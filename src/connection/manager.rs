@@ -79,15 +79,89 @@ enum RClient {
     Cluster(cluster::ClusterClient),
 }
 
+#[derive(Debug, Clone)]
 struct RedisNode {
     addr: String,
     master: bool,
 }
 
-struct RedisClient {
+pub struct RedisClient {
     client: RClient,
     nodes: Vec<RedisNode>,
+    master_nodes: Vec<RedisNode>,
     server_type: ServerType,
+}
+impl RedisClient {
+    pub fn get_connection(&self) -> Result<RedisConn> {
+        match &self.client {
+            RClient::Single(client) => {
+                let conn = client.get_connection()?;
+                Ok(RedisConn::Single(conn))
+            }
+            RClient::Cluster(client) => {
+                let conn = client.get_connection()?;
+                Ok(RedisConn::Cluster(conn))
+            }
+        }
+    }
+    fn is_cluster(&self) -> bool {
+        self.server_type == ServerType::Cluster
+    }
+    fn query_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
+        if cmds.is_empty() {
+            return Err(Error::Invalid {
+                message: "Commands are empty".to_string(),
+            });
+        }
+        let first_cmd = cmds[0].clone();
+        let mut values = Vec::with_capacity(self.nodes.len() / 2 + 1);
+        for (index, node) in self.master_nodes.iter().enumerate() {
+            let client = Client::open(node.addr.clone())?;
+            let mut conn = client.get_connection()?;
+            let value: T = cmds
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| first_cmd.clone())
+                .query(&mut conn)?;
+            values.push(value);
+        }
+        Ok(values)
+    }
+    pub fn dbsize(&self) -> Result<u64> {
+        let list = self.query_masters(vec![cmd("DBSIZE")])?;
+        Ok(list.iter().sum())
+    }
+    pub fn count_masters(&self) -> Result<usize> {
+        Ok(self.master_nodes.len())
+    }
+    pub fn scan(
+        &self,
+        cursors: Vec<u64>,
+        pattern: &str,
+        count: u64,
+    ) -> Result<(Vec<u64>, Vec<String>)> {
+        let cmds: Vec<Cmd> = cursors
+            .iter()
+            .map(|cursor| {
+                cmd("SCAN")
+                    .cursor_arg(*cursor)
+                    .arg("MATCH")
+                    .arg(pattern)
+                    .arg("COUNT")
+                    .arg(count)
+                    .clone()
+            })
+            .collect();
+        let values: Vec<(u64, Vec<String>)> = self.query_masters(cmds)?;
+        let mut cursors = Vec::with_capacity(values.len());
+        let mut keys = Vec::with_capacity(values[0].1.len() * values.len());
+        for (cursor, keys_in_node) in values {
+            cursors.push(cursor);
+            keys.extend(keys_in_node);
+        }
+        keys.sort_unstable();
+        Ok((cursors, keys))
+    }
 }
 
 pub struct ConnectionManager {}
@@ -128,7 +202,7 @@ impl ConnectionManager {
             server_type,
         ))
     }
-    fn get_client(&self, name: &str) -> Result<RedisClient> {
+    pub fn get_client(&self, name: &str) -> Result<RedisClient> {
         let (nodes, server_type) = self.get_redis_nodes(name)?;
         let client = match server_type {
             ServerType::Standalone => {
@@ -148,57 +222,15 @@ impl ConnectionManager {
                 return Err(Error::Invalid {
                     message: "Sentinel is not supported".to_string(),
                 });
-                // let client = cluster::ClusterClient::new(nodes)?;
-                // RClient::Cluster(client)
             }
         };
+        let master_nodes = nodes.iter().filter(|node| node.master).cloned().collect();
         Ok(RedisClient {
             client,
             nodes,
+            master_nodes,
             server_type,
         })
-
-        // let config = get_config(name)?;
-        // if config.addrs.is_empty() {
-        //     return Err(Error::InvalidRedisConfig {
-        //         name: name.to_string(),
-        //     });
-        // }
-        // let nodes = config
-        //     .addrs
-        //     .iter()
-        //     .map(|addr| {
-        //         if let Some(password) = &config.password {
-        //             format!("redis://:{password}@{addr}")
-        //         } else {
-        //             format!("redis://{addr}")
-        //         }
-        //     })
-        //     .collect::<Vec<String>>();
-        // println!("nodes: {nodes:?}");
-        // let client = if nodes.len() == 1 {
-        //     let client = Client::open(nodes[0].clone())?;
-        //     RedisClient::Single(client)
-        // } else {
-        //     let client = cluster::ClusterClient::new(nodes)?;
-        //     RedisClient::Cluster(client)
-        // };
-        // let client = Client::open(nodes[0].addr.clone())?;
-        // Ok(RedisClient::Single((client, nodes)))
-    }
-    pub fn get_connection(&self, name: &str) -> Result<RedisConn> {
-        let client = self.get_client(name)?;
-        match client.client {
-            RClient::Single(client) => {
-                let conn = client.get_connection()?;
-                Ok(RedisConn::Single(conn))
-            }
-            RClient::Cluster(client) => {
-                let conn = client.get_connection()?;
-                println!(">>>>>");
-                Ok(RedisConn::Cluster(conn))
-            }
-        }
     }
 }
 
