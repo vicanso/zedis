@@ -12,55 +12,160 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::get_connection_manager;
+use crate::helpers::build_key_tree;
+use crate::states::ZedisServerState;
 use gpui::AppContext;
+use gpui::Subscription;
 use gpui::px;
 use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
 use gpui_component::ActiveTheme;
+use gpui_component::Disableable;
 use gpui_component::IconName;
+use gpui_component::button::Button;
+use gpui_component::button::ButtonVariants;
 use gpui_component::h_flex;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::ListItem;
-use gpui_component::tree::TreeItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
+use gpui_component::v_flex;
 
 pub struct ZedisKeyTree {
+    loading: bool,
     keys: Vec<String>,
+    keyword: String,
+    cursors: Option<Vec<u64>>,
+    current_server: String,
+    keyword_state: Entity<InputState>,
     tree_state: Entity<TreeState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisKeyTree {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        server_state: Entity<ZedisServerState>,
+    ) -> Self {
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.observe(&server_state, |this, model, cx| {
+            let current_server = model.read(cx).current_server.clone();
+            if this.current_server != current_server {
+                this.current_server = current_server;
+                this.reset(cx);
+                this.handle_fetch_keys(cx);
+            }
+        }));
         let tree_state = cx.new(|cx| TreeState::new(cx));
-        // tree_state.update(cx, |state, cx| {
-        //     state.set_items(
-        //         vec![
-        //             TreeItem::new("1", "1"),
-        //             TreeItem::new("2", "2"),
-        //             TreeItem::new("3", "3"),
-        //         ],
-        //         cx,
-        //     );
-        // });
+        let keyword_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder("Input scan keyword")
+        });
+        subscriptions.push(
+            cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
+                if let InputEvent::PressEnter { .. } = &event {
+                    view.handle_filter(cx);
+                }
+            }),
+        );
+
         Self {
+            loading: false,
+            cursors: None,
             tree_state,
             keys: vec![],
+            keyword: "".to_string(),
+            current_server: "".to_string(),
+            keyword_state,
+            _subscriptions: subscriptions,
+        }
+    }
+    fn reset(&mut self, cx: &mut Context<Self>) {
+        self.cursors = None;
+        self.keys.clear();
+        self.keyword = "".to_string();
+        self.tree_state.update(cx, |state, cx| {
+            state.set_items(vec![], cx);
+        });
+    }
+    fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
+        // if server or keyword changed, stop the scan
+        if self.current_server != server || self.keyword != keyword {
+            return;
+        }
+        let cursors = self.cursors.clone();
+        cx.spawn(async move |handle, cx| {
+            let server_clone = server.clone();
+            let key_clone = keyword.clone();
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let pattern = format!("*{}*", keyword);
+                if let Some(cursors) = cursors {
+                    client.scan(cursors, &pattern, 10_000)
+                } else {
+                    client.first_scan(&pattern)
+                }
+            });
+            let result = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok((cursors, keys)) => {
+                        if cursors.iter().sum::<u64>() == 0 {
+                            this.cursors = None;
+                        } else {
+                            this.cursors = Some(cursors);
+                        }
+                        this.extend_key(keys, cx);
+                    }
+                    Err(e) => {
+                        // TODO 出错的处理
+                        println!("error: {e:?}");
+                        this.cursors = None;
+                        cx.notify();
+                    }
+                };
+                if this.cursors.is_some() && this.keys.len() < 1_000 {
+                    // run again
+                    this.scan_keys(cx, server_clone, key_clone);
+                    return cx.notify();
+                }
+                this.loading = false;
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+    fn handle_fetch_keys(&mut self, cx: &mut Context<Self>) {
+        let current_server = self.current_server.clone();
+        if current_server.is_empty() {
+            return;
+        }
+        self.loading = true;
+        cx.notify();
+        self.scan_keys(cx, current_server, self.keyword.clone());
+    }
+    fn handle_filter(&mut self, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+        let value = self.keyword_state.read(cx).text().to_string();
+        if value != self.keyword {
+            self.reset(cx);
+            self.keyword = value;
+            self.handle_fetch_keys(cx);
         }
     }
     pub fn extend_key(&mut self, keys: Vec<String>, cx: &mut Context<Self>) {
         self.keys.extend(keys);
-        let items = self
-            .keys
-            .iter()
-            .map(|key| TreeItem::new(key.to_string(), key.to_string()))
-            .collect::<Vec<TreeItem>>();
+        let items = build_key_tree(&self.keys);
+
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
         });
     }
-}
-
-impl Render for ZedisKeyTree {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         tree(
             &self.tree_state,
@@ -108,5 +213,41 @@ impl Render for ZedisKeyTree {
         .bg(cx.theme().sidebar)
         .text_color(cx.theme().sidebar_foreground)
         .h_full()
+    }
+    fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                Input::new(&self.keyword_state)
+                    .suffix(
+                        Button::new("key-tree-search-btn")
+                            .ghost()
+                            .loading(self.loading)
+                            .disabled(self.loading)
+                            .icon(IconName::Search)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.handle_filter(cx);
+                                // let value = this.keyword_state.read(cx).text().to_string();
+                                // if value != this.keyword {
+                                //     this.reset(cx);
+                                //     this.keyword = value;
+                                //     this.handle_fetch_keys(cx);
+                                // }
+                            })),
+                    )
+                    .cleanable(true),
+            )
+    }
+}
+
+impl Render for ZedisKeyTree {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .h_full()
+            .w_full()
+            .child(self.render_keyword_input(cx))
+            .child(self.render_tree(cx))
     }
 }

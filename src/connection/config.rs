@@ -22,11 +22,11 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub(crate) struct RedisConfig {
-    name: String,
-    host: String,
-    port: u16,
-    // TODO 加密
-    password: Option<String>,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub password: Option<String>,
+    pub master_name: Option<String>,
 }
 impl RedisConfig {
     pub fn get_connection_url(&self) -> String {
@@ -56,6 +56,8 @@ pub(crate) fn get_config(name: &str) -> Result<RedisConfig> {
     let config_dir = get_or_create_config_dir()?;
     let path = config_dir.join("redis-servers.json");
     let value = read_to_string(path)?;
+    // TODO 密码是否应该加密
+    // 是否使用toml
     let configs: Vec<RedisConfig> = serde_json::from_str(&value)?;
     let config = configs
         .iter()
