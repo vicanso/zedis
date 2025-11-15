@@ -14,6 +14,7 @@
 
 use super::config::get_config;
 use crate::error::Error;
+use dashmap::DashMap;
 use redis::{Client, Cmd, Connection, ConnectionLike, RedisResult, cluster};
 use redis::{Commands, cmd};
 use redis::{FromRedisValue, Value};
@@ -76,6 +77,7 @@ enum ServerType {
     Sentinel,
 }
 
+#[derive(Clone)]
 enum RClient {
     Single(Client),
     Cluster(cluster::ClusterClient),
@@ -230,6 +232,7 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
 }
 
 // TODO 是否在client中保存connection
+#[derive(Clone)]
 pub struct RedisClient {
     client: RClient,
     nodes: Vec<RedisNode>,
@@ -279,20 +282,16 @@ impl RedisClient {
     pub fn count_masters(&self) -> Result<usize> {
         Ok(self.master_nodes.len())
     }
-    pub fn first_scan(&self, pattern: &str) -> Result<(Vec<u64>, Vec<String>)> {
-        let db_size = self.dbsize()?;
+    pub fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<String>)> {
         let master_count = self.count_masters()?;
-        let max_first_scan_count = 1000;
-        let first_scan_count = if db_size < max_first_scan_count {
-            db_size
-        } else {
-            max_first_scan_count
-        };
-
         let cursors = vec![0; master_count];
 
-        let (cursors, keys) = self.scan(cursors, pattern, first_scan_count)?;
+        let (cursors, keys) = self.scan(cursors, pattern, count)?;
         Ok((cursors, keys))
+    }
+    pub fn get<T: FromRedisValue>(&self, key: &str) -> Result<Option<T>> {
+        let value = self.get_connection()?.get(key)?;
+        Ok(value)
     }
     pub fn scan(
         &self,
@@ -324,7 +323,9 @@ impl RedisClient {
     }
 }
 
-pub struct ConnectionManager {}
+pub struct ConnectionManager {
+    clients: DashMap<String, RedisClient>,
+}
 
 fn detect_server_type(client: &Client) -> Result<ServerType> {
     let mut conn = client.get_connection()?;
@@ -345,7 +346,9 @@ fn detect_server_type(client: &Client) -> Result<ServerType> {
 
 impl ConnectionManager {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            clients: DashMap::new(),
+        }
     }
     fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_config(name)?;
@@ -445,6 +448,9 @@ impl ConnectionManager {
         }
     }
     pub fn get_client(&self, name: &str) -> Result<RedisClient> {
+        if let Some(client) = self.clients.get(name) {
+            return Ok(client.clone());
+        }
         let (nodes, server_type) = self.get_redis_nodes(name)?;
         let client = match server_type {
             ServerType::Cluster => {
@@ -466,12 +472,14 @@ impl ConnectionManager {
             .filter(|node| node.role == NodeRole::Master)
             .cloned()
             .collect();
-        Ok(RedisClient {
+        let client = RedisClient {
             client,
             nodes,
             master_nodes,
             server_type,
-        })
+        };
+        self.clients.insert(name.to_string(), client.clone());
+        Ok(client)
     }
 }
 

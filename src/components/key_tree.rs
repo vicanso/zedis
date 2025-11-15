@@ -36,8 +36,9 @@ pub struct ZedisKeyTree {
     keys: Vec<String>,
     keyword: String,
     cursors: Option<Vec<u64>>,
-    current_server: String,
+    server: String,
     keyword_state: Entity<InputState>,
+    server_state: Entity<ZedisServerState>,
     tree_state: Entity<TreeState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -50,9 +51,9 @@ impl ZedisKeyTree {
     ) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let current_server = model.read(cx).current_server.clone();
-            if this.current_server != current_server {
-                this.current_server = current_server;
+            let server = model.read(cx).server.clone();
+            if this.server != server {
+                this.server = server;
                 this.reset(cx);
                 this.handle_fetch_keys(cx);
             }
@@ -77,8 +78,9 @@ impl ZedisKeyTree {
             tree_state,
             keys: vec![],
             keyword: "".to_string(),
-            current_server: "".to_string(),
+            server: "".to_string(),
             keyword_state,
+            server_state,
             _subscriptions: subscriptions,
         }
     }
@@ -92,7 +94,7 @@ impl ZedisKeyTree {
     }
     fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
         // if server or keyword changed, stop the scan
-        if self.current_server != server || self.keyword != keyword {
+        if self.server != server || self.keyword != keyword {
             return;
         }
         let cursors = self.cursors.clone();
@@ -102,10 +104,11 @@ impl ZedisKeyTree {
             let task = cx.background_spawn(async move {
                 let client = get_connection_manager().get_client(&server)?;
                 let pattern = format!("*{}*", keyword);
+                let count = if keyword.is_empty() { 2_000 } else { 10_000 };
                 if let Some(cursors) = cursors {
-                    client.scan(cursors, &pattern, 10_000)
+                    client.scan(cursors, &pattern, count)
                 } else {
-                    client.first_scan(&pattern)
+                    client.first_scan(&pattern, count)
                 }
             });
             let result = task.await;
@@ -123,7 +126,6 @@ impl ZedisKeyTree {
                         // TODO 出错的处理
                         println!("error: {e:?}");
                         this.cursors = None;
-                        cx.notify();
                     }
                 };
                 if this.cursors.is_some() && this.keys.len() < 1_000 {
@@ -138,13 +140,13 @@ impl ZedisKeyTree {
         .detach();
     }
     fn handle_fetch_keys(&mut self, cx: &mut Context<Self>) {
-        let current_server = self.current_server.clone();
-        if current_server.is_empty() {
+        let server = self.server.clone();
+        if server.is_empty() {
             return;
         }
         self.loading = true;
         cx.notify();
-        self.scan_keys(cx, current_server, self.keyword.clone());
+        self.scan_keys(cx, server, self.keyword.clone());
     }
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         if self.loading {
@@ -189,20 +191,15 @@ impl ZedisKeyTree {
                         .child(h_flex().gap_2().child(icon).child(item.label.clone()))
                         .on_click(cx.listener({
                             let item = item.clone();
-                            move |_, _, _window, cx| {
+                            move |this, _, _window, cx| {
                                 if item.is_folder() {
                                     return;
                                 }
-
-                                // Self::open_file(
-                                //     cx.entity(),
-                                //     PathBuf::from(item.id.as_str()),
-                                //     _window,
-                                //     cx,
-                                // )
-                                // .ok();
-
-                                cx.notify();
+                                let selected_key = item.id.to_string();
+                                this.server_state.update(cx, |state, cx| {
+                                    state.selected_key = Some(selected_key);
+                                    cx.notify();
+                                });
                             }
                         }))
                 })

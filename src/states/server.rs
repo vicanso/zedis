@@ -12,22 +12,54 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
+use crate::connection::get_connection_manager;
+use gpui::AppContext;
+use gpui::Context;
 
+#[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
-    pub current_server: String,
+    pub server: String,
+    pub dbsize: Option<u64>,
+    pub selected_key: Option<String>,
 }
 
 impl ZedisServerState {
     pub fn new(_cx: &mut Context<Self>) -> Self {
         Self {
-            current_server: "".to_string(),
+            ..Default::default()
         }
     }
     pub fn select_server(&mut self, server: String, cx: &mut Context<Self>) {
-        if self.current_server != server {
-            self.current_server = server;
+        if self.server != server {
+            let server_clone = server.clone();
+            self.server = server;
+            self.dbsize = None;
             cx.notify();
+            cx.spawn(async move |handle, cx| {
+                let counting_server = server_clone.clone();
+                let task = cx.background_spawn(async move {
+                    let client = get_connection_manager().get_client(&server_clone)?;
+                    client.dbsize()
+                });
+                let result = task.await;
+                handle.update(cx, move |this, cx| {
+                    if this.server != counting_server {
+                        return;
+                    }
+                    match result {
+                        Ok(dbsize) => {
+                            this.dbsize = Some(dbsize);
+                        }
+                        Err(e) => {
+                            // TODO 出错的处理
+                            println!("error: {e:?}");
+                            this.dbsize = None;
+                        }
+                    };
+                    cx.notify();
+                })
+            })
+            .detach();
         }
     }
 }

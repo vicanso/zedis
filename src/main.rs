@@ -1,8 +1,7 @@
 use crate::assets::Assets;
+use crate::components::ZedisEditor;
 use crate::components::ZedisKeyTree;
 use crate::components::ZedisSidebar;
-use crate::connection::get_connection_manager;
-use crate::error::Error;
 use crate::states::ZedisServerState;
 use gpui::AppContext;
 use gpui::Application;
@@ -15,6 +14,7 @@ use gpui::IntoElement;
 use gpui::ParentElement;
 use gpui::Render;
 use gpui::Styled;
+use gpui::Subscription;
 use gpui::Window;
 use gpui::WindowBounds;
 use gpui::WindowOptions;
@@ -33,6 +33,9 @@ use gpui_component::h_flex;
 use gpui_component::list::ListItem;
 use gpui_component::resizable::h_resizable;
 use gpui_component::resizable::resizable_panel;
+use gpui_component::select::{
+    SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectItem, SelectState,
+};
 use gpui_component::tree::TreeItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
@@ -51,82 +54,54 @@ mod states;
 pub struct Zedis {
     line_number: bool,
     key_tree: Entity<ZedisKeyTree>,
+    value_editor: Entity<ZedisEditor>,
     server_state: Entity<ZedisServerState>,
+    server_select_state: Entity<SelectState<Vec<String>>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut subscriptions = Vec::new();
         let server_state = cx.new(|cx| ZedisServerState::new(cx));
         let key_tree = cx.new(|cx| ZedisKeyTree::new(window, cx, server_state.clone()));
-        // 由启用时选择或者读取配置
-        server_state.update(cx, |state, cx| {
-            state.select_server("local".to_string(), cx);
+        let value_editor = cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()));
+        let server_select_state = cx.new(|cx| {
+            SelectState::new(
+                vec![
+                    "local".to_string(),
+                    "xiaoji".to_string(),
+                    "sentinel".to_string(),
+                ],
+                None,
+                window,
+                cx,
+            )
         });
+        subscriptions.push(cx.subscribe_in(
+            &server_select_state,
+            window,
+            |view, _, event, _, cx| match event {
+                SelectEvent::Confirm(value) => {
+                    if let Some(selected_value) = value {
+                        view.server_state.update(cx, |state, cx| {
+                            state.select_server(selected_value.clone(), cx);
+                        });
+                    }
+                }
+            },
+        ));
         Self {
             line_number: false,
             key_tree,
             server_state,
+            server_select_state,
+            value_editor,
+            _subscriptions: subscriptions,
         }
     }
-    fn render_line_number_button(
-        &self,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        Button::new("line-number")
-            .icon(IconName::Check)
-            .selected(self.line_number)
-            .label("Line Number")
-            .ghost()
-            .xsmall()
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.line_number = !this.line_number;
-
-                cx.spawn(async move |handle, mut cx| {
-                    let task = cx.background_spawn(async move {
-                        let demo = || -> Result<(u64, Vec<String>), Error>  {
-
-                        let client = get_connection_manager().get_client("sentinel")?;
-                        let db_size = client.dbsize()?;
-                        let master_count = client.count_masters()?;
-
-                        let cursors = vec![0; master_count];
-
-                        let (cursors, keys) = client.scan(cursors, "*", 1000)?;
-                        println!(
-                            "db_size: {db_size}, master_count: {master_count}, cursors: {cursors:?}",
-                        );
-
-                        // let dbsize = get_connection_manager().dbsize("xiaoji").unwrap();
-                        // println!("dbsize: {}", dbsize);
-                        // let master_count = get_connection_manager().master_count("local").unwrap();
-                        // // let (cursor, keys) =
-                        // //     get_connection_manager().scan("local", "*", 1000).unwrap();
-                        // // println!("keys: {keys:?}");
-                        Ok((db_size, keys))
-                        };
-                        match demo() {
-                            Ok((db_size, keys)) => (db_size, keys),
-                            Err(e) => {
-                                println!("error: {e:?}");
-                                (0, vec![])
-                            }
-                        }
-                    });
-                    let result = task.await;
-                    println!("result: {:?}", result.1.len());
-                    let _ = handle.update(cx, |this, cx| {
-                        this.key_tree.update(cx, |state, cx| {
-                            state.extend_key(result.1, cx);
-                            // state.set_items(result.1, cx);
-                        });
-                        cx.notify();
-                        // this.label = result;
-                        // cx.notify();
-                    });
-                })
-                .detach();
-            }))
+    fn render_server_select(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Select::new(&self.server_select_state).w(px(150.)).small()
     }
 
     fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -191,7 +166,7 @@ impl Render for Zedis {
                                     .size_range(px(200.)..px(400.))
                                     .child(self.key_tree.clone()),
                             )
-                            .child(Button::new("line-column").ghost().xsmall().label("input")),
+                            .child(resizable_panel().child(self.value_editor.clone())),
                     )
                     .child(
                         h_flex()
@@ -205,7 +180,7 @@ impl Render for Zedis {
                             .child(
                                 h_flex()
                                     .gap_3()
-                                    .child(self.render_line_number_button(window, cx))
+                                    .child(self.render_server_select(window, cx))
                                     .child(self.render_soft_wrap_button(window, cx))
                                     .child(self.render_indent_guides_button(window, cx)),
                             )

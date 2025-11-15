@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
+dashmap = "6.1.0"
 gpui = "0.2.2"
 gpui-component = "0.4.0-preview2"
 gpui-macros = "0.2.2"
