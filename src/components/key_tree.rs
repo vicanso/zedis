@@ -22,11 +22,14 @@ use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, 
 use gpui_component::ActiveTheme;
 use gpui_component::Colorize;
 use gpui_component::Disableable;
+use gpui_component::Icon;
 use gpui_component::IconName;
+use gpui_component::StyledExt;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
 use gpui_component::h_flex;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::label::Label;
 use gpui_component::list::ListItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
@@ -169,6 +172,16 @@ impl ZedisKeyTree {
         });
     }
     fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.loading && !self.server.is_empty() && self.keys.is_empty() {
+            return div()
+                .h_flex()
+                .justify_center()
+                .gap_2()
+                .pt_5()
+                .child(Icon::new(IconName::Info).text_sm())
+                .child(Label::new("No keys found").text_sm())
+                .into_any_element();
+        }
         let view = cx.entity();
         tree(
             &self.tree_state,
@@ -217,6 +230,7 @@ impl ZedisKeyTree {
         .bg(cx.theme().sidebar)
         .text_color(cx.theme().sidebar_foreground)
         .h_full()
+        .into_any_element()
     }
     fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()

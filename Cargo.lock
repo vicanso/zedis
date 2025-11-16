@@ -2187,9 +2187,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-component"
-version = "0.4.0-preview2"
+version = "0.4.0-preview3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54ca6397f1dae49d9fce9cb254aa9e99443d54264f4adc456303871d160a8adf"
+checksum = "f9d63e658f2fb8b80b93c031dd8eb1576daec4acef61bbee674e52e70bb8f6ce"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2225,10 +2225,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-component-macros"
-version = "0.4.0-preview2"
+name = "gpui-component-assets"
+version = "0.4.0-preview3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b62bf31416493266c9b3009b02233098c42ac2c995e371e22fc7c816baf74a9f"
+checksum = "be4602a953642b7a2e05c51d2543195ee0aa528854716962feb7616c7f6586ef"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "rust-embed",
+]
+
+[[package]]
+name = "gpui-component-macros"
+version = "0.4.0-preview3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b52cb5a399ec3469e91acee348b07d9a8f7206c9398df5449ea782557d3f2d88"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4642,6 +4653,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rust-embed-utils",
+ "shellexpand",
  "syn 2.0.109",
  "walkdir",
 ]
@@ -5127,6 +5139,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shellexpand"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
+dependencies = [
+ "dirs 5.0.1",
 ]
 
 [[package]]
@@ -7506,6 +7527,7 @@ dependencies = [
  "dashmap",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui-macros",
  "home",
  "lsp-types",

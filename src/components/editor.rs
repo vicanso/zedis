@@ -53,7 +53,8 @@ impl ZedisEditor {
             let editor = InputState::new(window, cx)
                 .code_editor(default_language.name())
                 .line_number(true)
-                .indent_guides(true)
+                // TODO 等component完善后，再打开indent_guides
+                .indent_guides(false)
                 .tab_size(TabSize {
                     tab_size: 4,
                     hard_tabs: false,

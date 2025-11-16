@@ -1,4 +1,3 @@
-use crate::assets::Assets;
 use crate::components::ZedisEditor;
 use crate::components::ZedisKeyTree;
 use crate::components::ZedisSidebar;
@@ -40,11 +39,11 @@ use gpui_component::tree::TreeItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
+use gpui_component_assets::Assets;
 use std::env;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
-mod assets;
 mod components;
 mod connection;
 mod error;
@@ -214,7 +213,7 @@ fn main() {
                 },
                 |window, cx| {
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
-                    cx.new(|cx| Root::new(zedis_view.into(), window, cx))
+                    cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;
 
