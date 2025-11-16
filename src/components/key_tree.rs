@@ -20,6 +20,7 @@ use gpui::Subscription;
 use gpui::px;
 use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
 use gpui_component::ActiveTheme;
+use gpui_component::Colorize;
 use gpui_component::Disableable;
 use gpui_component::IconName;
 use gpui_component::button::Button;
@@ -99,8 +100,8 @@ impl ZedisKeyTree {
         }
         let cursors = self.cursors.clone();
         cx.spawn(async move |handle, cx| {
-            let server_clone = server.clone();
-            let key_clone = keyword.clone();
+            let processing_server = server.clone();
+            let processing_keyword = keyword.clone();
             let task = cx.background_spawn(async move {
                 let client = get_connection_manager().get_client(&server)?;
                 let pattern = format!("*{}*", keyword);
@@ -130,7 +131,7 @@ impl ZedisKeyTree {
                 };
                 if this.cursors.is_some() && this.keys.len() < 1_000 {
                     // run again
-                    this.scan_keys(cx, server_clone, key_clone);
+                    this.scan_keys(cx, processing_server, processing_keyword);
                     return cx.notify();
                 }
                 this.loading = false;
@@ -181,11 +182,17 @@ impl ZedisKeyTree {
                     } else {
                         IconName::Folder
                     };
+                    let bg = if ix % 2 == 0 {
+                        cx.theme().background
+                    } else {
+                        cx.theme().background.lighten(0.8)
+                    };
 
                     ListItem::new(ix)
                         .w_full()
                         .rounded(cx.theme().radius)
-                        .py_0p5()
+                        .bg(bg)
+                        .py_1()
                         .px_2()
                         .pl(px(16.) * entry.depth() + px(8.))
                         .child(h_flex().gap_2().child(icon).child(item.label.clone()))

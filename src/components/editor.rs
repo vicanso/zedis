@@ -12,26 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::get_connection_manager;
+use crate::error::Error;
 use crate::states::ZedisServerState;
 use gpui::AnyWindowHandle;
 use gpui::AppContext;
 use gpui::Subscription;
 use gpui::px;
-use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::IconName;
-use gpui_component::button::Button;
-use gpui_component::button::ButtonVariants;
-use gpui_component::h_flex;
+use gpui::{Context, Entity, IntoElement, Render, Styled, Window};
 use gpui_component::highlighter::Language;
 use gpui_component::input::TabSize;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::list::ListItem;
-use gpui_component::tree::TreeState;
-use gpui_component::tree::tree;
-use gpui_component::v_flex;
-use std::rc::Rc;
+use gpui_component::input::{Input, InputState};
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct ZedisEditor {
     selected_key: String,
@@ -89,13 +82,29 @@ impl ZedisEditor {
     }
     fn handle_get_value(&mut self, cx: &mut Context<Self>) {
         let window_handle = self.window_handle.clone();
+        let server = self.server_state.read(cx).server.clone();
+        let selected_key = self.selected_key.clone();
         cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move { r#""{"a": 1}"# });
-            let reslt = task.await;
+            let processing_selected_key = selected_key.clone();
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let value = client.get(&selected_key)?;
+                Ok(value.unwrap_or_default())
+            });
+            let result: Result<String, Error> = task.await;
             window_handle.update(cx, move |_, window, cx| {
                 handle.update(cx, move |this, cx| {
+                    // if this.selected_key changed, stop the task
+                    if this.selected_key != processing_selected_key {
+                        return;
+                    }
                     this.editor.update(cx, |this, cx| {
-                        this.set_value(reslt.to_string(), window, cx);
+                        let value = result.unwrap_or_else(|e| {
+                            // TODO: handle error
+                            println!("error: {e:?}");
+                            format!("Zedis error: {e:?}")
+                        });
+                        this.set_value(value, window, cx);
                         cx.notify();
                     });
                 })
