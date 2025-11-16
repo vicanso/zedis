@@ -58,59 +58,29 @@ mod states;
 pub struct Zedis {
     key_tree: Entity<ZedisKeyTree>,
     value_editor: Entity<ZedisEditor>,
+    sidebar: Entity<ZedisSidebar>,
     servers: Option<Vec<RedisServer>>,
     server_state: Entity<ZedisServerState>,
-    server_select_state: Entity<SelectState<Vec<String>>>,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut subscriptions = Vec::new();
         let server_state = cx.new(ZedisServerState::new);
         let key_tree = cx.new(|cx| ZedisKeyTree::new(window, cx, server_state.clone()));
         let value_editor = cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()));
-        let server_select_state = cx.new(|cx| {
-            SelectState::new(
-                vec![
-                    "local".to_string(),
-                    "xiaoji".to_string(),
-                    "sentinel".to_string(),
-                ],
-                None,
-                window,
-                cx,
-            )
-        });
+        let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
         server_state.update(cx, |state, cx| {
             state.fetch_servers(cx);
         });
-        subscriptions.push(cx.subscribe_in(
-            &server_select_state,
-            window,
-            |view, _, event, _, cx| match event {
-                SelectEvent::Confirm(value) => {
-                    if let Some(selected_value) = value {
-                        view.server_state.update(cx, |state, cx| {
-                            state.select_server(selected_value.clone(), cx);
-                        });
-                    }
-                }
-            },
-        ));
+
         Self {
             key_tree,
             server_state,
-            server_select_state,
             value_editor,
+            sidebar,
             servers: None,
-            _subscriptions: subscriptions,
         }
     }
-    fn render_server_select(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        Select::new(&self.server_select_state).w(px(150.)).small()
-    }
-
     fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         Button::new("soft-wrap")
             .ghost()
@@ -161,7 +131,7 @@ impl Zedis {
             .enumerate()
             .map(|(index, server)| {
                 let server_name = server.name.clone();
-                v_flex()
+                ListItem::new(("server-select-card", index))
                     .m_2()
                     .border(px(1.))
                     .border_color(cx.theme().border)
@@ -177,20 +147,18 @@ impl Zedis {
                                     .whitespace_normal(),
                             )
                             .child(
-                                h_flex().flex_1().justify_end().child(
-                                    Button::new(("server-select", index))
-                                        .ghost()
-                                        .icon(IconName::Eye)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            let server_name = server_name.clone();
-                                            this.server_state.update(cx, |state, cx| {
-                                                state.server = server_name.clone();
-                                                cx.notify();
-                                            });
-                                        })),
-                                ),
+                                h_flex()
+                                    .flex_1()
+                                    .justify_end()
+                                    .child(Icon::new(IconName::Eye)),
                             ),
                     )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let server_name = server_name.clone();
+                        this.server_state.update(cx, |state, cx| {
+                            state.select_server(&server_name, cx);
+                        });
+                    }))
             })
             .collect();
 
@@ -228,7 +196,7 @@ impl Render for Zedis {
             .id(PKG_NAME)
             .bg(cx.theme().background)
             .size_full()
-            .child(ZedisSidebar::new(window, cx))
+            .child(self.sidebar.clone())
             .child(
                 v_flex()
                     .id("main-container")
@@ -251,7 +219,6 @@ impl Render for Zedis {
                             .child(
                                 h_flex()
                                     .gap_3()
-                                    .child(self.render_server_select(window, cx))
                                     .child(self.render_soft_wrap_button(window, cx))
                                     .child(self.render_indent_guides_button(window, cx)),
                             )

@@ -56,12 +56,15 @@ impl ZedisServerState {
         })
         .detach();
     }
-    pub fn select_server(&mut self, server: String, cx: &mut Context<Self>) {
+    pub fn select_server(&mut self, server: &str, cx: &mut Context<Self>) {
         if self.server != server {
-            let server_clone = server.clone();
-            self.server = server;
+            self.server = server.to_string();
             self.dbsize = None;
             cx.notify();
+            if self.server.is_empty() {
+                return;
+            }
+            let server_clone = server.to_string();
             cx.spawn(async move |handle, cx| {
                 let counting_server = server_clone.clone();
                 let task = cx.background_spawn(async move {
