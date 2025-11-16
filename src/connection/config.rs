@@ -14,21 +14,21 @@
 
 use crate::error::Error;
 use home::home_dir;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Debug, Default, Deserialize, Clone)]
-pub(crate) struct RedisConfig {
+#[derive(Debug, Default, Deserialize, Clone, Serialize)]
+pub struct RedisServer {
     pub name: String,
     pub host: String,
     pub port: u16,
     pub password: Option<String>,
     pub master_name: Option<String>,
 }
-impl RedisConfig {
+impl RedisServer {
     pub fn get_connection_url(&self) -> String {
         let addr = format!("{}:{}", self.host, self.port);
         if let Some(password) = &self.password {
@@ -37,6 +37,11 @@ impl RedisConfig {
             format!("redis://{addr}")
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize, Clone, Serialize)]
+pub(crate) struct RedisServers {
+    pub servers: Vec<RedisServer>,
 }
 
 fn get_or_create_config_dir() -> Result<PathBuf> {
@@ -52,14 +57,31 @@ fn get_or_create_config_dir() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub(crate) fn get_config(name: &str) -> Result<RedisConfig> {
+fn get_or_create_server_config() -> Result<PathBuf> {
     let config_dir = get_or_create_config_dir()?;
-    let path = config_dir.join("redis-servers.json");
+    let path = config_dir.join("redis-servers.toml");
+    if path.exists() {
+        return Ok(path);
+    }
+    std::fs::write(&path, "")?;
+    Ok(path)
+}
+
+pub fn get_servers() -> Result<Vec<RedisServer>> {
+    let path = get_or_create_server_config()?;
+    let value = read_to_string(path)?;
+    let configs: RedisServers = toml::from_str(&value)?;
+    Ok(configs.servers)
+}
+
+pub(crate) fn get_config(name: &str) -> Result<RedisServer> {
+    let path = get_or_create_server_config()?;
     let value = read_to_string(path)?;
     // TODO 密码是否应该加密
     // 是否使用toml
-    let configs: Vec<RedisConfig> = serde_json::from_str(&value)?;
+    let configs: RedisServers = toml::from_str(&value)?;
     let config = configs
+        .servers
         .iter()
         .find(|config| config.name == name)
         .ok_or(Error::Invalid {

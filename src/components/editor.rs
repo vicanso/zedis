@@ -23,6 +23,7 @@ use gpui::{Context, Entity, IntoElement, Render, Styled, Window};
 use gpui_component::highlighter::Language;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
+use serde_json::Value;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -82,15 +83,22 @@ impl ZedisEditor {
         }
     }
     fn handle_get_value(&mut self, cx: &mut Context<Self>) {
-        let window_handle = self.window_handle.clone();
+        let window_handle = self.window_handle;
         let server = self.server_state.read(cx).server.clone();
         let selected_key = self.selected_key.clone();
         cx.spawn(async move |handle, cx| {
             let processing_selected_key = selected_key.clone();
             let task = cx.background_spawn(async move {
+                // TODO 根据key的类型判断逻辑
                 let client = get_connection_manager().get_client(&server)?;
-                let value = client.get(&selected_key)?;
-                Ok(value.unwrap_or_default())
+                let value = client.get::<String>(&selected_key)?.unwrap_or_default();
+                if !value.is_empty()
+                    && let Ok(value) = serde_json::from_str::<Value>(&value)
+                    && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
+                {
+                    return Ok(pretty_value);
+                }
+                Ok(value)
             });
             let result: Result<String, Error> = task.await;
             window_handle.update(cx, move |_, window, cx| {

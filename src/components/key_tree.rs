@@ -43,6 +43,7 @@ pub struct ZedisKeyTree {
     server: String,
     keyword_state: Entity<InputState>,
     server_state: Entity<ZedisServerState>,
+    error: Option<String>,
     tree_state: Entity<TreeState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -66,7 +67,7 @@ impl ZedisKeyTree {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder("Input scan keyword")
+                .placeholder("Filter keys by keyword")
         });
         subscriptions.push(
             cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
@@ -79,6 +80,7 @@ impl ZedisKeyTree {
         Self {
             loading: false,
             cursors: None,
+            error: None,
             tree_state,
             keys: vec![],
             keyword: "".to_string(),
@@ -129,6 +131,7 @@ impl ZedisKeyTree {
                     Err(e) => {
                         // TODO 出错的处理
                         println!("error: {e:?}");
+                        this.error = Some(e.to_string());
                         this.cursors = None;
                     }
                 };
@@ -148,6 +151,7 @@ impl ZedisKeyTree {
         if server.is_empty() {
             return;
         }
+        self.error = None;
         self.loading = true;
         cx.notify();
         self.scan_keys(cx, server, self.keyword.clone());
@@ -172,14 +176,27 @@ impl ZedisKeyTree {
         });
     }
     fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.loading && !self.server.is_empty() && self.keys.is_empty() {
+        if (!self.loading && !self.server.is_empty() && self.keys.is_empty())
+            || self.error.is_some()
+        {
+            let text = self
+                .error
+                .clone()
+                .unwrap_or_else(|| "No keys found".to_string());
             return div()
                 .h_flex()
-                .justify_center()
+                .w_full()
+                .items_center()
                 .gap_2()
                 .pt_5()
+                .px_2()
                 .child(Icon::new(IconName::Info).text_sm())
-                .child(Label::new("No keys found").text_sm())
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(Label::new(text).text_sm().whitespace_normal()),
+                )
                 .into_any_element();
         }
         let view = cx.entity();
@@ -198,7 +215,7 @@ impl ZedisKeyTree {
                     let bg = if ix % 2 == 0 {
                         cx.theme().background
                     } else {
-                        cx.theme().background.lighten(0.8)
+                        cx.theme().background.lighten(1.0)
                     };
 
                     ListItem::new(ix)

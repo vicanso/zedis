@@ -15,4 +15,5 @@
 mod config;
 mod manager;
 
+pub use config::{RedisServer, get_servers};
 pub use manager::get_connection_manager;

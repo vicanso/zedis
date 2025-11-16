@@ -7536,6 +7536,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snafu",
+ "toml 0.9.8",
 ]
 
 [[package]]

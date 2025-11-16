@@ -1,6 +1,8 @@
 use crate::components::ZedisEditor;
 use crate::components::ZedisKeyTree;
 use crate::components::ZedisSidebar;
+use crate::connection::{RedisServer, get_servers};
+use crate::error::Error;
 use crate::states::ZedisServerState;
 use gpui::AppContext;
 use gpui::Application;
@@ -29,6 +31,7 @@ use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
+use gpui_component::label::Label;
 use gpui_component::list::ListItem;
 use gpui_component::resizable::h_resizable;
 use gpui_component::resizable::resizable_panel;
@@ -42,6 +45,8 @@ use gpui_component::v_flex;
 use gpui_component_assets::Assets;
 use std::env;
 
+type Result<T, E = Error> = std::result::Result<T, E>;
+
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 mod components;
@@ -51,9 +56,9 @@ mod helpers;
 mod states;
 
 pub struct Zedis {
-    line_number: bool,
     key_tree: Entity<ZedisKeyTree>,
     value_editor: Entity<ZedisEditor>,
+    servers: Option<Vec<RedisServer>>,
     server_state: Entity<ZedisServerState>,
     server_select_state: Entity<SelectState<Vec<String>>>,
     _subscriptions: Vec<Subscription>,
@@ -62,7 +67,7 @@ pub struct Zedis {
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        let server_state = cx.new(|cx| ZedisServerState::new(cx));
+        let server_state = cx.new(ZedisServerState::new);
         let key_tree = cx.new(|cx| ZedisKeyTree::new(window, cx, server_state.clone()));
         let value_editor = cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()));
         let server_select_state = cx.new(|cx| {
@@ -76,6 +81,9 @@ impl Zedis {
                 window,
                 cx,
             )
+        });
+        server_state.update(cx, |state, cx| {
+            state.fetch_servers(cx);
         });
         subscriptions.push(cx.subscribe_in(
             &server_select_state,
@@ -91,11 +99,11 @@ impl Zedis {
             },
         ));
         Self {
-            line_number: false,
             key_tree,
             server_state,
             server_select_state,
             value_editor,
+            servers: None,
             _subscriptions: subscriptions,
         }
     }
@@ -143,6 +151,75 @@ impl Zedis {
         Button::new("line-column").ghost().xsmall().label("abc")
         // .on_click(cx.listener(Self::go_to_line))
     }
+    fn render_servers_grid(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(servers) = &self.server_state.read(cx).servers else {
+            return div().h_full().into_any_element();
+        };
+
+        let children: Vec<_> = servers
+            .iter()
+            .enumerate()
+            .map(|(index, server)| {
+                let server_name = server.name.clone();
+                v_flex()
+                    .m_2()
+                    .border(px(1.))
+                    .border_color(cx.theme().border)
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .child(
+                        h_flex()
+                            .child(Icon::new(IconName::Palette))
+                            .child(
+                                Label::new(server.name.clone())
+                                    .ml_2()
+                                    .text_sm()
+                                    .whitespace_normal(),
+                            )
+                            .child(
+                                h_flex().flex_1().justify_end().child(
+                                    Button::new(("server-select", index))
+                                        .ghost()
+                                        .icon(IconName::Eye)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let server_name = server_name.clone();
+                                            this.server_state.update(cx, |state, cx| {
+                                                state.server = server_name.clone();
+                                                cx.notify();
+                                            });
+                                        })),
+                                ),
+                            ),
+                    )
+            })
+            .collect();
+
+        div()
+            .grid()
+            .grid_cols(3)
+            .gap_2()
+            .w_full()
+            .children(children)
+            .into_any_element()
+    }
+    fn render_content_container(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        if self.server_state.read(cx).server.is_empty() {
+            return self.render_servers_grid(window, cx).into_any_element();
+        }
+        h_resizable("editor-container")
+            .child(
+                resizable_panel()
+                    .size(px(240.))
+                    .size_range(px(200.)..px(400.))
+                    .child(self.key_tree.clone()),
+            )
+            .child(resizable_panel().child(self.value_editor.clone()))
+            .into_any_element()
+    }
 }
 
 impl Render for Zedis {
@@ -154,18 +231,13 @@ impl Render for Zedis {
             .child(ZedisSidebar::new(window, cx))
             .child(
                 v_flex()
-                    .id("right-container")
+                    .id("main-container")
                     .flex_1()
                     .h_full()
                     .child(
-                        h_resizable("editor-container")
-                            .child(
-                                resizable_panel()
-                                    .size(px(240.))
-                                    .size_range(px(200.)..px(400.))
-                                    .child(self.key_tree.clone()),
-                            )
-                            .child(resizable_panel().child(self.value_editor.clone())),
+                        div()
+                            .flex_1()
+                            .child(self.render_content_container(window, cx)),
                     )
                     .child(
                         h_flex()

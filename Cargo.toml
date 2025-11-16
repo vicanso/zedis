@@ -18,6 +18,7 @@ rust-embed = "8.9.0"
 serde = "1.0.228"
 serde_json = "1.0.145"
 snafu = "0.8.9"
+toml = "0.9.8"
 
 [lints.clippy]
 # Set the unwrap_used lint level to deny

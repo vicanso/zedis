@@ -24,6 +24,8 @@ pub enum Error {
     Io { source: std::io::Error },
     #[snafu(display("Serde JSON error: {source}"))]
     SerdeJson { source: serde_json::Error },
+    #[snafu(display("Serde TOML error: {source}"))]
+    SerdeToml { source: toml::de::Error },
 }
 
 impl From<redis::RedisError> for Error {
@@ -41,5 +43,11 @@ impl From<std::io::Error> for Error {
 impl From<serde_json::Error> for Error {
     fn from(source: serde_json::Error) -> Self {
         Error::SerdeJson { source }
+    }
+}
+
+impl From<toml::de::Error> for Error {
+    fn from(source: toml::de::Error) -> Self {
+        Error::SerdeToml { source }
     }
 }
