@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod editor;
-mod key_tree;
-mod sidebar;
+mod card;
 
-pub use editor::ZedisEditor;
-pub use key_tree::ZedisKeyTree;
-pub use sidebar::ZedisSidebar;
+pub use card::Card;

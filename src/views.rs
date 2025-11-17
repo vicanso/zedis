@@ -12,8 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod config;
-mod manager;
+mod editor;
+mod key_tree;
+mod servers;
+mod sidebar;
 
-pub use config::{RedisServer, get_servers};
-pub use manager::get_connection_manager;
+pub use editor::ZedisEditor;
+pub use key_tree::ZedisKeyTree;
+pub use servers::ZedisServers;
+pub use sidebar::ZedisSidebar;

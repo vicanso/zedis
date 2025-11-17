@@ -1,9 +1,11 @@
-use crate::components::ZedisEditor;
-use crate::components::ZedisKeyTree;
-use crate::components::ZedisSidebar;
+use crate::components::Card;
 use crate::connection::{RedisServer, get_servers};
 use crate::error::Error;
 use crate::states::ZedisServerState;
+use crate::views::ZedisEditor;
+use crate::views::ZedisKeyTree;
+use crate::views::ZedisServers;
+use crate::views::ZedisSidebar;
 use gpui::AppContext;
 use gpui::Application;
 use gpui::Axis;
@@ -23,13 +25,13 @@ use gpui::div;
 use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui::size;
-use gpui_component::ActiveTheme;
 use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::Root;
 use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::dialog::DialogButtonProps;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::list::ListItem;
@@ -42,6 +44,7 @@ use gpui_component::tree::TreeItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
+use gpui_component::{ActiveTheme, WindowExt};
 use gpui_component_assets::Assets;
 use std::env;
 
@@ -54,12 +57,13 @@ mod connection;
 mod error;
 mod helpers;
 mod states;
+mod views;
 
 pub struct Zedis {
     key_tree: Entity<ZedisKeyTree>,
     value_editor: Entity<ZedisEditor>,
     sidebar: Entity<ZedisSidebar>,
-    servers: Option<Vec<RedisServer>>,
+    servers: Entity<ZedisServers>,
     server_state: Entity<ZedisServerState>,
 }
 
@@ -69,6 +73,7 @@ impl Zedis {
         let key_tree = cx.new(|cx| ZedisKeyTree::new(window, cx, server_state.clone()));
         let value_editor = cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()));
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
+        let servers = cx.new(|cx| ZedisServers::new(window, cx, server_state.clone()));
         server_state.update(cx, |state, cx| {
             state.fetch_servers(cx);
         });
@@ -78,7 +83,7 @@ impl Zedis {
             server_state,
             value_editor,
             sidebar,
-            servers: None,
+            servers,
         }
     }
     fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -121,62 +126,13 @@ impl Zedis {
         Button::new("line-column").ghost().xsmall().label("abc")
         // .on_click(cx.listener(Self::go_to_line))
     }
-    fn render_servers_grid(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(servers) = &self.server_state.read(cx).servers else {
-            return div().h_full().into_any_element();
-        };
-
-        let children: Vec<_> = servers
-            .iter()
-            .enumerate()
-            .map(|(index, server)| {
-                let server_name = server.name.clone();
-                ListItem::new(("server-select-card", index))
-                    .m_2()
-                    .border(px(1.))
-                    .border_color(cx.theme().border)
-                    .p_2()
-                    .rounded(cx.theme().radius)
-                    .child(
-                        h_flex()
-                            .child(Icon::new(IconName::Palette))
-                            .child(
-                                Label::new(server.name.clone())
-                                    .ml_2()
-                                    .text_sm()
-                                    .whitespace_normal(),
-                            )
-                            .child(
-                                h_flex()
-                                    .flex_1()
-                                    .justify_end()
-                                    .child(Icon::new(IconName::Eye)),
-                            ),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let server_name = server_name.clone();
-                        this.server_state.update(cx, |state, cx| {
-                            state.select_server(&server_name, cx);
-                        });
-                    }))
-            })
-            .collect();
-
-        div()
-            .grid()
-            .grid_cols(3)
-            .gap_2()
-            .w_full()
-            .children(children)
-            .into_any_element()
-    }
     fn render_content_container(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         if self.server_state.read(cx).server.is_empty() {
-            return self.render_servers_grid(window, cx).into_any_element();
+            return self.servers.clone().into_any_element();
         }
         h_resizable("editor-container")
             .child(
@@ -192,6 +148,9 @@ impl Zedis {
 
 impl Render for Zedis {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialog_layer = Root::render_dialog_layer(window, cx);
+        let notification_layer = Root::render_notification_layer(window, cx);
+
         h_flex()
             .id(PKG_NAME)
             .bg(cx.theme().background)
@@ -225,6 +184,8 @@ impl Render for Zedis {
                             .child(self.render_go_to_line_button(window, cx)),
                     ),
             )
+            .children(dialog_layer)
+            .children(notification_layer)
     }
 }
 

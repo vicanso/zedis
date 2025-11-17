@@ -14,7 +14,7 @@
 
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
-use crate::connection::get_servers;
+use crate::connection::{get_servers, save_servers};
 use crate::error::Error;
 use gpui::AppContext;
 use gpui::Context;
@@ -34,6 +34,34 @@ impl ZedisServerState {
         Self {
             ..Default::default()
         }
+    }
+    pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, server: RedisServer) {
+        let mut servers = self.servers.clone().unwrap_or_default();
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                if let Some(existing_server) = servers.iter_mut().find(|s| s.name == server.name) {
+                    *existing_server = server;
+                } else {
+                    servers.push(server);
+                }
+                save_servers(&servers)?;
+
+                Ok(servers)
+            });
+            let result: Result<Vec<RedisServer>> = task.await;
+            match result {
+                Ok(servers) => handle.update(cx, |this, cx| {
+                    this.servers = Some(servers);
+                    cx.notify();
+                }),
+                Err(e) => {
+                    // TODO
+                    println!("error: {e:?}");
+                    Ok(())
+                }
+            }
+        })
+        .detach();
     }
     pub fn fetch_servers(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {

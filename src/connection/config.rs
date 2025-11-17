@@ -70,8 +70,22 @@ fn get_or_create_server_config() -> Result<PathBuf> {
 pub fn get_servers() -> Result<Vec<RedisServer>> {
     let path = get_or_create_server_config()?;
     let value = read_to_string(path)?;
+    if value.is_empty() {
+        return Ok(vec![]);
+    }
     let configs: RedisServers = toml::from_str(&value)?;
     Ok(configs.servers)
+}
+pub fn save_servers(servers: &Vec<RedisServer>) -> Result<()> {
+    let path = get_or_create_server_config()?;
+    let value = toml::to_string(&RedisServers {
+        servers: servers.clone(),
+    })
+    .map_err(|e| Error::Invalid {
+        message: e.to_string(),
+    })?;
+    std::fs::write(path, value)?;
+    Ok(())
 }
 
 pub(crate) fn get_config(name: &str) -> Result<RedisServer> {
