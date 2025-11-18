@@ -27,6 +27,8 @@ pub struct RedisServer {
     pub port: u16,
     pub password: Option<String>,
     pub master_name: Option<String>,
+    pub description: Option<String>,
+    pub updated_at: Option<String>,
 }
 impl RedisServer {
     pub fn get_connection_url(&self) -> String {
@@ -41,7 +43,7 @@ impl RedisServer {
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 pub(crate) struct RedisServers {
-    pub servers: Vec<RedisServer>,
+    servers: Vec<RedisServer>,
 }
 
 fn get_or_create_config_dir() -> Result<PathBuf> {
@@ -76,12 +78,9 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
     let configs: RedisServers = toml::from_str(&value)?;
     Ok(configs.servers)
 }
-pub fn save_servers(servers: &Vec<RedisServer>) -> Result<()> {
+pub fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
     let path = get_or_create_server_config()?;
-    let value = toml::to_string(&RedisServers {
-        servers: servers.clone(),
-    })
-    .map_err(|e| Error::Invalid {
+    let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid {
         message: e.to_string(),
     })?;
     std::fs::write(path, value)?;

@@ -12,27 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use gpui::AnyElement;
 use gpui::App;
 use gpui::ClickEvent;
-use gpui::Context;
 use gpui::ElementId;
-use gpui::InteractiveElement;
-use gpui::ParentElement;
-use gpui::Render;
-use gpui::RenderOnce;
-use gpui::Styled;
 use gpui::Window;
-use gpui::div;
+use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::Icon;
-use gpui_component::Sizable;
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::Button;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::list::ListItem;
-use gpui_component::v_flex;
-use gpui_macros::IntoElement;
+
+type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
 pub struct Card {
@@ -41,7 +35,8 @@ pub struct Card {
     title: Option<String>,
     description: Option<String>,
     actions: Option<Vec<Button>>,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<OnClick>,
+    footer: Option<AnyElement>,
 }
 
 impl Card {
@@ -54,6 +49,7 @@ impl Card {
             description: None,
             actions: None,
             on_click: None,
+            footer: None,
         }
     }
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
@@ -79,10 +75,14 @@ impl Card {
         self.on_click = Some(Box::new(handler));
         self
     }
+    pub fn footer(mut self, footer: impl IntoElement) -> Self {
+        self.footer = Some(footer.into_any_element());
+        self
+    }
 }
 
 impl RenderOnce for Card {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut header = h_flex();
         if let Some(icon) = self.icon {
             header = header.child(icon);
@@ -91,12 +91,7 @@ impl RenderOnce for Card {
             header = header.child(Label::new(title).ml_2().text_sm().whitespace_normal());
         }
         if let Some(actions) = self.actions {
-            header = header.child(
-                h_flex()
-                    .flex_1()
-                    .justify_end()
-                    .children(actions.into_iter()),
-            );
+            header = header.child(h_flex().flex_1().justify_end().children(actions));
         }
 
         let mut item = ListItem::new(self.id)
@@ -109,6 +104,14 @@ impl RenderOnce for Card {
 
         if let Some(on_click) = self.on_click {
             item = item.on_click(on_click);
+        }
+
+        if let Some(description) = self.description {
+            item = item.child(Label::new(description).text_sm().whitespace_normal());
+        }
+
+        if let Some(footer) = self.footer {
+            item = item.child(footer);
         }
 
         item

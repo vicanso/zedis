@@ -14,11 +14,17 @@
 
 use crate::connection::get_connection_manager;
 use crate::helpers::build_key_tree;
+use crate::states::Route;
+use crate::states::ZedisAppState;
 use crate::states::ZedisServerState;
+use gpui::AnyWindowHandle;
 use gpui::AppContext;
+use gpui::Entity;
 use gpui::Subscription;
+use gpui::Window;
+use gpui::div;
+use gpui::prelude::*;
 use gpui::px;
-use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
 use gpui_component::ActiveTheme;
 use gpui_component::Colorize;
 use gpui_component::Disableable;
@@ -36,15 +42,16 @@ use gpui_component::tree::tree;
 use gpui_component::v_flex;
 
 pub struct ZedisKeyTree {
+    server_state: Entity<ZedisServerState>,
     loading: bool,
     keys: Vec<String>,
     keyword: String,
     cursors: Option<Vec<u64>>,
     server: String,
     keyword_state: Entity<InputState>,
-    server_state: Entity<ZedisServerState>,
     error: Option<String>,
     tree_state: Entity<TreeState>,
+    window_handle: AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -52,15 +59,21 @@ impl ZedisKeyTree {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
+        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let server = model.read(cx).server.clone();
+            let server = model.read(cx).server();
             if this.server != server {
-                this.server = server;
+                this.server = server.to_string();
                 this.reset(cx);
                 this.handle_fetch_keys(cx);
+            }
+        }));
+        subscriptions.push(cx.observe(&app_state, |this, model, cx| {
+            if model.read(cx).route() != Route::Editor {
+                this.reset(cx);
             }
         }));
         let tree_state = cx.new(|cx| TreeState::new(cx));
@@ -87,6 +100,7 @@ impl ZedisKeyTree {
             server: "".to_string(),
             keyword_state,
             server_state,
+            window_handle: window.window_handle(),
             _subscriptions: subscriptions,
         }
     }
@@ -97,6 +111,16 @@ impl ZedisKeyTree {
         self.tree_state.update(cx, |state, cx| {
             state.set_items(vec![], cx);
         });
+        let window_handle = self.window_handle;
+        let keyword_state = self.keyword_state.clone();
+        cx.spawn(async move |_, cx| {
+            window_handle.update(cx, move |_, window, cx| {
+                keyword_state.update(cx, |state, cx| {
+                    state.set_value("", window, cx);
+                })
+            })
+        })
+        .detach();
     }
     fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
         // if server or keyword changed, stop the scan
@@ -160,12 +184,9 @@ impl ZedisKeyTree {
         if self.loading {
             return;
         }
-        let value = self.keyword_state.read(cx).text().to_string();
-        if value != self.keyword {
-            self.reset(cx);
-            self.keyword = value;
-            self.handle_fetch_keys(cx);
-        }
+        self.reset(cx);
+        self.keyword = self.keyword_state.read(cx).text().to_string();
+        self.handle_fetch_keys(cx);
     }
     pub fn extend_key(&mut self, keys: Vec<String>, cx: &mut Context<Self>) {
         self.keys.extend(keys);
@@ -234,8 +255,7 @@ impl ZedisKeyTree {
                                 }
                                 let selected_key = item.id.to_string();
                                 this.server_state.update(cx, |state, cx| {
-                                    state.selected_key = Some(selected_key);
-                                    cx.notify();
+                                    state.select_key(selected_key, cx);
                                 });
                             }
                         }))
@@ -278,7 +298,7 @@ impl ZedisKeyTree {
 }
 
 impl Render for ZedisKeyTree {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .h_full()
             .w_full()

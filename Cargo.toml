@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
+chrono = "0.4.42"
 dashmap = "6.1.0"
 gpui = "0.2.2"
 gpui-component = "0.4.0"
@@ -18,8 +19,15 @@ rust-embed = "8.9.0"
 serde = "1.0.228"
 serde_json = "1.0.145"
 snafu = "0.8.9"
+substring = "1.4.5"
 toml = "0.9.8"
 
 [lints.clippy]
 # Set the unwrap_used lint level to deny
 unwrap_used = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"

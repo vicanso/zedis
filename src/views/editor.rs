@@ -14,12 +14,15 @@
 
 use crate::connection::get_connection_manager;
 use crate::error::Error;
+use crate::states::Route;
+use crate::states::ZedisAppState;
 use crate::states::ZedisServerState;
 use gpui::AnyWindowHandle;
-use gpui::AppContext;
+use gpui::Entity;
 use gpui::Subscription;
+use gpui::Window;
+use gpui::prelude::*;
 use gpui::px;
-use gpui::{Context, Entity, IntoElement, Render, Styled, Window};
 use gpui_component::highlighter::Language;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
@@ -39,19 +42,25 @@ impl ZedisEditor {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
+        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let selected_key = model.read(cx).selected_key.clone().unwrap_or_default();
+            let selected_key = model.read(cx).key().unwrap_or_default();
             if this.selected_key != selected_key {
-                this.selected_key = selected_key;
+                this.selected_key = selected_key.to_string();
                 this.handle_get_value(cx);
+            }
+        }));
+        subscriptions.push(cx.observe(&app_state, |this, model, cx| {
+            if model.read(cx).route() != Route::Editor {
+                this.reset(cx);
             }
         }));
         let default_language = Language::from_str("json");
         let editor = cx.new(|cx| {
-            let editor = InputState::new(window, cx)
+            InputState::new(window, cx)
                 .code_editor(default_language.name())
                 .line_number(true)
                 // TODO 等component完善后，再打开indent_guides
@@ -60,18 +69,8 @@ impl ZedisEditor {
                     tab_size: 4,
                     hard_tabs: false,
                 })
-                .soft_wrap(true);
-            // .default_value(include_str!("./fixtures/test.rs"))
-            // .placeholder("Enter your code here...");
-
-            // let lsp_store = Rc::new(lsp_store.clone());
-            // editor.lsp.completion_provider = Some(lsp_store.clone());
-            // editor.lsp.code_action_providers = vec![lsp_store.clone(), Rc::new(TextConvertor)];
-            // editor.lsp.hover_provider = Some(lsp_store.clone());
-            // editor.lsp.definition_provider = Some(lsp_store.clone());
-            // editor.lsp.document_color_provider = Some(lsp_store.clone());
-
-            editor
+                .searchable(true)
+                .soft_wrap(true)
         });
 
         Self {
@@ -82,10 +81,25 @@ impl ZedisEditor {
             _subscriptions: subscriptions,
         }
     }
+    fn reset(&mut self, cx: &mut Context<Self>) {
+        let window_handle = self.window_handle;
+        let editor = self.editor.clone();
+        cx.spawn(async move |_, cx| {
+            window_handle.update(cx, move |_, window, cx| {
+                editor.update(cx, |state, cx| {
+                    state.set_value("", window, cx);
+                })
+            })
+        })
+        .detach();
+    }
     fn handle_get_value(&mut self, cx: &mut Context<Self>) {
         let window_handle = self.window_handle;
-        let server = self.server_state.read(cx).server.clone();
+        let server = self.server_state.read(cx).server().to_string();
         let selected_key = self.selected_key.clone();
+        if selected_key.is_empty() {
+            return;
+        }
         cx.spawn(async move |handle, cx| {
             let processing_selected_key = selected_key.clone();
             let task = cx.background_spawn(async move {
@@ -124,7 +138,7 @@ impl ZedisEditor {
 }
 
 impl Render for ZedisEditor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         Input::new(&self.editor)
             .bordered(false)
             .p_0()

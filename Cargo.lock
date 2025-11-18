@@ -5434,6 +5434,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "substring"
+version = "1.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42ee6433ecef213b2e72f587ef64a2f5943e7cd16fbd82dbe8bc07486c534c86"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7524,6 +7533,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "anyhow",
+ "chrono",
  "dashmap",
  "gpui",
  "gpui-component",
@@ -7536,6 +7546,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snafu",
+ "substring",
  "toml 0.9.8",
 ]
 

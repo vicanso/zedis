@@ -12,9 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod app;
-mod server;
+use gpui::prelude::*;
 
-pub use app::Route;
-pub use app::ZedisAppState;
-pub use server::ZedisServerState;
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Route {
+    #[default]
+    Home,
+    Editor,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ZedisAppState {
+    route: Route,
+}
+
+impl ZedisAppState {
+    pub fn new(_cx: &mut Context<Self>) -> Self {
+        Self {
+            ..Default::default()
+        }
+    }
+    pub fn route(&self) -> Route {
+        self.route
+    }
+    pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
+        if self.route != route {
+            self.route = route;
+            cx.notify();
+        }
+    }
+}

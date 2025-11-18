@@ -16,17 +16,17 @@ use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::{get_servers, save_servers};
 use crate::error::Error;
-use gpui::AppContext;
-use gpui::Context;
+use chrono::Local;
+use gpui::prelude::*;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
-    pub server: String,
-    pub dbsize: Option<u64>,
-    pub servers: Option<Vec<RedisServer>>,
-    pub selected_key: Option<String>,
+    server: String,
+    dbsize: Option<u64>,
+    servers: Option<Vec<RedisServer>>,
+    key: Option<String>,
 }
 
 impl ZedisServerState {
@@ -35,8 +35,18 @@ impl ZedisServerState {
             ..Default::default()
         }
     }
-    pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, server: RedisServer) {
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+    pub fn servers(&self) -> Option<&[RedisServer]> {
+        self.servers.as_deref()
+    }
+    pub fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+    pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, mut server: RedisServer) {
         let mut servers = self.servers.clone().unwrap_or_default();
+        server.updated_at = Some(Local::now().to_rfc3339());
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.name == server.name) {
@@ -44,7 +54,7 @@ impl ZedisServerState {
                 } else {
                     servers.push(server);
                 }
-                save_servers(&servers)?;
+                save_servers(servers.clone())?;
 
                 Ok(servers)
             });
@@ -84,9 +94,10 @@ impl ZedisServerState {
         })
         .detach();
     }
-    pub fn select_server(&mut self, server: &str, cx: &mut Context<Self>) {
+    pub fn select(&mut self, server: &str, cx: &mut Context<Self>) {
         if self.server != server {
             self.server = server.to_string();
+            self.key = None;
             self.dbsize = None;
             cx.notify();
             if self.server.is_empty() {
@@ -118,6 +129,12 @@ impl ZedisServerState {
                 })
             })
             .detach();
+        }
+    }
+    pub fn select_key(&mut self, key: String, cx: &mut Context<Self>) {
+        if self.key.clone().unwrap_or_default() != key {
+            self.key = Some(key);
+            cx.notify();
         }
     }
 }
