@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::assets::CustomIconName;
 use crate::connection::get_connection_manager;
 use crate::error::Error;
-use crate::states::Route;
-use crate::states::ZedisAppState;
 use crate::states::ZedisServerState;
 use gpui::AnyWindowHandle;
 use gpui::Entity;
@@ -23,9 +22,13 @@ use gpui::Subscription;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui::px;
+use gpui_component::Icon;
+use gpui_component::h_flex;
 use gpui_component::highlighter::Language;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
+use gpui_component::label::Label;
+use gpui_component::v_flex;
 use serde_json::Value;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -42,7 +45,6 @@ impl ZedisEditor {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
@@ -51,11 +53,6 @@ impl ZedisEditor {
             if this.selected_key != selected_key {
                 this.selected_key = selected_key.to_string();
                 this.handle_get_value(cx);
-            }
-        }));
-        subscriptions.push(cx.observe(&app_state, |this, model, cx| {
-            if model.read(cx).route() != Route::Editor {
-                this.reset(cx);
             }
         }));
         let default_language = Language::from_str("json");
@@ -81,23 +78,17 @@ impl ZedisEditor {
             _subscriptions: subscriptions,
         }
     }
-    fn reset(&mut self, cx: &mut Context<Self>) {
-        let window_handle = self.window_handle;
-        let editor = self.editor.clone();
-        cx.spawn(async move |_, cx| {
-            window_handle.update(cx, move |_, window, cx| {
-                editor.update(cx, |state, cx| {
-                    state.set_value("", window, cx);
-                })
-            })
-        })
-        .detach();
-    }
     fn handle_get_value(&mut self, cx: &mut Context<Self>) {
         let window_handle = self.window_handle;
         let server = self.server_state.read(cx).server().to_string();
         let selected_key = self.selected_key.clone();
         if selected_key.is_empty() {
+            let _ = window_handle.update(cx, move |_, window, cx| {
+                self.editor.update(cx, |this, cx| {
+                    this.set_value("", window, cx);
+                    cx.notify();
+                });
+            });
             return;
         }
         cx.spawn(async move |handle, cx| {
@@ -139,13 +130,27 @@ impl ZedisEditor {
 
 impl Render for ZedisEditor {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Input::new(&self.editor)
-            .bordered(false)
-            .p_0()
+        v_flex()
+            .w_full()
             .h_full()
-            .font_family("Monaco")
-            .text_size(px(12.))
-            .focus_bordered(false)
+            .child(
+                h_flex()
+                    .m_2()
+                    .items_center()
+                    .child(Icon::new(CustomIconName::Key).mr_1())
+                    .child(Label::new(&self.selected_key)),
+            )
+            .child(
+                Input::new(&self.editor)
+                    .flex_1()
+                    .bordered(false)
+                    .p_0()
+                    .w_full()
+                    .h_full()
+                    .font_family("Monaco")
+                    .text_size(px(12.))
+                    .focus_bordered(false),
+            )
             .into_any_element()
     }
 }

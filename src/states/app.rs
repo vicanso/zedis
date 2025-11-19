@@ -12,33 +12,76 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::error::Error;
+use crate::helpers::get_or_create_config_dir;
+use gpui::Bounds;
+use gpui::Pixels;
 use gpui::prelude::*;
+use serde::Deserialize;
+use serde::Serialize;
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum Route {
     #[default]
     Home,
     Editor,
 }
 
-#[derive(Debug, Clone, Default)]
+fn get_or_create_server_config() -> Result<PathBuf> {
+    let config_dir = get_or_create_config_dir()?;
+    let path = config_dir.join("zedis.toml");
+    if path.exists() {
+        return Ok(path);
+    }
+    std::fs::write(&path, "")?;
+    Ok(path)
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
+    bounds: Option<Bounds<Pixels>>,
+}
+
+pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
+    let path = get_or_create_server_config()?;
+    let value = toml::to_string(state)?;
+    std::fs::write(path, value)?;
+    Ok(())
 }
 
 impl ZedisAppState {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn try_new() -> Result<Self> {
+        let path = get_or_create_server_config()?;
+        let value = std::fs::read_to_string(path)?;
+        let mut state: Self = toml::from_str(&value)?;
+        // TODO 暂时不支持指定route，后续修改
+        state.route = Route::Home;
+
+        Ok(state)
+    }
+    pub fn new() -> Self {
         Self {
             ..Default::default()
         }
     }
+
     pub fn route(&self) -> Route {
         self.route
+    }
+    pub fn bounds(&self) -> Option<&Bounds<Pixels>> {
+        self.bounds.as_ref()
     }
     pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         if self.route != route {
             self.route = route;
             cx.notify();
         }
+    }
+    pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.bounds = Some(bounds);
     }
 }

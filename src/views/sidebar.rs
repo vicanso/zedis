@@ -95,7 +95,6 @@ impl Render for ZedisSidebar {
                         });
                         this.server_state.update(cx, |state, cx| {
                             state.select(&server_name, cx);
-                            cx.notify();
                         });
                     }))
             })

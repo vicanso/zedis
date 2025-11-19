@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::RedisServer;
 use crate::states::Route;
@@ -55,7 +56,7 @@ impl ZedisServers {
         let host_state = cx.new(|cx| InputState::new(window, cx));
         let port_state = cx.new(|cx| InputState::new(window, cx).default_value("6379"));
         let password_state = cx.new(|cx| InputState::new(window, cx).masked(true));
-        let description_state = cx.new(|cx| InputState::new(window, cx));
+        let description_state = cx.new(|cx| InputState::new(window, cx).multi_line());
         Self {
             app_state,
             server_state,
@@ -75,14 +76,32 @@ impl ZedisServers {
         self.host_state.update(cx, |state, cx| {
             state.set_value(server.host.clone(), window, cx);
         });
-        self.port_state.update(cx, |state, cx| {
-            state.set_value(server.port.to_string(), window, cx);
-        });
+        if server.port != 0 {
+            self.port_state.update(cx, |state, cx| {
+                state.set_value(server.port.to_string(), window, cx);
+            });
+        }
         self.password_state.update(cx, |state, cx| {
             state.set_value(server.password.clone().unwrap_or_default(), window, cx);
         });
         self.description_state.update(cx, |state, cx| {
             state.set_value(server.description.clone().unwrap_or_default(), window, cx);
+        });
+    }
+    fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>, server: &str) {
+        let server_state = self.server_state.clone();
+        let server = server.to_string();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let message = format!("Are you sure you want to delete this server: {server}?");
+            let server_state = server_state.clone();
+            let server = server.clone();
+            dialog.confirm().child(message).on_ok(move |_, window, cx| {
+                server_state.update(cx, |state, cx| {
+                    state.remove_server(&server, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
         });
     }
     fn add_or_update_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -196,6 +215,7 @@ impl Render for ZedisServers {
             .map(|(index, server)| {
                 let select_server_name = server.name.clone();
                 let update_server = server.clone();
+                let remove_server_name = server.name.clone();
                 let description = server.description.as_deref().unwrap_or_default();
                 let updated_at = if let Some(updated_at) = &server.updated_at {
                     updated_at.substring(0, 9).to_string()
@@ -204,7 +224,7 @@ impl Render for ZedisServers {
                 };
                 let title = format!("{} ({}:{})", server.name, server.host, server.port);
                 Card::new(("servers-card", index))
-                    .icon(Icon::new(IconName::Palette))
+                    .icon(Icon::new(CustomIconName::DatabaseZap))
                     .title(title)
                     .when(!description.is_empty(), |this| {
                         this.description(description)
@@ -219,13 +239,20 @@ impl Render for ZedisServers {
                         )
                     })
                     .actions(vec![
-                        Button::new(("servers-card-action", index))
+                        Button::new(("servers-card-action-select", index))
                             .ghost()
-                            .icon(IconName::Settings2)
+                            .icon(CustomIconName::FilePenLine)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.fill_inputs(window, cx, &update_server);
                                 this.add_or_update_server(window, cx);
+                            })),
+                        Button::new(("servers-card-action-delete", index))
+                            .ghost()
+                            .icon(CustomIconName::FileXCorner)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.remove_server(window, cx, &remove_server_name);
                             })),
                     ])
                     .on_click(cx.listener(move |this, _, _, cx| {

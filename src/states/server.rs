@@ -18,6 +18,7 @@ use crate::connection::{get_servers, save_servers};
 use crate::error::Error;
 use chrono::Local;
 use gpui::prelude::*;
+use tracing::debug;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -43,6 +44,30 @@ impl ZedisServerState {
     }
     pub fn key(&self) -> Option<&str> {
         self.key.as_deref()
+    }
+    pub fn remove_server(&mut self, server: &str, cx: &mut Context<Self>) {
+        let mut servers = self.servers.clone().unwrap_or_default();
+        servers.retain(|s| s.name != server);
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                save_servers(servers.clone())?;
+
+                Ok(servers)
+            });
+            let result: Result<Vec<RedisServer>> = task.await;
+            match result {
+                Ok(servers) => handle.update(cx, |this, cx| {
+                    this.servers = Some(servers);
+                    cx.notify();
+                }),
+                Err(e) => {
+                    // TODO
+                    println!("error: {e:?}");
+                    Ok(())
+                }
+            }
+        })
+        .detach();
     }
     pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, mut server: RedisServer) {
         let mut servers = self.servers.clone().unwrap_or_default();
@@ -99,6 +124,7 @@ impl ZedisServerState {
             self.server = server.to_string();
             self.key = None;
             self.dbsize = None;
+            debug!(server = self.server, "select server");
             cx.notify();
             if self.server.is_empty() {
                 return;

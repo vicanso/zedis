@@ -14,8 +14,6 @@
 
 use crate::connection::get_connection_manager;
 use crate::helpers::build_key_tree;
-use crate::states::Route;
-use crate::states::ZedisAppState;
 use crate::states::ZedisServerState;
 use gpui::AnyWindowHandle;
 use gpui::AppContext;
@@ -40,6 +38,7 @@ use gpui_component::list::ListItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
+use tracing::debug;
 
 pub struct ZedisKeyTree {
     server_state: Entity<ZedisServerState>,
@@ -59,21 +58,21 @@ impl ZedisKeyTree {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
+        let server = server_state.read(cx).server().to_string();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
             let server = model.read(cx).server();
+            debug!(
+                server,
+                key_tree_server = this.server,
+                "observe server state"
+            );
             if this.server != server {
                 this.server = server.to_string();
                 this.reset(cx);
                 this.handle_fetch_keys(cx);
-            }
-        }));
-        subscriptions.push(cx.observe(&app_state, |this, model, cx| {
-            if model.read(cx).route() != Route::Editor {
-                this.reset(cx);
             }
         }));
         let tree_state = cx.new(|cx| TreeState::new(cx));
@@ -90,19 +89,24 @@ impl ZedisKeyTree {
             }),
         );
 
-        Self {
+        debug!(server, "new key tree");
+
+        let mut this = Self {
             loading: false,
             cursors: None,
             error: None,
             tree_state,
             keys: vec![],
             keyword: "".to_string(),
-            server: "".to_string(),
+            server,
             keyword_state,
             server_state,
             window_handle: window.window_handle(),
             _subscriptions: subscriptions,
-        }
+        };
+        this.handle_fetch_keys(cx);
+
+        this
     }
     fn reset(&mut self, cx: &mut Context<Self>) {
         self.cursors = None;

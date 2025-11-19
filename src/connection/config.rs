@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::error::Error;
-use home::home_dir;
+use crate::helpers::get_or_create_config_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::read_to_string;
 use std::path::PathBuf;
@@ -44,19 +44,6 @@ impl RedisServer {
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 pub(crate) struct RedisServers {
     servers: Vec<RedisServer>,
-}
-
-fn get_or_create_config_dir() -> Result<PathBuf> {
-    let Some(home) = home_dir() else {
-        return Err(Error::Invalid {
-            message: "Home directory not found".to_string(),
-        });
-    };
-    let path = home.join(".zedis");
-    if !path.exists() {
-        std::fs::create_dir_all(&path)?;
-    }
-    Ok(path)
 }
 
 fn get_or_create_server_config() -> Result<PathBuf> {

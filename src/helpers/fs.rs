@@ -12,8 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod fs;
-mod key_tree;
+use crate::error::Error;
+use home::home_dir;
+use std::path::PathBuf;
 
-pub use fs::get_or_create_config_dir;
-pub use key_tree::build_key_tree;
+type Result<T, E = Error> = std::result::Result<T, E>;
+
+pub fn get_or_create_config_dir() -> Result<PathBuf> {
+    let Some(home) = home_dir() else {
+        return Err(Error::Invalid {
+            message: "Home directory not found".to_string(),
+        });
+    };
+    let path = home.join(".zedis");
+    if !path.exists() {
+        std::fs::create_dir_all(&path)?;
+    }
+    Ok(path)
+}
