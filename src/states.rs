@@ -18,4 +18,5 @@ mod server;
 pub use app::Route;
 pub use app::ZedisAppState;
 pub use app::save_app_state;
+pub use server::RedisValue;
 pub use server::ZedisServerState;

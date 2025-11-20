@@ -279,6 +279,11 @@ impl RedisClient {
         let list = self.query_masters(vec![cmd("DBSIZE")])?;
         Ok(list.iter().sum())
     }
+    pub fn ping(&self) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let _: () = cmd("PING").query(&mut conn)?;
+        Ok(())
+    }
     pub fn count_masters(&self) -> Result<usize> {
         Ok(self.master_nodes.len())
     }

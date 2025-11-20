@@ -6,6 +6,7 @@ use crate::views::ZedisEditor;
 use crate::views::ZedisKeyTree;
 use crate::views::ZedisServers;
 use crate::views::ZedisSidebar;
+use crate::views::ZedisStatusBar;
 use gpui::Application;
 use gpui::Bounds;
 use gpui::Entity;
@@ -20,10 +21,7 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
 use gpui_component::ActiveTheme;
-use gpui_component::IconName;
 use gpui_component::Root;
-use gpui_component::Sizable;
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
 use gpui_component::resizable::h_resizable;
 use gpui_component::resizable::resizable_panel;
@@ -58,6 +56,7 @@ pub struct Zedis {
     key_tree: Option<Entity<ZedisKeyTree>>,
     value_editor: Option<Entity<ZedisEditor>>,
     servers: Option<Entity<ZedisServers>>,
+    status_bar: Entity<ZedisStatusBar>,
 }
 
 impl Zedis {
@@ -68,6 +67,9 @@ impl Zedis {
     ) -> Self {
         let mut subscriptions = Vec::new();
         let server_state = cx.new(ZedisServerState::new);
+
+        let status_bar =
+            cx.new(|cx| ZedisStatusBar::new(window, cx, app_state.clone(), server_state.clone()));
 
         let sidebar =
             cx.new(|cx| ZedisSidebar::new(window, cx, app_state.clone(), server_state.clone()));
@@ -91,6 +93,7 @@ impl Zedis {
         Self {
             app_state,
             server_state,
+            status_bar,
             sidebar,
             key_tree: None,
             servers: None,
@@ -130,46 +133,6 @@ impl Zedis {
             .await;
         });
         self.save_task = Some(task);
-    }
-    fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("soft-wrap")
-            .ghost()
-            .xsmall()
-            .when(true, |this| this.icon(IconName::Check))
-            .label("Soft Wrap")
-            .on_click(cx.listener(|_this, _, _window, cx| {
-                // this.soft_wrap = !this.soft_wrap;
-                // this.editor.update(cx, |state, cx| {
-                //     state.set_soft_wrap(this.soft_wrap, window, cx);
-                // });
-                cx.notify();
-            }))
-    }
-
-    fn render_indent_guides_button(
-        &self,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        Button::new("indent-guides")
-            .ghost()
-            .xsmall()
-            .when(true, |this| this.icon(IconName::Check))
-            .label("Indent Guides")
-            .on_click(cx.listener(|_this, _, _window, cx| {
-                // this.indent_guides = !this.indent_guides;
-                // this.editor.update(cx, |state, cx| {
-                //     state.set_indent_guides(this.indent_guides, window, cx);
-                // });
-                cx.notify();
-            }))
-    }
-    fn render_go_to_line_button(&self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // let position = self.editor.read(cx).cursor_position();
-        // let cursor = self.editor.read(cx).cursor();
-
-        Button::new("line-column").ghost().xsmall().label("abc")
-        // .on_click(cx.listener(Self::go_to_line))
     }
     fn render_content_container(
         &mut self,
@@ -247,21 +210,22 @@ impl Render for Zedis {
                             .child(self.render_content_container(window, cx)),
                     )
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .text_sm()
-                            .py_1p5()
-                            .px_4()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .text_color(cx.theme().muted_foreground)
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .child(self.render_soft_wrap_button(window, cx))
-                                    .child(self.render_indent_guides_button(window, cx)),
-                            )
-                            .child(self.render_go_to_line_button(window, cx)),
+                        self.status_bar.clone(),
+                        // h_flex()
+                        //     .justify_between()
+                        //     .text_sm()
+                        //     .py_1p5()
+                        //     .px_4()
+                        //     .border_t_1()
+                        //     .border_color(cx.theme().border)
+                        //     .text_color(cx.theme().muted_foreground)
+                        //     .child(
+                        //         h_flex()
+                        //             .gap_3()
+                        //             .child(self.render_soft_wrap_button(window, cx))
+                        //             .child(self.render_indent_guides_button(window, cx)),
+                        //     )
+                        //     .child(self.render_go_to_line_button(window, cx)),
                     ),
             )
             .children(dialog_layer)

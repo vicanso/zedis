@@ -44,6 +44,8 @@ pub enum CustomIconName {
     DatabaseZap,
     FileXCorner,
     FilePenLine,
+    FilePlusCorner,
+    ChevronsLeftRightEllipsis,
 }
 
 impl CustomIconName {
@@ -53,6 +55,8 @@ impl CustomIconName {
             CustomIconName::DatabaseZap => "icons/database-zap.svg",
             CustomIconName::FileXCorner => "icons/file-x-corner.svg",
             CustomIconName::FilePenLine => "icons/file-pen-line.svg",
+            CustomIconName::FilePlusCorner => "icons/file-plus-corner.svg",
+            CustomIconName::ChevronsLeftRightEllipsis => "icons/chevrons-left-right-ellipsis.svg",
         }
         .into()
     }

@@ -56,7 +56,7 @@ impl ZedisServers {
         let host_state = cx.new(|cx| InputState::new(window, cx));
         let port_state = cx.new(|cx| InputState::new(window, cx).default_value("6379"));
         let password_state = cx.new(|cx| InputState::new(window, cx).masked(true));
-        let description_state = cx.new(|cx| InputState::new(window, cx).multi_line());
+        let description_state = cx.new(|cx| InputState::new(window, cx).auto_grow(2, 10));
         Self {
             app_state,
             server_state,
@@ -270,7 +270,7 @@ impl Render for ZedisServers {
         div()
             .grid()
             .grid_cols(3)
-            .gap_2()
+            .gap_1()
             .w_full()
             .children(children)
             .child(
@@ -278,6 +278,11 @@ impl Render for ZedisServers {
                     .icon(IconName::Plus)
                     .title("Add")
                     .description("Add a new redis server")
+                    .actions(vec![
+                        Button::new("add")
+                            .ghost()
+                            .icon(CustomIconName::FilePlusCorner),
+                    ])
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.fill_inputs(window, cx, &RedisServer::default());
                         this.add_or_update_server(window, cx);

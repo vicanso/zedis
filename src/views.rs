@@ -16,8 +16,10 @@ mod editor;
 mod key_tree;
 mod servers;
 mod sidebar;
+mod status_bar;
 
 pub use editor::ZedisEditor;
 pub use key_tree::ZedisKeyTree;
 pub use servers::ZedisServers;
 pub use sidebar::ZedisSidebar;
+pub use status_bar::ZedisStatusBar;
