@@ -13,15 +13,15 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::get_connection_manager;
-use crate::error::Error;
-use crate::states::ZedisServerState;
+use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::Entity;
 use gpui::Subscription;
 use gpui::Window;
+use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
+use gpui_component::ActiveTheme;
 use gpui_component::Icon;
 use gpui_component::h_flex;
 use gpui_component::highlighter::Language;
@@ -29,12 +29,10 @@ use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::v_flex;
-use serde_json::Value;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
+use humansize::{DECIMAL, format_size};
+use tracing::debug;
 
 pub struct ZedisEditor {
-    selected_key: String,
     server_state: Entity<ZedisServerState>,
     editor: Entity<InputState>,
     window_handle: AnyWindowHandle,
@@ -49,11 +47,8 @@ impl ZedisEditor {
     ) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let selected_key = model.read(cx).key().unwrap_or_default();
-            if this.selected_key != selected_key {
-                this.selected_key = selected_key.to_string();
-                this.handle_get_value(cx);
-            }
+            let value = model.read(cx).value().cloned();
+            this.update_editor_value(cx, value);
         }));
         let default_language = Language::from_str("json");
         let editor = cx.new(|cx| {
@@ -73,73 +68,86 @@ impl ZedisEditor {
         Self {
             server_state,
             editor,
-            selected_key: "".to_string(),
             window_handle: window.window_handle(),
             _subscriptions: subscriptions,
         }
     }
-    fn handle_get_value(&mut self, cx: &mut Context<Self>) {
+    fn update_editor_value(&mut self, cx: &mut Context<Self>, value: Option<RedisValue>) {
         let window_handle = self.window_handle;
-        let server = self.server_state.read(cx).server().to_string();
-        let selected_key = self.selected_key.clone();
-        if selected_key.is_empty() {
-            let _ = window_handle.update(cx, move |_, window, cx| {
-                self.editor.update(cx, |this, cx| {
+        let _ = window_handle.update(cx, move |_, window, cx| {
+            self.editor.update(cx, move |this, cx| {
+                debug!(value = ?value, "update editor value");
+                let Some(value) = value else {
                     this.set_value("", window, cx);
-                    cx.notify();
-                });
-            });
-            return;
-        }
-        cx.spawn(async move |handle, cx| {
-            let processing_selected_key = selected_key.clone();
-            let task = cx.background_spawn(async move {
-                // TODO 根据key的类型判断逻辑
-                let client = get_connection_manager().get_client(&server)?;
-                let value = client.get::<String>(&selected_key)?.unwrap_or_default();
-                if !value.is_empty()
-                    && let Ok(value) = serde_json::from_str::<Value>(&value)
-                    && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
-                {
-                    return Ok(pretty_value);
+                    return;
+                };
+                if let Some(data) = value.data() {
+                    this.set_value(data, window, cx);
+                } else {
+                    this.set_value("", window, cx);
                 }
-                Ok(value)
+                cx.notify();
             });
-            let result: Result<String, Error> = task.await;
-            window_handle.update(cx, move |_, window, cx| {
-                handle.update(cx, move |this, cx| {
-                    // if this.selected_key changed, stop the task
-                    if this.selected_key != processing_selected_key {
-                        return;
-                    }
-                    this.editor.update(cx, |this, cx| {
-                        let value = result.unwrap_or_else(|e| {
-                            // TODO: handle error
-                            println!("error: {e:?}");
-                            format!("Zedis error: {e:?}")
-                        });
-                        this.set_value(value, window, cx);
-                        cx.notify();
-                    });
-                })
-            })
-        })
-        .detach();
+        });
+    }
+    fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_state = self.server_state.read(cx);
+        let Some(key) = server_state.key().map(|key| key.to_string()) else {
+            return h_flex();
+        };
+        let mut labels = vec![];
+        if let Some(value) = server_state.value() {
+            let ttl = if let Some(ttl) = value.ttl() {
+                humantime::format_duration(ttl).to_string()
+            } else {
+                "--".to_string()
+            };
+            let ttl = ttl
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let size = format_size(value.size() as u64, DECIMAL);
+            let text_color = cx.theme().muted_foreground;
+            labels.push(
+                Label::new(format!("SIZE : {size}"))
+                    .mr_2()
+                    .text_sm()
+                    .text_color(text_color),
+            );
+            labels.push(
+                Label::new(format!("TTL : {ttl}",))
+                    .text_sm()
+                    .text_color(text_color),
+            );
+        }
+
+        h_flex()
+            .p_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .items_center()
+            .w_full()
+            .child(Icon::new(CustomIconName::Key).mr_1())
+            .child(
+                div()
+                    .flex_1()
+                    // 不设置为w_0，宽度会被过长的key撑开，导致布局错乱
+                    .w_0()
+                    .overflow_hidden()
+                    .mx_2()
+                    .child(Label::new(key).text_ellipsis().whitespace_nowrap()),
+            )
+            .children(labels)
     }
 }
 
 impl Render for ZedisEditor {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .w_full()
             .h_full()
-            .child(
-                h_flex()
-                    .m_2()
-                    .items_center()
-                    .child(Icon::new(CustomIconName::Key).mr_1())
-                    .child(Label::new(&self.selected_key)),
-            )
+            .child(self.render_select_key(cx))
             .child(
                 Input::new(&self.editor)
                     .flex_1()
