@@ -27,6 +27,7 @@ time = "0.3.44"
 toml = "0.9.8"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["local-time"] }
+uuid = "1.18.1"
 
 
 [lints.clippy]

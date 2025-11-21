@@ -111,6 +111,7 @@ impl Render for ZedisSidebar {
                     Button::new("github")
                         .ghost()
                         .w_full()
+                        .tooltip("Star on GitHub")
                         .icon(Icon::new(IconName::GitHub))
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.open_url("https://github.com/vicanso/zedis");

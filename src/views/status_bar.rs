@@ -19,6 +19,7 @@ use gpui::Entity;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui_component::ActiveTheme;
+use gpui_component::Disableable;
 use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::Sizable;
@@ -50,9 +51,7 @@ impl ZedisStatusBar {
         }
         let dbsize = server_state.dbsize();
         let scan_count = server_state.scan_count();
-        let text = if let Some(scan_count) = scan_count
-            && let Some(dbsize) = dbsize
-        {
+        let text = if let Some(dbsize) = dbsize {
             format!("{scan_count}/{dbsize}")
         } else {
             "--".to_string()
@@ -72,12 +71,26 @@ impl ZedisStatusBar {
         } else {
             (cx.theme().primary, "--".to_string())
         };
+        let is_completed = server_state.scan_completed();
         h_flex()
             .items_center()
             .child(
-                Icon::new(CustomIconName::Key)
-                    .text_color(cx.theme().primary)
-                    .mr_1(),
+                Button::new("zedis-status-bar-scan-more")
+                    .outline()
+                    .small()
+                    .disabled(is_completed)
+                    .tooltip(if is_completed {
+                        "Scan completed"
+                    } else {
+                        "Scan more keys"
+                    })
+                    .mr_1()
+                    .icon(CustomIconName::ChevronsDown)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| {
+                            state.scan_next(cx);
+                        });
+                    })),
             )
             .child(Label::new(format!(": {text}")).mr_4())
             .child(
@@ -125,7 +138,7 @@ impl ZedisStatusBar {
                 cx.notify();
             }))
     }
-    fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_errors(&self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // 记录出错的显示
         h_flex()
     }

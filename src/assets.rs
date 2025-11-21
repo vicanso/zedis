@@ -46,6 +46,7 @@ pub enum CustomIconName {
     FilePenLine,
     FilePlusCorner,
     ChevronsLeftRightEllipsis,
+    ChevronsDown,
 }
 
 impl CustomIconName {
@@ -57,6 +58,7 @@ impl CustomIconName {
             CustomIconName::FilePenLine => "icons/file-pen-line.svg",
             CustomIconName::FilePlusCorner => "icons/file-plus-corner.svg",
             CustomIconName::ChevronsLeftRightEllipsis => "icons/chevrons-left-right-ellipsis.svg",
+            CustomIconName::ChevronsDown => "icons/chevrons-down.svg",
         }
         .into()
     }

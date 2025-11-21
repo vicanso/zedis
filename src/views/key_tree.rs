@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::get_connection_manager;
-use crate::helpers::build_key_tree;
 use crate::states::ZedisServerState;
-use gpui::AnyWindowHandle;
 use gpui::AppContext;
 use gpui::Entity;
 use gpui::Subscription;
@@ -41,16 +38,14 @@ use gpui_component::v_flex;
 use tracing::debug;
 
 pub struct ZedisKeyTree {
+    is_empty: bool,
     server_state: Entity<ZedisServerState>,
-    loading: bool,
-    keys: Vec<String>,
-    keyword: String,
-    cursors: Option<Vec<u64>>,
+    key_tree_id: String,
+    tree_state: Entity<TreeState>,
+
     server: String,
     keyword_state: Entity<InputState>,
     error: Option<String>,
-    tree_state: Entity<TreeState>,
-    window_handle: AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -63,17 +58,14 @@ impl ZedisKeyTree {
         let mut subscriptions = Vec::new();
         let server = server_state.read(cx).server().to_string();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let server = model.read(cx).server();
+            let server_state = model.read(cx);
+            let server = server_state.server();
             debug!(
                 server,
                 key_tree_server = this.server,
                 "observe server state"
             );
-            if this.server != server {
-                this.server = server.to_string();
-                this.reset(cx);
-                this.handle_fetch_keys(cx);
-            }
+            this.update_key_tree(cx);
         }));
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let keyword_state = cx.new(|cx| {
@@ -91,119 +83,44 @@ impl ZedisKeyTree {
 
         debug!(server, "new key tree");
 
-        let mut this = Self {
-            loading: false,
-            cursors: None,
+        Self {
+            is_empty: false,
+            key_tree_id: "".to_string(),
+
             error: None,
             tree_state,
-            keys: vec![],
-            keyword: "".to_string(),
             server,
             keyword_state,
             server_state,
-            window_handle: window.window_handle(),
             _subscriptions: subscriptions,
-        };
-        this.handle_fetch_keys(cx);
+        }
+    }
 
-        this
-    }
-    fn reset(&mut self, cx: &mut Context<Self>) {
-        self.cursors = None;
-        self.keys.clear();
-        self.keyword = "".to_string();
-        self.tree_state.update(cx, |state, cx| {
-            state.set_items(vec![], cx);
-        });
-        let window_handle = self.window_handle;
-        let keyword_state = self.keyword_state.clone();
-        cx.spawn(async move |_, cx| {
-            window_handle.update(cx, move |_, window, cx| {
-                keyword_state.update(cx, |state, cx| {
-                    state.set_value("", window, cx);
-                })
-            })
-        })
-        .detach();
-    }
-    fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
-        // if server or keyword changed, stop the scan
-        if self.server != server || self.keyword != keyword {
+    fn update_key_tree(&mut self, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        if self.key_tree_id == server_state.key_tree_id() {
             return;
         }
-        let cursors = self.cursors.clone();
-        cx.spawn(async move |handle, cx| {
-            let processing_server = server.clone();
-            let processing_keyword = keyword.clone();
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
-                let pattern = format!("*{}*", keyword);
-                let count = if keyword.is_empty() { 2_000 } else { 10_000 };
-                if let Some(cursors) = cursors {
-                    client.scan(cursors, &pattern, count)
-                } else {
-                    client.first_scan(&pattern, count)
-                }
-            });
-            let result = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok((cursors, keys)) => {
-                        if cursors.iter().sum::<u64>() == 0 {
-                            this.cursors = None;
-                        } else {
-                            this.cursors = Some(cursors);
-                        }
-                        this.extend_key(keys, cx);
-                    }
-                    Err(e) => {
-                        // TODO 出错的处理
-                        println!("error: {e:?}");
-                        this.error = Some(e.to_string());
-                        this.cursors = None;
-                    }
-                };
-                if this.cursors.is_some() && this.keys.len() < 1_000 {
-                    // run again
-                    this.scan_keys(cx, processing_server, processing_keyword);
-                    return cx.notify();
-                }
-                this.loading = false;
-                cx.notify();
-            })
-        })
-        .detach();
-    }
-    fn handle_fetch_keys(&mut self, cx: &mut Context<Self>) {
-        let server = self.server.clone();
-        if server.is_empty() {
-            return;
-        }
-        self.error = None;
-        self.loading = true;
-        cx.notify();
-        self.scan_keys(cx, server, self.keyword.clone());
-    }
-    fn handle_filter(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
-            return;
-        }
-        self.reset(cx);
-        self.keyword = self.keyword_state.read(cx).text().to_string();
-        self.handle_fetch_keys(cx);
-    }
-    pub fn extend_key(&mut self, keys: Vec<String>, cx: &mut Context<Self>) {
-        self.keys.extend(keys);
-        let items = build_key_tree(&self.keys);
-
+        self.key_tree_id = server_state.key_tree_id().to_string();
+        let items = server_state.key_tree();
+        self.is_empty = items.is_empty() && !server_state.scaning();
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
+            cx.notify();
         });
     }
+    fn handle_filter(&mut self, cx: &mut Context<Self>) {
+        if self.server_state.read(cx).scaning() {
+            return;
+        }
+        let keyword = self.keyword_state.read(cx).text().to_string();
+        self.server_state.update(cx, move |handle, cx| {
+            handle.scan(cx, keyword);
+        });
+    }
+
     fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        if (!self.loading && !self.server.is_empty() && self.keys.is_empty())
-            || self.error.is_some()
-        {
+        if self.is_empty || self.error.is_some() {
             let text = self
                 .error
                 .clone()
@@ -274,6 +191,7 @@ impl ZedisKeyTree {
         .into_any_element()
     }
     fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let scaning = self.server_state.read(cx).scaning();
         div()
             .p_2()
             .border_b_1()
@@ -283,17 +201,12 @@ impl ZedisKeyTree {
                     .suffix(
                         Button::new("key-tree-search-btn")
                             .ghost()
-                            .loading(self.loading)
-                            .disabled(self.loading)
+                            .tooltip("Search keys")
+                            .loading(scaning)
+                            .disabled(scaning)
                             .icon(IconName::Search)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.handle_filter(cx);
-                                // let value = this.keyword_state.read(cx).text().to_string();
-                                // if value != this.keyword {
-                                //     this.reset(cx);
-                                //     this.keyword = value;
-                                //     this.handle_fetch_keys(cx);
-                                // }
                             })),
                     )
                     .cleanable(true),

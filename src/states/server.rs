@@ -16,24 +16,28 @@ use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::{get_servers, save_servers};
 use crate::error::Error;
+use ahash::AHashMap;
 use chrono::Local;
 use gpui::prelude::*;
+use gpui_component::tree::TreeItem;
 use pretty_hex::{HexConfig, config_hex};
-use redis::cmd;
-use redis::pipe;
+use redis::{cmd, pipe};
 use serde_json::Value;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 use tracing::error;
+use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
 // string, list, set, zset, hash, stream, and vectorset.
 #[derive(Debug, Clone, Default)]
 enum KeyType {
     #[default]
+    Unknown,
     String,
     List,
     Set,
@@ -48,6 +52,53 @@ fn unix_ts() -> u64 {
         value.as_secs()
     } else {
         0
+    }
+}
+
+// KeyNode is a node in the key tree.
+#[derive(Debug, Default)]
+struct KeyNode {
+    /// full path (e.g. "dir1:dir2")
+    full_path: String,
+
+    /// is this node a real key?
+    is_key: bool,
+
+    /// children nodes (key is short name, e.g. "dir2")
+    children: AHashMap<String, KeyNode>,
+}
+
+impl KeyNode {
+    /// create a new child node
+    fn new(full_path: String) -> Self {
+        Self {
+            full_path,
+            is_key: false,
+            children: AHashMap::new(),
+        }
+    }
+
+    /// recursively insert a key (by parts) into this node.
+    /// 'self' is the parent node (e.g. "dir1")
+    /// 'mut parts' is the remaining parts (e.g. ["dir2", "name"])
+    fn insert(&mut self, mut parts: std::str::Split<'_, &str>) {
+        let Some(part_name) = parts.next() else {
+            self.is_key = true;
+            return;
+        };
+
+        let child_full_path = if self.full_path.is_empty() {
+            part_name.to_string()
+        } else {
+            format!("{}:{}", self.full_path, part_name)
+        };
+
+        let child_node = self
+            .children
+            .entry(part_name.to_string()) // Key in map is short name
+            .or_insert_with(|| KeyNode::new(child_full_path));
+
+        child_node.insert(parts);
     }
 }
 
@@ -81,7 +132,8 @@ impl From<String> for KeyType {
             "hash" => KeyType::Hash,
             "stream" => KeyType::Stream,
             "vectorset" => KeyType::Vectorset,
-            _ => KeyType::String,
+            "string" => KeyType::String,
+            _ => KeyType::Unknown,
         }
     }
 }
@@ -94,6 +146,14 @@ pub struct ZedisServerState {
     servers: Option<Vec<RedisServer>>,
     key: Option<String>,
     value: Option<RedisValue>,
+    // scan
+    keyword: String,
+    cursors: Option<Vec<u64>>,
+    scaning: bool,
+    scan_completed: bool,
+    scan_times: usize,
+    key_tree_id: String,
+    keys: AHashMap<String, KeyType>,
 }
 
 impl ZedisServerState {
@@ -102,18 +162,70 @@ impl ZedisServerState {
             ..Default::default()
         }
     }
+    fn reset_scan(&mut self) {
+        self.keyword = "".to_string();
+        self.cursors = None;
+        self.keys.clear();
+        self.scaning = false;
+        self.scan_completed = false;
+        self.scan_times = 0;
+    }
     fn reset(&mut self) {
         self.server = "".to_string();
         self.dbsize = None;
         self.latency = None;
         self.key = None;
+        self.reset_scan();
+    }
+    pub fn key_tree_id(&self) -> &str {
+        &self.key_tree_id
+    }
+    pub fn key_tree(&self) -> Vec<TreeItem> {
+        let keys = self.keys.keys();
+        let mut root_trie_node = KeyNode {
+            full_path: "".to_string(),
+            is_key: false,
+            children: AHashMap::new(),
+        };
+
+        for key in keys {
+            root_trie_node.insert(key.split(":"));
+        }
+
+        fn convert_map_to_vec_tree(children_map: &AHashMap<String, KeyNode>) -> Vec<TreeItem> {
+            let mut children_vec = Vec::new();
+
+            for (short_name, internal_node) in children_map {
+                let node = TreeItem::new(internal_node.full_path.clone(), short_name.clone());
+                let node = node.children(convert_map_to_vec_tree(&internal_node.children));
+                children_vec.push(node);
+            }
+
+            children_vec.sort_unstable_by(|a, b| {
+                let a_is_dir = !a.children.is_empty();
+                let b_is_dir = !b.children.is_empty();
+
+                let type_ordering = a_is_dir.cmp(&b_is_dir).reverse();
+
+                type_ordering.then_with(|| a.id.cmp(&b.id))
+            });
+
+            children_vec
+        }
+
+        convert_map_to_vec_tree(&root_trie_node.children)
+    }
+    pub fn scan_completed(&self) -> bool {
+        self.scan_completed
+    }
+    pub fn scaning(&self) -> bool {
+        self.scaning
     }
     pub fn dbsize(&self) -> Option<u64> {
         self.dbsize
     }
-    pub fn scan_count(&self) -> Option<u64> {
-        // TODO
-        Some(10)
+    pub fn scan_count(&self) -> usize {
+        self.keys.len()
     }
     pub fn latency(&self) -> Option<Duration> {
         self.latency
@@ -204,6 +316,75 @@ impl ZedisServerState {
         })
         .detach();
     }
+    fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
+        if self.server != server || self.keyword != keyword {
+            return;
+        }
+        let cursors = self.cursors.clone();
+        let max = (self.scan_times + 1) * DEFAULT_SCAN_RESULT_MAX;
+        cx.spawn(async move |handle, cx| {
+            let processing_server = server.clone();
+            let processing_keyword = keyword.clone();
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let pattern = format!("*{}*", keyword);
+                let count = if keyword.is_empty() { 2_000 } else { 10_000 };
+                if let Some(cursors) = cursors {
+                    client.scan(cursors, &pattern, count)
+                } else {
+                    client.first_scan(&pattern, count)
+                }
+            });
+            let result = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok((cursors, keys)) => {
+                        debug!("cursors: {cursors:?}, keys count: {}", keys.len());
+                        if cursors.iter().sum::<u64>() == 0 {
+                            this.scan_completed = true;
+                            this.cursors = None;
+                        } else {
+                            this.cursors = Some(cursors);
+                        }
+                        this.keys.reserve(keys.len());
+                        for key in keys {
+                            this.keys.entry(key).or_insert(KeyType::Unknown);
+                        }
+                        this.key_tree_id = Uuid::now_v7().to_string();
+                    }
+                    Err(e) => {
+                        // TODO 出错的处理
+                        println!("error: {e:?}");
+                        // this.error = Some(e.to_string());
+                        this.cursors = None;
+                    }
+                };
+                if this.cursors.is_some() && this.keys.len() < max {
+                    // run again
+                    this.scan_keys(cx, processing_server, processing_keyword);
+                    return cx.notify();
+                }
+                this.scaning = false;
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+    pub fn scan(&mut self, cx: &mut Context<Self>, keyword: String) {
+        self.scaning = true;
+        self.reset_scan();
+        self.keyword = keyword.clone();
+        self.scan_keys(cx, self.server.clone(), keyword);
+        cx.notify();
+    }
+    pub fn scan_next(&mut self, cx: &mut Context<Self>) {
+        if self.scan_completed {
+            return;
+        }
+        self.scan_times += 1;
+        self.scan_keys(cx, self.server.clone(), self.keyword.clone());
+        cx.notify();
+    }
     pub fn select(&mut self, server: &str, cx: &mut Context<Self>) {
         if self.server != server {
             self.reset();
@@ -240,7 +421,10 @@ impl ZedisServerState {
                             this.latency = None;
                         }
                     };
+                    let server = this.server.clone();
+                    this.scaning = true;
                     cx.notify();
+                    this.scan_keys(cx, server, "".to_string());
                 })
             })
             .detach();
@@ -264,6 +448,7 @@ impl ZedisServerState {
                         key_type: KeyType::from(t),
                         ..Default::default()
                     };
+                    // TODO 根据类型选择对应的函数
                     let (value, ttl): (Vec<u8>, i64) =
                         pipe().get(&key).ttl(&key).query(&mut conn)?;
                     if ttl >= 0 {
@@ -311,5 +496,33 @@ impl ZedisServerState {
             })
             .detach();
         }
+    }
+    pub fn delete_key(&mut self, key: String, cx: &mut Context<Self>) {
+        let server = self.server.clone();
+        cx.spawn(async move |handle, cx| {
+            let remove_key = key.clone();
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let mut conn = client.get_connection()?;
+                let _: () = cmd("DEL").arg(&key).query(&mut conn)?;
+                Ok(())
+            });
+            let result: Result<(), Error> = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.keys.remove(&remove_key);
+                        this.key_tree_id = Uuid::now_v7().to_string();
+                        this.key = None;
+                    }
+                    Err(e) => {
+                        // TODO 出错的处理
+                        error!(error = %e, "delete key fail");
+                    }
+                };
+                cx.notify();
+            })
+        })
+        .detach();
     }
 }

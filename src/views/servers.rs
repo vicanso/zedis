@@ -241,6 +241,7 @@ impl Render for ZedisServers {
                     .actions(vec![
                         Button::new(("servers-card-action-select", index))
                             .ghost()
+                            .tooltip("Update redis server")
                             .icon(CustomIconName::FilePenLine)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
@@ -249,6 +250,7 @@ impl Render for ZedisServers {
                             })),
                         Button::new(("servers-card-action-delete", index))
                             .ghost()
+                            .tooltip("Remove redis server")
                             .icon(CustomIconName::FileXCorner)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();

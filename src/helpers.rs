@@ -13,7 +13,5 @@
 // limitations under the License.
 
 mod fs;
-mod key_tree;
 
 pub use fs::get_or_create_config_dir;
-pub use key_tree::build_key_tree;

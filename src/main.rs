@@ -209,24 +209,7 @@ impl Render for Zedis {
                             .flex_1()
                             .child(self.render_content_container(window, cx)),
                     )
-                    .child(
-                        self.status_bar.clone(),
-                        // h_flex()
-                        //     .justify_between()
-                        //     .text_sm()
-                        //     .py_1p5()
-                        //     .px_4()
-                        //     .border_t_1()
-                        //     .border_color(cx.theme().border)
-                        //     .text_color(cx.theme().muted_foreground)
-                        //     .child(
-                        //         h_flex()
-                        //             .gap_3()
-                        //             .child(self.render_soft_wrap_button(window, cx))
-                        //             .child(self.render_indent_guides_button(window, cx)),
-                        //     )
-                        //     .child(self.render_go_to_line_button(window, cx)),
-                    ),
+                    .child(self.status_bar.clone()),
             )
             .children(dialog_layer)
             .children(notification_layer)

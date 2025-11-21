@@ -12,23 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
 use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
+use gpui::ClipboardItem;
 use gpui::Entity;
 use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
+use gpui_component::WindowExt;
+use gpui_component::button::Button;
 use gpui_component::h_flex;
 use gpui_component::highlighter::Language;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
+use gpui_component::notification::Notification;
 use gpui_component::v_flex;
+use gpui_component::{ActiveTheme, IconName};
 use humansize::{DECIMAL, format_size};
 use tracing::debug;
 
@@ -90,6 +92,26 @@ impl ZedisEditor {
             });
         });
     }
+    fn delete_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.server_state.read(cx).key() else {
+            return;
+        };
+        let key = key.to_string();
+        let server_state = self.server_state.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let message = format!("Are you sure you want to delete this key: {key}?");
+            let server_state = server_state.clone();
+            let key = key.clone();
+            dialog.confirm().child(message).on_ok(move |_, window, cx| {
+                let key = key.clone();
+                server_state.update(cx, move |state, cx| {
+                    state.delete_key(key, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+        });
+    }
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
         let Some(key) = server_state.key().map(|key| key.to_string()) else {
@@ -108,19 +130,10 @@ impl ZedisEditor {
                 .collect::<Vec<&str>>()
                 .join(" ");
             let size = format_size(value.size() as u64, DECIMAL);
-            let text_color = cx.theme().muted_foreground;
-            labels.push(
-                Label::new(format!("SIZE : {size}"))
-                    .mr_2()
-                    .text_sm()
-                    .text_color(text_color),
-            );
-            labels.push(
-                Label::new(format!("TTL : {ttl}",))
-                    .text_sm()
-                    .text_color(text_color),
-            );
+            labels.push(Label::new(format!("size : {size}")).mr_2().text_sm());
+            labels.push(Label::new(format!("ttl : {ttl}",)).text_sm());
         }
+        let content = key.clone();
 
         h_flex()
             .p_2()
@@ -128,7 +141,20 @@ impl ZedisEditor {
             .border_color(cx.theme().border)
             .items_center()
             .w_full()
-            .child(Icon::new(CustomIconName::Key).mr_1())
+            .child(
+                Button::new("zedis-editor-copy-key")
+                    .outline()
+                    .tooltip("Copy key")
+                    .icon(IconName::Copy)
+                    .on_click(cx.listener(move |_this, _event, window, cx| {
+                        let content = content.clone();
+                        cx.write_to_clipboard(ClipboardItem::new_string(content));
+                        window.push_notification(
+                            Notification::info("Copied the key to clipboard"),
+                            cx,
+                        );
+                    })),
+            )
             .child(
                 div()
                     .flex_1()
@@ -139,6 +165,16 @@ impl ZedisEditor {
                     .child(Label::new(key).text_ellipsis().whitespace_nowrap()),
             )
             .children(labels)
+            .child(
+                Button::new("zedis-editor-delete-key")
+                    .outline()
+                    .tooltip("Delete key")
+                    .icon(IconName::Delete)
+                    .ml_2()
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.delete_key(window, cx);
+                    })),
+            )
     }
 }
 
