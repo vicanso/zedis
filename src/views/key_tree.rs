@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::states::ZedisServerState;
+use ahash::AHashSet;
 use gpui::AppContext;
 use gpui::Entity;
 use gpui::Subscription;
@@ -43,7 +44,7 @@ pub struct ZedisKeyTree {
     key_tree_id: String,
     tree_state: Entity<TreeState>,
 
-    server: String,
+    expanded_items: AHashSet<String>,
     keyword_state: Entity<InputState>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -58,13 +59,6 @@ impl ZedisKeyTree {
         let mut subscriptions = Vec::new();
         let server = server_state.read(cx).server().to_string();
         subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let server_state = model.read(cx);
-            let server = server_state.server();
-            debug!(
-                server,
-                key_tree_server = this.server,
-                "observe server state"
-            );
             this.update_key_tree(cx);
         }));
         let tree_state = cx.new(|cx| TreeState::new(cx));
@@ -89,20 +83,29 @@ impl ZedisKeyTree {
 
             error: None,
             tree_state,
-            server,
             keyword_state,
             server_state,
+            expanded_items: AHashSet::with_capacity(10),
             _subscriptions: subscriptions,
         }
     }
 
     fn update_key_tree(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
+        debug!(
+            key_tree_server = server_state.server(),
+            key_tree_id = server_state.key_tree_id(),
+            "observe server state"
+        );
+
         if self.key_tree_id == server_state.key_tree_id() {
             return;
         }
         self.key_tree_id = server_state.key_tree_id().to_string();
-        let items = server_state.key_tree();
+        let items = server_state.key_tree(&self.expanded_items);
+        if items.is_empty() {
+            self.expanded_items.clear();
+        }
         self.is_empty = items.is_empty() && !server_state.scaning();
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
@@ -120,7 +123,8 @@ impl ZedisKeyTree {
     }
 
     fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.is_empty || self.error.is_some() {
+        let scaning = self.server_state.read(cx).scaning();
+        if !scaning && (self.is_empty || self.error.is_some()) {
             let text = self
                 .error
                 .clone()
@@ -142,23 +146,46 @@ impl ZedisKeyTree {
                 .into_any_element();
         }
         let view = cx.entity();
+        let yellow = cx.theme().colors.yellow;
+        let server_state = self.server_state.clone();
         tree(
             &self.tree_state,
             move |ix, entry, _selected, _window, cx| {
                 view.update(cx, |_, cx| {
                     let item = entry.item();
                     let icon = if !entry.is_folder() {
-                        IconName::File
+                        let key_type = server_state
+                            .read(cx)
+                            .key_type(&item.id)
+                            .map(|item| item.as_str())
+                            .unwrap_or("-");
+                        Label::new(key_type)
+                            .text_sm()
+                            .border_1()
+                            .px_1()
+                            .rounded_sm()
+                            .border_color(cx.theme().border)
+                            .into_any_element()
                     } else if entry.is_expanded() {
-                        IconName::FolderOpen
+                        Icon::new(IconName::FolderOpen)
+                            .text_color(yellow)
+                            .into_any_element()
                     } else {
-                        IconName::Folder
+                        Icon::new(IconName::Folder)
+                            .text_color(yellow)
+                            .into_any_element()
                     };
                     let bg = if ix % 2 == 0 {
                         cx.theme().background
                     } else {
                         cx.theme().background.lighten(1.0)
                     };
+                    let mut count_label = Label::new("");
+                    if entry.is_folder() {
+                        count_label = Label::new(item.children.len().to_string())
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground);
+                    }
 
                     ListItem::new(ix)
                         .w_full()
@@ -167,11 +194,26 @@ impl ZedisKeyTree {
                         .py_1()
                         .px_2()
                         .pl(px(16.) * entry.depth() + px(8.))
-                        .child(h_flex().gap_2().child(icon).child(item.label.clone()))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(icon)
+                                .child(div().flex_1().text_ellipsis().child(item.label.clone()))
+                                .child(count_label),
+                        )
                         .on_click(cx.listener({
                             let item = item.clone();
                             move |this, _, _window, cx| {
                                 if item.is_folder() {
+                                    let key = item.id.to_string();
+                                    if item.is_expanded() {
+                                        this.expanded_items.insert(key.clone());
+                                        this.server_state.update(cx, |state, cx| {
+                                            state.scan_prefix(cx, format!("{key}:"));
+                                        });
+                                    } else {
+                                        this.expanded_items.remove(&key);
+                                    }
                                     return;
                                 }
                                 let selected_key = item.id.to_string();

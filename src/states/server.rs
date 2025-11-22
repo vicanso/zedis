@@ -17,6 +17,7 @@ use crate::connection::get_connection_manager;
 use crate::connection::{get_servers, save_servers};
 use crate::error::Error;
 use ahash::AHashMap;
+use ahash::AHashSet;
 use chrono::Local;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
@@ -34,8 +35,8 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
 // string, list, set, zset, hash, stream, and vectorset.
-#[derive(Debug, Clone, Default)]
-enum KeyType {
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum KeyType {
     #[default]
     Unknown,
     String,
@@ -45,6 +46,23 @@ enum KeyType {
     Hash,
     Stream,
     Vectorset,
+}
+
+impl KeyType {
+    /// 返回单字符的字符串切片
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KeyType::String => "S",
+            KeyType::List => "L",
+            KeyType::Hash => "H",
+            KeyType::Zset => "Z",
+            // 冲突解决策略：
+            KeyType::Set => "T",    // seT
+            KeyType::Stream => "M", // streaM
+            KeyType::Vectorset => "V",
+            KeyType::Unknown => "",
+        }
+    }
 }
 
 fn unix_ts() -> u64 {
@@ -123,9 +141,9 @@ impl RedisValue {
     }
 }
 
-impl From<String> for KeyType {
-    fn from(value: String) -> Self {
-        match value.as_str() {
+impl From<&str> for KeyType {
+    fn from(value: &str) -> Self {
+        match value {
             "list" => KeyType::List,
             "set" => KeyType::Set,
             "zset" => KeyType::Zset,
@@ -153,6 +171,7 @@ pub struct ZedisServerState {
     scan_completed: bool,
     scan_times: usize,
     key_tree_id: String,
+    loaded_prefixes: AHashSet<String>,
     keys: AHashMap<String, KeyType>,
 }
 
@@ -166,9 +185,11 @@ impl ZedisServerState {
         self.keyword = "".to_string();
         self.cursors = None;
         self.keys.clear();
+        self.key_tree_id = Uuid::now_v7().to_string();
         self.scaning = false;
         self.scan_completed = false;
         self.scan_times = 0;
+        self.loaded_prefixes.clear();
     }
     fn reset(&mut self) {
         self.server = "".to_string();
@@ -177,10 +198,26 @@ impl ZedisServerState {
         self.key = None;
         self.reset_scan();
     }
+    fn extend_keys(&mut self, keys: Vec<String>) {
+        self.keys.reserve(keys.len());
+        let mut insert_count = 0;
+        for key in keys {
+            self.keys.entry(key).or_insert_with(|| {
+                insert_count += 1;
+                KeyType::Unknown
+            });
+        }
+        if insert_count != 0 {
+            self.key_tree_id = Uuid::now_v7().to_string();
+        }
+    }
+    pub fn key_type(&self, key: &str) -> Option<&KeyType> {
+        self.keys.get(key)
+    }
     pub fn key_tree_id(&self) -> &str {
         &self.key_tree_id
     }
-    pub fn key_tree(&self) -> Vec<TreeItem> {
+    pub fn key_tree(&self, expanded_items: &AHashSet<String>) -> Vec<TreeItem> {
         let keys = self.keys.keys();
         let mut root_trie_node = KeyNode {
             full_path: "".to_string(),
@@ -192,12 +229,21 @@ impl ZedisServerState {
             root_trie_node.insert(key.split(":"));
         }
 
-        fn convert_map_to_vec_tree(children_map: &AHashMap<String, KeyNode>) -> Vec<TreeItem> {
+        fn convert_map_to_vec_tree(
+            children_map: &AHashMap<String, KeyNode>,
+            expanded_items: &AHashSet<String>,
+        ) -> Vec<TreeItem> {
             let mut children_vec = Vec::new();
 
             for (short_name, internal_node) in children_map {
-                let node = TreeItem::new(internal_node.full_path.clone(), short_name.clone());
-                let node = node.children(convert_map_to_vec_tree(&internal_node.children));
+                let mut node = TreeItem::new(internal_node.full_path.clone(), short_name.clone());
+                if expanded_items.contains(&internal_node.full_path) {
+                    node = node.expanded(true);
+                }
+                let node = node.children(convert_map_to_vec_tree(
+                    &internal_node.children,
+                    expanded_items,
+                ));
                 children_vec.push(node);
             }
 
@@ -213,7 +259,7 @@ impl ZedisServerState {
             children_vec
         }
 
-        convert_map_to_vec_tree(&root_trie_node.children)
+        convert_map_to_vec_tree(&root_trie_node.children, expanded_items)
     }
     pub fn scan_completed(&self) -> bool {
         self.scan_completed
@@ -316,6 +362,62 @@ impl ZedisServerState {
         })
         .detach();
     }
+    fn fill_key_types(&mut self, cx: &mut Context<Self>, prefix: String) {
+        let mut keys = self
+            .keys
+            .iter()
+            .filter_map(|(key, value)| {
+                if *value != KeyType::Unknown {
+                    return None;
+                }
+                let suffix = key.strip_prefix(&prefix)?;
+                if suffix.contains(":") {
+                    return None;
+                }
+                Some(key.clone())
+            })
+            .collect::<Vec<String>>();
+        if keys.is_empty() {
+            return;
+        }
+        let server = self.server.clone();
+        keys.sort_unstable();
+        let keys_clone = keys.clone();
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let mut conn = client.get_connection()?;
+                let mut cmd = pipe();
+                for key in keys.iter().take(1000) {
+                    cmd.cmd("TYPE").arg(key);
+                }
+                let types: Vec<String> = cmd.query(&mut conn)?;
+                Ok(types)
+            });
+            let result: Result<Vec<String>> = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok(types) => {
+                        for (index, t) in types.iter().enumerate() {
+                            let Some(key) = keys_clone.get(index) else {
+                                continue;
+                            };
+                            this.keys
+                                .get_mut(key)
+                                .map(|k| *k = KeyType::from(t.as_str()));
+                        }
+                        this.key_tree_id = Uuid::now_v7().to_string();
+                    }
+                    Err(e) => {
+                        // TODO 出错的处理
+                        error!(error = %e, "fill key types fail");
+                    }
+                }
+                cx.notify();
+            })
+        })
+        .detach();
+    }
     fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
         if self.server != server || self.keyword != keyword {
             return;
@@ -346,11 +448,7 @@ impl ZedisServerState {
                         } else {
                             this.cursors = Some(cursors);
                         }
-                        this.keys.reserve(keys.len());
-                        for key in keys {
-                            this.keys.entry(key).or_insert(KeyType::Unknown);
-                        }
-                        this.key_tree_id = Uuid::now_v7().to_string();
+                        this.extend_keys(keys);
                     }
                     Err(e) => {
                         // TODO 出错的处理
@@ -366,16 +464,17 @@ impl ZedisServerState {
                 }
                 this.scaning = false;
                 cx.notify();
+                this.fill_key_types(cx, "".to_string());
             })
         })
         .detach();
     }
     pub fn scan(&mut self, cx: &mut Context<Self>, keyword: String) {
-        self.scaning = true;
         self.reset_scan();
+        self.scaning = true;
         self.keyword = keyword.clone();
-        self.scan_keys(cx, self.server.clone(), keyword);
         cx.notify();
+        self.scan_keys(cx, self.server.clone(), keyword);
     }
     pub fn scan_next(&mut self, cx: &mut Context<Self>) {
         if self.scan_completed {
@@ -383,6 +482,54 @@ impl ZedisServerState {
         }
         self.scan_times += 1;
         self.scan_keys(cx, self.server.clone(), self.keyword.clone());
+        cx.notify();
+    }
+    pub fn scan_prefix(&mut self, cx: &mut Context<Self>, prefix: String) {
+        if self.loaded_prefixes.contains(&prefix) || self.scan_completed {
+            return;
+        }
+        let server = self.server.clone();
+        cx.spawn(async move |handle, cx| {
+            let pattern = format!("{}*", prefix);
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let count = 10_000;
+                // let mut cursors: Option<Vec<u64>>,
+                let mut cursors: Option<Vec<u64>> = None;
+                let mut result_keys = vec![];
+                // 最多执行x次
+                for _ in 0..20 {
+                    let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
+                        client.scan(cursors, &pattern, count)?
+                    } else {
+                        client.first_scan(&pattern, count)?
+                    };
+                    result_keys.extend(keys);
+                    if new_cursor.iter().sum::<u64>() == 0 {
+                        break;
+                    }
+                    cursors = Some(new_cursor);
+                }
+
+                Ok(result_keys)
+            });
+            let result: Result<Vec<String>> = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok(keys) => {
+                        debug!(prefix, count = keys.len(), "scan prefix success");
+                        this.loaded_prefixes.insert(prefix.clone());
+                        this.extend_keys(keys);
+                    }
+                    Err(e) => {
+                        error!(err = %e, "scan prefix fail");
+                    }
+                };
+                cx.notify();
+                this.fill_key_types(cx, prefix);
+            })
+        })
+        .detach();
         cx.notify();
     }
     pub fn select(&mut self, server: &str, cx: &mut Context<Self>) {
@@ -394,6 +541,8 @@ impl ZedisServerState {
             if self.server.is_empty() {
                 return;
             }
+            self.scaning = true;
+            cx.notify();
             let server_clone = server.to_string();
             cx.spawn(async move |handle, cx| {
                 let counting_server = server_clone.clone();
@@ -422,7 +571,6 @@ impl ZedisServerState {
                         }
                     };
                     let server = this.server.clone();
-                    this.scaning = true;
                     cx.notify();
                     this.scan_keys(cx, server, "".to_string());
                 })
@@ -445,7 +593,7 @@ impl ZedisServerState {
                     let mut conn = client.get_connection()?;
                     let t: String = cmd("TYPE").arg(&key).query(&mut conn)?;
                     let mut redis_value = RedisValue {
-                        key_type: KeyType::from(t),
+                        key_type: KeyType::from(t.as_str()),
                         ..Default::default()
                     };
                     // TODO 根据类型选择对应的函数
