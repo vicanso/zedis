@@ -259,11 +259,11 @@ impl Render for ZedisServers {
                     ])
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let server_name = select_server_name.clone();
-                        this.app_state.update(cx, |state, cx| {
-                            state.go_to(Route::Editor, cx);
-                        });
                         this.server_state.update(cx, |state, cx| {
                             state.select(&server_name, cx);
+                        });
+                        this.app_state.update(cx, |state, cx| {
+                            state.go_to(Route::Editor, cx);
                         });
                     }))
             })
