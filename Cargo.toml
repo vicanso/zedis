@@ -39,3 +39,11 @@ codegen-units = 1
 lto = true
 strip = true
 panic = "abort"
+
+[package.metadata.bundle]
+name = "Zedis"
+identifier = "com.bigtree.zedis"
+icon = ["icons/zedis.icns"]
+copyright = "Copyright © 2025 Tree xie. All rights reserved."
+category = "Developer Tools"
+short_description = "A high-performance Redis client written in Rust and GPUI."

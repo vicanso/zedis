@@ -9,4 +9,4 @@ dev:
 
 
 release:
-	cargo build --release 
+	cargo bundle --release 

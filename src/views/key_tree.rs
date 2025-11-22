@@ -58,7 +58,7 @@ impl ZedisKeyTree {
     ) -> Self {
         let mut subscriptions = Vec::new();
         let server = server_state.read(cx).server().to_string();
-        subscriptions.push(cx.observe(&server_state, |this, model, cx| {
+        subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
             this.update_key_tree(cx);
         }));
         let tree_state = cx.new(|cx| TreeState::new(cx));

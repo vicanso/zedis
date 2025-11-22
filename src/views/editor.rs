@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::assets::CustomIconName;
 use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::ClipboardItem;
@@ -21,22 +22,24 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
-use gpui_component::WindowExt;
 use gpui_component::button::Button;
 use gpui_component::h_flex;
 use gpui_component::highlighter::Language;
+use gpui_component::input::InputEvent;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::notification::Notification;
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, IconName};
+use gpui_component::{Disableable, WindowExt};
 use humansize::{DECIMAL, format_size};
 use tracing::debug;
 
 pub struct ZedisEditor {
     server_state: Entity<ZedisServerState>,
     editor: Entity<InputState>,
+    value_modified: bool,
     window_handle: AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -66,16 +69,28 @@ impl ZedisEditor {
                 .searchable(true)
                 .soft_wrap(true)
         });
+        subscriptions.push(cx.subscribe(&editor, |this, _, event, cx| {
+            if let InputEvent::Change = &event {
+                let value = this.editor.read(cx).value();
+                let redis_value = this.server_state.read(cx).value();
+                let original = redis_value.and_then(|r| r.data()).map_or("", |v| v);
+
+                this.value_modified = original != value.as_str();
+                cx.notify();
+            }
+        }));
 
         Self {
             server_state,
             editor,
+            value_modified: false,
             window_handle: window.window_handle(),
             _subscriptions: subscriptions,
         }
     }
     fn update_editor_value(&mut self, cx: &mut Context<Self>, value: Option<RedisValue>) {
         let window_handle = self.window_handle;
+        self.value_modified = false;
         let _ = window_handle.update(cx, move |_, window, cx| {
             self.editor.update(cx, move |this, cx| {
                 debug!(value = ?value, "update editor value");
@@ -166,10 +181,28 @@ impl ZedisEditor {
             )
             .children(labels)
             .child(
+                Button::new("zedis-editor-save-key")
+                    .disabled(!self.value_modified)
+                    .outline()
+                    .tooltip("Save data")
+                    .ml_2()
+                    .icon(CustomIconName::FileCheckCorner)
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        let Some(key) = this.server_state.read(cx).key().map(|key| key.to_string())
+                        else {
+                            return;
+                        };
+                        let value = this.editor.read(cx).value().to_string();
+                        this.server_state.update(cx, move |state, cx| {
+                            state.save_value(key, value, cx);
+                        });
+                    })),
+            )
+            .child(
                 Button::new("zedis-editor-delete-key")
                     .outline()
                     .tooltip("Delete key")
-                    .icon(IconName::Delete)
+                    .icon(IconName::CircleX)
                     .ml_2()
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.delete_key(window, cx);

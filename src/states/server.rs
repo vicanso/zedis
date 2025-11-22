@@ -402,9 +402,9 @@ impl ZedisServerState {
                             let Some(key) = keys_clone.get(index) else {
                                 continue;
                             };
-                            this.keys
-                                .get_mut(key)
-                                .map(|k| *k = KeyType::from(t.as_str()));
+                            if let Some(k) = this.keys.get_mut(key) {
+                                *k = KeyType::from(t.as_str());
+                            }
                         }
                         this.key_tree_id = Uuid::now_v7().to_string();
                     }
@@ -666,6 +666,35 @@ impl ZedisServerState {
                     Err(e) => {
                         // TODO 出错的处理
                         error!(error = %e, "delete key fail");
+                    }
+                };
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+    pub fn save_value(&mut self, key: String, value: String, cx: &mut Context<Self>) {
+        let server = self.server.clone();
+        cx.spawn(async move |handle, cx| {
+            let update_value = value.clone();
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let mut conn = client.get_connection()?;
+                let _: () = cmd("SET").arg(&key).arg(&value).query(&mut conn)?;
+                Ok(())
+            });
+            let result: Result<(), Error> = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok(()) => {
+                        if let Some(value) = this.value.as_mut() {
+                            value.size = update_value.as_bytes().len();
+                            value.data = Some(update_value);
+                        }
+                    }
+                    Err(e) => {
+                        // TODO 出错的处理
+                        error!(error = %e, "save key fail");
                     }
                 };
                 cx.notify();
