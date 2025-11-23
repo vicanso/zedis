@@ -160,7 +160,7 @@ fn get_redis_list_value(
     key: &str,
     offset: usize,
     count: usize,
-) -> Result<(Vec<String>)> {
+) -> Result<Vec<String>> {
     let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(offset).arg(count).query(conn)?;
     if value.is_empty() {
         return Ok(vec![]);
@@ -175,7 +175,7 @@ fn get_redis_list_value(
 #[derive(Debug, Clone)]
 pub enum RedisValueData {
     String(String),
-    List((usize, Vec<String>)),
+    List(Arc<(usize, Vec<String>)>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -187,7 +187,13 @@ pub struct RedisValue {
 }
 
 impl RedisValue {
-    pub fn data(&self) -> Option<&String> {
+    pub fn list_value(&self) -> Option<&Arc<(usize, Vec<String>)>> {
+        if let Some(RedisValueData::List(data)) = self.data.as_ref() {
+            return Some(data);
+        }
+        None
+    }
+    pub fn string_value(&self) -> Option<&String> {
         if let Some(RedisValueData::String(value)) = self.data.as_ref() {
             return Some(value);
         }
@@ -715,7 +721,8 @@ impl ZedisServerState {
                         KeyType::List => {
                             let size: usize = cmd("LLEN").arg(&key).query(&mut conn)?;
                             let value = get_redis_list_value(&mut conn, &key, 0, 100)?;
-                            redis_value.data = Some(RedisValueData::List((size, value)));
+                            redis_value.data =
+                                Some(RedisValueData::List(Arc::new((size, value.clone()))));
                         }
                         _ => {
                             return Err(Error::Invalid {
@@ -817,11 +824,11 @@ impl ZedisServerState {
         let Some(value) = &self.value else {
             return;
         };
-        let Some(RedisValueData::List((size, value))) = value.data.as_ref() else {
+        let Some(RedisValueData::List(data)) = value.data.as_ref() else {
             return;
         };
-        let offset = value.len();
-        if offset >= *size {
+        let offset = data.1.len();
+        if offset >= data.0 {
             return;
         }
         let server = self.server.clone();
@@ -837,12 +844,14 @@ impl ZedisServerState {
             handle.update(cx, move |this, cx| {
                 match result {
                     Ok(values) => {
-                        // this.value = Some(RedisValueData::List((size, value)));
                         if let Some(value) = this.value.as_mut() {
-                            let Some(RedisValueData::List((_, data))) = value.data.as_mut() else {
+                            let Some(RedisValueData::List(data)) = value.data.as_ref() else {
                                 return;
                             };
-                            data.extend(values);
+                            // 加载的时候复制了多一次，后续研究优化
+                            let mut new_values = data.1.clone();
+                            new_values.extend(values);
+                            value.data = Some(RedisValueData::List(Arc::new((data.0, new_values))));
                         }
                     }
                     Err(e) => {

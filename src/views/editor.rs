@@ -18,10 +18,13 @@ use gpui::AnyWindowHandle;
 use gpui::ClipboardItem;
 use gpui::Entity;
 use gpui::Subscription;
+use gpui::TextAlign;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
+use gpui::uniform_list;
+use gpui_component::Colorize;
 use gpui_component::button::Button;
 use gpui_component::h_flex;
 use gpui_component::highlighter::Language;
@@ -29,6 +32,7 @@ use gpui_component::input::InputEvent;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
+use gpui_component::list::ListItem;
 use gpui_component::notification::Notification;
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, IconName};
@@ -74,7 +78,7 @@ impl ZedisEditor {
             if let InputEvent::Change = &event {
                 let value = this.editor.read(cx).value();
                 let redis_value = this.server_state.read(cx).value();
-                let original = redis_value.and_then(|r| r.data()).map_or("", |v| v);
+                let original = redis_value.and_then(|r| r.string_value()).map_or("", |v| v);
 
                 this.value_modified = original != value.as_str();
                 cx.notify();
@@ -99,7 +103,7 @@ impl ZedisEditor {
                     this.set_value("", window, cx);
                     return;
                 };
-                if let Some(data) = value.data() {
+                if let Some(data) = value.string_value() {
                     this.set_value(data, window, cx);
                 } else {
                     this.set_value("", window, cx);
@@ -223,7 +227,53 @@ impl ZedisEditor {
             return div().into_any_element();
         };
         match value.key_type() {
-            KeyType::List => div().into_any_element(),
+            KeyType::List => {
+                let Some(data) = value.list_value() else {
+                    return div().into_any_element();
+                };
+                let data = data.clone();
+                let size = data.1.len();
+
+                uniform_list(
+                    "zedis-editor-list",
+                    size,
+                    move |visible_range, _window, cx| {
+                        let mut children = vec![];
+                        let index_word_count = visible_range.clone().last().unwrap_or(2) + 1;
+                        let index_width = index_word_count.to_string().len().max(3) as f32 * 16.;
+
+                        for ix in visible_range {
+                            let bg = if ix % 2 == 0 {
+                                cx.theme().background
+                            } else {
+                                cx.theme().background.lighten(1.0)
+                            };
+                            children.push(
+                                ListItem::new(("zedis-editor-list-item", ix))
+                                    .h(px(40.))
+                                    .w_full()
+                                    .bg(bg)
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Label::new((ix + 1).to_string())
+                                                    .w(px(index_width))
+                                                    .text_align(TextAlign::Right)
+                                                    .text_sm()
+                                                    .px_2(),
+                                            )
+                                            .child(Label::new(data.1[ix].clone()).text_sm()),
+                                    ),
+                            );
+                        }
+                        children
+                    },
+                )
+                .h_full()
+                .w_full()
+                .into_any_element()
+            }
             _ => Input::new(&self.editor)
                 .flex_1()
                 .bordered(false)
