@@ -14,12 +14,16 @@
 
 mod editor;
 mod key_tree;
+mod list_editor;
 mod servers;
 mod sidebar;
 mod status_bar;
+mod string_editor;
 
 pub use editor::ZedisEditor;
 pub use key_tree::ZedisKeyTree;
+pub use list_editor::ZedisListEditor;
 pub use servers::ZedisServers;
 pub use sidebar::ZedisSidebar;
 pub use status_bar::ZedisStatusBar;
+pub use string_editor::ZedisStringEditor;

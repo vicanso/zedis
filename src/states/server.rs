@@ -404,6 +404,9 @@ impl ZedisServerState {
     pub fn value(&self) -> Option<&RedisValue> {
         self.value.as_ref()
     }
+    pub fn value_key_type(&self) -> Option<KeyType> {
+        self.value.as_ref().map(|value| value.key_type())
+    }
     pub fn remove_server(&mut self, server: &str, cx: &mut Context<Self>) {
         let mut servers = self.servers.clone().unwrap_or_default();
         servers.retain(|s| s.name != server);
@@ -585,9 +588,14 @@ impl ZedisServerState {
         cx.notify();
     }
     pub fn scan_prefix(&mut self, cx: &mut Context<Self>, prefix: String) {
-        if self.loaded_prefixes.contains(&prefix) || self.scan_completed {
+        if self.loaded_prefixes.contains(&prefix) {
             return;
         }
+        if self.scan_completed {
+            self.fill_key_types(cx, prefix);
+            return;
+        }
+
         let server = self.server.clone();
         self.last_operated_at = unix_ts();
         cx.spawn(async move |handle, cx| {
