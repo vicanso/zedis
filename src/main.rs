@@ -23,6 +23,7 @@ use gpui::size;
 use gpui_component::ActiveTheme;
 use gpui_component::Root;
 use gpui_component::h_flex;
+use gpui_component::resizable::ResizableState;
 use gpui_component::resizable::h_resizable;
 use gpui_component::resizable::resizable_panel;
 use gpui_component::v_flex;
@@ -171,14 +172,36 @@ impl Zedis {
                     self.key_tree = Some(key_tree.clone());
                     key_tree
                 };
+                let mut key_tree_width = app_state.read(cx).key_tree_width();
+                let min_width = px(200.);
+                if key_tree_width < min_width {
+                    key_tree_width = min_width;
+                }
                 h_resizable("editor-container")
                     .child(
                         resizable_panel()
-                            .size(px(240.))
-                            .size_range(px(200.)..px(400.))
+                            .size(key_tree_width)
+                            .size_range(min_width..px(400.))
                             .child(key_tree),
                     )
                     .child(resizable_panel().child(value_editor))
+                    .on_resize(cx.listener(
+                        move |_this, event: &Entity<ResizableState>, _window, cx| {
+                            let Some(width) = event.read(cx).sizes().first() else {
+                                return;
+                            };
+                            let mut value = app_state.read(cx).clone();
+                            value.set_key_tree_width(*width);
+                            cx.background_spawn(async move {
+                                if let Err(e) = save_app_state(&value) {
+                                    error!(error = %e, "save key tree width fail",);
+                                } else {
+                                    info!("save key tree width success");
+                                }
+                            })
+                            .detach();
+                        },
+                    ))
                     .into_any_element()
             }
         }

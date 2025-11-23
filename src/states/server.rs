@@ -19,6 +19,7 @@ use crate::error::Error;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
+use gpui::Hsla;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
 use pretty_hex::{HexConfig, config_hex};
@@ -49,18 +50,29 @@ pub enum KeyType {
 }
 
 impl KeyType {
-    /// 返回单字符的字符串切片
     pub fn as_str(&self) -> &'static str {
         match self {
-            KeyType::String => "S",
-            KeyType::List => "L",
-            KeyType::Hash => "H",
-            KeyType::Zset => "Z",
-            // 冲突解决策略：
-            KeyType::Set => "T",    // seT
-            KeyType::Stream => "M", // streaM
-            KeyType::Vectorset => "V",
+            KeyType::String => "STR",
+            KeyType::List => "LIST",
+            KeyType::Hash => "HASH",
+            KeyType::Set => "SET",
+            KeyType::Zset => "ZSET",
+            KeyType::Stream => "STRM",
+            KeyType::Vectorset => "VEC",
             KeyType::Unknown => "",
+        }
+    }
+
+    pub fn color(&self) -> Hsla {
+        match self {
+            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0), // 蓝色系
+            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),   // 紫色系
+            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),   // 橙色系
+            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),    // 青色系
+            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),  // 红色系
+            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0), // 绿色系
+            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // 粉色系
+            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0), // 灰色
         }
     }
 }
@@ -599,6 +611,8 @@ impl ZedisServerState {
                     // TODO 根据类型选择对应的函数
                     let (value, ttl): (Vec<u8>, i64) =
                         pipe().get(&key).ttl(&key).query(&mut conn)?;
+                    println!("ttl: {ttl}");
+                    println!("value: {}", value.len());
                     if ttl >= 0 {
                         redis_value.expire_at = Some(unix_ts() + ttl as u64);
                     }
@@ -688,7 +702,7 @@ impl ZedisServerState {
                 match result {
                     Ok(()) => {
                         if let Some(value) = this.value.as_mut() {
-                            value.size = update_value.as_bytes().len();
+                            value.size = update_value.len();
                             value.data = Some(update_value);
                         }
                     }

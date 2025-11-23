@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::states::KeyType;
 use crate::states::ZedisServerState;
 use ahash::AHashSet;
 use gpui::AppContext;
@@ -157,14 +158,20 @@ impl ZedisKeyTree {
                         let key_type = server_state
                             .read(cx)
                             .key_type(&item.id)
-                            .map(|item| item.as_str())
-                            .unwrap_or("-");
-                        Label::new(key_type)
-                            .text_sm()
+                            .unwrap_or(&KeyType::Unknown);
+                        let key_type_color = key_type.color();
+                        let mut key_type_bg = key_type_color;
+                        key_type_bg.fade_out(0.8);
+                        let mut key_type_border = key_type_color;
+                        key_type_border.fade_out(0.5);
+                        Label::new(key_type.as_str())
+                            .text_xs()
+                            .bg(key_type_bg)
+                            .text_color(key_type_color)
                             .border_1()
                             .px_1()
                             .rounded_sm()
-                            .border_color(cx.theme().border)
+                            .border_color(key_type_border)
                             .into_any_element()
                     } else if entry.is_expanded() {
                         Icon::new(IconName::FolderOpen)

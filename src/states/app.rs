@@ -44,6 +44,7 @@ fn get_or_create_server_config() -> Result<PathBuf> {
 pub struct ZedisAppState {
     route: Route,
     bounds: Option<Bounds<Pixels>>,
+    key_tree_width: Pixels,
 }
 
 pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
@@ -69,6 +70,12 @@ impl ZedisAppState {
         }
     }
 
+    pub fn key_tree_width(&self) -> Pixels {
+        self.key_tree_width
+    }
+    pub fn set_key_tree_width(&mut self, width: Pixels) {
+        self.key_tree_width = width;
+    }
     pub fn route(&self) -> Route {
         self.route
     }
