@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::time::Duration;
+
 use crate::assets::CustomIconName;
 use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
@@ -135,7 +137,12 @@ impl ZedisEditor {
         let mut labels = vec![];
         if let Some(value) = server_state.value() {
             let ttl = if let Some(ttl) = value.ttl() {
-                humantime::format_duration(ttl).to_string()
+                let seconds = ttl.num_seconds();
+                if seconds < 0 {
+                    "Perm".to_string()
+                } else {
+                    humantime::format_duration(Duration::from_secs(seconds as u64)).to_string()
+                }
             } else {
                 "--".to_string()
             };
@@ -182,7 +189,8 @@ impl ZedisEditor {
             .children(labels)
             .child(
                 Button::new("zedis-editor-save-key")
-                    .disabled(!self.value_modified)
+                    .disabled(!self.value_modified || server_state.updating())
+                    .loading(server_state.updating())
                     .outline()
                     .tooltip("Save data")
                     .ml_2()
@@ -201,6 +209,8 @@ impl ZedisEditor {
             .child(
                 Button::new("zedis-editor-delete-key")
                     .outline()
+                    .loading(server_state.deleting())
+                    .disabled(server_state.deleting())
                     .tooltip("Delete key")
                     .icon(IconName::CircleX)
                     .ml_2()

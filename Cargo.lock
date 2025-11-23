@@ -2196,9 +2196,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-component"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f58e192c970b94144e884d7eadbeb47ae0439b94eead33abd331df16ec71f48"
+checksum = "637027625747c194c8bbcbc12965e5eac867c3ac38f20c3090c76cdcc0653214"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2235,9 +2235,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-component-assets"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "275913d119db966729c1e4a7c51f87ded868026f84de3ad327aa88367c225d4b"
+checksum = "4ad4bc3a528a46707e045dbca940b5588dd40a661bb95ac6f9117c449ca8014e"
 dependencies = [
  "anyhow",
  "gpui",
@@ -2246,9 +2246,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-component-macros"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e6ac41ada7802159245da8bb8cc2ae15506b74f2c7abde583538d9a60058346"
+checksum = "440ef68055e212f31bb9a6662aa1e7aa52087c857b7f8db737b812d240582aa2"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -1,3 +1,4 @@
+use crate::connection::get_servers;
 use crate::states::Route;
 use crate::states::ZedisAppState;
 use crate::states::ZedisServerState;
@@ -65,9 +66,9 @@ impl Zedis {
         window: &mut Window,
         cx: &mut Context<Self>,
         app_state: Entity<ZedisAppState>,
+        server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
-        let server_state = cx.new(ZedisServerState::new);
 
         let status_bar =
             cx.new(|cx| ZedisStatusBar::new(window, cx, app_state.clone(), server_state.clone()));
@@ -75,9 +76,6 @@ impl Zedis {
         let sidebar =
             cx.new(|cx| ZedisSidebar::new(window, cx, app_state.clone(), server_state.clone()));
 
-        server_state.update(cx, |state, cx| {
-            state.fetch_servers(cx);
-        });
         subscriptions.push(cx.observe(&app_state, |this, model, cx| {
             let route = model.read(cx).route();
             if route != Route::Home && this.servers.is_some() {
@@ -263,26 +261,28 @@ fn init_logger() {
 }
 
 fn main() {
+    init_logger();
     let app = Application::new().with_assets(assets::Assets);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
-    init_logger();
+    let mut server_state = ZedisServerState::new();
+    match get_servers() {
+        Ok(servers) => {
+            server_state.set_servers(servers);
+        }
+        Err(e) => {
+            error!(error = %e, "get servers fail",);
+        }
+    }
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
         cx.activate(true);
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
         let window_bounds = if let Some(bounds) = app_state.bounds() {
             info!(bounds = ?bounds, "get window bounds from setting");
             *bounds
         } else {
             let mut window_size = size(px(1200.), px(750.));
-
             if let Some(display) = cx.primary_display() {
                 let display_size = display.bounds().size;
                 window_size.width = window_size.width.min(display_size.width * 0.85);
@@ -299,7 +299,7 @@ fn main() {
             println!("{:?}", item.default_bounds());
         }
         let app_state = cx.new(|_| app_state.clone());
-
+        let server_state = cx.new(|_| server_state.clone());
         cx.spawn(async move |cx| {
             cx.open_window(
                 WindowOptions {
@@ -308,7 +308,12 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let zedis_view = cx.new(|cx| Zedis::new(window, cx, app_state.clone()));
+                    #[cfg(target_os = "macos")]
+                    window.on_window_should_close(cx, move |_window, cx| {
+                        cx.hide();
+                        false
+                    });
+                    let zedis_view = cx.new(|cx| Zedis::new(window, cx, app_state, server_state));
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;

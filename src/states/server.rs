@@ -14,7 +14,7 @@
 
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
-use crate::connection::{get_servers, save_servers};
+use crate::connection::save_servers;
 use crate::error::Error;
 use ahash::AHashMap;
 use ahash::AHashSet;
@@ -147,9 +147,16 @@ impl RedisValue {
     pub fn size(&self) -> usize {
         self.size
     }
-    pub fn ttl(&self) -> Option<Duration> {
-        self.expire_at
-            .map(|expire_at| Duration::from_secs(expire_at - unix_ts()))
+    pub fn ttl(&self) -> Option<chrono::Duration> {
+        self.expire_at.map(|expire_at| {
+            if expire_at == 0 {
+                chrono::Duration::seconds(-1)
+            } else {
+                let now = unix_ts();
+                let seconds = expire_at.saturating_sub(now);
+                chrono::Duration::seconds(seconds as i64)
+            }
+        })
     }
 }
 
@@ -176,6 +183,8 @@ pub struct ZedisServerState {
     servers: Option<Vec<RedisServer>>,
     key: Option<String>,
     value: Option<RedisValue>,
+    updating: bool,
+    deleting: bool,
     // scan
     keyword: String,
     cursors: Option<Vec<u64>>,
@@ -188,7 +197,7 @@ pub struct ZedisServerState {
 }
 
 impl ZedisServerState {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new() -> Self {
         Self {
             ..Default::default()
         }
@@ -279,6 +288,12 @@ impl ZedisServerState {
     pub fn scaning(&self) -> bool {
         self.scaning
     }
+    pub fn updating(&self) -> bool {
+        self.updating
+    }
+    pub fn deleting(&self) -> bool {
+        self.deleting
+    }
     pub fn dbsize(&self) -> Option<u64> {
         self.dbsize
     }
@@ -290,6 +305,9 @@ impl ZedisServerState {
     }
     pub fn server(&self) -> &str {
         &self.server
+    }
+    pub fn set_servers(&mut self, servers: Vec<RedisServer>) {
+        self.servers = Some(servers);
     }
     pub fn servers(&self) -> Option<&[RedisServer]> {
         self.servers.as_deref()
@@ -350,27 +368,6 @@ impl ZedisServerState {
                     Ok(())
                 }
             }
-        })
-        .detach();
-    }
-    pub fn fetch_servers(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                let servers = get_servers()?;
-                Ok(servers)
-            });
-            let result: Result<Vec<RedisServer>> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(servers) => {
-                        this.servers = Some(servers);
-                    }
-                    Err(e) => {
-                        println!("error: {e:?}");
-                    }
-                };
-                cx.notify();
-            })
         })
         .detach();
     }
@@ -611,9 +608,9 @@ impl ZedisServerState {
                     // TODO 根据类型选择对应的函数
                     let (value, ttl): (Vec<u8>, i64) =
                         pipe().get(&key).ttl(&key).query(&mut conn)?;
-                    println!("ttl: {ttl}");
-                    println!("value: {}", value.len());
-                    if ttl >= 0 {
+                    if ttl == -1 {
+                        redis_value.expire_at = Some(0);
+                    } else if ttl >= 0 {
                         redis_value.expire_at = Some(unix_ts() + ttl as u64);
                     }
                     redis_value.size = value.len();
@@ -661,6 +658,8 @@ impl ZedisServerState {
     }
     pub fn delete_key(&mut self, key: String, cx: &mut Context<Self>) {
         let server = self.server.clone();
+        self.deleting = true;
+        cx.notify();
         cx.spawn(async move |handle, cx| {
             let remove_key = key.clone();
             let task = cx.background_spawn(async move {
@@ -682,6 +681,7 @@ impl ZedisServerState {
                         error!(error = %e, "delete key fail");
                     }
                 };
+                this.deleting = false;
                 cx.notify();
             })
         })
@@ -689,6 +689,8 @@ impl ZedisServerState {
     }
     pub fn save_value(&mut self, key: String, value: String, cx: &mut Context<Self>) {
         let server = self.server.clone();
+        self.updating = true;
+        cx.notify();
         cx.spawn(async move |handle, cx| {
             let update_value = value.clone();
             let task = cx.background_spawn(async move {
@@ -711,6 +713,7 @@ impl ZedisServerState {
                         error!(error = %e, "save key fail");
                     }
                 };
+                this.updating = false;
                 cx.notify();
             })
         })
