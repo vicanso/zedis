@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
-
 use crate::assets::CustomIconName;
-use crate::states::{RedisValue, ZedisServerState};
+use crate::states::{KeyType, RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::ClipboardItem;
 use gpui::Entity;
@@ -36,6 +34,7 @@ use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, IconName};
 use gpui_component::{Disableable, WindowExt};
 use humansize::{DECIMAL, format_size};
+use std::time::Duration;
 use tracing::debug;
 
 pub struct ZedisEditor {
@@ -219,25 +218,38 @@ impl ZedisEditor {
                     })),
             )
     }
+    fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(value) = self.server_state.read(cx).value() else {
+            return div().into_any_element();
+        };
+        match value.key_type() {
+            KeyType::List => div().into_any_element(),
+            _ => Input::new(&self.editor)
+                .flex_1()
+                .bordered(false)
+                .p_0()
+                .w_full()
+                .h_full()
+                .font_family("Monaco")
+                .text_size(px(12.))
+                .focus_bordered(false)
+                .into_any_element(),
+        }
+    }
 }
 
 impl Render for ZedisEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_state = self.server_state.read(cx);
+        if server_state.key().is_none() {
+            return v_flex().into_any_element();
+        }
+
         v_flex()
             .w_full()
             .h_full()
             .child(self.render_select_key(cx))
-            .child(
-                Input::new(&self.editor)
-                    .flex_1()
-                    .bordered(false)
-                    .p_0()
-                    .w_full()
-                    .h_full()
-                    .font_family("Monaco")
-                    .text_size(px(12.))
-                    .focus_bordered(false),
-            )
+            .child(self.render_editor(cx))
             .into_any_element()
     }
 }

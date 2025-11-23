@@ -7687,6 +7687,7 @@ dependencies = [
  "humansize",
  "humantime",
  "lsp-types",
+ "parking_lot",
  "pretty-hex",
  "redis",
  "rust-embed",

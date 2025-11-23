@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::RedisConn;
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
@@ -22,12 +23,13 @@ use chrono::Local;
 use gpui::Hsla;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
+use parking_lot::RwLock;
 use pretty_hex::{HexConfig, config_hex};
 use redis::{cmd, pipe};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 use tracing::error;
 use uuid::Uuid;
@@ -36,7 +38,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
 // string, list, set, zset, hash, stream, and vectorset.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum KeyType {
     #[default]
     Unknown,
@@ -78,11 +80,7 @@ impl KeyType {
 }
 
 fn unix_ts() -> u64 {
-    if let Ok(value) = SystemTime::now().duration_since(UNIX_EPOCH) {
-        value.as_secs()
-    } else {
-        0
-    }
+    Local::now().timestamp() as u64
 }
 
 // KeyNode is a node in the key tree.
@@ -132,17 +130,68 @@ impl KeyNode {
     }
 }
 
+fn get_redis_string_value(conn: &mut RedisConn, key: &str) -> Result<String> {
+    let value: Vec<u8> = cmd("GET").arg(key).query(conn)?;
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if let Ok(value) = std::str::from_utf8(&value) {
+        if let Ok(value) = serde_json::from_str::<Value>(value)
+            && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
+        {
+            return Ok(pretty_value);
+        } else {
+            return Ok(value.to_string());
+        }
+    }
+    // TODO 根据窗口宽度使用width:16/32
+    let cfg = HexConfig {
+        title: false,
+        width: 32,
+        group: 0,
+        ..HexConfig::default()
+    };
+
+    Ok(config_hex(&value, cfg))
+}
+
+fn get_redis_list_value(
+    conn: &mut RedisConn,
+    key: &str,
+    offset: usize,
+    count: usize,
+) -> Result<(Vec<String>)> {
+    let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(offset).arg(count).query(conn)?;
+    if value.is_empty() {
+        return Ok(vec![]);
+    }
+    let value: Vec<String> = value
+        .iter()
+        .map(|v| String::from_utf8_lossy(v).to_string())
+        .collect();
+    Ok(value)
+}
+
+#[derive(Debug, Clone)]
+pub enum RedisValueData {
+    String(String),
+    List((usize, Vec<String>)),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RedisValue {
     key_type: KeyType,
-    data: Option<String>,
+    data: Option<RedisValueData>,
     expire_at: Option<u64>,
     size: usize,
 }
 
 impl RedisValue {
     pub fn data(&self) -> Option<&String> {
-        self.data.as_ref()
+        if let Some(RedisValueData::String(value)) = self.data.as_ref() {
+            return Some(value);
+        }
+        None
     }
     pub fn size(&self) -> usize {
         self.size
@@ -157,6 +206,9 @@ impl RedisValue {
                 chrono::Duration::seconds(seconds as i64)
             }
         })
+    }
+    pub fn key_type(&self) -> KeyType {
+        self.key_type
     }
 }
 
@@ -173,6 +225,13 @@ impl From<&str> for KeyType {
             _ => KeyType::Unknown,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorMessage {
+    pub category: String,
+    pub message: String,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -194,13 +253,15 @@ pub struct ZedisServerState {
     key_tree_id: String,
     loaded_prefixes: AHashSet<String>,
     keys: AHashMap<String, KeyType>,
+
+    last_operated_at: u64,
+    // error
+    error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
 }
 
 impl ZedisServerState {
     pub fn new() -> Self {
-        Self {
-            ..Default::default()
-        }
+        Self::default()
     }
     fn reset_scan(&mut self) {
         self.keyword = "".to_string();
@@ -231,6 +292,25 @@ impl ZedisServerState {
         if insert_count != 0 {
             self.key_tree_id = Uuid::now_v7().to_string();
         }
+    }
+    fn add_error_message(&mut self, category: String, message: String) {
+        let mut guard = self.error_messages.write();
+        if guard.len() >= 10 {
+            guard.remove(0);
+        }
+        guard.push(ErrorMessage {
+            category,
+            message,
+            created_at: unix_ts(),
+        });
+    }
+    pub fn get_error_message(&self) -> Option<ErrorMessage> {
+        if let Some(last) = self.error_messages.read().last()
+            && last.created_at >= self.last_operated_at
+        {
+            return Some(last.clone());
+        }
+        None
     }
     pub fn key_type(&self, key: &str) -> Option<&KeyType> {
         self.keys.get(key)
@@ -321,6 +401,7 @@ impl ZedisServerState {
     pub fn remove_server(&mut self, server: &str, cx: &mut Context<Self>) {
         let mut servers = self.servers.clone().unwrap_or_default();
         servers.retain(|s| s.name != server);
+        self.last_operated_at = unix_ts();
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 save_servers(servers.clone())?;
@@ -328,23 +409,25 @@ impl ZedisServerState {
                 Ok(servers)
             });
             let result: Result<Vec<RedisServer>> = task.await;
-            match result {
-                Ok(servers) => handle.update(cx, |this, cx| {
-                    this.servers = Some(servers);
-                    cx.notify();
-                }),
-                Err(e) => {
-                    // TODO
-                    println!("error: {e:?}");
-                    Ok(())
-                }
-            }
+            handle.update(cx, |this, cx| {
+                match result {
+                    Ok(servers) => {
+                        this.servers = Some(servers);
+                    }
+                    Err(e) => {
+                        this.add_error_message("remove_server".to_string(), e.to_string());
+                        error!(error = %e, "remove server fail");
+                    }
+                };
+                cx.notify();
+            })
         })
         .detach();
     }
     pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, mut server: RedisServer) {
         let mut servers = self.servers.clone().unwrap_or_default();
         server.updated_at = Some(Local::now().to_rfc3339());
+        self.last_operated_at = unix_ts();
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.name == server.name) {
@@ -357,17 +440,18 @@ impl ZedisServerState {
                 Ok(servers)
             });
             let result: Result<Vec<RedisServer>> = task.await;
-            match result {
-                Ok(servers) => handle.update(cx, |this, cx| {
-                    this.servers = Some(servers);
-                    cx.notify();
-                }),
-                Err(e) => {
-                    // TODO
-                    println!("error: {e:?}");
-                    Ok(())
-                }
-            }
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok(servers) => {
+                        this.servers = Some(servers);
+                    }
+                    Err(e) => {
+                        this.add_error_message("update_or_insrt_server".to_string(), e.to_string());
+                        error!(error = %e, "update or insert server fail");
+                    }
+                };
+                cx.notify();
+            })
         })
         .detach();
     }
@@ -418,6 +502,7 @@ impl ZedisServerState {
                         this.key_tree_id = Uuid::now_v7().to_string();
                     }
                     Err(e) => {
+                        this.add_error_message("fill_key_types".to_string(), e.to_string());
                         // TODO 出错的处理
                         error!(error = %e, "fill key types fail");
                     }
@@ -461,8 +546,8 @@ impl ZedisServerState {
                     }
                     Err(e) => {
                         // TODO 出错的处理
-                        println!("error: {e:?}");
-                        // this.error = Some(e.to_string());
+                        this.add_error_message("scan_keys".to_string(), e.to_string());
+                        error!(error = %e, "scan keys fail");
                         this.cursors = None;
                     }
                 };
@@ -498,6 +583,7 @@ impl ZedisServerState {
             return;
         }
         let server = self.server.clone();
+        self.last_operated_at = unix_ts();
         cx.spawn(async move |handle, cx| {
             let pattern = format!("{}*", prefix);
             let task = cx.background_spawn(async move {
@@ -531,7 +617,8 @@ impl ZedisServerState {
                         this.extend_keys(keys);
                     }
                     Err(e) => {
-                        error!(err = %e, "scan prefix fail");
+                        this.add_error_message("scan_prefix".to_string(), e.to_string());
+                        error!(error = %e, "scan prefix fail");
                     }
                 };
                 cx.notify();
@@ -553,6 +640,7 @@ impl ZedisServerState {
             self.scaning = true;
             cx.notify();
             let server_clone = server.to_string();
+            self.last_operated_at = unix_ts();
             cx.spawn(async move |handle, cx| {
                 let counting_server = server_clone.clone();
                 let task = cx.background_spawn(async move {
@@ -573,7 +661,7 @@ impl ZedisServerState {
                             this.dbsize = Some(dbsize);
                         }
                         Err(e) => {
-                            // TODO 出错的处理
+                            this.add_error_message("select_server".to_string(), e.to_string());
                             error!(error = %e, "get redis info fail");
                             this.dbsize = None;
                             this.latency = None;
@@ -595,47 +683,47 @@ impl ZedisServerState {
                 return;
             }
             let server = self.server.clone();
+            self.last_operated_at = unix_ts();
             cx.spawn(async move |handle, cx| {
-                // TODO判断key的类型
                 let task = cx.background_spawn(async move {
                     let client = get_connection_manager().get_client(&server)?;
                     let mut conn = client.get_connection()?;
-                    let t: String = cmd("TYPE").arg(&key).query(&mut conn)?;
+                    let (t, ttl): (String, i64) = pipe()
+                        .cmd("TYPE")
+                        .arg(&key)
+                        .cmd("TTL")
+                        .arg(&key)
+                        .query(&mut conn)?;
+                    let expire_at = if ttl == -1 {
+                        Some(0)
+                    } else if ttl >= 0 {
+                        Some(unix_ts() + ttl as u64)
+                    } else {
+                        None
+                    };
+                    let key_type = KeyType::from(t.as_str());
                     let mut redis_value = RedisValue {
-                        key_type: KeyType::from(t.as_str()),
+                        key_type,
+                        expire_at,
                         ..Default::default()
                     };
-                    // TODO 根据类型选择对应的函数
-                    let (value, ttl): (Vec<u8>, i64) =
-                        pipe().get(&key).ttl(&key).query(&mut conn)?;
-                    if ttl == -1 {
-                        redis_value.expire_at = Some(0);
-                    } else if ttl >= 0 {
-                        redis_value.expire_at = Some(unix_ts() + ttl as u64);
-                    }
-                    redis_value.size = value.len();
-                    if value.is_empty() {
-                        return Ok(redis_value);
-                    }
-                    if let Ok(value) = std::str::from_utf8(&value) {
-                        if let Ok(value) = serde_json::from_str::<Value>(value)
-                            && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
-                        {
-                            redis_value.data = Some(pretty_value);
-                        } else {
-                            redis_value.data = Some(value.to_string());
+                    match key_type {
+                        KeyType::String => {
+                            let value = get_redis_string_value(&mut conn, &key)?;
+                            redis_value.data = Some(RedisValueData::String(value));
                         }
-                    } else {
-                        // TODO 根据窗口宽度使用width:16/32
-                        let cfg = HexConfig {
-                            title: false,
-                            width: 32,
-                            group: 0,
-                            ..HexConfig::default()
-                        };
-
-                        redis_value.data = Some(config_hex(&value, cfg));
+                        KeyType::List => {
+                            let size: usize = cmd("LLEN").arg(&key).query(&mut conn)?;
+                            let value = get_redis_list_value(&mut conn, &key, 0, 100)?;
+                            redis_value.data = Some(RedisValueData::List((size, value)));
+                        }
+                        _ => {
+                            return Err(Error::Invalid {
+                                message: "unsupported key type".to_string(),
+                            });
+                        }
                     }
+
                     Ok(redis_value)
                 });
                 let result: Result<RedisValue, Error> = task.await;
@@ -645,7 +733,7 @@ impl ZedisServerState {
                             this.value = Some(value);
                         }
                         Err(e) => {
-                            // TODO 出错的处理
+                            this.add_error_message("select_key".to_string(), e.to_string());
                             this.value = None;
                             error!(error = %e, "get redis info fail");
                         }
@@ -660,6 +748,7 @@ impl ZedisServerState {
         let server = self.server.clone();
         self.deleting = true;
         cx.notify();
+        self.last_operated_at = unix_ts();
         cx.spawn(async move |handle, cx| {
             let remove_key = key.clone();
             let task = cx.background_spawn(async move {
@@ -677,7 +766,7 @@ impl ZedisServerState {
                         this.key = None;
                     }
                     Err(e) => {
-                        // TODO 出错的处理
+                        this.add_error_message("delete_key".to_string(), e.to_string());
                         error!(error = %e, "delete key fail");
                     }
                 };
@@ -691,6 +780,7 @@ impl ZedisServerState {
         let server = self.server.clone();
         self.updating = true;
         cx.notify();
+        self.last_operated_at = unix_ts();
         cx.spawn(async move |handle, cx| {
             let update_value = value.clone();
             let task = cx.background_spawn(async move {
@@ -705,15 +795,61 @@ impl ZedisServerState {
                     Ok(()) => {
                         if let Some(value) = this.value.as_mut() {
                             value.size = update_value.len();
-                            value.data = Some(update_value);
+                            value.data = Some(RedisValueData::String(update_value));
                         }
                     }
                     Err(e) => {
-                        // TODO 出错的处理
+                        this.add_error_message("save_value".to_string(), e.to_string());
                         error!(error = %e, "save key fail");
                     }
                 };
                 this.updating = false;
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+    pub fn load_more_list_value(&mut self, cx: &mut Context<Self>) {
+        let key = self.key.clone().unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        let Some(value) = &self.value else {
+            return;
+        };
+        let Some(RedisValueData::List((size, value))) = value.data.as_ref() else {
+            return;
+        };
+        let offset = value.len();
+        if offset >= *size {
+            return;
+        }
+        let server = self.server.clone();
+        self.last_operated_at = unix_ts();
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server)?;
+                let mut conn = client.get_connection()?;
+                let value = get_redis_list_value(&mut conn, &key, offset, 100)?;
+                Ok(value)
+            });
+            let result: Result<Vec<String>> = task.await;
+            handle.update(cx, move |this, cx| {
+                match result {
+                    Ok(values) => {
+                        // this.value = Some(RedisValueData::List((size, value)));
+                        if let Some(value) = this.value.as_mut() {
+                            let Some(RedisValueData::List((_, data))) = value.data.as_mut() else {
+                                return;
+                            };
+                            data.extend(values);
+                        }
+                    }
+                    Err(e) => {
+                        this.add_error_message("load_more_list_value".to_string(), e.to_string());
+                        error!(error = %e, "load more list value fail");
+                    }
+                };
                 cx.notify();
             })
         })

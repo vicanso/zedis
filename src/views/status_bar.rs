@@ -138,9 +138,17 @@ impl ZedisStatusBar {
                 cx.notify();
             }))
     }
-    fn render_errors(&self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_state = self.server_state.read(cx);
+        let Some(data) = server_state.get_error_message() else {
+            return h_flex();
+        };
         // 记录出错的显示
-        h_flex()
+        h_flex().child(
+            Label::new(data.message)
+                .text_xs()
+                .text_color(cx.theme().red),
+        )
     }
 }
 
