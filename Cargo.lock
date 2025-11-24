@@ -914,7 +914,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4551,15 +4555,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e3c1983f96fe1aa42d3e75d6eedc0374ba45f784fb86f130e2c8dac95817471"
 dependencies = [
  "arcstr",
+ "async-io",
+ "bytes",
+ "cfg-if",
  "combine",
  "crc16",
+ "futures-util",
  "itoa",
+ "log",
  "num-bigint",
  "percent-encoding",
+ "pin-project-lite",
  "rand 0.9.2",
  "ryu",
  "sha1_smol",
+ "smol",
+ "smol-timeout",
  "socket2",
+ "tokio",
+ "tokio-util",
  "url",
 ]
 
@@ -5310,6 +5324,16 @@ dependencies = [
  "async-process",
  "blocking",
  "futures-lite 2.6.1",
+]
+
+[[package]]
+name = "smol-timeout"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7859830574b98cb971aa80d150d8920d28a75df5ed7b0c0d6bd4b50fa0b0cf1f"
+dependencies = [
+ "async-io",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -7677,6 +7701,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "anyhow",
+ "async-trait",
  "chrono",
  "dashmap",
  "gpui",
@@ -7693,6 +7718,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "smol",
  "snafu",
  "substring",
  "time",

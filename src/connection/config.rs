@@ -15,6 +15,7 @@
 use crate::error::Error;
 use crate::helpers::get_or_create_config_dir;
 use serde::{Deserialize, Serialize};
+use smol::fs;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
@@ -65,12 +66,12 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
     let configs: RedisServers = toml::from_str(&value)?;
     Ok(configs.servers)
 }
-pub fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
+pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
     let path = get_or_create_server_config()?;
     let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid {
         message: e.to_string(),
     })?;
-    std::fs::write(path, value)?;
+    fs::write(&path, value).await?;
     Ok(())
 }
 

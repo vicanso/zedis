@@ -16,6 +16,7 @@ use gpui::AnyElement;
 use gpui::App;
 use gpui::ClickEvent;
 use gpui::ElementId;
+use gpui::Fill;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui::px;
@@ -37,6 +38,7 @@ pub struct Card {
     actions: Option<Vec<Button>>,
     on_click: Option<OnClick>,
     footer: Option<AnyElement>,
+    bg: Option<Fill>,
 }
 
 impl Card {
@@ -50,6 +52,7 @@ impl Card {
             actions: None,
             on_click: None,
             footer: None,
+            bg: None,
         }
     }
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
@@ -79,6 +82,10 @@ impl Card {
         self.footer = Some(footer.into_any_element());
         self
     }
+    pub fn bg(mut self, bg: impl Into<Fill>) -> Self {
+        self.bg = Some(bg.into());
+        self
+    }
 }
 
 impl RenderOnce for Card {
@@ -88,7 +95,7 @@ impl RenderOnce for Card {
             header = header.child(icon);
         }
         if let Some(title) = self.title {
-            header = header.child(Label::new(title).ml_2().text_sm().whitespace_normal());
+            header = header.child(Label::new(title).ml_2().text_base().whitespace_normal());
         }
         if let Some(actions) = self.actions {
             header = header.child(h_flex().flex_1().justify_end().children(actions));
@@ -98,9 +105,13 @@ impl RenderOnce for Card {
             .m_2()
             .border(px(1.))
             .border_color(cx.theme().border)
-            .p_2()
+            .p_4()
             .rounded(cx.theme().radius)
             .child(header);
+
+        if let Some(bg) = self.bg {
+            item = item.bg(bg);
+        }
 
         if let Some(on_click) = self.on_click {
             item = item.on_click(on_click);

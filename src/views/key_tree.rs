@@ -159,20 +159,24 @@ impl ZedisKeyTree {
                             .read(cx)
                             .key_type(&item.id)
                             .unwrap_or(&KeyType::Unknown);
-                        let key_type_color = key_type.color();
-                        let mut key_type_bg = key_type_color;
-                        key_type_bg.fade_out(0.8);
-                        let mut key_type_border = key_type_color;
-                        key_type_border.fade_out(0.5);
-                        Label::new(key_type.as_str())
-                            .text_xs()
-                            .bg(key_type_bg)
-                            .text_color(key_type_color)
-                            .border_1()
-                            .px_1()
-                            .rounded_sm()
-                            .border_color(key_type_border)
-                            .into_any_element()
+                        if key_type == &KeyType::Unknown {
+                            div().into_any_element()
+                        } else {
+                            let key_type_color = key_type.color();
+                            let mut key_type_bg = key_type_color;
+                            key_type_bg.fade_out(0.8);
+                            let mut key_type_border = key_type_color;
+                            key_type_border.fade_out(0.5);
+                            Label::new(key_type.as_str())
+                                .text_xs()
+                                .bg(key_type_bg)
+                                .text_color(key_type_color)
+                                .border_1()
+                                .px_1()
+                                .rounded_sm()
+                                .border_color(key_type_border)
+                                .into_any_element()
+                        }
                     } else if entry.is_expanded() {
                         Icon::new(IconName::FolderOpen)
                             .text_color(yellow)

@@ -23,6 +23,7 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui_component::ActiveTheme;
+use gpui_component::Colorize;
 use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::WindowExt;
@@ -226,6 +227,7 @@ impl Render for ZedisServers {
                 Card::new(("servers-card", index))
                     .icon(Icon::new(CustomIconName::DatabaseZap))
                     .title(title)
+                    .bg(cx.theme().background.lighten(1.0))
                     .when(!description.is_empty(), |this| {
                         this.description(description)
                     })
@@ -279,6 +281,7 @@ impl Render for ZedisServers {
                 Card::new("servers-card-add")
                     .icon(IconName::Plus)
                     .title("Add")
+                    .bg(cx.theme().background.lighten(1.0))
                     .description("Add a new redis server")
                     .actions(vec![
                         Button::new("add")

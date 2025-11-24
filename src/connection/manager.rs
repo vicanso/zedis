@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::async_connection::{RedisAsyncConn, query_async_masters};
 use super::config::get_config;
 use crate::error::Error;
 use dashmap::DashMap;
-use redis::{Client, Cmd, Connection, ConnectionLike, RedisResult, cluster};
-use redis::{Commands, cmd};
-use redis::{FromRedisValue, Value};
+use redis::FromRedisValue;
+use redis::cmd;
+use redis::{Client, Cmd, cluster};
 use redis::{InfoDict, Role};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -26,49 +27,6 @@ use std::sync::LazyLock;
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 static CONNECTION_MANAGER: LazyLock<ConnectionManager> = LazyLock::new(ConnectionManager::new);
-
-pub enum RedisConn {
-    Single(Connection),
-    Cluster(Box<cluster::ClusterConnection>),
-}
-
-impl ConnectionLike for RedisConn {
-    fn req_packed_command(&mut self, cmd: &[u8]) -> RedisResult<Value> {
-        match self {
-            RedisConn::Single(conn) => conn.req_packed_command(cmd),
-            RedisConn::Cluster(conn) => conn.req_packed_command(cmd),
-        }
-    }
-    fn req_packed_commands(
-        &mut self,
-        cmd: &[u8],
-        offset: usize,
-        count: usize,
-    ) -> RedisResult<Vec<Value>> {
-        match self {
-            RedisConn::Single(conn) => conn.req_packed_commands(cmd, offset, count),
-            RedisConn::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
-        }
-    }
-    fn get_db(&self) -> i64 {
-        match self {
-            RedisConn::Single(conn) => conn.get_db(),
-            RedisConn::Cluster(conn) => conn.get_db(),
-        }
-    }
-    fn check_connection(&mut self) -> bool {
-        match self {
-            RedisConn::Single(conn) => conn.check_connection(),
-            RedisConn::Cluster(conn) => conn.check_connection(),
-        }
-    }
-    fn is_open(&self) -> bool {
-        match self {
-            RedisConn::Single(conn) => conn.is_open(),
-            RedisConn::Cluster(conn) => conn.is_open(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 enum ServerType {
@@ -240,65 +198,54 @@ pub struct RedisClient {
     server_type: ServerType,
 }
 impl RedisClient {
-    pub fn get_connection(&self) -> Result<RedisConn> {
+    async fn get_async_connection(&self) -> Result<RedisAsyncConn> {
         match &self.client {
             RClient::Single(client) => {
-                let conn = client.get_connection()?;
-                Ok(RedisConn::Single(conn))
+                let conn = client.get_multiplexed_async_connection().await?;
+                Ok(RedisAsyncConn::Single(conn))
             }
             RClient::Cluster(client) => {
-                let conn = client.get_connection()?;
-                Ok(RedisConn::Cluster(Box::new(conn)))
+                let conn = client.get_async_connection().await?;
+                Ok(RedisAsyncConn::Cluster(conn))
             }
         }
     }
     fn is_cluster(&self) -> bool {
         self.server_type == ServerType::Cluster
     }
-    fn query_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
-        if cmds.is_empty() {
-            return Err(Error::Invalid {
-                message: "Commands are empty".to_string(),
-            });
-        }
-        let first_cmd = cmds[0].clone();
-        let mut values = Vec::with_capacity(self.nodes.len() / 2 + 1);
-        for (index, node) in self.master_nodes.iter().enumerate() {
-            let client = Client::open(node.addr.clone())?;
-            let mut conn = client.get_connection()?;
-            let value: T = cmds
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| first_cmd.clone())
-                .query(&mut conn)?;
-            values.push(value);
-        }
+    pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
+        let addrs: Vec<_> = self
+            .master_nodes
+            .iter()
+            .map(|item| item.addr.as_str())
+            .collect();
+        let values = query_async_masters(addrs, cmds).await?;
         Ok(values)
     }
-    pub fn dbsize(&self) -> Result<u64> {
-        let list = self.query_masters(vec![cmd("DBSIZE")])?;
+    pub async fn dbsize(&self) -> Result<u64> {
+        let list = self.query_async_masters(vec![cmd("DBSIZE")]).await?;
         Ok(list.iter().sum())
     }
-    pub fn ping(&self) -> Result<()> {
-        let mut conn = self.get_connection()?;
-        let _: () = cmd("PING").query(&mut conn)?;
+    pub async fn ping(&self) -> Result<()> {
+        let mut conn = self.get_async_connection().await?;
+        let _: () = cmd("PING").query_async(&mut conn).await?;
         Ok(())
     }
     pub fn count_masters(&self) -> Result<usize> {
         Ok(self.master_nodes.len())
     }
-    pub fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<String>)> {
+    pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<String>)> {
         let master_count = self.count_masters()?;
         let cursors = vec![0; master_count];
 
-        let (cursors, keys) = self.scan(cursors, pattern, count)?;
+        let (cursors, keys) = self.scan(cursors, pattern, count).await?;
         Ok((cursors, keys))
     }
-    pub fn get<T: FromRedisValue>(&self, key: &str) -> Result<Option<T>> {
-        let value = self.get_connection()?.get(key)?;
-        Ok(value)
-    }
-    pub fn scan(
+    // pub fn get<T: FromRedisValue>(&self, key: &str) -> Result<Option<T>> {
+    //     let value = self.get_connection()?.get(key)?;
+    //     Ok(value)
+    // }
+    pub async fn scan(
         &self,
         cursors: Vec<u64>,
         pattern: &str,
@@ -316,7 +263,7 @@ impl RedisClient {
                     .clone()
             })
             .collect();
-        let values: Vec<(u64, Vec<String>)> = self.query_masters(cmds)?;
+        let values: Vec<(u64, Vec<String>)> = self.query_async_masters(cmds).await?;
         let mut cursors = Vec::with_capacity(values.len());
         let mut keys = Vec::with_capacity(values[0].1.len() * values.len());
         for (cursor, keys_in_node) in values {
@@ -332,13 +279,13 @@ pub struct ConnectionManager {
     clients: DashMap<String, RedisClient>,
 }
 
-fn detect_server_type(client: &Client) -> Result<ServerType> {
-    let mut conn = client.get_connection()?;
-    let role: Role = cmd("ROLE").query(&mut conn)?;
+async fn detect_server_type(client: &Client) -> Result<ServerType> {
+    let mut conn = client.get_multiplexed_async_connection().await?;
+    let role: Role = cmd("ROLE").query_async(&mut conn).await?;
     match role {
         Role::Sentinel { .. } => Ok(ServerType::Sentinel),
         _ => {
-            let info: InfoDict = cmd("INFO").arg("cluster").query(&mut conn)?;
+            let info: InfoDict = cmd("INFO").arg("cluster").query_async(&mut conn).await?;
             let is_cluster = info.get("cluster_enabled").unwrap_or(0i64) == 1i64;
             if is_cluster {
                 Ok(ServerType::Cluster)
@@ -355,13 +302,13 @@ impl ConnectionManager {
             clients: DashMap::new(),
         }
     }
-    fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
+    async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_config(name)?;
         let url = config.get_connection_url();
         let mut client = Client::open(url.clone())?;
         // 如果密码错，再试无密码的
         // sentinel大概率无密码
-        let server_type = match detect_server_type(&client) {
+        let server_type = match detect_server_type(&client).await {
             Ok(server_type) => server_type,
             Err(e) => {
                 if config.password.is_none() || !e.to_string().contains("AuthenticationFailed") {
@@ -370,13 +317,13 @@ impl ConnectionManager {
                 let mut tmp_config = config.clone();
                 tmp_config.password = None;
                 client = Client::open(tmp_config.get_connection_url())?;
-                detect_server_type(&client)?
+                detect_server_type(&client).await?
             }
         };
         match server_type {
             ServerType::Cluster => {
-                let mut conn = client.get_connection()?;
-                let nodes: String = cmd("CLUSTER").arg("NODES").query(&mut conn)?;
+                let mut conn = client.get_multiplexed_async_connection().await?;
+                let nodes: String = cmd("CLUSTER").arg("NODES").query_async(&mut conn).await?;
                 let nodes = parse_cluster_nodes(&nodes)?
                     .iter()
                     .map(|item| {
@@ -394,9 +341,11 @@ impl ConnectionManager {
                 Ok((nodes, server_type))
             }
             ServerType::Sentinel => {
-                let mut conn = client.get_connection()?;
-                let masters_response: Vec<HashMap<String, String>> =
-                    cmd("SENTINEL").arg("MASTERS").query(&mut conn)?;
+                let mut conn = client.get_multiplexed_async_connection().await?;
+                let masters_response: Vec<HashMap<String, String>> = cmd("SENTINEL")
+                    .arg("MASTERS")
+                    .query_async(&mut conn)
+                    .await?;
                 let mut nodes = vec![];
 
                 for item in masters_response {
@@ -452,11 +401,11 @@ impl ConnectionManager {
             )),
         }
     }
-    pub fn get_client(&self, name: &str) -> Result<RedisClient> {
+    pub async fn get_client(&self, name: &str) -> Result<RedisClient> {
         if let Some(client) = self.clients.get(name) {
             return Ok(client.clone());
         }
-        let (nodes, server_type) = self.get_redis_nodes(name)?;
+        let (nodes, server_type) = self.get_redis_nodes(name).await?;
         let client = match server_type {
             ServerType::Cluster => {
                 let client = cluster::ClusterClient::new(
@@ -485,6 +434,10 @@ impl ConnectionManager {
         };
         self.clients.insert(name.to_string(), client.clone());
         Ok(client)
+    }
+    pub async fn get_connection(&self, name: &str) -> Result<RedisAsyncConn> {
+        let client = self.get_client(name).await?;
+        client.get_async_connection().await
     }
 }
 

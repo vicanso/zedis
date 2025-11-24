@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::RedisConn;
+use crate::connection::RedisAsyncConn;
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
@@ -130,8 +130,8 @@ impl KeyNode {
     }
 }
 
-fn get_redis_string_value(conn: &mut RedisConn, key: &str) -> Result<String> {
-    let value: Vec<u8> = cmd("GET").arg(key).query(conn)?;
+async fn get_redis_string_value(conn: &mut RedisAsyncConn, key: &str) -> Result<String> {
+    let value: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
     if value.is_empty() {
         return Ok(String::new());
     }
@@ -155,13 +155,18 @@ fn get_redis_string_value(conn: &mut RedisConn, key: &str) -> Result<String> {
     Ok(config_hex(&value, cfg))
 }
 
-fn get_redis_list_value(
-    conn: &mut RedisConn,
+async fn get_redis_list_value(
+    conn: &mut RedisAsyncConn,
     key: &str,
     offset: usize,
     count: usize,
 ) -> Result<Vec<String>> {
-    let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(offset).arg(count).query(conn)?;
+    let value: Vec<Vec<u8>> = cmd("LRANGE")
+        .arg(key)
+        .arg(offset)
+        .arg(count)
+        .query_async(conn)
+        .await?;
     if value.is_empty() {
         return Ok(vec![]);
     }
@@ -318,6 +323,32 @@ impl ZedisServerState {
         }
         None
     }
+    fn spawn<T, Fut>(
+        &mut self,
+        cx: &mut Context<Self>,
+        task_name: &str,
+        task: impl FnOnce() -> Fut + Send + 'static,
+        callback: impl FnOnce(&mut Self, Result<T>, &mut Context<Self>) + Send + 'static,
+    ) where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let name = task_name.to_string();
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move { task().await });
+            let result: Result<T> = task.await;
+            handle.update(cx, move |this, cx| {
+                if let Err(e) = &result {
+                    // TODO 出错的处理
+                    let message = format!("{name} fail");
+                    error!(error = %e, message);
+                    this.add_error_message(name, e.to_string());
+                }
+                callback(this, result, cx);
+            })
+        })
+        .detach();
+    }
     pub fn key_type(&self, key: &str) -> Option<&KeyType> {
         self.keys.get(key)
     }
@@ -411,59 +442,47 @@ impl ZedisServerState {
         let mut servers = self.servers.clone().unwrap_or_default();
         servers.retain(|s| s.name != server);
         self.last_operated_at = unix_ts();
-        cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                save_servers(servers.clone())?;
-
+        self.spawn(
+            cx,
+            "remove_server",
+            move || async move {
+                save_servers(servers.clone()).await?;
                 Ok(servers)
-            });
-            let result: Result<Vec<RedisServer>> = task.await;
-            handle.update(cx, |this, cx| {
-                match result {
-                    Ok(servers) => {
-                        this.servers = Some(servers);
-                    }
-                    Err(e) => {
-                        this.add_error_message("remove_server".to_string(), e.to_string());
-                        error!(error = %e, "remove server fail");
-                    }
-                };
+            },
+            move |this, result, cx| {
+                if let Ok(servers) = result {
+                    this.servers = Some(servers);
+                }
                 cx.notify();
-            })
-        })
-        .detach();
+            },
+        );
     }
     pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, mut server: RedisServer) {
         let mut servers = self.servers.clone().unwrap_or_default();
         server.updated_at = Some(Local::now().to_rfc3339());
         self.last_operated_at = unix_ts();
-        cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
+        self.spawn(
+            cx,
+            "update_or_insert_server",
+            move || async move {
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.name == server.name) {
                     *existing_server = server;
                 } else {
                     servers.push(server);
                 }
-                save_servers(servers.clone())?;
+                save_servers(servers.clone()).await?;
 
                 Ok(servers)
-            });
-            let result: Result<Vec<RedisServer>> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(servers) => {
-                        this.servers = Some(servers);
-                    }
-                    Err(e) => {
-                        this.add_error_message("update_or_insrt_server".to_string(), e.to_string());
-                        error!(error = %e, "update or insert server fail");
-                    }
-                };
+            },
+            move |this, result, cx| {
+                if let Ok(servers) = result {
+                    this.servers = Some(servers);
+                }
                 cx.notify();
-            })
-        })
-        .detach();
+            },
+        );
     }
+
     fn fill_key_types(&mut self, cx: &mut Context<Self>, prefix: String) {
         let mut keys = self
             .keys
@@ -485,41 +504,38 @@ impl ZedisServerState {
         let server = self.server.clone();
         keys.sort_unstable();
         let keys_clone = keys.clone();
-        cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
-                let mut conn = client.get_connection()?;
-                let mut cmd = pipe();
+        self.spawn(
+            cx,
+            "fill_key_types",
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut types = Vec::with_capacity(keys.len());
                 for key in keys.iter().take(1000) {
-                    cmd.cmd("TYPE").arg(key);
+                    // 如果失败则忽略
+                    let t: String = cmd("TYPE")
+                        .arg(key)
+                        .query_async(&mut conn)
+                        .await
+                        .unwrap_or_default();
+                    types.push(t);
                 }
-                let types: Vec<String> = cmd.query(&mut conn)?;
                 Ok(types)
-            });
-            let result: Result<Vec<String>> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(types) => {
-                        for (index, t) in types.iter().enumerate() {
-                            let Some(key) = keys_clone.get(index) else {
-                                continue;
-                            };
-                            if let Some(k) = this.keys.get_mut(key) {
-                                *k = KeyType::from(t.as_str());
-                            }
+            },
+            move |this, result, cx| {
+                if let Ok(types) = result {
+                    for (index, t) in types.iter().enumerate() {
+                        let Some(key) = keys_clone.get(index) else {
+                            continue;
+                        };
+                        if let Some(k) = this.keys.get_mut(key) {
+                            *k = KeyType::from(t.as_str());
                         }
-                        this.key_tree_id = Uuid::now_v7().to_string();
                     }
-                    Err(e) => {
-                        this.add_error_message("fill_key_types".to_string(), e.to_string());
-                        // TODO 出错的处理
-                        error!(error = %e, "fill key types fail");
-                    }
+                    this.key_tree_id = Uuid::now_v7().to_string();
                 }
                 cx.notify();
-            })
-        })
-        .detach();
+            },
+        );
     }
     fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
         if self.server != server || self.keyword != keyword {
@@ -527,21 +543,23 @@ impl ZedisServerState {
         }
         let cursors = self.cursors.clone();
         let max = (self.scan_times + 1) * DEFAULT_SCAN_RESULT_MAX;
-        cx.spawn(async move |handle, cx| {
-            let processing_server = server.clone();
-            let processing_keyword = keyword.clone();
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
+
+        let processing_server = server.clone();
+        let processing_keyword = keyword.clone();
+        self.spawn(
+            cx,
+            "scan_keys",
+            move || async move {
+                let client = get_connection_manager().get_client(&server).await?;
                 let pattern = format!("*{}*", keyword);
                 let count = if keyword.is_empty() { 2_000 } else { 10_000 };
                 if let Some(cursors) = cursors {
-                    client.scan(cursors, &pattern, count)
+                    client.scan(cursors, &pattern, count).await
                 } else {
-                    client.first_scan(&pattern, count)
+                    client.first_scan(&pattern, count).await
                 }
-            });
-            let result = task.await;
-            handle.update(cx, move |this, cx| {
+            },
+            move |this, result, cx| {
                 match result {
                     Ok((cursors, keys)) => {
                         debug!("cursors: {cursors:?}, keys count: {}", keys.len());
@@ -553,10 +571,7 @@ impl ZedisServerState {
                         }
                         this.extend_keys(keys);
                     }
-                    Err(e) => {
-                        // TODO 出错的处理
-                        this.add_error_message("scan_keys".to_string(), e.to_string());
-                        error!(error = %e, "scan keys fail");
+                    Err(_) => {
                         this.cursors = None;
                     }
                 };
@@ -568,9 +583,8 @@ impl ZedisServerState {
                 this.scaning = false;
                 cx.notify();
                 this.fill_key_types(cx, "".to_string());
-            })
-        })
-        .detach();
+            },
+        );
     }
     pub fn scan(&mut self, cx: &mut Context<Self>, keyword: String) {
         self.reset_scan();
@@ -598,10 +612,12 @@ impl ZedisServerState {
 
         let server = self.server.clone();
         self.last_operated_at = unix_ts();
-        cx.spawn(async move |handle, cx| {
-            let pattern = format!("{}*", prefix);
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
+        let pattern = format!("{}*", prefix);
+        self.spawn(
+            cx,
+            "scan_prefix",
+            move || async move {
+                let client = get_connection_manager().get_client(&server).await?;
                 let count = 10_000;
                 // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;
@@ -609,9 +625,9 @@ impl ZedisServerState {
                 // 最多执行x次
                 for _ in 0..20 {
                     let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(cursors, &pattern, count)?
+                        client.scan(cursors, &pattern, count).await?
                     } else {
-                        client.first_scan(&pattern, count)?
+                        client.first_scan(&pattern, count).await?
                     };
                     result_keys.extend(keys);
                     if new_cursor.iter().sum::<u64>() == 0 {
@@ -621,26 +637,17 @@ impl ZedisServerState {
                 }
 
                 Ok(result_keys)
-            });
-            let result: Result<Vec<String>> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(keys) => {
-                        debug!(prefix, count = keys.len(), "scan prefix success");
-                        this.loaded_prefixes.insert(prefix.clone());
-                        this.extend_keys(keys);
-                    }
-                    Err(e) => {
-                        this.add_error_message("scan_prefix".to_string(), e.to_string());
-                        error!(error = %e, "scan prefix fail");
-                    }
-                };
+            },
+            move |this, result, cx| {
+                if let Ok(keys) = result {
+                    debug!(prefix, count = keys.len(), "scan prefix success");
+                    this.loaded_prefixes.insert(prefix.clone());
+                    this.extend_keys(keys);
+                }
                 cx.notify();
                 this.fill_key_types(cx, prefix);
-            })
-        })
-        .detach();
-        cx.notify();
+            },
+        );
     }
     pub fn select(&mut self, server: &str, cx: &mut Context<Self>) {
         if self.server != server {
@@ -655,38 +662,30 @@ impl ZedisServerState {
             cx.notify();
             let server_clone = server.to_string();
             self.last_operated_at = unix_ts();
-            cx.spawn(async move |handle, cx| {
-                let counting_server = server_clone.clone();
-                let task = cx.background_spawn(async move {
-                    let client = get_connection_manager().get_client(&server_clone)?;
-                    let dbsize = client.dbsize()?;
+            let counting_server = server_clone.clone();
+            self.spawn(
+                cx,
+                "select_server",
+                move || async move {
+                    let client = get_connection_manager().get_client(&server_clone).await?;
+                    let dbsize = client.dbsize().await?;
                     let start = Instant::now();
-                    client.ping()?;
+                    client.ping().await?;
                     Ok((dbsize, start.elapsed()))
-                });
-                let result: Result<(u64, Duration)> = task.await;
-                handle.update(cx, move |this, cx| {
+                },
+                move |this, result, cx| {
                     if this.server != counting_server {
                         return;
                     }
-                    match result {
-                        Ok((dbsize, latency)) => {
-                            this.latency = Some(latency);
-                            this.dbsize = Some(dbsize);
-                        }
-                        Err(e) => {
-                            this.add_error_message("select_server".to_string(), e.to_string());
-                            error!(error = %e, "get redis info fail");
-                            this.dbsize = None;
-                            this.latency = None;
-                        }
+                    if let Ok((dbsize, latency)) = result {
+                        this.latency = Some(latency);
+                        this.dbsize = Some(dbsize);
                     };
                     let server = this.server.clone();
                     cx.notify();
                     this.scan_keys(cx, server, "".to_string());
-                })
-            })
-            .detach();
+                },
+            );
         }
     }
     pub fn select_key(&mut self, key: String, cx: &mut Context<Self>) {
@@ -698,16 +697,19 @@ impl ZedisServerState {
             }
             let server = self.server.clone();
             self.last_operated_at = unix_ts();
-            cx.spawn(async move |handle, cx| {
-                let task = cx.background_spawn(async move {
-                    let client = get_connection_manager().get_client(&server)?;
-                    let mut conn = client.get_connection()?;
+
+            self.spawn(
+                cx,
+                "select_key",
+                move || async move {
+                    let mut conn = get_connection_manager().get_connection(&server).await?;
                     let (t, ttl): (String, i64) = pipe()
                         .cmd("TYPE")
                         .arg(&key)
                         .cmd("TTL")
                         .arg(&key)
-                        .query(&mut conn)?;
+                        .query_async(&mut conn)
+                        .await?;
                     let expire_at = if ttl == -1 {
                         Some(0)
                     } else if ttl >= 0 {
@@ -723,12 +725,13 @@ impl ZedisServerState {
                     };
                     match key_type {
                         KeyType::String => {
-                            let value = get_redis_string_value(&mut conn, &key)?;
+                            let value = get_redis_string_value(&mut conn, &key).await?;
+                            redis_value.size = value.len();
                             redis_value.data = Some(RedisValueData::String(value));
                         }
                         KeyType::List => {
-                            let size: usize = cmd("LLEN").arg(&key).query(&mut conn)?;
-                            let value = get_redis_list_value(&mut conn, &key, 0, 100)?;
+                            let size: usize = cmd("LLEN").arg(&key).query_async(&mut conn).await?;
+                            let value = get_redis_list_value(&mut conn, &key, 0, 100).await?;
                             redis_value.data =
                                 Some(RedisValueData::List(Arc::new((size, value.clone()))));
                         }
@@ -740,23 +743,19 @@ impl ZedisServerState {
                     }
 
                     Ok(redis_value)
-                });
-                let result: Result<RedisValue, Error> = task.await;
-                handle.update(cx, move |this, cx| {
+                },
+                move |this, result, cx| {
                     match result {
                         Ok(value) => {
                             this.value = Some(value);
                         }
-                        Err(e) => {
-                            this.add_error_message("select_key".to_string(), e.to_string());
+                        Err(_) => {
                             this.value = None;
-                            error!(error = %e, "get redis info fail");
                         }
                     };
                     cx.notify();
-                })
-            })
-            .detach();
+                },
+            );
         }
     }
     pub fn delete_key(&mut self, key: String, cx: &mut Context<Self>) {
@@ -764,65 +763,54 @@ impl ZedisServerState {
         self.deleting = true;
         cx.notify();
         self.last_operated_at = unix_ts();
-        cx.spawn(async move |handle, cx| {
-            let remove_key = key.clone();
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
-                let mut conn = client.get_connection()?;
-                let _: () = cmd("DEL").arg(&key).query(&mut conn)?;
+        let remove_key = key.clone();
+        self.spawn(
+            cx,
+            "delete_key",
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let _: () = cmd("DEL").arg(&key).query_async(&mut conn).await?;
                 Ok(())
-            });
-            let result: Result<(), Error> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(()) => {
-                        this.keys.remove(&remove_key);
-                        this.key_tree_id = Uuid::now_v7().to_string();
-                        this.key = None;
-                    }
-                    Err(e) => {
-                        this.add_error_message("delete_key".to_string(), e.to_string());
-                        error!(error = %e, "delete key fail");
-                    }
-                };
+            },
+            move |this, result, cx| {
+                if let Ok(()) = result {
+                    this.keys.remove(&remove_key);
+                    this.key_tree_id = Uuid::now_v7().to_string();
+                    this.key = None;
+                }
                 this.deleting = false;
                 cx.notify();
-            })
-        })
-        .detach();
+            },
+        );
     }
     pub fn save_value(&mut self, key: String, value: String, cx: &mut Context<Self>) {
         let server = self.server.clone();
         self.updating = true;
         cx.notify();
         self.last_operated_at = unix_ts();
-        cx.spawn(async move |handle, cx| {
-            let update_value = value.clone();
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
-                let mut conn = client.get_connection()?;
-                let _: () = cmd("SET").arg(&key).arg(&value).query(&mut conn)?;
-                Ok(())
-            });
-            let result: Result<(), Error> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(()) => {
-                        if let Some(value) = this.value.as_mut() {
-                            value.size = update_value.len();
-                            value.data = Some(RedisValueData::String(update_value));
-                        }
-                    }
-                    Err(e) => {
-                        this.add_error_message("save_value".to_string(), e.to_string());
-                        error!(error = %e, "save key fail");
-                    }
-                };
+        self.spawn(
+            cx,
+            "save_value",
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let _: () = cmd("SET")
+                    .arg(&key)
+                    .arg(&value)
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(value)
+            },
+            move |this, result, cx| {
+                if let Ok(update_value) = result
+                    && let Some(value) = this.value.as_mut()
+                {
+                    value.size = update_value.len();
+                    value.data = Some(RedisValueData::String(update_value));
+                }
                 this.updating = false;
                 cx.notify();
-            })
-        })
-        .detach();
+            },
+        );
     }
     pub fn load_more_list_value(&mut self, cx: &mut Context<Self>) {
         let key = self.key.clone().unwrap_or_default();
@@ -841,35 +829,28 @@ impl ZedisServerState {
         }
         let server = self.server.clone();
         self.last_operated_at = unix_ts();
-        cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server)?;
-                let mut conn = client.get_connection()?;
-                let value = get_redis_list_value(&mut conn, &key, offset, 100)?;
+        self.spawn(
+            cx,
+            "load_more_list_value",
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let value = get_redis_list_value(&mut conn, &key, offset, 100).await?;
                 Ok(value)
-            });
-            let result: Result<Vec<String>> = task.await;
-            handle.update(cx, move |this, cx| {
-                match result {
-                    Ok(values) => {
-                        if let Some(value) = this.value.as_mut() {
-                            let Some(RedisValueData::List(data)) = value.data.as_ref() else {
-                                return;
-                            };
-                            // 加载的时候复制了多一次，后续研究优化
-                            let mut new_values = data.1.clone();
-                            new_values.extend(values);
-                            value.data = Some(RedisValueData::List(Arc::new((data.0, new_values))));
-                        }
-                    }
-                    Err(e) => {
-                        this.add_error_message("load_more_list_value".to_string(), e.to_string());
-                        error!(error = %e, "load more list value fail");
-                    }
-                };
+            },
+            move |this, result, cx| {
+                if let Ok(values) = result
+                    && let Some(value) = this.value.as_mut()
+                {
+                    let Some(RedisValueData::List(data)) = value.data.as_ref() else {
+                        return;
+                    };
+                    // 加载的时候复制了多一次，后续研究优化
+                    let mut new_values = data.1.clone();
+                    new_values.extend(values);
+                    value.data = Some(RedisValueData::List(Arc::new((data.0, new_values))));
+                }
                 cx.notify();
-            })
-        })
-        .detach();
+            },
+        );
     }
 }

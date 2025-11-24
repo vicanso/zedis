@@ -66,20 +66,17 @@ impl Render for ZedisSidebar {
                 };
                 let is_current = server_name == current_server;
                 ListItem::new(("sidebar-redis-server", index))
-                    .when(is_current, |this| this.bg(cx.theme().muted_foreground))
+                    .when(is_current, |this| this.bg(cx.theme().list_active))
                     .py_2()
+                    .border_r_2()
+                    .when(is_current, |this| {
+                        this.border_color(cx.theme().list_active_border)
+                    })
                     .child(
                         v_flex()
                             .items_center()
                             .child(Icon::new(IconName::LayoutDashboard))
-                            .child(
-                                Label::new(name)
-                                    .text_ellipsis()
-                                    .text_xs()
-                                    .when(!is_current, |this| {
-                                        this.text_color(cx.theme().muted_foreground)
-                                    }),
-                            ),
+                            .child(Label::new(name).text_ellipsis().text_xs()),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if is_current {

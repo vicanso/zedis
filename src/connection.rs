@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod async_connection;
 mod config;
 mod manager;
 
+pub use async_connection::RedisAsyncConn;
 pub use config::{RedisServer, get_servers, save_servers};
-pub use manager::RedisConn;
 pub use manager::get_connection_manager;
