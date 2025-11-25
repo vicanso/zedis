@@ -20,6 +20,7 @@ use crate::error::Error;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
+use futures::{StreamExt, stream};
 use gpui::Hsla;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
@@ -508,17 +509,24 @@ impl ZedisServerState {
             cx,
             "fill_key_types",
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
-                let mut types = Vec::with_capacity(keys.len());
-                for key in keys.iter().take(1000) {
-                    // 如果失败则忽略
-                    let t: String = cmd("TYPE")
-                        .arg(key)
-                        .query_async(&mut conn)
-                        .await
-                        .unwrap_or_default();
-                    types.push(t);
-                }
+                let conn = get_connection_manager().get_connection(&server).await?;
+                // run task stream
+                let types: Vec<String> = stream::iter(keys.iter().cloned())
+                    .map(|key| {
+                        let mut conn_clone = conn.clone();
+                        let key = key.clone();
+                        async move {
+                            let t: String = cmd("TYPE")
+                                .arg(key)
+                                .query_async(&mut conn_clone)
+                                .await
+                                .unwrap_or_default();
+                            t.to_string()
+                        }
+                    })
+                    .buffer_unordered(100)
+                    .collect::<Vec<_>>()
+                    .await;
                 Ok(types)
             },
             move |this, result, cx| {
@@ -779,6 +787,37 @@ impl ZedisServerState {
                     this.key = None;
                 }
                 this.deleting = false;
+                cx.notify();
+            },
+        );
+    }
+    pub fn update_value_ttl(&mut self, key: String, ttl: String, cx: &mut Context<Self>) {
+        let server = self.server.clone();
+        self.updating = true;
+        cx.notify();
+        self.last_operated_at = unix_ts();
+        self.spawn(
+            cx,
+            "update_value_ttl",
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid {
+                    message: e.to_string(),
+                })?;
+                let _: () = cmd("EXPIRE")
+                    .arg(&key)
+                    .arg(ttl.as_secs())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(ttl)
+            },
+            move |this, result, cx| {
+                if let Ok(ttl) = result
+                    && let Some(value) = this.value.as_mut()
+                {
+                    value.expire_at = Some(unix_ts() + ttl.as_secs());
+                }
+                this.updating = false;
                 cx.notify();
             },
         );

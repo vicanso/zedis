@@ -245,12 +245,14 @@ impl ZedisKeyTree {
     }
     fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let scaning = self.server_state.read(cx).scaning();
-        div()
+        h_flex()
             .p_2()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
                 Input::new(&self.keyword_state)
+                    .w_full()
+                    .flex_1()
                     .suffix(
                         Button::new("key-tree-search-btn")
                             .ghost()

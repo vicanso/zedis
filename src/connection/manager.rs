@@ -210,9 +210,6 @@ impl RedisClient {
             }
         }
     }
-    fn is_cluster(&self) -> bool {
-        self.server_type == ServerType::Cluster
-    }
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
         let addrs: Vec<_> = self
             .master_nodes
@@ -241,10 +238,6 @@ impl RedisClient {
         let (cursors, keys) = self.scan(cursors, pattern, count).await?;
         Ok((cursors, keys))
     }
-    // pub fn get<T: FromRedisValue>(&self, key: &str) -> Result<Option<T>> {
-    //     let value = self.get_connection()?.get(key)?;
-    //     Ok(value)
-    // }
     pub async fn scan(
         &self,
         cursors: Vec<u64>,

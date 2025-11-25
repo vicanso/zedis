@@ -23,6 +23,7 @@ use gpui::px;
 use gpui::size;
 use gpui_component::ActiveTheme;
 use gpui_component::Root;
+use gpui_component::Theme;
 use gpui_component::h_flex;
 use gpui_component::resizable::ResizableState;
 use gpui_component::resizable::h_resizable;
@@ -277,6 +278,9 @@ fn main() {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
+        if let Some(theme) = app_state.theme() {
+            Theme::change(theme, None, cx);
+        }
         cx.activate(true);
         let window_bounds = if let Some(bounds) = app_state.bounds() {
             info!(bounds = ?bounds, "get window bounds from setting");
@@ -305,6 +309,7 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(window_bounds)),
                     show: true,
+                    window_min_size: Some(size(px(600.), px(400.))),
                     ..Default::default()
                 },
                 |window, cx| {

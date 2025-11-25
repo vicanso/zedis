@@ -17,6 +17,7 @@ use crate::helpers::get_or_create_config_dir;
 use gpui::Bounds;
 use gpui::Pixels;
 use gpui::prelude::*;
+use gpui_component::ThemeMode;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -29,6 +30,9 @@ pub enum Route {
     Home,
     Editor,
 }
+
+const LIGHT_THEME_MODE: &str = "light";
+const DARK_THEME_MODE: &str = "dark";
 
 fn get_or_create_server_config() -> Result<PathBuf> {
     let config_dir = get_or_create_config_dir()?;
@@ -45,6 +49,7 @@ pub struct ZedisAppState {
     route: Route,
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
+    theme: Option<String>,
 }
 
 pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
@@ -88,7 +93,27 @@ impl ZedisAppState {
             cx.notify();
         }
     }
+    pub fn theme(&self) -> Option<ThemeMode> {
+        match self.theme.as_deref() {
+            Some(LIGHT_THEME_MODE) => Some(ThemeMode::Light),
+            Some(DARK_THEME_MODE) => Some(ThemeMode::Dark),
+            _ => None,
+        }
+    }
     pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
         self.bounds = Some(bounds);
+    }
+    pub fn set_theme(&mut self, theme: Option<ThemeMode>) {
+        match theme {
+            Some(ThemeMode::Light) => {
+                self.theme = Some(LIGHT_THEME_MODE.to_string());
+            }
+            Some(ThemeMode::Dark) => {
+                self.theme = Some(DARK_THEME_MODE.to_string());
+            }
+            _ => {
+                self.theme = None;
+            }
+        }
     }
 }

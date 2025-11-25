@@ -2,6 +2,15 @@
 name = "zedis"
 version = "0.1.0"
 edition = "2024"
+authors = ["Tree Xie <tree.xie@outlook.com>"]
+categories = ["database"]
+keywords = ["redis manager", "gpui", "redis client"]
+description = "A blazing-fast, native Redis GUI built with Rust and GPUI."
+license = "Apache-2.0"
+homepage = "https://github.com/vicanso/zedis"
+repository = "https://github.com/vicanso/zedis"
+exclude = ["test/*", "Cargo.lock"]
+readme = "./README.md"
 
 [dependencies]
 ahash = "0.8.12"
@@ -9,6 +18,7 @@ anyhow = "1.0.100"
 async-trait = "0.1.89"
 chrono = "0.4.42"
 dashmap = "6.1.0"
+futures = "0.3.31"
 gpui = "0.2.2"
 gpui-component = "0.4.1"
 gpui-component-assets = "0.4.1"
@@ -19,13 +29,14 @@ humantime = "2.3.0"
 lsp-types = "0.97.0"
 parking_lot = "0.12.5"
 pretty-hex = "0.4.1"
-redis = { version = "1.0.0-rc.3", features = [
+redis = { version = "1.0.0-rc.4", features = [
     "cluster",
     "cluster-async",
     "smol-comp",
     "aio",
 ] }
 rust-embed = "8.9.0"
+schemars = "1.1.0"
 serde = "1.0.228"
 serde_json = "1.0.145"
 smol = "2.0.2"

@@ -22,6 +22,7 @@ use gpui::Entity;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
+use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::Colorize;
 use gpui_component::Icon;
@@ -205,7 +206,18 @@ impl ZedisServers {
 }
 
 impl Render for ZedisServers {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let width = window.viewport_size().width;
+        let cols = match width {
+            width if width < px(800.) => 1,
+            width if width < px(1200.) => 2,
+            _ => 3,
+        };
+        let bg = if cx.theme().is_dark() {
+            cx.theme().background.lighten(1.0)
+        } else {
+            cx.theme().background.darken(0.02)
+        };
         let children: Vec<_> = self
             .server_state
             .read(cx)
@@ -227,7 +239,7 @@ impl Render for ZedisServers {
                 Card::new(("servers-card", index))
                     .icon(Icon::new(CustomIconName::DatabaseZap))
                     .title(title)
-                    .bg(cx.theme().background.lighten(1.0))
+                    .bg(bg)
                     .when(!description.is_empty(), |this| {
                         this.description(description)
                     })
@@ -273,7 +285,7 @@ impl Render for ZedisServers {
 
         div()
             .grid()
-            .grid_cols(3)
+            .grid_cols(cols)
             .gap_1()
             .w_full()
             .children(children)
@@ -281,7 +293,7 @@ impl Render for ZedisServers {
                 Card::new("servers-card-add")
                     .icon(IconName::Plus)
                     .title("Add")
-                    .bg(cx.theme().background.lighten(1.0))
+                    .bg(bg)
                     .description("Add a new redis server")
                     .actions(vec![
                         Button::new("add")

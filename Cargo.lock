@@ -4550,9 +4550,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e3c1983f96fe1aa42d3e75d6eedc0374ba45f784fb86f130e2c8dac95817471"
+checksum = "5d22b875ec205873a92d32994685b731b1429e95dd66d0577591e6aec4fbdd0f"
 dependencies = [
  "arcstr",
  "async-io",
@@ -7704,6 +7704,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "futures",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -7716,6 +7717,7 @@ dependencies = [
  "pretty-hex",
  "redis",
  "rust-embed",
+ "schemars",
  "serde",
  "serde_json",
  "smol",

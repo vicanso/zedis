@@ -10,3 +10,12 @@ dev:
 
 release:
 	cargo bundle --release 
+
+udeps:
+	cargo +nightly udeps
+
+msrv:
+	cargo msrv list
+
+bloat:
+	cargo bloat --release --crates --bin zedis

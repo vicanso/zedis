@@ -25,6 +25,7 @@ use redis::{FromRedisValue, Value};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[derive(Clone)]
 pub enum RedisAsyncConn {
     Single(MultiplexedConnection),
     Cluster(ClusterConnection),

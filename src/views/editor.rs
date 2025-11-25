@@ -18,11 +18,17 @@ use crate::views::ZedisListEditor;
 use crate::views::ZedisStringEditor;
 use gpui::ClipboardItem;
 use gpui::Entity;
+use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
+use gpui::px;
+use gpui_component::Icon;
 use gpui_component::button::Button;
 use gpui_component::h_flex;
+use gpui_component::input::Input;
+use gpui_component::input::InputEvent;
+use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::notification::Notification;
 use gpui_component::v_flex;
@@ -32,25 +38,73 @@ use humansize::{DECIMAL, format_size};
 use std::time::Duration;
 use tracing::debug;
 
+const PERM: &str = "Perm";
+
 pub struct ZedisEditor {
     server_state: Entity<ZedisServerState>,
 
     // editors
     list_editor: Option<Entity<ZedisListEditor>>,
     string_editor: Option<Entity<ZedisStringEditor>>,
+    // state
+    ttl_edit_mode: bool,
+    ttl_input_state: Entity<InputState>,
+
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisEditor {
     pub fn new(
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
+        let mut subscriptions = vec![];
+        let input = cx.new(|cx| InputState::new(window, cx).clean_on_escape());
+
+        subscriptions.push(
+            cx.subscribe_in(
+                &input,
+                window,
+                |view, _state, event, window, cx| match &event {
+                    InputEvent::PressEnter { .. } => {
+                        view.handle_update_ttl(window, cx);
+                    }
+                    InputEvent::Blur => {
+                        view.ttl_edit_mode = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
+        );
+
         Self {
             server_state,
             list_editor: None,
             string_editor: None,
+            ttl_edit_mode: false,
+            ttl_input_state: input,
+            _subscriptions: subscriptions,
         }
+    }
+    fn handle_update_ttl(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let key = self
+            .server_state
+            .clone()
+            .read(cx)
+            .key()
+            .map(|key| key.to_string())
+            .unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        self.ttl_edit_mode = false;
+        let ttl = self.ttl_input_state.read(cx).value().to_string();
+        self.server_state.update(cx, move |state, cx| {
+            state.update_value_ttl(key, ttl, cx);
+        });
+        cx.notify();
     }
 
     fn delete_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -78,58 +132,120 @@ impl ZedisEditor {
         let Some(key) = server_state.key().map(|key| key.to_string()) else {
             return h_flex();
         };
-        let mut labels = vec![];
+        let mut btns = vec![];
+        let mut ttl = "".to_string();
+        let mut size = "".to_string();
         if let Some(value) = server_state.value() {
-            let ttl = if let Some(ttl) = value.ttl() {
+            ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
                 if seconds < 0 {
-                    "Perm".to_string()
+                    PERM.to_string()
                 } else {
                     humantime::format_duration(Duration::from_secs(seconds as u64)).to_string()
                 }
             } else {
                 "--".to_string()
-            };
-            let ttl = ttl
-                .split_whitespace()
-                .take(2)
-                .collect::<Vec<&str>>()
-                .join(" ");
-            let size = format_size(value.size() as u64, DECIMAL);
-            labels.push(Label::new(format!("size : {size}")).mr_2().text_sm());
-            labels.push(Label::new(format!("ttl : {ttl}",)).text_sm());
+            }
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<&str>>()
+            .join(" ");
+            size = format_size(value.size() as u64, DECIMAL);
         }
-        let content = key.clone();
+        if !size.is_empty() {
+            btns.push(
+                Label::new(format!("size : {size}"))
+                    .ml_2()
+                    .text_sm()
+                    .into_any_element(),
+            );
+        }
 
-        let save_btn = if let Some(string_editor) = &self.string_editor {
+        debug!("string editor:{}", self.string_editor.is_some());
+        if let Some(string_editor) = &self.string_editor {
             let value_modified = string_editor.read(cx).is_value_modified();
-            Button::new("zedis-editor-save-key")
-                .disabled(!value_modified || server_state.updating())
-                .loading(server_state.updating())
-                .outline()
-                .tooltip("Save data")
-                .ml_2()
-                .icon(CustomIconName::FileCheckCorner)
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    let Some(key) = this.server_state.read(cx).key().map(|key| key.to_string())
-                    else {
-                        return;
-                    };
-                    let Some(editor) = this.string_editor.as_ref() else {
-                        return;
-                    };
-                    editor.clone().update(cx, move |state, cx| {
-                        let value = state.value(cx);
-                        this.server_state.update(cx, move |state, cx| {
-                            state.save_value(key, value, cx);
+            btns.push(
+                Button::new("zedis-editor-save-key")
+                    .ml_2()
+                    .disabled(!value_modified || server_state.updating())
+                    .loading(server_state.updating())
+                    .outline()
+                    .tooltip("Save data")
+                    .ml_2()
+                    .icon(CustomIconName::FileCheckCorner)
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        let Some(key) = this.server_state.read(cx).key().map(|key| key.to_string())
+                        else {
+                            return;
+                        };
+                        let Some(editor) = this.string_editor.as_ref() else {
+                            return;
+                        };
+                        editor.clone().update(cx, move |state, cx| {
+                            let value = state.value(cx);
+                            this.server_state.update(cx, move |state, cx| {
+                                state.save_value(key, value, cx);
+                            });
                         });
-                    });
-                }))
-                .into_any_element()
-        } else {
-            div().into_any_element()
-        };
+                    }))
+                    .into_any_element(),
+            );
+        }
 
+        if !ttl.is_empty() {
+            let ttl_btn = if self.ttl_edit_mode {
+                Input::new(&self.ttl_input_state)
+                    .ml_2()
+                    .max_w(px(150.))
+                    .suffix(
+                        Button::new("zedis-editor-ttl-update-btn")
+                            .icon(Icon::new(IconName::Check))
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                this.handle_update_ttl(window, cx);
+                            })),
+                    )
+                    .into_any_element()
+            } else {
+                Button::new("zedis-editor-ttl-btn")
+                    .ml_2()
+                    .label(ttl.clone())
+                    .icon(Icon::new(CustomIconName::Clock3))
+                    .text_sm()
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        let ttl = ttl.clone();
+                        this.ttl_edit_mode = true;
+                        this.ttl_input_state.update(cx, move |state, cx| {
+                            let value = if ttl == PERM {
+                                "".to_string()
+                            } else {
+                                ttl.clone()
+                            };
+                            state.set_value(value, window, cx);
+                            state.focus(window, cx);
+                        });
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            };
+            btns.push(ttl_btn);
+        }
+
+        btns.push(
+            Button::new("zedis-editor-delete-key")
+                .ml_2()
+                .outline()
+                .loading(server_state.deleting())
+                .disabled(server_state.deleting())
+                .tooltip("Delete key")
+                .icon(IconName::CircleX)
+                .ml_2()
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.delete_key(window, cx);
+                }))
+                .into_any_element(),
+        );
+
+        let content = key.clone();
         h_flex()
             .p_2()
             .border_b_1()
@@ -159,20 +275,7 @@ impl ZedisEditor {
                     .mx_2()
                     .child(Label::new(key).text_ellipsis().whitespace_nowrap()),
             )
-            .children(labels)
-            .child(save_btn)
-            .child(
-                Button::new("zedis-editor-delete-key")
-                    .outline()
-                    .loading(server_state.deleting())
-                    .disabled(server_state.deleting())
-                    .tooltip("Delete key")
-                    .icon(IconName::CircleX)
-                    .ml_2()
-                    .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.delete_key(window, cx);
-                    })),
-            )
+            .children(btns)
     }
     fn reset_editors(&mut self, key_type: KeyType) {
         if key_type != KeyType::String {
@@ -210,6 +313,13 @@ impl ZedisEditor {
                     let string_editor =
                         cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()));
                     self.string_editor = Some(string_editor.clone());
+                    let string_editor_entity = string_editor.clone();
+                    cx.spawn(async move |_this, cx| {
+                        string_editor_entity.update(cx, move |_state, cx| {
+                            cx.notify();
+                        })
+                    })
+                    .detach();
                     string_editor
                 };
                 editor.into_any_element()
