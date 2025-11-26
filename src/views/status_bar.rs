@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::states::ZedisAppState;
 use crate::states::ZedisServerState;
+use crate::states::i18n_status_bar;
 use gpui::Entity;
+use gpui::Task;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui_component::ActiveTheme;
@@ -26,22 +27,39 @@ use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
+use std::time::Duration;
 
 pub struct ZedisStatusBar {
-    app_state: Entity<ZedisAppState>,
     server_state: Entity<ZedisServerState>,
+    heartbeat_task: Option<Task<()>>,
 }
 impl ZedisStatusBar {
     pub fn new(
         _window: &mut Window,
-        _cx: &mut Context<Self>,
-        app_state: Entity<ZedisAppState>,
+        cx: &mut Context<Self>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
-        Self {
+        let mut this = Self {
             server_state,
-            app_state,
-        }
+            heartbeat_task: None,
+        };
+        this.start_heartbeat(cx);
+        this
+    }
+
+    fn start_heartbeat(&mut self, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+        // start task
+        self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+                let _ = server_state.update(cx, |state, cx| {
+                    state.ping(cx);
+                });
+            }
+        }));
     }
 
     fn render_server_status(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -67,7 +85,11 @@ impl ZedisStatusBar {
             } else {
                 theme.red
             };
-            (color, format!("{:.2}s", ms as f64 / 1000.0))
+            if ms < 1000 {
+                (color, format!("{ms}ms"))
+            } else {
+                (color, format!("{:.2}s", ms as f64 / 1000.0))
+            }
         } else {
             (cx.theme().primary, "--".to_string())
         };
@@ -80,9 +102,9 @@ impl ZedisStatusBar {
                     .small()
                     .disabled(is_completed)
                     .tooltip(if is_completed {
-                        "Scan completed"
+                        i18n_status_bar(cx, "scan_completed").to_string()
                     } else {
-                        "Scan more keys"
+                        i18n_status_bar(cx, "scan_more_keys").to_string()
                     })
                     .mr_1()
                     .icon(CustomIconName::ChevronsDown)
@@ -92,17 +114,19 @@ impl ZedisStatusBar {
                         });
                     })),
             )
-            .child(Label::new(format!(": {text}")).mr_4())
+            .child(Label::new(text).mr_4())
             .child(
-                Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
-                    .text_color(cx.theme().primary)
-                    .mr_1(),
+                Button::new("zedis-status-bar-letency")
+                    .ghost()
+                    .disabled(true)
+                    .tooltip(i18n_status_bar(cx, "latency").to_string())
+                    .icon(
+                        Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
+                            .text_color(cx.theme().primary)
+                            .mr_1(),
+                    ),
             )
-            .child(
-                h_flex()
-                    .child(Label::new(":").mx_1())
-                    .child(Label::new(latency_text).text_color(color)),
-            )
+            .child(Label::new(latency_text).text_color(color))
     }
 
     fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

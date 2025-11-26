@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod about;
 mod editor;
 mod key_tree;
 mod list_editor;
@@ -20,6 +21,7 @@ mod sidebar;
 mod status_bar;
 mod string_editor;
 
+pub use about::open_about_window;
 pub use editor::ZedisEditor;
 pub use key_tree::ZedisKeyTree;
 pub use list_editor::ZedisListEditor;

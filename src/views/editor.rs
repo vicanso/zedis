@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::states::ZedisGlobalStore;
+use crate::states::i18n_editor;
 use crate::states::{KeyType, ZedisServerState};
 use crate::views::ZedisListEditor;
 use crate::views::ZedisStringEditor;
@@ -35,10 +37,11 @@ use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, IconName};
 use gpui_component::{Disableable, WindowExt};
 use humansize::{DECIMAL, format_size};
+use rust_i18n::t;
 use std::time::Duration;
 use tracing::debug;
 
-const PERM: &str = "Perm";
+const PERM: &str = "perm";
 
 pub struct ZedisEditor {
     server_state: Entity<ZedisServerState>,
@@ -113,8 +116,9 @@ impl ZedisEditor {
         };
         let key = key.to_string();
         let server_state = self.server_state.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let message = format!("Are you sure you want to delete this key: {key}?");
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+            let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
             let server_state = server_state.clone();
             let key = key.clone();
             dialog.confirm().child(message).on_ok(move |_, window, cx| {
@@ -139,7 +143,7 @@ impl ZedisEditor {
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
                 if seconds < 0 {
-                    PERM.to_string()
+                    i18n_editor(cx, "perm").to_string()
                 } else {
                     humantime::format_duration(Duration::from_secs(seconds as u64)).to_string()
                 }
@@ -152,9 +156,10 @@ impl ZedisEditor {
             .join(" ");
             size = format_size(value.size() as u64, DECIMAL);
         }
+        let size_label = i18n_editor(cx, "size").to_string();
         if !size.is_empty() {
             btns.push(
-                Label::new(format!("size : {size}"))
+                Label::new(format!("{size_label} : {size}"))
                     .ml_2()
                     .text_sm()
                     .into_any_element(),
@@ -170,7 +175,7 @@ impl ZedisEditor {
                     .disabled(!value_modified || server_state.updating())
                     .loading(server_state.updating())
                     .outline()
-                    .tooltip("Save data")
+                    .tooltip(i18n_editor(cx, "save_data_tooltip").to_string())
                     .ml_2()
                     .icon(CustomIconName::FileCheckCorner)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -236,7 +241,7 @@ impl ZedisEditor {
                 .outline()
                 .loading(server_state.deleting())
                 .disabled(server_state.deleting())
-                .tooltip("Delete key")
+                .tooltip(i18n_editor(cx, "delete_key_tooltip").to_string())
                 .icon(IconName::CircleX)
                 .ml_2()
                 .on_click(cx.listener(move |this, _event, window, cx| {
@@ -255,13 +260,15 @@ impl ZedisEditor {
             .child(
                 Button::new("zedis-editor-copy-key")
                     .outline()
-                    .tooltip("Copy key")
+                    .tooltip(i18n_editor(cx, "copy_key_tooltip").to_string())
                     .icon(IconName::Copy)
                     .on_click(cx.listener(move |_this, _event, window, cx| {
                         let content = content.clone();
                         cx.write_to_clipboard(ClipboardItem::new_string(content));
                         window.push_notification(
-                            Notification::info("Copied the key to clipboard"),
+                            Notification::info(
+                                i18n_editor(cx, "copied_key_to_clipboard").to_string(),
+                            ),
                             cx,
                         );
                     })),

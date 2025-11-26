@@ -14,6 +14,7 @@
 
 use crate::states::KeyType;
 use crate::states::ZedisServerState;
+use crate::states::i18n_key_tree;
 use ahash::AHashSet;
 use gpui::AppContext;
 use gpui::Entity;
@@ -66,7 +67,7 @@ impl ZedisKeyTree {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder("Filter keys by keyword")
+                .placeholder(i18n_key_tree(cx, "filter_placeholder").to_string())
         });
         subscriptions.push(
             cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
@@ -129,7 +130,7 @@ impl ZedisKeyTree {
             let text = self
                 .error
                 .clone()
-                .unwrap_or_else(|| "No keys found".to_string());
+                .unwrap_or_else(|| i18n_key_tree(cx, "no_keys_found").to_string());
             return div()
                 .h_flex()
                 .w_full()
@@ -256,7 +257,7 @@ impl ZedisKeyTree {
                     .suffix(
                         Button::new("key-tree-search-btn")
                             .ghost()
-                            .tooltip("Search keys")
+                            .tooltip(i18n_key_tree(cx, "search_tooltip").to_string())
                             .loading(scaning)
                             .disabled(scaning)
                             .icon(IconName::Search)

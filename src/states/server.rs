@@ -657,6 +657,29 @@ impl ZedisServerState {
             },
         );
     }
+    pub fn ping(&mut self, cx: &mut Context<Self>) {
+        if self.server.is_empty() {
+            return;
+        }
+        let server = self.server.clone();
+        self.spawn(
+            cx,
+            "ping",
+            move || async move {
+                let client = get_connection_manager().get_client(&server).await?;
+                let start = Instant::now();
+                client.ping().await?;
+                Ok(start.elapsed())
+            },
+            move |this, result, cx| {
+                if let Ok(latency) = result {
+                    println!("latency: {:?}", latency);
+                    this.latency = Some(latency);
+                };
+                cx.notify();
+            },
+        );
+    }
     pub fn select(&mut self, server: &str, cx: &mut Context<Self>) {
         if self.server != server {
             self.reset();

@@ -1,0 +1,44 @@
+[sidebar]
+home = "首页"
+theme = "主题"
+lang = "语言"
+light = "亮色"
+dark = "深色"
+system = "跟随系统"
+star = "Star 项目"
+settings = "设置"
+
+
+[servers]
+remove_prompt = "您确定要删除此redis服务器：%{server}吗？"
+add_server_title = "添加服务器"
+update_server_title = "更新服务器"
+name = "名称"
+host = "主机"
+port = "端口"
+password = "密码"
+description = "描述"
+submit = "提交"
+cancel = "取消"
+update_tooltip = "更新 Redis 服务器"
+remove_tooltip = "移除 Redis 服务器"
+add_server_description = "添加一个新的 Redis 服务器"
+
+[editor]
+perm = "永久有效"
+delete_key_prompt = "您确定要删除此redis键：%{key}吗？"
+size = "大小"
+save_data_tooltip = "保存数据"
+delete_key_tooltip = "删除键"
+copy_key_tooltip = "复制键"
+copied_key_to_clipboard = "已将键复制到剪贴板"
+
+[key_tree]
+filter_placeholder = "按关键字过滤键"
+no_keys_found = "未找到键"
+search_tooltip = "搜索键"
+
+[status_bar]
+latency = "延迟"
+scan_completed = "扫描完成"
+scan_more_keys = "扫描更多键"

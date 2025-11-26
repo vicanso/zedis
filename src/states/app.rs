@@ -14,10 +14,15 @@
 
 use crate::error::Error;
 use crate::helpers::get_or_create_config_dir;
+use gpui::App;
+use gpui::AppContext;
 use gpui::Bounds;
+use gpui::Context;
+use gpui::Entity;
+use gpui::Global;
 use gpui::Pixels;
-use gpui::prelude::*;
 use gpui_component::ThemeMode;
+use locale_config::Locale;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -47,10 +52,46 @@ fn get_or_create_server_config() -> Result<PathBuf> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
+    locale: Option<String>,
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
     theme: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct ZedisGlobalStore {
+    app_state: Entity<ZedisAppState>,
+}
+
+impl ZedisGlobalStore {
+    pub fn new(app_state: Entity<ZedisAppState>) -> Self {
+        Self { app_state }
+    }
+    pub fn state(&self) -> Entity<ZedisAppState> {
+        self.app_state.clone()
+    }
+    pub fn value(&self, cx: &App) -> ZedisAppState {
+        self.app_state.read(cx).clone()
+    }
+    pub fn locale<'a>(&self, cx: &'a App) -> &'a str {
+        self.app_state.read(cx).locale.as_deref().unwrap_or("en")
+    }
+    pub fn theme(&self, cx: &App) -> Option<ThemeMode> {
+        self.app_state.read(cx).theme()
+    }
+    pub fn update<R, C: AppContext>(
+        &self,
+        cx: &mut C,
+        update: impl FnOnce(&mut ZedisAppState, &mut Context<ZedisAppState>) -> R,
+    ) -> C::Result<R> {
+        self.app_state.update(cx, update)
+    }
+    pub fn read<'a>(&self, cx: &'a App) -> &'a ZedisAppState {
+        self.app_state.read(cx)
+    }
+}
+
+impl Global for ZedisGlobalStore {}
 
 pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
     let path = get_or_create_server_config()?;
@@ -64,7 +105,11 @@ impl ZedisAppState {
         let path = get_or_create_server_config()?;
         let value = std::fs::read_to_string(path)?;
         let mut state: Self = toml::from_str(&value)?;
-        // TODO 暂时不支持指定route，后续修改
+        if state.locale.clone().unwrap_or_default().is_empty()
+            && let Some((lang, _)) = Locale::current().to_string().split_once("-")
+        {
+            state.locale = Some(lang.to_string());
+        }
         state.route = Route::Home;
 
         Ok(state)
@@ -74,7 +119,6 @@ impl ZedisAppState {
             ..Default::default()
         }
     }
-
     pub fn key_tree_width(&self) -> Pixels {
         self.key_tree_width
     }
@@ -87,13 +131,12 @@ impl ZedisAppState {
     pub fn bounds(&self) -> Option<&Bounds<Pixels>> {
         self.bounds.as_ref()
     }
-    pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
+    pub fn go_to(&mut self, route: Route) {
         if self.route != route {
             self.route = route;
-            cx.notify();
         }
     }
-    pub fn theme(&self) -> Option<ThemeMode> {
+    fn theme(&self) -> Option<ThemeMode> {
         match self.theme.as_deref() {
             Some(LIGHT_THEME_MODE) => Some(ThemeMode::Light),
             Some(DARK_THEME_MODE) => Some(ThemeMode::Dark),
@@ -115,5 +158,8 @@ impl ZedisAppState {
                 self.theme = None;
             }
         }
+    }
+    pub fn set_locale(&mut self, locale: String) {
+        self.locale = Some(locale);
     }
 }

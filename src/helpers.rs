@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod action;
 mod fs;
 
+pub use action::{MemuAction, new_hot_keys};
 pub use fs::get_or_create_config_dir;

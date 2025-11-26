@@ -3177,6 +3177,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
+name = "locale_config"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d2c35b16f4483f6c26f0e4e9550717a2f6575bcd6f12a53ff0c490a94a6934"
+dependencies = [
+ "lazy_static",
+ "objc",
+ "objc-foundation",
+ "regex",
+ "winapi",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7712,11 +7725,13 @@ dependencies = [
  "home",
  "humansize",
  "humantime",
+ "locale_config",
  "lsp-types",
  "parking_lot",
  "pretty-hex",
  "redis",
  "rust-embed",
+ "rust-i18n",
  "schemars",
  "serde",
  "serde_json",

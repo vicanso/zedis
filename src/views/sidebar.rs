@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::states::Route;
-use crate::states::ZedisAppState;
+use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
+use crate::states::i18n_sidebar;
 use crate::states::save_app_state;
 use gpui::Action;
 use gpui::Axis;
@@ -43,27 +44,28 @@ use tracing::error;
 use tracing::info;
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-pub enum ThemeAction {
+enum ThemeAction {
     Light,
     Dark,
     System,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+enum LocaleAction {
+    En,
+    Zh,
+}
+
 pub struct ZedisSidebar {
     server_state: Entity<ZedisServerState>,
-    app_state: Entity<ZedisAppState>,
 }
 impl ZedisSidebar {
     pub fn new(
         _window: &mut Window,
         _cx: &mut Context<Self>,
-        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
-        Self {
-            server_state,
-            app_state,
-        }
+        Self { server_state }
     }
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut server_list = vec!["".to_string()];
@@ -78,7 +80,7 @@ impl ZedisSidebar {
             .map(|(index, server_name)| {
                 let server_name = server_name.clone();
                 let name = if server_name.is_empty() {
-                    "home".to_string()
+                    i18n_sidebar(cx, "home").to_string()
                 } else {
                     server_name.clone()
                 };
@@ -105,8 +107,11 @@ impl ZedisSidebar {
                         } else {
                             Route::Editor
                         };
-                        this.app_state.update(cx, |state, cx| {
-                            state.go_to(route, cx);
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, _cx| {
+                                state.go_to(route);
+                            });
+                            cx.notify();
                         });
                         this.server_state.update(cx, |state, cx| {
                             state.select(&server_name, cx);
@@ -117,33 +122,61 @@ impl ZedisSidebar {
         v_flex().flex_1().children(server_elements)
     }
     fn render_settings_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_action = match self.app_state.read(cx).theme() {
+        let current_action = match cx.global::<ZedisGlobalStore>().theme(cx) {
             Some(ThemeMode::Light) => ThemeAction::Light,
             Some(ThemeMode::Dark) => ThemeAction::Dark,
             _ => ThemeAction::System,
         };
+        let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+        let current_locale = match locale {
+            "zh" => LocaleAction::Zh,
+            _ => LocaleAction::En,
+        };
+
         let btn = Button::new("zedis-sidebar-setting-btn")
             .ghost()
             .w_full()
             .h(px(60.))
+            .tooltip(i18n_sidebar(cx, "settings").to_string())
             .child(Icon::new(IconName::Settings).size(px(18.)))
             .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
-                menu.submenu("Theme", window, cx, move |submenu, _window, _cx| {
+                let theme_text = i18n_sidebar(cx, "theme").to_string();
+                let lang_text = i18n_sidebar(cx, "lang").to_string();
+                menu.submenu(theme_text, window, cx, move |submenu, _window, _cx| {
                     submenu
                         .menu_element_with_check(
                             current_action == ThemeAction::Light,
                             Box::new(ThemeAction::Light),
-                            |_window, _cx| Label::new("Light").text_xs(),
+                            |_window, cx| {
+                                Label::new(i18n_sidebar(cx, "light").to_string()).text_xs()
+                            },
                         )
                         .menu_element_with_check(
                             current_action == ThemeAction::Dark,
                             Box::new(ThemeAction::Dark),
-                            |_window, _cx| Label::new("Dark").text_xs(),
+                            |_window, cx| {
+                                Label::new(i18n_sidebar(cx, "dark").to_string()).text_xs()
+                            },
                         )
                         .menu_element_with_check(
                             current_action == ThemeAction::System,
                             Box::new(ThemeAction::System),
-                            |_window, _cx| Label::new("System").text_xs(),
+                            |_window, cx| {
+                                Label::new(i18n_sidebar(cx, "system").to_string()).text_xs()
+                            },
+                        )
+                })
+                .submenu(lang_text, window, cx, move |submenu, _window, _cx| {
+                    submenu
+                        .menu_element_with_check(
+                            current_locale == LocaleAction::Zh,
+                            Box::new(LocaleAction::Zh),
+                            |_window, _cx| Label::new("中文").text_xs(),
+                        )
+                        .menu_element_with_check(
+                            current_locale == LocaleAction::En,
+                            Box::new(LocaleAction::En),
+                            |_window, _cx| Label::new("English").text_xs(),
                         )
                 })
             });
@@ -152,7 +185,7 @@ impl ZedisSidebar {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(btn)
-            .on_action(cx.listener(|this, e: &ThemeAction, _window, cx| {
+            .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let mode = match e {
                     ThemeAction::Light => {
                         Theme::change(ThemeMode::Light, None, cx);
@@ -173,12 +206,11 @@ impl ZedisSidebar {
                         None
                     }
                 };
-                let app_state = this.app_state.clone();
-                let mut value = app_state.read(cx).clone();
+                let mut value = cx.global::<ZedisGlobalStore>().value(cx);
                 value.set_theme(mode);
-                let app_state = app_state.clone();
+                let store = cx.global::<ZedisGlobalStore>().clone();
                 cx.spawn(async move |_, cx| {
-                    let _ = app_state.update(cx, |state, _cx| {
+                    let _ = store.update(cx, |state, _cx| {
                         state.set_theme(mode);
                     });
                     cx.background_spawn(async move {
@@ -193,6 +225,31 @@ impl ZedisSidebar {
                 .detach();
                 cx.refresh_windows();
             }))
+            .on_action(cx.listener(|_this, e: &LocaleAction, _window, cx| {
+                let locale = match e {
+                    LocaleAction::Zh => "zh",
+                    LocaleAction::En => "en",
+                };
+                // println!("locale: {}", locale);
+                let mut value = cx.global::<ZedisGlobalStore>().value(cx);
+                value.set_locale(locale.to_string());
+                let store = cx.global::<ZedisGlobalStore>().clone();
+                cx.spawn(async move |_, cx| {
+                    let _ = store.update(cx, |state, _cx| {
+                        state.set_locale(locale.to_string());
+                    });
+                    cx.background_spawn(async move {
+                        if let Err(e) = save_app_state(&value) {
+                            error!(error = %e, "save locale fail",);
+                        } else {
+                            info!("save locale success");
+                        }
+                    })
+                    .await;
+                })
+                .detach();
+                cx.refresh_windows();
+            }))
     }
     fn render_star(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().border_b_1().border_color(cx.theme().border).child(
@@ -200,7 +257,7 @@ impl ZedisSidebar {
                 .ghost()
                 .h(px(50.))
                 .w_full()
-                .tooltip("Star on GitHub")
+                .tooltip(i18n_sidebar(cx, "star").to_string())
                 .icon(Icon::new(IconName::GitHub))
                 .on_click(cx.listener(move |_, _, _, cx| {
                     cx.open_url("https://github.com/vicanso/zedis");

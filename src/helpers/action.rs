@@ -12,17 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod app;
-mod i18n;
-mod server;
+use gpui::Action;
+use gpui::KeyBinding;
+use schemars::JsonSchema;
+use serde::Deserialize;
 
-pub use app::Route;
-pub use app::ZedisAppState;
-pub use app::ZedisGlobalStore;
-pub use app::save_app_state;
-pub use i18n::i18n_editor;
-pub use i18n::i18n_key_tree;
-pub use i18n::i18n_servers;
-pub use i18n::i18n_sidebar;
-pub use i18n::i18n_status_bar;
-pub use server::{KeyType, RedisValue, ZedisServerState};
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum MemuAction {
+    Quit,
+    About,
+}
+
+pub fn new_hot_keys() -> Vec<KeyBinding> {
+    vec![
+        // macOS 使用 Cmd+Q
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-q", MemuAction::Quit, None),
+        // Windows/Linux 使用 Ctrl+Q
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-q", MemuAction::Quit, None),
+    ]
+}

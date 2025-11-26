@@ -16,8 +16,9 @@ use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::RedisServer;
 use crate::states::Route;
-use crate::states::ZedisAppState;
+use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
+use crate::states::i18n_servers;
 use gpui::Entity;
 use gpui::Window;
 use gpui::div;
@@ -34,10 +35,9 @@ use gpui_component::form::v_form;
 use gpui_component::input::Input;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
+use rust_i18n::t;
 use substring::Substring;
-
 pub struct ZedisServers {
-    app_state: Entity<ZedisAppState>,
     server_state: Entity<ZedisServerState>,
     name_state: Entity<InputState>,
     host_state: Entity<InputState>,
@@ -51,7 +51,6 @@ impl ZedisServers {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let name_state = cx.new(|cx| InputState::new(window, cx));
@@ -60,7 +59,6 @@ impl ZedisServers {
         let password_state = cx.new(|cx| InputState::new(window, cx).masked(true));
         let description_state = cx.new(|cx| InputState::new(window, cx).auto_grow(2, 10));
         Self {
-            app_state,
             server_state,
             name_state,
             host_state,
@@ -93,8 +91,9 @@ impl ZedisServers {
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>, server: &str) {
         let server_state = self.server_state.clone();
         let server = server.to_string();
+        let locale = cx.global::<ZedisGlobalStore>().locale(cx).to_string();
         window.open_dialog(cx, move |dialog, _, _| {
-            let message = format!("Are you sure you want to delete this server: {server}?");
+            let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();
             let server_state = server_state.clone();
             let server = server.clone();
             dialog.confirm().child(message).on_ok(move |_, window, cx| {
@@ -115,11 +114,11 @@ impl ZedisServers {
         let description_state = self.description_state.clone();
         let is_new = self.is_new;
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let title = if is_new {
-                "Add Server".to_string()
+                i18n_servers(cx, "add_server_title").to_string()
             } else {
-                "Update Server".to_string()
+                i18n_servers(cx, "update_server_title").to_string()
             };
             let server_state = server_state.clone();
             let name_input = name_state.clone();
@@ -127,6 +126,11 @@ impl ZedisServers {
             let port_input = port_state.clone();
             let password_input = password_state.clone();
             let description_input = description_state.clone();
+            let name_label = i18n_servers(cx, "name").to_string();
+            let host_label = i18n_servers(cx, "host").to_string();
+            let port_label = i18n_servers(cx, "port").to_string();
+            let password_label = i18n_servers(cx, "password").to_string();
+            let description_label = i18n_servers(cx, "description").to_string();
             dialog
                 .title(title)
                 .overlay(true)
@@ -134,31 +138,33 @@ impl ZedisServers {
                     v_form()
                         .child(
                             field()
-                                .label("Name")
+                                .label(name_label)
                                 .child(Input::new(&name_state).disabled(!is_new)),
                         )
-                        .child(field().label("Host").child(Input::new(&host_state)))
-                        .child(field().label("Port").child(Input::new(&port_state)))
+                        .child(field().label(host_label).child(Input::new(&host_state)))
+                        .child(field().label(port_label).child(Input::new(&port_state)))
                         .child(
                             field()
-                                .label("Password")
+                                .label(password_label)
                                 .child(Input::new(&password_state).mask_toggle()),
                         )
                         .child(
                             field()
-                                .label("Description")
+                                .label(description_label)
                                 .child(Input::new(&description_state)),
                         ),
                 )
-                .footer(move |_, _, _, _| {
+                .footer(move |_, _, _, cx| {
                     let name_input = name_input.clone();
                     let host_input = host_input.clone();
                     let port_input = port_input.clone();
                     let password_input = password_input.clone();
                     let description_input = description_input.clone();
                     let server_state = server_state.clone();
+                    let submit_label = i18n_servers(cx, "submit").to_string();
+                    let cancel_label = i18n_servers(cx, "cancel").to_string();
                     vec![
-                        Button::new("ok").primary().label("Submit").on_click(
+                        Button::new("ok").primary().label(submit_label).on_click(
                             move |_, window, cx| {
                                 let server_state = server_state.clone();
                                 let name = name_input.read(cx).value().to_string();
@@ -195,7 +201,7 @@ impl ZedisServers {
                             },
                         ),
                         Button::new("cancel")
-                            .label("Cancel")
+                            .label(cancel_label)
                             .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
                             }),
@@ -218,6 +224,8 @@ impl Render for ZedisServers {
         } else {
             cx.theme().background.darken(0.02)
         };
+        let update_tooltip = i18n_servers(cx, "update_tooltip").to_string();
+        let remove_tooltip = i18n_servers(cx, "remove_tooltip").to_string();
         let children: Vec<_> = self
             .server_state
             .read(cx)
@@ -255,7 +263,7 @@ impl Render for ZedisServers {
                     .actions(vec![
                         Button::new(("servers-card-action-select", index))
                             .ghost()
-                            .tooltip("Update redis server")
+                            .tooltip(update_tooltip.clone())
                             .icon(CustomIconName::FilePenLine)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
@@ -264,7 +272,7 @@ impl Render for ZedisServers {
                             })),
                         Button::new(("servers-card-action-delete", index))
                             .ghost()
-                            .tooltip("Remove redis server")
+                            .tooltip(remove_tooltip.clone())
                             .icon(CustomIconName::FileXCorner)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
@@ -276,8 +284,11 @@ impl Render for ZedisServers {
                         this.server_state.update(cx, |state, cx| {
                             state.select(&server_name, cx);
                         });
-                        this.app_state.update(cx, |state, cx| {
-                            state.go_to(Route::Editor, cx);
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, _cx| {
+                                state.go_to(Route::Editor);
+                            });
+                            cx.notify();
                         });
                     }))
             })
@@ -292,9 +303,9 @@ impl Render for ZedisServers {
             .child(
                 Card::new("servers-card-add")
                     .icon(IconName::Plus)
-                    .title("Add")
+                    .title(i18n_servers(cx, "add_server_title").to_string())
                     .bg(bg)
-                    .description("Add a new redis server")
+                    .description(i18n_servers(cx, "add_server_description").to_string())
                     .actions(vec![
                         Button::new("add")
                             .ghost()

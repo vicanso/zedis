@@ -1,16 +1,21 @@
 use crate::connection::get_servers;
+use crate::helpers::{MemuAction, new_hot_keys};
 use crate::states::Route;
 use crate::states::ZedisAppState;
+use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::save_app_state;
-use crate::views::ZedisEditor;
 use crate::views::ZedisKeyTree;
 use crate::views::ZedisServers;
 use crate::views::ZedisSidebar;
 use crate::views::ZedisStatusBar;
+use crate::views::{ZedisEditor, open_about_window};
+use gpui::App;
 use gpui::Application;
 use gpui::Bounds;
 use gpui::Entity;
+use gpui::Menu;
+use gpui::MenuItem;
 use gpui::Pixels;
 use gpui::Subscription;
 use gpui::Task;
@@ -37,6 +42,8 @@ use tracing::error;
 use tracing::info;
 use tracing_subscriber::FmtSubscriber;
 
+rust_i18n::i18n!("locales", fallback = "en");
+
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 mod assets;
@@ -52,7 +59,6 @@ pub struct Zedis {
     save_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     // states
-    app_state: Entity<ZedisAppState>,
     server_state: Entity<ZedisServerState>,
     // views
     sidebar: Entity<ZedisSidebar>,
@@ -66,32 +72,31 @@ impl Zedis {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        app_state: Entity<ZedisAppState>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
 
-        let status_bar =
-            cx.new(|cx| ZedisStatusBar::new(window, cx, app_state.clone(), server_state.clone()));
+        let status_bar = cx.new(|cx| ZedisStatusBar::new(window, cx, server_state.clone()));
 
-        let sidebar =
-            cx.new(|cx| ZedisSidebar::new(window, cx, app_state.clone(), server_state.clone()));
+        let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
 
-        subscriptions.push(cx.observe(&app_state, |this, model, cx| {
-            let route = model.read(cx).route();
-            if route != Route::Home && this.servers.is_some() {
-                debug!("remove servers view");
-                let _ = this.servers.take();
-            }
-            if route != Route::Editor && this.value_editor.is_some() {
-                debug!("remove value editor view");
-                let _ = this.value_editor.take();
-            }
-            cx.notify();
-        }));
+        subscriptions.push(cx.observe(
+            &cx.global::<ZedisGlobalStore>().state(),
+            |this, model, cx| {
+                let route = model.read(cx).route();
+                if route != Route::Home && this.servers.is_some() {
+                    debug!("remove servers view");
+                    let _ = this.servers.take();
+                }
+                if route != Route::Editor && this.value_editor.is_some() {
+                    debug!("remove value editor view");
+                    let _ = this.value_editor.take();
+                }
+                cx.notify();
+            },
+        ));
 
         Self {
-            app_state,
             server_state,
             status_bar,
             sidebar,
@@ -105,8 +110,8 @@ impl Zedis {
     }
     fn persist_window_state(&mut self, new_bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
         self.last_bounds = new_bounds;
-        let app_state = self.app_state.clone();
-        let mut value = app_state.read(cx).clone();
+        let store = cx.global::<ZedisGlobalStore>().clone();
+        let mut value = store.value(cx);
         value.set_bounds(new_bounds);
         let task = cx.spawn(async move |_, cx| {
             // wait 500ms
@@ -114,7 +119,7 @@ impl Zedis {
                 .timer(std::time::Duration::from_millis(500))
                 .await;
 
-            let result = app_state.update(cx, move |state, cx| {
+            let result = store.update(cx, move |state, cx| {
                 state.set_bounds(new_bounds);
                 cx.notify();
             });
@@ -139,16 +144,15 @@ impl Zedis {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let app_state = self.app_state.clone();
+        // let app_state = self.app_state.clone();
         let server_state = self.server_state.clone();
-        match app_state.read(cx).route() {
+        match cx.global::<ZedisGlobalStore>().read(cx).route() {
             Route::Home => {
                 let servers = if let Some(servers) = &self.servers {
                     servers.clone()
                 } else {
                     debug!("new servers view");
-                    let servers =
-                        cx.new(|cx| ZedisServers::new(window, cx, app_state, server_state));
+                    let servers = cx.new(|cx| ZedisServers::new(window, cx, server_state));
                     self.servers = Some(servers.clone());
                     servers
                 };
@@ -171,7 +175,7 @@ impl Zedis {
                     self.key_tree = Some(key_tree.clone());
                     key_tree
                 };
-                let mut key_tree_width = app_state.read(cx).key_tree_width();
+                let mut key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
                 let min_width = px(200.);
                 if key_tree_width < min_width {
                     key_tree_width = min_width;
@@ -189,7 +193,7 @@ impl Zedis {
                             let Some(width) = event.read(cx).sizes().first() else {
                                 return;
                             };
-                            let mut value = app_state.read(cx).clone();
+                            let mut value = cx.global::<ZedisGlobalStore>().value(cx);
                             value.set_key_tree_width(*width);
                             cx.background_spawn(async move {
                                 if let Err(e) = save_app_state(&value) {
@@ -278,9 +282,7 @@ fn main() {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
-        if let Some(theme) = app_state.theme() {
-            Theme::change(theme, None, cx);
-        }
+
         cx.activate(true);
         let window_bounds = if let Some(bounds) = app_state.bounds() {
             info!(bounds = ?bounds, "get window bounds from setting");
@@ -294,6 +296,11 @@ fn main() {
             }
             Bounds::centered(None, window_size, cx)
         };
+        let app_state = cx.new(|_| app_state);
+        let app_store = ZedisGlobalStore::new(app_state);
+        if let Some(theme) = app_store.theme(cx) {
+            Theme::change(theme, None, cx);
+        }
         println!("primary display: {:?}", cx.primary_display());
         // TODO 校验是否在显示区域
         for item in cx.displays() {
@@ -302,7 +309,25 @@ fn main() {
             println!("{:?}", item.uuid());
             println!("{:?}", item.default_bounds());
         }
-        let app_state = cx.new(|_| app_state.clone());
+        cx.set_global(app_store);
+
+        cx.bind_keys(new_hot_keys());
+        cx.on_action(|e: &MemuAction, cx: &mut App| match e {
+            MemuAction::Quit => {
+                cx.quit();
+            }
+            MemuAction::About => {
+                open_about_window(cx);
+            }
+        });
+        cx.set_menus(vec![Menu {
+            name: "Zedis".into(),
+            items: vec![
+                MenuItem::action("About Zedis", MemuAction::About),
+                MenuItem::action("Quit", MemuAction::Quit),
+            ],
+        }]);
+
         let server_state = cx.new(|_| server_state.clone());
         cx.spawn(async move |cx| {
             cx.open_window(
@@ -318,7 +343,7 @@ fn main() {
                         cx.hide();
                         false
                     });
-                    let zedis_view = cx.new(|cx| Zedis::new(window, cx, app_state, server_state));
+                    let zedis_view = cx.new(|cx| Zedis::new(window, cx, server_state));
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;
