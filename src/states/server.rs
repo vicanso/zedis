@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::RedisAsyncConn;
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
@@ -20,68 +19,26 @@ use crate::error::Error;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
-use futures::{StreamExt, stream};
-use gpui::Hsla;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
 use parking_lot::RwLock;
-use pretty_hex::{HexConfig, config_hex};
-use redis::{cmd, pipe};
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::debug;
 use tracing::error;
 use uuid::Uuid;
+use value::{KeyType, RedisValue, RedisValueData};
+
+pub mod key;
+pub mod list;
+pub mod string;
+pub mod value;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
-// string, list, set, zset, hash, stream, and vectorset.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub enum KeyType {
-    #[default]
-    Unknown,
-    String,
-    List,
-    Set,
-    Zset,
-    Hash,
-    Stream,
-    Vectorset,
-}
-
-impl KeyType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            KeyType::String => "STR",
-            KeyType::List => "LIST",
-            KeyType::Hash => "HASH",
-            KeyType::Set => "SET",
-            KeyType::Zset => "ZSET",
-            KeyType::Stream => "STRM",
-            KeyType::Vectorset => "VEC",
-            KeyType::Unknown => "",
-        }
-    }
-
-    pub fn color(&self) -> Hsla {
-        match self {
-            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0), // 蓝色系
-            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),   // 紫色系
-            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),   // 橙色系
-            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),    // 青色系
-            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),  // 红色系
-            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0), // 绿色系
-            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // 粉色系
-            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0), // 灰色
-        }
-    }
-}
-
-fn unix_ts() -> u64 {
-    Local::now().timestamp() as u64
+fn unix_ts() -> i64 {
+    Local::now().timestamp()
 }
 
 // KeyNode is a node in the key tree.
@@ -131,119 +88,11 @@ impl KeyNode {
     }
 }
 
-async fn get_redis_string_value(conn: &mut RedisAsyncConn, key: &str) -> Result<String> {
-    let value: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
-    if value.is_empty() {
-        return Ok(String::new());
-    }
-    if let Ok(value) = std::str::from_utf8(&value) {
-        if let Ok(value) = serde_json::from_str::<Value>(value)
-            && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
-        {
-            return Ok(pretty_value);
-        } else {
-            return Ok(value.to_string());
-        }
-    }
-    // TODO 根据窗口宽度使用width:16/32
-    let cfg = HexConfig {
-        title: false,
-        width: 32,
-        group: 0,
-        ..HexConfig::default()
-    };
-
-    Ok(config_hex(&value, cfg))
-}
-
-async fn get_redis_list_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    offset: usize,
-    count: usize,
-) -> Result<Vec<String>> {
-    let value: Vec<Vec<u8>> = cmd("LRANGE")
-        .arg(key)
-        .arg(offset)
-        .arg(count)
-        .query_async(conn)
-        .await?;
-    if value.is_empty() {
-        return Ok(vec![]);
-    }
-    let value: Vec<String> = value
-        .iter()
-        .map(|v| String::from_utf8_lossy(v).to_string())
-        .collect();
-    Ok(value)
-}
-
-#[derive(Debug, Clone)]
-pub enum RedisValueData {
-    String(String),
-    List(Arc<(usize, Vec<String>)>),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RedisValue {
-    key_type: KeyType,
-    data: Option<RedisValueData>,
-    expire_at: Option<u64>,
-    size: usize,
-}
-
-impl RedisValue {
-    pub fn list_value(&self) -> Option<&Arc<(usize, Vec<String>)>> {
-        if let Some(RedisValueData::List(data)) = self.data.as_ref() {
-            return Some(data);
-        }
-        None
-    }
-    pub fn string_value(&self) -> Option<&String> {
-        if let Some(RedisValueData::String(value)) = self.data.as_ref() {
-            return Some(value);
-        }
-        None
-    }
-    pub fn size(&self) -> usize {
-        self.size
-    }
-    pub fn ttl(&self) -> Option<chrono::Duration> {
-        self.expire_at.map(|expire_at| {
-            if expire_at == 0 {
-                chrono::Duration::seconds(-1)
-            } else {
-                let now = unix_ts();
-                let seconds = expire_at.saturating_sub(now);
-                chrono::Duration::seconds(seconds as i64)
-            }
-        })
-    }
-    pub fn key_type(&self) -> KeyType {
-        self.key_type
-    }
-}
-
-impl From<&str> for KeyType {
-    fn from(value: &str) -> Self {
-        match value {
-            "list" => KeyType::List,
-            "set" => KeyType::Set,
-            "zset" => KeyType::Zset,
-            "hash" => KeyType::Hash,
-            "stream" => KeyType::Stream,
-            "vectorset" => KeyType::Vectorset,
-            "string" => KeyType::String,
-            _ => KeyType::Unknown,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ErrorMessage {
     pub category: String,
     pub message: String,
-    pub created_at: u64,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -266,7 +115,7 @@ pub struct ZedisServerState {
     loaded_prefixes: AHashSet<String>,
     keys: AHashMap<String, KeyType>,
 
-    last_operated_at: u64,
+    last_operated_at: i64,
     // error
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
 }
@@ -484,179 +333,6 @@ impl ZedisServerState {
         );
     }
 
-    fn fill_key_types(&mut self, cx: &mut Context<Self>, prefix: String) {
-        let mut keys = self
-            .keys
-            .iter()
-            .filter_map(|(key, value)| {
-                if *value != KeyType::Unknown {
-                    return None;
-                }
-                let suffix = key.strip_prefix(&prefix)?;
-                if suffix.contains(":") {
-                    return None;
-                }
-                Some(key.clone())
-            })
-            .collect::<Vec<String>>();
-        if keys.is_empty() {
-            return;
-        }
-        let server = self.server.clone();
-        keys.sort_unstable();
-        let keys_clone = keys.clone();
-        self.spawn(
-            cx,
-            "fill_key_types",
-            move || async move {
-                let conn = get_connection_manager().get_connection(&server).await?;
-                // run task stream
-                let types: Vec<String> = stream::iter(keys.iter().cloned())
-                    .map(|key| {
-                        let mut conn_clone = conn.clone();
-                        let key = key.clone();
-                        async move {
-                            let t: String = cmd("TYPE")
-                                .arg(key)
-                                .query_async(&mut conn_clone)
-                                .await
-                                .unwrap_or_default();
-                            t.to_string()
-                        }
-                    })
-                    .buffer_unordered(100)
-                    .collect::<Vec<_>>()
-                    .await;
-                Ok(types)
-            },
-            move |this, result, cx| {
-                if let Ok(types) = result {
-                    for (index, t) in types.iter().enumerate() {
-                        let Some(key) = keys_clone.get(index) else {
-                            continue;
-                        };
-                        if let Some(k) = this.keys.get_mut(key) {
-                            *k = KeyType::from(t.as_str());
-                        }
-                    }
-                    this.key_tree_id = Uuid::now_v7().to_string();
-                }
-                cx.notify();
-            },
-        );
-    }
-    fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
-        if self.server != server || self.keyword != keyword {
-            return;
-        }
-        let cursors = self.cursors.clone();
-        let max = (self.scan_times + 1) * DEFAULT_SCAN_RESULT_MAX;
-
-        let processing_server = server.clone();
-        let processing_keyword = keyword.clone();
-        self.spawn(
-            cx,
-            "scan_keys",
-            move || async move {
-                let client = get_connection_manager().get_client(&server).await?;
-                let pattern = format!("*{}*", keyword);
-                let count = if keyword.is_empty() { 2_000 } else { 10_000 };
-                if let Some(cursors) = cursors {
-                    client.scan(cursors, &pattern, count).await
-                } else {
-                    client.first_scan(&pattern, count).await
-                }
-            },
-            move |this, result, cx| {
-                match result {
-                    Ok((cursors, keys)) => {
-                        debug!("cursors: {cursors:?}, keys count: {}", keys.len());
-                        if cursors.iter().sum::<u64>() == 0 {
-                            this.scan_completed = true;
-                            this.cursors = None;
-                        } else {
-                            this.cursors = Some(cursors);
-                        }
-                        this.extend_keys(keys);
-                    }
-                    Err(_) => {
-                        this.cursors = None;
-                    }
-                };
-                if this.cursors.is_some() && this.keys.len() < max {
-                    // run again
-                    this.scan_keys(cx, processing_server, processing_keyword);
-                    return cx.notify();
-                }
-                this.scaning = false;
-                cx.notify();
-                this.fill_key_types(cx, "".to_string());
-            },
-        );
-    }
-    pub fn scan(&mut self, cx: &mut Context<Self>, keyword: String) {
-        self.reset_scan();
-        self.scaning = true;
-        self.keyword = keyword.clone();
-        cx.notify();
-        self.scan_keys(cx, self.server.clone(), keyword);
-    }
-    pub fn scan_next(&mut self, cx: &mut Context<Self>) {
-        if self.scan_completed {
-            return;
-        }
-        self.scan_times += 1;
-        self.scan_keys(cx, self.server.clone(), self.keyword.clone());
-        cx.notify();
-    }
-    pub fn scan_prefix(&mut self, cx: &mut Context<Self>, prefix: String) {
-        if self.loaded_prefixes.contains(&prefix) {
-            return;
-        }
-        if self.scan_completed {
-            self.fill_key_types(cx, prefix);
-            return;
-        }
-
-        let server = self.server.clone();
-        self.last_operated_at = unix_ts();
-        let pattern = format!("{}*", prefix);
-        self.spawn(
-            cx,
-            "scan_prefix",
-            move || async move {
-                let client = get_connection_manager().get_client(&server).await?;
-                let count = 10_000;
-                // let mut cursors: Option<Vec<u64>>,
-                let mut cursors: Option<Vec<u64>> = None;
-                let mut result_keys = vec![];
-                // 最多执行x次
-                for _ in 0..20 {
-                    let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(cursors, &pattern, count).await?
-                    } else {
-                        client.first_scan(&pattern, count).await?
-                    };
-                    result_keys.extend(keys);
-                    if new_cursor.iter().sum::<u64>() == 0 {
-                        break;
-                    }
-                    cursors = Some(new_cursor);
-                }
-
-                Ok(result_keys)
-            },
-            move |this, result, cx| {
-                if let Ok(keys) = result {
-                    debug!(prefix, count = keys.len(), "scan prefix success");
-                    this.loaded_prefixes.insert(prefix.clone());
-                    this.extend_keys(keys);
-                }
-                cx.notify();
-                this.fill_key_types(cx, prefix);
-            },
-        );
-    }
     pub fn ping(&mut self, cx: &mut Context<Self>) {
         if self.server.is_empty() {
             return;
@@ -673,7 +349,6 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(latency) = result {
-                    println!("latency: {:?}", latency);
                     this.latency = Some(latency);
                 };
                 cx.notify();
@@ -718,201 +393,5 @@ impl ZedisServerState {
                 },
             );
         }
-    }
-    pub fn select_key(&mut self, key: String, cx: &mut Context<Self>) {
-        if self.key.clone().unwrap_or_default() != key {
-            self.key = Some(key.clone());
-            cx.notify();
-            if key.is_empty() {
-                return;
-            }
-            let server = self.server.clone();
-            self.last_operated_at = unix_ts();
-
-            self.spawn(
-                cx,
-                "select_key",
-                move || async move {
-                    let mut conn = get_connection_manager().get_connection(&server).await?;
-                    let (t, ttl): (String, i64) = pipe()
-                        .cmd("TYPE")
-                        .arg(&key)
-                        .cmd("TTL")
-                        .arg(&key)
-                        .query_async(&mut conn)
-                        .await?;
-                    let expire_at = if ttl == -1 {
-                        Some(0)
-                    } else if ttl >= 0 {
-                        Some(unix_ts() + ttl as u64)
-                    } else {
-                        None
-                    };
-                    let key_type = KeyType::from(t.as_str());
-                    let mut redis_value = RedisValue {
-                        key_type,
-                        expire_at,
-                        ..Default::default()
-                    };
-                    match key_type {
-                        KeyType::String => {
-                            let value = get_redis_string_value(&mut conn, &key).await?;
-                            redis_value.size = value.len();
-                            redis_value.data = Some(RedisValueData::String(value));
-                        }
-                        KeyType::List => {
-                            let size: usize = cmd("LLEN").arg(&key).query_async(&mut conn).await?;
-                            let value = get_redis_list_value(&mut conn, &key, 0, 100).await?;
-                            redis_value.data =
-                                Some(RedisValueData::List(Arc::new((size, value.clone()))));
-                        }
-                        _ => {
-                            return Err(Error::Invalid {
-                                message: "unsupported key type".to_string(),
-                            });
-                        }
-                    }
-
-                    Ok(redis_value)
-                },
-                move |this, result, cx| {
-                    match result {
-                        Ok(value) => {
-                            this.value = Some(value);
-                        }
-                        Err(_) => {
-                            this.value = None;
-                        }
-                    };
-                    cx.notify();
-                },
-            );
-        }
-    }
-    pub fn delete_key(&mut self, key: String, cx: &mut Context<Self>) {
-        let server = self.server.clone();
-        self.deleting = true;
-        cx.notify();
-        self.last_operated_at = unix_ts();
-        let remove_key = key.clone();
-        self.spawn(
-            cx,
-            "delete_key",
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
-                let _: () = cmd("DEL").arg(&key).query_async(&mut conn).await?;
-                Ok(())
-            },
-            move |this, result, cx| {
-                if let Ok(()) = result {
-                    this.keys.remove(&remove_key);
-                    this.key_tree_id = Uuid::now_v7().to_string();
-                    this.key = None;
-                }
-                this.deleting = false;
-                cx.notify();
-            },
-        );
-    }
-    pub fn update_value_ttl(&mut self, key: String, ttl: String, cx: &mut Context<Self>) {
-        let server = self.server.clone();
-        self.updating = true;
-        cx.notify();
-        self.last_operated_at = unix_ts();
-        self.spawn(
-            cx,
-            "update_value_ttl",
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
-                let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid {
-                    message: e.to_string(),
-                })?;
-                let _: () = cmd("EXPIRE")
-                    .arg(&key)
-                    .arg(ttl.as_secs())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(ttl)
-            },
-            move |this, result, cx| {
-                if let Ok(ttl) = result
-                    && let Some(value) = this.value.as_mut()
-                {
-                    value.expire_at = Some(unix_ts() + ttl.as_secs());
-                }
-                this.updating = false;
-                cx.notify();
-            },
-        );
-    }
-    pub fn save_value(&mut self, key: String, value: String, cx: &mut Context<Self>) {
-        let server = self.server.clone();
-        self.updating = true;
-        cx.notify();
-        self.last_operated_at = unix_ts();
-        self.spawn(
-            cx,
-            "save_value",
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
-                let _: () = cmd("SET")
-                    .arg(&key)
-                    .arg(&value)
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(value)
-            },
-            move |this, result, cx| {
-                if let Ok(update_value) = result
-                    && let Some(value) = this.value.as_mut()
-                {
-                    value.size = update_value.len();
-                    value.data = Some(RedisValueData::String(update_value));
-                }
-                this.updating = false;
-                cx.notify();
-            },
-        );
-    }
-    pub fn load_more_list_value(&mut self, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = &self.value else {
-            return;
-        };
-        let Some(RedisValueData::List(data)) = value.data.as_ref() else {
-            return;
-        };
-        let offset = data.1.len();
-        if offset >= data.0 {
-            return;
-        }
-        let server = self.server.clone();
-        self.last_operated_at = unix_ts();
-        self.spawn(
-            cx,
-            "load_more_list_value",
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
-                let value = get_redis_list_value(&mut conn, &key, offset, 100).await?;
-                Ok(value)
-            },
-            move |this, result, cx| {
-                if let Ok(values) = result
-                    && let Some(value) = this.value.as_mut()
-                {
-                    let Some(RedisValueData::List(data)) = value.data.as_ref() else {
-                        return;
-                    };
-                    // 加载的时候复制了多一次，后续研究优化
-                    let mut new_values = data.1.clone();
-                    new_values.extend(values);
-                    value.data = Some(RedisValueData::List(Arc::new((data.0, new_values))));
-                }
-                cx.notify();
-            },
-        );
     }
 }

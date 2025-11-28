@@ -41,3 +41,8 @@ pub fn i18n_status_bar<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
     t!(format!("status_bar.{key}"), locale = locale)
 }
+
+pub fn i18n_list_editor<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+    t!(format!("list_editor.{key}"), locale = locale)
+}

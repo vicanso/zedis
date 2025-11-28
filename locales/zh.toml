@@ -25,6 +25,7 @@ remove_tooltip = "移除 Redis 服务器"
 add_server_description = "添加一个新的 Redis 服务器"
 
 [editor]
+expired = "已过期"
 perm = "永久有效"
 delete_key_prompt = "您确定要删除此redis键：%{key}吗？"
 size = "大小"
@@ -42,3 +43,6 @@ search_tooltip = "搜索键"
 latency = "延迟"
 scan_completed = "扫描完成"
 scan_more_keys = "扫描更多键"
+
+[list_editor]
+value = "值"

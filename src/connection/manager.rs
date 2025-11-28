@@ -26,8 +26,10 @@ use std::sync::LazyLock;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+// Global singleton for ConnectionManager
 static CONNECTION_MANAGER: LazyLock<ConnectionManager> = LazyLock::new(ConnectionManager::new);
 
+// Enum representing the type of Redis server
 #[derive(Debug, Clone, PartialEq)]
 enum ServerType {
     Standalone,
@@ -35,12 +37,14 @@ enum ServerType {
     Sentinel,
 }
 
+// Wrapper for the underlying Redis client
 #[derive(Clone)]
 enum RClient {
     Single(Client),
     Cluster(cluster::ClusterClient),
 }
 
+// Node roles in a Redis setup
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum NodeRole {
     #[default]
@@ -50,6 +54,7 @@ pub enum NodeRole {
     Unknown, // e.g. "handshake", "noaddr"
 }
 
+// Represents a single Redis node
 #[derive(Debug, Clone, Default)]
 struct RedisNode {
     addr: String,
@@ -57,6 +62,7 @@ struct RedisNode {
     master_name: Option<String>,
 }
 
+// Information parsed from `CLUSTER NODES` command
 #[derive(Debug, Clone)]
 pub struct ClusterNodeInfo {
     pub node_id: String,
@@ -73,59 +79,52 @@ pub struct ClusterNodeInfo {
     pub slot_ranges: Vec<String>,
 }
 
+/// Parses a Redis address string like "ip:port@cport" or just "ip:port".
 fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
-    // 1. 将 "ip:port" 和 "cport" (可选) 分开
-    let (ip_port_part, cport_part) = match address_str.split_once('@') {
-        Some((addr, cport)) => (addr, Some(cport)),
-        None => (address_str, None), // 没有 '@'，意味着没有 cport
-    };
+    // Split into address part and optional cluster bus port part
+    let (addr_part, cport_part) = address_str
+        .split_once('@')
+        .map(|(a, c)| (a, Some(c)))
+        .unwrap_or((address_str, None));
 
-    // 2. 将 "ip" 和 "port" 分开
-    let (ip_str, port_str) = ip_port_part.split_once(':').ok_or_else(|| Error::Invalid {
-        message: format!("Invalid address (no :): {}", ip_port_part),
+    // Parse IP and Port
+    let (ip, port_str) = addr_part.split_once(':').ok_or_else(|| Error::Invalid {
+        message: format!("Invalid address format: {}", addr_part),
     })?;
 
-    // 3. 解析 port
     let port = port_str.parse::<u16>().map_err(|e| Error::Invalid {
         message: format!("Invalid port '{}': {}", port_str, e),
     })?;
 
-    // 4. 解析 cport (如果存在)
-    let cluster_bus_port = match cport_part {
-        Some(s) => Some(s.parse::<u16>().map_err(|e| Error::Invalid {
-            message: format!("Invalid cport '{}': {}", s, e),
-        })?),
-        None => None,
-    };
+    // Parse cluster bus port if present
+    let cport = cport_part
+        .map(|s| {
+            s.parse::<u16>().map_err(|e| Error::Invalid {
+                message: format!("Invalid cluster bus port '{}': {}", s, e),
+            })
+        })
+        .transpose()?;
 
-    Ok((ip_str.to_string(), port, cluster_bus_port))
+    Ok((ip.to_string(), port, cport))
 }
 
+/// Parses the output of the `CLUSTER NODES` command.
 fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     let mut nodes = Vec::new();
 
-    // 1. 遍历原始文本的每一行
     for line in raw_data.trim().lines() {
-        // 2. 按空格分割每一列
         let parts: Vec<&str> = line.split_whitespace().collect();
 
-        // 3. 'CLUSTER NODES' 至少有 8 列。如果少于 8 列，
-        //    这可能是一个空行或格式错误的行，安全地跳过它。
+        // Basic validation: ensure enough columns exist
         if parts.len() < 8 {
             continue;
         }
 
-        // --- 4. 开始安全地解析每一列 ---
-
-        // [0] Node ID
         let node_id = parts[0].to_string();
-
-        // [1] Address (格式: "ip:port@cport")
         let (ip, port, cluster_bus_port) = parse_address(parts[1])?;
 
-        // [2] Flags (格式: "myself,master,fail?")
-        let flags_str = parts[2];
-        let flags: HashSet<String> = flags_str.split(',').map(String::from).collect();
+        // Parse flags to determine role
+        let flags: HashSet<String> = parts[2].split(',').map(String::from).collect();
         let role = if flags.contains("master") {
             NodeRole::Master
         } else if flags.contains("slave") {
@@ -136,32 +135,26 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             NodeRole::Unknown
         };
 
-        // [3] Master ID (如果是 master，则为 "-")
         let master_id = if parts[3] == "-" {
             None
         } else {
             Some(parts[3].to_string())
         };
 
-        // [4] Ping Sent (u64)
-        let ping_sent_timestamp_ms = parts[4].parse::<u64>().map_err(|e| Error::Invalid {
+        // Parse timestamps and epoch
+        let ping_sent = parts[4].parse::<u64>().map_err(|e| Error::Invalid {
             message: format!("Invalid ping_sent '{}': {}", parts[4], e),
         })?;
-
-        // [5] Pong Recv (u64)
-        let pong_recv_timestamp_ms = parts[5].parse::<u64>().map_err(|e| Error::Invalid {
+        let pong_recv = parts[5].parse::<u64>().map_err(|e| Error::Invalid {
             message: format!("Invalid pong_recv '{}': {}", parts[5], e),
         })?;
-
-        // [6] Config Epoch (u64)
         let config_epoch = parts[6].parse::<u64>().map_err(|e| Error::Invalid {
             message: format!("Invalid config_epoch '{}': {}", parts[6], e),
         })?;
 
-        // [7] Link State
         let link_state = parts[7].to_string();
 
-        // [8+] Slot Ranges (所有剩余的列)
+        // Remaining parts are slot ranges
         let slot_ranges = parts
             .get(8..)
             .unwrap_or(&[])
@@ -169,17 +162,16 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             .map(|s| s.to_string())
             .collect();
 
-        // 5. 将解析后的结构体添加到我们的 Vec 中
         nodes.push(ClusterNodeInfo {
             node_id,
             ip,
             port,
-            cluster_bus_port,
             role,
+            cluster_bus_port,
             flags,
             master_id,
-            ping_sent_timestamp_ms,
-            pong_recv_timestamp_ms,
+            ping_sent_timestamp_ms: ping_sent,
+            pong_recv_timestamp_ms: pong_recv,
             config_epoch,
             link_state,
             slot_ranges,
@@ -198,6 +190,7 @@ pub struct RedisClient {
     server_type: ServerType,
 }
 impl RedisClient {
+    /// Establishes an asynchronous connection based on the client type.
     async fn get_async_connection(&self) -> Result<RedisAsyncConn> {
         match &self.client {
             RClient::Single(client) => {
@@ -210,6 +203,11 @@ impl RedisClient {
             }
         }
     }
+    /// Executes commands on all master nodes concurrently.
+    /// # Arguments
+    /// * `cmds` - A vector of commands to execute.
+    /// # Returns
+    /// * `Vec<T>` - A vector of results from the commands.
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
         let addrs: Vec<_> = self
             .master_nodes
@@ -219,18 +217,31 @@ impl RedisClient {
         let values = query_async_masters(addrs, cmds).await?;
         Ok(values)
     }
+    /// Calculates the total DB size across all masters.
+    /// # Returns
+    /// * `u64` - The total DB size.
     pub async fn dbsize(&self) -> Result<u64> {
         let list = self.query_async_masters(vec![cmd("DBSIZE")]).await?;
         Ok(list.iter().sum())
     }
+    /// Pings the server to check connectivity.
     pub async fn ping(&self) -> Result<()> {
         let mut conn = self.get_async_connection().await?;
         let _: () = cmd("PING").query_async(&mut conn).await?;
         Ok(())
     }
+    /// Returns the number of master nodes.
+    /// # Returns
+    /// * `usize` - The number of master nodes.
     pub fn count_masters(&self) -> Result<usize> {
         Ok(self.master_nodes.len())
     }
+    /// Initiates a SCAN operation across all masters.
+    /// # Arguments
+    /// * `pattern` - The pattern to match keys.
+    /// * `count` - The count of keys to return.
+    /// # Returns
+    /// * `(Vec<u64>, Vec<String>)` - A tuple containing the new cursors and the keys.
     pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<String>)> {
         let master_count = self.count_masters()?;
         let cursors = vec![0; master_count];
@@ -238,6 +249,13 @@ impl RedisClient {
         let (cursors, keys) = self.scan(cursors, pattern, count).await?;
         Ok((cursors, keys))
     }
+    /// Continues a SCAN operation.
+    /// # Arguments
+    /// * `cursors` - A vector of cursors for each master.
+    /// * `pattern` - The pattern to match keys.
+    /// * `count` - The count of keys to return.
+    /// # Returns
+    /// * `(Vec<u64>, Vec<String>)` - A tuple containing the new cursors and the keys.
     pub async fn scan(
         &self,
         cursors: Vec<u64>,
@@ -272,20 +290,31 @@ pub struct ConnectionManager {
     clients: DashMap<String, RedisClient>,
 }
 
+/// Detects the type of Redis server (Sentinel, Cluster, or Standalone).
+/// This function checks the role of the Redis server and returns the server type.
+/// # Arguments
+/// * `client` - The Redis client to check the server type.
+/// # Returns
+/// * `ServerType` - The type of the Redis server.
 async fn detect_server_type(client: &Client) -> Result<ServerType> {
     let mut conn = client.get_multiplexed_async_connection().await?;
+    // Check if it's a Sentinel
+    // Note: `ROLE` command might not exist on old Redis versions, consider fallback if needed.
+    // Assuming modern Redis here.
     let role: Role = cmd("ROLE").query_async(&mut conn).await?;
-    match role {
-        Role::Sentinel { .. } => Ok(ServerType::Sentinel),
-        _ => {
-            let info: InfoDict = cmd("INFO").arg("cluster").query_async(&mut conn).await?;
-            let is_cluster = info.get("cluster_enabled").unwrap_or(0i64) == 1i64;
-            if is_cluster {
-                Ok(ServerType::Cluster)
-            } else {
-                Ok(ServerType::Standalone)
-            }
-        }
+
+    if let Role::Sentinel { .. } = role {
+        return Ok(ServerType::Sentinel);
+    }
+
+    // Check if Cluster mode is enabled via INFO command
+    let info: InfoDict = cmd("INFO").arg("cluster").query_async(&mut conn).await?;
+    let cluster_enabled = info.get("cluster_enabled").unwrap_or(0i64);
+
+    if cluster_enabled == 1 {
+        Ok(ServerType::Cluster)
+    } else {
+        Ok(ServerType::Standalone)
     }
 }
 
@@ -295,15 +324,18 @@ impl ConnectionManager {
             clients: DashMap::new(),
         }
     }
+    /// Discovers Redis nodes and server type based on initial configuration.
     async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_config(name)?;
         let url = config.get_connection_url();
         let mut client = Client::open(url.clone())?;
-        // 如果密码错，再试无密码的
-        // sentinel大概率无密码
+        // Attempt to connect and detect server type
+        // Handles logic to retry without password if authentication fails
         let server_type = match detect_server_type(&client).await {
             Ok(server_type) => server_type,
             Err(e) => {
+                // Retry without password if auth failed and config might allow empty password
+                // or simply to handle sentinel cases which often have no auth
                 if config.password.is_none() || !e.to_string().contains("AuthenticationFailed") {
                     return Err(e);
                 }
@@ -316,7 +348,9 @@ impl ConnectionManager {
         match server_type {
             ServerType::Cluster => {
                 let mut conn = client.get_multiplexed_async_connection().await?;
+                // Fetch cluster topology
                 let nodes: String = cmd("CLUSTER").arg("NODES").query_async(&mut conn).await?;
+                // Parse nodes and convert to RedisNode
                 let nodes = parse_cluster_nodes(&nodes)?
                     .iter()
                     .map(|item| {
@@ -335,6 +369,7 @@ impl ConnectionManager {
             }
             ServerType::Sentinel => {
                 let mut conn = client.get_multiplexed_async_connection().await?;
+                // Fetch masters from Sentinel
                 let masters_response: Vec<HashMap<String, String>> = cmd("SENTINEL")
                     .arg("MASTERS")
                     .query_async(&mut conn)
@@ -357,6 +392,7 @@ impl ConnectionManager {
                     let name = item.get("name").ok_or_else(|| Error::Invalid {
                         message: "master_name is not found".to_string(),
                     })?;
+                    // Filter by master name if configured
                     if let Some(master_name) = &config.master_name
                         && name != master_name
                     {
@@ -372,16 +408,18 @@ impl ConnectionManager {
                         master_name: Some(name.clone()),
                     });
                 }
-                let mut master_names: Vec<_> = nodes
+                // Check for ambiguous master configuration
+                let unique_masters: HashSet<_> = nodes
                     .iter()
-                    .map(|item| item.master_name.clone().unwrap_or_default())
+                    .filter_map(|n| n.master_name.as_ref())
                     .collect();
-                master_names.dedup();
-                if master_names.len() > 1 {
+                if unique_masters.len() > 1 {
                     return Err(Error::Invalid {
-                        message: "Sentinel should set master name".to_string(),
+                        message: "Multiple masters found in Sentinel, please specify master_name"
+                            .into(),
                     });
                 }
+
                 Ok((nodes, server_type))
             }
             _ => Ok((
@@ -394,6 +432,7 @@ impl ConnectionManager {
             )),
         }
     }
+    /// Retrieves or creates a RedisClient for the given configuration name.
     pub async fn get_client(&self, name: &str) -> Result<RedisClient> {
         if let Some(client) = self.clients.get(name) {
             return Ok(client.clone());
@@ -401,12 +440,8 @@ impl ConnectionManager {
         let (nodes, server_type) = self.get_redis_nodes(name).await?;
         let client = match server_type {
             ServerType::Cluster => {
-                let client = cluster::ClusterClient::new(
-                    nodes
-                        .iter()
-                        .map(|node| node.addr.clone())
-                        .collect::<Vec<String>>(),
-                )?;
+                let addrs: Vec<String> = nodes.iter().map(|n| n.addr.clone()).collect();
+                let client = cluster::ClusterClient::new(addrs)?;
                 RClient::Cluster(client)
             }
             _ => {
@@ -425,15 +460,18 @@ impl ConnectionManager {
             master_nodes,
             server_type,
         };
+        // Cache the client
         self.clients.insert(name.to_string(), client.clone());
         Ok(client)
     }
+    /// Shorthand to get an async connection directly.
     pub async fn get_connection(&self, name: &str) -> Result<RedisAsyncConn> {
         let client = self.get_client(name).await?;
         client.get_async_connection().await
     }
 }
 
+/// Global accessor for the connection manager.
 pub fn get_connection_manager() -> &'static ConnectionManager {
     &CONNECTION_MANAGER
 }

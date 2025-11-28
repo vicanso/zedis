@@ -23,7 +23,8 @@ use gpui_component::highlighter::Language;
 use gpui_component::input::InputEvent;
 use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
-use tracing::debug;
+use pretty_hex::HexConfig;
+use pretty_hex::config_hex;
 
 pub struct ZedisStringEditor {
     server_state: Entity<ZedisServerState>,
@@ -33,6 +34,30 @@ pub struct ZedisStringEditor {
     _subscriptions: Vec<Subscription>,
 }
 
+fn get_string_value(window: &Window, value: Option<&RedisValue>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    let mut string_value = value.string_value().cloned().unwrap_or_default();
+    if string_value.is_empty()
+        && let Some(data) = value.bytes_value()
+    {
+        let width = window.viewport_size().width;
+        let width = match width {
+            width if width < px(1400.) => 16,
+            _ => 32,
+        };
+        let cfg = HexConfig {
+            title: false,
+            width,
+            group: 0,
+            ..Default::default()
+        };
+        string_value = config_hex(&data, cfg)
+    }
+    string_value
+}
+
 impl ZedisStringEditor {
     pub fn new(
         window: &mut Window,
@@ -40,15 +65,10 @@ impl ZedisStringEditor {
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
-        subscriptions.push(cx.observe(&server_state, |this, model, cx| {
-            let value = model.read(cx).value().cloned();
-            this.update_editor_value(cx, value);
+        subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
+            this.update_editor_value(cx);
         }));
-        let value = server_state
-            .read(cx)
-            .value()
-            .and_then(|v| v.string_value())
-            .map_or(String::new(), |v| v.to_string());
+        let value = get_string_value(window, server_state.read(cx).value());
 
         let default_language = Language::from_str("json");
         let editor = cx.new(|cx| {
@@ -84,21 +104,14 @@ impl ZedisStringEditor {
             _subscriptions: subscriptions,
         }
     }
-    fn update_editor_value(&mut self, cx: &mut Context<Self>, value: Option<RedisValue>) {
+    fn update_editor_value(&mut self, cx: &mut Context<Self>) {
         let window_handle = self.window_handle;
+        let server_state = self.server_state.clone();
         self.value_modified = false;
         let _ = window_handle.update(cx, move |_, window, cx| {
             self.editor.update(cx, move |this, cx| {
-                debug!(value = ?value, "update editor value");
-                let Some(value) = value else {
-                    this.set_value("", window, cx);
-                    return;
-                };
-                if let Some(data) = value.string_value() {
-                    this.set_value(data, window, cx);
-                } else {
-                    this.set_value("", window, cx);
-                }
+                let value = server_state.read(cx).value();
+                this.set_value(get_string_value(window, value), window, cx);
                 cx.notify();
             });
         });

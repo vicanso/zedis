@@ -18,13 +18,13 @@ use crate::states::i18n_key_tree;
 use ahash::AHashSet;
 use gpui::AppContext;
 use gpui::Entity;
+use gpui::Hsla;
 use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
-use gpui_component::Colorize;
 use gpui_component::Disableable;
 use gpui_component::Icon;
 use gpui_component::IconName;
@@ -150,6 +150,12 @@ impl ZedisKeyTree {
         let view = cx.entity();
         let yellow = cx.theme().colors.yellow;
         let server_state = self.server_state.clone();
+        let even_bg = cx.theme().background;
+        let odd_bg = if cx.theme().is_dark() {
+            Hsla::white().alpha(0.1)
+        } else {
+            Hsla::black().alpha(0.03)
+        };
         tree(
             &self.tree_state,
             move |ix, entry, _selected, _window, cx| {
@@ -187,11 +193,7 @@ impl ZedisKeyTree {
                             .text_color(yellow)
                             .into_any_element()
                     };
-                    let bg = if ix % 2 == 0 {
-                        cx.theme().background
-                    } else {
-                        cx.theme().background.lighten(1.0)
-                    };
+                    let bg = if ix % 2 == 0 { even_bg } else { odd_bg };
                     let mut count_label = Label::new("");
                     if entry.is_folder() {
                         count_label = Label::new(item.children.len().to_string())

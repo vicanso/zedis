@@ -14,6 +14,7 @@
 
 use crate::error::Error;
 use async_trait::async_trait;
+use futures::future::try_join_all;
 use redis::Client;
 use redis::Cmd;
 use redis::Pipeline;
@@ -25,6 +26,11 @@ use redis::{FromRedisValue, Value};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// A wrapper enum for Redis asynchronous connections.
+///
+/// This unifies `MultiplexedConnection` (for single nodes) and
+/// `ClusterConnection` (for clusters) under a single type,
+/// allowing generic usage across the application.
 #[derive(Clone)]
 pub enum RedisAsyncConn {
     Single(MultiplexedConnection),
@@ -33,12 +39,14 @@ pub enum RedisAsyncConn {
 
 #[async_trait]
 impl ConnectionLike for RedisAsyncConn {
+    #[inline]
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
         match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_command(cmd),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_command(cmd),
         }
     }
+    #[inline]
     fn req_packed_commands<'a>(
         &'a mut self,
         cmd: &'a Pipeline,
@@ -50,6 +58,7 @@ impl ConnectionLike for RedisAsyncConn {
             RedisAsyncConn::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
         }
     }
+    #[inline]
     fn get_db(&self) -> i64 {
         match self {
             RedisAsyncConn::Single(conn) => conn.get_db(),
@@ -58,27 +67,43 @@ impl ConnectionLike for RedisAsyncConn {
     }
 }
 
+/// Queries multiple Redis master nodes concurrently.
+///
+/// This function establishes connections to all provided addresses in parallel
+/// and executes the corresponding commands.
+///
+/// # Arguments
+///
+/// * `addrs` - A vector of Redis connection strings (e.g., "redis://127.0.0.1").
+/// * `cmds` - A vector of commands to execute. If there are fewer commands than addresses,
+///   the first command is reused for the remaining addresses.
 pub(crate) async fn query_async_masters<T: FromRedisValue>(
     addrs: Vec<&str>,
     cmds: Vec<Cmd>,
 ) -> Result<Vec<T>> {
-    if cmds.is_empty() {
-        return Err(Error::Invalid {
-            message: "Commands are empty".to_string(),
-        });
-    }
-    let first_cmd = cmds[0].clone();
-    let mut values = Vec::with_capacity(addrs.len());
-    for (index, addr) in addrs.iter().enumerate() {
-        let client = Client::open(*addr)?;
-        let mut conn = client.get_multiplexed_async_connection().await?;
-        let value: T = cmds
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| first_cmd.clone())
-            .query_async(&mut conn)
-            .await?;
-        values.push(value);
-    }
+    let first_cmd = cmds.first().ok_or_else(|| Error::Invalid {
+        message: "Commands are empty".to_string(),
+    })?;
+    let tasks = addrs.into_iter().enumerate().map(|(index, addr)| {
+        // Clone data to move ownership into the async block.
+        let addr = addr.to_string();
+        // Use the specific command for this index, or fallback to the first command.
+        let cmd = cmds.get(index).unwrap_or(first_cmd).clone();
+
+        async move {
+            // TODO get client connect from cache
+            // Establish a multiplexed async connection to the specific node.
+            let client = Client::open(addr)?;
+            let mut conn = client.get_multiplexed_async_connection().await?;
+
+            // Execute the command asynchronously.
+            let value: T = cmd.query_async(&mut conn).await?;
+
+            Ok::<T, Error>(value)
+        }
+    });
+
+    let values = try_join_all(tasks).await?;
+
     Ok(values)
 }

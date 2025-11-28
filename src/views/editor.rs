@@ -142,7 +142,9 @@ impl ZedisEditor {
         if let Some(value) = server_state.value() {
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
-                if seconds < 0 {
+                if seconds == -2 {
+                    i18n_editor(cx, "expired").to_string()
+                } else if seconds < 0 {
                     i18n_editor(cx, "perm").to_string()
                 } else {
                     humantime::format_duration(Duration::from_secs(seconds as u64)).to_string()
@@ -166,7 +168,6 @@ impl ZedisEditor {
             );
         }
 
-        debug!("string editor:{}", self.string_editor.is_some());
         if let Some(string_editor) = &self.string_editor {
             let value_modified = string_editor.read(cx).is_value_modified();
             btns.push(
