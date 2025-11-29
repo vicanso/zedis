@@ -23,8 +23,15 @@ use redis::aio::ConnectionLike;
 use redis::aio::MultiplexedConnection;
 use redis::cluster_async::ClusterConnection;
 use redis::{FromRedisValue, Value};
+use std::sync::LazyLock;
+use std::time::Duration;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+const DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
+    let value = std::env::var("REDIS_DELAY").unwrap_or_default();
+    humantime::parse_duration(&value).ok()
+});
 
 /// A wrapper enum for Redis asynchronous connections.
 ///
@@ -41,10 +48,17 @@ pub enum RedisAsyncConn {
 impl ConnectionLike for RedisAsyncConn {
     #[inline]
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
-        match self {
+        let cmd_future = match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_command(cmd),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_command(cmd),
+        };
+        if let Some(delay) = *DELAY {
+            return Box::pin(async move {
+                smol::Timer::after(delay).await;
+                cmd_future.await
+            });
         }
+        cmd_future
     }
     #[inline]
     fn req_packed_commands<'a>(
@@ -53,10 +67,17 @@ impl ConnectionLike for RedisAsyncConn {
         offset: usize,
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
-        match self {
+        let cmd_future = match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_commands(cmd, offset, count),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
+        };
+        if let Some(delay) = *DELAY {
+            return Box::pin(async move {
+                smol::Timer::after(delay).await;
+                cmd_future.await
+            });
         }
+        cmd_future
     }
     #[inline]
     fn get_db(&self) -> i64 {
