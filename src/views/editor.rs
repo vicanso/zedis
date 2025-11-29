@@ -105,7 +105,7 @@ impl ZedisEditor {
         self.ttl_edit_mode = false;
         let ttl = self.ttl_input_state.read(cx).value().to_string();
         self.server_state.update(cx, move |state, cx| {
-            state.update_value_ttl(key, ttl, cx);
+            state.update_key_ttl(key, ttl, cx);
         });
         cx.notify();
     }

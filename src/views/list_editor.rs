@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::assets::CustomIconName;
 use crate::states::i18n_list_editor;
 use crate::states::{RedisListValue, ZedisServerState};
 use gpui::App;
@@ -20,23 +21,32 @@ use gpui::Hsla;
 use gpui::Subscription;
 use gpui::TextAlign;
 use gpui::Window;
+use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
-use gpui_component::ActiveTheme;
 use gpui_component::IndexPath;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
+use gpui_component::input::Input;
+use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::v_flex;
+use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::{Icon, IconName};
 use std::sync::Arc;
 
 const INDEX_WIDTH: f32 = 50.;
+const ACTION_WIDTH: f32 = 100.;
 
 #[derive(Debug)]
 struct RedisListValues {
+    view: Entity<ZedisListEditor>,
     list_value: Arc<RedisListValue>,
     server_state: Entity<ZedisServerState>,
     selected_index: Option<IndexPath>,
+    value_state: Entity<InputState>,
+    updated_index: Option<IndexPath>,
     done: bool,
 }
 impl RedisListValues {
@@ -63,6 +73,22 @@ impl ListDelegate for RedisListValues {
             } else {
                 odd_bg
             };
+            let is_updated = self.updated_index == Some(ix);
+            let content = if is_updated {
+                div()
+                    .mx_2()
+                    .child(Input::new(&self.value_state).small())
+                    .flex_1()
+                    .into_any_element()
+            } else {
+                Label::new(item)
+                    .pl_4()
+                    .text_sm()
+                    .flex_1()
+                    .into_any_element()
+            };
+            let view = self.view.clone();
+            let default_value = item.to_string();
             ListItem::new(("zedis-editor-list-item", index))
                 .gap(px(0.))
                 .bg(bg)
@@ -76,7 +102,56 @@ impl ListDelegate for RedisListValues {
                                 .text_sm()
                                 .w(px(INDEX_WIDTH)),
                         )
-                        .child(Label::new(item).pl_4().text_sm().flex_1()),
+                        .child(content)
+                        .child(
+                            h_flex()
+                                .w(px(ACTION_WIDTH))
+                                .child(
+                                    Button::new(("zedis-editor-list-action-update-btn", index))
+                                        .small()
+                                        .ghost()
+                                        .mr_2()
+                                        .tooltip(i18n_list_editor(cx, "update_tooltip").to_string())
+                                        .when(!is_updated, |this| {
+                                            this.icon(Icon::new(CustomIconName::FilePenLine))
+                                        })
+                                        .when(is_updated, |this| {
+                                            this.icon(Icon::new(IconName::Check))
+                                        })
+                                        .on_click(move |_event, _window, cx| {
+                                            cx.stop_propagation();
+                                            view.update(cx, |this, cx| {
+                                                if is_updated {
+                                                    this.handle_update_value(
+                                                        default_value.clone(),
+                                                        ix,
+                                                        cx,
+                                                    );
+                                                } else {
+                                                    this.handle_update_index(
+                                                        default_value.clone(),
+                                                        ix,
+                                                        cx,
+                                                    );
+                                                }
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new(("zedis-editor-list-action-delete-btn", index))
+                                        .small()
+                                        .ghost()
+                                        .tooltip(i18n_list_editor(cx, "delete_tooltip").to_string())
+                                        .icon(Icon::new(CustomIconName::FilePlusCorner))
+                                        .on_click(move |_event, _window, cx| {
+                                            cx.stop_propagation();
+                                            // 3. 使用外部捕获的 view 句柄来更新
+                                            // delete_view.update(cx, |this, cx| {
+                                            //     // this.handle_click(ix, cx);
+                                            // });
+                                        }),
+                                ),
+                        ),
                 )
         })
     }
@@ -107,6 +182,8 @@ impl ListDelegate for RedisListValues {
 pub struct ZedisListEditor {
     list_state: Entity<ListState<RedisListValues>>,
     server_state: Entity<ZedisServerState>,
+    value_state: Entity<InputState>,
+    input_default_value: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -120,19 +197,31 @@ impl ZedisListEditor {
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
             this.update_list_values(cx);
         }));
+        let value_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_list_editor(cx, "value_placeholder").to_string())
+        });
+        let view = cx.entity();
         let mut deletage = RedisListValues {
+            view,
             server_state: server_state.clone(),
             list_value: Default::default(),
             selected_index: Default::default(),
+            value_state: value_state.clone(),
             done: false,
+            updated_index: None,
         };
         if let Some(data) = server_state.read(cx).value().and_then(|v| v.list_value()) {
             deletage.list_value = data.clone()
         };
+
         let list_state = cx.new(|cx| ListState::new(deletage, window, cx));
         Self {
             server_state,
             list_state,
+            value_state,
+            input_default_value: None,
             _subscriptions: subscriptions,
         }
     }
@@ -147,14 +236,42 @@ impl ZedisListEditor {
             cx.notify();
         });
     }
+    fn handle_update_index(&mut self, value: String, ix: IndexPath, cx: &mut Context<Self>) {
+        self.input_default_value = Some(value);
+        self.list_state.update(cx, |this, cx| {
+            this.delegate_mut().updated_index = Some(ix);
+        });
+    }
+    fn handle_update_value(
+        &mut self,
+        original_value: String,
+        ix: IndexPath,
+        cx: &mut Context<Self>,
+    ) {
+        self.list_state.update(cx, |this, cx| {
+            this.delegate_mut().updated_index = None;
+        });
+        let value = self.value_state.read(cx).value().to_string();
+        self.server_state.update(cx, |this, cx| {
+            this.update_list_value(ix.row, original_value, value, cx);
+        });
+    }
 }
 
 impl Render for ZedisListEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let value_label = i18n_list_editor(cx, "value").to_string();
+        let action_label = i18n_list_editor(cx, "action").to_string();
         let list_state = self.list_state.read(cx).delegate();
         let (items_count, total_count) = list_state.get_counts();
         let text_color = cx.theme().muted_foreground;
+        if let Some(value) = self.input_default_value.take() {
+            self.value_state.update(cx, |this, cx| {
+                this.set_value(value, window, cx);
+                this.focus(window, cx);
+            });
+        }
+
         v_flex()
             .h_full()
             .w_full()
@@ -176,6 +293,12 @@ impl Render for ZedisListEditor {
                             .text_sm()
                             .text_color(text_color)
                             .flex_1(),
+                    )
+                    .child(
+                        Label::new(action_label)
+                            .text_sm()
+                            .text_color(text_color)
+                            .w(px(ACTION_WIDTH + 10.)),
                     ),
             )
             .child(List::new(&self.list_state).flex_1())

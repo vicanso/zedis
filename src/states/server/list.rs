@@ -65,6 +65,63 @@ pub(crate) async fn first_load_list_value(
 }
 
 impl ZedisServerState {
+    pub fn update_list_value(
+        &mut self,
+        index: usize,
+        original_value: String,
+        new_value: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = self.key.clone().unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        let Some(value) = self.value() else {
+            return;
+        };
+        let Some(data) = value.list_value() else {
+            return;
+        };
+        let data = data.clone();
+        let server = self.server.clone();
+        let mut value = value.clone();
+        self.spawn(
+            cx,
+            "update_list_value",
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let current_value: String = cmd("LINDEX")
+                    .arg(&key)
+                    .arg(index)
+                    .query_async(&mut conn)
+                    .await?;
+                if current_value != original_value {
+                    return Err(Error::Invalid {
+                        message: "value is changed, it cannot be updated".to_string(),
+                    });
+                }
+                let _: () = cmd("LSET")
+                    .arg(&key)
+                    .arg(index)
+                    .arg(&new_value)
+                    .query_async(&mut conn)
+                    .await?;
+                let mut values = data.values.clone();
+                values[index] = new_value;
+                value.data = Some(RedisValueData::List(Arc::new(RedisListValue {
+                    size: data.size,
+                    values,
+                })));
+                Ok(value)
+            },
+            move |this, result, cx| {
+                if let Ok(value) = result {
+                    this.value = Some(value);
+                }
+                cx.notify();
+            },
+        );
+    }
     pub fn load_more_list_value(&mut self, cx: &mut Context<Self>) {
         let key = self.key.clone().unwrap_or_default();
         if key.is_empty() {

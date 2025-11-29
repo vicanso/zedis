@@ -47,3 +47,7 @@ scan_more_keys = "Scan more keys"
 
 [list_editor]
 value = "Value"
+action = "Action"
+update_tooltip = "Update list value"
+delete_tooltip = "Delete list value"
+value_placeholder = "Enter new value"

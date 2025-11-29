@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod action;
-mod fs;
-mod time;
+use chrono::Local;
 
-pub use action::{MemuAction, new_hot_keys};
-pub use fs::get_or_create_config_dir;
-pub use time::unix_ts;
+/// Helper function to get current Unix timestamp in seconds.
+pub fn unix_ts() -> i64 {
+    Local::now().timestamp()
+}

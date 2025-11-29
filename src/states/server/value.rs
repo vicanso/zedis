@@ -14,7 +14,6 @@
 
 use super::ZedisServerState;
 use crate::connection::get_connection_manager;
-use crate::error::Error;
 use chrono::Local;
 use gpui::Hsla;
 use gpui::prelude::*;
@@ -170,37 +169,6 @@ impl ZedisServerState {
                 {
                     value.size = update_value.len();
                     value.data = Some(RedisValueData::String(update_value));
-                }
-                this.updating = false;
-                cx.notify();
-            },
-        );
-    }
-    pub fn update_value_ttl(&mut self, key: String, ttl: String, cx: &mut Context<Self>) {
-        let server = self.server.clone();
-        self.updating = true;
-        cx.notify();
-        self.last_operated_at = unix_ts();
-        self.spawn(
-            cx,
-            "update_value_ttl",
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
-                let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid {
-                    message: e.to_string(),
-                })?;
-                let _: () = cmd("EXPIRE")
-                    .arg(&key)
-                    .arg(ttl.as_secs())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(ttl)
-            },
-            move |this, result, cx| {
-                if let Ok(ttl) = result
-                    && let Some(value) = this.value.as_mut()
-                {
-                    value.expire_at = Some(unix_ts() + ttl.as_secs() as i64);
                 }
                 this.updating = false;
                 cx.notify();
