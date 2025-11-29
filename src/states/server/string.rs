@@ -16,10 +16,30 @@ use super::value::KeyType;
 use super::value::{RedisValue, RedisValueData};
 use crate::connection::RedisAsyncConn;
 use crate::error::Error;
+use gpui::SharedString;
 use redis::cmd;
 use serde_json::Value;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+fn pretty_json(value: &str) -> Option<SharedString> {
+    let trimmed = value.trim();
+    let mut is_json = false;
+    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+    {
+        is_json = true;
+    }
+    if !is_json {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(value)
+        && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
+    {
+        return Some(pretty_value.into());
+    }
+    None
+}
 
 pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
     let value: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
@@ -27,25 +47,23 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
     if value.is_empty() {
         return Ok(RedisValue {
             key_type: KeyType::String,
-            data: Some(RedisValueData::String(String::new())),
+            data: Some(RedisValueData::String(String::new().into())),
             size,
             ..Default::default()
         });
     }
     if let Ok(value) = std::str::from_utf8(&value) {
-        if let Ok(value) = serde_json::from_str::<Value>(value)
-            && let Ok(pretty_value) = serde_json::to_string_pretty(&value)
-        {
+        if let Some(value) = pretty_json(value) {
             return Ok(RedisValue {
                 key_type: KeyType::String,
-                data: Some(RedisValueData::String(pretty_value)),
+                data: Some(RedisValueData::String(value)),
                 size,
                 ..Default::default()
             });
         } else {
             return Ok(RedisValue {
                 key_type: KeyType::String,
-                data: Some(RedisValueData::String(value.to_string())),
+                data: Some(RedisValueData::String(value.to_string().into())),
                 size,
                 ..Default::default()
             });

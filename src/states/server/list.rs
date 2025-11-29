@@ -57,7 +57,7 @@ pub(crate) async fn first_load_list_value(
         key_type: KeyType::List,
         data: Some(RedisValueData::List(Arc::new(RedisListValue {
             size,
-            values,
+            values: values.into_iter().map(|v| v.into()).collect(),
         }))),
         expire_at: None,
         ..Default::default()
@@ -91,7 +91,7 @@ impl ZedisServerState {
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let current_value: String = cmd("LINDEX")
-                    .arg(&key)
+                    .arg(key.as_str())
                     .arg(index)
                     .query_async(&mut conn)
                     .await?;
@@ -101,13 +101,13 @@ impl ZedisServerState {
                     });
                 }
                 let _: () = cmd("LSET")
-                    .arg(&key)
+                    .arg(key.as_str())
                     .arg(index)
                     .arg(&new_value)
                     .query_async(&mut conn)
                     .await?;
                 let mut values = data.values.clone();
-                values[index] = new_value;
+                values[index] = new_value.into();
                 value.data = Some(RedisValueData::List(Arc::new(RedisListValue {
                     size: data.size,
                     values,
@@ -145,7 +145,7 @@ impl ZedisServerState {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let new_values = get_redis_list_value(&mut conn, &key, start, stop).await?;
                 let mut values = data.values.clone();
-                values.extend(new_values);
+                values.extend(new_values.into_iter().map(|v| v.into()));
                 value.data = Some(RedisValueData::List(Arc::new(RedisListValue {
                     size: data.size,
                     values,

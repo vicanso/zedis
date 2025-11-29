@@ -16,6 +16,7 @@ use super::ZedisServerState;
 use crate::connection::get_connection_manager;
 use chrono::Local;
 use gpui::Hsla;
+use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
 use std::sync::Arc;
@@ -26,7 +27,7 @@ fn unix_ts() -> i64 {
 
 #[derive(Debug, Clone)]
 pub enum RedisValueData {
-    String(String),
+    String(SharedString),
     Bytes(Vec<u8>),
     List(Arc<RedisListValue>),
 }
@@ -34,7 +35,7 @@ pub enum RedisValueData {
 #[derive(Debug, Clone, Default)]
 pub struct RedisListValue {
     pub size: usize,
-    pub values: Vec<String>,
+    pub values: Vec<SharedString>,
 }
 
 impl RedisValue {
@@ -95,9 +96,9 @@ pub struct RedisValue {
 }
 
 impl RedisValue {
-    pub fn string_value(&self) -> Option<&String> {
+    pub fn string_value(&self) -> Option<SharedString> {
         if let Some(RedisValueData::String(value)) = self.data.as_ref() {
-            return Some(value);
+            return Some(value.clone());
         }
         None
     }
@@ -168,7 +169,7 @@ impl ZedisServerState {
                     && let Some(value) = this.value.as_mut()
                 {
                     value.size = update_value.len();
-                    value.data = Some(RedisValueData::String(update_value));
+                    value.data = Some(RedisValueData::String(update_value.into()));
                 }
                 this.updating = false;
                 cx.notify();

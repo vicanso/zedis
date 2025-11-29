@@ -114,7 +114,7 @@ impl ZedisSidebar {
                             cx.notify();
                         });
                         this.server_state.update(cx, |state, cx| {
-                            state.select(&server_name, cx);
+                            state.select(server_name.clone().into(), cx);
                         });
                     }))
             })

@@ -15,6 +15,7 @@
 use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::Entity;
+use gpui::SharedString;
 use gpui::Subscription;
 use gpui::Window;
 use gpui::prelude::*;
@@ -34,11 +35,11 @@ pub struct ZedisStringEditor {
     _subscriptions: Vec<Subscription>,
 }
 
-fn get_string_value(window: &Window, value: Option<&RedisValue>) -> String {
+fn get_string_value(window: &Window, value: Option<&RedisValue>) -> SharedString {
     let Some(value) = value else {
-        return String::new();
+        return String::new().into();
     };
-    let mut string_value = value.string_value().cloned().unwrap_or_default();
+    let mut string_value = value.string_value().unwrap_or_default();
     if string_value.is_empty()
         && let Some(data) = value.bytes_value()
     {
@@ -53,7 +54,7 @@ fn get_string_value(window: &Window, value: Option<&RedisValue>) -> String {
             group: 0,
             ..Default::default()
         };
-        string_value = config_hex(&data, cfg)
+        string_value = config_hex(&data, cfg).into()
     }
     string_value
 }
@@ -89,7 +90,9 @@ impl ZedisStringEditor {
             if let InputEvent::Change = &event {
                 let value = this.editor.read(cx).value();
                 let redis_value = this.server_state.read(cx).value();
-                let original = redis_value.and_then(|r| r.string_value()).map_or("", |v| v);
+                let original = redis_value
+                    .and_then(|r| r.string_value())
+                    .map_or("".into(), |v| v);
 
                 this.value_modified = original != value.as_str();
                 cx.notify();

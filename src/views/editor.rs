@@ -92,18 +92,12 @@ impl ZedisEditor {
         }
     }
     fn handle_update_ttl(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let key = self
-            .server_state
-            .clone()
-            .read(cx)
-            .key()
-            .map(|key| key.to_string())
-            .unwrap_or_default();
+        let key = self.server_state.clone().read(cx).key().unwrap_or_default();
         if key.is_empty() {
             return;
         }
         self.ttl_edit_mode = false;
-        let ttl = self.ttl_input_state.read(cx).value().to_string();
+        let ttl = self.ttl_input_state.read(cx).value();
         self.server_state.update(cx, move |state, cx| {
             state.update_key_ttl(key, ttl, cx);
         });
@@ -122,7 +116,7 @@ impl ZedisEditor {
             let server_state = server_state.clone();
             let key = key.clone();
             dialog.confirm().child(message).on_ok(move |_, window, cx| {
-                let key = key.clone();
+                let key = key.clone().into();
                 server_state.update(cx, move |state, cx| {
                     state.delete_key(key, cx);
                 });

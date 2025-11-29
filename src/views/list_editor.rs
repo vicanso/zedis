@@ -238,7 +238,7 @@ impl ZedisListEditor {
     }
     fn handle_update_index(&mut self, value: String, ix: IndexPath, cx: &mut Context<Self>) {
         self.input_default_value = Some(value);
-        self.list_state.update(cx, |this, cx| {
+        self.list_state.update(cx, |this, _cx| {
             this.delegate_mut().updated_index = Some(ix);
         });
     }
@@ -248,7 +248,7 @@ impl ZedisListEditor {
         ix: IndexPath,
         cx: &mut Context<Self>,
     ) {
-        self.list_state.update(cx, |this, cx| {
+        self.list_state.update(cx, |this, _cx| {
             this.delegate_mut().updated_index = None;
         });
         let value = self.value_state.read(cx).value().to_string();

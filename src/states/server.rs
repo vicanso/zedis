@@ -19,6 +19,7 @@ use crate::error::Error;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
+use gpui::SharedString;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
 use parking_lot::RwLock;
@@ -90,30 +91,30 @@ impl KeyNode {
 
 #[derive(Debug, Clone)]
 pub struct ErrorMessage {
-    pub category: String,
-    pub message: String,
+    pub category: SharedString,
+    pub message: SharedString,
     pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
-    server: String,
+    server: SharedString,
     dbsize: Option<u64>,
     latency: Option<Duration>,
     servers: Option<Vec<RedisServer>>,
-    key: Option<String>,
+    key: Option<SharedString>,
     value: Option<RedisValue>,
     updating: bool,
     deleting: bool,
     // scan
-    keyword: String,
+    keyword: SharedString,
     cursors: Option<Vec<u64>>,
     scaning: bool,
     scan_completed: bool,
     scan_times: usize,
-    key_tree_id: String,
-    loaded_prefixes: AHashSet<String>,
-    keys: AHashMap<String, KeyType>,
+    key_tree_id: SharedString,
+    loaded_prefixes: AHashSet<SharedString>,
+    keys: AHashMap<SharedString, KeyType>,
 
     last_operated_at: i64,
     // error
@@ -125,17 +126,17 @@ impl ZedisServerState {
         Self::default()
     }
     fn reset_scan(&mut self) {
-        self.keyword = "".to_string();
+        self.keyword = "".into();
         self.cursors = None;
         self.keys.clear();
-        self.key_tree_id = Uuid::now_v7().to_string();
+        self.key_tree_id = Uuid::now_v7().to_string().into();
         self.scaning = false;
         self.scan_completed = false;
         self.scan_times = 0;
         self.loaded_prefixes.clear();
     }
     fn reset(&mut self) {
-        self.server = "".to_string();
+        self.server = "".into();
         self.dbsize = None;
         self.latency = None;
         self.key = None;
@@ -145,13 +146,13 @@ impl ZedisServerState {
         self.keys.reserve(keys.len());
         let mut insert_count = 0;
         for key in keys {
-            self.keys.entry(key).or_insert_with(|| {
+            self.keys.entry(key.into()).or_insert_with(|| {
                 insert_count += 1;
                 KeyType::Unknown
             });
         }
         if insert_count != 0 {
-            self.key_tree_id = Uuid::now_v7().to_string();
+            self.key_tree_id = Uuid::now_v7().to_string().into();
         }
     }
     fn add_error_message(&mut self, category: String, message: String) {
@@ -160,8 +161,8 @@ impl ZedisServerState {
             guard.remove(0);
         }
         guard.push(ErrorMessage {
-            category,
-            message,
+            category: category.into(),
+            message: message.into(),
             created_at: unix_ts(),
         });
     }
@@ -279,8 +280,8 @@ impl ZedisServerState {
     pub fn servers(&self) -> Option<&[RedisServer]> {
         self.servers.as_deref()
     }
-    pub fn key(&self) -> Option<&str> {
-        self.key.as_deref()
+    pub fn key(&self) -> Option<SharedString> {
+        self.key.clone()
     }
     pub fn value(&self) -> Option<&RedisValue> {
         self.value.as_ref()
@@ -355,20 +356,20 @@ impl ZedisServerState {
             },
         );
     }
-    pub fn select(&mut self, server: &str, cx: &mut Context<Self>) {
+    pub fn select(&mut self, server: SharedString, cx: &mut Context<Self>) {
         if self.server != server {
             self.reset();
-            self.server = server.to_string();
-            debug!(server = self.server, "select server");
+            self.server = server;
+            debug!(server = self.server.as_str(), "select server");
             cx.notify();
             if self.server.is_empty() {
                 return;
             }
             self.scaning = true;
             cx.notify();
-            let server_clone = server.to_string();
+            let server_clone = self.server.clone();
             self.last_operated_at = unix_ts();
-            let counting_server = server_clone.clone();
+            let counting_server = self.server.clone();
             self.spawn(
                 cx,
                 "select_server",
@@ -389,7 +390,7 @@ impl ZedisServerState {
                     };
                     let server = this.server.clone();
                     cx.notify();
-                    this.scan_keys(cx, server, "".to_string());
+                    this.scan_keys(cx, server, "".into());
                 },
             );
         }

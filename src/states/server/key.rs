@@ -20,6 +20,7 @@ use crate::connection::get_connection_manager;
 use crate::error::Error;
 use crate::helpers::unix_ts;
 use futures::{StreamExt, stream};
+use gpui::SharedString;
 use gpui::prelude::*;
 use redis::{cmd, pipe};
 use tracing::debug;
@@ -32,7 +33,7 @@ impl ZedisServerState {
     ///
     /// This is typically used when expanding a directory in the key tree view.
     /// It filters keys based on the prefix and ensures we only query keys at the current level.
-    fn fill_key_types(&mut self, cx: &mut Context<Self>, prefix: String) {
+    fn fill_key_types(&mut self, cx: &mut Context<Self>, prefix: SharedString) {
         // Filter keys that need type resolution
         let mut keys = self
             .keys
@@ -41,14 +42,14 @@ impl ZedisServerState {
                 if *value != KeyType::Unknown {
                     return None;
                 }
-                let suffix = key.strip_prefix(&prefix)?;
+                let suffix = key.strip_prefix(prefix.as_str())?;
                 // Skip if the key is in a deeper subdirectory (contains delimiter)
                 if suffix.contains(":") {
                     return None;
                 }
                 Some(key.clone())
             })
-            .collect::<Vec<String>>();
+            .collect::<Vec<SharedString>>();
         if keys.is_empty() {
             return;
         }
@@ -61,13 +62,13 @@ impl ZedisServerState {
             move || async move {
                 let conn = get_connection_manager().get_connection(&server).await?;
                 // Use a stream to execute commands concurrently with backpressure
-                let types: Vec<(String, String)> = stream::iter(keys.iter().cloned())
+                let types: Vec<(SharedString, String)> = stream::iter(keys.iter().cloned())
                     .map(|key| {
                         let mut conn_clone = conn.clone();
                         let key = key.clone();
                         async move {
                             let t: String = cmd("TYPE")
-                                .arg(&key)
+                                .arg(key.as_str())
                                 .query_async(&mut conn_clone)
                                 .await
                                 .unwrap_or_default();
@@ -82,13 +83,13 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(types) = result {
                     // Update local state with fetched types
-                    for (key, value) in types.iter() {
-                        if let Some(k) = this.keys.get_mut(key) {
+                    for (key, value) in types {
+                        if let Some(k) = this.keys.get_mut(&key) {
                             *k = KeyType::from(value.as_str());
                         }
                     }
                     // Trigger UI update by changing the tree ID
-                    this.key_tree_id = Uuid::now_v7().to_string();
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
                 cx.notify();
             },
@@ -98,7 +99,12 @@ impl ZedisServerState {
     ///
     /// It handles pagination via cursors and recursive calls to fetch more data
     /// if the result set is too small.
-    pub(crate) fn scan_keys(&mut self, cx: &mut Context<Self>, server: String, keyword: String) {
+    pub(crate) fn scan_keys(
+        &mut self,
+        cx: &mut Context<Self>,
+        server: SharedString,
+        keyword: SharedString,
+    ) {
         // Guard clause: ignore if the context has changed (e.g., switched server)
         if self.server != server || self.keyword != keyword {
             return;
@@ -148,12 +154,12 @@ impl ZedisServerState {
                 }
                 this.scaning = false;
                 cx.notify();
-                this.fill_key_types(cx, "".to_string());
+                this.fill_key_types(cx, "".into());
             },
         );
     }
     /// Initiates a new scan for keys matching the keyword.
-    pub fn scan(&mut self, cx: &mut Context<Self>, keyword: String) {
+    pub fn scan(&mut self, cx: &mut Context<Self>, keyword: SharedString) {
         self.reset_scan();
         self.scaning = true;
         self.keyword = keyword.clone();
@@ -172,7 +178,7 @@ impl ZedisServerState {
     /// Scans keys matching a specific prefix.
     ///
     /// Optimized for populating directory-like structures in the key view.
-    pub fn scan_prefix(&mut self, cx: &mut Context<Self>, prefix: String) {
+    pub fn scan_prefix(&mut self, cx: &mut Context<Self>, prefix: SharedString) {
         // Avoid reloading if already loaded
         if self.loaded_prefixes.contains(&prefix) {
             return;
@@ -215,21 +221,25 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(keys) = result {
-                    debug!(prefix, count = keys.len(), "scan prefix success");
+                    debug!(
+                        prefix = prefix.as_str(),
+                        count = keys.len(),
+                        "scan prefix success"
+                    );
                     this.loaded_prefixes.insert(prefix.clone());
                     this.extend_keys(keys);
                 }
                 cx.notify();
                 // Resolve types for the keys under this prefix
-                this.fill_key_types(cx, prefix);
+                this.fill_key_types(cx, prefix.clone());
             },
         );
     }
 
     /// Selects a key and fetches its details (Type, TTL, Value).
-    pub fn select_key(&mut self, key: String, cx: &mut Context<Self>) {
+    pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         // Avoid reloading if the key is already selected
-        if self.key.as_deref() == Some(key.as_str()) {
+        if self.key == Some(key.clone()) {
             return;
         }
         self.key = Some(key.clone());
@@ -247,9 +257,9 @@ impl ZedisServerState {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let (t, ttl): (String, i64) = pipe()
                     .cmd("TYPE")
-                    .arg(&key)
+                    .arg(key.as_str())
                     .cmd("TTL")
-                    .arg(&key)
+                    .arg(key.as_str())
                     .query_async(&mut conn)
                     .await?;
                 // the key does not exist
@@ -292,7 +302,7 @@ impl ZedisServerState {
         );
     }
     /// Deletes a specified key.
-    pub fn delete_key(&mut self, key: String, cx: &mut Context<Self>) {
+    pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server = self.server.clone();
         self.deleting = true;
         cx.notify();
@@ -303,16 +313,16 @@ impl ZedisServerState {
             "delete_key",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
-                let _: () = cmd("DEL").arg(&key).query_async(&mut conn).await?;
+                let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
                 Ok(())
             },
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.remove(&remove_key);
                     // Force refresh of the key tree view
-                    this.key_tree_id = Uuid::now_v7().to_string();
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
                     // Deselect if the deleted key was selected
-                    if this.key.as_deref() == Some(remove_key.as_str()) {
+                    if this.key == Some(remove_key) {
                         this.key = None;
                     }
                 }
@@ -322,7 +332,7 @@ impl ZedisServerState {
         );
     }
     /// Updates the TTL (expiration) for a key.
-    pub fn update_key_ttl(&mut self, key: String, ttl: String, cx: &mut Context<Self>) {
+    pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         let server = self.server.clone();
         self.updating = true;
         cx.notify();
@@ -336,7 +346,7 @@ impl ZedisServerState {
                     message: e.to_string(),
                 })?;
                 let _: () = cmd("EXPIRE")
-                    .arg(&key)
+                    .arg(key.as_str())
                     .arg(ttl.as_secs())
                     .query_async(&mut conn)
                     .await?;

@@ -282,7 +282,7 @@ impl Render for ZedisServers {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let server_name = select_server_name.clone();
                         this.server_state.update(cx, |state, cx| {
-                            state.select(&server_name, cx);
+                            state.select(server_name.into(), cx);
                         });
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, _cx| {

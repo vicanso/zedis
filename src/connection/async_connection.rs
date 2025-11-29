@@ -28,7 +28,7 @@ use std::time::Duration;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-const DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
+static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     let value = std::env::var("REDIS_DELAY").unwrap_or_default();
     humantime::parse_duration(&value).ok()
 });
