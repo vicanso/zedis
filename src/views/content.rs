@@ -130,7 +130,7 @@ impl ZedisContent {
             key_tree
         };
         let mut key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
-        let min_width = px(200.);
+        let min_width = px(275.);
         if key_tree_width < min_width {
             key_tree_width = min_width;
         }

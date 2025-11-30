@@ -23,7 +23,6 @@ use gpui::prelude::*;
 use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
 use gpui_component::Icon;
-use gpui_component::IconName;
 use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
@@ -138,39 +137,6 @@ impl ZedisStatusBar {
             .child(Label::new(latency_text).text_color(color).mr_4())
     }
 
-    fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("soft-wrap")
-            .ghost()
-            .xsmall()
-            .when(true, |this| this.icon(IconName::Check))
-            .label("Soft Wrap")
-            .on_click(cx.listener(|_this, _, _window, cx| {
-                // this.soft_wrap = !this.soft_wrap;
-                // this.editor.update(cx, |state, cx| {
-                //     state.set_soft_wrap(this.soft_wrap, window, cx);
-                // });
-                cx.notify();
-            }))
-    }
-
-    fn render_indent_guides_button(
-        &self,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        Button::new("indent-guides")
-            .ghost()
-            .xsmall()
-            .when(true, |this| this.icon(IconName::Check))
-            .label("Indent Guides")
-            .on_click(cx.listener(|_this, _, _window, cx| {
-                // this.indent_guides = !this.indent_guides;
-                // this.editor.update(cx, |state, cx| {
-                //     state.set_indent_guides(this.indent_guides, window, cx);
-                // });
-                cx.notify();
-            }))
-    }
     fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
         let Some(data) = server_state.get_error_message() else {
@@ -187,6 +153,9 @@ impl ZedisStatusBar {
 
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.server_state.read(cx).server().is_empty() {
+            return h_flex();
+        }
         h_flex()
             .justify_between()
             .text_sm()
@@ -195,13 +164,7 @@ impl Render for ZedisStatusBar {
             .border_t_1()
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(self.render_server_status(window, cx))
-                    .child(self.render_soft_wrap_button(window, cx))
-                    .child(self.render_indent_guides_button(window, cx)),
-            )
+            .child(self.render_server_status(window, cx))
             .child(self.render_errors(window, cx))
     }
 }

@@ -129,7 +129,7 @@ impl ZedisServerState {
     pub fn new() -> Self {
         Self::default()
     }
-    fn reset_scan(&mut self) {
+    pub fn reset_scan(&mut self) {
         self.keyword = "".into();
         self.cursors = None;
         self.keys.clear();
@@ -214,7 +214,7 @@ impl ZedisServerState {
     pub fn key_tree_id(&self) -> &str {
         &self.key_tree_id
     }
-    pub fn key_tree(&self, expanded_items: &AHashSet<String>) -> Vec<TreeItem> {
+    pub fn key_tree(&self, expanded_items: &AHashSet<String>, expand_all: bool) -> Vec<TreeItem> {
         let keys = self.keys.keys();
         let mut root_trie_node = KeyNode {
             full_path: "".to_string(),
@@ -229,17 +229,19 @@ impl ZedisServerState {
         fn convert_map_to_vec_tree(
             children_map: &AHashMap<String, KeyNode>,
             expanded_items: &AHashSet<String>,
+            expand_all: bool,
         ) -> Vec<TreeItem> {
             let mut children_vec = Vec::new();
 
             for (short_name, internal_node) in children_map {
                 let mut node = TreeItem::new(internal_node.full_path.clone(), short_name.clone());
-                if expanded_items.contains(&internal_node.full_path) {
+                if expand_all || expanded_items.contains(&internal_node.full_path) {
                     node = node.expanded(true);
                 }
                 let node = node.children(convert_map_to_vec_tree(
                     &internal_node.children,
                     expanded_items,
+                    expand_all,
                 ));
                 children_vec.push(node);
             }
@@ -256,7 +258,7 @@ impl ZedisServerState {
             children_vec
         }
 
-        convert_map_to_vec_tree(&root_trie_node.children, expanded_items)
+        convert_map_to_vec_tree(&root_trie_node.children, expanded_items, expand_all)
     }
     pub fn scan_completed(&self) -> bool {
         self.scan_completed

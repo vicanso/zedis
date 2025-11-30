@@ -14,6 +14,7 @@
 
 use crate::error::Error;
 use crate::helpers::get_or_create_config_dir;
+use gpui::Action;
 use gpui::App;
 use gpui::AppContext;
 use gpui::Bounds;
@@ -23,9 +24,13 @@ use gpui::Global;
 use gpui::Pixels;
 use gpui_component::ThemeMode;
 use locale_config::Locale;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -56,6 +61,36 @@ pub struct ZedisAppState {
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
     theme: Option<String>,
+    query_modes: Option<HashMap<String, String>>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+pub enum QueryMode {
+    All,
+    Prefix,
+    Exact,
+}
+
+impl fmt::Display for QueryMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            QueryMode::Prefix => "^",
+            QueryMode::Exact => "=",
+            _ => "*",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl FromStr for QueryMode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "^" => Ok(QueryMode::Prefix),
+            "=" => Ok(QueryMode::Exact),
+            _ => Ok(QueryMode::All),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +104,15 @@ impl ZedisGlobalStore {
     }
     pub fn state(&self) -> Entity<ZedisAppState> {
         self.app_state.clone()
+    }
+    pub fn query_mode(&self, server: &str, cx: &App) -> QueryMode {
+        let Some(query_modes) = &self.value(cx).query_modes else {
+            return QueryMode::All;
+        };
+        let Some(mode) = query_modes.get(server) else {
+            return QueryMode::All;
+        };
+        QueryMode::from_str(mode).unwrap_or(QueryMode::All)
     }
     pub fn value(&self, cx: &App) -> ZedisAppState {
         self.app_state.read(cx).clone()
@@ -161,5 +205,13 @@ impl ZedisAppState {
     }
     pub fn set_locale(&mut self, locale: String) {
         self.locale = Some(locale);
+    }
+    pub fn add_query_mode(&mut self, server: String, mode: QueryMode) {
+        if self.query_modes.is_none() {
+            self.query_modes = Some(HashMap::new());
+        }
+        if let Some(query_modes) = self.query_modes.as_mut() {
+            query_modes.insert(server, mode.to_string());
+        }
     }
 }

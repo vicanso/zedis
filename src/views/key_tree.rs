@@ -13,10 +13,14 @@
 // limitations under the License.
 
 use crate::states::KeyType;
+use crate::states::QueryMode;
+use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::i18n_key_tree;
+use crate::states::save_app_state;
 use ahash::AHashSet;
 use gpui::AppContext;
+use gpui::Corner;
 use gpui::Entity;
 use gpui::Hsla;
 use gpui::Subscription;
@@ -29,8 +33,8 @@ use gpui_component::Disableable;
 use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::StyledExt;
-use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
+use gpui_component::button::{Button, DropdownButton};
 use gpui_component::h_flex;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
@@ -39,12 +43,16 @@ use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
 use tracing::debug;
+use tracing::error;
+use tracing::info;
 
 pub struct ZedisKeyTree {
     is_empty: bool,
     server_state: Entity<ZedisServerState>,
     key_tree_id: String,
     tree_state: Entity<TreeState>,
+
+    query_mode: QueryMode,
 
     expanded_items: AHashSet<String>,
     keyword_state: Entity<InputState>,
@@ -87,6 +95,7 @@ impl ZedisKeyTree {
             tree_state,
             keyword_state,
             server_state,
+            query_mode: QueryMode::All,
             expanded_items: AHashSet::with_capacity(10),
             _subscriptions: subscriptions,
         }
@@ -94,17 +103,22 @@ impl ZedisKeyTree {
 
     fn update_key_tree(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
+        let query_mode = cx
+            .global::<ZedisGlobalStore>()
+            .query_mode(server_state.server(), cx);
         debug!(
             key_tree_server = server_state.server(),
             key_tree_id = server_state.key_tree_id(),
             "observe server state"
         );
+        self.query_mode = query_mode;
 
         if self.key_tree_id == server_state.key_tree_id() {
             return;
         }
-        self.key_tree_id = server_state.key_tree_id().to_string();
-        let items = server_state.key_tree(&self.expanded_items);
+
+        let expand_all = !self.keyword_state.read(cx).value().is_empty();
+        let items = server_state.key_tree(&self.expanded_items, expand_all);
         if items.is_empty() {
             self.expanded_items.clear();
         }
@@ -119,8 +133,9 @@ impl ZedisKeyTree {
             return;
         }
         let keyword = self.keyword_state.read(cx).value();
+        let mode = self.query_mode;
         self.server_state.update(cx, move |handle, cx| {
-            handle.scan(keyword, cx);
+            handle.handle_filter(keyword, mode, cx);
         });
     }
 
@@ -251,6 +266,7 @@ impl ZedisKeyTree {
     }
     fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let scaning = self.server_state.read(cx).scaning();
+        let query_mode = self.query_mode;
         h_flex()
             .p_2()
             .border_b_1()
@@ -259,6 +275,37 @@ impl ZedisKeyTree {
                 Input::new(&self.keyword_state)
                     .w_full()
                     .flex_1()
+                    .px_0()
+                    .prefix(
+                        DropdownButton::new("dropdown")
+                            .button(
+                                Button::new("key-tree-query-mode-btn")
+                                    .ghost()
+                                    .p_0()
+                                    .ml(px(-1.))
+                                    .bg(cx.theme().background)
+                                    .label("")
+                                    .text_color(cx.theme().foreground),
+                            )
+                            .compact()
+                            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _, _| {
+                                menu.menu_element_with_check(
+                                    query_mode == QueryMode::All,
+                                    Box::new(QueryMode::All),
+                                    |_, _| Label::new("*").ml_2().text_xs(),
+                                )
+                                .menu_element_with_check(
+                                    query_mode == QueryMode::Prefix,
+                                    Box::new(QueryMode::Prefix),
+                                    |_, _| Label::new("^").ml_2().text_xs(),
+                                )
+                                .menu_element_with_check(
+                                    query_mode == QueryMode::Exact,
+                                    Box::new(QueryMode::Exact),
+                                    |_, _| Label::new("=").ml_2().text_xs(),
+                                )
+                            }),
+                    )
                     .suffix(
                         Button::new("key-tree-search-btn")
                             .ghost()
@@ -282,5 +329,25 @@ impl Render for ZedisKeyTree {
             .w_full()
             .child(self.render_keyword_input(cx))
             .child(self.render_tree(cx))
+            .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
+                let server = this.server_state.read(cx).server().to_string();
+                let app_state = cx.global::<ZedisGlobalStore>().state();
+                app_state.update(cx, |state, cx| {
+                    state.add_query_mode(server, *e);
+                    let value = state.clone();
+                    cx.spawn(async move |_, cx| {
+                        cx.background_spawn(async move {
+                            if let Err(e) = save_app_state(&value) {
+                                error!(error = %e, "save app state failed");
+                            } else {
+                                info!(action = "save app state", "save app state success");
+                            }
+                        })
+                        .await;
+                    })
+                    .detach();
+                });
+                this.query_mode = *e;
+            }))
     }
 }

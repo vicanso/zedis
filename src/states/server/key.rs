@@ -19,13 +19,13 @@ use super::value::{KeyType, RedisValue, RedisValueStatus};
 use crate::connection::get_connection_manager;
 use crate::error::Error;
 use crate::helpers::unix_ts;
+use crate::states::app::QueryMode;
 use futures::{StreamExt, stream};
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::{cmd, pipe};
 use tracing::debug;
 use uuid::Uuid;
-
 const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
 
 impl ZedisServerState {
@@ -158,6 +158,19 @@ impl ZedisServerState {
             cx,
         );
     }
+    pub fn handle_filter(
+        &mut self,
+        keyword: SharedString,
+        mode: QueryMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.reset_scan();
+        match mode {
+            QueryMode::Prefix => self.scan_prefix(keyword, cx),
+            QueryMode::Exact => self.select_key(keyword, cx),
+            _ => self.scan(keyword, cx),
+        }
+    }
     /// Initiates a new scan for keys matching the keyword.
     pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan();
@@ -238,19 +251,15 @@ impl ZedisServerState {
 
     /// Selects a key and fetches its details (Type, TTL, Value).
     pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
-        // Avoid reloading if the key is already selected
-        if self.key == Some(key.clone()) {
+        self.key = Some(key.clone());
+        if key.is_empty() {
             return;
         }
-        self.key = Some(key.clone());
         self.value = Some(RedisValue {
             status: RedisValueStatus::Loading,
             ..Default::default()
         });
         cx.notify();
-        if key.is_empty() {
-            return;
-        }
 
         let server = self.server.clone();
         self.last_operated_at = unix_ts();
@@ -295,6 +304,12 @@ impl ZedisServerState {
             move |this, result, cx| {
                 match result {
                     Ok(value) => {
+                        if let Some(key) = this.key.as_ref()
+                            && !this.keys.contains_key(key)
+                        {
+                            this.keys.insert(key.clone(), value.key_type());
+                            this.key_tree_id = Uuid::now_v7().to_string().into();
+                        }
                         this.value = Some(value);
                     }
                     Err(_) => {
