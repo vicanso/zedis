@@ -108,7 +108,6 @@ impl ZedisEditor {
         let Some(key) = self.server_state.read(cx).key() else {
             return;
         };
-        let key = key.to_string();
         let server_state = self.server_state.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
             let locale = cx.global::<ZedisGlobalStore>().locale(cx);
@@ -116,7 +115,7 @@ impl ZedisEditor {
             let server_state = server_state.clone();
             let key = key.clone();
             dialog.confirm().child(message).on_ok(move |_, window, cx| {
-                let key = key.clone().into();
+                let key = key.clone();
                 server_state.update(cx, move |state, cx| {
                     state.delete_key(key, cx);
                 });
@@ -127,7 +126,7 @@ impl ZedisEditor {
     }
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
-        let Some(key) = server_state.key().map(|key| key.to_string()) else {
+        let Some(key) = server_state.key() else {
             return h_flex();
         };
         let mut btns = vec![];
@@ -137,14 +136,16 @@ impl ZedisEditor {
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
                 if seconds == -2 {
-                    i18n_editor(cx, "expired").to_string()
+                    i18n_editor(cx, "expired")
                 } else if seconds < 0 {
-                    i18n_editor(cx, "perm").to_string()
+                    i18n_editor(cx, "perm")
                 } else {
-                    humantime::format_duration(Duration::from_secs(seconds as u64)).to_string()
+                    humantime::format_duration(Duration::from_secs(seconds as u64))
+                        .to_string()
+                        .into()
                 }
             } else {
-                "--".to_string()
+                "--".into()
             }
             .split_whitespace()
             .take(2)
@@ -152,7 +153,7 @@ impl ZedisEditor {
             .join(" ");
             size = format_size(value.size() as u64, DECIMAL);
         }
-        let size_label = i18n_editor(cx, "size").to_string();
+        let size_label = i18n_editor(cx, "size");
         if !size.is_empty() {
             btns.push(
                 Label::new(format!("{size_label} : {size}"))
@@ -170,12 +171,11 @@ impl ZedisEditor {
                     .disabled(!value_modified || server_state.updating())
                     .loading(server_state.updating())
                     .outline()
-                    .tooltip(i18n_editor(cx, "save_data_tooltip").to_string())
+                    .tooltip(i18n_editor(cx, "save_data_tooltip"))
                     .ml_2()
                     .icon(CustomIconName::FileCheckCorner)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        let Some(key) = this.server_state.read(cx).key().map(|key| key.to_string())
-                        else {
+                        let Some(key) = this.server_state.read(cx).key() else {
                             return;
                         };
                         let Some(editor) = this.string_editor.as_ref() else {
@@ -184,7 +184,7 @@ impl ZedisEditor {
                         editor.clone().update(cx, move |state, cx| {
                             let value = state.value(cx);
                             this.server_state.update(cx, move |state, cx| {
-                                state.save_value(key, value, cx);
+                                state.save_value(key.to_string(), value, cx);
                             });
                         });
                     }))
@@ -258,8 +258,7 @@ impl ZedisEditor {
                     .tooltip(i18n_editor(cx, "copy_key_tooltip").to_string())
                     .icon(IconName::Copy)
                     .on_click(cx.listener(move |_this, _event, window, cx| {
-                        let content = content.clone();
-                        cx.write_to_clipboard(ClipboardItem::new_string(content));
+                        cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));
                         window.push_notification(
                             Notification::info(
                                 i18n_editor(cx, "copied_key_to_clipboard").to_string(),

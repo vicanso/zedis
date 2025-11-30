@@ -14,16 +14,13 @@
 
 use super::ZedisServerState;
 use crate::connection::get_connection_manager;
+use crate::helpers::unix_ts;
 use chrono::Local;
 use gpui::Hsla;
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
 use std::sync::Arc;
-
-fn unix_ts() -> i64 {
-    Local::now().timestamp()
-}
 
 #[derive(Debug, Clone)]
 pub enum RedisValueData {
@@ -87,8 +84,17 @@ impl KeyType {
     }
 }
 
+#[derive(Clone, PartialEq, Default, Debug)]
+pub enum RedisValueStatus {
+    #[default]
+    Idle,
+    Loading,
+    Updating,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RedisValue {
+    pub(crate) status: RedisValueStatus,
     pub(crate) key_type: KeyType,
     pub(crate) data: Option<RedisValueData>,
     pub(crate) expire_at: Option<i64>,
@@ -96,6 +102,9 @@ pub struct RedisValue {
 }
 
 impl RedisValue {
+    pub fn is_busy(&self) -> bool {
+        self.status != RedisValueStatus::Idle
+    }
     pub fn string_value(&self) -> Option<SharedString> {
         if let Some(RedisValueData::String(value)) = self.data.as_ref() {
             return Some(value.clone());

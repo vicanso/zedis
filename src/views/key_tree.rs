@@ -118,9 +118,9 @@ impl ZedisKeyTree {
         if self.server_state.read(cx).scaning() {
             return;
         }
-        let keyword = self.keyword_state.read(cx).text().to_string().into();
+        let keyword = self.keyword_state.read(cx).value();
         self.server_state.update(cx, move |handle, cx| {
-            handle.scan(cx, keyword);
+            handle.scan(keyword, cx);
         });
     }
 
@@ -224,8 +224,8 @@ impl ZedisKeyTree {
                                         this.expanded_items.insert(key.clone());
                                         this.server_state.update(cx, |state, cx| {
                                             state.scan_prefix(
-                                                cx,
                                                 format!("{}:", key.as_str()).into(),
+                                                cx,
                                             );
                                         });
                                     } else {
