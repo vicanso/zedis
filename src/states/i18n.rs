@@ -46,3 +46,8 @@ pub fn i18n_list_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
     t!(format!("list_editor.{key}"), locale = locale).into()
 }
+
+pub fn i18n_content<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+    t!(format!("content.{key}"), locale = locale).into()
+}

@@ -51,3 +51,6 @@ action = "Action"
 update_tooltip = "Update list value"
 delete_tooltip = "Delete list value"
 value_placeholder = "Enter new value"
+
+[content]
+loading = "Loading..."

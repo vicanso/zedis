@@ -93,9 +93,17 @@ pub struct ErrorMessage {
     pub created_at: i64,
 }
 
+#[derive(Clone, PartialEq, Default, Debug)]
+pub enum RedisServerStatus {
+    #[default]
+    Idle,
+    Loading,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
     server: SharedString,
+    server_status: RedisServerStatus,
     dbsize: Option<u64>,
     latency: Option<Duration>,
     servers: Option<Vec<RedisServer>>,
@@ -196,6 +204,9 @@ impl ZedisServerState {
             })
         })
         .detach();
+    }
+    pub fn is_busy(&self) -> bool {
+        !matches!(self.server_status, RedisServerStatus::Idle)
     }
     pub fn key_type(&self, key: &str) -> Option<&KeyType> {
         self.keys.get(key)
@@ -362,6 +373,7 @@ impl ZedisServerState {
             if self.server.is_empty() {
                 return;
             }
+            self.server_status = RedisServerStatus::Loading;
             self.scaning = true;
             cx.notify();
             let server_clone = self.server.clone();
@@ -386,6 +398,7 @@ impl ZedisServerState {
                         this.dbsize = Some(dbsize);
                     };
                     let server = this.server.clone();
+                    this.server_status = RedisServerStatus::Idle;
                     cx.notify();
                     this.scan_keys(server, "".into(), cx);
                 },

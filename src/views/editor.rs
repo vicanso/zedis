@@ -184,7 +184,7 @@ impl ZedisEditor {
                         editor.clone().update(cx, move |state, cx| {
                             let value = state.value(cx);
                             this.server_state.update(cx, move |state, cx| {
-                                state.save_value(key.to_string(), value, cx);
+                                state.save_value(key, value, cx);
                             });
                         });
                     }))

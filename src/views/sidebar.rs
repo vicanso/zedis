@@ -68,23 +68,24 @@ impl ZedisSidebar {
         Self { server_state }
     }
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut server_list = vec!["".to_string()];
+        let mut server_names = vec![String::new()];
         let server_state = self.server_state.read(cx);
         let current_server = server_state.server();
         if let Some(servers) = server_state.servers() {
-            server_list.extend(servers.iter().map(|server| server.name.clone()));
+            server_names.extend(servers.iter().map(|server| server.name.clone()));
         }
-        let server_elements: Vec<_> = server_list
-            .iter()
+        let server_elements: Vec<_> = server_names
+            .into_iter()
             .enumerate()
             .map(|(index, server_name)| {
-                let server_name = server_name.clone();
-                let name = if server_name.is_empty() {
-                    i18n_sidebar(cx, "home").to_string()
-                } else {
-                    server_name.clone()
-                };
+                let is_home = server_name.is_empty();
+                // let server_name = server_name.clone();
                 let is_current = server_name == current_server;
+                let name = if server_name.is_empty() {
+                    i18n_sidebar(cx, "home")
+                } else {
+                    server_name.clone().into()
+                };
                 ListItem::new(("sidebar-redis-server", index))
                     .when(is_current, |this| this.bg(cx.theme().list_active))
                     .py_4()
@@ -102,11 +103,7 @@ impl ZedisSidebar {
                         if is_current {
                             return;
                         }
-                        let route = if server_name.is_empty() {
-                            Route::Home
-                        } else {
-                            Route::Editor
-                        };
+                        let route = if is_home { Route::Home } else { Route::Editor };
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, _cx| {
                                 state.go_to(route);
@@ -122,12 +119,14 @@ impl ZedisSidebar {
         v_flex().flex_1().children(server_elements)
     }
     fn render_settings_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_action = match cx.global::<ZedisGlobalStore>().theme(cx) {
+        let store = cx.global::<ZedisGlobalStore>();
+
+        let current_action = match store.theme(cx) {
             Some(ThemeMode::Light) => ThemeAction::Light,
             Some(ThemeMode::Dark) => ThemeAction::Dark,
             _ => ThemeAction::System,
         };
-        let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+        let locale = store.locale(cx);
         let current_locale = match locale {
             "zh" => LocaleAction::Zh,
             _ => LocaleAction::En,
@@ -137,33 +136,27 @@ impl ZedisSidebar {
             .ghost()
             .w_full()
             .h(px(60.))
-            .tooltip(i18n_sidebar(cx, "settings").to_string())
+            .tooltip(i18n_sidebar(cx, "settings"))
             .child(Icon::new(IconName::Settings).size(px(18.)))
             .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
-                let theme_text = i18n_sidebar(cx, "theme").to_string();
-                let lang_text = i18n_sidebar(cx, "lang").to_string();
+                let theme_text = i18n_sidebar(cx, "theme");
+                let lang_text = i18n_sidebar(cx, "lang");
                 menu.submenu(theme_text, window, cx, move |submenu, _window, _cx| {
                     submenu
                         .menu_element_with_check(
                             current_action == ThemeAction::Light,
                             Box::new(ThemeAction::Light),
-                            |_window, cx| {
-                                Label::new(i18n_sidebar(cx, "light").to_string()).text_xs()
-                            },
+                            |_window, cx| Label::new(i18n_sidebar(cx, "light")).text_xs(),
                         )
                         .menu_element_with_check(
                             current_action == ThemeAction::Dark,
                             Box::new(ThemeAction::Dark),
-                            |_window, cx| {
-                                Label::new(i18n_sidebar(cx, "dark").to_string()).text_xs()
-                            },
+                            |_window, cx| Label::new(i18n_sidebar(cx, "dark")).text_xs(),
                         )
                         .menu_element_with_check(
                             current_action == ThemeAction::System,
                             Box::new(ThemeAction::System),
-                            |_window, cx| {
-                                Label::new(i18n_sidebar(cx, "system").to_string()).text_xs()
-                            },
+                            |_window, cx| Label::new(i18n_sidebar(cx, "system")).text_xs(),
                         )
                 })
                 .submenu(lang_text, window, cx, move |submenu, _window, _cx| {
@@ -257,7 +250,7 @@ impl ZedisSidebar {
                 .ghost()
                 .h(px(50.))
                 .w_full()
-                .tooltip(i18n_sidebar(cx, "star").to_string())
+                .tooltip(i18n_sidebar(cx, "star"))
                 .icon(Icon::new(IconName::GitHub))
                 .on_click(cx.listener(move |_, _, _, cx| {
                     cx.open_url("https://github.com/vicanso/zedis");

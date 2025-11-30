@@ -103,7 +103,7 @@ pub struct RedisValue {
 
 impl RedisValue {
     pub fn is_busy(&self) -> bool {
-        self.status != RedisValueStatus::Idle
+        !matches!(self.status, RedisValueStatus::Idle)
     }
     pub fn string_value(&self) -> Option<SharedString> {
         if let Some(RedisValueData::String(value)) = self.data.as_ref() {
@@ -121,19 +121,21 @@ impl RedisValue {
         self.size
     }
     pub fn ttl(&self) -> Option<chrono::Duration> {
-        self.expire_at.map(|expire_at| {
-            if expire_at < 0 {
-                chrono::Duration::seconds(expire_at)
-            } else {
-                let now = Local::now().timestamp();
-                let seconds = expire_at.saturating_sub(now);
-                if seconds < 0 {
-                    chrono::Duration::seconds(-2)
-                } else {
-                    chrono::Duration::seconds(seconds)
-                }
-            }
-        })
+        let expire_at = self.expire_at?;
+
+        // Handle special Redis TTL codes
+        if expire_at < 0 {
+            return Some(chrono::Duration::seconds(expire_at));
+        }
+
+        // Calculate remaining time
+        let now = Local::now().timestamp();
+        let remaining = expire_at.saturating_sub(now);
+
+        // If calculated remaining is 0 but it wasn't a special code, it means expired just now.
+        // We can treat it as expired (-2) or just 0.
+        // Keeping consistent with original logic: if < 0 (should imply logic error if saturating_sub used, but kept for safety)
+        Some(chrono::Duration::seconds(remaining))
     }
     pub fn key_type(&self) -> KeyType {
         self.key_type
@@ -156,7 +158,12 @@ impl From<&str> for KeyType {
 }
 
 impl ZedisServerState {
-    pub fn save_value(&mut self, key: String, value: String, cx: &mut Context<Self>) {
+    pub fn save_value(
+        &mut self,
+        key: SharedString,
+        new_value: SharedString,
+        cx: &mut Context<Self>,
+    ) {
         let server = self.server.clone();
         self.updating = true;
         cx.notify();
@@ -167,20 +174,23 @@ impl ZedisServerState {
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let _: () = cmd("SET")
-                    .arg(&key)
-                    .arg(&value)
+                    .arg(key.as_str())
+                    .arg(new_value.as_str())
                     .query_async(&mut conn)
                     .await?;
-                Ok(value)
+                Ok(new_value)
             },
             move |this, result, cx| {
                 if let Ok(update_value) = result
                     && let Some(value) = this.value.as_mut()
                 {
                     value.size = update_value.len();
-                    value.data = Some(RedisValueData::String(update_value.into()));
+                    value.data = Some(RedisValueData::String(update_value));
                 }
                 this.updating = false;
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                }
                 cx.notify();
             },
         );

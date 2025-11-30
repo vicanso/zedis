@@ -47,3 +47,6 @@ scan_more_keys = "扫描更多键"
 [list_editor]
 value = "值"
 action = "操作"
+
+[content]
+loading = "加载中..."

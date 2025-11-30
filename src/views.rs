@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod about;
+mod content;
 mod editor;
 mod key_tree;
 mod list_editor;
@@ -22,6 +23,7 @@ mod status_bar;
 mod string_editor;
 
 pub use about::open_about_window;
+pub use content::ZedisContent;
 pub use editor::ZedisEditor;
 pub use key_tree::ZedisKeyTree;
 pub use list_editor::ZedisListEditor;

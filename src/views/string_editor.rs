@@ -122,8 +122,8 @@ impl ZedisStringEditor {
     pub fn is_value_modified(&self) -> bool {
         self.value_modified
     }
-    pub fn value(&self, cx: &mut Context<Self>) -> String {
-        self.editor.read(cx).value().to_string()
+    pub fn value(&self, cx: &mut Context<Self>) -> SharedString {
+        self.editor.read(cx).value()
     }
 }
 
