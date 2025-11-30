@@ -15,7 +15,7 @@
 use super::ZedisServerState;
 use super::list::first_load_list_value;
 use super::string::get_redis_value;
-use super::value::{KeyType, RedisValue};
+use super::value::{KeyType, RedisValue, RedisValueStatus};
 use crate::connection::get_connection_manager;
 use crate::error::Error;
 use crate::helpers::unix_ts;
@@ -243,10 +243,15 @@ impl ZedisServerState {
             return;
         }
         self.key = Some(key.clone());
+        self.value = Some(RedisValue {
+            status: RedisValueStatus::Loading,
+            ..Default::default()
+        });
         cx.notify();
         if key.is_empty() {
             return;
         }
+
         let server = self.server.clone();
         self.last_operated_at = unix_ts();
 
@@ -304,7 +309,10 @@ impl ZedisServerState {
     /// Deletes a specified key.
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server = self.server.clone();
-        self.deleting = true;
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
         cx.notify();
         self.last_operated_at = unix_ts();
         let remove_key = key.clone();
@@ -324,9 +332,9 @@ impl ZedisServerState {
                     // Deselect if the deleted key was selected
                     if this.key == Some(remove_key) {
                         this.key = None;
+                        this.value = None;
                     }
                 }
-                this.deleting = false;
                 cx.notify();
             },
         );
@@ -334,7 +342,14 @@ impl ZedisServerState {
     /// Updates the TTL (expiration) for a key.
     pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         let server = self.server.clone();
-        self.updating = true;
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
+        let original_ttl = value.expire_at;
+        if let Ok(ttl) = humantime::parse_duration(&ttl) {
+            value.expire_at = Some(unix_ts() + ttl.as_secs() as i64);
+        }
         cx.notify();
         self.last_operated_at = unix_ts();
         self.spawn(
@@ -353,12 +368,12 @@ impl ZedisServerState {
                 Ok(ttl)
             },
             move |this, result, cx| {
-                if let Ok(ttl) = result
-                    && let Some(value) = this.value.as_mut()
-                {
-                    value.expire_at = Some(unix_ts() + ttl.as_secs() as i64);
+                if let Some(value) = this.value.as_mut() {
+                    if result.is_err() {
+                        value.expire_at = original_ttl;
+                    }
+                    value.status = RedisValueStatus::Idle;
                 }
-                this.updating = false;
                 cx.notify();
             },
         );

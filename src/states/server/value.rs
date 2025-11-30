@@ -165,7 +165,14 @@ impl ZedisServerState {
         cx: &mut Context<Self>,
     ) {
         let server = self.server.clone();
-        self.updating = true;
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        let original_value = value.string_value().unwrap_or_default();
+        value.status = RedisValueStatus::Updating;
+        value.size = new_value.len();
+        value.data = Some(RedisValueData::String(new_value.clone()));
+
         cx.notify();
         self.last_operated_at = unix_ts();
         self.spawn(
@@ -181,16 +188,15 @@ impl ZedisServerState {
                 Ok(new_value)
             },
             move |this, result, cx| {
-                if let Ok(update_value) = result
-                    && let Some(value) = this.value.as_mut()
-                {
-                    value.size = update_value.len();
-                    value.data = Some(RedisValueData::String(update_value));
-                }
-                this.updating = false;
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
+                    // recover
+                    if result.is_err() {
+                        value.size = original_value.len();
+                        value.data = Some(RedisValueData::String(original_value));
+                    }
                 }
+
                 cx.notify();
             },
         );

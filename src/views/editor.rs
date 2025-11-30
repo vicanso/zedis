@@ -129,10 +129,16 @@ impl ZedisEditor {
         let Some(key) = server_state.key() else {
             return h_flex();
         };
+        let mut is_busy = false;
+        let mut is_loading_value = false;
         let mut btns = vec![];
         let mut ttl = "".to_string();
         let mut size = "".to_string();
         if let Some(value) = server_state.value() {
+            is_busy = value.is_busy();
+            if is_busy && value.key_type() == KeyType::Unknown {
+                is_loading_value = true;
+            }
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
                 if seconds == -2 {
@@ -165,11 +171,12 @@ impl ZedisEditor {
 
         if let Some(string_editor) = &self.string_editor {
             let value_modified = string_editor.read(cx).is_value_modified();
+
             btns.push(
                 Button::new("zedis-editor-save-key")
                     .ml_2()
-                    .disabled(!value_modified || server_state.updating())
-                    .loading(server_state.updating())
+                    .disabled(!value_modified || is_busy)
+                    .loading(is_busy)
                     .outline()
                     .tooltip(i18n_editor(cx, "save_data_tooltip"))
                     .ml_2()
@@ -234,8 +241,8 @@ impl ZedisEditor {
             Button::new("zedis-editor-delete-key")
                 .ml_2()
                 .outline()
-                .loading(server_state.deleting())
-                .disabled(server_state.deleting())
+                .loading(is_busy)
+                .disabled(is_busy)
                 .tooltip(i18n_editor(cx, "delete_key_tooltip").to_string())
                 .icon(IconName::CircleX)
                 .ml_2()
@@ -256,6 +263,7 @@ impl ZedisEditor {
                 Button::new("zedis-editor-copy-key")
                     .outline()
                     .tooltip(i18n_editor(cx, "copy_key_tooltip").to_string())
+                    .loading(is_loading_value)
                     .icon(IconName::Copy)
                     .on_click(cx.listener(move |_this, _event, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));
@@ -291,6 +299,9 @@ impl ZedisEditor {
             self.reset_editors(KeyType::Unknown);
             return div().into_any_element();
         };
+        if value.key_type == KeyType::Unknown && value.is_busy() {
+            return div().into_any_element();
+        }
         match value.key_type() {
             KeyType::List => {
                 self.reset_editors(KeyType::List);

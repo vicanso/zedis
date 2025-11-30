@@ -109,8 +109,6 @@ pub struct ZedisServerState {
     servers: Option<Vec<RedisServer>>,
     key: Option<SharedString>,
     value: Option<RedisValue>,
-    updating: bool,
-    deleting: bool,
     // scan
     keyword: SharedString,
     cursors: Option<Vec<u64>>,
@@ -264,12 +262,12 @@ impl ZedisServerState {
     pub fn scaning(&self) -> bool {
         self.scaning
     }
-    pub fn updating(&self) -> bool {
-        self.updating
-    }
-    pub fn deleting(&self) -> bool {
-        self.deleting
-    }
+    // pub fn updating(&self) -> bool {
+    //     self.updating
+    // }
+    // pub fn deleting(&self) -> bool {
+    //     self.deleting
+    // }
     pub fn dbsize(&self) -> Option<u64> {
         self.dbsize
     }
