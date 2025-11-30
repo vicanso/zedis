@@ -65,18 +65,9 @@ struct RedisNode {
 // Information parsed from `CLUSTER NODES` command
 #[derive(Debug, Clone)]
 pub struct ClusterNodeInfo {
-    pub node_id: String,
     pub ip: String,
     pub port: u16,
     pub role: NodeRole,
-    pub cluster_bus_port: Option<u16>,
-    pub flags: HashSet<String>,
-    pub master_id: Option<String>,
-    pub ping_sent_timestamp_ms: u64,
-    pub pong_recv_timestamp_ms: u64,
-    pub config_epoch: u64,
-    pub link_state: String,
-    pub slot_ranges: Vec<String>,
 }
 
 /// Parses a Redis address string like "ip:port@cport" or just "ip:port".
@@ -120,8 +111,7 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             continue;
         }
 
-        let node_id = parts[0].to_string();
-        let (ip, port, cluster_bus_port) = parse_address(parts[1])?;
+        let (ip, port, _) = parse_address(parts[1])?;
 
         // Parse flags to determine role
         let flags: HashSet<String> = parts[2].split(',').map(String::from).collect();
@@ -135,47 +125,7 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             NodeRole::Unknown
         };
 
-        let master_id = if parts[3] == "-" {
-            None
-        } else {
-            Some(parts[3].to_string())
-        };
-
-        // Parse timestamps and epoch
-        let ping_sent = parts[4].parse::<u64>().map_err(|e| Error::Invalid {
-            message: format!("Invalid ping_sent '{}': {}", parts[4], e),
-        })?;
-        let pong_recv = parts[5].parse::<u64>().map_err(|e| Error::Invalid {
-            message: format!("Invalid pong_recv '{}': {}", parts[5], e),
-        })?;
-        let config_epoch = parts[6].parse::<u64>().map_err(|e| Error::Invalid {
-            message: format!("Invalid config_epoch '{}': {}", parts[6], e),
-        })?;
-
-        let link_state = parts[7].to_string();
-
-        // Remaining parts are slot ranges
-        let slot_ranges = parts
-            .get(8..)
-            .unwrap_or(&[])
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        nodes.push(ClusterNodeInfo {
-            node_id,
-            ip,
-            port,
-            role,
-            cluster_bus_port,
-            flags,
-            master_id,
-            ping_sent_timestamp_ms: ping_sent,
-            pong_recv_timestamp_ms: pong_recv,
-            config_epoch,
-            link_state,
-            slot_ranges,
-        });
+        nodes.push(ClusterNodeInfo { ip, port, role });
     }
 
     Ok(nodes)
@@ -187,9 +137,11 @@ pub struct RedisClient {
     client: RClient,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
-    server_type: ServerType,
 }
 impl RedisClient {
+    pub fn nodes(&self) -> (usize, usize) {
+        (self.master_nodes.len(), self.nodes.len())
+    }
     /// Establishes an asynchronous connection based on the client type.
     async fn get_async_connection(&self) -> Result<RedisAsyncConn> {
         match &self.client {
@@ -458,7 +410,6 @@ impl ConnectionManager {
             client,
             nodes,
             master_nodes,
-            server_type,
         };
         // Cache the client
         self.clients.insert(name.to_string(), client.clone());

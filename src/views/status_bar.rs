@@ -16,6 +16,7 @@ use crate::assets::CustomIconName;
 use crate::states::ZedisServerState;
 use crate::states::i18n_status_bar;
 use gpui::Entity;
+use gpui::SharedString;
 use gpui::Task;
 use gpui::Window;
 use gpui::prelude::*;
@@ -93,6 +94,8 @@ impl ZedisStatusBar {
         } else {
             (cx.theme().primary, "--".to_string())
         };
+        let nodes = server_state.nodes();
+        let nodes_description: SharedString = format!("{} / {}", nodes.0, nodes.1).into();
         let is_completed = server_state.scan_completed();
         h_flex()
             .items_center()
@@ -116,6 +119,12 @@ impl ZedisStatusBar {
             )
             .child(Label::new(text).mr_4())
             .child(
+                Icon::new(CustomIconName::Network)
+                    .text_color(cx.theme().primary)
+                    .mr_1(),
+            )
+            .child(Label::new(nodes_description).mr_4())
+            .child(
                 Button::new("zedis-status-bar-letency")
                     .ghost()
                     .disabled(true)
@@ -126,7 +135,7 @@ impl ZedisStatusBar {
                             .mr_1(),
                     ),
             )
-            .child(Label::new(latency_text).text_color(color))
+            .child(Label::new(latency_text).text_color(color).mr_4())
     }
 
     fn render_soft_wrap_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

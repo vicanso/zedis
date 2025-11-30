@@ -16,7 +16,6 @@ use crate::assets::CustomIconName;
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_list_editor;
 use crate::states::{RedisListValue, ZedisServerState};
-use gpui::AnyWindowHandle;
 use gpui::App;
 use gpui::Entity;
 use gpui::Hsla;

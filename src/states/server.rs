@@ -105,6 +105,7 @@ pub struct ZedisServerState {
     server: SharedString,
     server_status: RedisServerStatus,
     dbsize: Option<u64>,
+    nodes: (usize, usize),
     latency: Option<Duration>,
     servers: Option<Vec<RedisServer>>,
     key: Option<SharedString>,
@@ -140,6 +141,7 @@ impl ZedisServerState {
     }
     fn reset(&mut self) {
         self.server = "".into();
+        self.nodes = (0, 0);
         self.dbsize = None;
         self.latency = None;
         self.key = None;
@@ -179,10 +181,10 @@ impl ZedisServerState {
     }
     fn spawn<T, Fut>(
         &mut self,
-        cx: &mut Context<Self>,
         task_name: &str,
         task: impl FnOnce() -> Fut + Send + 'static,
         callback: impl FnOnce(&mut Self, Result<T>, &mut Context<Self>) + Send + 'static,
+        cx: &mut Context<Self>,
     ) where
         T: Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
@@ -262,12 +264,6 @@ impl ZedisServerState {
     pub fn scaning(&self) -> bool {
         self.scaning
     }
-    // pub fn updating(&self) -> bool {
-    //     self.updating
-    // }
-    // pub fn deleting(&self) -> bool {
-    //     self.deleting
-    // }
     pub fn dbsize(&self) -> Option<u64> {
         self.dbsize
     }
@@ -276,6 +272,9 @@ impl ZedisServerState {
     }
     pub fn latency(&self) -> Option<Duration> {
         self.latency
+    }
+    pub fn nodes(&self) -> (usize, usize) {
+        self.nodes
     }
     pub fn server(&self) -> &str {
         &self.server
@@ -300,7 +299,6 @@ impl ZedisServerState {
         servers.retain(|s| s.name != server);
         self.last_operated_at = unix_ts();
         self.spawn(
-            cx,
             "remove_server",
             move || async move {
                 save_servers(servers.clone()).await?;
@@ -312,6 +310,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
     pub fn update_or_insrt_server(&mut self, cx: &mut Context<Self>, mut server: RedisServer) {
@@ -319,7 +318,6 @@ impl ZedisServerState {
         server.updated_at = Some(Local::now().to_rfc3339());
         self.last_operated_at = unix_ts();
         self.spawn(
-            cx,
             "update_or_insert_server",
             move || async move {
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.name == server.name) {
@@ -337,6 +335,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
 
@@ -346,7 +345,6 @@ impl ZedisServerState {
         }
         let server = self.server.clone();
         self.spawn(
-            cx,
             "ping",
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
@@ -360,6 +358,7 @@ impl ZedisServerState {
                 };
                 cx.notify();
             },
+            cx,
         );
     }
     pub fn select(&mut self, server: SharedString, cx: &mut Context<Self>) {
@@ -378,28 +377,29 @@ impl ZedisServerState {
             self.last_operated_at = unix_ts();
             let counting_server = self.server.clone();
             self.spawn(
-                cx,
                 "select_server",
                 move || async move {
                     let client = get_connection_manager().get_client(&server_clone).await?;
                     let dbsize = client.dbsize().await?;
                     let start = Instant::now();
                     client.ping().await?;
-                    Ok((dbsize, start.elapsed()))
+                    Ok((dbsize, start.elapsed(), client.nodes()))
                 },
                 move |this, result, cx| {
                     if this.server != counting_server {
                         return;
                     }
-                    if let Ok((dbsize, latency)) = result {
+                    if let Ok((dbsize, latency, nodes)) = result {
                         this.latency = Some(latency);
                         this.dbsize = Some(dbsize);
+                        this.nodes = nodes;
                     };
                     let server = this.server.clone();
                     this.server_status = RedisServerStatus::Idle;
                     cx.notify();
                     this.scan_keys(server, "".into(), cx);
                 },
+                cx,
             );
         }
     }

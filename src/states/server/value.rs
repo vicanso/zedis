@@ -176,7 +176,6 @@ impl ZedisServerState {
         cx.notify();
         self.last_operated_at = unix_ts();
         self.spawn(
-            cx,
             "save_value",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -199,6 +198,7 @@ impl ZedisServerState {
 
                 cx.notify();
             },
+            cx,
         );
     }
 }

@@ -50,6 +50,7 @@ pub enum CustomIconName {
     FileCheckCorner,
     Clock3,
     Zap,
+    Network,
 }
 
 impl CustomIconName {
@@ -65,6 +66,7 @@ impl CustomIconName {
             CustomIconName::FileCheckCorner => "icons/file-check-corner.svg",
             CustomIconName::Clock3 => "icons/clock-3.svg",
             CustomIconName::Zap => "icons/zap.svg",
+            CustomIconName::Network => "icons/network.svg",
         }
         .into()
     }

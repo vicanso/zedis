@@ -57,7 +57,6 @@ impl ZedisServerState {
         keys.sort_unstable();
         // Spawn a background task to fetch types concurrently
         self.spawn(
-            cx,
             "fill_key_types",
             move || async move {
                 let conn = get_connection_manager().get_connection(&server).await?;
@@ -93,6 +92,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
     /// Internal function to scan keys from Redis.
@@ -116,7 +116,6 @@ impl ZedisServerState {
         let processing_server = server.clone();
         let processing_keyword = keyword.clone();
         self.spawn(
-            cx,
             "scan_keys",
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
@@ -156,6 +155,7 @@ impl ZedisServerState {
                 cx.notify();
                 this.fill_key_types("".into(), cx);
             },
+            cx,
         );
     }
     /// Initiates a new scan for keys matching the keyword.
@@ -193,7 +193,6 @@ impl ZedisServerState {
         self.last_operated_at = unix_ts();
         let pattern = format!("{}*", prefix);
         self.spawn(
-            cx,
             "scan_prefix",
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
@@ -233,6 +232,7 @@ impl ZedisServerState {
                 // Resolve types for the keys under this prefix
                 this.fill_key_types(prefix.clone(), cx);
             },
+            cx,
         );
     }
 
@@ -256,7 +256,6 @@ impl ZedisServerState {
         self.last_operated_at = unix_ts();
 
         self.spawn(
-            cx,
             "select_key",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -304,6 +303,7 @@ impl ZedisServerState {
                 };
                 cx.notify();
             },
+            cx,
         );
     }
     /// Deletes a specified key.
@@ -317,7 +317,6 @@ impl ZedisServerState {
         self.last_operated_at = unix_ts();
         let remove_key = key.clone();
         self.spawn(
-            cx,
             "delete_key",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -337,6 +336,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
     /// Updates the TTL (expiration) for a key.
@@ -353,7 +353,6 @@ impl ZedisServerState {
         cx.notify();
         self.last_operated_at = unix_ts();
         self.spawn(
-            cx,
             "update_value_ttl",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -376,6 +375,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
 }

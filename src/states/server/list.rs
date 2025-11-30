@@ -90,7 +90,6 @@ impl ZedisServerState {
         cx.notify();
         let server = self.server.clone();
         self.spawn(
-            cx,
             "delete_list_item",
             move || async move {
                 let unique_marker = Uuid::new_v4().to_string();
@@ -123,6 +122,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
     /// Update a specific item in a Redis List.
@@ -165,7 +165,6 @@ impl ZedisServerState {
         let new_value_clone = new_value.clone();
 
         self.spawn(
-            cx,
             "update_list_value",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -200,21 +199,21 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
-                    if result.is_err() {
-                        if let Some(RedisValueData::List(list_data)) =
+                    if result.is_err()
+                        && let Some(RedisValueData::List(list_data)) =
                             this.value.as_mut().and_then(|v| v.data.as_mut())
-                        {
-                            // Use Arc::make_mut to get mutable access (Cow behavior)
-                            let list = Arc::make_mut(list_data);
-                            if index < list.values.len() {
-                                list.values[index] = original_value;
-                            }
+                    {
+                        // Use Arc::make_mut to get mutable access (Cow behavior)
+                        let list = Arc::make_mut(list_data);
+                        if index < list.values.len() {
+                            list.values[index] = original_value;
                         }
                     }
                 }
 
                 cx.notify();
             },
+            cx,
         );
     }
     /// Load the next page of items for the current List.
@@ -244,7 +243,6 @@ impl ZedisServerState {
         let stop = start + 99; // Load 100 items
 
         self.spawn(
-            cx,
             "load_more_list",
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -270,6 +268,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
             },
+            cx,
         );
     }
 }
