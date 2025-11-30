@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::states::ZedisGlobalStore;
 use crate::states::i18n_list_editor;
 use crate::states::{RedisListValue, ZedisServerState};
+use gpui::AnyWindowHandle;
 use gpui::App;
 use gpui::Entity;
 use gpui::Hsla;
@@ -25,20 +27,22 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
-use gpui_component::IndexPath;
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::h_flex;
 use gpui_component::input::Input;
+use gpui_component::input::InputEvent;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::{Disableable, IndexPath};
 use gpui_component::{Icon, IconName};
+use gpui_component::{WindowExt, h_flex};
+use rust_i18n::t;
 use std::sync::Arc;
 
 const INDEX_WIDTH: f32 = 50.;
-const ACTION_WIDTH: f32 = 100.;
+const ACTION_WIDTH: f32 = 80.;
 
 #[derive(Debug)]
 struct RedisListValues {
@@ -48,6 +52,7 @@ struct RedisListValues {
     selected_index: Option<IndexPath>,
     value_state: Entity<InputState>,
     updated_index: Option<IndexPath>,
+    default_value: SharedString,
     done: bool,
 }
 impl RedisListValues {
@@ -61,6 +66,10 @@ impl ListDelegate for RedisListValues {
         self.list_value.values.len()
     }
     fn render_item(&self, ix: IndexPath, _window: &mut Window, cx: &mut App) -> Option<Self::Item> {
+        let mut is_busy = false;
+        if let Some(value) = self.server_state.read(cx).value() {
+            is_busy = value.is_busy();
+        }
         let even_bg = cx.theme().background;
         let odd_bg = if cx.theme().is_dark() {
             Hsla::white().alpha(0.1)
@@ -88,7 +97,8 @@ impl ListDelegate for RedisListValues {
                     .flex_1()
                     .into_any_element()
             };
-            let view = self.view.clone();
+            let update_view = self.view.clone();
+            let delete_view = self.view.clone();
             let default_value = item.clone();
             ListItem::new(("zedis-editor-list-item", index))
                 .gap(px(0.))
@@ -119,15 +129,12 @@ impl ListDelegate for RedisListValues {
                                         .when(is_updated, |this| {
                                             this.icon(Icon::new(IconName::Check))
                                         })
+                                        .disabled(is_busy)
                                         .on_click(move |_event, _window, cx| {
                                             cx.stop_propagation();
-                                            view.update(cx, |this, cx| {
+                                            update_view.clone().update(cx, |this, cx| {
                                                 if is_updated {
-                                                    this.handle_update_value(
-                                                        default_value.clone(),
-                                                        ix,
-                                                        cx,
-                                                    );
+                                                    this.handle_update_value(ix, cx);
                                                 } else {
                                                     this.handle_update_index(
                                                         default_value.clone(),
@@ -143,13 +150,13 @@ impl ListDelegate for RedisListValues {
                                         .small()
                                         .ghost()
                                         .tooltip(i18n_list_editor(cx, "delete_tooltip").to_string())
-                                        .icon(Icon::new(CustomIconName::FilePlusCorner))
-                                        .on_click(move |_event, _window, cx| {
+                                        .icon(Icon::new(CustomIconName::FileXCorner))
+                                        .disabled(is_busy)
+                                        .on_click(move |_event, window, cx| {
                                             cx.stop_propagation();
-                                            // 3. 使用外部捕获的 view 句柄来更新
-                                            // delete_view.update(cx, |this, cx| {
-                                            //     // this.handle_click(ix, cx);
-                                            // });
+                                            delete_view.update(cx, |this, cx| {
+                                                this.handle_delete_item(ix, window, cx);
+                                            });
                                         }),
                                 ),
                         ),
@@ -203,7 +210,21 @@ impl ZedisListEditor {
                 .clean_on_escape()
                 .placeholder(i18n_list_editor(cx, "value_placeholder").to_string())
         });
+
         let view = cx.entity();
+        subscriptions.push(
+            cx.subscribe_in(&value_state, window, |view, _, event, _, cx| match &event {
+                InputEvent::Blur => {
+                    view.handle_blur(cx);
+                }
+                InputEvent::PressEnter { .. } => {
+                    if let Some(ix) = view.list_state.read(cx).delegate().updated_index {
+                        view.handle_update_value(ix, cx);
+                    }
+                }
+                _ => {}
+            }),
+        );
         let mut deletage = RedisListValues {
             view,
             server_state: server_state.clone(),
@@ -211,6 +232,7 @@ impl ZedisListEditor {
             selected_index: Default::default(),
             value_state: value_state.clone(),
             done: false,
+            default_value: Default::default(),
             updated_index: None,
         };
         if let Some(data) = server_state.read(cx).value().and_then(|v| v.list_value()) {
@@ -226,6 +248,12 @@ impl ZedisListEditor {
             _subscriptions: subscriptions,
         }
     }
+    fn handle_blur(&mut self, cx: &mut Context<Self>) {
+        self.list_state.update(cx, |this, cx| {
+            this.delegate_mut().updated_index = None;
+            cx.notify();
+        });
+    }
     fn update_list_values(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let Some(data) = server_state.value().and_then(|v| v.list_value()) else {
@@ -238,17 +266,35 @@ impl ZedisListEditor {
         });
     }
     fn handle_update_index(&mut self, value: SharedString, ix: IndexPath, cx: &mut Context<Self>) {
-        self.input_default_value = Some(value);
+        self.input_default_value = Some(value.clone());
         self.list_state.update(cx, |this, _cx| {
-            this.delegate_mut().updated_index = Some(ix);
+            let delegate = this.delegate_mut();
+            delegate.default_value = value;
+            delegate.updated_index = Some(ix);
         });
     }
-    fn handle_update_value(
-        &mut self,
-        original_value: SharedString,
-        ix: IndexPath,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_delete_item(&mut self, ix: IndexPath, window: &mut Window, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+            let message = t!(
+                "list_editor.delete_list_item_prompt",
+                index = ix.row + 1,
+                locale = locale
+            )
+            .to_string();
+            let server_state = server_state.clone();
+            dialog.confirm().child(message).on_ok(move |_, window, cx| {
+                server_state.update(cx, |this, cx| {
+                    this.delete_list_item(ix.row, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+        });
+    }
+    fn handle_update_value(&mut self, ix: IndexPath, cx: &mut Context<Self>) {
+        let original_value = self.list_state.read(cx).delegate().default_value.clone();
         self.list_state.update(cx, |this, _cx| {
             this.delegate_mut().updated_index = None;
         });

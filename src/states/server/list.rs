@@ -23,7 +23,9 @@ use crate::error::Error;
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
+use redis::pipe;
 use std::sync::Arc;
+use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -73,6 +75,56 @@ pub(crate) async fn first_load_list_value(
 }
 
 impl ZedisServerState {
+    pub fn delete_list_item(&mut self, index: usize, cx: &mut Context<Self>) {
+        let key = self.key.clone().unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        if value.is_busy() {
+            return;
+        }
+        value.status = RedisValueStatus::Updating;
+        cx.notify();
+        let server = self.server.clone();
+        self.spawn(
+            cx,
+            "delete_list_item",
+            move || async move {
+                let unique_marker = Uuid::new_v4().to_string();
+                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let _: () = pipe()
+                    .atomic()
+                    .cmd("LSET")
+                    .arg(key.as_str())
+                    .arg(index)
+                    .arg(&unique_marker)
+                    .cmd("LREM")
+                    .arg(key.as_str())
+                    .arg(1)
+                    .arg(&unique_marker)
+                    .query_async(&mut conn)
+                    .await?;
+
+                Ok(())
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    if result.is_ok()
+                        && let Some(RedisValueData::List(list_data)) = value.data.as_mut()
+                    {
+                        let list = Arc::make_mut(list_data);
+                        list.size -= 1;
+                        list.values.remove(index);
+                    }
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+        );
+    }
     /// Update a specific item in a Redis List.
     ///
     /// Performs an optimistic lock check: verifies if the current value at `index`
@@ -95,6 +147,13 @@ impl ZedisServerState {
             return;
         }
         value.status = RedisValueStatus::Updating;
+        if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
+            // Use Arc::make_mut to get mutable access (Cow behavior)
+            let list = Arc::make_mut(list_data);
+            if index < list.values.len() {
+                list.values[index] = new_value.clone();
+            }
+        }
         cx.notify();
         // Optimization: We don't clone the entire value here.
         // We only need basic info for the background task.
@@ -136,25 +195,24 @@ impl ZedisServerState {
                     .await?;
 
                 // Return the new value so UI thread can update local state
-                Ok(new_value_clone)
+                Ok(())
             },
             move |this, result, cx| {
-                if let Ok(updated_val) = result {
-                    // 3. Update Local State (UI Thread)
-                    // We modify the data here to avoid cloning the whole list in the background task.
-                    if let Some(RedisValueData::List(list_data)) =
-                        this.value.as_mut().and_then(|v| v.data.as_mut())
-                    {
-                        // Use Arc::make_mut to get mutable access (Cow behavior)
-                        let list = Arc::make_mut(list_data);
-                        if index < list.values.len() {
-                            list.values[index] = updated_val;
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                    if result.is_err() {
+                        if let Some(RedisValueData::List(list_data)) =
+                            this.value.as_mut().and_then(|v| v.data.as_mut())
+                        {
+                            // Use Arc::make_mut to get mutable access (Cow behavior)
+                            let list = Arc::make_mut(list_data);
+                            if index < list.values.len() {
+                                list.values[index] = original_value;
+                            }
                         }
                     }
                 }
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                }
+
                 cx.notify();
             },
         );
