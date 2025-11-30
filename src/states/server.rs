@@ -16,6 +16,7 @@ use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
 use crate::error::Error;
+use crate::helpers::unix_ts;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
@@ -37,10 +38,6 @@ pub mod string;
 pub mod value;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-fn unix_ts() -> i64 {
-    Local::now().timestamp()
-}
 
 // KeyNode is a node in the key tree.
 #[derive(Debug, Default)]
@@ -390,7 +387,7 @@ impl ZedisServerState {
                     };
                     let server = this.server.clone();
                     cx.notify();
-                    this.scan_keys(cx, server, "".into());
+                    this.scan_keys(server, "".into(), cx);
                 },
             );
         }

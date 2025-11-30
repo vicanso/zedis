@@ -14,35 +14,35 @@
 
 use super::ZedisGlobalStore;
 use gpui::App;
+use gpui::SharedString;
 use rust_i18n::t;
-use std::borrow::Cow;
 
-pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("sidebar.{key}"), locale = locale)
+    t!(format!("sidebar.{key}"), locale = locale).into()
 }
 
-pub fn i18n_servers<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+pub fn i18n_servers<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("servers.{key}"), locale = locale)
+    t!(format!("servers.{key}"), locale = locale).into()
 }
 
-pub fn i18n_editor<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+pub fn i18n_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("editor.{key}"), locale = locale)
+    t!(format!("editor.{key}"), locale = locale).into()
 }
 
-pub fn i18n_key_tree<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+pub fn i18n_key_tree<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("key_tree.{key}"), locale = locale)
+    t!(format!("key_tree.{key}"), locale = locale).into()
 }
 
-pub fn i18n_status_bar<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+pub fn i18n_status_bar<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("status_bar.{key}"), locale = locale)
+    t!(format!("status_bar.{key}"), locale = locale).into()
 }
 
-pub fn i18n_list_editor<'a>(cx: &'a App, key: &'a str) -> Cow<'a, str> {
+pub fn i18n_list_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("list_editor.{key}"), locale = locale)
+    t!(format!("list_editor.{key}"), locale = locale).into()
 }

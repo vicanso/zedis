@@ -21,7 +21,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 pub fn get_or_create_config_dir() -> Result<PathBuf> {
     let Some(home) = home_dir() else {
         return Err(Error::Invalid {
-            message: "Home directory not found".to_string(),
+            message: "home directory not found".to_string(),
         });
     };
     let path = home.join(".zedis");

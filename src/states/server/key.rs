@@ -33,7 +33,7 @@ impl ZedisServerState {
     ///
     /// This is typically used when expanding a directory in the key tree view.
     /// It filters keys based on the prefix and ensures we only query keys at the current level.
-    fn fill_key_types(&mut self, cx: &mut Context<Self>, prefix: SharedString) {
+    fn fill_key_types(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
         // Filter keys that need type resolution
         let mut keys = self
             .keys
@@ -72,7 +72,7 @@ impl ZedisServerState {
                                 .query_async(&mut conn_clone)
                                 .await
                                 .unwrap_or_default();
-                            (key, t.to_string())
+                            (key, t)
                         }
                     })
                     .buffer_unordered(100) // Limit concurrency to 100
@@ -101,9 +101,9 @@ impl ZedisServerState {
     /// if the result set is too small.
     pub(crate) fn scan_keys(
         &mut self,
-        cx: &mut Context<Self>,
         server: SharedString,
         keyword: SharedString,
+        cx: &mut Context<Self>,
     ) {
         // Guard clause: ignore if the context has changed (e.g., switched server)
         if self.server != server || self.keyword != keyword {
@@ -149,22 +149,22 @@ impl ZedisServerState {
                 // Automatically load more if we haven't reached the limit and scan isn't done
                 if this.cursors.is_some() && this.keys.len() < max {
                     // run again
-                    this.scan_keys(cx, processing_server, processing_keyword);
+                    this.scan_keys(processing_server, processing_keyword, cx);
                     return cx.notify();
                 }
                 this.scaning = false;
                 cx.notify();
-                this.fill_key_types(cx, "".into());
+                this.fill_key_types("".into(), cx);
             },
         );
     }
     /// Initiates a new scan for keys matching the keyword.
-    pub fn scan(&mut self, cx: &mut Context<Self>, keyword: SharedString) {
+    pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan();
         self.scaning = true;
         self.keyword = keyword.clone();
         cx.notify();
-        self.scan_keys(cx, self.server.clone(), keyword);
+        self.scan_keys(self.server.clone(), keyword, cx);
     }
     /// Loads the next batch of keys (pagination).
     pub fn scan_next(&mut self, cx: &mut Context<Self>) {
@@ -172,20 +172,20 @@ impl ZedisServerState {
             return;
         }
         self.scan_times += 1;
-        self.scan_keys(cx, self.server.clone(), self.keyword.clone());
+        self.scan_keys(self.server.clone(), self.keyword.clone(), cx);
         cx.notify();
     }
     /// Scans keys matching a specific prefix.
     ///
     /// Optimized for populating directory-like structures in the key view.
-    pub fn scan_prefix(&mut self, cx: &mut Context<Self>, prefix: SharedString) {
+    pub fn scan_prefix(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
         // Avoid reloading if already loaded
         if self.loaded_prefixes.contains(&prefix) {
             return;
         }
         // If global scan is complete, we might just need to resolve types
         if self.scan_completed {
-            self.fill_key_types(cx, prefix);
+            self.fill_key_types(prefix, cx);
             return;
         }
 
@@ -231,7 +231,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
                 // Resolve types for the keys under this prefix
-                this.fill_key_types(cx, prefix.clone());
+                this.fill_key_types(prefix.clone(), cx);
             },
         );
     }

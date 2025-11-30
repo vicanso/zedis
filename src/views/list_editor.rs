@@ -18,6 +18,7 @@ use crate::states::{RedisListValue, ZedisServerState};
 use gpui::App;
 use gpui::Entity;
 use gpui::Hsla;
+use gpui::SharedString;
 use gpui::Subscription;
 use gpui::TextAlign;
 use gpui::Window;
@@ -88,7 +89,7 @@ impl ListDelegate for RedisListValues {
                     .into_any_element()
             };
             let view = self.view.clone();
-            let default_value = item.to_string();
+            let default_value = item.clone();
             ListItem::new(("zedis-editor-list-item", index))
                 .gap(px(0.))
                 .bg(bg)
@@ -183,7 +184,7 @@ pub struct ZedisListEditor {
     list_state: Entity<ListState<RedisListValues>>,
     server_state: Entity<ZedisServerState>,
     value_state: Entity<InputState>,
-    input_default_value: Option<String>,
+    input_default_value: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -236,7 +237,7 @@ impl ZedisListEditor {
             cx.notify();
         });
     }
-    fn handle_update_index(&mut self, value: String, ix: IndexPath, cx: &mut Context<Self>) {
+    fn handle_update_index(&mut self, value: SharedString, ix: IndexPath, cx: &mut Context<Self>) {
         self.input_default_value = Some(value);
         self.list_state.update(cx, |this, _cx| {
             this.delegate_mut().updated_index = Some(ix);
@@ -244,14 +245,14 @@ impl ZedisListEditor {
     }
     fn handle_update_value(
         &mut self,
-        original_value: String,
+        original_value: SharedString,
         ix: IndexPath,
         cx: &mut Context<Self>,
     ) {
         self.list_state.update(cx, |this, _cx| {
             this.delegate_mut().updated_index = None;
         });
-        let value = self.value_state.read(cx).value().to_string();
+        let value = self.value_state.read(cx).value();
         self.server_state.update(cx, |this, cx| {
             this.update_list_value(ix.row, original_value, value, cx);
         });
