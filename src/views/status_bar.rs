@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::states::ServerEvent;
 use crate::states::ZedisServerState;
 use crate::states::i18n_status_bar;
 use gpui::Entity;
 use gpui::SharedString;
+use gpui::Subscription;
 use gpui::Task;
 use gpui::Window;
 use gpui::prelude::*;
@@ -32,6 +34,8 @@ use std::time::Duration;
 pub struct ZedisStatusBar {
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
+    latency: Option<Duration>,
+    _subscriptions: Vec<Subscription>,
 }
 impl ZedisStatusBar {
     pub fn new(
@@ -39,9 +43,20 @@ impl ZedisStatusBar {
         cx: &mut Context<Self>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
+        let mut subscriptions = vec![];
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, cx| {
+                if let ServerEvent::Heartbeat(latency) = event {
+                    this.latency = Some(*latency);
+                    cx.notify();
+                }
+            }),
+        );
         let mut this = Self {
             server_state,
             heartbeat_task: None,
+            _subscriptions: subscriptions,
+            latency: None,
         };
         this.start_heartbeat(cx);
         this
@@ -74,8 +89,7 @@ impl ZedisStatusBar {
         } else {
             "--".to_string()
         };
-        let latency = server_state.latency();
-        let (color, latency_text) = if let Some(latency) = latency {
+        let (color, latency_text) = if let Some(latency) = self.latency {
             let ms = latency.as_millis();
             let theme = cx.theme();
             let color = if ms < 50 {
@@ -94,7 +108,8 @@ impl ZedisStatusBar {
             (cx.theme().primary, "--".to_string())
         };
         let nodes = server_state.nodes();
-        let nodes_description: SharedString = format!("{} / {}", nodes.0, nodes.1).into();
+        let nodes_description: SharedString =
+            format!("{} / {} (v{})", nodes.0, nodes.1, server_state.version()).into();
         let is_completed = server_state.scan_completed();
         h_flex()
             .items_center()
@@ -153,7 +168,8 @@ impl ZedisStatusBar {
 
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.server_state.read(cx).server().is_empty() {
+        let server_state = self.server_state.read(cx);
+        if server_state.server().is_empty() && server_state.get_error_message().is_none() {
             return h_flex();
         }
         h_flex()

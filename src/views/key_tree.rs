@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::assets::CustomIconName;
 use crate::states::KeyType;
 use crate::states::QueryMode;
 use crate::states::ZedisGlobalStore;
@@ -84,10 +85,13 @@ impl ZedisKeyTree {
                 }
             }),
         );
+        let query_mode = cx
+            .global::<ZedisGlobalStore>()
+            .query_mode(server.as_str(), cx);
 
         debug!(server, "new key tree");
 
-        Self {
+        let mut this = Self {
             is_empty: false,
             key_tree_id: "".to_string(),
 
@@ -95,10 +99,13 @@ impl ZedisKeyTree {
             tree_state,
             keyword_state,
             server_state,
-            query_mode: QueryMode::All,
+            query_mode,
             expanded_items: AHashSet::with_capacity(10),
             _subscriptions: subscriptions,
-        }
+        };
+        this.update_key_tree(cx);
+
+        this
     }
 
     fn update_key_tree(&mut self, cx: &mut Context<Self>) {
@@ -117,7 +124,7 @@ impl ZedisKeyTree {
             return;
         }
 
-        let expand_all = !self.keyword_state.read(cx).value().is_empty();
+        let expand_all = server_state.scan_count() < 20;
         let items = server_state.key_tree(&self.expanded_items, expand_all);
         if items.is_empty() {
             self.expanded_items.clear();
@@ -133,15 +140,30 @@ impl ZedisKeyTree {
             return;
         }
         let keyword = self.keyword_state.read(cx).value();
-        let mode = self.query_mode;
         self.server_state.update(cx, move |handle, cx| {
-            handle.handle_filter(keyword, mode, cx);
+            handle.handle_filter(keyword, cx);
         });
     }
 
     fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let scaning = self.server_state.read(cx).scaning();
-        if !scaning && (self.is_empty || self.error.is_some()) {
+        let server_state = self.server_state.read(cx);
+        if !server_state.scaning() && (self.is_empty || self.error.is_some()) {
+            if self.query_mode == QueryMode::Exact {
+                if let Some(value) = server_state.value()
+                    && value.is_expired()
+                {
+                    return h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .pt_5()
+                        .px_2()
+                        .child(Label::new(i18n_key_tree(cx, "key_not_exists")).text_sm())
+                        .into_any_element();
+                }
+                return h_flex().into_any_element();
+            }
             let text = self
                 .error
                 .clone()
@@ -150,6 +172,7 @@ impl ZedisKeyTree {
                 .h_flex()
                 .w_full()
                 .items_center()
+                .justify_center()
                 .gap_2()
                 .pt_5()
                 .px_2()
@@ -164,6 +187,7 @@ impl ZedisKeyTree {
         }
         let view = cx.entity();
         let yellow = cx.theme().colors.yellow;
+        let selected_key = server_state.key().unwrap_or_default();
         let server_state = self.server_state.clone();
         let even_bg = cx.theme().background;
         let odd_bg = if cx.theme().is_dark() {
@@ -171,6 +195,8 @@ impl ZedisKeyTree {
         } else {
             Hsla::black().alpha(0.03)
         };
+        let list_active_color = cx.theme().list_active;
+        let list_active_border_color = cx.theme().list_active_border;
         tree(
             &self.tree_state,
             move |ix, entry, _selected, _window, cx| {
@@ -208,7 +234,13 @@ impl ZedisKeyTree {
                             .text_color(yellow)
                             .into_any_element()
                     };
-                    let bg = if ix % 2 == 0 { even_bg } else { odd_bg };
+                    let bg = if item.id == selected_key {
+                        list_active_color
+                    } else if ix % 2 == 0 {
+                        even_bg
+                    } else {
+                        odd_bg
+                    };
                     let mut count_label = Label::new("");
                     if entry.is_folder() {
                         count_label = Label::new(item.children.len().to_string())
@@ -218,11 +250,13 @@ impl ZedisKeyTree {
 
                     ListItem::new(ix)
                         .w_full()
-                        .rounded(cx.theme().radius)
                         .bg(bg)
                         .py_1()
                         .px_2()
                         .pl(px(16.) * entry.depth() + px(8.))
+                        .when(item.id == selected_key, |this| {
+                            this.border_r_3().border_color(list_active_border_color)
+                        })
                         .child(
                             h_flex()
                                 .gap_2()
@@ -267,6 +301,11 @@ impl ZedisKeyTree {
     fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let scaning = self.server_state.read(cx).scaning();
         let query_mode = self.query_mode;
+        let icon = match query_mode {
+            QueryMode::All => Icon::new(IconName::Asterisk),
+            QueryMode::Prefix => Icon::new(CustomIconName::Activity),
+            QueryMode::Exact => Icon::new(CustomIconName::Equal),
+        };
         h_flex()
             .p_2()
             .border_b_1()
@@ -281,28 +320,37 @@ impl ZedisKeyTree {
                             .button(
                                 Button::new("key-tree-query-mode-btn")
                                     .ghost()
-                                    .p_0()
-                                    .ml(px(-1.))
                                     .bg(cx.theme().background)
-                                    .label("")
-                                    .text_color(cx.theme().foreground),
+                                    .px_2()
+                                    .icon(icon),
                             )
-                            .compact()
                             .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _, _| {
                                 menu.menu_element_with_check(
                                     query_mode == QueryMode::All,
                                     Box::new(QueryMode::All),
-                                    |_, _| Label::new("*").ml_2().text_xs(),
+                                    |_, cx| {
+                                        Label::new(i18n_key_tree(cx, "query_mode_all"))
+                                            .ml_2()
+                                            .text_xs()
+                                    },
                                 )
                                 .menu_element_with_check(
                                     query_mode == QueryMode::Prefix,
                                     Box::new(QueryMode::Prefix),
-                                    |_, _| Label::new("^").ml_2().text_xs(),
+                                    |_, cx| {
+                                        Label::new(i18n_key_tree(cx, "query_mode_prefix"))
+                                            .ml_2()
+                                            .text_xs()
+                                    },
                                 )
                                 .menu_element_with_check(
                                     query_mode == QueryMode::Exact,
                                     Box::new(QueryMode::Exact),
-                                    |_, _| Label::new("=").ml_2().text_xs(),
+                                    |_, cx| {
+                                        Label::new(i18n_key_tree(cx, "query_mode_exact"))
+                                            .ml_2()
+                                            .text_xs()
+                                    },
                                 )
                             }),
                     )
@@ -332,6 +380,9 @@ impl Render for ZedisKeyTree {
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
                 let server = this.server_state.read(cx).server().to_string();
                 let app_state = cx.global::<ZedisGlobalStore>().state();
+                this.server_state.update(cx, |state, _cx| {
+                    state.set_query_mode(*e);
+                });
                 app_state.update(cx, |state, cx| {
                     state.add_query_mode(server, *e);
                     let value = state.clone();

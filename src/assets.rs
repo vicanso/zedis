@@ -51,6 +51,8 @@ pub enum CustomIconName {
     Clock3,
     Zap,
     Network,
+    Equal,
+    Activity,
 }
 
 impl CustomIconName {
@@ -67,6 +69,8 @@ impl CustomIconName {
             CustomIconName::Clock3 => "icons/clock-3.svg",
             CustomIconName::Zap => "icons/zap.svg",
             CustomIconName::Network => "icons/network.svg",
+            CustomIconName::Equal => "icons/equal.svg",
+            CustomIconName::Activity => "icons/activity.svg",
         }
         .into()
     }

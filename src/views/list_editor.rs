@@ -190,6 +190,7 @@ pub struct ZedisListEditor {
     list_state: Entity<ListState<RedisListValues>>,
     server_state: Entity<ZedisServerState>,
     value_state: Entity<InputState>,
+    keyword_state: Entity<InputState>,
     input_default_value: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
@@ -208,6 +209,11 @@ impl ZedisListEditor {
             InputState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_list_editor(cx, "value_placeholder").to_string())
+        });
+        let keyword_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_list_editor(cx, "keyword_placeholder").to_string())
         });
 
         let view = cx.entity();
@@ -243,6 +249,7 @@ impl ZedisListEditor {
             server_state,
             list_state,
             value_state,
+            keyword_state,
             input_default_value: None,
             _subscriptions: subscriptions,
         }
@@ -349,12 +356,19 @@ impl Render for ZedisListEditor {
             )
             .child(List::new(&self.list_state).flex_1())
             .child(
-                h_flex().w_full().p_2().text_align(TextAlign::Right).child(
-                    Label::new(format!("{} / {}", items_count, total_count))
-                        .text_sm()
-                        .text_color(text_color)
-                        .flex_1(),
-                ),
+                h_flex()
+                    .w_full()
+                    .p_2()
+                    .child(
+                        div()
+                            .child(Input::new(&self.keyword_state).w(px(200.)))
+                            .flex_1(),
+                    )
+                    .child(
+                        Label::new(format!("{} / {}", items_count, total_count))
+                            .text_sm()
+                            .text_color(text_color),
+                    ),
             )
     }
 }

@@ -140,6 +140,9 @@ impl RedisValue {
     pub fn key_type(&self) -> KeyType {
         self.key_type
     }
+    pub fn is_expired(&self) -> bool {
+        self.expire_at.is_some_and(|expire_at| expire_at == -2)
+    }
 }
 
 impl From<&str> for KeyType {

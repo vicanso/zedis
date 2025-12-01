@@ -24,6 +24,7 @@ use futures::{StreamExt, stream};
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::{cmd, pipe};
+use std::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
@@ -158,14 +159,9 @@ impl ZedisServerState {
             cx,
         );
     }
-    pub fn handle_filter(
-        &mut self,
-        keyword: SharedString,
-        mode: QueryMode,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn handle_filter(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan();
-        match mode {
+        match self.query_mode {
             QueryMode::Prefix => self.scan_prefix(keyword, cx),
             QueryMode::Exact => self.select_key(keyword, cx),
             _ => self.scan(keyword, cx),
@@ -304,7 +300,8 @@ impl ZedisServerState {
             move |this, result, cx| {
                 match result {
                     Ok(value) => {
-                        if let Some(key) = this.key.as_ref()
+                        if !value.is_expired()
+                            && let Some(key) = this.key.as_ref()
                             && !this.keys.contains_key(key)
                         {
                             this.keys.insert(key.clone(), value.key_type());
@@ -356,27 +353,46 @@ impl ZedisServerState {
     }
     /// Updates the TTL (expiration) for a key.
     pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
+        if ttl.is_empty() {
+            return;
+        }
         let server = self.server.clone();
         let Some(value) = self.value.as_mut() else {
             return;
         };
         value.status = RedisValueStatus::Updating;
         let original_ttl = value.expire_at;
-        if let Ok(ttl) = humantime::parse_duration(&ttl) {
-            value.expire_at = Some(unix_ts() + ttl.as_secs() as i64);
+
+        let mut new_ttl = Duration::ZERO;
+        let mut parse_fail_error = "".to_string();
+        if let Ok(secs) = ttl.parse::<u64>() {
+            new_ttl = Duration::from_secs(secs);
+        } else {
+            match humantime::parse_duration(&ttl) {
+                Ok(ttl) => new_ttl = ttl,
+                Err(err) => {
+                    parse_fail_error = err.to_string();
+                }
+            }
+        }
+
+        if !new_ttl.is_zero() {
+            value.expire_at = Some(unix_ts() + new_ttl.as_secs() as i64);
         }
         cx.notify();
         self.last_operated_at = unix_ts();
         self.spawn(
             "update_value_ttl",
             move || async move {
+                if !parse_fail_error.is_empty() {
+                    return Err(Error::Invalid {
+                        message: parse_fail_error,
+                    });
+                }
                 let mut conn = get_connection_manager().get_connection(&server).await?;
-                let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid {
-                    message: e.to_string(),
-                })?;
                 let _: () = cmd("EXPIRE")
                     .arg(key.as_str())
-                    .arg(ttl.as_secs())
+                    .arg(new_ttl.as_secs())
                     .query_async(&mut conn)
                     .await?;
                 Ok(ttl)

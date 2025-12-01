@@ -63,8 +63,9 @@ pub struct ZedisAppState {
     theme: Option<String>,
     query_modes: Option<HashMap<String, String>>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
 pub enum QueryMode {
+    #[default]
     All,
     Prefix,
     Exact,

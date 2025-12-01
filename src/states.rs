@@ -28,5 +28,6 @@ pub use i18n::i18n_list_editor;
 pub use i18n::i18n_servers;
 pub use i18n::i18n_sidebar;
 pub use i18n::i18n_status_bar;
+pub use server::ServerEvent;
 pub use server::ZedisServerState;
 pub use server::value::*;

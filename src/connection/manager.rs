@@ -137,10 +137,14 @@ pub struct RedisClient {
     client: RClient,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
+    version: String,
 }
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
         (self.master_nodes.len(), self.nodes.len())
+    }
+    pub fn version(&self) -> &str {
+        &self.version
     }
     /// Establishes an asynchronous connection based on the client type.
     async fn get_async_connection(&self) -> Result<RedisAsyncConn> {
@@ -401,15 +405,29 @@ impl ConnectionManager {
                 RClient::Single(client)
             }
         };
+        // client.info().await?;
         let master_nodes = nodes
             .iter()
             .filter(|node| node.role == NodeRole::Master)
             .cloned()
             .collect();
-        let client = RedisClient {
+        let mut client = RedisClient {
             client,
             nodes,
             master_nodes,
+            version: "".to_string(),
+        };
+        let mut conn = client.get_async_connection().await?;
+        client.version = match server_type {
+            ServerType::Cluster => {
+                let info: Vec<InfoDict> = cmd("INFO").arg("server").query_async(&mut conn).await?;
+                println!("{:?}", info);
+                "".to_string()
+            }
+            _ => {
+                let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;
+                info.get::<String>("redis_version").unwrap_or_default()
+            }
         };
         // Cache the client
         self.clients.insert(name.to_string(), client.clone());

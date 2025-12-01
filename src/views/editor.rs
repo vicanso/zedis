@@ -63,7 +63,11 @@ impl ZedisEditor {
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = vec![];
-        let input = cx.new(|cx| InputState::new(window, cx).clean_on_escape());
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_editor(cx, "ttl_placeholder").to_string())
+        });
 
         subscriptions.push(
             cx.subscribe_in(
@@ -178,6 +182,7 @@ impl ZedisEditor {
                     .disabled(!value_modified || is_busy)
                     .loading(is_busy)
                     .outline()
+                    .label(i18n_editor(cx, "save"))
                     .tooltip(i18n_editor(cx, "save_data_tooltip"))
                     .ml_2()
                     .icon(CustomIconName::FileCheckCorner)

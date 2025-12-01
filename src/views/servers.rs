@@ -185,7 +185,6 @@ impl ZedisServers {
                                 };
                                 server_state.update(cx, |state, cx| {
                                     state.update_or_insrt_server(
-                                        cx,
                                         RedisServer {
                                             name,
                                             host,
@@ -194,6 +193,8 @@ impl ZedisServers {
                                             description,
                                             ..Default::default()
                                         },
+                                        is_new,
+                                        cx,
                                     );
                                 });
 
@@ -281,8 +282,11 @@ impl Render for ZedisServers {
                     ])
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let server_name = select_server_name.clone();
+                        let query_mode = cx
+                            .global::<ZedisGlobalStore>()
+                            .query_mode(server_name.as_str(), cx);
                         this.server_state.update(cx, |state, cx| {
-                            state.select(server_name.into(), cx);
+                            state.select(server_name.into(), query_mode, cx);
                         });
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, _cx| {

@@ -29,15 +29,21 @@ expired = "已过期"
 perm = "永久有效"
 delete_key_prompt = "您确定要删除此redis键：%{key}吗？"
 size = "大小"
+save = "保存"
 save_data_tooltip = "保存数据"
 delete_key_tooltip = "删除键"
 copy_key_tooltip = "复制键"
 copied_key_to_clipboard = "已将键复制到剪贴板"
+ttl_placeholder = "例如：1d 或 1h"
 
 [key_tree]
-filter_placeholder = "按关键字过滤键"
+filter_placeholder = "按关键字搜索"
 no_keys_found = "未找到键"
+key_not_exists = "不存在或已过期"
 search_tooltip = "搜索键"
+query_mode_all = "* 包含"
+query_mode_prefix = "^ 前缀"
+query_mode_exact = "= 精确"
 
 [status_bar]
 latency = "延迟"
@@ -51,6 +57,7 @@ update_tooltip = "更新列表值"
 delete_tooltip = "删除列表值"
 value_placeholder = "输入新值"
 delete_list_item_prompt = "您确定要删除此列表项：%{index}吗？"
+keyword_placeholder = "按关键字搜索"
 
 [content]
 loading = "加载中..."

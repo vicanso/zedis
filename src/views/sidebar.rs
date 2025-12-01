@@ -184,8 +184,11 @@ impl ZedisSidebar {
                                         });
                                         cx.notify();
                                     });
+                                    let query_mode = cx
+                                        .global::<ZedisGlobalStore>()
+                                        .query_mode(server_name.as_str(), cx);
                                     this.server_state.update(cx, |state, cx| {
-                                        state.select(server_name.clone(), cx);
+                                        state.select(server_name.clone(), query_mode, cx);
                                     });
                                 });
                             })
@@ -212,7 +215,7 @@ impl ZedisSidebar {
         let btn = Button::new("zedis-sidebar-setting-btn")
             .ghost()
             .w_full()
-            .h(px(60.))
+            .h(px(44.))
             .tooltip(i18n_sidebar(cx, "settings"))
             .child(Icon::new(IconName::Settings).size(px(18.)))
             .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
@@ -294,7 +297,7 @@ impl ZedisSidebar {
         div().border_b_1().border_color(cx.theme().border).child(
             Button::new("github")
                 .ghost()
-                .h(px(50.))
+                .h(px(48.))
                 .w_full()
                 .tooltip(i18n_sidebar(cx, "star"))
                 .icon(Icon::new(IconName::GitHub))
