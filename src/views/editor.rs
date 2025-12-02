@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::states::ServerEvent;
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_editor;
 use crate::states::{KeyType, ZedisServerState};
@@ -39,6 +40,7 @@ use gpui_component::{Disableable, WindowExt};
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
 use std::time::Duration;
+use std::time::Instant;
 use tracing::debug;
 
 const PERM: &str = "perm";
@@ -52,6 +54,8 @@ pub struct ZedisEditor {
     // state
     ttl_edit_mode: bool,
     ttl_input_state: Entity<InputState>,
+
+    selected_key_at: Option<Instant>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -68,6 +72,13 @@ impl ZedisEditor {
                 .clean_on_escape()
                 .placeholder(i18n_editor(cx, "ttl_placeholder").to_string())
         });
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, _cx| {
+                if let ServerEvent::Selectkey(_) = event {
+                    this.selected_key_at = Some(Instant::now());
+                }
+            }),
+        );
 
         subscriptions.push(
             cx.subscribe_in(
@@ -93,6 +104,14 @@ impl ZedisEditor {
             ttl_edit_mode: false,
             ttl_input_state: input,
             _subscriptions: subscriptions,
+            selected_key_at: None,
+        }
+    }
+    fn is_selected_key_recently(&self) -> bool {
+        if let Some(selected_key_at) = self.selected_key_at {
+            selected_key_at.elapsed() < Duration::from_millis(300)
+        } else {
+            false
         }
     }
     fn handle_update_ttl(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -134,15 +153,12 @@ impl ZedisEditor {
             return h_flex();
         };
         let mut is_busy = false;
-        let mut is_loading_value = false;
         let mut btns = vec![];
         let mut ttl = "".to_string();
         let mut size = "".to_string();
+        let mut should_show_loading = false;
         if let Some(value) = server_state.value() {
             is_busy = value.is_busy();
-            if is_busy && value.key_type() == KeyType::Unknown {
-                is_loading_value = true;
-            }
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
                 if seconds == -2 {
@@ -163,6 +179,9 @@ impl ZedisEditor {
             .join(" ");
             size = format_size(value.size() as u64, DECIMAL);
         }
+        if is_busy && !self.is_selected_key_recently() {
+            should_show_loading = true;
+        }
         let size_label = i18n_editor(cx, "size");
         if !size.is_empty() {
             btns.push(
@@ -179,14 +198,16 @@ impl ZedisEditor {
             btns.push(
                 Button::new("zedis-editor-save-key")
                     .ml_2()
-                    .disabled(!value_modified || is_busy)
-                    .loading(is_busy)
+                    .disabled(!value_modified || should_show_loading)
                     .outline()
                     .label(i18n_editor(cx, "save"))
                     .tooltip(i18n_editor(cx, "save_data_tooltip"))
                     .ml_2()
                     .icon(CustomIconName::FileCheckCorner)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if is_busy {
+                            return;
+                        }
                         let Some(key) = this.server_state.read(cx).key() else {
                             return;
                         };
@@ -220,10 +241,15 @@ impl ZedisEditor {
             } else {
                 Button::new("zedis-editor-ttl-btn")
                     .ml_2()
+                    .outline()
+                    .disabled(should_show_loading)
+                    .tooltip(i18n_editor(cx, "update_ttl_tooltip").to_string())
                     .label(ttl.clone())
-                    .icon(Icon::new(CustomIconName::Clock3))
-                    .text_sm()
+                    .icon(CustomIconName::Clock3)
                     .on_click(cx.listener(move |this, _event, window, cx| {
+                        if is_busy {
+                            return;
+                        }
                         let ttl = ttl.clone();
                         this.ttl_edit_mode = true;
                         this.ttl_input_state.update(cx, move |state, cx| {
@@ -246,12 +272,14 @@ impl ZedisEditor {
             Button::new("zedis-editor-delete-key")
                 .ml_2()
                 .outline()
-                .loading(is_busy)
-                .disabled(is_busy)
+                .disabled(should_show_loading)
                 .tooltip(i18n_editor(cx, "delete_key_tooltip").to_string())
                 .icon(IconName::CircleX)
                 .ml_2()
                 .on_click(cx.listener(move |this, _event, window, cx| {
+                    if is_busy {
+                        return;
+                    }
                     this.delete_key(window, cx);
                 }))
                 .into_any_element(),
@@ -268,7 +296,7 @@ impl ZedisEditor {
                 Button::new("zedis-editor-copy-key")
                     .outline()
                     .tooltip(i18n_editor(cx, "copy_key_tooltip").to_string())
-                    .loading(is_loading_value)
+                    .loading(should_show_loading)
                     .icon(IconName::Copy)
                     .on_click(cx.listener(move |_this, _event, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));

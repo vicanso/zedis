@@ -109,7 +109,7 @@ pub struct ZedisServerState {
     server_status: RedisServerStatus,
     dbsize: Option<u64>,
     nodes: (usize, usize),
-    version: String,
+    version: SharedString,
     latency: Option<Duration>,
     servers: Option<Vec<RedisServer>>,
     key: Option<SharedString>,
@@ -124,13 +124,21 @@ pub struct ZedisServerState {
     loaded_prefixes: AHashSet<SharedString>,
     keys: AHashMap<SharedString, KeyType>,
 
-    last_operated_at: i64,
     // error
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
 }
 
 pub enum ServerEvent {
+    Spawn(SharedString),
+    TaskFinish(SharedString),
+    Selectkey(SharedString),
+    ValueUpdated(SharedString),
     SelectServer(SharedString),
+    ServerUpdated(SharedString),
+    ScanStart(SharedString),
+    ScanNext(SharedString),
+    ScanFinish(SharedString),
+    Error(ErrorMessage),
     Heartbeat(Duration),
 }
 
@@ -152,17 +160,18 @@ impl ZedisServerState {
     }
     fn reset(&mut self) {
         self.server = "".into();
+        self.version = "".into();
         self.nodes = (0, 0);
         self.dbsize = None;
         self.latency = None;
         self.key = None;
         self.reset_scan();
     }
-    fn extend_keys(&mut self, keys: Vec<String>) {
+    fn extend_keys(&mut self, keys: Vec<SharedString>) {
         self.keys.reserve(keys.len());
         let mut insert_count = 0;
         for key in keys {
-            self.keys.entry(key.into()).or_insert_with(|| {
+            self.keys.entry(key).or_insert_with(|| {
                 insert_count += 1;
                 KeyType::Unknown
             });
@@ -171,24 +180,18 @@ impl ZedisServerState {
             self.key_tree_id = Uuid::now_v7().to_string().into();
         }
     }
-    fn add_error_message(&mut self, category: String, message: String) {
+    fn add_error_message(&mut self, category: String, message: String, cx: &mut Context<Self>) {
         let mut guard = self.error_messages.write();
         if guard.len() >= 10 {
             guard.remove(0);
         }
-        guard.push(ErrorMessage {
+        let info = ErrorMessage {
             category: category.into(),
             message: message.into(),
             created_at: unix_ts(),
-        });
-    }
-    pub fn get_error_message(&self) -> Option<ErrorMessage> {
-        if let Some(last) = self.error_messages.read().last()
-            && last.created_at >= self.last_operated_at
-        {
-            return Some(last.clone());
-        }
-        None
+        };
+        guard.push(info.clone());
+        cx.emit(ServerEvent::Error(info));
     }
     fn spawn<T, Fut>(
         &mut self,
@@ -201,6 +204,7 @@ impl ZedisServerState {
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
         let name = task_name.to_string();
+        cx.emit(ServerEvent::Spawn(name.clone().into()));
         debug!(name, "spawn task");
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move { task().await });
@@ -210,7 +214,7 @@ impl ZedisServerState {
                     // TODO 出错的处理
                     let message = format!("{name} fail");
                     error!(error = %e, message);
-                    this.add_error_message(name, e.to_string());
+                    this.add_error_message(name, e.to_string(), cx);
                 }
                 callback(this, result, cx);
             })
@@ -317,7 +321,6 @@ impl ZedisServerState {
     pub fn remove_server(&mut self, server: &str, cx: &mut Context<Self>) {
         let mut servers = self.servers.clone().unwrap_or_default();
         servers.retain(|s| s.name != server);
-        self.last_operated_at = unix_ts();
         self.spawn(
             "remove_server",
             move || async move {
@@ -341,7 +344,6 @@ impl ZedisServerState {
     ) {
         let mut servers = self.servers.clone().unwrap_or_default();
         server.updated_at = Some(Local::now().to_rfc3339());
-        self.last_operated_at = unix_ts();
         self.spawn(
             "update_or_insert_server",
             move || async move {
@@ -394,9 +396,10 @@ impl ZedisServerState {
     pub fn select(&mut self, server: SharedString, mode: QueryMode, cx: &mut Context<Self>) {
         if self.server != server {
             self.reset();
-            self.server = server;
+            self.server = server.clone();
             self.query_mode = mode;
             debug!(server = self.server.as_str(), "select server");
+            cx.emit(ServerEvent::SelectServer(server));
             cx.notify();
             if self.server.is_empty() {
                 return;
@@ -405,7 +408,6 @@ impl ZedisServerState {
             self.scaning = true;
             cx.notify();
             let server_clone = self.server.clone();
-            self.last_operated_at = unix_ts();
             let counting_server = server_clone.clone();
             self.spawn(
                 "select_server",
@@ -422,14 +424,14 @@ impl ZedisServerState {
                         return;
                     }
                     if let Ok((dbsize, latency, nodes, version)) = result {
-                        cx.emit(ServerEvent::Heartbeat(latency));
                         this.latency = Some(latency);
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
-                        this.version = version;
+                        this.version = version.into();
                     };
                     let server = this.server.clone();
                     this.server_status = RedisServerStatus::Idle;
+                    cx.emit(ServerEvent::ServerUpdated(server.clone()));
                     cx.notify();
                     if this.query_mode == QueryMode::All {
                         this.scan_keys(server, "".into(), cx);

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::ServerEvent;
 use super::ZedisServerState;
 use crate::connection::get_connection_manager;
-use crate::helpers::unix_ts;
 use chrono::Local;
 use gpui::Hsla;
 use gpui::SharedString;
@@ -105,6 +105,9 @@ impl RedisValue {
     pub fn is_busy(&self) -> bool {
         !matches!(self.status, RedisValueStatus::Idle)
     }
+    pub fn is_loading(&self) -> bool {
+        matches!(self.status, RedisValueStatus::Loading)
+    }
     pub fn string_value(&self) -> Option<SharedString> {
         if let Some(RedisValueData::String(value)) = self.data.as_ref() {
             return Some(value.clone());
@@ -175,9 +178,9 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Updating;
         value.size = new_value.len();
         value.data = Some(RedisValueData::String(new_value.clone()));
+        let current_key = key.clone();
 
         cx.notify();
-        self.last_operated_at = unix_ts();
         self.spawn(
             "save_value",
             move || async move {
@@ -197,6 +200,7 @@ impl ZedisServerState {
                         value.size = original_value.len();
                         value.data = Some(RedisValueData::String(original_value));
                     }
+                    cx.emit(ServerEvent::ValueUpdated(current_key));
                 }
 
                 cx.notify();

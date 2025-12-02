@@ -12,23 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod app;
-mod i18n;
-mod server;
-
-pub use app::QueryMode;
-pub use app::Route;
-pub use app::ZedisAppState;
-pub use app::ZedisGlobalStore;
-pub use app::save_app_state;
-pub use i18n::i18n_content;
-pub use i18n::i18n_editor;
-pub use i18n::i18n_key_tree;
-pub use i18n::i18n_list_editor;
-pub use i18n::i18n_servers;
-pub use i18n::i18n_sidebar;
-pub use i18n::i18n_status_bar;
-pub use server::ErrorMessage;
-pub use server::ServerEvent;
-pub use server::ZedisServerState;
-pub use server::value::*;
+pub fn get_font_family() -> String {
+    if cfg!(target_os = "macos") {
+        "Monaco".to_string()
+    } else if cfg!(target_os = "windows") {
+        "Consolas".to_string()
+    } else {
+        "monospace".to_string()
+    }
+}

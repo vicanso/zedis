@@ -13,9 +13,11 @@
 // limitations under the License.
 
 mod action;
+mod font;
 mod fs;
 mod time;
 
 pub use action::{MemuAction, new_hot_keys};
+pub use font::get_font_family;
 pub use fs::get_or_create_config_dir;
 pub use time::unix_ts;

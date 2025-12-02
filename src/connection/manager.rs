@@ -16,6 +16,7 @@ use super::async_connection::{RedisAsyncConn, query_async_masters};
 use super::config::get_config;
 use crate::error::Error;
 use dashmap::DashMap;
+use gpui::SharedString;
 use redis::FromRedisValue;
 use redis::cmd;
 use redis::{Client, Cmd, cluster};
@@ -197,8 +198,12 @@ impl RedisClient {
     /// * `pattern` - The pattern to match keys.
     /// * `count` - The count of keys to return.
     /// # Returns
-    /// * `(Vec<u64>, Vec<String>)` - A tuple containing the new cursors and the keys.
-    pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<String>)> {
+    /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
+    pub async fn first_scan(
+        &self,
+        pattern: &str,
+        count: u64,
+    ) -> Result<(Vec<u64>, Vec<SharedString>)> {
         let master_count = self.count_masters()?;
         let cursors = vec![0; master_count];
 
@@ -211,13 +216,13 @@ impl RedisClient {
     /// * `pattern` - The pattern to match keys.
     /// * `count` - The count of keys to return.
     /// # Returns
-    /// * `(Vec<u64>, Vec<String>)` - A tuple containing the new cursors and the keys.
+    /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
     pub async fn scan(
         &self,
         cursors: Vec<u64>,
         pattern: &str,
         count: u64,
-    ) -> Result<(Vec<u64>, Vec<String>)> {
+    ) -> Result<(Vec<u64>, Vec<SharedString>)> {
         let cmds: Vec<Cmd> = cursors
             .iter()
             .map(|cursor| {
@@ -230,12 +235,16 @@ impl RedisClient {
                     .clone()
             })
             .collect();
-        let values: Vec<(u64, Vec<String>)> = self.query_async_masters(cmds).await?;
+        let values: Vec<(u64, Vec<Vec<u8>>)> = self.query_async_masters(cmds).await?;
         let mut cursors = Vec::with_capacity(values.len());
         let mut keys = Vec::with_capacity(values[0].1.len() * values.len());
         for (cursor, keys_in_node) in values {
             cursors.push(cursor);
-            keys.extend(keys_in_node);
+            keys.extend(
+                keys_in_node
+                    .iter()
+                    .map(|k| String::from_utf8_lossy(k).to_string().into()),
+            );
         }
         keys.sort_unstable();
         Ok((cursors, keys))
@@ -420,9 +429,19 @@ impl ConnectionManager {
         let mut conn = client.get_async_connection().await?;
         client.version = match server_type {
             ServerType::Cluster => {
-                let info: Vec<InfoDict> = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                println!("{:?}", info);
-                "".to_string()
+                let info: redis::Value = cmd("INFO").arg("server").query_async(&mut conn).await?;
+                let mut version = "unknown".to_string();
+                if let redis::Value::Map(items) = info {
+                    for (_, node_info_val) in items {
+                        if let Ok(info) = InfoDict::from_redis_value(node_info_val)
+                            && let Some(v) = info.get::<String>("redis_version")
+                        {
+                            version = v;
+                            break;
+                        }
+                    }
+                }
+                version
             }
             _ => {
                 let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::ServerEvent;
 use super::ZedisServerState;
 use super::list::first_load_list_value;
 use super::string::get_redis_value;
@@ -120,7 +121,11 @@ impl ZedisServerState {
             "scan_keys",
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
-                let pattern = format!("*{}*", keyword);
+                let pattern = if keyword.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!("*{}*", keyword)
+                };
                 // Adjust count based on keyword specificity
                 let count = if keyword.is_empty() { 2_000 } else { 10_000 };
                 if let Some(cursors) = cursors {
@@ -136,6 +141,7 @@ impl ZedisServerState {
                         // Check if scan is complete (all cursors returned to 0)
                         if cursors.iter().sum::<u64>() == 0 {
                             this.scan_completed = true;
+                            cx.emit(ServerEvent::ScanFinish(processing_keyword.clone()));
                             this.cursors = None;
                         } else {
                             this.cursors = Some(cursors);
@@ -146,6 +152,9 @@ impl ZedisServerState {
                         this.cursors = None;
                     }
                 };
+                if this.cursors.is_some() {
+                    cx.emit(ServerEvent::ScanNext(processing_keyword.clone()));
+                }
                 // Automatically load more if we haven't reached the limit and scan isn't done
                 if this.cursors.is_some() && this.keys.len() < max {
                     // run again
@@ -172,6 +181,7 @@ impl ZedisServerState {
         self.reset_scan();
         self.scaning = true;
         self.keyword = keyword.clone();
+        cx.emit(ServerEvent::ScanStart(keyword.clone()));
         cx.notify();
         self.scan_keys(self.server.clone(), keyword, cx);
     }
@@ -197,9 +207,9 @@ impl ZedisServerState {
             self.fill_key_types(prefix, cx);
             return;
         }
+        cx.emit(ServerEvent::ScanStart(prefix.clone()));
 
         let server = self.server.clone();
-        self.last_operated_at = unix_ts();
         let pattern = format!("{}*", prefix);
         self.spawn(
             "scan_prefix",
@@ -251,14 +261,21 @@ impl ZedisServerState {
         if key.is_empty() {
             return;
         }
-        self.value = Some(RedisValue {
-            status: RedisValueStatus::Loading,
-            ..Default::default()
-        });
+        // only set loading status if the value exists for better performance
+        // prevent editor flickering
+        if let Some(value) = self.value.as_mut() {
+            value.status = RedisValueStatus::Loading;
+        } else {
+            self.value = Some(RedisValue {
+                status: RedisValueStatus::Loading,
+                ..Default::default()
+            });
+        }
+        cx.emit(ServerEvent::Selectkey(key.clone()));
         cx.notify();
 
         let server = self.server.clone();
-        self.last_operated_at = unix_ts();
+        let current_key = key.clone();
 
         self.spawn(
             "select_key",
@@ -298,6 +315,10 @@ impl ZedisServerState {
                 Ok(redis_value)
             },
             move |this, result, cx| {
+                // if the key is not the same as the selected key, return
+                if this.key != Some(current_key) {
+                    return;
+                }
                 match result {
                     Ok(value) => {
                         if !value.is_expired()
@@ -326,7 +347,6 @@ impl ZedisServerState {
         };
         value.status = RedisValueStatus::Updating;
         cx.notify();
-        self.last_operated_at = unix_ts();
         let remove_key = key.clone();
         self.spawn(
             "delete_key",
@@ -380,7 +400,6 @@ impl ZedisServerState {
             value.expire_at = Some(unix_ts() + new_ttl.as_secs() as i64);
         }
         cx.notify();
-        self.last_operated_at = unix_ts();
         self.spawn(
             "update_value_ttl",
             move || async move {

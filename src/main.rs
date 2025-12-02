@@ -1,5 +1,6 @@
 use crate::connection::get_servers;
 use crate::helpers::{MemuAction, new_hot_keys};
+use crate::states::ServerEvent;
 use crate::states::ZedisAppState;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
@@ -23,11 +24,16 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
+use gpui::{Action, SharedString};
 use gpui_component::ActiveTheme;
 use gpui_component::Root;
 use gpui_component::Theme;
+use gpui_component::WindowExt;
 use gpui_component::h_flex;
+use gpui_component::notification::Notification;
 use gpui_component::v_flex;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::env;
 use std::str::FromStr;
 use tracing::Level;
@@ -56,6 +62,11 @@ pub struct Zedis {
     status_bar: Entity<ZedisStatusBar>,
 }
 
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub struct NotificationAction {
+    message: SharedString,
+}
+
 impl Zedis {
     pub fn new(
         window: &mut Window,
@@ -65,6 +76,21 @@ impl Zedis {
         let status_bar = cx.new(|cx| ZedisStatusBar::new(window, cx, server_state.clone()));
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
         let content = cx.new(|cx| ZedisContent::new(window, cx, server_state.clone()));
+        cx.subscribe(&server_state, |_this, _server_state, event, cx| {
+            if let ServerEvent::Error(error) = event {
+                cx.dispatch_action(&NotificationAction {
+                    message: error.message.clone(),
+                });
+            }
+        })
+        .detach();
+        cx.observe_window_appearance(window, |_this, _window, cx| {
+            if cx.global::<ZedisGlobalStore>().theme(cx).is_none() {
+                Theme::change(cx.window_appearance(), None, cx);
+                cx.refresh_windows();
+            }
+        })
+        .detach();
 
         Self {
             status_bar,
@@ -131,6 +157,9 @@ impl Render for Zedis {
             )
             .children(dialog_layer)
             .children(notification_layer)
+            .on_action(cx.listener(|_this, e: &NotificationAction, window, cx| {
+                window.push_notification(Notification::error(e.message.clone()), cx);
+            }))
     }
 }
 

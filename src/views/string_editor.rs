@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::get_font_family;
 use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::Entity;
@@ -77,7 +78,7 @@ impl ZedisStringEditor {
                 .code_editor(default_language.name())
                 .line_number(true)
                 // TODO 等component完善后，再打开indent_guides
-                .indent_guides(false)
+                .indent_guides(true)
                 .tab_size(TabSize {
                     tab_size: 4,
                     hard_tabs: false,
@@ -108,6 +109,16 @@ impl ZedisStringEditor {
         }
     }
     fn update_editor_value(&mut self, cx: &mut Context<Self>) {
+        // prevent editor flickering by skipping value updates while loading
+        if self
+            .server_state
+            .read(cx)
+            .value()
+            .map(|value| value.is_loading())
+            .unwrap_or(false)
+        {
+            return;
+        }
         let window_handle = self.window_handle;
         let server_state = self.server_state.clone();
         self.value_modified = false;
@@ -135,7 +146,7 @@ impl Render for ZedisStringEditor {
             .p_0()
             .w_full()
             .h_full()
-            .font_family("Monaco")
+            .font_family(get_font_family())
             .text_size(px(12.))
             .focus_bordered(false)
             .into_any_element()

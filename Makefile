@@ -7,8 +7,10 @@ fmt:
 dev:
 	bacon run
 
-
 release:
+	cargo build --release
+
+bundle:
 	cargo bundle --release 
 
 udeps:
