@@ -15,6 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::states::ErrorMessage;
 use crate::states::ServerEvent;
+use crate::states::ServerTask;
 use crate::states::ZedisServerState;
 use crate::states::i18n_status_bar;
 use gpui::Entity;
@@ -33,8 +34,9 @@ use gpui_component::h_flex;
 use gpui_component::label::Label;
 use std::time::Duration;
 
+/// Formats the database size and scan count string "count/total".
 #[inline]
-fn format_size_description(dbsize: Option<u64>, scan_count: usize) -> SharedString {
+fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
     if let Some(dbsize) = dbsize {
         format!("{scan_count}/{dbsize}")
     } else {
@@ -42,14 +44,16 @@ fn format_size_description(dbsize: Option<u64>, scan_count: usize) -> SharedStri
     }
     .into()
 }
+/// Formats the latency string and determines the color based on the delay.
 #[inline]
-fn format_latency_description(
+fn format_latency(
     latency: Option<Duration>,
     cx: &mut Context<ZedisStatusBar>,
 ) -> (SharedString, Hsla) {
     if let Some(latency) = latency {
         let ms = latency.as_millis();
         let theme = cx.theme();
+        // Determine color based on latency thresholds
         let color = if ms < 50 {
             theme.green
         } else if ms < 500 {
@@ -57,6 +61,7 @@ fn format_latency_description(
         } else {
             theme.red
         };
+        // Format string
         if ms < 1000 {
             (format!("{ms}ms").into(), color)
         } else {
@@ -67,19 +72,28 @@ fn format_latency_description(
     }
 }
 
+/// Formats the node count and version information.
 #[inline]
-fn format_nodes_description(nodes: (usize, usize), version: &str) -> SharedString {
+fn format_nodes(nodes: (usize, usize), version: &str) -> SharedString {
     format!("{} / {} (v{})", nodes.0, nodes.1, version).into()
 }
 
+// --- Local State ---
+
+/// Local state for the status bar to cache formatted strings and colors.
+/// This prevents re-calculating strings on every render frame.
+#[derive(Default)]
+struct StatusBarState {
+    server: SharedString,
+    size: SharedString,
+    latency: (SharedString, Hsla),
+    nodes: SharedString,
+    scan_finished: bool,
+    error: Option<ErrorMessage>,
+}
+
 pub struct ZedisStatusBar {
-    // state
-    _server: SharedString,
-    _size: SharedString,
-    _latency: (SharedString, Hsla),
-    _nodes: SharedString,
-    _scan_finished: bool,
-    _error: Option<ErrorMessage>,
+    state: StatusBarState,
 
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
@@ -91,42 +105,57 @@ impl ZedisStatusBar {
         cx: &mut Context<Self>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
-        let state = server_state.read(cx).clone();
-        let dbsize = state.dbsize();
-        let scan_count = state.scan_count();
+        // Initialize state from the current server state
+        // Read only necessary fields to avoid cloning the entire state if it's large
+        let (dbsize, scan_count, server_name, nodes, version, latency, scan_completed) = {
+            let state = server_state.read(cx);
+            (
+                state.dbsize(),
+                state.scan_count(),
+                state.server().to_string(),
+                state.nodes(),
+                state.version().to_string(),
+                state.latency(),
+                state.scan_completed(),
+            )
+        };
+
         let mut subscriptions = vec![];
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| {
                 match event {
                     ServerEvent::Heartbeat(latency) => {
-                        this._latency = format_latency_description(Some(*latency), cx);
+                        this.state.latency = format_latency(Some(*latency), cx);
                     }
                     ServerEvent::SelectServer(server) => {
-                        this.reset(cx);
-                        this._server = server.clone();
+                        this.reset();
+                        this.state.server = server.clone();
                     }
                     ServerEvent::ServerUpdated(_) => {
                         let state = server_state.read(cx);
-                        this._nodes = format_nodes_description(state.nodes(), state.version());
-                        this._latency = format_latency_description(state.latency(), cx);
+                        this.state.nodes = format_nodes(state.nodes(), state.version());
+                        this.state.latency = format_latency(state.latency(), cx);
                     }
                     ServerEvent::ScanStart(_) => {
-                        this._scan_finished = false;
+                        this.state.scan_finished = false;
                     }
                     ServerEvent::ScanFinish(_) => {
                         let state = server_state.read(cx);
-                        this._size = format_size_description(state.dbsize(), state.scan_count());
-                        this._scan_finished = true;
+                        this.state.size = format_size(state.dbsize(), state.scan_count());
+                        this.state.scan_finished = true;
                     }
                     ServerEvent::ScanNext(_) => {
                         let state = server_state.read(cx);
-                        this._size = format_size_description(state.dbsize(), state.scan_count());
+                        this.state.size = format_size(state.dbsize(), state.scan_count());
                     }
                     ServerEvent::Error(error) => {
-                        this._error = Some(error.clone());
+                        this.state.error = Some(error.clone());
                     }
-                    ServerEvent::Spawn(_) => {
-                        this._error = None;
+                    ServerEvent::Spawn(task) => {
+                        // Clear error when a new task starts (except background ping)
+                        if *task != ServerTask::Ping {
+                            this.state.error = None;
+                        }
                     }
                     _ => {
                         return;
@@ -139,24 +168,23 @@ impl ZedisStatusBar {
             heartbeat_task: None,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
-            _size: format_size_description(dbsize, scan_count),
-            _server: state.server().to_string().into(),
-            _latency: format_latency_description(None, cx),
-            _nodes: format_nodes_description(state.nodes(), state.version()),
-            _scan_finished: state.scan_completed(),
-            _error: None,
+            state: StatusBarState {
+                size: format_size(dbsize, scan_count),
+                server: server_name.into(),
+                latency: format_latency(latency, cx),
+                nodes: format_nodes(nodes, &version),
+                scan_finished: scan_completed,
+                ..Default::default()
+            },
         };
         this.start_heartbeat(server_state, cx);
         this
     }
-    fn reset(&mut self, cx: &mut Context<Self>) {
-        self._server = SharedString::default();
-        self._nodes = SharedString::default();
-        self._latency = format_latency_description(None, cx);
-        self._size = SharedString::default();
-        self._error = None;
+    /// Reset the state to default
+    fn reset(&mut self) {
+        self.state = StatusBarState::default();
     }
-
+    /// Start the heartbeat task
     fn start_heartbeat(&mut self, server_state: Entity<ZedisServerState>, cx: &mut Context<Self>) {
         // start task
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
@@ -170,9 +198,9 @@ impl ZedisStatusBar {
             }
         }));
     }
-
+    /// Render the server status
     fn render_server_status(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_completed = self._scan_finished;
+        let is_completed = self.state.scan_finished;
         h_flex()
             .items_center()
             .child(
@@ -181,9 +209,9 @@ impl ZedisStatusBar {
                     .small()
                     .disabled(is_completed)
                     .tooltip(if is_completed {
-                        i18n_status_bar(cx, "scan_completed").to_string()
+                        i18n_status_bar(cx, "scan_completed")
                     } else {
-                        i18n_status_bar(cx, "scan_more_keys").to_string()
+                        i18n_status_bar(cx, "scan_more_keys")
                     })
                     .mr_1()
                     .icon(CustomIconName::ChevronsDown)
@@ -193,18 +221,18 @@ impl ZedisStatusBar {
                         });
                     })),
             )
-            .child(Label::new(self._size.clone()).mr_4())
+            .child(Label::new(self.state.size.clone()).mr_4())
             .child(
                 Icon::new(CustomIconName::Network)
                     .text_color(cx.theme().primary)
                     .mr_1(),
             )
-            .child(Label::new(self._nodes.clone()).mr_4())
+            .child(Label::new(self.state.nodes.clone()).mr_4())
             .child(
                 Button::new("zedis-status-bar-letency")
                     .ghost()
                     .disabled(true)
-                    .tooltip(i18n_status_bar(cx, "latency").to_string())
+                    .tooltip(i18n_status_bar(cx, "latency"))
                     .icon(
                         Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
                             .text_color(cx.theme().primary)
@@ -212,14 +240,14 @@ impl ZedisStatusBar {
                     ),
             )
             .child(
-                Label::new(self._latency.0.clone())
-                    .text_color(self._latency.1)
+                Label::new(self.state.latency.0.clone())
+                    .text_color(self.state.latency.1)
                     .mr_4(),
             )
     }
-
+    /// Render the error message
     fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(data) = &self._error else {
+        let Some(data) = &self.state.error else {
             return h_flex();
         };
         // 记录出错的显示
@@ -234,7 +262,7 @@ impl ZedisStatusBar {
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("render status bar view");
-        if self._server.is_empty() {
+        if self.state.server.is_empty() {
             return h_flex();
         }
         h_flex()

@@ -45,18 +45,18 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Default)]
 struct KeyNode {
     /// full path (e.g. "dir1:dir2")
-    full_path: String,
+    full_path: SharedString,
 
     /// is this node a real key?
     is_key: bool,
 
     /// children nodes (key is short name, e.g. "dir2")
-    children: AHashMap<String, KeyNode>,
+    children: AHashMap<SharedString, KeyNode>,
 }
 
 impl KeyNode {
     /// create a new child node
-    fn new(full_path: String) -> Self {
+    fn new(full_path: SharedString) -> Self {
         Self {
             full_path,
             is_key: false,
@@ -74,14 +74,14 @@ impl KeyNode {
         };
 
         let child_full_path = if self.full_path.is_empty() {
-            part_name.to_string()
+            part_name.to_string().into()
         } else {
-            format!("{}:{}", self.full_path, part_name)
+            format!("{}:{}", self.full_path, part_name).into()
         };
 
         let child_node = self
             .children
-            .entry(part_name.to_string()) // Key in map is short name
+            .entry(part_name.to_string().into()) // Key in map is short name
             .or_insert_with(|| KeyNode::new(child_full_path));
 
         child_node.insert(parts);
@@ -128,8 +128,47 @@ pub struct ZedisServerState {
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub enum ServerTask {
+    Ping,
+    SelectServer,
+    RemoveServer,
+    UpdateOrInsertServer,
+    FillKeyTypes,
+    Selectkey,
+    DeleteKey,
+    ScanKeys,
+    ScanPrefix,
+    UpdateKeyTtl,
+    DeleteListItem,
+    UpdateListValue,
+    LoadMoreListValue,
+    SaveValue,
+}
+
+impl ServerTask {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ServerTask::Ping => "ping",
+            ServerTask::SelectServer => "select_server",
+            ServerTask::RemoveServer => "remove_server",
+            ServerTask::UpdateOrInsertServer => "update_or_insert_server",
+            ServerTask::FillKeyTypes => "fill_key_types",
+            ServerTask::Selectkey => "select_key",
+            ServerTask::DeleteKey => "delete_key",
+            ServerTask::ScanKeys => "scan_keys",
+            ServerTask::ScanPrefix => "scan_prefix",
+            ServerTask::UpdateKeyTtl => "update_key_ttl",
+            ServerTask::DeleteListItem => "delete_list_item",
+            ServerTask::UpdateListValue => "update_list_value",
+            ServerTask::LoadMoreListValue => "load_more_list_value",
+            ServerTask::SaveValue => "save_value",
+        }
+    }
+}
+
 pub enum ServerEvent {
-    Spawn(SharedString),
+    Spawn(ServerTask),
     TaskFinish(SharedString),
     Selectkey(SharedString),
     ValueUpdated(SharedString),
@@ -139,6 +178,7 @@ pub enum ServerEvent {
     ScanNext(SharedString),
     ScanFinish(SharedString),
     Error(ErrorMessage),
+    UpdateServers,
     Heartbeat(Duration),
 }
 
@@ -195,7 +235,7 @@ impl ZedisServerState {
     }
     fn spawn<T, Fut>(
         &mut self,
-        task_name: &str,
+        name: ServerTask,
         task: impl FnOnce() -> Fut + Send + 'static,
         callback: impl FnOnce(&mut Self, Result<T>, &mut Context<Self>) + Send + 'static,
         cx: &mut Context<Self>,
@@ -203,18 +243,18 @@ impl ZedisServerState {
         T: Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let name = task_name.to_string();
-        cx.emit(ServerEvent::Spawn(name.clone().into()));
-        debug!(name, "spawn task");
+        // let name = task_name.to_string();
+        cx.emit(ServerEvent::Spawn(name.clone()));
+        debug!(name = name.as_str(), "spawn task");
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move { task().await });
             let result: Result<T> = task.await;
             handle.update(cx, move |this, cx| {
                 if let Err(e) = &result {
                     // TODO 出错的处理
-                    let message = format!("{name} fail");
+                    let message = format!("{} fail", name.as_str());
                     error!(error = %e, message);
-                    this.add_error_message(name, e.to_string(), cx);
+                    this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
                 }
                 callback(this, result, cx);
             })
@@ -233,10 +273,14 @@ impl ZedisServerState {
     pub fn set_query_mode(&mut self, mode: QueryMode) {
         self.query_mode = mode;
     }
-    pub fn key_tree(&self, expanded_items: &AHashSet<String>, expand_all: bool) -> Vec<TreeItem> {
+    pub fn key_tree(
+        &self,
+        expanded_items: &AHashSet<SharedString>,
+        expand_all: bool,
+    ) -> Vec<TreeItem> {
         let keys = self.keys.keys();
         let mut root_trie_node = KeyNode {
-            full_path: "".to_string(),
+            full_path: SharedString::default(),
             is_key: false,
             children: AHashMap::new(),
         };
@@ -246,8 +290,8 @@ impl ZedisServerState {
         }
 
         fn convert_map_to_vec_tree(
-            children_map: &AHashMap<String, KeyNode>,
-            expanded_items: &AHashSet<String>,
+            children_map: &AHashMap<SharedString, KeyNode>,
+            expanded_items: &AHashSet<SharedString>,
             expand_all: bool,
         ) -> Vec<TreeItem> {
             let mut children_vec = Vec::new();
@@ -322,13 +366,14 @@ impl ZedisServerState {
         let mut servers = self.servers.clone().unwrap_or_default();
         servers.retain(|s| s.name != server);
         self.spawn(
-            "remove_server",
+            ServerTask::RemoveServer,
             move || async move {
                 save_servers(servers.clone()).await?;
                 Ok(servers)
             },
             move |this, result, cx| {
                 if let Ok(servers) = result {
+                    cx.emit(ServerEvent::UpdateServers);
                     this.servers = Some(servers);
                 }
                 cx.notify();
@@ -345,7 +390,7 @@ impl ZedisServerState {
         let mut servers = self.servers.clone().unwrap_or_default();
         server.updated_at = Some(Local::now().to_rfc3339());
         self.spawn(
-            "update_or_insert_server",
+            ServerTask::UpdateOrInsertServer,
             move || async move {
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.name == server.name) {
                     if is_new {
@@ -363,6 +408,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(servers) = result {
+                    cx.emit(ServerEvent::UpdateServers);
                     this.servers = Some(servers);
                 }
                 cx.notify();
@@ -377,7 +423,7 @@ impl ZedisServerState {
         }
         let server = self.server.clone();
         self.spawn(
-            "ping",
+            ServerTask::Ping,
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
                 let start = Instant::now();
@@ -410,7 +456,7 @@ impl ZedisServerState {
             let server_clone = self.server.clone();
             let counting_server = server_clone.clone();
             self.spawn(
-                "select_server",
+                ServerTask::SelectServer,
                 move || async move {
                     let client = get_connection_manager().get_client(&server_clone).await?;
                     let dbsize = client.dbsize().await?;

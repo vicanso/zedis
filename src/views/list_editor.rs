@@ -64,7 +64,12 @@ impl ListDelegate for RedisListValues {
     fn items_count(&self, _section: usize, _cx: &App) -> usize {
         self.list_value.values.len()
     }
-    fn render_item(&self, ix: IndexPath, _window: &mut Window, cx: &mut App) -> Option<Self::Item> {
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
         let mut is_busy = false;
         if let Some(value) = self.server_state.read(cx).value() {
             is_busy = value.is_busy();

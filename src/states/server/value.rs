@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::ServerEvent;
+use super::ServerTask;
 use super::ZedisServerState;
 use crate::connection::get_connection_manager;
 use chrono::Local;
@@ -182,7 +183,7 @@ impl ZedisServerState {
 
         cx.notify();
         self.spawn(
-            "save_value",
+            ServerTask::SaveValue,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let _: () = cmd("SET")

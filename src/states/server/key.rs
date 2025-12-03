@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::ServerEvent;
+use super::ServerTask;
 use super::ZedisServerState;
 use super::list::first_load_list_value;
 use super::string::get_redis_value;
@@ -59,7 +60,7 @@ impl ZedisServerState {
         keys.sort_unstable();
         // Spawn a background task to fetch types concurrently
         self.spawn(
-            "fill_key_types",
+            ServerTask::FillKeyTypes,
             move || async move {
                 let conn = get_connection_manager().get_connection(&server).await?;
                 // Use a stream to execute commands concurrently with backpressure
@@ -118,7 +119,7 @@ impl ZedisServerState {
         let processing_server = server.clone();
         let processing_keyword = keyword.clone();
         self.spawn(
-            "scan_keys",
+            ServerTask::ScanKeys,
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
                 let pattern = if keyword.is_empty() {
@@ -212,7 +213,7 @@ impl ZedisServerState {
         let server = self.server.clone();
         let pattern = format!("{}*", prefix);
         self.spawn(
-            "scan_prefix",
+            ServerTask::ScanPrefix,
             move || async move {
                 let client = get_connection_manager().get_client(&server).await?;
                 let count = 10_000;
@@ -278,7 +279,7 @@ impl ZedisServerState {
         let current_key = key.clone();
 
         self.spawn(
-            "select_key",
+            ServerTask::Selectkey,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let (t, ttl): (String, i64) = pipe()
@@ -349,7 +350,7 @@ impl ZedisServerState {
         cx.notify();
         let remove_key = key.clone();
         self.spawn(
-            "delete_key",
+            ServerTask::DeleteKey,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
@@ -401,7 +402,7 @@ impl ZedisServerState {
         }
         cx.notify();
         self.spawn(
-            "update_value_ttl",
+            ServerTask::UpdateKeyTtl,
             move || async move {
                 if !parse_fail_error.is_empty() {
                     return Err(Error::Invalid {

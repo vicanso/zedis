@@ -21,6 +21,7 @@ use crate::views::ZedisEditor;
 use crate::views::ZedisKeyTree;
 use crate::views::ZedisServers;
 use gpui::Entity;
+use gpui::Pixels;
 use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
@@ -37,15 +38,44 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 
+// Constants for UI dimensions
+const KEY_TREE_MIN_WIDTH: f32 = 275.0;
+const KEY_TREE_MAX_WIDTH: f32 = 400.0;
+const LOADING_SKELETON_WIDTH: f32 = 600.0;
+const LOADING_SKELETON_SMALL_WIDTH: f32 = 100.0;
+const LOADING_SKELETON_MEDIUM_WIDTH: f32 = 220.0;
+const LOADING_SKELETON_LARGE_WIDTH: f32 = 420.0;
+const SERVERS_MARGIN: f32 = 4.0;
+
+/// Main content area component for the Zedis application
+///
+/// Manages the application's main views and routing:
+/// - Server list view (Route::Home): Display and manage Redis server connections
+/// - Editor view (Route::Editor): Display key tree and value editor for selected server
+///
+/// Views are lazily initialized and cached for performance, but cleared when
+/// no longer needed to conserve memory.
 pub struct ZedisContent {
+    /// Reference to the server state containing Redis connection and data
     server_state: Entity<ZedisServerState>,
+
+    /// Cached views - lazily initialized and cleared when switching routes
     servers: Option<Entity<ZedisServers>>,
     value_editor: Option<Entity<ZedisEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
+
+    /// Persisted width of the key tree panel (resizable by user)
+    key_tree_width: Pixels,
+
+    /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisContent {
+    /// Create a new content view with route-aware view management
+    ///
+    /// Sets up subscriptions to automatically clean up cached views when
+    /// switching routes to optimize memory usage.
     pub fn new(
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -53,41 +83,61 @@ impl ZedisContent {
     ) -> Self {
         let mut subscriptions = Vec::new();
 
+        // Subscribe to global state changes for automatic view cleanup
+        // This ensures we only keep views in memory that are currently relevant
         subscriptions.push(cx.observe(
             &cx.global::<ZedisGlobalStore>().state(),
             |this, model, cx| {
                 let route = model.read(cx).route();
+
+                // Clean up servers view when not on home route
                 if route != Route::Home && this.servers.is_some() {
-                    debug!("remove servers view");
+                    debug!("Cleaning up servers view (route changed)");
                     let _ = this.servers.take();
                 }
+
+                // Clean up editor views when not on editor route
                 if route != Route::Editor && this.value_editor.is_some() {
-                    debug!("remove value editor view");
+                    debug!("Cleaning up value editor view (route changed)");
                     let _ = this.value_editor.take();
                 }
+
                 cx.notify();
             },
         ));
+
+        // Restore persisted key tree width from global state
+        let key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
 
         Self {
             server_state,
             servers: None,
             value_editor: None,
             key_tree: None,
+            key_tree_width,
             _subscriptions: subscriptions,
         }
     }
+    /// Render the server management view (home page)
+    ///
+    /// Lazily initializes the servers view on first render and caches it
+    /// for subsequent renders until the route changes.
     fn render_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let servers = if let Some(servers) = &self.servers {
-            servers.clone()
-        } else {
-            debug!("new servers view");
-            let servers = cx.new(|cx| ZedisServers::new(window, cx, self.server_state.clone()));
-            self.servers = Some(servers.clone());
-            servers
-        };
-        div().m_4().child(servers)
+        // Reuse existing view or create new one
+        let servers = self
+            .servers
+            .get_or_insert_with(|| {
+                debug!("Creating new servers view");
+                cx.new(|cx| ZedisServers::new(window, cx, self.server_state.clone()))
+            })
+            .clone();
+
+        div().m(px(SERVERS_MARGIN)).child(servers)
     }
+    /// Render a loading skeleton screen with animated placeholders
+    ///
+    /// Displayed when the application is busy (e.g., connecting to Redis server,
+    /// loading keys). Provides visual feedback that something is happening.
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .w_full()
@@ -97,12 +147,38 @@ impl ZedisContent {
             .child(
                 v_flex()
                     .gap_2()
-                    .w(px(600.0))
-                    .child(Skeleton::new().w(px(600.)).h_4().rounded_md())
-                    .child(Skeleton::new().w(px(100.)).h_4().rounded_md())
-                    .child(Skeleton::new().w(px(220.)).h_4().rounded_md())
-                    .child(Skeleton::new().w(px(420.)).h_4().rounded_md())
-                    .child(Skeleton::new().w(px(600.)).h_4().rounded_md())
+                    .w(px(LOADING_SKELETON_WIDTH))
+                    // Variable-width skeletons create a more natural loading appearance
+                    .child(
+                        Skeleton::new()
+                            .w(px(LOADING_SKELETON_WIDTH))
+                            .h_4()
+                            .rounded_md(),
+                    )
+                    .child(
+                        Skeleton::new()
+                            .w(px(LOADING_SKELETON_SMALL_WIDTH))
+                            .h_4()
+                            .rounded_md(),
+                    )
+                    .child(
+                        Skeleton::new()
+                            .w(px(LOADING_SKELETON_MEDIUM_WIDTH))
+                            .h_4()
+                            .rounded_md(),
+                    )
+                    .child(
+                        Skeleton::new()
+                            .w(px(LOADING_SKELETON_LARGE_WIDTH))
+                            .h_4()
+                            .rounded_md(),
+                    )
+                    .child(
+                        Skeleton::new()
+                            .w(px(LOADING_SKELETON_WIDTH))
+                            .h_4()
+                            .rounded_md(),
+                    )
                     .child(
                         Label::new(i18n_content(cx, "loading"))
                             .w_full()
@@ -112,48 +188,72 @@ impl ZedisContent {
                     ),
             )
     }
+    /// Render the main editor interface with resizable panels
+    ///
+    /// Layout:
+    /// - Left panel: Key tree for browsing Redis keys
+    /// - Right panel: Value editor for viewing/editing selected key
+    ///
+    /// The key tree width is user-adjustable and persisted to disk.
     fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.clone();
-        let value_editor = if let Some(value_editor) = &self.value_editor {
-            value_editor.clone()
-        } else {
-            let value_editor = cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()));
-            self.value_editor = Some(value_editor.clone());
-            value_editor
-        };
-        let key_tree = if let Some(key_tree) = &self.key_tree {
-            key_tree.clone()
-        } else {
-            debug!("new key tree view");
-            let key_tree = cx.new(|cx| ZedisKeyTree::new(window, cx, server_state));
-            self.key_tree = Some(key_tree.clone());
-            key_tree
-        };
-        let mut key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
-        let min_width = px(275.);
-        if key_tree_width < min_width {
-            key_tree_width = min_width;
-        }
+
+        // Lazily initialize value editor - reuse existing or create new
+        let value_editor = self
+            .value_editor
+            .get_or_insert_with(|| {
+                debug!("Creating new value editor view");
+                cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()))
+            })
+            .clone();
+
+        // Lazily initialize key tree - reuse existing or create new
+        let key_tree = self
+            .key_tree
+            .get_or_insert_with(|| {
+                debug!("Creating new key tree view");
+                cx.new(|cx| ZedisKeyTree::new(window, cx, server_state))
+            })
+            .clone();
+
+        let min_width = px(KEY_TREE_MIN_WIDTH);
+        let max_width = px(KEY_TREE_MAX_WIDTH);
+
+        // Ensure key tree width is within valid range
+        let key_tree_width = self.key_tree_width.max(min_width);
+
         h_resizable("editor-container")
             .child(
+                // Left panel: Resizable key tree
                 resizable_panel()
                     .size(key_tree_width)
-                    .size_range(min_width..px(400.))
+                    .size_range(min_width..max_width)
                     .child(key_tree),
             )
-            .child(resizable_panel().child(value_editor))
+            .child(
+                // Right panel: Value editor (takes remaining space)
+                resizable_panel().child(value_editor),
+            )
             .on_resize(
-                cx.listener(move |_this, event: &Entity<ResizableState>, _window, cx| {
+                cx.listener(move |this, event: &Entity<ResizableState>, _window, cx| {
+                    // Get the new width from the resize event
                     let Some(width) = event.read(cx).sizes().first() else {
                         return;
                     };
+
+                    // Update local state
+                    this.key_tree_width = *width;
+
+                    // Persist to global state and save to disk
                     let mut value = cx.global::<ZedisGlobalStore>().value(cx);
                     value.set_key_tree_width(*width);
+
+                    // Save asynchronously to avoid blocking UI
                     cx.background_spawn(async move {
                         if let Err(e) = save_app_state(&value) {
-                            error!(error = %e, "save key tree width fail",);
+                            error!(error = %e, "Failed to save key tree width");
                         } else {
-                            info!("save key tree width success");
+                            info!("Key tree width saved successfully");
                         }
                     })
                     .detach();
@@ -163,15 +263,27 @@ impl ZedisContent {
 }
 
 impl Render for ZedisContent {
+    /// Main render method - routes to appropriate view based on application state
+    ///
+    /// Rendering logic:
+    /// 1. If on home route -> show server list
+    /// 2. If server is busy (connecting/loading) -> show loading skeleton
+    /// 3. Otherwise -> show editor interface (key tree + value editor)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
+
+        // Route 1: Server management view
         if route == Route::Home {
             return self.render_servers(window, cx).into_any_element();
         }
+
+        // Route 2: Loading state (show skeleton while connecting/loading)
         let server_state = self.server_state.read(cx);
         if server_state.is_busy() {
             return self.render_loading(window, cx).into_any_element();
         }
+
+        // Route 3: Main editor interface
         self.render_editor(window, cx).into_any_element()
     }
 }

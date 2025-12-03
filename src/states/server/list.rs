@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::ServerTask;
 use super::ZedisServerState;
 use super::value::RedisListValue;
 use super::value::RedisValue;
@@ -90,7 +91,7 @@ impl ZedisServerState {
         cx.notify();
         let server = self.server.clone();
         self.spawn(
-            "delete_list_item",
+            ServerTask::DeleteListItem,
             move || async move {
                 let unique_marker = Uuid::new_v4().to_string();
                 let mut conn = get_connection_manager().get_connection(&server).await?;
@@ -165,7 +166,7 @@ impl ZedisServerState {
         let new_value_clone = new_value.clone();
 
         self.spawn(
-            "update_list_value",
+            ServerTask::UpdateListValue,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
 
@@ -243,7 +244,7 @@ impl ZedisServerState {
         let stop = start + 99; // Load 100 items
 
         self.spawn(
-            "load_more_list",
+            ServerTask::LoadMoreListValue,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server).await?;
                 // Fetch only the new items

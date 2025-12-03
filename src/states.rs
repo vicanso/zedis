@@ -30,5 +30,6 @@ pub use i18n::i18n_sidebar;
 pub use i18n::i18n_status_bar;
 pub use server::ErrorMessage;
 pub use server::ServerEvent;
+pub use server::ServerTask;
 pub use server::ZedisServerState;
 pub use server::value::*;

@@ -21,7 +21,7 @@ impl AssetSource for Assets {
 
         Self::get(path)
             .map(|f| Some(f.data))
-            .ok_or_else(|| anyhow!("could not find asset at path \"{path}\""))
+            .ok_or_else(|| anyhow!(r#"could not find asset at path "{path}""#))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -53,6 +53,7 @@ pub enum CustomIconName {
     Network,
     Equal,
     Activity,
+    Languages,
 }
 
 impl CustomIconName {
@@ -71,6 +72,7 @@ impl CustomIconName {
             CustomIconName::Network => "icons/network.svg",
             CustomIconName::Equal => "icons/equal.svg",
             CustomIconName::Activity => "icons/activity.svg",
+            CustomIconName::Languages => "icons/languages.svg",
         }
         .into()
     }
