@@ -153,7 +153,7 @@ impl ZedisKeyTree {
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
-        let server = server_state.read(cx).server().to_string();
+        let server_id = server_state.read(cx).server_id().to_string();
 
         // Subscribe to server state changes to rebuild tree when keys change
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
@@ -182,9 +182,9 @@ impl ZedisKeyTree {
         // Restore query mode from global state (per-server setting)
         let query_mode = cx
             .global::<ZedisGlobalStore>()
-            .query_mode(server.as_str(), cx);
+            .query_mode(server_id.as_str(), cx);
 
-        debug!(server, "Creating new key tree view");
+        debug!(server_id, "Creating new key tree view");
 
         let mut this = Self {
             state: KeyTreeState {
@@ -213,10 +213,10 @@ impl ZedisKeyTree {
         let server_state = self.server_state.read(cx);
         let query_mode = cx
             .global::<ZedisGlobalStore>()
-            .query_mode(server_state.server(), cx);
+            .query_mode(server_state.server_id(), cx);
 
         debug!(
-            key_tree_server = server_state.server(),
+            key_tree_server_id = server_state.server_id(),
             key_tree_id = server_state.key_tree_id(),
             "Server state updated"
         );
@@ -541,7 +541,7 @@ impl Render for ZedisKeyTree {
             .child(self.render_keyword_input(cx))
             .child(self.render_tree(cx))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
-                let server = this.server_state.read(cx).server().to_string();
+                let server_id = this.server_state.read(cx).server_id().to_string();
                 let new_mode = *e;
 
                 // Step 1: Update server state with new query mode
@@ -554,7 +554,7 @@ impl Render for ZedisKeyTree {
 
                 // Step 3: Persist query mode to global state (per-server setting)
                 update_app_state_and_save(cx, "save_query_mode", move |state, _cx| {
-                    state.add_query_mode(server, new_mode);
+                    state.add_query_mode(server_id, new_mode);
                 });
             }))
     }

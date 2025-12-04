@@ -89,12 +89,12 @@ impl ZedisServerState {
         }
         value.status = RedisValueStatus::Updating;
         cx.notify();
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         self.spawn(
             ServerTask::DeleteListItem,
             move || async move {
                 let unique_marker = Uuid::new_v4().to_string();
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 let _: () = pipe()
                     .atomic()
                     .cmd("LSET")
@@ -158,7 +158,7 @@ impl ZedisServerState {
         cx.notify();
         // Optimization: We don't clone the entire value here.
         // We only need basic info for the background task.
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
 
         // Prepare data for the async block (move ownership)
         let key_clone = key.clone();
@@ -168,7 +168,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::UpdateListValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
 
                 // 1. Optimistic Lock Check: Get current value
                 let current_value: String = cmd("LINDEX")
@@ -238,7 +238,7 @@ impl ZedisServerState {
             None => return,
         };
 
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         // Calculate pagination
         let start = current_len;
         let stop = start + 99; // Load 100 items
@@ -246,7 +246,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::LoadMoreListValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 // Fetch only the new items
                 let new_values = get_redis_list_value(&mut conn, &key, start, stop).await?;
                 Ok(new_values)

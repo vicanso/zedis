@@ -84,7 +84,7 @@ fn format_nodes(nodes: (usize, usize), version: &str) -> SharedString {
 /// This prevents re-calculating strings on every render frame.
 #[derive(Default)]
 struct StatusBarState {
-    server: SharedString,
+    server_id: SharedString,
     size: SharedString,
     latency: (SharedString, Hsla),
     nodes: SharedString,
@@ -107,12 +107,12 @@ impl ZedisStatusBar {
     ) -> Self {
         // Initialize state from the current server state
         // Read only necessary fields to avoid cloning the entire state if it's large
-        let (dbsize, scan_count, server_name, nodes, version, latency, scan_completed) = {
+        let (dbsize, scan_count, server_id, nodes, version, latency, scan_completed) = {
             let state = server_state.read(cx);
             (
                 state.dbsize(),
                 state.scan_count(),
-                state.server().to_string(),
+                state.server_id().to_string(),
                 state.nodes(),
                 state.version().to_string(),
                 state.latency(),
@@ -127,9 +127,9 @@ impl ZedisStatusBar {
                     ServerEvent::Heartbeat(latency) => {
                         this.state.latency = format_latency(Some(*latency), cx);
                     }
-                    ServerEvent::SelectServer(server) => {
+                    ServerEvent::SelectServer(server_id) => {
                         this.reset();
-                        this.state.server = server.clone();
+                        this.state.server_id = server_id.clone();
                     }
                     ServerEvent::ServerUpdated(_) => {
                         let state = server_state.read(cx);
@@ -170,7 +170,7 @@ impl ZedisStatusBar {
             _subscriptions: subscriptions,
             state: StatusBarState {
                 size: format_size(dbsize, scan_count),
-                server: server_name.into(),
+                server_id: server_id.into(),
                 latency: format_latency(latency, cx),
                 nodes: format_nodes(nodes, &version),
                 scan_finished: scan_completed,
@@ -262,7 +262,7 @@ impl ZedisStatusBar {
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("render status bar view");
-        if self.state.server.is_empty() {
+        if self.state.server_id.is_empty() {
             return h_flex();
         }
         h_flex()

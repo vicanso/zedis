@@ -12,14 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod action;
-mod font;
-mod fs;
-mod string;
-mod time;
+pub fn fast_contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    // 1. 长度剪枝
+    if needle_lower.len() > haystack.len() {
+        return false;
+    }
 
-pub use action::{MemuAction, new_hot_keys};
-pub use font::get_font_family;
-pub use fs::get_or_create_config_dir;
-pub use string::fast_contains_ignore_case;
-pub use time::unix_ts;
+    if haystack.is_ascii() {
+        let needle_bytes = needle_lower.as_bytes();
+        return haystack
+            .as_bytes()
+            .windows(needle_bytes.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_bytes));
+    }
+
+    haystack.to_lowercase().contains(needle_lower)
+}

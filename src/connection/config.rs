@@ -23,6 +23,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 pub struct RedisServer {
+    pub id: String,
     pub name: String,
     pub host: String,
     pub port: u16,
@@ -79,7 +80,7 @@ pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
 }
 
 /// Retrieves a single server configuration by name.
-pub(crate) fn get_config(name: &str) -> Result<RedisServer> {
+pub(crate) fn get_config(id: &str) -> Result<RedisServer> {
     let path = get_or_create_server_config()?;
     let value = read_to_string(path)?;
     // TODO 密码是否应该加密
@@ -88,9 +89,9 @@ pub(crate) fn get_config(name: &str) -> Result<RedisServer> {
     let config = configs
         .servers
         .iter()
-        .find(|config| config.name == name)
+        .find(|config| config.id == id)
         .ok_or(Error::Invalid {
-            message: format!("Redis config not found: {}", name),
+            message: format!("Redis config not found: {}", id),
         })?;
     Ok(config.clone())
 }

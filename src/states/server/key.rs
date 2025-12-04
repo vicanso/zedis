@@ -56,13 +56,13 @@ impl ZedisServerState {
         if keys.is_empty() {
             return;
         }
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         keys.sort_unstable();
         // Spawn a background task to fetch types concurrently
         self.spawn(
             ServerTask::FillKeyTypes,
             move || async move {
-                let conn = get_connection_manager().get_connection(&server).await?;
+                let conn = get_connection_manager().get_connection(&server_id).await?;
                 // Use a stream to execute commands concurrently with backpressure
                 let types: Vec<(SharedString, String)> = stream::iter(keys.iter().cloned())
                     .map(|key| {
@@ -104,24 +104,24 @@ impl ZedisServerState {
     /// if the result set is too small.
     pub(crate) fn scan_keys(
         &mut self,
-        server: SharedString,
+        server_id: SharedString,
         keyword: SharedString,
         cx: &mut Context<Self>,
     ) {
         // Guard clause: ignore if the context has changed (e.g., switched server)
-        if self.server != server || self.keyword != keyword {
+        if self.server_id != server_id || self.keyword != keyword {
             return;
         }
         let cursors = self.cursors.clone();
         // Calculate max limit based on scan times to prevent infinite scrolling from loading too much
         let max = (self.scan_times + 1) * DEFAULT_SCAN_RESULT_MAX;
 
-        let processing_server = server.clone();
+        let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
         self.spawn(
             ServerTask::ScanKeys,
             move || async move {
-                let client = get_connection_manager().get_client(&server).await?;
+                let client = get_connection_manager().get_client(&server_id).await?;
                 let pattern = if keyword.is_empty() {
                     "*".to_string()
                 } else {
@@ -184,7 +184,7 @@ impl ZedisServerState {
         self.keyword = keyword.clone();
         cx.emit(ServerEvent::ScanStart(keyword.clone()));
         cx.notify();
-        self.scan_keys(self.server.clone(), keyword, cx);
+        self.scan_keys(self.server_id.clone(), keyword, cx);
     }
     /// Loads the next batch of keys (pagination).
     pub fn scan_next(&mut self, cx: &mut Context<Self>) {
@@ -192,7 +192,7 @@ impl ZedisServerState {
             return;
         }
         self.scan_times += 1;
-        self.scan_keys(self.server.clone(), self.keyword.clone(), cx);
+        self.scan_keys(self.server_id.clone(), self.keyword.clone(), cx);
         cx.notify();
     }
     /// Scans keys matching a specific prefix.
@@ -210,12 +210,12 @@ impl ZedisServerState {
         }
         cx.emit(ServerEvent::ScanStart(prefix.clone()));
 
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         let pattern = format!("{}*", prefix);
         self.spawn(
             ServerTask::ScanPrefix,
             move || async move {
-                let client = get_connection_manager().get_client(&server).await?;
+                let client = get_connection_manager().get_client(&server_id).await?;
                 let count = 10_000;
                 // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;
@@ -275,13 +275,13 @@ impl ZedisServerState {
         cx.emit(ServerEvent::Selectkey(key.clone()));
         cx.notify();
 
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         let current_key = key.clone();
 
         self.spawn(
             ServerTask::Selectkey,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 let (t, ttl): (String, i64) = pipe()
                     .cmd("TYPE")
                     .arg(key.as_str())
@@ -342,7 +342,7 @@ impl ZedisServerState {
     }
     /// Deletes a specified key.
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -352,7 +352,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::DeleteKey,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
                 Ok(())
             },
@@ -377,7 +377,7 @@ impl ZedisServerState {
         if ttl.is_empty() {
             return;
         }
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -409,7 +409,7 @@ impl ZedisServerState {
                         message: parse_fail_error,
                     });
                 }
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 let _: () = cmd("EXPIRE")
                     .arg(key.as_str())
                     .arg(new_ttl.as_secs())

@@ -17,6 +17,7 @@ use super::config::get_config;
 use crate::error::Error;
 use dashmap::DashMap;
 use gpui::SharedString;
+use redis::AsyncConnectionConfig;
 use redis::FromRedisValue;
 use redis::cmd;
 use redis::{Client, Cmd, cluster};
@@ -24,6 +25,7 @@ use redis::{InfoDict, Role};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -132,13 +134,38 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     Ok(nodes)
 }
 
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Establishes an asynchronous connection based on the client type.
+async fn get_async_connection(client: &RClient) -> Result<RedisAsyncConn> {
+    match client {
+        RClient::Single(client) => {
+            let cfg = AsyncConnectionConfig::default()
+                .set_connection_timeout(Some(CONNECTION_TIMEOUT))
+                .set_response_timeout(Some(RESPONSE_TIMEOUT));
+            let conn = client
+                .get_multiplexed_async_connection_with_config(&cfg)
+                .await?;
+            Ok(RedisAsyncConn::Single(conn))
+        }
+        RClient::Cluster(client) => {
+            let cfg = cluster::ClusterConfig::default()
+                .set_connection_timeout(CONNECTION_TIMEOUT)
+                .set_response_timeout(RESPONSE_TIMEOUT);
+            let conn = client.get_async_connection_with_config(cfg).await?;
+            Ok(RedisAsyncConn::Cluster(conn))
+        }
+    }
+}
+
 // TODO 是否在client中保存connection
 #[derive(Clone)]
 pub struct RedisClient {
-    client: RClient,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
     version: String,
+    connection: RedisAsyncConn,
 }
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -147,19 +174,7 @@ impl RedisClient {
     pub fn version(&self) -> &str {
         &self.version
     }
-    /// Establishes an asynchronous connection based on the client type.
-    async fn get_async_connection(&self) -> Result<RedisAsyncConn> {
-        match &self.client {
-            RClient::Single(client) => {
-                let conn = client.get_multiplexed_async_connection().await?;
-                Ok(RedisAsyncConn::Single(conn))
-            }
-            RClient::Cluster(client) => {
-                let conn = client.get_async_connection().await?;
-                Ok(RedisAsyncConn::Cluster(conn))
-            }
-        }
-    }
+
     /// Executes commands on all master nodes concurrently.
     /// # Arguments
     /// * `cmds` - A vector of commands to execute.
@@ -183,7 +198,7 @@ impl RedisClient {
     }
     /// Pings the server to check connectivity.
     pub async fn ping(&self) -> Result<()> {
-        let mut conn = self.get_async_connection().await?;
+        let mut conn = self.connection.clone();
         let _: () = cmd("PING").query_async(&mut conn).await?;
         Ok(())
     }
@@ -397,12 +412,15 @@ impl ConnectionManager {
             )),
         }
     }
+    pub fn remove_client(&self, name: &str) {
+        self.clients.remove(name);
+    }
     /// Retrieves or creates a RedisClient for the given configuration name.
-    pub async fn get_client(&self, name: &str) -> Result<RedisClient> {
-        if let Some(client) = self.clients.get(name) {
+    pub async fn get_client(&self, server_id: &str) -> Result<RedisClient> {
+        if let Some(client) = self.clients.get(server_id) {
             return Ok(client.clone());
         }
-        let (nodes, server_type) = self.get_redis_nodes(name).await?;
+        let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
         let client = match server_type {
             ServerType::Cluster => {
                 let addrs: Vec<String> = nodes.iter().map(|n| n.addr.clone()).collect();
@@ -414,19 +432,19 @@ impl ConnectionManager {
                 RClient::Single(client)
             }
         };
-        // client.info().await?;
         let master_nodes = nodes
             .iter()
             .filter(|node| node.role == NodeRole::Master)
             .cloned()
             .collect();
+        let connection = get_async_connection(&client).await?;
         let mut client = RedisClient {
-            client,
             nodes,
             master_nodes,
             version: "".to_string(),
+            connection,
         };
-        let mut conn = client.get_async_connection().await?;
+        let mut conn = client.connection.clone();
         client.version = match server_type {
             ServerType::Cluster => {
                 let info: redis::Value = cmd("INFO").arg("server").query_async(&mut conn).await?;
@@ -449,13 +467,13 @@ impl ConnectionManager {
             }
         };
         // Cache the client
-        self.clients.insert(name.to_string(), client.clone());
+        self.clients.insert(server_id.to_string(), client.clone());
         Ok(client)
     }
     /// Shorthand to get an async connection directly.
-    pub async fn get_connection(&self, name: &str) -> Result<RedisAsyncConn> {
-        let client = self.get_client(name).await?;
-        client.get_async_connection().await
+    pub async fn get_connection(&self, server_id: &str) -> Result<RedisAsyncConn> {
+        let client = self.get_client(server_id).await?;
+        Ok(client.connection.clone())
     }
 }
 
