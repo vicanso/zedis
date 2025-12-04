@@ -11,6 +11,11 @@ settings = "Settings"
 
 
 [servers]
+name_placeholder = "Enter server name"
+host_placeholder = "Enter server host"
+port_placeholder = "Enter server port"
+password_placeholder = "Enter server password"
+description_placeholder = "Enter server description"
 remove_prompt = "Are you sure you want to delete this server: %{server}?"
 add_server_title = "Add Server"
 update_server_title = "Update Server"
@@ -58,7 +63,7 @@ action = "Action"
 update_tooltip = "Update list value"
 delete_tooltip = "Delete list value"
 value_placeholder = "Enter new value"
-delete_list_item_prompt = "Are you sure you want to delete this list item: %{index}?"
+delete_list_item_prompt = "Are you sure you want to delete this list item: %{value}(%{row})?"
 keyword_placeholder = "Filter by keyword"
 
 [content]

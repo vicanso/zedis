@@ -10,6 +10,11 @@ settings = "设置"
 
 
 [servers]
+name_placeholder = "输入服务器名称"
+host_placeholder = "输入服务器主机"
+port_placeholder = "输入服务器端口"
+password_placeholder = "输入服务器密码"
+description_placeholder = "输入服务器描述"
 remove_prompt = "您确定要删除此redis服务器：%{server}吗？"
 add_server_title = "添加服务器"
 update_server_title = "更新服务器"
@@ -57,7 +62,7 @@ action = "操作"
 update_tooltip = "更新列表值"
 delete_tooltip = "删除列表值"
 value_placeholder = "输入新值"
-delete_list_item_prompt = "您确定要删除此列表项：%{index}吗？"
+delete_list_item_prompt = "您确定要删除此列表项：%{value}(%{row})吗？"
 keyword_placeholder = "按关键字搜索"
 
 [content]

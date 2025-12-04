@@ -171,7 +171,7 @@ impl ZedisServerState {
         new_value: SharedString,
         cx: &mut Context<Self>,
     ) {
-        let server = self.server.clone();
+        let server_id = self.server_id.clone();
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -185,7 +185,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::SaveValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 let _: () = cmd("SET")
                     .arg(key.as_str())
                     .arg(new_value.as_str())

@@ -111,8 +111,8 @@ const LABEL_PADDING: Pixels = px(2.);
 
 #[derive(Default)]
 struct SidebarState {
-    server_names: Vec<SharedString>,
-    server: SharedString,
+    server_names: Vec<(SharedString, SharedString)>,
+    server_id: SharedString,
 }
 
 pub struct ZedisSidebar {
@@ -130,8 +130,8 @@ impl ZedisSidebar {
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| {
                 match event {
-                    ServerEvent::SelectServer(server) => {
-                        this.state.server = server.clone();
+                    ServerEvent::SelectServer(server_id) => {
+                        this.state.server_id = server_id.clone();
                     }
                     ServerEvent::UpdateServers => {
                         this.update_server_names(cx);
@@ -144,12 +144,12 @@ impl ZedisSidebar {
             }),
         );
         let state = server_state.read(cx).clone();
-        let server = state.server().to_string().into();
+        let server_id = state.server_id().to_string().into();
 
         let mut this = Self {
             server_state,
             state: SidebarState {
-                server,
+                server_id,
                 ..Default::default()
             },
             _subscriptions: subscriptions,
@@ -160,10 +160,14 @@ impl ZedisSidebar {
     }
     /// Update the server names
     fn update_server_names(&mut self, cx: &mut Context<Self>) {
-        let mut server_names = vec![SharedString::default()];
+        let mut server_names = vec![(SharedString::default(), SharedString::default())];
         let server_state = self.server_state.read(cx);
         if let Some(servers) = server_state.servers() {
-            server_names.extend(servers.iter().map(|server| server.name.clone().into()));
+            server_names.extend(
+                servers
+                    .iter()
+                    .map(|server| (server.id.clone().into(), server.name.clone().into())),
+            );
         }
         self.state.server_names = server_names;
     }
@@ -171,7 +175,7 @@ impl ZedisSidebar {
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let servers = self.state.server_names.clone();
-        let current_server_clone = self.state.server.clone();
+        let current_server_id_clone = self.state.server_id.clone();
         let home_label = i18n_sidebar(cx, "home");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
@@ -181,9 +185,10 @@ impl ZedisSidebar {
             move |range, _window, _cx| {
                 range
                     .map(|index| {
-                        let server_name = servers.get(index).cloned().unwrap_or_default();
-                        let is_home = server_name.is_empty();
-                        let is_current = server_name == current_server_clone;
+                        let (server_id, server_name) =
+                            servers.get(index).cloned().unwrap_or_default();
+                        let is_home = server_id.is_empty();
+                        let is_current = server_id == current_server_id_clone;
                         let name = if server_name.is_empty() {
                             home_label.clone()
                         } else {
@@ -220,9 +225,9 @@ impl ZedisSidebar {
                                     });
                                     let query_mode = cx
                                         .global::<ZedisGlobalStore>()
-                                        .query_mode(server_name.as_str(), cx);
+                                        .query_mode(server_id.as_str(), cx);
                                     this.server_state.update(cx, |state, cx| {
-                                        state.select(server_name.clone(), query_mode, cx);
+                                        state.select(server_id.clone(), query_mode, cx);
                                     });
                                 });
                             })
