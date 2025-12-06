@@ -8,10 +8,10 @@ dev:
 	bacon run
 
 release:
-	cargo build --release
+	cargo build --release --features mimalloc
 
 bundle:
-	cargo bundle --release 
+	cargo bundle --release  --features mimalloc
 
 udeps:
 	cargo +nightly udeps

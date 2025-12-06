@@ -49,21 +49,49 @@ use serde::Deserialize;
 use tracing::error;
 use tracing::info;
 
+// Constants for UI layout
+const ICON_PADDING: Pixels = px(8.0);
+const ICON_MARGIN: Pixels = px(4.0);
+const LABEL_PADDING: Pixels = px(2.0);
+const SIDEBAR_WIDTH: f32 = 80.0;
+const STAR_BUTTON_HEIGHT: f32 = 48.0;
+const SETTINGS_BUTTON_HEIGHT: f32 = 44.0;
+const SERVER_LIST_ITEM_BORDER_WIDTH: f32 = 3.0;
+const SETTINGS_ICON_SIZE: f32 = 18.0;
+
+/// Theme selection actions for the settings menu
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 enum ThemeAction {
+    /// Light theme mode
     Light,
+    /// Dark theme mode
     Dark,
+    /// Follow system theme
     System,
 }
 
+/// Locale/language selection actions for the settings menu
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 enum LocaleAction {
+    /// English language
     En,
+    /// Chinese language
     Zh,
 }
 
-/// Updates AppState in the background, persists it, and refreshes the UI.
-/// This helper reduces code duplication for Theme and Locale switching.
+/// Update app state in background, persist to disk, and refresh UI
+///
+/// This helper function abstracts the common pattern for updating global state:
+/// 1. Apply mutation to app state
+/// 2. Save updated state to disk asynchronously
+/// 3. Refresh all windows to apply changes
+///
+/// Used for theme and locale changes to ensure consistency across the app.
+///
+/// # Arguments
+/// * `cx` - Context for spawning async tasks
+/// * `action_name` - Human-readable action name for logging
+/// * `mutation` - Callback to modify the app state
 #[inline]
 fn update_app_state_and_save<F>(
     cx: &mut Context<ZedisSidebar>,
@@ -72,68 +100,92 @@ fn update_app_state_and_save<F>(
 ) where
     F: FnOnce(&mut ZedisAppState, &mut Context<ZedisAppState>) + Send + 'static + Clone,
 {
-    // 1. Get Global Store handle (Clone to move into async block)
     let store = cx.global::<ZedisGlobalStore>().clone();
 
     cx.spawn(async move |_, cx| {
-        // 1. Update Global State
-        // Using AsyncContext to update Entity
+        // Step 1: Update global state with the mutation
         let current_state = store.update(cx, |state, cx| {
-            // Execute specific mutation logic (fn mutation)
             mutation(state, cx);
-
-            // Return a clone of the current state for persistence
-            state.clone()
+            state.clone() // Return clone for async persistence
         });
 
-        // 2. Save to Disk, background task
+        // Step 2: Persist to disk in background executor
         if let Ok(state) = current_state {
             cx.background_executor()
                 .spawn(async move {
                     if let Err(e) = save_app_state(&state) {
-                        error!(error = %e, action = action_name, "save state failed");
+                        error!(error = %e, action = action_name, "Failed to save state");
                     } else {
-                        info!(action = action_name, "save state success");
+                        info!(action = action_name, "State saved successfully");
                     }
                 })
                 .await;
         }
 
-        // 3. Refresh Windows (Apply Theme/Locale changes globally)
+        // Step 3: Refresh windows to apply visual changes (theme/locale)
         cx.update(|cx| cx.refresh_windows()).ok();
     })
     .detach();
 }
 
-const ICON_PADDING: Pixels = px(8.);
-const ICON_MARGIN: Pixels = px(4.);
-const LABEL_PADDING: Pixels = px(2.);
-
+/// Internal state for sidebar component
+///
+/// Caches server list to avoid repeated queries and tracks current selection.
 #[derive(Default)]
 struct SidebarState {
+    /// List of (server_id, server_name) tuples for display
+    /// First entry is always (empty, empty) representing the home page
     server_names: Vec<(SharedString, SharedString)>,
+
+    /// Currently selected server ID (empty string means home page)
     server_id: SharedString,
 }
 
+/// Sidebar navigation component
+///
+/// Features:
+/// - Star button (link to GitHub)
+/// - Server list for quick navigation between servers and home
+/// - Settings menu with theme and language options
+///
+/// The sidebar provides quick access to:
+/// - Home page (server management)
+/// - Connected Redis servers
+/// - Application settings (theme, language)
 pub struct ZedisSidebar {
+    /// Internal state with cached server list
     state: SidebarState,
+
+    /// Reference to server state for Redis operations
     server_state: Entity<ZedisServerState>,
+
+    /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
+
 impl ZedisSidebar {
+    /// Create a new sidebar component with event subscriptions
+    ///
+    /// Sets up listeners for:
+    /// - Server selection changes (updates current selection)
+    /// - Server list updates (refreshes displayed servers)
     pub fn new(
         _window: &mut Window,
         cx: &mut Context<Self>,
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = vec![];
+
+        // Subscribe to server events for reactive updates
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| {
                 match event {
                     ServerEvent::SelectServer(server_id) => {
+                        // Update current selection highlight
                         this.state.server_id = server_id.clone();
                     }
                     ServerEvent::UpdateServers => {
+                        // Refresh server list when servers are added/removed/updated
                         this.update_server_names(cx);
                     }
                     _ => {
@@ -143,6 +195,8 @@ impl ZedisSidebar {
                 cx.notify();
             }),
         );
+
+        // Get current server ID for initial selection
         let state = server_state.read(cx).clone();
         let server_id = state.server_id().to_string().into();
 
@@ -155,12 +209,20 @@ impl ZedisSidebar {
             _subscriptions: subscriptions,
         };
 
+        // Load initial server list
         this.update_server_names(cx);
         this
     }
-    /// Update the server names
+
+    /// Update cached server list from server state
+    ///
+    /// Rebuilds the server_names list with:
+    /// - First entry: (empty, empty) for home page
+    /// - Remaining entries: (server_id, server_name) for each configured server
     fn update_server_names(&mut self, cx: &mut Context<Self>) {
+        // Start with home page entry
         let mut server_names = vec![(SharedString::default(), SharedString::default())];
+
         let server_state = self.server_state.read(cx);
         if let Some(servers) = server_state.servers() {
             server_names.extend(
@@ -171,7 +233,15 @@ impl ZedisSidebar {
         }
         self.state.server_names = server_names;
     }
-    /// Render the server list
+
+    /// Render the scrollable server list
+    ///
+    /// Shows:
+    /// - Home page item (always first)
+    /// - All configured server items
+    ///
+    /// Current selection is highlighted with background color and border.
+    /// Clicking an item navigates to that server or home page.
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let servers = self.state.server_names.clone();
@@ -179,6 +249,7 @@ impl ZedisSidebar {
         let home_label = i18n_sidebar(cx, "home");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
+
         uniform_list(
             "sidebar-redis-servers",
             servers.len(),
@@ -187,8 +258,11 @@ impl ZedisSidebar {
                     .map(|index| {
                         let (server_id, server_name) =
                             servers.get(index).cloned().unwrap_or_default();
+
                         let is_home = server_id.is_empty();
                         let is_current = server_id == current_server_id_clone;
+
+                        // Display "Home" for empty server_name, otherwise use server name
                         let name = if server_name.is_empty() {
                             home_label.clone()
                         } else {
@@ -201,7 +275,7 @@ impl ZedisSidebar {
                             .w_full()
                             .when(is_current, |this| this.bg(list_active_color))
                             .py_4()
-                            .border_r_3()
+                            .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
                             .when(is_current, |this| {
                                 this.border_color(list_active_border_color)
                             })
@@ -212,17 +286,24 @@ impl ZedisSidebar {
                                     .child(Label::new(name).text_ellipsis().text_xs()),
                             )
                             .on_click(move |_, _window, cx| {
+                                // Don't do anything if already selected
                                 if is_current {
                                     return;
                                 }
+
+                                // Determine target route based on home/server
                                 let route = if is_home { Route::Home } else { Route::Editor };
+
                                 view.update(cx, |this, cx| {
+                                    // Update global route
                                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                         store.update(cx, |state, _cx| {
                                             state.go_to(route);
                                         });
                                         cx.notify();
                                     });
+
+                                    // Get saved query mode for this server and connect
                                     let query_mode = cx
                                         .global::<ZedisGlobalStore>()
                                         .query_mode(server_id.as_str(), cx);
@@ -237,15 +318,25 @@ impl ZedisSidebar {
         )
         .size_full()
     }
-    /// Render the settings button
+
+    /// Render settings button with dropdown menu
+    ///
+    /// The dropdown contains two submenus:
+    /// 1. Theme selection (Light/Dark/System)
+    /// 2. Language selection (English/Chinese)
+    ///
+    /// Changes are saved to disk and applied immediately across all windows.
     fn render_settings_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = cx.global::<ZedisGlobalStore>();
 
+        // Determine currently selected theme mode
         let current_action = match store.theme(cx) {
             Some(ThemeMode::Light) => ThemeAction::Light,
             Some(ThemeMode::Dark) => ThemeAction::Dark,
             _ => ThemeAction::System,
         };
+
+        // Determine currently selected locale
         let locale = store.locale(cx);
         let current_locale = match locale {
             "zh" => LocaleAction::Zh,
@@ -255,12 +346,14 @@ impl ZedisSidebar {
         let btn = Button::new("zedis-sidebar-setting-btn")
             .ghost()
             .w_full()
-            .h(px(44.))
+            .h(px(SETTINGS_BUTTON_HEIGHT))
             .tooltip(i18n_sidebar(cx, "settings"))
-            .child(Icon::new(IconName::Settings).size(px(18.)))
+            .child(Icon::new(IconName::Settings).size(px(SETTINGS_ICON_SIZE)))
             .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
                 let theme_text = i18n_sidebar(cx, "theme");
                 let lang_text = i18n_sidebar(cx, "lang");
+
+                // Theme submenu with light/dark/system options
                 menu.submenu_with_icon(
                     Some(Icon::new(IconName::Sun).px(ICON_PADDING).mr(ICON_MARGIN)),
                     theme_text,
@@ -297,6 +390,7 @@ impl ZedisSidebar {
                             )
                     },
                 )
+                // Language submenu with Chinese/English options
                 .submenu_with_icon(
                     Some(
                         Icon::new(CustomIconName::Languages)
@@ -326,17 +420,18 @@ impl ZedisSidebar {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(btn)
+            // Theme action handler - applies theme and saves to disk
             .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let action = *e;
 
-                // 1. Apply Theme change immediately (visual feedback)
+                // Convert action to theme mode
                 let mode = match action {
                     ThemeAction::Light => Some(ThemeMode::Light),
                     ThemeAction::Dark => Some(ThemeMode::Dark),
-                    ThemeAction::System => None,
+                    ThemeAction::System => None, // Follow OS theme
                 };
 
-                // Calculate the actual mode used for rendering
+                // Determine actual render mode (resolve System to Light/Dark)
                 let render_mode = match mode {
                     Some(m) => m,
                     None => match cx.window_appearance() {
@@ -344,29 +439,35 @@ impl ZedisSidebar {
                         _ => ThemeMode::Dark,
                     },
                 };
+
+                // Apply theme immediately for instant visual feedback
                 Theme::change(render_mode, None, cx);
 
+                // Save preference to disk asynchronously
                 update_app_state_and_save(cx, "save_theme", move |state, _cx| {
                     state.set_theme(mode);
                 });
             }))
+            // Locale action handler - changes language and saves to disk
             .on_action(cx.listener(|_this, e: &LocaleAction, _window, cx| {
                 let locale = match e {
                     LocaleAction::Zh => "zh",
                     LocaleAction::En => "en",
                 };
 
+                // Save locale preference and refresh UI
                 update_app_state_and_save(cx, "save_locale", move |state, _cx| {
                     state.set_locale(locale.to_string());
                 });
             }))
     }
-    /// Render the star button
+
+    /// Render GitHub star button (link to repository)
     fn render_star(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().border_b_1().border_color(cx.theme().border).child(
             Button::new("github")
                 .ghost()
-                .h(px(48.))
+                .h(px(STAR_BUTTON_HEIGHT))
                 .w_full()
                 .tooltip(i18n_sidebar(cx, "star"))
                 .icon(Icon::new(IconName::GitHub))
@@ -376,11 +477,19 @@ impl ZedisSidebar {
         )
     }
 }
+
 impl Render for ZedisSidebar {
+    /// Main render method - displays vertical sidebar with navigation and settings
+    ///
+    /// Layout structure (top to bottom):
+    /// 1. GitHub star button
+    /// 2. Server list (scrollable, takes remaining space)
+    /// 3. Settings button (theme & language)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        tracing::debug!("render sidebar view");
+        tracing::debug!("Rendering sidebar view");
+
         v_flex()
-            .w(px(80.))
+            .w(px(SIDEBAR_WIDTH))
             .id("sidebar-container")
             .justify_start()
             .h_full()
@@ -388,6 +497,7 @@ impl Render for ZedisSidebar {
             .border_color(cx.theme().border)
             .child(self.render_star(window, cx))
             .child(
+                // Server list takes up remaining vertical space
                 div()
                     .flex_1()
                     .size_full()

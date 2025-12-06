@@ -41,6 +41,10 @@ use tracing::error;
 use tracing::info;
 use tracing_subscriber::FmtSubscriber;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 rust_i18n::i18n!("locales", fallback = "en");
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");

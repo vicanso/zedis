@@ -169,6 +169,9 @@ impl ZedisKeyTree {
                 .clean_on_escape()
                 .placeholder(i18n_key_tree(cx, "filter_placeholder"))
         });
+        keyword_state.update(cx, |state, cx| {
+            state.focus(window, cx);
+        });
 
         // Subscribe to search input events (Enter key triggers filter)
         subscriptions.push(

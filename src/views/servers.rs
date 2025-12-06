@@ -175,8 +175,7 @@ impl ZedisServers {
         let description_state = self.description_state.clone();
         let server_id = self.server_id.clone();
         let is_new = server_id.is_empty();
-
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, _window, cx| {
             // Set dialog title based on add/update mode
             let title = if is_new {
                 i18n_servers(cx, "add_server_title")
