@@ -366,6 +366,9 @@ impl ZedisKeyTree {
                             }
                             return;
                         }
+                        if this.server_state.read(cx).key() == Some(item_id.clone()) {
+                            return;
+                        }
 
                         // Key click: Select the key for editing
                         this.server_state.update(cx, |state, cx| {

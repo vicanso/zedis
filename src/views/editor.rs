@@ -58,7 +58,7 @@ pub struct ZedisEditor {
     /// Type-specific editors for different Redis data types
     list_editor: Option<Entity<ZedisListEditor>>,
     string_editor: Option<Entity<ZedisStringEditor>>,
-    
+
     /// TTL editing state
     ttl_edit_mode: bool,
     ttl_input_state: Entity<InputState>,
@@ -78,14 +78,14 @@ impl ZedisEditor {
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = vec![];
-        
+
         // Initialize TTL input field with placeholder
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_editor(cx, "ttl_placeholder"))
         });
-        
+
         // Subscribe to server events to track when keys are selected
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, _cx| {
@@ -123,7 +123,7 @@ impl ZedisEditor {
             selected_key_at: None,
         }
     }
-    
+
     /// Check if a key was selected recently (within threshold)
     /// Used to prevent showing loading indicator immediately after selection
     fn is_selected_key_recently(&self) -> bool {
@@ -137,10 +137,10 @@ impl ZedisEditor {
         if key.is_empty() {
             return;
         }
-        
+
         self.ttl_edit_mode = false;
         let ttl = self.ttl_input_state.read(cx).value();
-        
+
         self.server_state.update(cx, move |state, cx| {
             state.update_key_ttl(key, ttl, cx);
         });
@@ -152,14 +152,14 @@ impl ZedisEditor {
         let Some(key) = self.server_state.read(cx).key() else {
             return;
         };
-        
+
         let server_state = self.server_state.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
             let locale = cx.global::<ZedisGlobalStore>().locale(cx);
             let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
             let server_state = server_state.clone();
             let key = key.clone();
-            
+
             dialog.confirm().child(message).on_ok(move |_, window, cx| {
                 let key = key.clone();
                 server_state.update(cx, move |state, cx| {
@@ -170,22 +170,30 @@ impl ZedisEditor {
             })
         });
     }
+    fn reload(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.server_state.read(cx).key() else {
+            return;
+        };
+        self.server_state.update(cx, move |state, cx| {
+            state.select_key(key, cx);
+        });
+    }
     /// Render the key information bar with actions (copy, save, TTL, delete)
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
         let Some(key) = server_state.key() else {
             return h_flex();
         };
-        
+
         let mut is_busy = false;
         let mut btns = vec![];
         let mut ttl = SharedString::default();
         let mut size = SharedString::default();
-        
+
         // Extract value information if available
         if let Some(value) = server_state.value() {
             is_busy = value.is_busy();
-            
+
             // Format TTL display
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
@@ -206,10 +214,10 @@ impl ZedisEditor {
             .collect::<Vec<&str>>()
             .join(" ")
             .into();
-            
+
             size = format_size(value.size() as u64, DECIMAL).into();
         }
-        
+
         // Show loading only if busy and not recently selected (avoid flashing)
         let should_show_loading = is_busy && !self.is_selected_key_recently();
         // Add size label if available
@@ -303,6 +311,20 @@ impl ZedisEditor {
             btns.push(ttl_btn);
         }
 
+        // reload
+        btns.push(
+            Button::new("zedis-editor-reload-key")
+                .ml_2()
+                .outline()
+                .disabled(should_show_loading)
+                .tooltip(i18n_editor(cx, "reload_key_tooltip"))
+                .icon(CustomIconName::RotateCw)
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.reload(window, cx);
+                }))
+                .into_any_element(),
+        );
+
         // Add delete button
         btns.push(
             Button::new("zedis-editor-delete-key")
@@ -362,23 +384,23 @@ impl ZedisEditor {
             let _ = self.list_editor.take();
         }
     }
-    
+
     /// Render the appropriate editor based on the key type
     fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(value) = self.server_state.read(cx).value() else {
             self.reset_editors(KeyType::Unknown);
             return div().into_any_element();
         };
-        
+
         // Don't render anything if key type is unknown and still loading
         if value.key_type == KeyType::Unknown && value.is_busy() {
             return div().into_any_element();
         }
-        
+
         match value.key_type() {
             KeyType::List => {
                 self.reset_editors(KeyType::List);
-                
+
                 // Reuse existing editor or create new one
                 let editor = if let Some(list_editor) = &self.list_editor {
                     list_editor.clone()
@@ -394,7 +416,7 @@ impl ZedisEditor {
             _ => {
                 // Default to string editor for String type and other types
                 self.reset_editors(KeyType::String);
-                
+
                 let editor = if let Some(string_editor) = &self.string_editor {
                     string_editor.clone()
                 } else {
@@ -402,7 +424,7 @@ impl ZedisEditor {
                     let string_editor =
                         cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()));
                     self.string_editor = Some(string_editor.clone());
-                    
+
                     // Trigger a refresh to ensure the editor renders properly
                     let string_editor_entity = string_editor.clone();
                     cx.spawn(async move |_this, cx| {
@@ -423,7 +445,7 @@ impl Render for ZedisEditor {
     /// Main render method - displays key info bar and appropriate editor
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
-        
+
         // Don't render anything if no key is selected
         if server_state.key().is_none() {
             return v_flex().into_any_element();

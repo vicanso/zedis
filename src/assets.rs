@@ -54,6 +54,7 @@ pub enum CustomIconName {
     Equal,
     Activity,
     Languages,
+    RotateCw,
 }
 
 impl CustomIconName {
@@ -73,6 +74,7 @@ impl CustomIconName {
             CustomIconName::Equal => "icons/equal.svg",
             CustomIconName::Activity => "icons/activity.svg",
             CustomIconName::Languages => "icons/languages.svg",
+            CustomIconName::RotateCw => "icons/rotate-cw.svg",
         }
         .into()
     }
