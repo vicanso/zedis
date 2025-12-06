@@ -42,6 +42,7 @@ use gpui_component::list::ListItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
+use tracing::info;
 
 // Constants for tree layout and behavior
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
@@ -55,6 +56,7 @@ const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for
 
 #[derive(Default)]
 struct KeyTreeState {
+    server_id: SharedString,
     /// Unique ID for the current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
     /// Whether the tree is empty (no keys found)
@@ -135,11 +137,12 @@ impl ZedisKeyTree {
             }),
         );
 
-        tracing::debug!(server_id, "Creating new key tree view");
+        info!(server_id, "Creating new key tree view");
 
         let mut this = Self {
             state: KeyTreeState {
                 query_mode,
+                server_id: server_id.into(),
                 expanded_items: AHashSet::with_capacity(EXPANDED_ITEMS_INITIAL_CAPACITY),
                 ..Default::default()
             },
@@ -409,8 +412,20 @@ impl ZedisKeyTree {
     /// - Search input field with placeholder
     /// - Search button (with loading state during scan)
     /// - Clearable input (X button appears when text entered)
-    fn render_keyword_input(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let scaning = self.server_state.read(cx).scaning();
+    fn render_keyword_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let server_state = self.server_state.read(cx);
+        let scaning = server_state.scaning();
+        let server_id = server_state.server_id();
+        if server_id != self.state.server_id.as_str() {
+            self.state.server_id = server_id.to_string().into();
+            self.keyword_state.update(cx, |state, cx| {
+                state.set_value(SharedString::default(), window, cx);
+            });
+        }
         let query_mode = self.state.query_mode;
 
         // Select icon based on query mode
@@ -485,11 +500,11 @@ impl ZedisKeyTree {
 
 impl Render for ZedisKeyTree {
     /// Main render method - displays search bar and tree structure
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .h_full()
             .w_full()
-            .child(self.render_keyword_input(cx))
+            .child(self.render_keyword_input(window, cx))
             .child(self.render_tree(cx))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
                 // let server_id = this.server_state.read(cx).server_id().to_string();

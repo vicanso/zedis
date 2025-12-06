@@ -33,6 +33,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use std::time::Duration;
+use tracing::info;
 
 /// Formats the database size and scan count string "count/total".
 #[inline]
@@ -178,6 +179,8 @@ impl ZedisStatusBar {
             },
         };
         this.start_heartbeat(server_state, cx);
+
+        info!("Creating new status bar view");
         this
     }
     /// Reset the state to default

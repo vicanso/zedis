@@ -43,6 +43,7 @@ use rust_i18n::t;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::debug;
+use tracing::info;
 
 // Constants
 const PERM: &str = "perm";
@@ -112,6 +113,8 @@ impl ZedisEditor {
                 },
             ),
         );
+
+        info!("Creating new editor view");
 
         Self {
             server_state,

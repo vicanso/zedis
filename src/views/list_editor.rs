@@ -40,6 +40,7 @@ use gpui_component::{Icon, IconName};
 use gpui_component::{WindowExt, h_flex};
 use rust_i18n::t;
 use std::sync::Arc;
+use tracing::info;
 
 // UI layout constants
 const INDEX_WIDTH: f32 = 50.0; // Width for item index column
@@ -412,6 +413,8 @@ impl ZedisListEditor {
         };
 
         let list_state = cx.new(|cx| ListState::new(deletage, window, cx));
+
+        info!("Creating new list editor view");
 
         Self {
             server_state,

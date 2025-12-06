@@ -7,6 +7,9 @@ fmt:
 dev:
 	bacon run
 
+debug:
+	RUST_LOG=DEBUG make dev
+
 release:
 	cargo build --release --features mimalloc
 

@@ -131,9 +131,10 @@ impl ZedisAppState {
     pub fn bounds(&self) -> Option<&Bounds<Pixels>> {
         self.bounds.as_ref()
     }
-    pub fn go_to(&mut self, route: Route) {
+    pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         if self.route != route {
             self.route = route;
+            cx.notify();
         }
     }
     fn theme(&self) -> Option<ThemeMode> {

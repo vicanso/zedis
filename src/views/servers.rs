@@ -37,6 +37,7 @@ use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use rust_i18n::t;
 use substring::Substring;
+use tracing::info;
 
 // Constants for UI layout
 const DEFAULT_REDIS_PORT: u16 = 6379;
@@ -95,6 +96,8 @@ impl ZedisServers {
         let description_state = cx.new(|cx| {
             InputState::new(window, cx).placeholder(i18n_servers(cx, "description_placeholder"))
         });
+
+        info!("Creating new servers view");
 
         Self {
             server_state,
@@ -384,10 +387,9 @@ impl Render for ZedisServers {
 
                     // Navigate to editor view
                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                        store.update(cx, |state, _cx| {
-                            state.go_to(Route::Editor);
+                        store.update(cx, |state, cx| {
+                            state.go_to(Route::Editor, cx);
                         });
-                        cx.notify();
                     });
                 });
 

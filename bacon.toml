@@ -7,7 +7,6 @@
 
 default_job = "check"
 env.CARGO_TERM_COLOR = "always"
-env.RUST_LOG = "DEBUG"
 env.RUST_ENV = "dev"
 
 [jobs.check]

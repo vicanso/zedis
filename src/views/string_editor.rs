@@ -27,6 +27,7 @@ use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
+use tracing::info;
 
 // Constants for editor configuration
 const DEFAULT_TAB_SIZE: usize = 4;
@@ -160,6 +161,8 @@ impl ZedisStringEditor {
                 cx.notify();
             }
         }));
+
+        info!("Creating new string editor view");
 
         Self {
             value_modified: false,

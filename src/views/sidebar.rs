@@ -209,6 +209,8 @@ impl ZedisSidebar {
             _subscriptions: subscriptions,
         };
 
+        info!("Creating new sidebar view");
+
         // Load initial server list
         this.update_server_names(cx);
         this
@@ -297,10 +299,9 @@ impl ZedisSidebar {
                                 view.update(cx, |this, cx| {
                                     // Update global route
                                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                        store.update(cx, |state, _cx| {
-                                            state.go_to(route);
+                                        store.update(cx, |state, cx| {
+                                            state.go_to(route, cx);
                                         });
-                                        cx.notify();
                                     });
 
                                     this.server_state.update(cx, |state, cx| {

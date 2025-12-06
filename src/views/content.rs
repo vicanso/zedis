@@ -92,14 +92,19 @@ impl ZedisContent {
 
                 // Clean up servers view when not on home route
                 if route != Route::Home && this.servers.is_some() {
-                    debug!("Cleaning up servers view (route changed)");
+                    info!("Cleaning up servers view (route changed)");
                     let _ = this.servers.take();
                 }
 
                 // Clean up editor views when not on editor route
-                if route != Route::Editor && this.value_editor.is_some() {
-                    debug!("Cleaning up value editor view (route changed)");
-                    let _ = this.value_editor.take();
+                if route != Route::Editor {
+                    info!("Cleaning up key tree and value editor view (route changed)");
+                    if this.value_editor.is_some() {
+                        let _ = this.value_editor.take();
+                    }
+                    if this.key_tree.is_some() {
+                        let _ = this.key_tree.take();
+                    }
                 }
 
                 cx.notify();
@@ -108,6 +113,7 @@ impl ZedisContent {
 
         // Restore persisted key tree width from global state
         let key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
+        info!("Creating new content view");
 
         Self {
             server_state,
