@@ -377,14 +377,9 @@ impl Render for ZedisServers {
                 let handle_select_server = cx.listener(move |this, _, _, cx| {
                     let select_server_id = select_server_id.clone();
 
-                    // Get saved query mode for this server
-                    let query_mode = cx
-                        .global::<ZedisGlobalStore>()
-                        .query_mode(select_server_id.as_str(), cx);
-
                     // Connect to server
                     this.server_state.update(cx, |state, cx| {
-                        state.select(select_server_id.into(), query_mode, cx);
+                        state.select(select_server_id.into(), cx);
                     });
 
                     // Navigate to editor view

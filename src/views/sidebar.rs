@@ -303,12 +303,8 @@ impl ZedisSidebar {
                                         cx.notify();
                                     });
 
-                                    // Get saved query mode for this server and connect
-                                    let query_mode = cx
-                                        .global::<ZedisGlobalStore>()
-                                        .query_mode(server_id.as_str(), cx);
                                     this.server_state.update(cx, |state, cx| {
-                                        state.select(server_id.clone(), query_mode, cx);
+                                        state.select(server_id.clone(), cx);
                                     });
                                 });
                             })

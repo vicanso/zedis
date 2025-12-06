@@ -13,13 +13,10 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::connection::QueryMode;
 use crate::states::KeyType;
-use crate::states::QueryMode;
-use crate::states::ZedisAppState;
-use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::i18n_key_tree;
-use crate::states::save_app_state;
 use ahash::AHashSet;
 use gpui::AppContext;
 use gpui::Corner;
@@ -45,9 +42,6 @@ use gpui_component::list::ListItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
 
 // Constants for tree layout and behavior
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
@@ -58,50 +52,6 @@ const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type ba
 const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
 const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
-
-/// Update global app state and persist it to disk asynchronously
-///
-/// This helper abstracts the common pattern of:
-/// 1. Updating global state via mutation callback
-/// 2. Saving the updated state to disk in the background
-/// 3. Handling errors without blocking the UI
-///
-/// # Arguments
-/// * `cx` - Context for spawning async tasks
-/// * `action_name` - Human-readable action name for logging
-/// * `mutation` - Callback to modify the app state
-#[inline]
-fn update_app_state_and_save<F>(
-    cx: &mut Context<ZedisKeyTree>,
-    action_name: &'static str,
-    mutation: F,
-) where
-    F: FnOnce(&mut ZedisAppState, &mut Context<ZedisAppState>) + Send + 'static + Clone,
-{
-    let store = cx.global::<ZedisGlobalStore>().clone();
-
-    cx.spawn(async move |_, cx| {
-        // Step 1: Update global state and get a snapshot for persistence
-        let current_state = store.update(cx, |state, cx| {
-            mutation(state, cx);
-            state.clone() // Clone for async persistence
-        });
-
-        // Step 2: Persist to disk in background executor
-        if let Ok(state) = current_state {
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(e) = save_app_state(&state) {
-                        error!(error = %e, action = action_name, "Failed to save state");
-                    } else {
-                        info!(action = action_name, "State saved successfully");
-                    }
-                })
-                .await;
-        }
-    })
-    .detach();
-}
 
 #[derive(Default)]
 struct KeyTreeState {
@@ -153,7 +103,6 @@ impl ZedisKeyTree {
         server_state: Entity<ZedisServerState>,
     ) -> Self {
         let mut subscriptions = Vec::new();
-        let server_id = server_state.read(cx).server_id().to_string();
 
         // Subscribe to server state changes to rebuild tree when keys change
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
@@ -173,6 +122,10 @@ impl ZedisKeyTree {
             state.focus(window, cx);
         });
 
+        let server_state_value = server_state.read(cx);
+        let server_id = server_state_value.server_id().to_string();
+        let query_mode = server_state_value.query_mode();
+
         // Subscribe to search input events (Enter key triggers filter)
         subscriptions.push(
             cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
@@ -182,12 +135,7 @@ impl ZedisKeyTree {
             }),
         );
 
-        // Restore query mode from global state (per-server setting)
-        let query_mode = cx
-            .global::<ZedisGlobalStore>()
-            .query_mode(server_id.as_str(), cx);
-
-        debug!(server_id, "Creating new key tree view");
+        tracing::debug!(server_id, "Creating new key tree view");
 
         let mut this = Self {
             state: KeyTreeState {
@@ -214,17 +162,14 @@ impl ZedisKeyTree {
     /// if the total key count is below the threshold.
     fn update_key_tree(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
-        let query_mode = cx
-            .global::<ZedisGlobalStore>()
-            .query_mode(server_state.server_id(), cx);
 
-        debug!(
+        tracing::debug!(
             key_tree_server_id = server_state.server_id(),
             key_tree_id = server_state.key_tree_id(),
             "Server state updated"
         );
 
-        self.state.query_mode = query_mode;
+        self.state.query_mode = server_state.query_mode();
 
         // Skip rebuild if tree ID hasn't changed (same keys)
         if self.state.key_tree_id == server_state.key_tree_id() {
@@ -544,21 +489,16 @@ impl Render for ZedisKeyTree {
             .child(self.render_keyword_input(cx))
             .child(self.render_tree(cx))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
-                let server_id = this.server_state.read(cx).server_id().to_string();
+                // let server_id = this.server_state.read(cx).server_id().to_string();
                 let new_mode = *e;
 
                 // Step 1: Update server state with new query mode
-                this.server_state.update(cx, |state, _cx| {
-                    state.set_query_mode(new_mode);
+                this.server_state.update(cx, |state, cx| {
+                    state.set_query_mode(new_mode, cx);
                 });
 
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
-
-                // Step 3: Persist query mode to global state (per-server setting)
-                update_app_state_and_save(cx, "save_query_mode", move |state, _cx| {
-                    state.add_query_mode(server_id, new_mode);
-                });
             }))
     }
 }

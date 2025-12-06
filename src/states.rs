@@ -16,7 +16,6 @@ mod app;
 mod i18n;
 mod server;
 
-pub use app::QueryMode;
 pub use app::Route;
 pub use app::ZedisAppState;
 pub use app::ZedisGlobalStore;

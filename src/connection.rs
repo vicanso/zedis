@@ -17,5 +17,5 @@ mod config;
 mod manager;
 
 pub use async_connection::RedisAsyncConn;
-pub use config::{RedisServer, get_servers, save_servers};
+pub use config::{QueryMode, RedisServer, get_servers, save_servers};
 pub use manager::get_connection_manager;

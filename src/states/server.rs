@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::QueryMode;
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
 use crate::error::Error;
 use crate::helpers::unix_ts;
-use crate::states::QueryMode;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
@@ -26,6 +26,7 @@ use gpui::SharedString;
 use gpui::prelude::*;
 use gpui_component::tree::TreeItem;
 use parking_lot::RwLock;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -214,6 +215,8 @@ pub enum ServerTask {
     /// Remove a server from configuration
     RemoveServer,
 
+    UpdateServerQueryMode,
+
     /// Add new server or update existing server configuration
     UpdateOrInsertServer,
 
@@ -266,6 +269,7 @@ impl ServerTask {
             ServerTask::UpdateListValue => "update_list_value",
             ServerTask::LoadMoreListValue => "load_more_list_value",
             ServerTask::SaveValue => "save_value",
+            ServerTask::UpdateServerQueryMode => "update_server_query_mode",
         }
     }
 }
@@ -446,8 +450,32 @@ impl ZedisServerState {
     }
 
     /// Set the query mode (All/Prefix/Exact)
-    pub fn set_query_mode(&mut self, mode: QueryMode) {
+    pub fn set_query_mode(&mut self, mode: QueryMode, cx: &mut Context<Self>) {
         self.query_mode = mode;
+
+        let mut servers = self.servers.clone().unwrap_or_default();
+        if let Some(s) = servers.iter_mut().find(|s| s.id == self.server_id) {
+            s.query_mode = Some(mode.to_string());
+        }
+
+        self.spawn(
+            ServerTask::UpdateServerQueryMode,
+            move || async move {
+                save_servers(servers.clone()).await?;
+                Ok(servers)
+            },
+            move |this, result, cx| {
+                if let Ok(servers) = result {
+                    this.servers = Some(servers);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+    /// Get the current query mode (All/Prefix/Exact)
+    pub fn query_mode(&self) -> QueryMode {
+        self.query_mode
     }
     /// Build hierarchical tree structure from flat Redis keys
     ///
@@ -702,14 +730,18 @@ impl ZedisServerState {
     ///
     /// # Arguments
     /// * `server_id` - Server id to connect to
-    /// * `mode` - Query mode to use for this server
     /// * `cx` - Context for spawning async tasks and state updates
-    pub fn select(&mut self, server_id: SharedString, mode: QueryMode, cx: &mut Context<Self>) {
+    pub fn select(&mut self, server_id: SharedString, cx: &mut Context<Self>) {
         // Only proceed if selecting a different server
         if self.server_id != server_id {
             self.reset();
             self.server_id = server_id.clone();
-            self.query_mode = mode;
+            self.query_mode = self
+                .servers()
+                .and_then(|servers| servers.iter().find(|s| s.id == server_id))
+                .and_then(|server| server.query_mode.as_deref())
+                .and_then(|s| QueryMode::from_str(s).ok())
+                .unwrap_or_default();
 
             debug!(server_id = self.server_id.as_str(), "Selecting server");
             cx.emit(ServerEvent::SelectServer(server_id));

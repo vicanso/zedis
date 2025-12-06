@@ -14,12 +14,47 @@
 
 use crate::error::Error;
 use crate::helpers::get_or_create_config_dir;
+use gpui::Action;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
+use std::fmt;
 use std::fs::read_to_string;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+pub enum QueryMode {
+    #[default]
+    All,
+    Prefix,
+    Exact,
+}
+
+impl fmt::Display for QueryMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            QueryMode::Prefix => "^",
+            QueryMode::Exact => "=",
+            _ => "*",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl FromStr for QueryMode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "^" => Ok(QueryMode::Prefix),
+            "=" => Ok(QueryMode::Exact),
+            _ => Ok(QueryMode::All),
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 pub struct RedisServer {
@@ -31,6 +66,7 @@ pub struct RedisServer {
     pub master_name: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
+    pub query_mode: Option<String>,
 }
 impl RedisServer {
     /// Generates the connection URL based on host, port, and optional password.
