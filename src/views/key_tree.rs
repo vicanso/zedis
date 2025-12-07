@@ -431,7 +431,7 @@ impl ZedisKeyTree {
         // Select icon based on query mode
         let icon = match query_mode {
             QueryMode::All => Icon::new(IconName::Asterisk), // * for all keys
-            QueryMode::Prefix => Icon::new(CustomIconName::Activity), // ~ for prefix
+            QueryMode::Prefix => Icon::new(CustomIconName::ChevronUp), // ~ for prefix
             QueryMode::Exact => Icon::new(CustomIconName::Equal), // = for exact match
         };
         let query_mode_dropdown = DropdownButton::new("dropdown")

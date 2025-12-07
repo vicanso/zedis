@@ -164,7 +164,13 @@ impl ZedisServerState {
                 }
                 this.scaning = false;
                 cx.notify();
-                this.fill_key_types("".into(), cx);
+                if this.keys.len() == 1
+                    && let Some(key) = this.keys.keys().next()
+                {
+                    this.select_key(key.clone(), cx);
+                } else {
+                    this.fill_key_types("".into(), cx);
+                }
             },
             cx,
         );
@@ -250,7 +256,13 @@ impl ZedisServerState {
                 }
                 cx.notify();
                 // Resolve types for the keys under this prefix
-                this.fill_key_types(prefix.clone(), cx);
+                if this.keys.len() == 1
+                    && let Some(key) = this.keys.keys().next()
+                {
+                    this.select_key(key.clone(), cx);
+                } else {
+                    this.fill_key_types(prefix.clone(), cx);
+                }
             },
             cx,
         );
@@ -324,9 +336,12 @@ impl ZedisServerState {
                     Ok(value) => {
                         if !value.is_expired()
                             && let Some(key) = this.key.as_ref()
-                            && !this.keys.contains_key(key)
                         {
-                            this.keys.insert(key.clone(), value.key_type());
+                            if let Some(k) = this.keys.get_mut(key) {
+                                *k = value.key_type();
+                            } else {
+                                this.keys.insert(key.clone(), value.key_type());
+                            }
                             this.key_tree_id = Uuid::now_v7().to_string().into();
                         }
                         this.value = Some(value);

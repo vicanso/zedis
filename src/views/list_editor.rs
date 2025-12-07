@@ -88,9 +88,6 @@ struct RedisListValues {
 
     /// Keyword for filtering items
     keyword: Option<SharedString>,
-
-    /// Flag indicating all items have been loaded (no more to fetch)
-    done: bool,
 }
 impl RedisListValues {
     /// Get the current item counts (loaded vs total)
@@ -132,7 +129,6 @@ impl RedisListValues {
             }
         }
 
-        println!("visible_item_indexes: {visible_item_indexes:?}");
         self.visible_items = visible_items;
         self.visible_item_indexes = Some(visible_item_indexes);
     }
@@ -291,14 +287,12 @@ impl ListDelegate for RedisListValues {
     /// - Not all items loaded yet
     /// - Current count less than total count
     fn load_more(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        // Skip if already loading or all items loaded
-        if self.done || self.loading(cx) {
+        // Skip if already loading
+        if self.loading(cx) {
             return;
         }
-
         // Check if we've loaded everything
         if self.list_value.values.len() >= self.list_value.size {
-            self.done = true;
             return;
         }
 
@@ -398,7 +392,6 @@ impl ZedisListEditor {
             list_value: Default::default(),
             selected_index: Default::default(),
             value_state: value_state.clone(),
-            done: false,
             default_value: Default::default(),
             keyword: Default::default(),
             visible_items: Default::default(),
