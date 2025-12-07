@@ -214,6 +214,11 @@ impl ZedisServers {
             };
 
             server_state_clone.update(cx, |state, cx| {
+                let current_server = state
+                    .server(server_id_clone.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+
                 state.update_or_insrt_server(
                     RedisServer {
                         id: server_id_clone.clone(),
@@ -222,7 +227,7 @@ impl ZedisServers {
                         port,
                         password: password.map(|p| p.to_string()),
                         description: description.map(|d| d.to_string()),
-                        ..Default::default()
+                        ..current_server
                     },
                     cx,
                 );

@@ -577,7 +577,11 @@ impl Render for ZedisListEditor {
                     .p_2()
                     .child(
                         div()
-                            .child(Input::new(&self.keyword_state).w(px(KEYWORD_INPUT_WIDTH)))
+                            .child(
+                                Input::new(&self.keyword_state)
+                                    .w(px(KEYWORD_INPUT_WIDTH))
+                                    .cleanable(true),
+                            )
                             .flex_1(),
                     )
                     .child(

@@ -645,6 +645,13 @@ impl ZedisServerState {
         self.servers = Some(servers);
     }
 
+    /// Get a server by id
+    pub fn server(&self, server_id: &str) -> Option<&RedisServer> {
+        self.servers
+            .as_deref()
+            .and_then(|servers| servers.iter().find(|s| s.id == server_id))
+    }
+
     /// Get the list of all configured servers
     pub fn servers(&self) -> Option<&[RedisServer]> {
         self.servers.as_deref()
@@ -784,8 +791,7 @@ impl ZedisServerState {
             self.reset();
             self.server_id = server_id.clone();
             let (query_mode, soft_wrap) = self
-                .servers()
-                .and_then(|servers| servers.iter().find(|s| s.id == server_id))
+                .server(server_id.as_str())
                 .map(|server_config| {
                     let mode = server_config
                         .query_mode
