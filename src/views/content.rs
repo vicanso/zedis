@@ -76,40 +76,33 @@ impl ZedisContent {
     ///
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
-    pub fn new(
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to global state changes for automatic view cleanup
         // This ensures we only keep views in memory that are currently relevant
-        subscriptions.push(cx.observe(
-            &cx.global::<ZedisGlobalStore>().state(),
-            |this, model, cx| {
-                let route = model.read(cx).route();
+        subscriptions.push(cx.observe(&cx.global::<ZedisGlobalStore>().state(), |this, model, cx| {
+            let route = model.read(cx).route();
 
-                // Clean up servers view when not on home route
-                if route != Route::Home && this.servers.is_some() {
-                    info!("Cleaning up servers view (route changed)");
-                    let _ = this.servers.take();
+            // Clean up servers view when not on home route
+            if route != Route::Home && this.servers.is_some() {
+                info!("Cleaning up servers view (route changed)");
+                let _ = this.servers.take();
+            }
+
+            // Clean up editor views when not on editor route
+            if route != Route::Editor {
+                info!("Cleaning up key tree and value editor view (route changed)");
+                if this.value_editor.is_some() {
+                    let _ = this.value_editor.take();
                 }
-
-                // Clean up editor views when not on editor route
-                if route != Route::Editor {
-                    info!("Cleaning up key tree and value editor view (route changed)");
-                    if this.value_editor.is_some() {
-                        let _ = this.value_editor.take();
-                    }
-                    if this.key_tree.is_some() {
-                        let _ = this.key_tree.take();
-                    }
+                if this.key_tree.is_some() {
+                    let _ = this.key_tree.take();
                 }
+            }
 
-                cx.notify();
-            },
-        ));
+            cx.notify();
+        }));
 
         // Restore persisted key tree width from global state
         let key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
@@ -145,54 +138,24 @@ impl ZedisContent {
     /// Displayed when the application is busy (e.g., connecting to Redis server,
     /// loading keys). Provides visual feedback that something is happening.
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .w_full()
-            .h_full()
-            .items_center()
-            .justify_center()
-            .child(
-                v_flex()
-                    .gap_2()
-                    .w(px(LOADING_SKELETON_WIDTH))
-                    // Variable-width skeletons create a more natural loading appearance
-                    .child(
-                        Skeleton::new()
-                            .w(px(LOADING_SKELETON_WIDTH))
-                            .h_4()
-                            .rounded_md(),
-                    )
-                    .child(
-                        Skeleton::new()
-                            .w(px(LOADING_SKELETON_SMALL_WIDTH))
-                            .h_4()
-                            .rounded_md(),
-                    )
-                    .child(
-                        Skeleton::new()
-                            .w(px(LOADING_SKELETON_MEDIUM_WIDTH))
-                            .h_4()
-                            .rounded_md(),
-                    )
-                    .child(
-                        Skeleton::new()
-                            .w(px(LOADING_SKELETON_LARGE_WIDTH))
-                            .h_4()
-                            .rounded_md(),
-                    )
-                    .child(
-                        Skeleton::new()
-                            .w(px(LOADING_SKELETON_WIDTH))
-                            .h_4()
-                            .rounded_md(),
-                    )
-                    .child(
-                        Label::new(i18n_content(cx, "loading"))
-                            .w_full()
-                            .text_color(cx.theme().muted_foreground)
-                            .mt_2()
-                            .text_align(gpui::TextAlign::Center),
-                    ),
-            )
+        v_flex().w_full().h_full().items_center().justify_center().child(
+            v_flex()
+                .gap_2()
+                .w(px(LOADING_SKELETON_WIDTH))
+                // Variable-width skeletons create a more natural loading appearance
+                .child(Skeleton::new().w(px(LOADING_SKELETON_WIDTH)).h_4().rounded_md())
+                .child(Skeleton::new().w(px(LOADING_SKELETON_SMALL_WIDTH)).h_4().rounded_md())
+                .child(Skeleton::new().w(px(LOADING_SKELETON_MEDIUM_WIDTH)).h_4().rounded_md())
+                .child(Skeleton::new().w(px(LOADING_SKELETON_LARGE_WIDTH)).h_4().rounded_md())
+                .child(Skeleton::new().w(px(LOADING_SKELETON_WIDTH)).h_4().rounded_md())
+                .child(
+                    Label::new(i18n_content(cx, "loading"))
+                        .w_full()
+                        .text_color(cx.theme().muted_foreground)
+                        .mt_2()
+                        .text_align(gpui::TextAlign::Center),
+                ),
+        )
     }
     /// Render the main editor interface with resizable panels
     ///
@@ -240,31 +203,29 @@ impl ZedisContent {
                 // Right panel: Value editor (takes remaining space)
                 resizable_panel().child(value_editor),
             )
-            .on_resize(
-                cx.listener(move |this, event: &Entity<ResizableState>, _window, cx| {
-                    // Get the new width from the resize event
-                    let Some(width) = event.read(cx).sizes().first() else {
-                        return;
-                    };
+            .on_resize(cx.listener(move |this, event: &Entity<ResizableState>, _window, cx| {
+                // Get the new width from the resize event
+                let Some(width) = event.read(cx).sizes().first() else {
+                    return;
+                };
 
-                    // Update local state
-                    this.key_tree_width = *width;
+                // Update local state
+                this.key_tree_width = *width;
 
-                    // Persist to global state and save to disk
-                    let mut value = cx.global::<ZedisGlobalStore>().value(cx);
-                    value.set_key_tree_width(*width);
+                // Persist to global state and save to disk
+                let mut value = cx.global::<ZedisGlobalStore>().value(cx);
+                value.set_key_tree_width(*width);
 
-                    // Save asynchronously to avoid blocking UI
-                    cx.background_spawn(async move {
-                        if let Err(e) = save_app_state(&value) {
-                            error!(error = %e, "Failed to save key tree width");
-                        } else {
-                            info!("Key tree width saved successfully");
-                        }
-                    })
-                    .detach();
-                }),
-            )
+                // Save asynchronously to avoid blocking UI
+                cx.background_spawn(async move {
+                    if let Err(e) = save_app_state(&value) {
+                        error!(error = %e, "Failed to save key tree width");
+                    } else {
+                        info!("Key tree width saved successfully");
+                    }
+                })
+                .detach();
+            }))
     }
 }
 

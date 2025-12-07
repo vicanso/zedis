@@ -66,6 +66,11 @@ delete_tooltip = "删除列表值"
 value_placeholder = "输入新值"
 delete_list_item_prompt = "您确定要删除此列表项：%{value}(%{row})吗？"
 keyword_placeholder = "按关键字搜索"
+add_value_title = "添加值"
+add_value_tooltip = "在列表中添加值"
+confirm = "确定"
+cancel = "取消"
+
 
 [content]
 loading = "加载中..."

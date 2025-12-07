@@ -26,9 +26,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// Returns None if the string is not valid JSON or doesn't look like JSON.
 fn pretty_json(value: &str) -> Option<SharedString> {
     let trimmed = value.trim();
-    if !((trimmed.starts_with('{') && trimmed.ends_with('}'))
-        || (trimmed.starts_with('[') && trimmed.ends_with(']')))
-    {
+    if !((trimmed.starts_with('{') && trimmed.ends_with('}')) || (trimmed.starts_with('[') && trimmed.ends_with(']'))) {
         return None;
     }
     let json_value = serde_json::from_str::<Value>(value).ok()?;

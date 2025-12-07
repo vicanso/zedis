@@ -62,11 +62,16 @@ soft_wrap = "Soft Wrap"
 [list_editor]
 value = "Value"
 action = "Action"
+positon = "Positon"
 update_tooltip = "Update list value"
 delete_tooltip = "Delete list value"
 value_placeholder = "Enter new value"
 delete_list_item_prompt = "Are you sure you want to delete this list item: %{value}(%{row})?"
 keyword_placeholder = "Filter by keyword"
+add_value_title = "Add value"
+add_value_tooltip = "Add value to list"
+confirm = "Confirm"
+cancel = "Cancel"
 
 [content]
 loading = "Loading..."

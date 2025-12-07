@@ -251,6 +251,9 @@ pub enum ServerTask {
     /// Update a value in a list
     UpdateListValue,
 
+    /// Push a value to a list
+    PushListValue,
+
     /// Load more items from a list (pagination)
     LoadMoreListValue,
 
@@ -278,6 +281,7 @@ impl ServerTask {
             ServerTask::SaveValue => "save_value",
             ServerTask::UpdateServerQueryMode => "update_server_query_mode",
             ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
+            ServerTask::PushListValue => "push_list_value",
         }
     }
 }
@@ -447,12 +451,8 @@ impl ZedisServerState {
         .detach();
     }
     /// Update and save server configuration
-    fn update_and_save_server_config<F>(
-        &mut self,
-        task_name: ServerTask,
-        cx: &mut Context<Self>,
-        modifier: F,
-    ) where
+    fn update_and_save_server_config<F>(&mut self, task_name: ServerTask, cx: &mut Context<Self>, modifier: F)
+    where
         F: FnOnce(&mut RedisServer),
     {
         let mut servers = self.servers.clone().unwrap_or_default();
@@ -530,11 +530,7 @@ impl ZedisServerState {
     ///
     /// # Returns
     /// Vector of tree items sorted with folders first, then alphabetically
-    pub fn key_tree(
-        &self,
-        expanded_items: &AHashSet<SharedString>,
-        expand_all: bool,
-    ) -> Vec<TreeItem> {
+    pub fn key_tree(&self, expanded_items: &AHashSet<SharedString>, expand_all: bool) -> Vec<TreeItem> {
         let keys = self.keys.keys();
 
         // Build trie structure from all keys
@@ -827,9 +823,7 @@ impl ZedisServerState {
             self.spawn(
                 ServerTask::SelectServer,
                 move || async move {
-                    let client = get_connection_manager()
-                        .get_client(&server_id_clone)
-                        .await?;
+                    let client = get_connection_manager().get_client(&server_id_clone).await?;
 
                     // Gather server metadata
                     let dbsize = client.dbsize().await?;

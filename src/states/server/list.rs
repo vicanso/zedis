@@ -33,35 +33,19 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// Fetch a range of elements from a Redis List.
 ///
 /// Returns a vector of strings. Binary data is lossily converted to UTF-8.
-async fn get_redis_list_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    start: usize,
-    stop: usize,
-) -> Result<Vec<String>> {
+async fn get_redis_list_value(conn: &mut RedisAsyncConn, key: &str, start: usize, stop: usize) -> Result<Vec<String>> {
     // Fetch raw bytes to handle binary data safely
-    let value: Vec<Vec<u8>> = cmd("LRANGE")
-        .arg(key)
-        .arg(start)
-        .arg(stop)
-        .query_async(conn)
-        .await?;
+    let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(start).arg(stop).query_async(conn).await?;
     if value.is_empty() {
         return Ok(vec![]);
     }
-    let value: Vec<String> = value
-        .iter()
-        .map(|v| String::from_utf8_lossy(v).to_string())
-        .collect();
+    let value: Vec<String> = value.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect();
     Ok(value)
 }
 
 /// Initial load for a List key.
 /// Fetches the total length (LLEN) and the first 100 items.
-pub(crate) async fn first_load_list_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-) -> Result<RedisValue> {
+pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
     let size: usize = cmd("LLEN").arg(key).query_async(conn).await?;
     let values = get_redis_list_value(conn, key, 0, 99).await?;
     Ok(RedisValue {
@@ -121,6 +105,74 @@ impl ZedisServerState {
                     }
                     value.status = RedisValueStatus::Idle;
                 }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+    pub fn push_list_value(&mut self, new_value: SharedString, mode: usize, cx: &mut Context<Self>) {
+        let key = self.key.clone().unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        if value.is_busy() {
+            return;
+        }
+        let is_lpush = mode == 1;
+        let mut pushed_value = false;
+        value.status = RedisValueStatus::Updating;
+        if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
+            // Use Arc::make_mut to get mutable access (Cow behavior)
+            let list = Arc::make_mut(list_data);
+            if is_lpush {
+                list.values.insert(0, new_value.clone());
+                pushed_value = true;
+            } else if list.values.len() == list.size {
+                list.values.push(new_value.clone());
+                pushed_value = true;
+            }
+            list.size += 1;
+        }
+
+        cx.notify();
+        let server_id = self.server_id.clone();
+
+        self.spawn(
+            ServerTask::PushListValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let cmd_name = if is_lpush { "LPUSH" } else { "RPUSH" };
+
+                let _: () = cmd(cmd_name)
+                    .arg(key.as_str())
+                    .arg(new_value.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                    if result.is_err()
+                        && pushed_value
+                        && let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
+                    {
+                        // Use Arc::make_mut to get mutable access (Cow behavior)
+                        let list = Arc::make_mut(list_data);
+                        if pushed_value {
+                            if is_lpush {
+                                list.values.remove(0);
+                            } else {
+                                list.values.pop();
+                            }
+                        }
+                        list.size -= 1;
+                    }
+                }
+
                 cx.notify();
             },
             cx,
@@ -201,8 +253,7 @@ impl ZedisServerState {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                     if result.is_err()
-                        && let Some(RedisValueData::List(list_data)) =
-                            this.value.as_mut().and_then(|v| v.data.as_mut())
+                        && let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                     {
                         // Use Arc::make_mut to get mutable access (Cow behavior)
                         let list = Arc::make_mut(list_data);
@@ -257,9 +308,7 @@ impl ZedisServerState {
                 {
                     // Update Local State (UI Thread)
                     // Append new items to the existing list
-                    if let Some(RedisValueData::List(list_data)) =
-                        this.value.as_mut().and_then(|v| v.data.as_mut())
-                    {
+                    if let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                         let list = Arc::make_mut(list_data);
                         list.values.extend(new_values.into_iter().map(|v| v.into()));
                     }

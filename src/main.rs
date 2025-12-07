@@ -72,11 +72,7 @@ pub struct NotificationAction {
 }
 
 impl Zedis {
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let status_bar = cx.new(|cx| ZedisStatusBar::new(window, cx, server_state.clone()));
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
         let content = cx.new(|cx| ZedisContent::new(window, cx, server_state.clone()));

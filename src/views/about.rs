@@ -72,11 +72,7 @@ pub fn open_about_window(cx: &mut App) {
     let window_size = size(width, height);
 
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            window_size,
-            cx,
-        ))),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
         is_movable: false,
         is_resizable: false,
 

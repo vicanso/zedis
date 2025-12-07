@@ -102,12 +102,7 @@ impl ZedisServerState {
     ///
     /// It handles pagination via cursors and recursive calls to fetch more data
     /// if the result set is too small.
-    pub(crate) fn scan_keys(
-        &mut self,
-        server_id: SharedString,
-        keyword: SharedString,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn scan_keys(&mut self, server_id: SharedString, keyword: SharedString, cx: &mut Context<Self>) {
         // Guard clause: ignore if the context has changed (e.g., switched server)
         if self.server_id != server_id || self.keyword != keyword {
             return;
@@ -246,11 +241,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(keys) = result {
-                    debug!(
-                        prefix = prefix.as_str(),
-                        count = keys.len(),
-                        "scan prefix success"
-                    );
+                    debug!(prefix = prefix.as_str(), count = keys.len(), "scan prefix success");
                     this.loaded_prefixes.insert(prefix.clone());
                     this.extend_keys(keys);
                 }

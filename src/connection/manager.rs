@@ -144,9 +144,7 @@ async fn get_async_connection(client: &RClient) -> Result<RedisAsyncConn> {
             let cfg = AsyncConnectionConfig::default()
                 .set_connection_timeout(Some(CONNECTION_TIMEOUT))
                 .set_response_timeout(Some(RESPONSE_TIMEOUT));
-            let conn = client
-                .get_multiplexed_async_connection_with_config(&cfg)
-                .await?;
+            let conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
             Ok(RedisAsyncConn::Single(conn))
         }
         RClient::Cluster(client) => {
@@ -181,11 +179,7 @@ impl RedisClient {
     /// # Returns
     /// * `Vec<T>` - A vector of results from the commands.
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
-        let addrs: Vec<_> = self
-            .master_nodes
-            .iter()
-            .map(|item| item.addr.as_str())
-            .collect();
+        let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.addr.as_str()).collect();
         let values = query_async_masters(addrs, cmds).await?;
         Ok(values)
     }
@@ -214,11 +208,7 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
-    pub async fn first_scan(
-        &self,
-        pattern: &str,
-        count: u64,
-    ) -> Result<(Vec<u64>, Vec<SharedString>)> {
+    pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<SharedString>)> {
         let master_count = self.count_masters()?;
         let cursors = vec![0; master_count];
 
@@ -232,12 +222,7 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
-    pub async fn scan(
-        &self,
-        cursors: Vec<u64>,
-        pattern: &str,
-        count: u64,
-    ) -> Result<(Vec<u64>, Vec<SharedString>)> {
+    pub async fn scan(&self, cursors: Vec<u64>, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<SharedString>)> {
         let cmds: Vec<Cmd> = cursors
             .iter()
             .map(|cursor| {
@@ -350,10 +335,8 @@ impl ConnectionManager {
             ServerType::Sentinel => {
                 let mut conn = client.get_multiplexed_async_connection().await?;
                 // Fetch masters from Sentinel
-                let masters_response: Vec<HashMap<String, String>> = cmd("SENTINEL")
-                    .arg("MASTERS")
-                    .query_async(&mut conn)
-                    .await?;
+                let masters_response: Vec<HashMap<String, String>> =
+                    cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
                 let mut nodes = vec![];
 
                 for item in masters_response {
@@ -389,14 +372,10 @@ impl ConnectionManager {
                     });
                 }
                 // Check for ambiguous master configuration
-                let unique_masters: HashSet<_> = nodes
-                    .iter()
-                    .filter_map(|n| n.master_name.as_ref())
-                    .collect();
+                let unique_masters: HashSet<_> = nodes.iter().filter_map(|n| n.master_name.as_ref()).collect();
                 if unique_masters.len() > 1 {
                     return Err(Error::Invalid {
-                        message: "Multiple masters found in Sentinel, please specify master_name"
-                            .into(),
+                        message: "Multiple masters found in Sentinel, please specify master_name".into(),
                     });
                 }
 

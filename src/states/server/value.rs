@@ -73,14 +73,14 @@ impl KeyType {
 
     pub fn color(&self) -> Hsla {
         match self {
-            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0), // 蓝色系
-            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),   // 紫色系
-            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),   // 橙色系
-            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),    // 青色系
-            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),  // 红色系
-            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0), // 绿色系
+            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),    // 蓝色系
+            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),      // 紫色系
+            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),      // 橙色系
+            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),       // 青色系
+            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),     // 红色系
+            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),    // 绿色系
             KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // 粉色系
-            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0), // 灰色
+            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0),   // 灰色
         }
     }
 }
@@ -165,12 +165,7 @@ impl From<&str> for KeyType {
 }
 
 impl ZedisServerState {
-    pub fn save_value(
-        &mut self,
-        key: SharedString,
-        new_value: SharedString,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn save_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let Some(value) = self.value.as_mut() else {
             return;

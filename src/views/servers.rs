@@ -38,6 +38,7 @@ use gpui_component::input::InputState;
 use gpui_component::input::NumberInput;
 use gpui_component::label::Label;
 use rust_i18n::t;
+use std::cell::Cell;
 use std::rc::Rc;
 use substring::Substring;
 use tracing::info;
@@ -78,27 +79,15 @@ impl ZedisServers {
     /// Create a new server management view
     ///
     /// Initializes all input field states with appropriate placeholders
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         // Initialize input fields for server configuration form
-        let name_state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(i18n_servers(cx, "name_placeholder"))
-        });
-        let host_state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(i18n_servers(cx, "host_placeholder"))
-        });
-        let port_state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(i18n_servers(cx, "port_placeholder"))
-        });
-        let password_state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(i18n_servers(cx, "password_placeholder"))
-        });
-        let description_state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(i18n_servers(cx, "description_placeholder"))
-        });
+        let name_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "name_placeholder")));
+        let host_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "host_placeholder")));
+        let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "port_placeholder")));
+        let password_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "password_placeholder")));
+        let description_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "description_placeholder")));
 
         info!("Creating new servers view");
 
@@ -207,17 +196,10 @@ impl ZedisServers {
             };
 
             let desc_val = description_state_clone.read(cx).value();
-            let description = if desc_val.is_empty() {
-                None
-            } else {
-                Some(desc_val)
-            };
+            let description = if desc_val.is_empty() { None } else { Some(desc_val) };
 
             server_state_clone.update(cx, |state, cx| {
-                let current_server = state
-                    .server(server_id_clone.as_str())
-                    .cloned()
-                    .unwrap_or_default();
+                let current_server = state.server(server_id_clone.as_str()).cloned().unwrap_or_default();
 
                 state.update_or_insrt_server(
                     RedisServer {
@@ -237,7 +219,8 @@ impl ZedisServers {
             true
         });
 
-        window.open_dialog(cx, move |dialog, _window, cx| {
+        let focus_handle_done = Cell::new(false);
+        window.open_dialog(cx, move |dialog, window, cx| {
             // Set dialog title based on add/update mode
             let title = if is_new {
                 i18n_servers(cx, "add_server_title")
@@ -255,7 +238,13 @@ impl ZedisServers {
             dialog
                 .title(title)
                 .overlay(true)
-                .child(
+                .child({
+                    if !focus_handle_done.get() {
+                        name_state.clone().update(cx, |this, cx| {
+                            this.focus(window, cx);
+                        });
+                        focus_handle_done.set(true);
+                    }
                     v_form()
                         .child(
                             field()
@@ -264,23 +253,15 @@ impl ZedisServers {
                                 .child(Input::new(&name_state)),
                         )
                         .child(field().label(host_label).child(Input::new(&host_state)))
-                        .child(
-                            field()
-                                .label(port_label)
-                                .child(NumberInput::new(&port_state)),
-                        )
+                        .child(field().label(port_label).child(NumberInput::new(&port_state)))
                         .child(
                             field()
                                 .label(password_label)
                                 // Password field with show/hide toggle
                                 .child(Input::new(&password_state).mask_toggle()),
                         )
-                        .child(
-                            field()
-                                .label(description_label)
-                                .child(Input::new(&description_state)),
-                        ),
-                )
+                        .child(field().label(description_label).child(Input::new(&description_state)))
+                })
                 .on_ok({
                     let handle = handle_submit.clone();
                     move |_, window, cx| handle(window, cx)
@@ -300,11 +281,9 @@ impl ZedisServers {
                                 }
                             }),
                             // Cancel button - closes dialog without saving
-                            Button::new("cancel")
-                                .label(cancel_label)
-                                .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
-                                }),
+                            Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
                         ]
                     }
                 })
@@ -357,9 +336,7 @@ impl Render for ZedisServers {
 
                 // Extract and format update timestamp (show only date part)
                 let updated_at = if let Some(updated_at) = &server.updated_at {
-                    updated_at
-                        .substring(0, UPDATED_AT_SUBSTRING_LENGTH)
-                        .to_string()
+                    updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string()
                 } else {
                     String::new()
                 };
@@ -411,9 +388,7 @@ impl Render for ZedisServers {
                     .icon(Icon::new(CustomIconName::DatabaseZap))
                     .title(title)
                     .bg(bg)
-                    .when(!description.is_empty(), |this| {
-                        this.description(description)
-                    })
+                    .when(!description.is_empty(), |this| this.description(description))
                     .when(!updated_at.is_empty(), |this| {
                         this.footer(
                             Label::new(updated_at)
@@ -442,11 +417,7 @@ impl Render for ZedisServers {
                     .title(i18n_servers(cx, "add_server_title"))
                     .bg(bg)
                     .description(i18n_servers(cx, "add_server_description"))
-                    .actions(vec![
-                        Button::new("add")
-                            .ghost()
-                            .icon(CustomIconName::FilePlusCorner),
-                    ])
+                    .actions(vec![Button::new("add").ghost().icon(CustomIconName::FilePlusCorner)])
                     .on_click(cx.listener(move |this, _, window, cx| {
                         // Fill with empty server data for new entry
                         this.fill_inputs(window, cx, &RedisServer::default());

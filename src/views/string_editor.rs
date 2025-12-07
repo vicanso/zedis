@@ -122,20 +122,15 @@ impl ZedisStringEditor {
     /// - Search functionality
     /// - Soft wrap for long lines
     /// - Automatic value updates when server state changes
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update editor when value changes
         // subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
         //     this.update_editor_value(cx);
         // }));
-        subscriptions.push(cx.subscribe(
-            &server_state,
-            |this, _server_state, event, cx| match event {
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
                 ServerEvent::ValueFetching(_) => {
                     this.update_editor_value(cx);
                 }
@@ -144,8 +139,8 @@ impl ZedisStringEditor {
                     this.soft_wrap = *soft_wrap;
                 }
                 _ => {}
-            },
-        ));
+            }),
+        );
 
         // Get initial value (string or hex dump)
         let value = get_string_value(window, server_state.read(cx).value());
@@ -174,9 +169,7 @@ impl ZedisStringEditor {
                 let redis_value = this.server_state.read(cx).value();
 
                 // Compare with original value to determine if modified
-                let original = redis_value
-                    .and_then(|r| r.string_value())
-                    .map_or("".into(), |v| v);
+                let original = redis_value.and_then(|r| r.string_value()).map_or("".into(), |v| v);
 
                 this.value_modified = original != value.as_str();
                 cx.notify();

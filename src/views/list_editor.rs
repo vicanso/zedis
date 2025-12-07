@@ -28,17 +28,22 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::form::field;
+use gpui_component::form::v_form;
 use gpui_component::input::Input;
 use gpui_component::input::InputEvent;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
+use gpui_component::radio::RadioGroup;
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, Sizable};
 use gpui_component::{Disableable, IndexPath};
 use gpui_component::{Icon, IconName};
 use gpui_component::{WindowExt, h_flex};
 use rust_i18n::t;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tracing::info;
 
@@ -102,10 +107,7 @@ impl RedisListValues {
     /// Returns true if loading or updating data, false otherwise.
     /// Used to disable UI actions during operations.
     fn loading(&self, cx: &App) -> bool {
-        self.server_state
-            .read(cx)
-            .value()
-            .is_some_and(|v| v.is_busy())
+        self.server_state.read(cx).value().is_some_and(|v| v.is_busy())
     }
 
     /// Recalculate the visible items based on the keyword
@@ -173,11 +175,7 @@ impl ListDelegate for RedisListValues {
                 .unwrap_or(row);
 
             let show_index = row + 1; // Display as 1-based index
-            let bg = if show_index.is_multiple_of(2) {
-                even_bg
-            } else {
-                odd_bg
-            };
+            let bg = if show_index.is_multiple_of(2) { even_bg } else { odd_bg };
 
             // Check if this item is currently being edited
             let is_updated = self.updated_index == Some(real_index);
@@ -190,11 +188,7 @@ impl ListDelegate for RedisListValues {
                     .flex_1()
                     .into_any_element()
             } else {
-                Label::new(item)
-                    .pl_4()
-                    .text_sm()
-                    .flex_1()
-                    .into_any_element()
+                Label::new(item).pl_4().text_sm().flex_1().into_any_element()
             };
 
             let update_view = self.view.clone();
@@ -208,9 +202,7 @@ impl ListDelegate for RedisListValues {
                 .ghost()
                 .mr_2()
                 .tooltip(i18n_list_editor(cx, "update_tooltip"))
-                .when(!is_updated, |this| {
-                    this.icon(Icon::new(CustomIconName::FilePenLine))
-                })
+                .when(!is_updated, |this| this.icon(Icon::new(CustomIconName::FilePenLine)))
                 .when(is_updated, |this| this.icon(Icon::new(IconName::Check)))
                 .disabled(is_busy)
                 .on_click(move |_event, _window, cx| {
@@ -236,13 +228,7 @@ impl ListDelegate for RedisListValues {
                 .on_click(move |_event, window, cx| {
                     cx.stop_propagation();
                     delete_view.update(cx, |this, cx| {
-                        this.handle_delete_item(
-                            real_index,
-                            show_index,
-                            remove_value.clone(),
-                            window,
-                            cx,
-                        );
+                        this.handle_delete_item(real_index, show_index, remove_value.clone(), window, cx);
                     });
                 });
 
@@ -260,22 +246,12 @@ impl ListDelegate for RedisListValues {
                                 .w(px(INDEX_WIDTH)),
                         )
                         .child(content)
-                        .child(
-                            h_flex()
-                                .w(px(ACTION_WIDTH))
-                                .child(update_btn)
-                                .child(delete_btn),
-                        ),
+                        .child(h_flex().w(px(ACTION_WIDTH)).child(update_btn).child(delete_btn)),
                 )
         })
     }
     /// Update the selected item index
-    fn set_selected_index(
-        &mut self,
-        ix: Option<IndexPath>,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) {
+    fn set_selected_index(&mut self, ix: Option<IndexPath>, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
         self.selected_index = ix;
         cx.notify();
     }
@@ -322,6 +298,11 @@ pub struct ZedisListEditor {
     /// Input field state for inline value editing
     value_state: Entity<InputState>,
 
+    /// Input field state for new value input
+    new_value_state: Entity<InputState>,
+
+    new_value_mode: Option<usize>,
+
     /// Input field state for keyword search/filter
     keyword_state: Entity<InputState>,
 
@@ -337,11 +318,7 @@ impl ZedisListEditor {
     ///
     /// Sets up reactive updates when server state changes and
     /// initializes input fields for inline editing.
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update list when data changes
@@ -351,6 +328,12 @@ impl ZedisListEditor {
 
         // Initialize value input field for inline editing
         let value_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_list_editor(cx, "value_placeholder"))
+        });
+
+        let new_value_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_list_editor(cx, "value_placeholder"))
@@ -415,6 +398,8 @@ impl ZedisListEditor {
             value_state,
             keyword_state,
             input_default_value: None,
+            new_value_mode: Some(0),
+            new_value_state,
             _subscriptions: subscriptions,
         }
     }
@@ -512,6 +497,16 @@ impl ZedisListEditor {
             this.update_list_value(index, original_value, value, cx);
         });
     }
+    /// Handle push value action
+    ///
+    /// Pushes the value to the list
+    fn handle_push_value(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let mode = self.new_value_mode.unwrap_or_default();
+        let value = self.new_value_state.read(cx).value();
+        self.server_state.update(cx, |this, cx| {
+            this.push_list_value(value, mode, cx);
+        });
+    }
 }
 
 impl Render for ZedisListEditor {
@@ -536,6 +531,86 @@ impl Render for ZedisListEditor {
             });
         }
 
+        let handle_add_value = cx.listener(move |this, _event, window, cx| {
+            this.new_value_state.update(cx, |this, cx| {
+                this.set_value(SharedString::default(), window, cx);
+            });
+            let new_value_state = this.new_value_state.clone();
+            let view = cx.entity();
+            let view_update = view.clone();
+            let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
+                view_update.update(cx, |this, cx| {
+                    this.handle_push_value(window, cx);
+                });
+                window.close_dialog(cx);
+                true
+            });
+            let focus_handle_done = Cell::new(false);
+
+            window.open_dialog(cx, move |dialog, window, cx| {
+                let new_value_mode = view.read(cx).new_value_mode;
+                dialog
+                    .title(i18n_list_editor(cx, "add_value_title"))
+                    .overlay(true)
+                    .child({
+                        if !focus_handle_done.get() {
+                            new_value_state.clone().update(cx, |this, cx| {
+                                this.focus(window, cx);
+                            });
+                            focus_handle_done.set(true);
+                        }
+
+                        v_form()
+                            .child(
+                                field().label(i18n_list_editor(cx, "positon")).child(
+                                    RadioGroup::horizontal("add-value-positon-group")
+                                        .children(["RPUSH", "LPUSH"])
+                                        .selected_index(new_value_mode)
+                                        .on_click({
+                                            let view = view.clone();
+                                            move |index, _, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.new_value_mode = Some(*index);
+                                                    cx.notify();
+                                                });
+                                                cx.stop_propagation();
+                                            }
+                                        }),
+                                ),
+                            )
+                            .child(
+                                field()
+                                    .label(i18n_list_editor(cx, "value"))
+                                    .child(Input::new(&new_value_state)),
+                            )
+                    })
+                    .on_ok({
+                        let handle = handle_submit.clone();
+                        move |_, window, cx| handle(window, cx)
+                    })
+                    .footer({
+                        let handle = handle_submit.clone();
+                        move |_, _, _, cx| {
+                            let confirm_label = i18n_list_editor(cx, "confirm");
+                            let cancel_label = i18n_list_editor(cx, "cancel");
+                            vec![
+                                // Submit button - validates and saves server configuration
+                                Button::new("ok").primary().label(confirm_label).on_click({
+                                    let handle = handle.clone();
+                                    move |_, window, cx| {
+                                        handle.clone()(window, cx);
+                                    }
+                                }),
+                                // Cancel button - closes dialog without saving
+                                Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                            ]
+                        }
+                    })
+            });
+        });
+
         v_flex()
             .h_full()
             .w_full()
@@ -552,13 +627,7 @@ impl Render for ZedisListEditor {
                             .text_color(text_color)
                             .w(px(INDEX_WIDTH_WITH_PADDING)),
                     )
-                    .child(
-                        Label::new(value_label)
-                            .pl_4()
-                            .text_sm()
-                            .text_color(text_color)
-                            .flex_1(),
-                    )
+                    .child(Label::new(value_label).pl_4().text_sm().text_color(text_color).flex_1())
                     .child(
                         Label::new(action_label)
                             .text_sm()
@@ -576,7 +645,14 @@ impl Render for ZedisListEditor {
                     .w_full()
                     .p_2()
                     .child(
-                        div()
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("add-value-btn")
+                                    .icon(CustomIconName::FilePlusCorner)
+                                    .tooltip(i18n_list_editor(cx, "add_value_tooltip"))
+                                    .on_click(handle_add_value),
+                            )
                             .child(
                                 Input::new(&self.keyword_state)
                                     .w(px(KEYWORD_INPUT_WIDTH))

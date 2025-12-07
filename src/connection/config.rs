@@ -109,9 +109,7 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
 /// Saves the server configuration to the file.
 pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
     let path = get_or_create_server_config()?;
-    let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid {
-        message: e.to_string(),
-    })?;
+    let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid { message: e.to_string() })?;
     fs::write(&path, value).await?;
     Ok(())
 }

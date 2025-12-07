@@ -115,9 +115,7 @@ impl ZedisAppState {
         Ok(state)
     }
     pub fn new() -> Self {
-        Self {
-            ..Default::default()
-        }
+        Self { ..Default::default() }
     }
     pub fn key_tree_width(&self) -> Pixels {
         self.key_tree_width

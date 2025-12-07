@@ -48,10 +48,7 @@ fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
 }
 /// Formats the latency string and determines the color based on the delay.
 #[inline]
-fn format_latency(
-    latency: Option<Duration>,
-    cx: &mut Context<ZedisStatusBar>,
-) -> (SharedString, Hsla) {
+fn format_latency(latency: Option<Duration>, cx: &mut Context<ZedisStatusBar>) -> (SharedString, Hsla) {
     if let Some(latency) = latency {
         let ms = latency.as_millis();
         let theme = cx.theme();
@@ -103,11 +100,7 @@ pub struct ZedisStatusBar {
     _subscriptions: Vec<Subscription>,
 }
 impl ZedisStatusBar {
-    pub fn new(
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         // Initialize state from the current server state
         // Read only necessary fields to avoid cloning the entire state if it's large
         let (dbsize, scan_count, server_id, nodes, version, latency, scan_completed, soft_wrap) = {
@@ -125,50 +118,48 @@ impl ZedisStatusBar {
         };
 
         let mut subscriptions = vec![];
-        subscriptions.push(
-            cx.subscribe(&server_state, |this, server_state, event, cx| {
-                match event {
-                    ServerEvent::Heartbeat(latency) => {
-                        this.state.latency = format_latency(Some(*latency), cx);
-                    }
-                    ServerEvent::SelectServer(server_id) => {
-                        this.reset();
-                        this.state.server_id = server_id.clone();
-                        this.state.soft_wrap = server_state.read(cx).soft_wrap();
-                    }
-                    ServerEvent::ServerUpdated(_) => {
-                        let state = server_state.read(cx);
-                        this.state.nodes = format_nodes(state.nodes(), state.version());
-                        this.state.latency = format_latency(state.latency(), cx);
-                    }
-                    ServerEvent::ScanStart(_) => {
-                        this.state.scan_finished = false;
-                    }
-                    ServerEvent::ScanFinish(_) => {
-                        let state = server_state.read(cx);
-                        this.state.size = format_size(state.dbsize(), state.scan_count());
-                        this.state.scan_finished = true;
-                    }
-                    ServerEvent::ScanNext(_) => {
-                        let state = server_state.read(cx);
-                        this.state.size = format_size(state.dbsize(), state.scan_count());
-                    }
-                    ServerEvent::Error(error) => {
-                        this.state.error = Some(error.clone());
-                    }
-                    ServerEvent::Spawn(task) => {
-                        // Clear error when a new task starts (except background ping)
-                        if *task != ServerTask::Ping {
-                            this.state.error = None;
-                        }
-                    }
-                    _ => {
-                        return;
+        subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
+            match event {
+                ServerEvent::Heartbeat(latency) => {
+                    this.state.latency = format_latency(Some(*latency), cx);
+                }
+                ServerEvent::SelectServer(server_id) => {
+                    this.reset();
+                    this.state.server_id = server_id.clone();
+                    this.state.soft_wrap = server_state.read(cx).soft_wrap();
+                }
+                ServerEvent::ServerUpdated(_) => {
+                    let state = server_state.read(cx);
+                    this.state.nodes = format_nodes(state.nodes(), state.version());
+                    this.state.latency = format_latency(state.latency(), cx);
+                }
+                ServerEvent::ScanStart(_) => {
+                    this.state.scan_finished = false;
+                }
+                ServerEvent::ScanFinish(_) => {
+                    let state = server_state.read(cx);
+                    this.state.size = format_size(state.dbsize(), state.scan_count());
+                    this.state.scan_finished = true;
+                }
+                ServerEvent::ScanNext(_) => {
+                    let state = server_state.read(cx);
+                    this.state.size = format_size(state.dbsize(), state.scan_count());
+                }
+                ServerEvent::Error(error) => {
+                    this.state.error = Some(error.clone());
+                }
+                ServerEvent::Spawn(task) => {
+                    // Clear error when a new task starts (except background ping)
+                    if *task != ServerTask::Ping {
+                        this.state.error = None;
                     }
                 }
-                cx.notify();
-            }),
-        );
+                _ => {
+                    return;
+                }
+            }
+            cx.notify();
+        }));
         let mut this = Self {
             heartbeat_task: None,
             server_state: server_state.clone(),
@@ -197,9 +188,7 @@ impl ZedisStatusBar {
         // start task
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(30))
-                    .await;
+                cx.background_executor().timer(Duration::from_secs(30)).await;
                 let _ = server_state.update(cx, |state, cx| {
                     state.ping(cx);
                 });
@@ -230,11 +219,7 @@ impl ZedisStatusBar {
                     })),
             )
             .child(Label::new(self.state.size.clone()).mr_4())
-            .child(
-                Icon::new(CustomIconName::Network)
-                    .text_color(cx.theme().primary)
-                    .mr_1(),
-            )
+            .child(Icon::new(CustomIconName::Network).text_color(cx.theme().primary).mr_1())
             .child(Label::new(self.state.nodes.clone()).mr_4())
             .child(
                 Button::new("zedis-status-bar-letency")
@@ -273,11 +258,9 @@ impl ZedisStatusBar {
             return h_flex().flex_1();
         };
         // 记录出错的显示
-        h_flex().flex_1().child(
-            Label::new(data.message.clone())
-                .text_xs()
-                .text_color(cx.theme().red),
-        )
+        h_flex()
+            .flex_1()
+            .child(Label::new(data.message.clone()).text_xs().text_color(cx.theme().red))
     }
 }
 

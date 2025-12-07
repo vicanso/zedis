@@ -98,10 +98,7 @@ impl ConnectionLike for RedisAsyncConn {
 /// * `addrs` - A vector of Redis connection strings (e.g., "redis://127.0.0.1").
 /// * `cmds` - A vector of commands to execute. If there are fewer commands than addresses,
 ///   the first command is reused for the remaining addresses.
-pub(crate) async fn query_async_masters<T: FromRedisValue>(
-    addrs: Vec<&str>,
-    cmds: Vec<Cmd>,
-) -> Result<Vec<T>> {
+pub(crate) async fn query_async_masters<T: FromRedisValue>(addrs: Vec<&str>, cmds: Vec<Cmd>) -> Result<Vec<T>> {
     let first_cmd = cmds.first().ok_or_else(|| Error::Invalid {
         message: "Commands are empty".to_string(),
     })?;

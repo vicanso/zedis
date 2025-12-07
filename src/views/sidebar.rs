@@ -93,11 +93,8 @@ enum LocaleAction {
 /// * `action_name` - Human-readable action name for logging
 /// * `mutation` - Callback to modify the app state
 #[inline]
-fn update_app_state_and_save<F>(
-    cx: &mut Context<ZedisSidebar>,
-    action_name: &'static str,
-    mutation: F,
-) where
+fn update_app_state_and_save<F>(cx: &mut Context<ZedisSidebar>, action_name: &'static str, mutation: F)
+where
     F: FnOnce(&mut ZedisAppState, &mut Context<ZedisAppState>) + Send + 'static + Clone,
 {
     let store = cx.global::<ZedisGlobalStore>().clone();
@@ -169,32 +166,26 @@ impl ZedisSidebar {
     /// Sets up listeners for:
     /// - Server selection changes (updates current selection)
     /// - Server list updates (refreshes displayed servers)
-    pub fn new(
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let mut subscriptions = vec![];
 
         // Subscribe to server events for reactive updates
-        subscriptions.push(
-            cx.subscribe(&server_state, |this, _server_state, event, cx| {
-                match event {
-                    ServerEvent::SelectServer(server_id) => {
-                        // Update current selection highlight
-                        this.state.server_id = server_id.clone();
-                    }
-                    ServerEvent::UpdateServers => {
-                        // Refresh server list when servers are added/removed/updated
-                        this.update_server_names(cx);
-                    }
-                    _ => {
-                        return;
-                    }
+        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
+            match event {
+                ServerEvent::SelectServer(server_id) => {
+                    // Update current selection highlight
+                    this.state.server_id = server_id.clone();
                 }
-                cx.notify();
-            }),
-        );
+                ServerEvent::UpdateServers => {
+                    // Refresh server list when servers are added/removed/updated
+                    this.update_server_names(cx);
+                }
+                _ => {
+                    return;
+                }
+            }
+            cx.notify();
+        }));
 
         // Get current server ID for initial selection
         let state = server_state.read(cx).clone();
@@ -252,67 +243,60 @@ impl ZedisSidebar {
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
 
-        uniform_list(
-            "sidebar-redis-servers",
-            servers.len(),
-            move |range, _window, _cx| {
-                range
-                    .map(|index| {
-                        let (server_id, server_name) =
-                            servers.get(index).cloned().unwrap_or_default();
+        uniform_list("sidebar-redis-servers", servers.len(), move |range, _window, _cx| {
+            range
+                .map(|index| {
+                    let (server_id, server_name) = servers.get(index).cloned().unwrap_or_default();
 
-                        let is_home = server_id.is_empty();
-                        let is_current = server_id == current_server_id_clone;
+                    let is_home = server_id.is_empty();
+                    let is_current = server_id == current_server_id_clone;
 
-                        // Display "Home" for empty server_name, otherwise use server name
-                        let name = if server_name.is_empty() {
-                            home_label.clone()
-                        } else {
-                            server_name.clone()
-                        };
+                    // Display "Home" for empty server_name, otherwise use server name
+                    let name = if server_name.is_empty() {
+                        home_label.clone()
+                    } else {
+                        server_name.clone()
+                    };
 
-                        let view = view.clone();
+                    let view = view.clone();
 
-                        ListItem::new(("sidebar-redis-server", index))
-                            .w_full()
-                            .when(is_current, |this| this.bg(list_active_color))
-                            .py_4()
-                            .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
-                            .when(is_current, |this| {
-                                this.border_color(list_active_border_color)
-                            })
-                            .child(
-                                v_flex()
-                                    .items_center()
-                                    .child(Icon::new(IconName::LayoutDashboard))
-                                    .child(Label::new(name).text_ellipsis().text_xs()),
-                            )
-                            .on_click(move |_, _window, cx| {
-                                // Don't do anything if already selected
-                                if is_current {
-                                    return;
-                                }
+                    ListItem::new(("sidebar-redis-server", index))
+                        .w_full()
+                        .when(is_current, |this| this.bg(list_active_color))
+                        .py_4()
+                        .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
+                        .when(is_current, |this| this.border_color(list_active_border_color))
+                        .child(
+                            v_flex()
+                                .items_center()
+                                .child(Icon::new(IconName::LayoutDashboard))
+                                .child(Label::new(name).text_ellipsis().text_xs()),
+                        )
+                        .on_click(move |_, _window, cx| {
+                            // Don't do anything if already selected
+                            if is_current {
+                                return;
+                            }
 
-                                // Determine target route based on home/server
-                                let route = if is_home { Route::Home } else { Route::Editor };
+                            // Determine target route based on home/server
+                            let route = if is_home { Route::Home } else { Route::Editor };
 
-                                view.update(cx, |this, cx| {
-                                    // Update global route
-                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                        store.update(cx, |state, cx| {
-                                            state.go_to(route, cx);
-                                        });
-                                    });
-
-                                    this.server_state.update(cx, |state, cx| {
-                                        state.select(server_id.clone(), cx);
+                            view.update(cx, |this, cx| {
+                                // Update global route
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| {
+                                        state.go_to(route, cx);
                                     });
                                 });
-                            })
-                    })
-                    .collect()
-            },
-        )
+
+                                this.server_state.update(cx, |state, cx| {
+                                    state.select(server_id.clone(), cx);
+                                });
+                            });
+                        })
+                })
+                .collect()
+        })
         .size_full()
     }
 
@@ -361,39 +345,23 @@ impl ZedisSidebar {
                             .menu_element_with_check(
                                 current_action == ThemeAction::Light,
                                 Box::new(ThemeAction::Light),
-                                |_window, cx| {
-                                    Label::new(i18n_sidebar(cx, "light"))
-                                        .text_xs()
-                                        .p(LABEL_PADDING)
-                                },
+                                |_window, cx| Label::new(i18n_sidebar(cx, "light")).text_xs().p(LABEL_PADDING),
                             )
                             .menu_element_with_check(
                                 current_action == ThemeAction::Dark,
                                 Box::new(ThemeAction::Dark),
-                                |_window, cx| {
-                                    Label::new(i18n_sidebar(cx, "dark"))
-                                        .text_xs()
-                                        .p(LABEL_PADDING)
-                                },
+                                |_window, cx| Label::new(i18n_sidebar(cx, "dark")).text_xs().p(LABEL_PADDING),
                             )
                             .menu_element_with_check(
                                 current_action == ThemeAction::System,
                                 Box::new(ThemeAction::System),
-                                |_window, cx| {
-                                    Label::new(i18n_sidebar(cx, "system"))
-                                        .text_xs()
-                                        .p(LABEL_PADDING)
-                                },
+                                |_window, cx| Label::new(i18n_sidebar(cx, "system")).text_xs().p(LABEL_PADDING),
                             )
                     },
                 )
                 // Language submenu with Chinese/English options
                 .submenu_with_icon(
-                    Some(
-                        Icon::new(CustomIconName::Languages)
-                            .px(ICON_PADDING)
-                            .mr(ICON_MARGIN),
-                    ),
+                    Some(Icon::new(CustomIconName::Languages).px(ICON_PADDING).mr(ICON_MARGIN)),
                     lang_text,
                     window,
                     cx,
@@ -495,10 +463,7 @@ impl Render for ZedisSidebar {
             .child(self.render_star(window, cx))
             .child(
                 // Server list takes up remaining vertical space
-                div()
-                    .flex_1()
-                    .size_full()
-                    .child(self.render_server_list(window, cx)),
+                div().flex_1().size_full().child(self.render_server_list(window, cx)),
             )
             .child(self.render_settings_button(window, cx))
     }

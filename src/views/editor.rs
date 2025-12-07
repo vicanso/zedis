@@ -73,11 +73,7 @@ pub struct ZedisEditor {
 
 impl ZedisEditor {
     /// Create a new editor instance with event subscriptions
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let mut subscriptions = vec![];
 
         // Initialize TTL input field with placeholder
@@ -88,30 +84,24 @@ impl ZedisEditor {
         });
 
         // Subscribe to server events to track when keys are selected
-        subscriptions.push(
-            cx.subscribe(&server_state, |this, _server_state, event, _cx| {
-                if let ServerEvent::Selectkey(_) = event {
-                    this.selected_key_at = Some(Instant::now());
-                }
-            }),
-        );
+        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, _cx| {
+            if let ServerEvent::Selectkey(_) = event {
+                this.selected_key_at = Some(Instant::now());
+            }
+        }));
 
         // Subscribe to TTL input events for Enter key and blur
         subscriptions.push(
-            cx.subscribe_in(
-                &input,
-                window,
-                |view, _state, event, window, cx| match &event {
-                    InputEvent::PressEnter { .. } => {
-                        view.handle_update_ttl(window, cx);
-                    }
-                    InputEvent::Blur => {
-                        view.ttl_edit_mode = false;
-                        cx.notify();
-                    }
-                    _ => {}
-                },
-            ),
+            cx.subscribe_in(&input, window, |view, _state, event, window, cx| match &event {
+                InputEvent::PressEnter { .. } => {
+                    view.handle_update_ttl(window, cx);
+                }
+                InputEvent::Blur => {
+                    view.ttl_edit_mode = false;
+                    cx.notify();
+                }
+                _ => {}
+            }),
         );
 
         info!("Creating new editor view");
@@ -361,10 +351,7 @@ impl ZedisEditor {
                     .icon(IconName::Copy)
                     .on_click(cx.listener(move |_this, _event, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));
-                        window.push_notification(
-                            Notification::info(i18n_editor(cx, "copied_key_to_clipboard")),
-                            cx,
-                        );
+                        window.push_notification(Notification::info(i18n_editor(cx, "copied_key_to_clipboard")), cx);
                     })),
             )
             .child(
@@ -409,8 +396,7 @@ impl ZedisEditor {
                     list_editor.clone()
                 } else {
                     debug!("Creating new list editor");
-                    let list_editor =
-                        cx.new(|cx| ZedisListEditor::new(window, cx, self.server_state.clone()));
+                    let list_editor = cx.new(|cx| ZedisListEditor::new(window, cx, self.server_state.clone()));
                     self.list_editor = Some(list_editor.clone());
                     list_editor
                 };
@@ -424,8 +410,7 @@ impl ZedisEditor {
                     string_editor.clone()
                 } else {
                     debug!("Creating new string editor");
-                    let string_editor =
-                        cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()));
+                    let string_editor = cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()));
                     self.string_editor = Some(string_editor.clone());
 
                     // Trigger a refresh to ensure the editor renders properly

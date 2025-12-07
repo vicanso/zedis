@@ -99,11 +99,7 @@ impl ZedisKeyTree {
     ///
     /// Sets up reactive updates when server state changes and
     /// initializes UI components (tree, search input).
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        server_state: Entity<ZedisServerState>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to rebuild tree when keys change
@@ -129,13 +125,11 @@ impl ZedisKeyTree {
         let query_mode = server_state_value.query_mode();
 
         // Subscribe to search input events (Enter key triggers filter)
-        subscriptions.push(
-            cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
-                if let InputEvent::PressEnter { .. } = &event {
-                    view.handle_filter(cx);
-                }
-            }),
-        );
+        subscriptions.push(cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
+            if let InputEvent::PressEnter { .. } = &event {
+                view.handle_filter(cx);
+            }
+        }));
 
         info!(server_id, "Creating new key tree view");
 
@@ -282,122 +276,111 @@ impl ZedisKeyTree {
 
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
-        tree(
-            &self.tree_state,
-            move |ix, entry, _selected, _window, cx| {
-                view.update(cx, |_, cx| {
-                    let item = entry.item();
+        tree(&self.tree_state, move |ix, entry, _selected, _window, cx| {
+            view.update(cx, |_, cx| {
+                let item = entry.item();
 
-                    // Render appropriate icon based on item type
-                    let icon = if !entry.is_folder() {
-                        // Key item: Show type badge (String, List, etc.)
-                        let key_type = server_state
-                            .read(cx)
-                            .key_type(&item.id)
-                            .unwrap_or(&KeyType::Unknown);
+                // Render appropriate icon based on item type
+                let icon = if !entry.is_folder() {
+                    // Key item: Show type badge (String, List, etc.)
+                    let key_type = server_state.read(cx).key_type(&item.id).unwrap_or(&KeyType::Unknown);
 
-                        if key_type == &KeyType::Unknown {
-                            div().into_any_element()
+                    if key_type == &KeyType::Unknown {
+                        div().into_any_element()
+                    } else {
+                        // Create colored badge with faded background and border
+                        let key_type_color = key_type.color();
+                        let mut key_type_bg = key_type_color;
+                        key_type_bg.fade_out(KEY_TYPE_FADE_ALPHA);
+                        let mut key_type_border = key_type_color;
+                        key_type_border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
+
+                        Label::new(key_type.as_str())
+                            .text_xs()
+                            .bg(key_type_bg)
+                            .text_color(key_type_color)
+                            .border_1()
+                            .px_1()
+                            .rounded_sm()
+                            .border_color(key_type_border)
+                            .into_any_element()
+                    }
+                } else if entry.is_expanded() {
+                    // Expanded folder: Show open folder icon
+                    Icon::new(IconName::FolderOpen).text_color(yellow).into_any_element()
+                } else {
+                    // Collapsed folder: Show closed folder icon
+                    Icon::new(IconName::Folder).text_color(yellow).into_any_element()
+                };
+                // Determine background color: selected > zebra striping
+                let bg = if item.id == selected_key {
+                    list_active_color
+                } else if ix % 2 == 0 {
+                    even_bg
+                } else {
+                    odd_bg
+                };
+
+                // Show child count for folders
+                let count_label = if entry.is_folder() {
+                    Label::new(item.children.len().to_string())
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                } else {
+                    Label::new("")
+                };
+
+                // Only clone minimal data: id and folder flag
+                let item_id = item.id.clone();
+                let is_folder = item.is_folder();
+
+                let handle_select_item = cx.listener(move |this, _, _window, cx| {
+                    if is_folder {
+                        // Check REAL-TIME expanded state from our state management
+                        // Note: item.is_expanded() reflects render-time state from TreeState,
+                        // but we need to check if it's ACTUALLY in our expanded set
+                        let currently_in_expanded_set = this.state.expanded_items.contains(&item_id);
+
+                        if currently_in_expanded_set {
+                            // User clicked an expanded folder -> collapse it
+                            this.state.expanded_items.remove(&item_id);
                         } else {
-                            // Create colored badge with faded background and border
-                            let key_type_color = key_type.color();
-                            let mut key_type_bg = key_type_color;
-                            key_type_bg.fade_out(KEY_TYPE_FADE_ALPHA);
-                            let mut key_type_border = key_type_color;
-                            key_type_border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
-
-                            Label::new(key_type.as_str())
-                                .text_xs()
-                                .bg(key_type_bg)
-                                .text_color(key_type_color)
-                                .border_1()
-                                .px_1()
-                                .rounded_sm()
-                                .border_color(key_type_border)
-                                .into_any_element()
+                            // User clicked a collapsed folder -> expand it and load data
+                            this.state.expanded_items.insert(item_id.clone());
+                            this.server_state.update(cx, |state, cx| {
+                                state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
+                            });
                         }
-                    } else if entry.is_expanded() {
-                        // Expanded folder: Show open folder icon
-                        Icon::new(IconName::FolderOpen)
-                            .text_color(yellow)
-                            .into_any_element()
-                    } else {
-                        // Collapsed folder: Show closed folder icon
-                        Icon::new(IconName::Folder)
-                            .text_color(yellow)
-                            .into_any_element()
-                    };
-                    // Determine background color: selected > zebra striping
-                    let bg = if item.id == selected_key {
-                        list_active_color
-                    } else if ix % 2 == 0 {
-                        even_bg
-                    } else {
-                        odd_bg
-                    };
+                        return;
+                    }
+                    if this.server_state.read(cx).key() == Some(item_id.clone()) {
+                        return;
+                    }
 
-                    // Show child count for folders
-                    let count_label = if entry.is_folder() {
-                        Label::new(item.children.len().to_string())
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                    } else {
-                        Label::new("")
-                    };
-
-                    // Only clone minimal data: id and folder flag
-                    let item_id = item.id.clone();
-                    let is_folder = item.is_folder();
-
-                    let handle_select_item = cx.listener(move |this, _, _window, cx| {
-                        if is_folder {
-                            // Check REAL-TIME expanded state from our state management
-                            // Note: item.is_expanded() reflects render-time state from TreeState,
-                            // but we need to check if it's ACTUALLY in our expanded set
-                            let currently_in_expanded_set =
-                                this.state.expanded_items.contains(&item_id);
-
-                            if currently_in_expanded_set {
-                                // User clicked an expanded folder -> collapse it
-                                this.state.expanded_items.remove(&item_id);
-                            } else {
-                                // User clicked a collapsed folder -> expand it and load data
-                                this.state.expanded_items.insert(item_id.clone());
-                                this.server_state.update(cx, |state, cx| {
-                                    state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
-                                });
-                            }
-                            return;
-                        }
-                        if this.server_state.read(cx).key() == Some(item_id.clone()) {
-                            return;
-                        }
-
-                        // Key click: Select the key for editing
-                        this.server_state.update(cx, |state, cx| {
-                            state.select_key(item_id.clone(), cx);
-                        });
+                    // Key click: Select the key for editing
+                    this.server_state.update(cx, |state, cx| {
+                        state.select_key(item_id.clone(), cx);
                     });
-                    ListItem::new(ix)
-                        .w_full()
-                        .bg(bg)
-                        .py_1()
-                        .px_2()
-                        .pl(px(TREE_INDENT_BASE) * entry.depth() + px(TREE_INDENT_OFFSET))
-                        .when(item.id == selected_key, |this| {
-                            this.border_r_3().border_color(list_active_border_color)
-                        })
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(icon)
-                                .child(div().flex_1().text_ellipsis().child(item.label.clone()))
-                                .child(count_label),
-                        )
-                        .on_click(handle_select_item)
-                })
-            },
-        )
+                });
+                ListItem::new(ix)
+                    .w_full()
+                    .bg(bg)
+                    .py_1()
+                    .px_2()
+                    .pl(px(TREE_INDENT_BASE) * entry.depth() + px(TREE_INDENT_OFFSET))
+                    .when(item.id == selected_key, |this| {
+                        this.border_r_3().border_color(list_active_border_color)
+                    })
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(icon)
+                            .child(div().flex_1().text_ellipsis().child(item.label.clone()))
+                            .child(count_label),
+                    )
+                    .on_click(handle_select_item)
+            })
+        })
         .text_sm()
         .p_1()
         .bg(cx.theme().sidebar)
@@ -412,11 +395,7 @@ impl ZedisKeyTree {
     /// - Search input field with placeholder
     /// - Search button (with loading state during scan)
     /// - Clearable input (X button appears when text entered)
-    fn render_keyword_input(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_keyword_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
         let scaning = server_state.scaning();
         let server_id = server_state.server_id();
@@ -435,40 +414,19 @@ impl ZedisKeyTree {
             QueryMode::Exact => Icon::new(CustomIconName::Equal), // = for exact match
         };
         let query_mode_dropdown = DropdownButton::new("dropdown")
-            .button(
-                Button::new("key-tree-query-mode-btn")
-                    .ghost()
-                    .px_2()
-                    .icon(icon),
-            )
+            .button(Button::new("key-tree-query-mode-btn").ghost().px_2().icon(icon))
             .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _, _| {
                 // Build menu with checkmarks for current mode
-                menu.menu_element_with_check(
-                    query_mode == QueryMode::All,
-                    Box::new(QueryMode::All),
-                    |_, cx| {
-                        Label::new(i18n_key_tree(cx, "query_mode_all"))
-                            .ml_2()
-                            .text_xs()
-                    },
-                )
-                .menu_element_with_check(
-                    query_mode == QueryMode::Prefix,
-                    Box::new(QueryMode::Prefix),
-                    |_, cx| {
-                        Label::new(i18n_key_tree(cx, "query_mode_prefix"))
-                            .ml_2()
-                            .text_xs()
-                    },
-                )
+                menu.menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
+                    Label::new(i18n_key_tree(cx, "query_mode_all")).ml_2().text_xs()
+                })
+                .menu_element_with_check(query_mode == QueryMode::Prefix, Box::new(QueryMode::Prefix), |_, cx| {
+                    Label::new(i18n_key_tree(cx, "query_mode_prefix")).ml_2().text_xs()
+                })
                 .menu_element_with_check(
                     query_mode == QueryMode::Exact,
                     Box::new(QueryMode::Exact),
-                    |_, cx| {
-                        Label::new(i18n_key_tree(cx, "query_mode_exact"))
-                            .ml_2()
-                            .text_xs()
-                    },
+                    |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")).ml_2().text_xs(),
                 )
             });
         // Search button (shows loading spinner during scan)
