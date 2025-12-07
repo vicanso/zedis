@@ -147,6 +147,9 @@ pub struct ZedisServerState {
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
 
+    /// Whether to soft wrap the editor
+    soft_wrap: bool,
+
     /// Current server status
     server_status: RedisServerStatus,
 
@@ -215,7 +218,11 @@ pub enum ServerTask {
     /// Remove a server from configuration
     RemoveServer,
 
+    /// Update the server query mode
     UpdateServerQueryMode,
+
+    /// Update the server soft wrap
+    UpdateServerSoftWrap,
 
     /// Add new server or update existing server configuration
     UpdateOrInsertServer,
@@ -270,6 +277,7 @@ impl ServerTask {
             ServerTask::LoadMoreListValue => "load_more_list_value",
             ServerTask::SaveValue => "save_value",
             ServerTask::UpdateServerQueryMode => "update_server_query_mode",
+            ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
         }
     }
 }
@@ -288,6 +296,9 @@ pub enum ServerEvent {
     /// A key's value has been updated
     ValueUpdated(SharedString),
 
+    /// A key's value is being fetched
+    ValueFetching(SharedString),
+
     /// User selected a different server
     SelectServer(SharedString),
 
@@ -305,6 +316,9 @@ pub enum ServerEvent {
 
     /// An error occurred during an operation
     Error(ErrorMessage),
+
+    /// Soft wrap changed
+    SoftWrapChanged(bool),
 
     /// Server list has been updated (add/remove/edit)
     UpdateServers,
@@ -432,6 +446,37 @@ impl ZedisServerState {
         })
         .detach();
     }
+    /// Update and save server configuration
+    fn update_and_save_server_config<F>(
+        &mut self,
+        task_name: ServerTask,
+        cx: &mut Context<Self>,
+        modifier: F,
+    ) where
+        F: FnOnce(&mut RedisServer),
+    {
+        let mut servers = self.servers.clone().unwrap_or_default();
+
+        if let Some(s) = servers.iter_mut().find(|s| s.id == self.server_id) {
+            modifier(s);
+        }
+
+        self.spawn(
+            task_name,
+            move || async move {
+                save_servers(servers.clone()).await?;
+                Ok(servers)
+            },
+            move |this, result, cx| {
+                if let Ok(servers) = result {
+                    this.servers = Some(servers);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     // ===== Public accessor methods =====
 
     /// Check if the server is currently busy with an operation
@@ -453,25 +498,18 @@ impl ZedisServerState {
     pub fn set_query_mode(&mut self, mode: QueryMode, cx: &mut Context<Self>) {
         self.query_mode = mode;
 
-        let mut servers = self.servers.clone().unwrap_or_default();
-        if let Some(s) = servers.iter_mut().find(|s| s.id == self.server_id) {
-            s.query_mode = Some(mode.to_string());
-        }
+        self.update_and_save_server_config(ServerTask::UpdateServerQueryMode, cx, move |server| {
+            server.query_mode = Some(mode.to_string());
+        });
+    }
+    /// Set whether to soft wrap the editor
+    pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
+        self.soft_wrap = soft_wrap;
+        cx.emit(ServerEvent::SoftWrapChanged(self.soft_wrap));
 
-        self.spawn(
-            ServerTask::UpdateServerQueryMode,
-            move || async move {
-                save_servers(servers.clone()).await?;
-                Ok(servers)
-            },
-            move |this, result, cx| {
-                if let Ok(servers) = result {
-                    this.servers = Some(servers);
-                }
-                cx.notify();
-            },
-            cx,
-        );
+        self.update_and_save_server_config(ServerTask::UpdateServerSoftWrap, cx, move |server| {
+            server.soft_wrap = Some(soft_wrap);
+        });
     }
     /// Get the current query mode (All/Prefix/Exact)
     pub fn query_mode(&self) -> QueryMode {
@@ -595,6 +633,11 @@ impl ZedisServerState {
     /// Get the currently selected server id
     pub fn server_id(&self) -> &str {
         &self.server_id
+    }
+
+    /// Get whether to soft wrap the editor
+    pub fn soft_wrap(&self) -> bool {
+        self.soft_wrap
     }
 
     /// Set the list of configured servers
@@ -736,12 +779,24 @@ impl ZedisServerState {
         if self.server_id != server_id {
             self.reset();
             self.server_id = server_id.clone();
-            self.query_mode = self
+            let (query_mode, soft_wrap) = self
                 .servers()
                 .and_then(|servers| servers.iter().find(|s| s.id == server_id))
-                .and_then(|server| server.query_mode.as_deref())
-                .and_then(|s| QueryMode::from_str(s).ok())
-                .unwrap_or_default();
+                .map(|server_config| {
+                    let mode = server_config
+                        .query_mode
+                        .as_deref()
+                        .and_then(|s| QueryMode::from_str(s).ok())
+                        .unwrap_or_default();
+
+                    let wrap = server_config.soft_wrap.unwrap_or(true);
+
+                    // 返回一个元组，包含所有需要更新的值
+                    (mode, wrap)
+                })
+                .unwrap_or((QueryMode::All, true));
+            self.query_mode = query_mode;
+            self.soft_wrap = soft_wrap;
 
             debug!(server_id = self.server_id.as_str(), "Selecting server");
             cx.emit(ServerEvent::SelectServer(server_id));

@@ -56,6 +56,7 @@ query_mode_exact = "= 精确"
 latency = "延迟"
 scan_completed = "扫描完成"
 scan_more_keys = "扫描更多键"
+soft_wrap = "自动换行"
 
 [list_editor]
 value = "值"

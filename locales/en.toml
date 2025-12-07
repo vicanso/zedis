@@ -57,6 +57,7 @@ query_mode_exact = "= Exact"
 latency = "Latency"
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"
+soft_wrap = "Soft Wrap"
 
 [list_editor]
 value = "Value"

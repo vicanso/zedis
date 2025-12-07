@@ -438,7 +438,6 @@ impl ZedisKeyTree {
             .button(
                 Button::new("key-tree-query-mode-btn")
                     .ghost()
-                    .bg(cx.theme().background)
                     .px_2()
                     .icon(icon),
             )
@@ -507,7 +506,6 @@ impl Render for ZedisKeyTree {
             .child(self.render_keyword_input(window, cx))
             .child(self.render_tree(cx))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
-                // let server_id = this.server_state.read(cx).server_id().to_string();
                 let new_mode = *e;
 
                 // Step 1: Update server state with new query mode

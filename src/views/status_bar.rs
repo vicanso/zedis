@@ -28,6 +28,7 @@ use gpui::prelude::*;
 use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
 use gpui_component::Icon;
+use gpui_component::IconName;
 use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::h_flex;
@@ -90,6 +91,7 @@ struct StatusBarState {
     latency: (SharedString, Hsla),
     nodes: SharedString,
     scan_finished: bool,
+    soft_wrap: bool,
     error: Option<ErrorMessage>,
 }
 
@@ -108,7 +110,7 @@ impl ZedisStatusBar {
     ) -> Self {
         // Initialize state from the current server state
         // Read only necessary fields to avoid cloning the entire state if it's large
-        let (dbsize, scan_count, server_id, nodes, version, latency, scan_completed) = {
+        let (dbsize, scan_count, server_id, nodes, version, latency, scan_completed, soft_wrap) = {
             let state = server_state.read(cx);
             (
                 state.dbsize(),
@@ -118,6 +120,7 @@ impl ZedisStatusBar {
                 state.version().to_string(),
                 state.latency(),
                 state.scan_completed(),
+                state.soft_wrap(),
             )
         };
 
@@ -131,6 +134,7 @@ impl ZedisStatusBar {
                     ServerEvent::SelectServer(server_id) => {
                         this.reset();
                         this.state.server_id = server_id.clone();
+                        this.state.soft_wrap = server_state.read(cx).soft_wrap();
                     }
                     ServerEvent::ServerUpdated(_) => {
                         let state = server_state.read(cx);
@@ -175,6 +179,7 @@ impl ZedisStatusBar {
                 latency: format_latency(latency, cx),
                 nodes: format_nodes(nodes, &version),
                 scan_finished: scan_completed,
+                soft_wrap,
                 ..Default::default()
             },
         };
@@ -248,13 +253,27 @@ impl ZedisStatusBar {
                     .mr_4(),
             )
     }
+    fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Button::new("soft-wrap")
+            .ghost()
+            .xsmall()
+            .when(self.state.soft_wrap, |this| this.icon(IconName::Check))
+            .label(i18n_status_bar(cx, "soft_wrap"))
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.state.soft_wrap = !this.state.soft_wrap;
+                this.server_state.update(cx, |state, cx| {
+                    state.set_soft_wrap(this.state.soft_wrap, cx);
+                });
+                cx.notify();
+            }))
+    }
     /// Render the error message
     fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(data) = &self.state.error else {
-            return h_flex();
+            return h_flex().flex_1();
         };
         // 记录出错的显示
-        h_flex().child(
+        h_flex().flex_1().child(
             Label::new(data.message.clone())
                 .text_xs()
                 .text_color(cx.theme().red),
@@ -277,6 +296,7 @@ impl Render for ZedisStatusBar {
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
             .child(self.render_server_status(window, cx))
+            .child(self.render_editor_settings(window, cx))
             .child(self.render_errors(window, cx))
     }
 }

@@ -67,6 +67,7 @@ pub struct RedisServer {
     pub description: Option<String>,
     pub updated_at: Option<String>,
     pub query_mode: Option<String>,
+    pub soft_wrap: Option<bool>,
 }
 impl RedisServer {
     /// Generates the connection URL based on host, port, and optional password.

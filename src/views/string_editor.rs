@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::helpers::get_font_family;
+use crate::states::ServerEvent;
 use crate::states::{RedisValue, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::Entity;
@@ -58,6 +59,12 @@ pub struct ZedisStringEditor {
 
     /// Window handle for cross-window updates
     window_handle: AnyWindowHandle,
+
+    /// Whether to soft wrap the editor
+    soft_wrap: bool,
+
+    /// Whether the soft wrap has been changed
+    soft_wrap_changed: bool,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -123,12 +130,26 @@ impl ZedisStringEditor {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update editor when value changes
-        subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
-            this.update_editor_value(cx);
-        }));
+        // subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
+        //     this.update_editor_value(cx);
+        // }));
+        subscriptions.push(cx.subscribe(
+            &server_state,
+            |this, _server_state, event, cx| match event {
+                ServerEvent::ValueFetching(_) => {
+                    this.update_editor_value(cx);
+                }
+                ServerEvent::SoftWrapChanged(soft_wrap) => {
+                    this.soft_wrap_changed = true;
+                    this.soft_wrap = *soft_wrap;
+                }
+                _ => {}
+            },
+        ));
 
         // Get initial value (string or hex dump)
         let value = get_string_value(window, server_state.read(cx).value());
+        let soft_wrap = server_state.read(cx).soft_wrap();
 
         // Configure code editor with JSON syntax highlighting
         let default_language = Language::from_str(DEFAULT_LANGUAGE);
@@ -142,7 +163,7 @@ impl ZedisStringEditor {
                     hard_tabs: false,
                 })
                 .searchable(true)
-                .soft_wrap(true)
+                .soft_wrap(soft_wrap)
                 .default_value(value)
         });
 
@@ -166,6 +187,8 @@ impl ZedisStringEditor {
 
         Self {
             value_modified: false,
+            soft_wrap,
+            soft_wrap_changed: false,
             editor,
             window_handle: window.window_handle(),
             server_state,
@@ -223,7 +246,13 @@ impl Render for ZedisStringEditor {
     /// - No borders for seamless integration
     /// - Monospace font for code readability
     /// - Customizable font size
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.soft_wrap_changed {
+            self.editor.update(cx, |this, cx| {
+                this.set_soft_wrap(self.soft_wrap, window, cx);
+            });
+            self.soft_wrap_changed = false;
+        }
         Input::new(&self.editor)
             .flex_1()
             .bordered(false)

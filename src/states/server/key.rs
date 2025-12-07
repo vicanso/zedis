@@ -329,7 +329,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 // if the key is not the same as the selected key, return
-                if this.key != Some(current_key) {
+                if this.key != Some(current_key.clone()) {
                     return;
                 }
                 match result {
@@ -350,6 +350,7 @@ impl ZedisServerState {
                         this.value = None;
                     }
                 };
+                cx.emit(ServerEvent::ValueFetching(current_key));
                 cx.notify();
             },
             cx,
