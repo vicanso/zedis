@@ -19,6 +19,7 @@ use crate::states::Route;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::i18n_servers;
+use gpui::App;
 use gpui::Entity;
 use gpui::Window;
 use gpui::div;
@@ -34,8 +35,10 @@ use gpui_component::form::field;
 use gpui_component::form::v_form;
 use gpui_component::input::Input;
 use gpui_component::input::InputState;
+use gpui_component::input::NumberInput;
 use gpui_component::label::Label;
 use rust_i18n::t;
+use std::rc::Rc;
 use substring::Substring;
 use tracing::info;
 
@@ -178,6 +181,57 @@ impl ZedisServers {
         let description_state = self.description_state.clone();
         let server_id = self.server_id.clone();
         let is_new = server_id.is_empty();
+
+        let server_state_clone = server_state.clone();
+        let name_state_clone = name_state.clone();
+        let host_state_clone = host_state.clone();
+        let port_state_clone = port_state.clone();
+        let password_state_clone = password_state.clone();
+        let description_state_clone = description_state.clone();
+        let server_id_clone = server_id.clone();
+
+        let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
+            let name = name_state_clone.read(cx).value();
+            let host = host_state_clone.read(cx).value();
+            let port = port_state_clone
+                .read(cx)
+                .value()
+                .parse::<u16>()
+                .unwrap_or(DEFAULT_REDIS_PORT);
+
+            let password_val = password_state_clone.read(cx).value();
+            let password = if password_val.is_empty() {
+                None
+            } else {
+                Some(password_val)
+            };
+
+            let desc_val = description_state_clone.read(cx).value();
+            let description = if desc_val.is_empty() {
+                None
+            } else {
+                Some(desc_val)
+            };
+
+            server_state_clone.update(cx, |state, cx| {
+                state.update_or_insrt_server(
+                    RedisServer {
+                        id: server_id_clone.clone(),
+                        name: name.to_string(),
+                        host: host.to_string(),
+                        port,
+                        password: password.map(|p| p.to_string()),
+                        description: description.map(|d| d.to_string()),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            });
+
+            window.close_dialog(cx);
+            true
+        });
+
         window.open_dialog(cx, move |dialog, _window, cx| {
             // Set dialog title based on add/update mode
             let title = if is_new {
@@ -185,14 +239,6 @@ impl ZedisServers {
             } else {
                 i18n_servers(cx, "update_server_title")
             };
-
-            let server_state = server_state.clone();
-            let name_input = name_state.clone();
-            let host_input = host_state.clone();
-            let port_input = port_state.clone();
-            let password_input = password_state.clone();
-            let description_input = description_state.clone();
-            let server_id = server_id.clone();
 
             // Prepare field labels
             let name_label = i18n_servers(cx, "name");
@@ -213,7 +259,11 @@ impl ZedisServers {
                                 .child(Input::new(&name_state)),
                         )
                         .child(field().label(host_label).child(Input::new(&host_state)))
-                        .child(field().label(port_label).child(Input::new(&port_state)))
+                        .child(
+                            field()
+                                .label(port_label)
+                                .child(NumberInput::new(&port_state)),
+                        )
                         .child(
                             field()
                                 .label(password_label)
@@ -226,74 +276,32 @@ impl ZedisServers {
                                 .child(Input::new(&description_state)),
                         ),
                 )
-                .footer(move |_, _, _, cx| {
-                    let name_input = name_input.clone();
-                    let host_input = host_input.clone();
-                    let port_input = port_input.clone();
-                    let password_input = password_input.clone();
-                    let description_input = description_input.clone();
-                    let server_state = server_state.clone();
-                    let submit_label = i18n_servers(cx, "submit");
-                    let cancel_label = i18n_servers(cx, "cancel");
-                    let server_id = server_id.clone();
+                .on_ok({
+                    let handle = handle_submit.clone();
+                    move |_, window, cx| handle(window, cx)
+                })
+                .footer({
+                    let handle = handle_submit.clone();
+                    move |_, _, _, cx| {
+                        let submit_label = i18n_servers(cx, "submit");
+                        let cancel_label = i18n_servers(cx, "cancel");
 
-                    vec![
-                        // Submit button - validates and saves server configuration
-                        Button::new("ok").primary().label(submit_label).on_click(
-                            move |_, window, cx| {
-                                let server_state = server_state.clone();
-
-                                // Read form values
-                                let name = name_input.read(cx).value();
-                                let host = host_input.read(cx).value();
-                                let port = port_input
-                                    .read(cx)
-                                    .value()
-                                    .parse::<u16>()
-                                    .unwrap_or(DEFAULT_REDIS_PORT);
-
-                                // Convert empty password to None
-                                let password = password_input.read(cx).value();
-                                let password = if password.is_empty() {
-                                    None
-                                } else {
-                                    Some(password)
-                                };
-
-                                // Convert empty description to None
-                                let description = description_input.read(cx).value();
-                                let description = if description.is_empty() {
-                                    None
-                                } else {
-                                    Some(description)
-                                };
-
-                                // Update or insert server configuration
-                                server_state.update(cx, |state, cx| {
-                                    state.update_or_insrt_server(
-                                        RedisServer {
-                                            id: server_id.clone(),
-                                            name: name.to_string(),
-                                            host: host.to_string(),
-                                            port,
-                                            password: password.map(|p| p.to_string()),
-                                            description: description.map(|d| d.to_string()),
-                                            ..Default::default()
-                                        },
-                                        cx,
-                                    );
-                                });
-
-                                window.close_dialog(cx);
-                            },
-                        ),
-                        // Cancel button - closes dialog without saving
-                        Button::new("cancel")
-                            .label(cancel_label)
-                            .on_click(|_, window, cx| {
-                                window.close_dialog(cx);
+                        vec![
+                            // Submit button - validates and saves server configuration
+                            Button::new("ok").primary().label(submit_label).on_click({
+                                let handle = handle.clone();
+                                move |_, window, cx| {
+                                    handle.clone()(window, cx);
+                                }
                             }),
-                    ]
+                            // Cancel button - closes dialog without saving
+                            Button::new("cancel")
+                                .label(cancel_label)
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        ]
+                    }
                 })
         });
     }

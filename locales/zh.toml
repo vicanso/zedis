@@ -12,7 +12,7 @@ settings = "设置"
 [servers]
 name_placeholder = "输入服务器名称"
 host_placeholder = "输入服务器主机"
-port_placeholder = "输入服务器端口"
+port_placeholder = "输入服务器端口，默认：6379"
 password_placeholder = "输入服务器密码"
 description_placeholder = "输入服务器描述"
 remove_prompt = "您确定要删除此redis服务器：%{server}吗？"

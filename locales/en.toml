@@ -13,7 +13,7 @@ settings = "Settings"
 [servers]
 name_placeholder = "Enter server name"
 host_placeholder = "Enter server host"
-port_placeholder = "Enter server port"
+port_placeholder = "Enter server port, default: 6379"
 password_placeholder = "Enter server password"
 description_placeholder = "Enter server description"
 remove_prompt = "Are you sure you want to delete this server: %{server}?"

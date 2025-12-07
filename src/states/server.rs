@@ -701,11 +701,15 @@ impl ZedisServerState {
             server.id = Uuid::now_v7().to_string();
         }
         server.updated_at = Some(Local::now().to_rfc3339());
-        println!("server: {:?}", server);
 
         self.spawn(
             ServerTask::UpdateOrInsertServer,
             move || async move {
+                if server.name.is_empty() {
+                    return Err(Error::Invalid {
+                        message: "Server name is required".to_string(),
+                    });
+                }
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.id == server.id) {
                     *existing_server = server;
                 } else {
