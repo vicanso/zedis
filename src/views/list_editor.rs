@@ -559,7 +559,6 @@ impl Render for ZedisListEditor {
                             });
                             focus_handle_done.set(true);
                         }
-
                         v_form()
                             .child(
                                 field().label(i18n_list_editor(cx, "positon")).child(

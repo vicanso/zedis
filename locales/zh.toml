@@ -41,7 +41,7 @@ save_data_tooltip = "保存数据"
 delete_key_tooltip = "删除键"
 copy_key_tooltip = "复制键"
 copied_key_to_clipboard = "已将键复制到剪贴板"
-ttl_placeholder = "例如：1d 或 1h"
+ttl_placeholder = "1d 或 1h"
 
 [key_tree]
 filter_placeholder = "按关键字搜索"
@@ -61,6 +61,7 @@ soft_wrap = "自动换行"
 [list_editor]
 value = "值"
 action = "操作"
+positon = "添加位置"
 update_tooltip = "更新列表值"
 delete_tooltip = "删除列表值"
 value_placeholder = "输入新值"

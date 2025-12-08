@@ -42,7 +42,7 @@ save_data_tooltip = "Save data"
 delete_key_tooltip = "Delete key"
 copy_key_tooltip = "Copy key"
 copied_key_to_clipboard = "Copied the key to clipboard"
-ttl_placeholder = "e.g. 1d or 1h"
+ttl_placeholder = "1d or 1h"
 
 [key_tree]
 filter_placeholder = "Filter by keyword"

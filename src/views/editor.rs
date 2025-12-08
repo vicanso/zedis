@@ -18,6 +18,7 @@ use crate::states::ZedisGlobalStore;
 use crate::states::i18n_editor;
 use crate::states::{KeyType, ZedisServerState};
 use crate::views::ZedisListEditor;
+use crate::views::ZedisSetEditor;
 use crate::views::ZedisStringEditor;
 use gpui::ClipboardItem;
 use gpui::Entity;
@@ -48,7 +49,7 @@ use tracing::info;
 // Constants
 const PERM: &str = "perm";
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
-const TTL_INPUT_MAX_WIDTH: f32 = 150.0;
+const TTL_INPUT_MAX_WIDTH: f32 = 130.0;
 
 /// Main editor component for displaying and editing Redis key values
 /// Supports different key types (String, List, etc.) with type-specific editors
@@ -59,6 +60,7 @@ pub struct ZedisEditor {
     /// Type-specific editors for different Redis data types
     list_editor: Option<Entity<ZedisListEditor>>,
     string_editor: Option<Entity<ZedisStringEditor>>,
+    set_editor: Option<Entity<ZedisSetEditor>>,
 
     /// TTL editing state
     ttl_edit_mode: bool,
@@ -110,6 +112,7 @@ impl ZedisEditor {
             server_state,
             list_editor: None,
             string_editor: None,
+            set_editor: None,
             ttl_edit_mode: false,
             ttl_input_state: input,
             _subscriptions: subscriptions,
@@ -277,6 +280,7 @@ impl ZedisEditor {
                 Button::new("zedis-editor-ttl-btn")
                     .ml_2()
                     .outline()
+                    .w(px(TTL_INPUT_MAX_WIDTH))
                     .disabled(should_show_loading)
                     .tooltip(i18n_editor(cx, "update_ttl_tooltip"))
                     .label(ttl.clone())
@@ -373,6 +377,9 @@ impl ZedisEditor {
         if key_type != KeyType::List {
             let _ = self.list_editor.take();
         }
+        if key_type != KeyType::Set {
+            let _ = self.set_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -390,40 +397,29 @@ impl ZedisEditor {
         match value.key_type() {
             KeyType::List => {
                 self.reset_editors(KeyType::List);
-
-                // Reuse existing editor or create new one
-                let editor = if let Some(list_editor) = &self.list_editor {
-                    list_editor.clone()
-                } else {
+                let editor = self.list_editor.get_or_insert_with(|| {
                     debug!("Creating new list editor");
-                    let list_editor = cx.new(|cx| ZedisListEditor::new(window, cx, self.server_state.clone()));
-                    self.list_editor = Some(list_editor.clone());
-                    list_editor
-                };
-                editor.into_any_element()
+                    cx.new(|cx| ZedisListEditor::new(window, cx, self.server_state.clone()))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::Set => {
+                self.reset_editors(KeyType::Set);
+                let editor = self.set_editor.get_or_insert_with(|| {
+                    debug!("Creating new set editor");
+                    cx.new(|cx| ZedisSetEditor::new(window, cx, self.server_state.clone()))
+                });
+                editor.clone().into_any_element()
             }
             _ => {
                 // Default to string editor for String type and other types
                 self.reset_editors(KeyType::String);
 
-                let editor = if let Some(string_editor) = &self.string_editor {
-                    string_editor.clone()
-                } else {
+                let editor = self.string_editor.get_or_insert_with(|| {
                     debug!("Creating new string editor");
-                    let string_editor = cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()));
-                    self.string_editor = Some(string_editor.clone());
-
-                    // Trigger a refresh to ensure the editor renders properly
-                    let string_editor_entity = string_editor.clone();
-                    cx.spawn(async move |_this, cx| {
-                        string_editor_entity.update(cx, move |_state, cx| {
-                            cx.notify();
-                        })
-                    })
-                    .detach();
-                    string_editor
-                };
-                editor.into_any_element()
+                    cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()))
+                });
+                editor.clone().into_any_element()
             }
         }
     }

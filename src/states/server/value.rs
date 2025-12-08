@@ -28,6 +28,14 @@ pub enum RedisValueData {
     String(SharedString),
     Bytes(Vec<u8>),
     List(Arc<RedisListValue>),
+    Set(Arc<RedisSetValue>),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RedisSetValue {
+    pub cursor: u64,
+    pub size: usize,
+    pub values: Vec<SharedString>,
 }
 
 #[derive(Debug, Clone, Default)]
