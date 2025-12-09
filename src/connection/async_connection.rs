@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::error::Error;
-use async_trait::async_trait;
 use futures::future::try_join_all;
 use redis::Client;
 use redis::Cmd;
@@ -44,7 +43,6 @@ pub enum RedisAsyncConn {
     Cluster(ClusterConnection),
 }
 
-#[async_trait]
 impl ConnectionLike for RedisAsyncConn {
     #[inline]
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {

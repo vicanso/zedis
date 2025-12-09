@@ -16,6 +16,7 @@ use super::ServerEvent;
 use super::ServerTask;
 use super::ZedisServerState;
 use crate::connection::get_connection_manager;
+use bytes::Bytes;
 use chrono::Local;
 use gpui::Hsla;
 use gpui::SharedString;
@@ -26,7 +27,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub enum RedisValueData {
     String(SharedString),
-    Bytes(Vec<u8>),
+    Bytes(Bytes),
     List(Arc<RedisListValue>),
     Set(Arc<RedisSetValue>),
 }
@@ -47,6 +48,12 @@ pub struct RedisListValue {
 impl RedisValue {
     pub fn list_value(&self) -> Option<&Arc<RedisListValue>> {
         if let Some(RedisValueData::List(data)) = self.data.as_ref() {
+            return Some(data);
+        }
+        None
+    }
+    pub fn set_value(&self) -> Option<&Arc<RedisSetValue>> {
+        if let Some(RedisValueData::Set(data)) = self.data.as_ref() {
             return Some(data);
         }
         None

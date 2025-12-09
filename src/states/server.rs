@@ -255,8 +255,8 @@ pub enum ServerTask {
     /// Push a value to a list
     PushListValue,
 
-    /// Load more items from a list (pagination)
-    LoadMoreListValue,
+    /// Load more items
+    LoadMoreValue,
 
     /// Save edited value back to Redis
     SaveValue,
@@ -278,7 +278,7 @@ impl ServerTask {
             ServerTask::UpdateKeyTtl => "update_key_ttl",
             ServerTask::DeleteListItem => "delete_list_item",
             ServerTask::UpdateListValue => "update_list_value",
-            ServerTask::LoadMoreListValue => "load_more_list_value",
+            ServerTask::LoadMoreValue => "load_more_value",
             ServerTask::SaveValue => "save_value",
             ServerTask::UpdateServerQueryMode => "update_server_query_mode",
             ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
@@ -303,6 +303,10 @@ pub enum ServerEvent {
 
     /// A key's value is being fetched
     ValueFetching(SharedString),
+
+    /// Load more value
+    LoadMoreValueStart(SharedString),
+    LoadMoreValueFinish(SharedString),
 
     /// User selected a different server
     SelectServer(SharedString),

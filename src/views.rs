@@ -22,6 +22,7 @@ mod set_editor;
 mod sidebar;
 mod status_bar;
 mod string_editor;
+mod table_delegate;
 
 pub use about::open_about_window;
 pub use content::ZedisContent;
@@ -33,3 +34,4 @@ pub use set_editor::ZedisSetEditor;
 pub use sidebar::ZedisSidebar;
 pub use status_bar::ZedisStatusBar;
 pub use string_editor::ZedisStringEditor;
+pub use table_delegate::{INDEX_COLUMN_NAME, ZedisTableDelegate, ZedisTableFetcher};

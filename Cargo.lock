@@ -7789,7 +7789,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "anyhow",
- "async-trait",
+ "bytes",
  "chrono",
  "dashmap",
  "futures",

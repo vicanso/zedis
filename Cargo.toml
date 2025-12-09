@@ -15,7 +15,7 @@ readme = "./README.md"
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
-async-trait = "0.1.89"
+bytes = "1.11.0"
 chrono = "0.4.42"
 dashmap = "6.1.0"
 futures = "0.3.31"

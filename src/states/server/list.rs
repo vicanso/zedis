@@ -295,7 +295,7 @@ impl ZedisServerState {
         let stop = start + 99; // Load 100 items
 
         self.spawn(
-            ServerTask::LoadMoreListValue,
+            ServerTask::LoadMoreValue,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 // Fetch only the new items

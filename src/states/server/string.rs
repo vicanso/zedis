@@ -16,6 +16,7 @@ use super::value::KeyType;
 use super::value::{RedisValue, RedisValueData};
 use crate::connection::RedisAsyncConn;
 use crate::error::Error;
+use bytes::Bytes;
 use gpui::SharedString;
 use redis::cmd;
 use serde_json::Value;
@@ -62,7 +63,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
         Err(e) => {
             // Conversion failed (invalid UTF-8). Recover the original bytes.
             let raw_bytes = e.into_bytes();
-            RedisValueData::Bytes(raw_bytes)
+            RedisValueData::Bytes(Bytes::from(raw_bytes))
         }
     };
     Ok(RedisValue {
