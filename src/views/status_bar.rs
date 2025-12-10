@@ -120,35 +120,35 @@ impl ZedisStatusBar {
         let mut subscriptions = vec![];
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
-                ServerEvent::Heartbeat(latency) => {
+                ServerEvent::HeartbeatReceived(latency) => {
                     this.state.latency = format_latency(Some(*latency), cx);
                 }
-                ServerEvent::SelectServer(server_id) => {
+                ServerEvent::ServerSelected(server_id) => {
                     this.reset();
                     this.state.server_id = server_id.clone();
                     this.state.soft_wrap = server_state.read(cx).soft_wrap();
                 }
-                ServerEvent::ServerUpdated(_) => {
+                ServerEvent::ServerInfoUpdated(_) => {
                     let state = server_state.read(cx);
                     this.state.nodes = format_nodes(state.nodes(), state.version());
                     this.state.latency = format_latency(state.latency(), cx);
                 }
-                ServerEvent::ScanStart(_) => {
+                ServerEvent::KeyScanStarted(_) => {
                     this.state.scan_finished = false;
                 }
-                ServerEvent::ScanFinish(_) => {
+                ServerEvent::KeyScanFinished(_) => {
                     let state = server_state.read(cx);
                     this.state.size = format_size(state.dbsize(), state.scan_count());
                     this.state.scan_finished = true;
                 }
-                ServerEvent::ScanNext(_) => {
+                ServerEvent::KeyScanPaged(_) => {
                     let state = server_state.read(cx);
                     this.state.size = format_size(state.dbsize(), state.scan_count());
                 }
-                ServerEvent::Error(error) => {
+                ServerEvent::ErrorOccurred(error) => {
                     this.state.error = Some(error.clone());
                 }
-                ServerEvent::Spawn(task) => {
+                ServerEvent::TaskStarted(task) => {
                     // Clear error when a new task starts (except background ping)
                     if *task != ServerTask::Ping {
                         this.state.error = None;

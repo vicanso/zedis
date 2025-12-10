@@ -12,52 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::Error;
+use crate::states::RedisValue;
+use crate::states::ZedisServerState;
 use gpui::App;
-use gpui::AppContext;
-use gpui::AsyncApp;
+use gpui::Entity;
 use gpui::SharedString;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui_component::label::Label;
-use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableState};
-use std::sync::Arc;
-use tracing::error;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
-
+use gpui_component::table::{Column, TableDelegate, TableState};
 pub const INDEX_COLUMN_NAME: &str = "#";
 
-pub trait ZedisTableFetcher: Sized + 'static {
+pub trait ZedisKvFetcher: 'static {
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
     fn rows_count(&self) -> usize;
     fn is_eof(&self) -> bool;
     fn load_more(&self, _window: &mut Window, _cx: &mut App);
+    fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
-pub struct ZedisTableDelegate<T: ZedisTableFetcher> {
+pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     loading: bool,
     fetcher: T,
     columns: Vec<Column>,
 }
 
-impl<T: ZedisTableFetcher> ZedisTableDelegate<T> {
+impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     pub fn set_fetcher(&mut self, fetcher: T) {
         self.fetcher = fetcher;
         self.loading = false;
     }
-    pub fn new(columns: Vec<SharedString>, fetcher: T) -> Self {
+    pub fn new(columns: Vec<Column>, fetcher: T) -> Self {
         Self {
-            columns: columns
-                .iter()
-                .map(|item| Column::new(item.clone(), item.clone()))
-                .collect(),
+            columns,
             fetcher,
             loading: false,
         }
     }
 }
 
-impl<T: ZedisTableFetcher + 'static> TableDelegate for ZedisTableDelegate<T> {
+impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
     }
@@ -75,7 +68,7 @@ impl<T: ZedisTableFetcher + 'static> TableDelegate for ZedisTableDelegate<T> {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        _cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
         Label::new(value).into_any_element()
@@ -87,12 +80,12 @@ impl<T: ZedisTableFetcher + 'static> TableDelegate for ZedisTableDelegate<T> {
     fn load_more_threshold(&self) -> usize {
         50 // Load more when 50 rows from bottom
     }
-    fn load_more(&mut self, window: &mut Window, cx: &mut Context<TableState<ZedisTableDelegate<T>>>) {
+
+    fn load_more(&mut self, window: &mut Window, cx: &mut Context<TableState<ZedisKvDelegate<T>>>) {
         if self.loading {
             return;
         }
         self.loading = true;
-
         self.fetcher.load_more(window, cx);
     }
 }

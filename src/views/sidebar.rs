@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::constants::SIDEBAR_WIDTH;
 use crate::states::Route;
 use crate::states::ServerEvent;
 use crate::states::ZedisAppState;
@@ -53,7 +54,6 @@ use tracing::info;
 const ICON_PADDING: Pixels = px(8.0);
 const ICON_MARGIN: Pixels = px(4.0);
 const LABEL_PADDING: Pixels = px(2.0);
-const SIDEBAR_WIDTH: f32 = 80.0;
 const STAR_BUTTON_HEIGHT: f32 = 48.0;
 const SETTINGS_BUTTON_HEIGHT: f32 = 44.0;
 const SERVER_LIST_ITEM_BORDER_WIDTH: f32 = 3.0;
@@ -172,11 +172,11 @@ impl ZedisSidebar {
         // Subscribe to server events for reactive updates
         subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
             match event {
-                ServerEvent::SelectServer(server_id) => {
+                ServerEvent::ServerSelected(server_id) => {
                     // Update current selection highlight
                     this.state.server_id = server_id.clone();
                 }
-                ServerEvent::UpdateServers => {
+                ServerEvent::ServerListUpdated => {
                     // Refresh server list when servers are added/removed/updated
                     this.update_server_names(cx);
                 }

@@ -126,15 +126,12 @@ impl ZedisStringEditor {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update editor when value changes
-        // subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
-        //     this.update_editor_value(cx);
-        // }));
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
-                ServerEvent::ValueFetching(_) => {
+                ServerEvent::ValueLoaded(_) => {
                     this.update_editor_value(cx);
                 }
-                ServerEvent::SoftWrapChanged(soft_wrap) => {
+                ServerEvent::SoftWrapToggled(soft_wrap) => {
                     this.soft_wrap_changed = true;
                     this.soft_wrap = *soft_wrap;
                 }

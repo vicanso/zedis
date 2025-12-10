@@ -87,7 +87,7 @@ impl ZedisEditor {
 
         // Subscribe to server events to track when keys are selected
         subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, _cx| {
-            if let ServerEvent::Selectkey(_) = event {
+            if let ServerEvent::KeySelected(_) = event {
                 this.selected_key_at = Some(Instant::now());
             }
         }));

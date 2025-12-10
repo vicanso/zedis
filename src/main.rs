@@ -52,6 +52,7 @@ const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 mod assets;
 mod components;
 mod connection;
+mod constants;
 mod error;
 mod helpers;
 mod states;
@@ -77,7 +78,7 @@ impl Zedis {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
         let content = cx.new(|cx| ZedisContent::new(window, cx, server_state.clone()));
         cx.subscribe(&server_state, |_this, _server_state, event, cx| {
-            if let ServerEvent::Error(error) = event {
+            if let ServerEvent::ErrorOccurred(error) = event {
                 cx.dispatch_action(&NotificationAction {
                     message: error.message.clone(),
                 });

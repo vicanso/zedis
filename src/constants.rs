@@ -12,26 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod about;
-mod content;
-mod editor;
-mod key_tree;
-mod kv_table;
-mod list_editor;
-mod servers;
-mod set_editor;
-mod sidebar;
-mod status_bar;
-mod string_editor;
-
-pub use about::open_about_window;
-pub use content::ZedisContent;
-pub use editor::ZedisEditor;
-pub use key_tree::ZedisKeyTree;
-pub use kv_table::{KvTableColumn, ZedisKvTable};
-pub use list_editor::ZedisListEditor;
-pub use servers::ZedisServers;
-pub use set_editor::ZedisSetEditor;
-pub use sidebar::ZedisSidebar;
-pub use status_bar::ZedisStatusBar;
-pub use string_editor::ZedisStringEditor;
+pub const SIDEBAR_WIDTH: f32 = 80.0;

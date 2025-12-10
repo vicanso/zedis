@@ -289,51 +289,41 @@ impl ServerTask {
 
 /// Events emitted by server state for reactive UI updates
 pub enum ServerEvent {
-    /// A new background task has been spawned
-    Spawn(ServerTask),
-
-    /// A background task has completed
-    TaskFinish(SharedString),
+    /// A new background task has started.
+    TaskStarted(ServerTask),
+    /// A background task has completed.
+    TaskFinished(SharedString),
 
     /// A key has been selected for viewing/editing
-    Selectkey(SharedString),
+    KeySelected(SharedString),
+    /// Key scan operation has started
+    KeyScanStarted(SharedString),
+    /// Key scan found a new batch of keys.
+    KeyScanPaged(SharedString),
+    /// Key scan operation has fully completed.
+    KeyScanFinished(SharedString),
 
+    /// A key's value has been fetched (initial load).
+    ValueLoaded(SharedString),
     /// A key's value has been updated
     ValueUpdated(SharedString),
-
-    /// A key's value is being fetched
-    ValueFetching(SharedString),
-
     /// Load more value
-    LoadMoreValueStart(SharedString),
-    LoadMoreValueFinish(SharedString),
+    ValuePaginationStarted(SharedString),
+    ValuePaginationFinished(SharedString),
 
     /// User selected a different server
-    SelectServer(SharedString),
-
-    /// Server metadata has been updated (version, dbsize, etc.)
-    ServerUpdated(SharedString),
-
-    /// Key scan operation has started
-    ScanStart(SharedString),
-
-    /// Key scan found more keys (batch update)
-    ScanNext(SharedString),
-
-    /// Key scan operation has completed
-    ScanFinish(SharedString),
-
-    /// An error occurred during an operation
-    Error(ErrorMessage),
+    ServerSelected(SharedString),
+    /// Server list config has been modified (add/remove/edit).
+    ServerListUpdated,
+    /// Server metadata (info/dbsize) has been refreshed.
+    ServerInfoUpdated(SharedString),
+    /// Periodic heartbeat received with latency.
+    HeartbeatReceived(Duration),
 
     /// Soft wrap changed
-    SoftWrapChanged(bool),
-
-    /// Server list has been updated (add/remove/edit)
-    UpdateServers,
-
-    /// Periodic heartbeat with latency measurement
-    Heartbeat(Duration),
+    SoftWrapToggled(bool),
+    /// An error occurred.
+    ErrorOccurred(ErrorMessage),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}
@@ -406,7 +396,7 @@ impl ZedisServerState {
             created_at: unix_ts(),
         };
         guard.push(info.clone());
-        cx.emit(ServerEvent::Error(info));
+        cx.emit(ServerEvent::ErrorOccurred(info));
     }
     /// Spawn an async background task with error handling
     ///
@@ -435,7 +425,7 @@ impl ZedisServerState {
         T: Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        cx.emit(ServerEvent::Spawn(name.clone()));
+        cx.emit(ServerEvent::TaskStarted(name.clone()));
         debug!(name = name.as_str(), "Spawning background task");
 
         cx.spawn(async move |handle, cx| {
@@ -510,7 +500,7 @@ impl ZedisServerState {
     /// Set whether to soft wrap the editor
     pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
         self.soft_wrap = soft_wrap;
-        cx.emit(ServerEvent::SoftWrapChanged(self.soft_wrap));
+        cx.emit(ServerEvent::SoftWrapToggled(self.soft_wrap));
 
         self.update_and_save_server_config(ServerTask::UpdateServerSoftWrap, cx, move |server| {
             server.soft_wrap = Some(soft_wrap);
@@ -689,7 +679,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(servers) = result {
-                    cx.emit(ServerEvent::UpdateServers);
+                    cx.emit(ServerEvent::ServerListUpdated);
                     this.servers = Some(servers);
                 }
                 cx.notify();
@@ -729,7 +719,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(servers) = result {
-                    cx.emit(ServerEvent::UpdateServers);
+                    cx.emit(ServerEvent::ServerListUpdated);
                     this.servers = Some(servers);
                 }
                 cx.notify();
@@ -762,7 +752,7 @@ impl ZedisServerState {
             move |this, result, cx| match result {
                 Ok(latency) => {
                     this.latency = Some(latency);
-                    cx.emit(ServerEvent::Heartbeat(latency));
+                    cx.emit(ServerEvent::HeartbeatReceived(latency));
                 }
                 Err(e) => {
                     // Connection is invalid, remove cached client
@@ -810,7 +800,7 @@ impl ZedisServerState {
             self.soft_wrap = soft_wrap;
 
             debug!(server_id = self.server_id.as_str(), "Selecting server");
-            cx.emit(ServerEvent::SelectServer(server_id));
+            cx.emit(ServerEvent::ServerSelected(server_id));
             cx.notify();
 
             if self.server_id.is_empty() {
@@ -856,7 +846,7 @@ impl ZedisServerState {
 
                     let server_id = this.server_id.clone();
                     this.server_status = RedisServerStatus::Idle;
-                    cx.emit(ServerEvent::ServerUpdated(server_id.clone()));
+                    cx.emit(ServerEvent::ServerInfoUpdated(server_id.clone()));
                     cx.notify();
 
                     // Auto-scan keys if in All mode

@@ -22,12 +22,9 @@ use crate::connection::RedisAsyncConn;
 use crate::connection::get_connection_manager;
 use crate::error::Error;
 use crate::states::ServerEvent;
-use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
-use redis::pipe;
 use std::sync::Arc;
-use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -37,7 +34,6 @@ async fn get_redis_set_value(
     cursor: u64,
     count: usize,
 ) -> Result<(u64, Vec<String>)> {
-    println!("key: {key} cursor: {cursor} count: {count}");
     let (cursor, value): (u64, Vec<Vec<u8>>) = cmd("SSCAN")
         .arg(key)
         .arg(cursor)
@@ -84,7 +80,7 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        // // Check if we have valid set data
+        // Check if we have valid set data
         let cursor = match value.set_value() {
             Some(set) => set.cursor,
             None => return,
@@ -92,7 +88,7 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let current_key = key.clone();
-        cx.emit(ServerEvent::LoadMoreValueStart(current_key.clone()));
+        cx.emit(ServerEvent::ValuePaginationStarted(current_key.clone()));
         self.spawn(
             ServerTask::LoadMoreValue,
             move || async move {
@@ -113,7 +109,7 @@ impl ZedisServerState {
                         set.values.extend(new_values.into_iter().map(|v| v.into()));
                     }
                 }
-                cx.emit(ServerEvent::LoadMoreValueFinish(current_key));
+                cx.emit(ServerEvent::ValuePaginationFinished(current_key));
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }
