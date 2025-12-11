@@ -37,8 +37,10 @@ impl ZedisServerState {
     ///
     /// This is typically used when expanding a directory in the key tree view.
     /// It filters keys based on the prefix and ensures we only query keys at the current level.
-    fn fill_key_types(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
+    fn fill_key_types(&mut self, prefix: Option<SharedString>, cx: &mut Context<Self>) {
         // Filter keys that need type resolution
+        let binding = prefix.unwrap_or_default();
+        let prefix = binding.as_str();
         let mut keys = self
             .keys
             .iter()
@@ -46,7 +48,10 @@ impl ZedisServerState {
                 if *value != KeyType::Unknown {
                     return None;
                 }
-                let suffix = key.strip_prefix(prefix.as_str())?;
+                if prefix.is_empty() || !key.starts_with(prefix) {
+                    return Some(key.clone());
+                };
+                let suffix = key.strip_prefix(prefix)?;
                 // Skip if the key is in a deeper subdirectory (contains delimiter)
                 if suffix.contains(":") {
                     return None;
@@ -165,7 +170,7 @@ impl ZedisServerState {
                 {
                     this.select_key(key.clone(), cx);
                 } else {
-                    this.fill_key_types("".into(), cx);
+                    this.fill_key_types(None, cx);
                 }
             },
             cx,
@@ -207,7 +212,7 @@ impl ZedisServerState {
         }
         // If global scan is complete, we might just need to resolve types
         if self.scan_completed {
-            self.fill_key_types(prefix, cx);
+            self.fill_key_types(Some(prefix), cx);
             return;
         }
         cx.emit(ServerEvent::KeyScanStarted(prefix.clone()));
@@ -253,7 +258,7 @@ impl ZedisServerState {
                 {
                     this.select_key(key.clone(), cx);
                 } else {
-                    this.fill_key_types(prefix.clone(), cx);
+                    this.fill_key_types(Some(prefix.clone()), cx);
                 }
             },
             cx,

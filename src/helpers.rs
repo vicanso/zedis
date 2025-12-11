@@ -13,12 +13,14 @@
 // limitations under the License.
 
 mod action;
+mod common;
 mod font;
 mod fs;
 mod string;
 mod time;
 
 pub use action::{MemuAction, new_hot_keys};
+pub use common::*;
 pub use font::get_font_family;
 pub use fs::get_or_create_config_dir;
 pub use string::fast_contains_ignore_case;

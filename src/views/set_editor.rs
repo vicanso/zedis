@@ -31,6 +31,15 @@ struct ZedisSetValues {
 }
 
 impl ZedisKvFetcher for ZedisSetValues {
+    fn is_initial_load(&self) -> bool {
+        self.value.set_value().is_some()
+    }
+    fn count(&self) -> usize {
+        let Some(value) = self.value.set_value() else {
+            return 0;
+        };
+        value.size
+    }
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         Self { server_state, value }
     }
@@ -48,11 +57,13 @@ impl ZedisKvFetcher for ZedisSetValues {
         value.values.len()
     }
     fn is_eof(&self) -> bool {
+        !self.is_done()
+    }
+    fn is_done(&self) -> bool {
         let Some(value) = self.value.set_value() else {
             return false;
         };
-        value.size > value.values.len()
-        // true
+        value.done
     }
 
     fn load_more(&self, _window: &mut Window, cx: &mut App) {
@@ -60,6 +71,8 @@ impl ZedisKvFetcher for ZedisSetValues {
             this.load_more_set_value(cx);
         });
     }
+
+    fn filter(&self, keyword: &str, _window: &mut Window, _cx: &mut App) {}
 }
 
 pub struct ZedisSetEditor {

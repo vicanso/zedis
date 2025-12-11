@@ -18,16 +18,23 @@ use gpui::App;
 use gpui::Entity;
 use gpui::SharedString;
 use gpui::Window;
+use gpui::div;
 use gpui::prelude::*;
+use gpui_component::StyledExt;
 use gpui_component::label::Label;
 use gpui_component::table::{Column, TableDelegate, TableState};
+
 pub const INDEX_COLUMN_NAME: &str = "#";
 
 pub trait ZedisKvFetcher: 'static {
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
+    fn count(&self) -> usize;
     fn rows_count(&self) -> usize;
     fn is_eof(&self) -> bool;
+    fn is_done(&self) -> bool;
+    fn is_initial_load(&self) -> bool;
     fn load_more(&self, _window: &mut Window, _cx: &mut App);
+    fn filter(&self, keyword: &str, _window: &mut Window, _cx: &mut App);
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
 pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
@@ -62,16 +69,39 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
     fn column(&self, index: usize, _: &App) -> &Column {
         &self.columns[index]
     }
+    /// Render the header cell at the given column index, default to the column name.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let column = self.column(col_ix, cx);
+        let label = Label::new(column.name.clone()).text_align(column.align);
+        div()
+            .size_full()
+            .when(column.paddings.is_some(), |this| {
+                this.paddings(column.paddings.unwrap_or_default())
+            })
+            .child(label)
+    }
 
     fn render_td(
         &mut self,
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
-        Label::new(value).into_any_element()
+        let column = self.column(col_ix, cx);
+        let label = Label::new(value).text_align(column.align);
+        div()
+            .size_full()
+            .when(column.paddings.is_some(), |this| {
+                this.paddings(column.paddings.unwrap_or_default())
+            })
+            .child(label)
     }
     fn is_eof(&self, _: &App) -> bool {
         self.fetcher.is_eof()
@@ -82,7 +112,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
     }
 
     fn load_more(&mut self, window: &mut Window, cx: &mut Context<TableState<ZedisKvDelegate<T>>>) {
-        if self.loading {
+        if self.loading || self.fetcher.is_done() {
             return;
         }
         self.loading = true;

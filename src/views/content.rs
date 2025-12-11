@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::get_key_tree_widths;
 use crate::states::Route;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
@@ -39,8 +40,6 @@ use tracing::error;
 use tracing::info;
 
 // Constants for UI dimensions
-const KEY_TREE_MIN_WIDTH: f32 = 275.0;
-const KEY_TREE_MAX_WIDTH: f32 = 400.0;
 const LOADING_SKELETON_WIDTH: f32 = 600.0;
 const LOADING_SKELETON_SMALL_WIDTH: f32 = 100.0;
 const LOADING_SKELETON_MEDIUM_WIDTH: f32 = 220.0;
@@ -185,11 +184,7 @@ impl ZedisContent {
             })
             .clone();
 
-        let min_width = px(KEY_TREE_MIN_WIDTH);
-        let max_width = px(KEY_TREE_MAX_WIDTH);
-
-        // Ensure key tree width is within valid range
-        let key_tree_width = self.key_tree_width.max(min_width);
+        let (key_tree_width, min_width, max_width) = get_key_tree_widths(self.key_tree_width);
 
         h_resizable("editor-container")
             .child(

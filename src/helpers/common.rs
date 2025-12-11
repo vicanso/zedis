@@ -12,6 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub const SIDEBAR_WIDTH: f32 = 80.0;
-pub const KEY_TREE_MIN_WIDTH: f32 = 275.0;
-pub const KEY_TREE_MAX_WIDTH: f32 = 800.0;
+use crate::constants::KEY_TREE_MAX_WIDTH;
+use crate::constants::KEY_TREE_MIN_WIDTH;
+use gpui::Pixels;
+use gpui::px;
+
+pub fn get_key_tree_widths(width: Pixels) -> (Pixels, Pixels, Pixels) {
+    let min_width = px(KEY_TREE_MIN_WIDTH);
+    let max_width = px(KEY_TREE_MAX_WIDTH);
+    (width.max(min_width), min_width, max_width)
+}

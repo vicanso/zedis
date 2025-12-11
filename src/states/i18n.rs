@@ -51,3 +51,8 @@ pub fn i18n_content<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
     t!(format!("content.{key}"), locale = locale).into()
 }
+
+pub fn i18n_kv_table<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+    t!(format!("kv_table.{key}"), locale = locale).into()
+}

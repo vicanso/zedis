@@ -75,3 +75,8 @@ cancel = "Cancel"
 
 [content]
 loading = "Loading..."
+
+[kv_table]
+keyword_placeholder = "Filter by keyword"
+add_value_tooltip = "Add value"
+search_tooltip = "Click to start searching"

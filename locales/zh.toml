@@ -75,3 +75,8 @@ cancel = "取消"
 
 [content]
 loading = "加载中..."
+
+[kv_table]
+keyword_placeholder = "按关键字搜索"
+add_value_tooltip = "添加值"
+search_tooltip = "点击开始搜索"

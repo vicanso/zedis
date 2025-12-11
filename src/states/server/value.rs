@@ -34,9 +34,11 @@ pub enum RedisValueData {
 
 #[derive(Debug, Clone, Default)]
 pub struct RedisSetValue {
+    pub keyword: Option<SharedString>,
     pub cursor: u64,
     pub size: usize,
     pub values: Vec<SharedString>,
+    pub done: bool,
 }
 
 #[derive(Debug, Clone, Default)]

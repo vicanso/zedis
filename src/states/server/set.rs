@@ -52,13 +52,16 @@ async fn get_redis_set_value(
 
 pub(crate) async fn first_load_set_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
     let size: usize = cmd("SCARD").arg(key).query_async(conn).await?;
-    let (cursor, values) = get_redis_set_value(conn, key, 0, 99).await?;
+    let (cursor, values) = get_redis_set_value(conn, key, 0, 100).await?;
+    let done = cursor == 0;
     Ok(RedisValue {
         key_type: KeyType::Set,
         data: Some(RedisValueData::Set(Arc::new(RedisSetValue {
             cursor,
             size,
             values: values.into_iter().map(|v| v.into()).collect(),
+            done,
+            ..Default::default()
         }))),
         expire_at: None,
         ..Default::default()
@@ -94,18 +97,21 @@ impl ZedisServerState {
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 // Fetch only the new items
-                let result = get_redis_set_value(&mut conn, &key, cursor, 99).await?;
+                let result = get_redis_set_value(&mut conn, &key, cursor, 100).await?;
                 Ok(result)
             },
             move |this, result, cx| {
                 if let Ok((new_cursor, new_values)) = result
-                    && !new_values.is_empty()
+                    && let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
-                    // Update Local State (UI Thread)
-                    // Append new items to the existing list
-                    if let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
-                        let set = Arc::make_mut(set_data);
-                        set.cursor = new_cursor;
+                    let set = Arc::make_mut(set_data);
+                    set.cursor = new_cursor;
+                    if new_cursor == 0 {
+                        set.done = true;
+                    }
+
+                    if !new_values.is_empty() {
+                        // Append new items to the existing list
                         set.values.extend(new_values.into_iter().map(|v| v.into()));
                     }
                 }
