@@ -15,6 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::helpers::fast_contains_ignore_case;
 use crate::states::ZedisGlobalStore;
+use crate::states::i18n_common;
 use crate::states::i18n_list_editor;
 use crate::states::{RedisListValue, ZedisServerState};
 use gpui::App;
@@ -318,7 +319,7 @@ impl ZedisListEditor {
     ///
     /// Sets up reactive updates when server state changes and
     /// initializes input fields for inline editing.
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update list when data changes
@@ -590,8 +591,8 @@ impl Render for ZedisListEditor {
                     .footer({
                         let handle = handle_submit.clone();
                         move |_, _, _, cx| {
-                            let confirm_label = i18n_list_editor(cx, "confirm");
-                            let cancel_label = i18n_list_editor(cx, "cancel");
+                            let confirm_label = i18n_common(cx, "confirm");
+                            let cancel_label = i18n_common(cx, "cancel");
                             vec![
                                 // Submit button - validates and saves server configuration
                                 Button::new("ok").primary().label(confirm_label).on_click({

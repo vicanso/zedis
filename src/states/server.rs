@@ -255,6 +255,9 @@ pub enum ServerTask {
     /// Push a value to a list
     PushListValue,
 
+    /// Add a value to a set
+    AddSetValue,
+
     /// Load more items
     LoadMoreValue,
 
@@ -283,6 +286,7 @@ impl ServerTask {
             ServerTask::UpdateServerQueryMode => "update_server_query_mode",
             ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
             ServerTask::PushListValue => "push_list_value",
+            ServerTask::AddSetValue => "add_set_value",
         }
     }
 }
@@ -309,7 +313,10 @@ pub enum ServerEvent {
     ValueUpdated(SharedString),
     /// Load more value
     ValuePaginationStarted(SharedString),
+    /// Load more value
     ValuePaginationFinished(SharedString),
+    /// Add a value to a set、list、hash、zset
+    ValueAdded(SharedString),
 
     /// User selected a different server
     ServerSelected(SharedString),

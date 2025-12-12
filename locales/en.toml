@@ -1,3 +1,46 @@
+[common]
+# --- General Actions/Buttons ---
+submit = "Submit"
+cancel = "Cancel"
+confirm = "Confirm"
+save = "Save"
+reload = "Reload"
+delete = "Delete"
+update = "Update"
+remove = "Remove"
+add = "Add"
+
+# --- General Labels/Fields ---
+name = "Name"
+host = "Host"
+port = "Port"
+password = "Password"
+description = "Description"
+value = "Value"
+action = "Action"
+size = "Size"
+expired = "Expired"
+ttl = "TTL"
+perm = "Permissions"
+loading = "Loading..."
+latency = "Latency"
+
+# --- General Placeholders ---
+name_placeholder = "Enter name"
+host_placeholder = "Enter host"
+port_placeholder = "Enter port (default: 6379)"
+password_placeholder = "Enter password"
+description_placeholder = "Enter description"
+value_placeholder = "Enter new value"
+filter_placeholder = "Filter by keyword"
+keyword_placeholder = "Filter by keyword"
+ttl_placeholder = "e.g., 1d or 1h"
+
+# --- General Tooltips ---
+update_tooltip = "Update %{item}"
+remove_tooltip = "Remove %{item}"
+delete_tooltip = "Delete %{item}"
+add_tooltip = "Add %{item}"
 
 [sidebar]
 home = "Home"
@@ -9,74 +52,57 @@ system = "System"
 star = "Star on GitHub"
 settings = "Settings"
 
-
 [servers]
-name_placeholder = "Enter server name"
-host_placeholder = "Enter server host"
-port_placeholder = "Enter server port, default: 6379"
-password_placeholder = "Enter server password"
-description_placeholder = "Enter server description"
 remove_prompt = "Are you sure you want to delete this server: %{server}?"
-add_server_title = "Add Server"
-update_server_title = "Update Server"
-name = "Name"
-host = "Host"
-port = "Port"
-password = "Password"
-description = "Description"
-submit = "Submit"
-cancel = "Cancel"
-update_tooltip = "Update redis server"
-remove_tooltip = "Remove redis server"
-add_server_description = "Add a new redis server"
+add_server_title = "Add New Server"
+update_server_title = "Edit Server"
+add_server_description = "Configure connection details for a new Redis instance."
+update_tooltip = "Edit connection details"
+remove_tooltip = "Delete this server configuration"
 
 [editor]
-expired = "Expired"
-perm = "Perm"
+# expired / perm / size / save / ttl_placeholder in common
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"
-size = "Size"
-save = "Save"
-reload_key_tooltip = "Reload value"
-update_ttl_tooltip = "Update ttl"
-save_data_tooltip = "Save data"
+reload_key_tooltip = "Reload key value"
+update_ttl_tooltip = "Update time-to-live (TTL)"
+save_data_tooltip = "Save changes to key value"
 delete_key_tooltip = "Delete key"
-copy_key_tooltip = "Copy key"
-copied_key_to_clipboard = "Copied the key to clipboard"
-ttl_placeholder = "1d or 1h"
+copy_key_tooltip = "Copy key name"
+copied_key_to_clipboard = "Copied key name to clipboard"
 
 [key_tree]
-filter_placeholder = "Filter by keyword"
+# filter_placeholder in common
 no_keys_found = "No keys found"
-key_not_exists = "Not exists or expired"
-search_tooltip = "Search keys"
-query_mode_all = "* Contains"
+key_not_exists = "Key does not exist or has expired"
+search_tooltip = "Toggle key search mode"
+query_mode_all = "* Contains (Glob)"
 query_mode_prefix = "^ Prefix"
-query_mode_exact = "= Exact"
+query_mode_exact = "= Exact Match"
 
 [status_bar]
-latency = "Latency"
+# latency in common
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"
 soft_wrap = "Soft Wrap"
 
 [list_editor]
-value = "Value"
-action = "Action"
-positon = "Positon"
-update_tooltip = "Update list value"
-delete_tooltip = "Delete list value"
-value_placeholder = "Enter new value"
-delete_list_item_prompt = "Are you sure you want to delete this list item: %{value}(%{row})?"
-keyword_placeholder = "Filter by keyword"
-add_value_title = "Add value"
-add_value_tooltip = "Add value to list"
-confirm = "Confirm"
-cancel = "Cancel"
+# value / action / value_placeholder / confirm / cancel in common
+positon = "Position"
+update_tooltip = "Update list item"
+delete_tooltip = "Delete list item"
+delete_list_item_prompt = "Are you sure you want to delete this list item: %{value} (Row %{row})?"
+add_value_title = "Add List Value"
+add_value_tooltip = "Add new value to the list"
 
-[content]
-loading = "Loading..."
+[set_editor]
+# value / value_placeholder / confirm / cancel in common
+add_value_title = "Add Set Member"
+add_value_tooltip = "Add new member to the Set"
+add_value_success = "Member Added"
+add_value_success_tips = "Success. Due to the unordered nature of Redis Sets and the incremental scan (SSCAN) used for this large dataset, the new item may appear in a later scan or after a full refresh."
+
 
 [kv_table]
-keyword_placeholder = "Filter by keyword"
-add_value_tooltip = "Add value"
-search_tooltip = "Click to start searching"
+# keyword_placeholder / add_tooltip in common
+search_tooltip = "Click to start incremental search (SCAN)"
+add_value_tooltip = "Add new value"

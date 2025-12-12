@@ -17,6 +17,7 @@ use crate::states::ErrorMessage;
 use crate::states::ServerEvent;
 use crate::states::ServerTask;
 use crate::states::ZedisServerState;
+use crate::states::i18n_common;
 use crate::states::i18n_status_bar;
 use gpui::Entity;
 use gpui::Hsla;
@@ -100,7 +101,7 @@ pub struct ZedisStatusBar {
     _subscriptions: Vec<Subscription>,
 }
 impl ZedisStatusBar {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize state from the current server state
         // Read only necessary fields to avoid cloning the entire state if it's large
         let (dbsize, scan_count, server_id, nodes, version, latency, scan_completed, soft_wrap) = {
@@ -225,7 +226,7 @@ impl ZedisStatusBar {
                 Button::new("zedis-status-bar-letency")
                     .ghost()
                     .disabled(true)
-                    .tooltip(i18n_status_bar(cx, "latency"))
+                    .tooltip(i18n_common(cx, "latency"))
                     .icon(
                         Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
                             .text_color(cx.theme().primary)

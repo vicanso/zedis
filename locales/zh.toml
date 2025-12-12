@@ -1,82 +1,108 @@
-[sidebar]
-home = "首页"
-theme = "主题"
-lang = "语言"
-light = "亮色"
-dark = "深色"
-system = "跟随系统"
-star = "Star 项目"
-settings = "设置"
+[common]
+# --- 通用操作/按钮 ---
+submit = "提交"
+cancel = "取消"
+confirm = "确认"
+save = "保存"
+reload = "重新加载"
+delete = "删除"
+update = "更新"
+remove = "移除"
+add = "添加"
 
-
-[servers]
-name_placeholder = "输入服务器名称"
-host_placeholder = "输入服务器主机"
-port_placeholder = "输入服务器端口，默认：6379"
-password_placeholder = "输入服务器密码"
-description_placeholder = "输入服务器描述"
-remove_prompt = "您确定要删除此redis服务器：%{server}吗？"
-add_server_title = "添加服务器"
-update_server_title = "更新服务器"
+# --- 通用标签/字段 ---
 name = "名称"
 host = "主机"
 port = "端口"
 password = "密码"
 description = "描述"
-submit = "提交"
-cancel = "取消"
-update_tooltip = "更新 Redis 服务器"
-remove_tooltip = "移除 Redis 服务器"
-add_server_description = "添加一个新的 Redis 服务器"
-
-[editor]
-expired = "已过期"
-perm = "永久有效"
-delete_key_prompt = "您确定要删除此redis键：%{key}吗？"
-size = "大小"
-save = "保存"
-reload_key_tooltip = "重新加载"
-update_ttl_tooltip = "更新有效期"
-save_data_tooltip = "保存数据"
-delete_key_tooltip = "删除键"
-copy_key_tooltip = "复制键"
-copied_key_to_clipboard = "已将键复制到剪贴板"
-ttl_placeholder = "1d 或 1h"
-
-[key_tree]
-filter_placeholder = "按关键字搜索"
-no_keys_found = "未找到键"
-key_not_exists = "不存在或已过期"
-search_tooltip = "搜索键"
-query_mode_all = "* 包含"
-query_mode_prefix = "^ 前缀"
-query_mode_exact = "= 精确"
-
-[status_bar]
-latency = "延迟"
-scan_completed = "扫描完成"
-scan_more_keys = "扫描更多键"
-soft_wrap = "自动换行"
-
-[list_editor]
 value = "值"
 action = "操作"
-positon = "添加位置"
-update_tooltip = "更新列表值"
-delete_tooltip = "删除列表值"
-value_placeholder = "输入新值"
-delete_list_item_prompt = "您确定要删除此列表项：%{value}(%{row})吗？"
-keyword_placeholder = "按关键字搜索"
-add_value_title = "添加值"
-add_value_tooltip = "在列表中添加值"
-confirm = "确定"
-cancel = "取消"
-
-
-[content]
+size = "大小"
+expired = "已过期"
+ttl = "有效期 (TTL)"
+perm = "权限"
 loading = "加载中..."
+latency = "延迟"
+
+# --- 通用占位符 ---
+name_placeholder = "输入名称"
+host_placeholder = "输入主机地址"
+port_placeholder = "输入端口 (默认: 6379)"
+password_placeholder = "输入密码"
+description_placeholder = "输入描述信息"
+value_placeholder = "输入新值"
+filter_placeholder = "按关键词过滤"
+keyword_placeholder = "按关键词过滤"
+ttl_placeholder = "例如：1d 或 1h"
+
+# --- 通用工具提示 ---
+update_tooltip = "更新 %{item}"
+remove_tooltip = "移除 %{item}"
+delete_tooltip = "删除 %{item}"
+add_tooltip = "添加 %{item}"
+
+[sidebar]
+home = "主页"
+theme = "主题"
+lang = "语言"
+light = "浅色"
+dark = "深色"
+system = "系统默认"
+star = "在 GitHub 上点赞"
+settings = "设置"
+
+[servers]
+remove_prompt = "您确定要删除此服务器连接: %{server} 吗？"
+add_server_title = "添加新服务器"
+update_server_title = "编辑服务器"
+add_server_description = "配置新 Redis 实例的连接详情。"
+update_tooltip = "编辑连接详情"
+remove_tooltip = "删除此服务器配置"
+
+[editor]
+# expired / perm / size / save / ttl_placeholder 在 common 中
+delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
+reload_key_tooltip = "重新加载键值"
+update_ttl_tooltip = "更新生存时间 (TTL)"
+save_data_tooltip = "保存键值修改"
+delete_key_tooltip = "删除键 (Key)"
+copy_key_tooltip = "复制键名"
+copied_key_to_clipboard = "键名已复制到剪贴板"
+
+[key_tree]
+# filter_placeholder 在 common 中
+no_keys_found = "未找到任何键"
+key_not_exists = "键不存在或已过期"
+search_tooltip = "切换键搜索模式"
+query_mode_all = "* 包含 (通配符)"
+query_mode_prefix = "^ 前缀匹配"
+query_mode_exact = "= 精确匹配"
+
+[status_bar]
+# latency 在 common 中
+scan_completed = "扫描完成"
+scan_more_keys = "继续扫描更多键"
+soft_wrap = "软换行"
+
+[list_editor]
+# value / action / value_placeholder / confirm / cancel 在 common 中
+positon = "位置"
+update_tooltip = "更新列表项"
+delete_tooltip = "删除列表项"
+delete_list_item_prompt = "您确定要删除此列表项: %{value} (行号 %{row}) 吗？"
+add_value_title = "添加列表值"
+add_value_tooltip = "向列表添加新值"
+
+[set_editor]
+# value / value_placeholder / confirm / cancel 在 common 中
+add_value_title = "添加集合成员"
+add_value_tooltip = "向集合添加新成员"
+add_value_success = "成员添加成功"
+add_value_success_tips = "已添加成功。由于 Redis 集合（Set）的无序特性以及用于处理大型数据集的增量扫描（SSCAN）机制，新项目可能会在后续扫描中或完全刷新后才会出现。”"
+
 
 [kv_table]
-keyword_placeholder = "按关键字搜索"
-add_value_tooltip = "添加值"
-search_tooltip = "点击开始搜索"
+# keyword_placeholder / add_tooltip 在 common 中
+search_tooltip = "点击开始增量扫描 (SCAN)"
+add_value_tooltip = "添加新值"

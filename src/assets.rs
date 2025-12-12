@@ -56,6 +56,8 @@ pub enum CustomIconName {
     Activity,
     Languages,
     RotateCw,
+    CircleCheckBig,
+    CircleDotDashed,
 }
 
 impl CustomIconName {
@@ -77,6 +79,8 @@ impl CustomIconName {
             CustomIconName::Activity => "icons/activity.svg",
             CustomIconName::Languages => "icons/languages.svg",
             CustomIconName::RotateCw => "icons/rotate-cw.svg",
+            CustomIconName::CircleCheckBig => "icons/circle-check-big.svg",
+            CustomIconName::CircleDotDashed => "icons/circle-dot-dashed.svg",
         }
         .into()
     }

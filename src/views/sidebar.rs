@@ -166,7 +166,7 @@ impl ZedisSidebar {
     /// Sets up listeners for:
     /// - Server selection changes (updates current selection)
     /// - Server list updates (refreshes displayed servers)
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = vec![];
 
         // Subscribe to server events for reactive updates

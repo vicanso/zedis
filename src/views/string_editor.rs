@@ -122,7 +122,7 @@ impl ZedisStringEditor {
     /// - Search functionality
     /// - Soft wrap for long lines
     /// - Automatic value updates when server state changes
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update editor when value changes
