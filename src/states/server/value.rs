@@ -18,11 +18,65 @@ use super::ZedisServerState;
 use crate::connection::get_connection_manager;
 use bytes::Bytes;
 use chrono::Local;
+use gpui::Action;
 use gpui::Hsla;
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Default)]
+pub enum NotificationCategory {
+    #[default]
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action, Default)]
+pub struct NotificationAction {
+    pub title: Option<SharedString>,
+    pub category: NotificationCategory,
+    pub message: SharedString,
+}
+
+impl NotificationAction {
+    pub fn new_info(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Info,
+            message,
+            ..Default::default()
+        }
+    }
+    pub fn new_success(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Success,
+            message,
+            ..Default::default()
+        }
+    }
+    pub fn new_warning(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Warning,
+            message,
+            ..Default::default()
+        }
+    }
+    pub fn new_error(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Error,
+            message,
+            ..Default::default()
+        }
+    }
+    pub fn with_title(mut self, title: SharedString) -> Self {
+        self.title = Some(title);
+        self
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum RedisValueData {

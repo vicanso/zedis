@@ -18,6 +18,7 @@ use crate::connection::RedisServer;
 use crate::states::Route;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
+use crate::states::i18n_common;
 use crate::states::i18n_servers;
 use gpui::App;
 use gpui::Entity;
@@ -79,15 +80,15 @@ impl ZedisServers {
     /// Create a new server management view
     ///
     /// Initializes all input field states with appropriate placeholders
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize input fields for server configuration form
-        let name_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "name_placeholder")));
-        let host_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "host_placeholder")));
-        let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "port_placeholder")));
+        let name_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "name_placeholder")));
+        let host_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "host_placeholder")));
+        let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "port_placeholder")));
         let password_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "password_placeholder")));
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "password_placeholder")));
         let description_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_servers(cx, "description_placeholder")));
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "description_placeholder")));
 
         info!("Creating new servers view");
 
@@ -229,11 +230,11 @@ impl ZedisServers {
             };
 
             // Prepare field labels
-            let name_label = i18n_servers(cx, "name");
-            let host_label = i18n_servers(cx, "host");
-            let port_label = i18n_servers(cx, "port");
-            let password_label = i18n_servers(cx, "password");
-            let description_label = i18n_servers(cx, "description");
+            let name_label = i18n_common(cx, "name");
+            let host_label = i18n_common(cx, "host");
+            let port_label = i18n_common(cx, "port");
+            let password_label = i18n_common(cx, "password");
+            let description_label = i18n_common(cx, "description");
 
             dialog
                 .title(title)
@@ -269,8 +270,8 @@ impl ZedisServers {
                 .footer({
                     let handle = handle_submit.clone();
                     move |_, _, _, cx| {
-                        let submit_label = i18n_servers(cx, "submit");
-                        let cancel_label = i18n_servers(cx, "cancel");
+                        let submit_label = i18n_common(cx, "submit");
+                        let cancel_label = i18n_common(cx, "cancel");
 
                         vec![
                             // Submit button - validates and saves server configuration

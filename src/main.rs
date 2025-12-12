@@ -5,6 +5,7 @@ use crate::states::ZedisAppState;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::save_app_state;
+use crate::states::{NotificationAction, NotificationCategory};
 use crate::views::ZedisContent;
 use crate::views::ZedisSidebar;
 use crate::views::ZedisStatusBar;
@@ -24,7 +25,6 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
-use gpui::{Action, SharedString};
 use gpui_component::ActiveTheme;
 use gpui_component::Root;
 use gpui_component::Theme;
@@ -32,8 +32,6 @@ use gpui_component::WindowExt;
 use gpui_component::h_flex;
 use gpui_component::notification::Notification;
 use gpui_component::v_flex;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use std::env;
 use std::str::FromStr;
 use tracing::Level;
@@ -67,21 +65,14 @@ pub struct Zedis {
     status_bar: Entity<ZedisStatusBar>,
 }
 
-#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-pub struct NotificationAction {
-    message: SharedString,
-}
-
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
-        let status_bar = cx.new(|cx| ZedisStatusBar::new(window, cx, server_state.clone()));
-        let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx, server_state.clone()));
-        let content = cx.new(|cx| ZedisContent::new(window, cx, server_state.clone()));
+        let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
+        let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
+        let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
         cx.subscribe(&server_state, |_this, _server_state, event, cx| {
             if let ServerEvent::ErrorOccurred(error) = event {
-                cx.dispatch_action(&NotificationAction {
-                    message: error.message.clone(),
-                });
+                cx.dispatch_action(&NotificationAction::new_error(error.message.clone()));
             }
         })
         .detach();
@@ -159,7 +150,17 @@ impl Render for Zedis {
             .children(dialog_layer)
             .children(notification_layer)
             .on_action(cx.listener(|_this, e: &NotificationAction, window, cx| {
-                window.push_notification(Notification::error(e.message.clone()), cx);
+                let message = e.message.clone();
+                let mut notification = match e.category {
+                    NotificationCategory::Info => Notification::info(message),
+                    NotificationCategory::Success => Notification::success(message),
+                    NotificationCategory::Warning => Notification::warning(message),
+                    _ => Notification::error(message),
+                };
+                if let Some(title) = e.title.as_ref() {
+                    notification = notification.title(title);
+                }
+                window.push_notification(notification, cx);
             }))
     }
 }

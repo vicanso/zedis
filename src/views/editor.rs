@@ -15,6 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::states::ServerEvent;
 use crate::states::ZedisGlobalStore;
+use crate::states::i18n_common;
 use crate::states::i18n_editor;
 use crate::states::{KeyType, ZedisServerState};
 use crate::views::ZedisListEditor;
@@ -75,14 +76,14 @@ pub struct ZedisEditor {
 
 impl ZedisEditor {
     /// Create a new editor instance with event subscriptions
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = vec![];
 
         // Initialize TTL input field with placeholder
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder(i18n_editor(cx, "ttl_placeholder"))
+                .placeholder(i18n_common(cx, "ttl_placeholder"))
         });
 
         // Subscribe to server events to track when keys are selected
@@ -194,9 +195,9 @@ impl ZedisEditor {
             ttl = if let Some(ttl) = value.ttl() {
                 let seconds = ttl.num_seconds();
                 if seconds == -2 {
-                    i18n_editor(cx, "expired")
+                    i18n_common(cx, "expired")
                 } else if seconds < 0 {
-                    i18n_editor(cx, "perm")
+                    i18n_common(cx, "perm")
                 } else {
                     humantime::format_duration(Duration::from_secs(seconds as u64))
                         .to_string()
@@ -218,7 +219,7 @@ impl ZedisEditor {
         let should_show_loading = is_busy && !self.is_selected_key_recently();
         // Add size label if available
         if !size.is_empty() {
-            let size_label = i18n_editor(cx, "size");
+            let size_label = i18n_common(cx, "size");
             btns.push(
                 Label::new(format!("{size_label} : {size}"))
                     .ml_2()
@@ -236,7 +237,7 @@ impl ZedisEditor {
                     .ml_2()
                     .disabled(!value_modified || should_show_loading)
                     .outline()
-                    .label(i18n_editor(cx, "save"))
+                    .label(i18n_common(cx, "save"))
                     .tooltip(i18n_editor(cx, "save_data_tooltip"))
                     .icon(CustomIconName::FileCheckCorner)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -399,7 +400,7 @@ impl ZedisEditor {
                 self.reset_editors(KeyType::List);
                 let editor = self.list_editor.get_or_insert_with(|| {
                     debug!("Creating new list editor");
-                    cx.new(|cx| ZedisListEditor::new(window, cx, self.server_state.clone()))
+                    cx.new(|cx| ZedisListEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }
@@ -407,7 +408,7 @@ impl ZedisEditor {
                 self.reset_editors(KeyType::Set);
                 let editor = self.set_editor.get_or_insert_with(|| {
                     debug!("Creating new set editor");
-                    cx.new(|cx| ZedisSetEditor::new(window, cx, self.server_state.clone()))
+                    cx.new(|cx| ZedisSetEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }
@@ -417,7 +418,7 @@ impl ZedisEditor {
 
                 let editor = self.string_editor.get_or_insert_with(|| {
                     debug!("Creating new string editor");
-                    cx.new(|cx| ZedisStringEditor::new(window, cx, self.server_state.clone()))
+                    cx.new(|cx| ZedisStringEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }

@@ -19,6 +19,7 @@ use crate::helpers::get_key_tree_widths;
 use crate::states::ServerEvent;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
+use crate::states::i18n_common;
 use crate::states::i18n_kv_table;
 use gpui::Subscription;
 use gpui::TextAlign;
@@ -27,7 +28,6 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::{Edges, Entity};
 use gpui::{SharedString, div};
-use gpui_component::IconName;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::Input;
@@ -38,6 +38,7 @@ use gpui_component::table::Column;
 use gpui_component::table::{Table, TableState};
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, Disableable};
+use gpui_component::{Icon, IconName};
 use gpui_component::{PixelsExt, h_flex};
 use tracing::info;
 
@@ -68,6 +69,7 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     total_count: usize,
     done: bool,
     loading: bool,
+    key_changed: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl<T: ZedisKvFetcher> ZedisKvTable<T> {
@@ -137,14 +139,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     ) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
-            let should_update_fetcher = matches!(
-                event,
-                ServerEvent::ValuePaginationFinished(_) | ServerEvent::ValueLoaded(_)
-            );
+            let mut should_update_fetcher = false;
+            match event {
+                ServerEvent::ValuePaginationFinished(_) | ServerEvent::ValueLoaded(_) | ServerEvent::ValueAdded(_) => {
+                    should_update_fetcher = true;
+                }
+                ServerEvent::KeySelected(_) => {
+                    this.key_changed = true;
+                }
+                _ => {}
+            }
             if !should_update_fetcher {
                 return;
             }
             let set_values = Self::new_values(server_state.clone(), cx);
+            this.loading = false;
             this.done = set_values.is_done();
             this.items_count = set_values.rows_count();
             this.total_count = set_values.count();
@@ -157,7 +166,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder(i18n_kv_table(cx, "keyword_placeholder"))
+                .placeholder(i18n_common(cx, "keyword_placeholder"))
         });
         subscriptions.push(cx.subscribe(&keyword_state, |this, _model, event, cx| {
             if let InputEvent::PressEnter { .. } = &event {
@@ -180,18 +189,32 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             keyword_state,
             done,
             loading: false,
+            key_changed: false,
             _subscriptions: subscriptions,
         }
     }
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         let keyword = self.keyword_state.read(cx).value();
         self.loading = true;
-        println!("keyword: {}", keyword);
+        self.table_state.update(cx, |this, cx| {
+            this.delegate().fetcher().filter(keyword.clone(), cx);
+        });
     }
 }
 impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_color = cx.theme().muted_foreground;
+        if self.key_changed {
+            self.keyword_state.update(cx, |this, cx| {
+                this.set_value(SharedString::new(""), window, cx);
+            });
+            self.key_changed = false;
+        }
+        let handle_add_value = cx.listener(move |this, _event, window, cx| {
+            this.table_state.update(cx, |this, cx| {
+                this.delegate().fetcher().handle_add_value(window, cx);
+            });
+        });
         let search_btn = Button::new("kv-table-search-btn")
             .ghost()
             .tooltip(i18n_kv_table(cx, "search_tooltip"))
@@ -201,6 +224,12 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.handle_filter(cx);
             }));
+
+        let icon = if self.done {
+            Icon::new(CustomIconName::CircleCheckBig)
+        } else {
+            Icon::new(CustomIconName::CircleDotDashed)
+        };
 
         v_flex()
             .h_full()
@@ -224,7 +253,8 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                             .child(
                                 Button::new("add-value-btn")
                                     .icon(CustomIconName::FilePlusCorner)
-                                    .tooltip(i18n_kv_table(cx, "add_value_tooltip")), // .on_click(handle_add_value),
+                                    .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
+                                    .on_click(handle_add_value),
                             )
                             .child(
                                 Input::new(&self.keyword_state)
@@ -234,15 +264,11 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                             )
                             .flex_1(),
                     )
+                    .child(icon.text_color(text_color).mr_2())
                     .child(
-                        Label::new(format!(
-                            "{} / {} {}",
-                            self.items_count,
-                            self.total_count,
-                            if self.done { "Done" } else { "Incomplete" }
-                        ))
-                        .text_sm()
-                        .text_color(text_color),
+                        Label::new(format!("{} / {}", self.items_count, self.total_count,))
+                            .text_sm()
+                            .text_color(text_color),
                     ),
             )
             .into_any_element()

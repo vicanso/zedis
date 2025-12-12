@@ -16,6 +16,7 @@ use crate::assets::CustomIconName;
 use crate::connection::QueryMode;
 use crate::states::KeyType;
 use crate::states::ZedisServerState;
+use crate::states::i18n_common;
 use crate::states::i18n_key_tree;
 use ahash::AHashSet;
 use gpui::AppContext;
@@ -99,7 +100,7 @@ impl ZedisKeyTree {
     ///
     /// Sets up reactive updates when server state changes and
     /// initializes UI components (tree, search input).
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to rebuild tree when keys change
@@ -114,7 +115,7 @@ impl ZedisKeyTree {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder(i18n_key_tree(cx, "filter_placeholder"))
+                .placeholder(i18n_common(cx, "filter_placeholder"))
         });
         keyword_state.update(cx, |state, cx| {
             state.focus(window, cx);

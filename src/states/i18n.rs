@@ -17,6 +17,11 @@ use gpui::App;
 use gpui::SharedString;
 use rust_i18n::t;
 
+pub fn i18n_common<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+    t!(format!("common.{key}"), locale = locale).into()
+}
+
 pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
     t!(format!("sidebar.{key}"), locale = locale).into()
@@ -47,12 +52,12 @@ pub fn i18n_list_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("list_editor.{key}"), locale = locale).into()
 }
 
-pub fn i18n_content<'a>(cx: &'a App, key: &'a str) -> SharedString {
-    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-    t!(format!("content.{key}"), locale = locale).into()
-}
-
 pub fn i18n_kv_table<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
     t!(format!("kv_table.{key}"), locale = locale).into()
+}
+
+pub fn i18n_set_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+    t!(format!("set_editor.{key}"), locale = locale).into()
 }

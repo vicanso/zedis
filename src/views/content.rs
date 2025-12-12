@@ -16,7 +16,7 @@ use crate::helpers::get_key_tree_widths;
 use crate::states::Route;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
-use crate::states::i18n_content;
+use crate::states::i18n_common;
 use crate::states::save_app_state;
 use crate::views::ZedisEditor;
 use crate::views::ZedisKeyTree;
@@ -75,7 +75,7 @@ impl ZedisContent {
     ///
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
         // Subscribe to global state changes for automatic view cleanup
@@ -126,7 +126,7 @@ impl ZedisContent {
             .servers
             .get_or_insert_with(|| {
                 debug!("Creating new servers view");
-                cx.new(|cx| ZedisServers::new(window, cx, self.server_state.clone()))
+                cx.new(|cx| ZedisServers::new(self.server_state.clone(), window, cx))
             })
             .clone();
 
@@ -148,7 +148,7 @@ impl ZedisContent {
                 .child(Skeleton::new().w(px(LOADING_SKELETON_LARGE_WIDTH)).h_4().rounded_md())
                 .child(Skeleton::new().w(px(LOADING_SKELETON_WIDTH)).h_4().rounded_md())
                 .child(
-                    Label::new(i18n_content(cx, "loading"))
+                    Label::new(i18n_common(cx, "loading"))
                         .w_full()
                         .text_color(cx.theme().muted_foreground)
                         .mt_2()
@@ -171,7 +171,7 @@ impl ZedisContent {
             .value_editor
             .get_or_insert_with(|| {
                 debug!("Creating new value editor view");
-                cx.new(|cx| ZedisEditor::new(window, cx, server_state.clone()))
+                cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
             })
             .clone();
 
@@ -180,7 +180,7 @@ impl ZedisContent {
             .key_tree
             .get_or_insert_with(|| {
                 debug!("Creating new key tree view");
-                cx.new(|cx| ZedisKeyTree::new(window, cx, server_state))
+                cx.new(|cx| ZedisKeyTree::new(server_state.clone(), window, cx))
             })
             .clone();
 

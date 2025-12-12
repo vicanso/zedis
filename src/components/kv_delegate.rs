@@ -34,7 +34,8 @@ pub trait ZedisKvFetcher: 'static {
     fn is_done(&self) -> bool;
     fn is_initial_load(&self) -> bool;
     fn load_more(&self, _window: &mut Window, _cx: &mut App);
-    fn filter(&self, keyword: &str, _window: &mut Window, _cx: &mut App);
+    fn filter(&self, keyword: SharedString, _cx: &mut App);
+    fn handle_add_value(&self, _window: &mut Window, _cx: &mut App);
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
 pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
@@ -44,6 +45,9 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
 }
 
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
+    pub fn fetcher(&self) -> &T {
+        &self.fetcher
+    }
     pub fn set_fetcher(&mut self, fetcher: T) {
         self.fetcher = fetcher;
         self.loading = false;
