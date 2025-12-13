@@ -74,10 +74,7 @@ impl ZedisKvFetcher for ZedisSetValues {
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         Self { server_state, value }
     }
-    fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
-        if col_ix == 0 {
-            return Some((row_ix + 1).to_string().into());
-        }
+    fn get(&self, row_ix: usize, _col_ix: usize) -> Option<SharedString> {
         let value = self.value.set_value()?;
         value.values.get(row_ix).cloned()
     }
@@ -106,6 +103,20 @@ impl ZedisKvFetcher for ZedisSetValues {
     fn filter(&self, keyword: SharedString, cx: &mut App) {
         self.server_state.update(cx, |this, cx| {
             this.filter_set_value(keyword.clone(), cx);
+        });
+    }
+
+    fn remove(&self, index: usize, cx: &mut App) {
+        let Some(set) = self.value.set_value() else {
+            return;
+        };
+        let Some(value) = set.values.get(index) else {
+            return;
+        };
+
+        // set.values.get
+        self.server_state.update(cx, |this, cx| {
+            this.remove_set_value(value.clone(), cx);
         });
     }
 }

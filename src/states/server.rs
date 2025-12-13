@@ -261,6 +261,9 @@ pub enum ServerTask {
     /// Load more items
     LoadMoreValue,
 
+    /// Remove a value from a set
+    RemoveSetValue,
+
     /// Save edited value back to Redis
     SaveValue,
 }
@@ -287,6 +290,7 @@ impl ServerTask {
             ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
             ServerTask::PushListValue => "push_list_value",
             ServerTask::AddSetValue => "add_set_value",
+            ServerTask::RemoveSetValue => "remove_set_value",
         }
     }
 }

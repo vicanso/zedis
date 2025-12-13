@@ -21,12 +21,12 @@ use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::i18n_common;
 use crate::states::i18n_kv_table;
+use gpui::Entity;
 use gpui::Subscription;
 use gpui::TextAlign;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui::px;
-use gpui::{Edges, Entity};
 use gpui::{SharedString, div};
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
@@ -34,7 +34,6 @@ use gpui_component::input::Input;
 use gpui_component::input::InputEvent;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
-use gpui_component::table::Column;
 use gpui_component::table::{Table, TableState};
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, Disableable};
@@ -45,10 +44,19 @@ use tracing::info;
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
 
 #[derive(Clone, Default)]
+pub enum KvTableColumnType {
+    #[default]
+    Value,
+    Index,
+    Action,
+}
+
+#[derive(Clone, Default)]
 pub struct KvTableColumn {
-    name: SharedString,
-    width: Option<f32>,
-    align: Option<TextAlign>,
+    pub ty: KvTableColumnType,
+    pub name: SharedString,
+    pub width: Option<f32>,
+    pub align: Option<TextAlign>,
 }
 impl KvTableColumn {
     pub fn new(name: &str, width: Option<f32>) -> Self {
@@ -77,7 +85,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let value = server_state.read(cx).value().cloned().unwrap_or_default();
         T::new(server_state.clone(), value)
     }
-    fn new_columns(columns: Vec<KvTableColumn>, window: &Window, cx: &mut Context<Self>) -> Vec<Column> {
+    fn new_columns(columns: Vec<KvTableColumn>, window: &Window, cx: &mut Context<Self>) -> Vec<KvTableColumn> {
         let window_width = window.viewport_size().width.as_f32();
         let key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
         let (key_tree_width, _, _) = get_key_tree_widths(key_tree_width);
@@ -85,11 +93,18 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         columns.insert(
             0,
             KvTableColumn {
+                ty: KvTableColumnType::Index,
                 name: INDEX_COLUMN_NAME.to_string().into(),
                 width: Some(80.0),
                 align: Some(TextAlign::Right),
             },
         );
+        columns.push(KvTableColumn {
+            ty: KvTableColumnType::Action,
+            name: i18n_common(cx, "action"),
+            width: Some(100.0),
+            align: Some(TextAlign::Center),
+        });
         let mut rest_width = window_width - key_tree_width.as_f32() - SIDEBAR_WIDTH - 10.;
         let mut none_with_count = 0;
         for column in columns.iter() {
@@ -111,25 +126,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
         }
         columns
-            .iter()
-            .map(|item| {
-                let name = item.name.clone();
-                let mut column = Column::new(name.clone(), name.clone());
-                if let Some(width) = item.width {
-                    column = column.width(width);
-                }
-                if let Some(align) = item.align {
-                    column.align = align;
-                }
-                column.paddings = Some(Edges {
-                    top: px(2.),
-                    bottom: px(2.),
-                    left: px(10.),
-                    right: px(10.),
-                });
-                column
-            })
-            .collect::<Vec<Column>>()
     }
     pub fn new(
         columns: Vec<KvTableColumn>,
@@ -141,7 +137,10 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             let mut should_update_fetcher = false;
             match event {
-                ServerEvent::ValuePaginationFinished(_) | ServerEvent::ValueLoaded(_) | ServerEvent::ValueAdded(_) => {
+                ServerEvent::ValuePaginationFinished(_)
+                | ServerEvent::ValueLoaded(_)
+                | ServerEvent::ValueAdded(_)
+                | ServerEvent::ValueUpdated(_) => {
                     should_update_fetcher = true;
                 }
                 ServerEvent::KeySelected(_) => {

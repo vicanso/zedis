@@ -36,11 +36,8 @@ filter_placeholder = "按关键词过滤"
 keyword_placeholder = "按关键词过滤"
 ttl_placeholder = "例如：1d 或 1h"
 
-# --- 通用工具提示 ---
-update_tooltip = "更新 %{item}"
-remove_tooltip = "移除 %{item}"
-delete_tooltip = "删除 %{item}"
-add_tooltip = "添加 %{item}"
+remove_tooltip = "移除项"
+remove_item_prompt = "您确定要删除此项: %{value} (行号 %{row}) 吗？"
 
 [sidebar]
 home = "主页"

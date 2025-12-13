@@ -109,7 +109,6 @@ pub fn open_add_value_dialog(params: FormDialog, window: &mut Window, cx: &mut A
                             this.focus(window, cx);
                         });
                     }
-                    // if item.focus &&
                     form = form.child(field().label(item.label.clone()).child(Input::new(value_state)));
                 }
                 form

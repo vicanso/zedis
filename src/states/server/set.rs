@@ -196,4 +196,49 @@ impl ZedisServerState {
             cx,
         );
     }
+    pub fn remove_set_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
+        let key = self.key.clone().unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        if value.is_busy() {
+            return;
+        }
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
+        let server_id = self.server_id.clone();
+        let remove_value_clone = remove_value.clone();
+        let key_clone = key.clone();
+        self.spawn(
+            ServerTask::RemoveSetValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                // Fetch only the new items
+                let count: usize = cmd("SREM")
+                    .arg(key.as_str())
+                    .arg(remove_value.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(count)
+            },
+            move |this, result, cx| {
+                if let Ok(count) = result
+                    && let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
+                {
+                    let set = Arc::make_mut(set_data);
+                    set.size -= count;
+                    set.values.retain(|v| v != &remove_value_clone);
+                }
+                cx.emit(ServerEvent::ValueUpdated(key_clone));
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
 }

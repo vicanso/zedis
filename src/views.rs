@@ -28,7 +28,7 @@ pub use about::open_about_window;
 pub use content::ZedisContent;
 pub use editor::ZedisEditor;
 pub use key_tree::ZedisKeyTree;
-pub use kv_table::{KvTableColumn, ZedisKvTable};
+pub use kv_table::{KvTableColumn, KvTableColumnType, ZedisKvTable};
 pub use list_editor::ZedisListEditor;
 pub use servers::ZedisServers;
 pub use set_editor::ZedisSetEditor;
