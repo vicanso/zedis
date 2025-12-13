@@ -13,7 +13,9 @@
 // limitations under the License.
 
 mod card;
+mod dialog;
 mod kv_delegate;
 
 pub use card::Card;
+pub use dialog::*;
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};

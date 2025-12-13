@@ -32,7 +32,6 @@ pub trait ZedisKvFetcher: 'static {
     fn rows_count(&self) -> usize;
     fn is_eof(&self) -> bool;
     fn is_done(&self) -> bool;
-    fn is_initial_load(&self) -> bool;
     fn load_more(&self, _window: &mut Window, _cx: &mut App);
     fn filter(&self, keyword: SharedString, _cx: &mut App);
     fn handle_add_value(&self, _window: &mut Window, _cx: &mut App);
