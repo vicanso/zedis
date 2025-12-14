@@ -161,8 +161,8 @@ impl ZedisServerState {
         };
 
         let server_id = self.server_id.clone();
-        let current_key = key.clone();
-        cx.emit(ServerEvent::ValuePaginationStarted(current_key.clone()));
+        cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
+        let key_clone = key.clone();
         self.spawn(
             ServerTask::LoadMoreValue,
             move || async move {
@@ -187,7 +187,7 @@ impl ZedisServerState {
                         set.values.extend(new_values.into_iter().map(|v| v.into()));
                     }
                 }
-                cx.emit(ServerEvent::ValuePaginationFinished(current_key));
+                cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }

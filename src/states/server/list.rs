@@ -21,6 +21,7 @@ use super::{KeyType, RedisValueData};
 use crate::connection::RedisAsyncConn;
 use crate::connection::get_connection_manager;
 use crate::error::Error;
+use crate::states::ServerEvent;
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
@@ -293,7 +294,8 @@ impl ZedisServerState {
         // Calculate pagination
         let start = current_len;
         let stop = start + 99; // Load 100 items
-
+        cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
+        let key_clone = key.clone();
         self.spawn(
             ServerTask::LoadMoreValue,
             move || async move {
@@ -313,6 +315,7 @@ impl ZedisServerState {
                         list.values.extend(new_values.into_iter().map(|v| v.into()));
                     }
                 }
+                cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }

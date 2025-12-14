@@ -84,9 +84,6 @@ impl ZedisKvFetcher for ZedisSetValues {
         };
         value.values.len()
     }
-    fn is_eof(&self) -> bool {
-        !self.is_done()
-    }
     fn is_done(&self) -> bool {
         let Some(value) = self.value.set_value() else {
             return false;

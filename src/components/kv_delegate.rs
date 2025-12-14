@@ -46,7 +46,9 @@ pub trait ZedisKvFetcher: 'static {
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
     fn count(&self) -> usize;
     fn rows_count(&self) -> usize;
-    fn is_eof(&self) -> bool;
+    fn is_eof(&self) -> bool {
+        !self.is_done()
+    }
     fn is_done(&self) -> bool;
     fn load_more(&self, _window: &mut Window, _cx: &mut App);
     fn remove(&self, index: usize, _cx: &mut App);
