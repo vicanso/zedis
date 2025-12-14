@@ -97,6 +97,7 @@ pub struct RedisSetValue {
 
 #[derive(Debug, Clone, Default)]
 pub struct RedisListValue {
+    pub keyword: Option<SharedString>,
     pub size: usize,
     pub values: Vec<SharedString>,
 }

@@ -38,6 +38,7 @@ ttl_placeholder = "e.g., 1d or 1h"
 
 remove_tooltip = "Remove item"
 remove_item_prompt = "Are you sure you want to delete this item: %{value} (Row %{row})?"
+update_tooltip = "Update item"
 
 [sidebar]
 home = "Home"

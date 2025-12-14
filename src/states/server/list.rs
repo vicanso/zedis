@@ -54,6 +54,7 @@ pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) 
         data: Some(RedisValueData::List(Arc::new(RedisListValue {
             size,
             values: values.into_iter().map(|v| v.into()).collect(),
+            ..Default::default()
         }))),
         expire_at: None,
         ..Default::default()
@@ -61,7 +62,22 @@ pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) 
 }
 
 impl ZedisServerState {
-    pub fn delete_list_item(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub fn filter_list_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        let Some(list_value) = value.list_value() else {
+            return;
+        };
+        let new_list_value = RedisListValue {
+            keyword: Some(keyword.clone()),
+            size: list_value.size,
+            values: list_value.values.clone(),
+        };
+        value.data = Some(RedisValueData::List(Arc::new(new_list_value)));
+        cx.emit(ServerEvent::ValueUpdated(self.key.clone().unwrap_or_default()));
+    }
+    pub fn remove_list_value(&mut self, index: usize, cx: &mut Context<Self>) {
         let key = self.key.clone().unwrap_or_default();
         if key.is_empty() {
             return;
@@ -75,8 +91,9 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Updating;
         cx.notify();
         let server_id = self.server_id.clone();
+        let key_clone = key.clone();
         self.spawn(
-            ServerTask::DeleteListItem,
+            ServerTask::RemoveListValue,
             move || async move {
                 let unique_marker = Uuid::new_v4().to_string();
                 let mut conn = get_connection_manager().get_connection(&server_id).await?;
@@ -103,6 +120,7 @@ impl ZedisServerState {
                         let list = Arc::make_mut(list_data);
                         list.size -= 1;
                         list.values.remove(index);
+                        cx.emit(ServerEvent::ValueUpdated(key_clone));
                     }
                     value.status = RedisValueStatus::Idle;
                 }
@@ -111,7 +129,7 @@ impl ZedisServerState {
             cx,
         );
     }
-    pub fn push_list_value(&mut self, new_value: SharedString, mode: usize, cx: &mut Context<Self>) {
+    pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
         let key = self.key.clone().unwrap_or_default();
         if key.is_empty() {
             return;
@@ -122,7 +140,7 @@ impl ZedisServerState {
         if value.is_busy() {
             return;
         }
-        let is_lpush = mode == 1;
+        let is_lpush = mode == "1";
         let mut pushed_value = false;
         value.status = RedisValueStatus::Updating;
         if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
@@ -140,7 +158,7 @@ impl ZedisServerState {
 
         cx.notify();
         let server_id = self.server_id.clone();
-
+        let key_clone = key.clone();
         self.spawn(
             ServerTask::PushListValue,
             move || async move {
@@ -173,7 +191,7 @@ impl ZedisServerState {
                         list.size -= 1;
                     }
                 }
-
+                cx.emit(ServerEvent::ValueUpdated(key_clone));
                 cx.notify();
             },
             cx,

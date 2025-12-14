@@ -247,7 +247,7 @@ pub enum ServerTask {
     UpdateKeyTtl,
 
     /// Delete an item from a list
-    DeleteListItem,
+    RemoveListValue,
 
     /// Update a value in a list
     UpdateListValue,
@@ -282,7 +282,7 @@ impl ServerTask {
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",
             ServerTask::UpdateKeyTtl => "update_key_ttl",
-            ServerTask::DeleteListItem => "delete_list_item",
+            ServerTask::RemoveListValue => "remove_list_value",
             ServerTask::UpdateListValue => "update_list_value",
             ServerTask::LoadMoreValue => "load_more_value",
             ServerTask::SaveValue => "save_value",

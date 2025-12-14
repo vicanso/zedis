@@ -28,15 +28,17 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui_component::Disableable;
 use gpui_component::Icon;
+use gpui_component::IconName;
 use gpui_component::Sizable;
 use gpui_component::StyledExt;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
+use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::table::{Column, TableDelegate, TableState};
 use rust_i18n::t;
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -49,6 +51,9 @@ pub trait ZedisKvFetcher: 'static {
     fn is_eof(&self) -> bool {
         !self.is_done()
     }
+    fn can_update(&self) -> bool {
+        false
+    }
     fn is_done(&self) -> bool;
     fn load_more(&self, _window: &mut Window, _cx: &mut App);
     fn remove(&self, index: usize, _cx: &mut App);
@@ -58,9 +63,10 @@ pub trait ZedisKvFetcher: 'static {
 }
 pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     table_columns: Vec<KvTableColumn>,
-    processing: Rc<RefCell<bool>>,
+    processing: Rc<Cell<bool>>,
     fetcher: Arc<T>,
     columns: Vec<Column>,
+    editing_row: Cell<Option<usize>>,
 }
 
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
@@ -69,7 +75,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     }
     pub fn set_fetcher(&mut self, fetcher: T) {
         self.fetcher = Arc::new(fetcher);
-        self.processing = Rc::new(RefCell::new(false));
+        self.processing = Rc::new(Cell::new(false));
     }
     pub fn new(columns: Vec<KvTableColumn>, fetcher: T) -> Self {
         let table_columns = columns.clone();
@@ -96,7 +102,8 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 })
                 .collect::<Vec<Column>>(),
             fetcher: Arc::new(fetcher),
-            processing: Rc::new(RefCell::new(false)),
+            processing: Rc::new(Cell::new(false)),
+            editing_row: Cell::new(None),
         }
     }
 }
@@ -138,12 +145,19 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
-        let base = div().size_full().when(column.paddings.is_some(), |this| {
+        let mut base = h_flex().size_full().when(column.paddings.is_some(), |this| {
             this.paddings(column.paddings.unwrap_or_default())
         });
         let fetcher = self.fetcher();
+        let support_update = fetcher.can_update();
         let processing = self.processing.clone();
-        let processing_clone = processing.clone();
+        let editing_row = self.editing_row.clone();
+        let is_editing = if let Some(editing_row) = editing_row.get() {
+            editing_row == row_ix
+        } else {
+            false
+        };
+        // let is_editing = editing_row.get()
         if let Some(table_column) = self.table_columns.get(col_ix) {
             match table_column.ty {
                 KvTableColumnType::Index => {
@@ -151,14 +165,32 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                     return base.child(label);
                 }
                 KvTableColumnType::Action => {
+                    // Update button: Toggles between edit mode (pen icon) and save mode (check icon)
+                    if support_update {
+                        let update_btn = Button::new(("zedis-editor-table-action-update-btn", row_ix))
+                            .small()
+                            .ghost()
+                            .mr_2()
+                            .tooltip(i18n_common(cx, "update_tooltip"))
+                            .when(!is_editing, |this| this.icon(Icon::new(CustomIconName::FilePenLine)))
+                            .when(is_editing, |this| this.icon(Icon::new(IconName::Check)))
+                            .disabled(processing.get())
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.delegate_mut().editing_row.set(Some(row_ix));
+                                cx.stop_propagation();
+                                cx.notify();
+                            }));
+                        base = base.child(update_btn);
+                    }
+
                     let remove_btn = Button::new(("zedis-editor-table-action-remove-btn", row_ix))
                         .small()
                         .ghost()
-                        .tooltip(i18n_common(cx, "delete_tooltip"))
+                        .tooltip(i18n_common(cx, "remove_tooltip"))
                         .icon(Icon::new(CustomIconName::FileXCorner))
-                        .disabled(*processing.borrow())
-                        .on_click(move |_event, window, cx| {
-                            let processing_clone = processing_clone.clone();
+                        .disabled(processing.get())
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            let processing_clone = this.delegate_mut().processing.clone();
                             cx.stop_propagation();
                             let value = fetcher.clone().get(row_ix, 0).unwrap_or_default();
                             let fetcher_clone = fetcher.clone();
@@ -181,7 +213,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                                     true
                                 })
                             });
-                        });
+                        }));
 
                     return base.child(remove_btn);
                 }
