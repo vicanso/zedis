@@ -58,6 +58,7 @@ pub enum CustomIconName {
     RotateCw,
     CircleCheckBig,
     CircleDotDashed,
+    X,
 }
 
 impl CustomIconName {
@@ -81,6 +82,7 @@ impl CustomIconName {
             CustomIconName::RotateCw => "icons/rotate-cw.svg",
             CustomIconName::CircleCheckBig => "icons/circle-check-big.svg",
             CustomIconName::CircleDotDashed => "icons/circle-dot-dashed.svg",
+            CustomIconName::X => "icons/x.svg",
         }
         .into()
     }

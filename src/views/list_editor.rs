@@ -146,6 +146,25 @@ impl ZedisKvFetcher for ZedisListValues {
             cx,
         );
     }
+    fn handle_update_value(&self, index: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+        let Some(value) = values.first() else {
+            return;
+        };
+        let real_index = self
+            .visible_item_indexes
+            .as_ref()
+            .map(|indexes| indexes.get(index).copied().unwrap_or(index))
+            .unwrap_or(index);
+        let Some(list_value) = self.value.list_value() else {
+            return;
+        };
+        let Some(original_value) = list_value.values.get(real_index) else {
+            return;
+        };
+        self.server_state.update(cx, |this, cx| {
+            this.update_list_value(real_index, original_value.clone(), value.clone(), cx);
+        });
+    }
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         let mut this = Self {
             server_state,

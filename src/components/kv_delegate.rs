@@ -35,13 +35,15 @@ use gpui_component::WindowExt;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
 use gpui_component::h_flex;
+use gpui_component::input::Input;
+use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::table::{Column, TableDelegate, TableState};
 use rust_i18n::t;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-
 pub const INDEX_COLUMN_NAME: &str = "#";
 
 pub trait ZedisKvFetcher: 'static {
@@ -59,6 +61,7 @@ pub trait ZedisKvFetcher: 'static {
     fn remove(&self, index: usize, _cx: &mut App);
     fn filter(&self, keyword: SharedString, _cx: &mut App);
     fn handle_add_value(&self, _window: &mut Window, _cx: &mut App);
+    fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
 pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
@@ -67,18 +70,19 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     fetcher: Arc<T>,
     columns: Vec<Column>,
     editing_row: Cell<Option<usize>>,
+    value_states: HashMap<usize, Entity<InputState>>,
+    edit_focus_done: bool,
 }
 
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
-    pub fn fetcher(&self) -> Arc<T> {
-        self.fetcher.clone()
-    }
-    pub fn set_fetcher(&mut self, fetcher: T) {
-        self.fetcher = Arc::new(fetcher);
-        self.processing = Rc::new(Cell::new(false));
-    }
-    pub fn new(columns: Vec<KvTableColumn>, fetcher: T) -> Self {
+    pub fn new(columns: Vec<KvTableColumn>, fetcher: T, window: &mut Window, cx: &mut App) -> Self {
         let table_columns = columns.clone();
+        let mut value_states = HashMap::new();
+        for (index, column) in columns.iter().enumerate() {
+            if column.ty == KvTableColumnType::Value {
+                value_states.insert(index, cx.new(|cx| InputState::new(window, cx).clean_on_escape()));
+            }
+        }
         Self {
             table_columns,
             columns: columns
@@ -101,10 +105,48 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                     column
                 })
                 .collect::<Vec<Column>>(),
+            value_states,
             fetcher: Arc::new(fetcher),
             processing: Rc::new(Cell::new(false)),
             editing_row: Cell::new(None),
+            edit_focus_done: false,
         }
+    }
+    pub fn fetcher(&self) -> Arc<T> {
+        self.fetcher.clone()
+    }
+    pub fn set_fetcher(&mut self, fetcher: T) {
+        self.fetcher = Arc::new(fetcher);
+        self.processing = Rc::new(Cell::new(false));
+    }
+    fn reset_edit(&mut self) {
+        self.edit_focus_done = false;
+        self.editing_row.set(None);
+    }
+    pub fn handle_edit_row(&mut self, row_ix: usize, window: &mut Window, cx: &mut App) {
+        self.edit_focus_done = false;
+        self.editing_row.set(Some(row_ix));
+        for (col_ix, state) in self.value_states.iter() {
+            let Some(value) = self.fetcher().get(row_ix, *col_ix) else {
+                continue;
+            };
+            state.update(cx, |this, cx| {
+                this.set_value(value, window, cx);
+            });
+        }
+    }
+    pub fn handle_update_row(&mut self, row_ix: usize, window: &mut Window, cx: &mut App) {
+        self.reset_edit();
+        let mut keys = self.value_states.keys().collect::<Vec<_>>();
+        keys.sort();
+        let mut values = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(state) = self.value_states.get(key) else {
+                continue;
+            };
+            values.push(state.read(cx).value());
+        }
+        self.fetcher().handle_update_value(row_ix, values, window, cx);
     }
 }
 
@@ -141,7 +183,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         &mut self,
         row_ix: usize,
         col_ix: usize,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
@@ -175,50 +217,78 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                             .when(!is_editing, |this| this.icon(Icon::new(CustomIconName::FilePenLine)))
                             .when(is_editing, |this| this.icon(Icon::new(IconName::Check)))
                             .disabled(processing.get())
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
-                                this.delegate_mut().editing_row.set(Some(row_ix));
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                if is_editing {
+                                    this.delegate_mut().handle_update_row(row_ix, window, cx);
+                                    return;
+                                }
+                                this.delegate_mut().handle_edit_row(row_ix, window, cx);
                                 cx.stop_propagation();
                                 cx.notify();
                             }));
                         base = base.child(update_btn);
                     }
-
-                    let remove_btn = Button::new(("zedis-editor-table-action-remove-btn", row_ix))
-                        .small()
-                        .ghost()
-                        .tooltip(i18n_common(cx, "remove_tooltip"))
-                        .icon(Icon::new(CustomIconName::FileXCorner))
-                        .disabled(processing.get())
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            let processing_clone = this.delegate_mut().processing.clone();
-                            cx.stop_propagation();
-                            let value = fetcher.clone().get(row_ix, 0).unwrap_or_default();
-                            let fetcher_clone = fetcher.clone();
-                            window.open_dialog(cx, move |dialog, _, cx| {
-                                let locale = cx.global::<ZedisGlobalStore>().locale(cx);
-                                let message = t!(
-                                    "common.remove_item_prompt",
-                                    row = row_ix + 1,
-                                    value = value,
-                                    locale = locale
-                                )
-                                .to_string();
-                                let fetcher_clone = fetcher_clone.clone();
-                                let processing_clone = processing_clone.clone();
+                    if is_editing {
+                        let cancel_btn = Button::new(("zedis-editor-table-action-cancel-btn", row_ix))
+                            .small()
+                            .ghost()
+                            .mr_2()
+                            .tooltip(i18n_common(cx, "cancel_tooltip"))
+                            .icon(Icon::new(CustomIconName::X))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.delegate_mut().editing_row.set(None);
                                 cx.stop_propagation();
-                                dialog.confirm().child(message).on_ok(move |_, window, cx| {
-                                    processing_clone.replace(true);
-                                    fetcher_clone.remove(row_ix, cx);
-                                    window.close_dialog(cx);
-                                    true
-                                })
-                            });
-                        }));
+                                cx.notify();
+                            }));
+                        base = base.child(cancel_btn);
+                    } else {
+                        let remove_btn = Button::new(("zedis-editor-table-action-remove-btn", row_ix))
+                            .small()
+                            .ghost()
+                            .tooltip(i18n_common(cx, "remove_tooltip"))
+                            .icon(Icon::new(CustomIconName::FileXCorner))
+                            .disabled(processing.get())
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                let processing_clone = this.delegate_mut().processing.clone();
+                                cx.stop_propagation();
+                                let value = fetcher.clone().get(row_ix, 0).unwrap_or_default();
+                                let fetcher_clone = fetcher.clone();
+                                window.open_dialog(cx, move |dialog, _, cx| {
+                                    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+                                    let message = t!(
+                                        "common.remove_item_prompt",
+                                        row = row_ix + 1,
+                                        value = value,
+                                        locale = locale
+                                    )
+                                    .to_string();
+                                    let fetcher_clone = fetcher_clone.clone();
+                                    let processing_clone = processing_clone.clone();
+                                    cx.stop_propagation();
+                                    dialog.confirm().child(message).on_ok(move |_, window, cx| {
+                                        processing_clone.replace(true);
+                                        fetcher_clone.remove(row_ix, cx);
+                                        window.close_dialog(cx);
+                                        true
+                                    })
+                                });
+                            }));
+                        base = base.child(remove_btn);
+                    }
 
-                    return base.child(remove_btn);
+                    return base;
                 }
                 _ => {}
             }
+        }
+        if is_editing && let Some(value_state) = self.value_states.get(&col_ix) {
+            if !self.edit_focus_done {
+                value_state.update(cx, |this, cx| {
+                    this.focus(window, cx);
+                });
+                self.edit_focus_done = true;
+            }
+            return base.child(Input::new(value_state).small().cleanable(true));
         }
         let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
         let label = Label::new(value).text_align(column.align);

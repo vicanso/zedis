@@ -224,6 +224,7 @@ impl ZedisServerState {
             let list = Arc::make_mut(list_data);
             if index < list.values.len() {
                 list.values[index] = new_value.clone();
+                cx.emit(ServerEvent::ValueUpdated(key.clone()));
             }
         }
         cx.notify();
@@ -243,7 +244,7 @@ impl ZedisServerState {
 
                 // 1. Optimistic Lock Check: Get current value
                 let current_value: String = cmd("LINDEX")
-                    .arg(key_clone.as_str())
+                    .arg(key.as_str())
                     .arg(index)
                     .query_async(&mut conn)
                     .await?;
@@ -259,7 +260,7 @@ impl ZedisServerState {
 
                 // 2. Perform Update
                 let _: () = cmd("LSET")
-                    .arg(key_clone.as_str())
+                    .arg(key.as_str())
                     .arg(index)
                     .arg(new_value_clone.as_str())
                     .query_async(&mut conn)
@@ -281,6 +282,7 @@ impl ZedisServerState {
                         }
                     }
                 }
+                cx.emit(ServerEvent::ValueUpdated(key_clone));
 
                 cx.notify();
             },

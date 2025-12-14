@@ -43,7 +43,7 @@ use tracing::info;
 
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub enum KvTableColumnType {
     #[default]
     Value,
@@ -177,7 +177,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let done = set_values.is_done();
         let items_count = set_values.rows_count();
         let total_count = set_values.count();
-        let delegate = ZedisKvDelegate::new(Self::new_columns(columns, window, cx), set_values);
+        let delegate = ZedisKvDelegate::new(Self::new_columns(columns, window, cx), set_values, window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         info!("Creating new key value table view");
