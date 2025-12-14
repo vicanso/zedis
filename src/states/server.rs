@@ -40,6 +40,7 @@ pub mod list;
 pub mod set;
 pub mod string;
 pub mod value;
+pub mod zset;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 

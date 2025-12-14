@@ -23,6 +23,7 @@ mod set_editor;
 mod sidebar;
 mod status_bar;
 mod string_editor;
+mod zset_editor;
 
 pub use about::open_about_window;
 pub use content::ZedisContent;
@@ -35,3 +36,4 @@ pub use set_editor::ZedisSetEditor;
 pub use sidebar::ZedisSidebar;
 pub use status_bar::ZedisStatusBar;
 pub use string_editor::ZedisStringEditor;
+pub use zset_editor::ZedisZsetEditor;

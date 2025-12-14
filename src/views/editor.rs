@@ -21,6 +21,7 @@ use crate::states::{KeyType, ZedisServerState};
 use crate::views::ZedisListEditor;
 use crate::views::ZedisSetEditor;
 use crate::views::ZedisStringEditor;
+use crate::views::ZedisZsetEditor;
 use gpui::ClipboardItem;
 use gpui::Entity;
 use gpui::SharedString;
@@ -62,6 +63,7 @@ pub struct ZedisEditor {
     list_editor: Option<Entity<ZedisListEditor>>,
     string_editor: Option<Entity<ZedisStringEditor>>,
     set_editor: Option<Entity<ZedisSetEditor>>,
+    zset_editor: Option<Entity<ZedisZsetEditor>>,
 
     /// TTL editing state
     ttl_edit_mode: bool,
@@ -114,6 +116,7 @@ impl ZedisEditor {
             list_editor: None,
             string_editor: None,
             set_editor: None,
+            zset_editor: None,
             ttl_edit_mode: false,
             ttl_input_state: input,
             _subscriptions: subscriptions,
@@ -381,6 +384,9 @@ impl ZedisEditor {
         if key_type != KeyType::Set {
             let _ = self.set_editor.take();
         }
+        if key_type != KeyType::Zset {
+            let _ = self.zset_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -409,6 +415,14 @@ impl ZedisEditor {
                 let editor = self.set_editor.get_or_insert_with(|| {
                     debug!("Creating new set editor");
                     cx.new(|cx| ZedisSetEditor::new(self.server_state.clone(), window, cx))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::Zset => {
+                self.reset_editors(KeyType::Zset);
+                let editor = self.zset_editor.get_or_insert_with(|| {
+                    debug!("Creating new zset editor");
+                    cx.new(|cx| ZedisZsetEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }

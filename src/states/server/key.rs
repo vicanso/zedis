@@ -19,6 +19,7 @@ use super::list::first_load_list_value;
 use super::set::first_load_set_value;
 use super::string::get_redis_value;
 use super::value::{KeyType, RedisValue, RedisValueStatus};
+use super::zset::first_load_zset_value;
 use crate::connection::QueryMode;
 use crate::connection::get_connection_manager;
 use crate::error::Error;
@@ -317,6 +318,7 @@ impl ZedisServerState {
                     KeyType::String => get_redis_value(&mut conn, &key).await,
                     KeyType::List => first_load_list_value(&mut conn, &key).await,
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
+                    KeyType::Zset => first_load_zset_value(&mut conn, &key).await,
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),

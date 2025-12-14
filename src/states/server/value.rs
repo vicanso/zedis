@@ -84,6 +84,7 @@ pub enum RedisValueData {
     Bytes(Bytes),
     List(Arc<RedisListValue>),
     Set(Arc<RedisSetValue>),
+    Zset(Arc<RedisZsetValue>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -92,6 +93,15 @@ pub struct RedisSetValue {
     pub cursor: u64,
     pub size: usize,
     pub values: Vec<SharedString>,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RedisZsetValue {
+    pub keyword: Option<SharedString>,
+    pub cursor: u64,
+    pub size: usize,
+    pub values: Vec<(SharedString, f64)>,
     pub done: bool,
 }
 
@@ -111,6 +121,12 @@ impl RedisValue {
     }
     pub fn set_value(&self) -> Option<&Arc<RedisSetValue>> {
         if let Some(RedisValueData::Set(data)) = self.data.as_ref() {
+            return Some(data);
+        }
+        None
+    }
+    pub fn zset_value(&self) -> Option<&Arc<RedisZsetValue>> {
+        if let Some(RedisValueData::Zset(data)) = self.data.as_ref() {
             return Some(data);
         }
         None

@@ -203,7 +203,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         if let Some(table_column) = self.table_columns.get(col_ix) {
             match table_column.ty {
                 KvTableColumnType::Index => {
-                    let label = Label::new((row_ix + 1).to_string()).text_align(column.align);
+                    let label = Label::new((row_ix + 1).to_string()).text_align(column.align).w_full();
                     return base.child(label);
                 }
                 KvTableColumnType::Action => {

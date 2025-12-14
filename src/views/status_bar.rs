@@ -24,6 +24,7 @@ use gpui::Hsla;
 use gpui::SharedString;
 use gpui::Subscription;
 use gpui::Task;
+use gpui::TextAlign;
 use gpui::Window;
 use gpui::prelude::*;
 use gpui_component::ActiveTheme;
@@ -259,9 +260,13 @@ impl ZedisStatusBar {
             return h_flex().flex_1();
         };
         // 记录出错的显示
-        h_flex()
-            .flex_1()
-            .child(Label::new(data.message.clone()).text_xs().text_color(cx.theme().red))
+        h_flex().flex_1().child(
+            Label::new(data.message.clone())
+                .w_full()
+                .text_xs()
+                .text_color(cx.theme().red)
+                .text_align(TextAlign::Right),
+        )
     }
 }
 
