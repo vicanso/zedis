@@ -15,7 +15,7 @@
 use crate::components::FormDialog;
 use crate::components::FormField;
 use crate::components::ZedisKvFetcher;
-use crate::components::open_add_value_dialog;
+use crate::components::open_add_form_dialog;
 use crate::helpers::fast_contains_ignore_case;
 use crate::states::RedisValue;
 use crate::states::ZedisServerState;
@@ -136,7 +136,7 @@ impl ZedisKvFetcher for ZedisListValues {
                 .with_placeholder(i18n_common(cx, "value_placeholder"))
                 .with_focus(),
         ];
-        open_add_value_dialog(
+        open_add_form_dialog(
             FormDialog {
                 title: i18n_list_editor(cx, "add_value_title"),
                 fields,

@@ -75,7 +75,7 @@ impl FormField {
     }
 }
 
-pub fn open_add_value_dialog(params: FormDialog, window: &mut Window, cx: &mut App) {
+pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut App) {
     let value_states = Rc::new(DashMap::new());
     let radio_group_states = Rc::new(DashMap::new());
     let mut should_foucus_index = None;
@@ -152,7 +152,11 @@ pub fn open_add_value_dialog(params: FormDialog, window: &mut Window, cx: &mut A
                                     this.focus(window, cx);
                                 });
                             }
-                            form = form.child(field().label(item.label.clone()).child(Input::new(&value_state)));
+                            form = form.child(
+                                field()
+                                    .label(item.label.clone())
+                                    .child(Input::new(&value_state).cleanable(true)),
+                            );
                         }
                         FormFieldType::RadioGroup => {
                             let Some(select_index) = radio_group_states_clone.get(&index) else {
@@ -183,6 +187,10 @@ pub fn open_add_value_dialog(params: FormDialog, window: &mut Window, cx: &mut A
             .on_ok({
                 let handle = handle.clone();
                 move |_, window, cx| handle(window, cx)
+            })
+            .on_cancel(|_, window, cx| {
+                window.close_dialog(cx);
+                true
             })
             .footer({
                 let handle = handle.clone();

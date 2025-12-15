@@ -63,7 +63,7 @@ pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) 
 
 impl ZedisServerState {
     pub fn filter_list_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        let Some(value) = self.value.as_mut() else {
+        let Some((_, value)) = self.try_get_mut_key_value() else {
             return;
         };
         let Some(list_value) = value.list_value() else {
@@ -78,16 +78,9 @@ impl ZedisServerState {
         cx.emit(ServerEvent::ValueUpdated(self.key.clone().unwrap_or_default()));
     }
     pub fn remove_list_value(&mut self, index: usize, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         value.status = RedisValueStatus::Updating;
         cx.notify();
         let server_id = self.server_id.clone();
@@ -130,16 +123,9 @@ impl ZedisServerState {
         );
     }
     pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         let is_lpush = mode == "1";
         let mut pushed_value = false;
         value.status = RedisValueStatus::Updating;
@@ -208,16 +194,9 @@ impl ZedisServerState {
         new_value: SharedString,
         cx: &mut Context<Self>,
     ) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         value.status = RedisValueStatus::Updating;
         if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
             // Use Arc::make_mut to get mutable access (Cow behavior)
@@ -291,16 +270,9 @@ impl ZedisServerState {
     }
     /// Load the next page of items for the current List.
     pub fn load_more_list_value(&mut self, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         value.status = RedisValueStatus::Loading;
         cx.notify();
 

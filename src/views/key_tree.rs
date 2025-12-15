@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::components::{FormDialog, FormField, open_add_form_dialog};
 use crate::connection::QueryMode;
 use crate::states::KeyType;
 use crate::states::ZedisServerState;
 use crate::states::i18n_common;
 use crate::states::i18n_key_tree;
 use ahash::AHashSet;
+use gpui::App;
 use gpui::AppContext;
 use gpui::Corner;
 use gpui::Entity;
@@ -34,6 +36,7 @@ use gpui_component::Disableable;
 use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::StyledExt;
+use gpui_component::WindowExt;
 use gpui_component::button::ButtonVariants;
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::h_flex;
@@ -43,6 +46,7 @@ use gpui_component::list::ListItem;
 use gpui_component::tree::TreeState;
 use gpui_component::tree::tree;
 use gpui_component::v_flex;
+use std::rc::Rc;
 use tracing::info;
 
 // Constants for tree layout and behavior
@@ -207,6 +211,42 @@ impl ZedisKeyTree {
         self.server_state.update(cx, move |handle, cx| {
             handle.handle_filter(keyword, cx);
         });
+    }
+
+    fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let category_list = ["String", "List", "Set", "Zset", "Hash"];
+        let fields = vec![
+            FormField::new(i18n_key_tree(cx, "category"))
+                .with_options(category_list.iter().map(|s| s.to_string().into()).collect()),
+            FormField::new(i18n_common(cx, "key"))
+                .with_placeholder(i18n_common(cx, "key_placeholder"))
+                .with_focus(),
+            FormField::new(i18n_common(cx, "ttl")).with_placeholder(i18n_common(cx, "ttl_placeholder")),
+        ];
+        let server_state = self.server_state.clone();
+        let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
+            if values.len() != 3 {
+                return false;
+            }
+            let index = values[0].parse::<usize>().unwrap_or(0);
+            let category = category_list.get(index).cloned().unwrap_or_default();
+
+            server_state.update(cx, |this, cx| {
+                this.add_key(category.to_string().into(), values[1].clone(), values[2].clone(), cx);
+            });
+            window.close_dialog(cx);
+            true
+        });
+
+        open_add_form_dialog(
+            FormDialog {
+                title: i18n_key_tree(cx, "add_key_title"),
+                fields,
+                handle_submit,
+            },
+            window,
+            cx,
+        );
     }
 
     /// Render the tree view or empty state message
@@ -445,6 +485,7 @@ impl ZedisKeyTree {
             .w_full()
             .flex_1()
             .px_0()
+            .mr_2()
             .prefix(query_mode_dropdown)
             .suffix(search_btn)
             .cleanable(true);
@@ -453,6 +494,14 @@ impl ZedisKeyTree {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(keyword_input)
+            .child(
+                Button::new("key-tree-add-btn")
+                    .outline()
+                    .icon(CustomIconName::FilePlusCorner)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.handle_add_key(window, cx);
+                    })),
+            )
     }
 }
 

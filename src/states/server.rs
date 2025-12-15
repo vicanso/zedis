@@ -244,6 +244,8 @@ pub enum ServerTask {
     /// Scan keys with a specific prefix (for lazy folder loading)
     ScanPrefix,
 
+    /// Add a new key
+    AddKey,
     /// Update TTL (time-to-live) for a key
     UpdateKeyTtl,
 
@@ -265,6 +267,11 @@ pub enum ServerTask {
     /// Remove a value from a set
     RemoveSetValue,
 
+    /// Add a value to a zset
+    AddZsetValue,
+    /// Remove a value from a zset
+    RemoveZsetValue,
+
     /// Save edited value back to Redis
     SaveValue,
 }
@@ -282,6 +289,7 @@ impl ServerTask {
             ServerTask::DeleteKey => "delete_key",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",
+            ServerTask::AddKey => "add_key",
             ServerTask::UpdateKeyTtl => "update_key_ttl",
             ServerTask::RemoveListValue => "remove_list_value",
             ServerTask::UpdateListValue => "update_list_value",
@@ -292,6 +300,8 @@ impl ServerTask {
             ServerTask::PushListValue => "push_list_value",
             ServerTask::AddSetValue => "add_set_value",
             ServerTask::RemoveSetValue => "remove_set_value",
+            ServerTask::AddZsetValue => "add_zset_value",
+            ServerTask::RemoveZsetValue => "remove_zset_value",
         }
     }
 }
@@ -482,6 +492,15 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+
+    fn try_get_mut_key_value(&mut self) -> Option<(SharedString, &mut RedisValue)> {
+        let key = self.key.as_ref().filter(|k| !k.is_empty())?.clone();
+        let value = self.value.as_mut()?;
+        if value.is_busy() {
+            return None;
+        }
+        Some((key, value))
     }
 
     // ===== Public accessor methods =====

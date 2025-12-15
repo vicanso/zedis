@@ -96,6 +96,13 @@ pub struct RedisSetValue {
     pub done: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub enum SortOrder {
+    #[default]
+    Asc, // 升序 (默认)
+    Desc, // 降序
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RedisZsetValue {
     pub keyword: Option<SharedString>,
@@ -103,6 +110,7 @@ pub struct RedisZsetValue {
     pub size: usize,
     pub values: Vec<(SharedString, f64)>,
     pub done: bool,
+    pub sort_order: SortOrder,
 }
 
 #[derive(Debug, Clone, Default)]

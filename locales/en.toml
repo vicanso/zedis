@@ -11,6 +11,7 @@ remove = "Remove"
 add = "Add"
 
 # --- General Labels/Fields ---
+key = "Key"
 name = "Name"
 host = "Host"
 port = "Port"
@@ -22,10 +23,12 @@ size = "Size"
 expired = "Expired"
 ttl = "TTL"
 perm = "Permissions"
+score = "Score"
 loading = "Loading..."
 latency = "Latency"
 
 # --- General Placeholders ---
+key_placeholder = "Enter key"
 name_placeholder = "Enter name"
 host_placeholder = "Enter host"
 port_placeholder = "Enter port (default: 6379)"
@@ -35,6 +38,7 @@ value_placeholder = "Enter new value"
 filter_placeholder = "Filter by keyword"
 keyword_placeholder = "Filter by keyword"
 ttl_placeholder = "e.g., 1d or 1h"
+score_placeholder = "Enter score (default: 0.0)"
 
 remove_tooltip = "Remove item"
 remove_item_prompt = "Are you sure you want to delete this item: %{value} (Row %{row})?"
@@ -59,7 +63,6 @@ update_tooltip = "Edit connection details"
 remove_tooltip = "Delete this server configuration"
 
 [editor]
-# expired / perm / size / save / ttl_placeholder in common
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"
 reload_key_tooltip = "Reload key value"
 update_ttl_tooltip = "Update time-to-live (TTL)"
@@ -69,22 +72,21 @@ copy_key_tooltip = "Copy key name"
 copied_key_to_clipboard = "Copied key name to clipboard"
 
 [key_tree]
-# filter_placeholder in common
 no_keys_found = "No keys found"
 key_not_exists = "Key does not exist or has expired"
 search_tooltip = "Toggle key search mode"
 query_mode_all = "* Contains (Glob)"
 query_mode_prefix = "^ Prefix"
 query_mode_exact = "= Exact Match"
+category = "Category"
+add_key_title = "Add Key"
 
 [status_bar]
-# latency in common
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"
 soft_wrap = "Soft Wrap"
 
 [list_editor]
-# value / action / value_placeholder / confirm / cancel in common
 positon = "Position"
 update_tooltip = "Update list item"
 delete_tooltip = "Delete list item"
@@ -93,14 +95,17 @@ add_value_title = "Add List Value"
 add_value_tooltip = "Add new value to the list"
 
 [set_editor]
-# value / value_placeholder / confirm / cancel in common
 add_value_title = "Add Set Member"
 add_value_tooltip = "Add new member to the Set"
 add_value_success = "Member Added"
 add_value_success_tips = "Success. Due to the unordered nature of Redis Sets and the incremental scan (SSCAN) used for this large dataset, the new item may appear in a later scan or after a full refresh."
 
+[zset_editor]
+add_value_title = "Add Zset Value"
+add_value_tooltip = "Add new value to the Zset"
+add_value_success = "Value Added"
+add_value_success_tips = "Value added. Its position is determined by the score; you may need to refresh to view it."
 
 [kv_table]
-# keyword_placeholder / add_tooltip in common
 search_tooltip = "Click to start incremental search (SCAN)"
 add_value_tooltip = "Add new value"

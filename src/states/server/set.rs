@@ -79,20 +79,14 @@ pub(crate) async fn first_load_set_value(conn: &mut RedisAsyncConn, key: &str) -
 
 impl ZedisServerState {
     pub fn add_set_value(&mut self, new_value: SharedString, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         value.status = RedisValueStatus::Updating;
         cx.notify();
         let server_id = self.server_id.clone();
         let current_key = key.clone();
+        let new_value_clone = new_value.clone();
         self.spawn(
             ServerTask::AddSetValue,
             move || async move {
@@ -115,9 +109,14 @@ impl ZedisServerState {
                     {
                         let set = Arc::make_mut(set_data);
                         set.size += count;
+                        if set.done {
+                            if !set.values.contains(&new_value_clone) {
+                                set.values.push(new_value_clone);
+                            }
+                        } else {
+                            cx.dispatch_action(&NotificationAction::new_success(msg).with_title(title));
+                        }
                         cx.emit(ServerEvent::ValueAdded(current_key));
-
-                        cx.dispatch_action(&NotificationAction::new_success(msg).with_title(title));
                     }
                 }
                 cx.notify();
@@ -141,16 +140,9 @@ impl ZedisServerState {
         self.load_more_set_value(cx);
     }
     pub fn load_more_set_value(&mut self, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
@@ -197,16 +189,9 @@ impl ZedisServerState {
         );
     }
     pub fn remove_set_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
-        let key = self.key.clone().unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let Some(value) = self.value.as_mut() else {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        if value.is_busy() {
-            return;
-        }
         value.status = RedisValueStatus::Loading;
         cx.notify();
         let server_id = self.server_id.clone();

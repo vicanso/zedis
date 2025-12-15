@@ -18,7 +18,7 @@ use super::ZedisServerState;
 use super::list::first_load_list_value;
 use super::set::first_load_set_value;
 use super::string::get_redis_value;
-use super::value::{KeyType, RedisValue, RedisValueStatus};
+use super::value::{KeyType, RedisValue, RedisValueStatus, SortOrder};
 use super::zset::first_load_zset_value;
 use crate::connection::QueryMode;
 use crate::connection::get_connection_manager;
@@ -318,7 +318,7 @@ impl ZedisServerState {
                     KeyType::String => get_redis_value(&mut conn, &key).await,
                     KeyType::List => first_load_list_value(&mut conn, &key).await,
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
-                    KeyType::Zset => first_load_zset_value(&mut conn, &key).await,
+                    KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),
@@ -439,6 +439,88 @@ impl ZedisServerState {
                         value.expire_at = original_ttl;
                     }
                     value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    pub fn add_key(&mut self, category: SharedString, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let key_type = KeyType::from(category.to_lowercase().as_str());
+        let key_clone = key.clone();
+        self.spawn(
+            ServerTask::AddKey,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let exists: bool = cmd("EXISTS").arg(key.as_str()).query_async(&mut conn).await?;
+                let ttl_duration = if ttl.is_empty() {
+                    None
+                } else {
+                    let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid { message: e.to_string() })?;
+                    Some(ttl)
+                };
+                if exists {
+                    return Err(Error::Invalid {
+                        message: "Key already exists".to_string(),
+                    });
+                }
+                match key_type {
+                    KeyType::String => {
+                        let _: () = cmd("SET").arg(key.as_str()).arg("").query_async(&mut conn).await?;
+                    }
+                    KeyType::List => {
+                        let _: () = cmd("LPUSH")
+                            .arg(key.as_str())
+                            .arg("list item 1")
+                            .query_async(&mut conn)
+                            .await?;
+                    }
+                    KeyType::Set => {
+                        let _: () = cmd("SADD")
+                            .arg(key.as_str())
+                            .arg("set item 1")
+                            .query_async(&mut conn)
+                            .await?;
+                    }
+                    KeyType::Zset => {
+                        let _: () = cmd("ZADD")
+                            .arg(key.as_str())
+                            .arg(1.0)
+                            .arg("zset item 1")
+                            .query_async(&mut conn)
+                            .await?;
+                    }
+                    KeyType::Hash => {
+                        let _: () = cmd("HSET")
+                            .arg(key.as_str())
+                            .arg("field1")
+                            .arg("value1")
+                            .query_async(&mut conn)
+                            .await?;
+                    }
+                    _ => {
+                        return Err(Error::Invalid {
+                            message: "Invalid key type".to_string(),
+                        });
+                    }
+                };
+                if let Some(ttl_duration) = ttl_duration {
+                    let _: () = cmd("EXPIRE")
+                        .arg(key.as_str())
+                        .arg(ttl_duration.as_secs())
+                        .query_async(&mut conn)
+                        .await?;
+                }
+
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    this.keys.insert(key_clone.clone(), key_type);
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                    this.select_key(key_clone, cx);
                 }
                 cx.notify();
             },

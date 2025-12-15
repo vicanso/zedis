@@ -29,6 +29,7 @@ pub use i18n::i18n_servers;
 pub use i18n::i18n_set_editor;
 pub use i18n::i18n_sidebar;
 pub use i18n::i18n_status_bar;
+pub use i18n::i18n_zset_editor;
 pub use server::ErrorMessage;
 pub use server::ServerEvent;
 pub use server::ServerTask;

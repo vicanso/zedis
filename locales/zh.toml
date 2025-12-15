@@ -11,6 +11,7 @@ remove = "移除"
 add = "添加"
 
 # --- 通用标签/字段 ---
+key = "键"
 name = "名称"
 host = "主机"
 port = "端口"
@@ -22,10 +23,12 @@ size = "大小"
 expired = "已过期"
 ttl = "有效期 (TTL)"
 perm = "权限"
+score = "分数"
 loading = "加载中..."
 latency = "延迟"
 
 # --- 通用占位符 ---
+key_placeholder = "输入键名"
 name_placeholder = "输入名称"
 host_placeholder = "输入主机地址"
 port_placeholder = "输入端口 (默认: 6379)"
@@ -35,6 +38,7 @@ value_placeholder = "输入新值"
 filter_placeholder = "按关键词过滤"
 keyword_placeholder = "按关键词过滤"
 ttl_placeholder = "例如：1d 或 1h"
+score_placeholder = "输入分数 (默认: 0.0)"
 
 remove_tooltip = "移除项"
 remove_item_prompt = "确定要删除此项: %{value} (行号 %{row}) 吗？"
@@ -59,7 +63,6 @@ update_tooltip = "编辑连接详情"
 remove_tooltip = "删除此服务器配置"
 
 [editor]
-# expired / perm / size / save / ttl_placeholder 在 common 中
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
 reload_key_tooltip = "重新加载键值"
 update_ttl_tooltip = "更新生存时间 (TTL)"
@@ -69,22 +72,21 @@ copy_key_tooltip = "复制键名"
 copied_key_to_clipboard = "键名已复制到剪贴板"
 
 [key_tree]
-# filter_placeholder 在 common 中
 no_keys_found = "未找到任何键"
 key_not_exists = "键不存在或已过期"
 search_tooltip = "切换键搜索模式"
 query_mode_all = "* 包含 (通配符)"
 query_mode_prefix = "^ 前缀匹配"
 query_mode_exact = "= 精确匹配"
+category = "类型"
+add_key_title = "添加键"
 
 [status_bar]
-# latency 在 common 中
 scan_completed = "扫描完成"
 scan_more_keys = "继续扫描更多键"
 soft_wrap = "软换行"
 
 [list_editor]
-# value / action / value_placeholder / confirm / cancel 在 common 中
 positon = "位置"
 update_tooltip = "更新列表项"
 delete_tooltip = "删除列表项"
@@ -93,14 +95,18 @@ add_value_title = "添加列表值"
 add_value_tooltip = "向列表添加新值"
 
 [set_editor]
-# value / value_placeholder / confirm / cancel 在 common 中
 add_value_title = "添加集合成员"
 add_value_tooltip = "向集合添加新成员"
 add_value_success = "成员添加成功"
 add_value_success_tips = "已添加成功。由于 Redis 集合（Set）的无序特性以及用于处理大型数据集的增量扫描（SSCAN）机制，新项目可能会在后续扫描中或完全刷新后才会出现。”"
 
+[zset_editor]
+add_value_title = "添加 Zset 值"
+add_value_tooltip = "向 Zset 添加新值"
+add_value_success = "值添加成功"
+add_value_success_tips = "值成员已添加。其位置由分数决定；您可能需要刷新才能看到它。。"
+
 
 [kv_table]
-# keyword_placeholder / add_tooltip 在 common 中
 search_tooltip = "点击开始增量扫描 (SCAN)"
 add_value_tooltip = "添加新值"
