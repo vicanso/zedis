@@ -14,16 +14,16 @@
 
 use super::ServerTask;
 use super::ZedisServerState;
-use super::value::NotificationAction;
-use super::value::RedisSetValue;
+use super::value::RedisHashValue;
 use super::value::RedisValue;
 use super::value::RedisValueStatus;
 use super::{KeyType, RedisValueData};
 use crate::connection::RedisAsyncConn;
 use crate::connection::get_connection_manager;
 use crate::error::Error;
+use crate::states::NotificationAction;
 use crate::states::ServerEvent;
-use crate::states::i18n_set_editor;
+use crate::states::i18n_hash_editor;
 use gpui::SharedString;
 use gpui::prelude::*;
 use redis::cmd;
@@ -31,19 +31,21 @@ use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-async fn get_redis_set_value(
+type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
+
+async fn get_redis_hash_value(
     conn: &mut RedisAsyncConn,
     key: &str,
     keyword: Option<SharedString>,
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<String>)> {
+) -> Result<(u64, Vec<(SharedString, SharedString)>)> {
     let pattern = if let Some(keyword) = keyword {
         format!("*{}*", keyword)
     } else {
         "*".to_string()
     };
-    let (cursor, value): (u64, Vec<Vec<u8>>) = cmd("SSCAN")
+    let (cursor, value): HashScanValue = cmd("HSCAN")
         .arg(key)
         .arg(cursor)
         .arg("MATCH")
@@ -55,29 +57,36 @@ async fn get_redis_set_value(
     if value.is_empty() {
         return Ok((cursor, vec![]));
     }
-    let value = value.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect();
+    let value = value
+        .iter()
+        .map(|(field, value)| {
+            (
+                String::from_utf8_lossy(field).to_string().into(),
+                String::from_utf8_lossy(value).to_string().into(),
+            )
+        })
+        .collect();
     Ok((cursor, value))
 }
 
-pub(crate) async fn first_load_set_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
-    let size: usize = cmd("SCARD").arg(key).query_async(conn).await?;
-    let (cursor, values) = get_redis_set_value(conn, key, None, 0, 100).await?;
+pub(crate) async fn first_load_hash_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
+    let size: usize = cmd("HLEN").arg(key).query_async(conn).await?;
+    let (cursor, values) = get_redis_hash_value(conn, key, None, 0, 100).await?;
     let done = cursor == 0;
     Ok(RedisValue {
-        key_type: KeyType::Set,
-        data: Some(RedisValueData::Set(Arc::new(RedisSetValue {
+        key_type: KeyType::Hash,
+        data: Some(RedisValueData::Hash(Arc::new(RedisHashValue {
             cursor,
             size,
-            values: values.into_iter().map(|v| v.into()).collect(),
+            values,
             done,
             ..Default::default()
         }))),
         ..Default::default()
     })
 }
-
 impl ZedisServerState {
-    pub fn add_set_value(&mut self, new_value: SharedString, cx: &mut Context<Self>) {
+    pub fn add_hash_value(&mut self, new_field: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
@@ -85,36 +94,30 @@ impl ZedisServerState {
         cx.notify();
         let server_id = self.server_id.clone();
         let key_clone = key.clone();
-        let new_value_clone = new_value.clone();
         self.spawn(
             ServerTask::AddSetValue,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id).await?;
 
-                let count: usize = cmd("SADD")
+                let count: usize = cmd("HSET")
                     .arg(key.as_str())
+                    .arg(new_field.as_str())
                     .arg(new_value.as_str())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
             },
             move |this, result, cx| {
-                let title = i18n_set_editor(cx, "add_value_success");
-                let msg = i18n_set_editor(cx, "add_value_success_tips");
+                let title = i18n_hash_editor(cx, "add_value_success");
+                let msg = i18n_hash_editor(cx, "add_value_success_tips");
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                     if let Ok(count) = result
-                        && let Some(RedisValueData::Set(set_data)) = value.data.as_mut()
+                        && let Some(RedisValueData::Hash(hash_data)) = value.data.as_mut()
                     {
-                        let set = Arc::make_mut(set_data);
-                        set.size += count;
-                        if set.done {
-                            if !set.values.contains(&new_value_clone) {
-                                set.values.push(new_value_clone);
-                            }
-                        } else {
-                            cx.dispatch_action(&NotificationAction::new_success(msg).with_title(title));
-                        }
+                        let hash = Arc::make_mut(hash_data);
+                        hash.size += count;
+                        cx.dispatch_action(&NotificationAction::new_success(msg).with_title(title));
                         cx.emit(ServerEvent::ValueAdded(key_clone));
                     }
                 }
@@ -123,31 +126,70 @@ impl ZedisServerState {
             cx,
         );
     }
-    pub fn filter_set_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
+    pub fn filter_hash_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         let Some(value) = self.value.as_mut() else {
             return;
         };
-        let Some(set) = value.set_value() else {
+        let Some(hash) = value.hash_value() else {
             return;
         };
-        let new_set = RedisSetValue {
+        let new_hash = RedisHashValue {
             keyword: Some(keyword.clone()),
-            size: set.size,
+            size: hash.size,
             ..Default::default()
         };
-        value.data = Some(RedisValueData::Set(Arc::new(new_set)));
-        self.load_more_set_value(cx);
+        value.data = Some(RedisValueData::Hash(Arc::new(new_hash)));
+        self.load_more_hash_value(cx);
     }
-    pub fn load_more_set_value(&mut self, cx: &mut Context<Self>) {
+    pub fn remove_hash_value(&mut self, remove_field: SharedString, cx: &mut Context<Self>) {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
+        let server_id = self.server_id.clone();
+        let remove_field_clone = remove_field.clone();
+        let key_clone = key.clone();
+        self.spawn(
+            ServerTask::RemoveHashValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let count: usize = cmd("HDEL")
+                    .arg(key.as_str())
+                    .arg(remove_field.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(count)
+            },
+            move |this, result, cx| {
+                if let Ok(count) = result {
+                    if count != 0
+                        && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
+                    {
+                        let hash = Arc::make_mut(hash_data);
+                        hash.values.retain(|(field, _)| field != &remove_field_clone);
+                        hash.size -= count;
+                    }
+                    cx.emit(ServerEvent::ValueUpdated(key_clone));
+                    if let Some(value) = this.value.as_mut() {
+                        value.status = RedisValueStatus::Idle;
+                    }
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+    }
+    pub fn load_more_hash_value(&mut self, cx: &mut Context<Self>) {
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        // Check if we have valid set data
-        let (cursor, keyword) = match value.set_value() {
-            Some(set) => (set.cursor, set.keyword.clone()),
+        // Check if we have valid hash data
+        let (cursor, keyword) = match value.hash_value() {
+            Some(hash) => (hash.cursor, hash.keyword.clone()),
             None => return,
         };
 
@@ -160,63 +202,25 @@ impl ZedisServerState {
                 let mut conn = get_connection_manager().get_connection(&server_id).await?;
                 // Fetch only the new items
                 let count = if keyword.is_some() { 1000 } else { 100 };
-                let result = get_redis_set_value(&mut conn, &key, keyword, cursor, count).await?;
+                let result = get_redis_hash_value(&mut conn, &key, keyword, cursor, count).await?;
                 Ok(result)
             },
             move |this, result, cx| {
                 if let Ok((new_cursor, new_values)) = result
-                    && let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
+                    && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
-                    let set = Arc::make_mut(set_data);
-                    set.cursor = new_cursor;
+                    let hash = Arc::make_mut(hash_data);
+                    hash.cursor = new_cursor;
                     if new_cursor == 0 {
-                        set.done = true;
+                        hash.done = true;
                     }
 
                     if !new_values.is_empty() {
                         // Append new items to the existing list
-                        set.values.extend(new_values.into_iter().map(|v| v.into()));
+                        hash.values.extend(new_values);
                     }
                 }
                 cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                }
-                cx.notify();
-            },
-            cx,
-        );
-    }
-    pub fn remove_set_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
-        let server_id = self.server_id.clone();
-        let remove_value_clone = remove_value.clone();
-        let key_clone = key.clone();
-        self.spawn(
-            ServerTask::RemoveSetValue,
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
-                // Fetch only the new items
-                let count: usize = cmd("SREM")
-                    .arg(key.as_str())
-                    .arg(remove_value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(count)
-            },
-            move |this, result, cx| {
-                if let Ok(count) = result
-                    && let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
-                {
-                    let set = Arc::make_mut(set_data);
-                    set.size -= count;
-                    set.values.retain(|v| v != &remove_value_clone);
-                }
-                cx.emit(ServerEvent::ValueUpdated(key_clone));
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }

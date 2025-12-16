@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
+use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -416,6 +417,7 @@ impl ConnectionManager {
             .filter(|node| node.role == NodeRole::Master)
             .cloned()
             .collect();
+        info!(master_nodes = ?master_nodes, "server master nodes");
         let connection = get_async_connection(&client).await?;
         let mut client = RedisClient {
             nodes,

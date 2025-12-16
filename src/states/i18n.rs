@@ -66,3 +66,8 @@ pub fn i18n_zset_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().locale(cx);
     t!(format!("zset_editor.{key}"), locale = locale).into()
 }
+
+pub fn i18n_hash_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+    t!(format!("hash_editor.{key}"), locale = locale).into()
+}

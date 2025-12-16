@@ -131,6 +131,10 @@ impl ZedisStringEditor {
                 ServerEvent::ValueLoaded(_) => {
                     this.update_editor_value(cx);
                 }
+                ServerEvent::ValueUpdated(_) => {
+                    this.value_modified = false;
+                    cx.notify();
+                }
                 ServerEvent::SoftWrapToggled(soft_wrap) => {
                     this.soft_wrap_changed = true;
                     this.soft_wrap = *soft_wrap;

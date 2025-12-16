@@ -12,6 +12,7 @@ add = "Add"
 
 # --- General Labels/Fields ---
 key = "Key"
+field = "Field"
 name = "Name"
 host = "Host"
 port = "Port"
@@ -22,13 +23,14 @@ action = "Action"
 size = "Size"
 expired = "Expired"
 ttl = "TTL"
-perm = "Permissions"
+permanent = "Permanent"
 score = "Score"
 loading = "Loading..."
 latency = "Latency"
 
 # --- General Placeholders ---
 key_placeholder = "Enter key"
+field_placeholder = "Enter field"
 name_placeholder = "Enter name"
 host_placeholder = "Enter host"
 port_placeholder = "Enter port (default: 6379)"
@@ -105,6 +107,12 @@ add_value_title = "Add Zset Value"
 add_value_tooltip = "Add new value to the Zset"
 add_value_success = "Value Added"
 add_value_success_tips = "Value added. Its position is determined by the score; you may need to refresh to view it."
+
+[hash_editor]
+add_value_title = "Add Hash Field"
+add_value_tooltip = "Add new field to the Hash"
+add_value_success = "Field Added"
+add_value_success_tips = "Field added. Its position is determined by the score; you may need to refresh to view it."
 
 [kv_table]
 search_tooltip = "Click to start incremental search (SCAN)"

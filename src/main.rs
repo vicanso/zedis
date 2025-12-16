@@ -57,6 +57,7 @@ mod states;
 mod views;
 
 pub struct Zedis {
+    pending_notification: Option<Notification>,
     last_bounds: Bounds<Pixels>,
     save_task: Option<Task<()>>,
     // views
@@ -70,9 +71,10 @@ impl Zedis {
         let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
         let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
         let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
-        cx.subscribe(&server_state, |_this, _server_state, event, cx| {
+        cx.subscribe(&server_state, |this, _server_state, event, cx| {
             if let ServerEvent::ErrorOccurred(error) = event {
-                cx.dispatch_action(&NotificationAction::new_error(error.message.clone()));
+                this.pending_notification = Some(Notification::error(error.message.clone()));
+                cx.notify();
             }
         })
         .detach();
@@ -89,6 +91,7 @@ impl Zedis {
             sidebar,
             save_task: None,
             content,
+            pending_notification: None,
             last_bounds: Bounds::default(),
         }
     }
@@ -132,6 +135,9 @@ impl Render for Zedis {
         let current_bounds = window.bounds();
         if current_bounds != self.last_bounds {
             self.persist_window_state(current_bounds, cx);
+        }
+        if let Some(notification) = self.pending_notification.take() {
+            window.push_notification(notification, cx);
         }
 
         h_flex()

@@ -15,6 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::components::{FormDialog, FormField, open_add_form_dialog};
 use crate::connection::QueryMode;
+use crate::helpers::{validate_key, validate_ttl};
 use crate::states::KeyType;
 use crate::states::ZedisServerState;
 use crate::states::i18n_common;
@@ -220,8 +221,11 @@ impl ZedisKeyTree {
                 .with_options(category_list.iter().map(|s| s.to_string().into()).collect()),
             FormField::new(i18n_common(cx, "key"))
                 .with_placeholder(i18n_common(cx, "key_placeholder"))
-                .with_focus(),
-            FormField::new(i18n_common(cx, "ttl")).with_placeholder(i18n_common(cx, "ttl_placeholder")),
+                .with_focus()
+                .with_validate(validate_key),
+            FormField::new(i18n_common(cx, "ttl"))
+                .with_placeholder(i18n_common(cx, "ttl_placeholder"))
+                .with_validate(validate_ttl),
         ];
         let server_state = self.server_state.clone();
         let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {

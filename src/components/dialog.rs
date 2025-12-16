@@ -30,6 +30,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 type SubmitHandler = Rc<dyn Fn(Vec<SharedString>, &mut Window, &mut App) -> bool>;
+type ValidateHandler = Rc<dyn Fn(&str) -> bool>;
 
 pub struct FormDialog {
     pub title: SharedString,
@@ -51,6 +52,7 @@ pub struct FormField {
     placeholder: SharedString,
     focus: bool,
     options: Option<Vec<SharedString>>,
+    validate_handler: Option<ValidateHandler>,
 }
 
 impl FormField {
@@ -73,6 +75,13 @@ impl FormField {
         self.options = Some(options);
         self
     }
+    pub fn with_validate<F>(mut self, validate: F) -> Self
+    where
+        F: Fn(&str) -> bool + 'static,
+    {
+        self.validate_handler = Some(Rc::new(validate));
+        self
+    }
 }
 
 pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut App) {
@@ -82,11 +91,19 @@ pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut Ap
     let focus_handle_done = Cell::new(false);
     let fields = params.fields.clone();
     for (index, field) in fields.iter().enumerate() {
+        let validate_handler = field.validate_handler.clone();
         match field.ty {
             FormFieldType::Input => {
                 let value_state = cx.new(|cx| {
                     InputState::new(window, cx)
                         .clean_on_escape()
+                        .validate(move |s, _cx| {
+                            if let Some(handler) = &validate_handler {
+                                handler(s)
+                            } else {
+                                true
+                            }
+                        })
                         .placeholder(field.placeholder.clone())
                 });
                 if should_foucus_index.is_none() && field.focus {

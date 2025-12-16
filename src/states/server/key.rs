@@ -15,6 +15,7 @@
 use super::ServerEvent;
 use super::ServerTask;
 use super::ZedisServerState;
+use super::hash::first_load_hash_value;
 use super::list::first_load_list_value;
 use super::set::first_load_set_value;
 use super::string::get_redis_value;
@@ -319,6 +320,7 @@ impl ZedisServerState {
                     KeyType::List => first_load_list_value(&mut conn, &key).await,
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
                     KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
+                    KeyType::Hash => first_load_hash_value(&mut conn, &key).await,
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),
@@ -457,10 +459,13 @@ impl ZedisServerState {
                 let exists: bool = cmd("EXISTS").arg(key.as_str()).query_async(&mut conn).await?;
                 let ttl_duration = if ttl.is_empty() {
                     None
+                } else if let Ok(secs) = ttl.parse::<u64>() {
+                    Some(Duration::from_secs(secs))
                 } else {
                     let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid { message: e.to_string() })?;
                     Some(ttl)
                 };
+
                 if exists {
                     return Err(Error::Invalid {
                         message: "Key already exists".to_string(),

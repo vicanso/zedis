@@ -12,6 +12,7 @@ add = "添加"
 
 # --- 通用标签/字段 ---
 key = "键"
+field = "字段"
 name = "名称"
 host = "主机"
 port = "端口"
@@ -22,13 +23,14 @@ action = "操作"
 size = "大小"
 expired = "已过期"
 ttl = "有效期 (TTL)"
-perm = "权限"
+permanent = "永久有效"
 score = "分数"
 loading = "加载中..."
 latency = "延迟"
 
 # --- 通用占位符 ---
 key_placeholder = "输入键名"
+field_placeholder = "输入字段名"
 name_placeholder = "输入名称"
 host_placeholder = "输入主机地址"
 port_placeholder = "输入端口 (默认: 6379)"
@@ -105,6 +107,12 @@ add_value_title = "添加 Zset 值"
 add_value_tooltip = "向 Zset 添加新值"
 add_value_success = "值添加成功"
 add_value_success_tips = "值成员已添加。其位置由分数决定；您可能需要刷新才能看到它。。"
+
+[hash_editor]
+add_value_title = "添加哈希字段"
+add_value_tooltip = "向哈希添加新字段"
+add_value_success = "字段添加成功"
+add_value_success_tips = "字段已添加。其位置由分数决定；您可能需要刷新才能看到它。"
 
 
 [kv_table]

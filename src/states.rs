@@ -22,6 +22,7 @@ pub use app::ZedisGlobalStore;
 pub use app::save_app_state;
 pub use i18n::i18n_common;
 pub use i18n::i18n_editor;
+pub use i18n::i18n_hash_editor;
 pub use i18n::i18n_key_tree;
 pub use i18n::i18n_kv_table;
 pub use i18n::i18n_list_editor;

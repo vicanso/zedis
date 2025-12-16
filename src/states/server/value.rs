@@ -85,6 +85,7 @@ pub enum RedisValueData {
     List(Arc<RedisListValue>),
     Set(Arc<RedisSetValue>),
     Zset(Arc<RedisZsetValue>),
+    Hash(Arc<RedisHashValue>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,6 +115,15 @@ pub struct RedisZsetValue {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct RedisHashValue {
+    pub cursor: u64,
+    pub keyword: Option<SharedString>,
+    pub size: usize,
+    pub done: bool,
+    pub values: Vec<(SharedString, SharedString)>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct RedisListValue {
     pub keyword: Option<SharedString>,
     pub size: usize,
@@ -135,6 +145,12 @@ impl RedisValue {
     }
     pub fn zset_value(&self) -> Option<&Arc<RedisZsetValue>> {
         if let Some(RedisValueData::Zset(data)) = self.data.as_ref() {
+            return Some(data);
+        }
+        None
+    }
+    pub fn hash_value(&self) -> Option<&Arc<RedisHashValue>> {
+        if let Some(RedisValueData::Hash(data)) = self.data.as_ref() {
             return Some(data);
         }
         None

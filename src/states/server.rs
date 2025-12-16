@@ -35,6 +35,7 @@ use tracing::error;
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 
+pub mod hash;
 pub mod key;
 pub mod list;
 pub mod set;
@@ -258,12 +259,11 @@ pub enum ServerTask {
     /// Push a value to a list
     PushListValue,
 
-    /// Add a value to a set
-    AddSetValue,
-
     /// Load more items
     LoadMoreValue,
 
+    /// Add a value to a set
+    AddSetValue,
     /// Remove a value from a set
     RemoveSetValue,
 
@@ -271,6 +271,9 @@ pub enum ServerTask {
     AddZsetValue,
     /// Remove a value from a zset
     RemoveZsetValue,
+
+    /// Remove a value from a hash
+    RemoveHashValue,
 
     /// Save edited value back to Redis
     SaveValue,
@@ -302,6 +305,7 @@ impl ServerTask {
             ServerTask::RemoveSetValue => "remove_set_value",
             ServerTask::AddZsetValue => "add_zset_value",
             ServerTask::RemoveZsetValue => "remove_zset_value",
+            ServerTask::RemoveHashValue => "remove_hash_value",
         }
     }
 }

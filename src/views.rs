@@ -15,6 +15,7 @@
 mod about;
 mod content;
 mod editor;
+mod hash_editor;
 mod key_tree;
 mod kv_table;
 mod list_editor;
@@ -28,6 +29,7 @@ mod zset_editor;
 pub use about::open_about_window;
 pub use content::ZedisContent;
 pub use editor::ZedisEditor;
+pub use hash_editor::ZedisHashEditor;
 pub use key_tree::ZedisKeyTree;
 pub use kv_table::{KvTableColumn, KvTableColumnType, ZedisKvTable};
 pub use list_editor::ZedisListEditor;

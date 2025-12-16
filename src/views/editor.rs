@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::helpers::validate_ttl;
 use crate::states::ServerEvent;
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_common;
 use crate::states::i18n_editor;
 use crate::states::{KeyType, ZedisServerState};
+use crate::views::ZedisHashEditor;
 use crate::views::ZedisListEditor;
 use crate::views::ZedisSetEditor;
 use crate::views::ZedisStringEditor;
@@ -38,6 +40,7 @@ use gpui_component::input::InputEvent;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::notification::Notification;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, IconName};
 use gpui_component::{Disableable, WindowExt};
@@ -49,7 +52,6 @@ use tracing::debug;
 use tracing::info;
 
 // Constants
-const PERM: &str = "perm";
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
 const TTL_INPUT_MAX_WIDTH: f32 = 130.0;
 
@@ -64,6 +66,7 @@ pub struct ZedisEditor {
     string_editor: Option<Entity<ZedisStringEditor>>,
     set_editor: Option<Entity<ZedisSetEditor>>,
     zset_editor: Option<Entity<ZedisZsetEditor>>,
+    hash_editor: Option<Entity<ZedisHashEditor>>,
 
     /// TTL editing state
     ttl_edit_mode: bool,
@@ -82,8 +85,9 @@ impl ZedisEditor {
         let mut subscriptions = vec![];
 
         // Initialize TTL input field with placeholder
-        let input = cx.new(|cx| {
+        let ttl_input_state = cx.new(|cx| {
             InputState::new(window, cx)
+                .validate(|s, _cx| validate_ttl(s))
                 .clean_on_escape()
                 .placeholder(i18n_common(cx, "ttl_placeholder"))
         });
@@ -96,8 +100,10 @@ impl ZedisEditor {
         }));
 
         // Subscribe to TTL input events for Enter key and blur
-        subscriptions.push(
-            cx.subscribe_in(&input, window, |view, _state, event, window, cx| match &event {
+        subscriptions.push(cx.subscribe_in(
+            &ttl_input_state,
+            window,
+            |view, _state, event, window, cx| match &event {
                 InputEvent::PressEnter { .. } => {
                     view.handle_update_ttl(window, cx);
                 }
@@ -106,8 +112,8 @@ impl ZedisEditor {
                     cx.notify();
                 }
                 _ => {}
-            }),
-        );
+            },
+        ));
 
         info!("Creating new editor view");
 
@@ -117,8 +123,9 @@ impl ZedisEditor {
             string_editor: None,
             set_editor: None,
             zset_editor: None,
+            hash_editor: None,
             ttl_edit_mode: false,
-            ttl_input_state: input,
+            ttl_input_state,
             _subscriptions: subscriptions,
             selected_key_at: None,
         }
@@ -160,14 +167,17 @@ impl ZedisEditor {
             let server_state = server_state.clone();
             let key = key.clone();
 
-            dialog.confirm().child(message).on_ok(move |_, window, cx| {
-                let key = key.clone();
-                server_state.update(cx, move |state, cx| {
-                    state.delete_key(key, cx);
-                });
-                window.close_dialog(cx);
-                true
-            })
+            dialog
+                .confirm()
+                .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
+                .on_ok(move |_, window, cx| {
+                    let key = key.clone();
+                    server_state.update(cx, move |state, cx| {
+                        state.delete_key(key, cx);
+                    });
+                    window.close_dialog(cx);
+                    true
+                })
         });
     }
     fn reload(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -200,7 +210,7 @@ impl ZedisEditor {
                 if seconds == -2 {
                     i18n_common(cx, "expired")
                 } else if seconds < 0 {
-                    i18n_common(cx, "perm")
+                    i18n_common(cx, "permanent")
                 } else {
                     humantime::format_duration(Duration::from_secs(seconds as u64))
                         .to_string()
@@ -297,7 +307,7 @@ impl ZedisEditor {
                         this.ttl_edit_mode = true;
                         this.ttl_input_state.update(cx, move |state, cx| {
                             // Clear value if permanent, otherwise use current TTL
-                            let value = if ttl == PERM {
+                            let value = if humantime::parse_duration(&ttl).is_err() {
                                 SharedString::default()
                             } else {
                                 ttl.clone()
@@ -387,6 +397,9 @@ impl ZedisEditor {
         if key_type != KeyType::Zset {
             let _ = self.zset_editor.take();
         }
+        if key_type != KeyType::Hash {
+            let _ = self.hash_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -423,6 +436,14 @@ impl ZedisEditor {
                 let editor = self.zset_editor.get_or_insert_with(|| {
                     debug!("Creating new zset editor");
                     cx.new(|cx| ZedisZsetEditor::new(self.server_state.clone(), window, cx))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::Hash => {
+                self.reset_editors(KeyType::Hash);
+                let editor = self.hash_editor.get_or_insert_with(|| {
+                    debug!("Creating new hash editor");
+                    cx.new(|cx| ZedisHashEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }
