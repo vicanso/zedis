@@ -57,8 +57,11 @@ star = "在 GitHub 上点赞"
 settings = "设置"
 
 [servers]
+master_name = "主节点名称"
+master_name_placeholder = "输入主节点名称，仅用于 Sentinel"
 remove_prompt = "您确定要删除此服务器连接: %{server} 吗？"
 add_server_title = "添加新服务器"
+remove_server_title = "删除服务器"
 update_server_title = "编辑服务器"
 add_server_description = "配置新 Redis 实例的连接详情。"
 update_tooltip = "编辑连接详情"

@@ -1,4 +1,6 @@
 use crate::connection::get_servers;
+use crate::helpers::is_app_store_build;
+use crate::helpers::is_development;
 use crate::helpers::{MemuAction, new_hot_keys};
 use crate::states::ServerEvent;
 use crate::states::ZedisAppState;
@@ -184,12 +186,11 @@ fn init_logger() {
             time::format_description::well_known::Rfc3339,
         )
     });
-    let is_development = env::var("RUST_ENV").unwrap_or_default() == "dev";
 
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
         .with_timer(timer)
-        .with_ansi(is_development)
+        .with_ansi(is_development())
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 }
@@ -207,6 +208,7 @@ fn main() {
             error!(error = %e, "get servers fail",);
         }
     }
+    info!(is_app_store_build = is_app_store_build(), "detect app build");
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.

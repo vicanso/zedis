@@ -15,7 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::components::{FormDialog, FormField, open_add_form_dialog};
 use crate::connection::QueryMode;
-use crate::helpers::{validate_key, validate_ttl};
+use crate::helpers::{validate_long_string, validate_ttl};
 use crate::states::KeyType;
 use crate::states::ZedisServerState;
 use crate::states::i18n_common;
@@ -222,7 +222,7 @@ impl ZedisKeyTree {
             FormField::new(i18n_common(cx, "key"))
                 .with_placeholder(i18n_common(cx, "key_placeholder"))
                 .with_focus()
-                .with_validate(validate_key),
+                .with_validate(validate_long_string),
             FormField::new(i18n_common(cx, "ttl"))
                 .with_placeholder(i18n_common(cx, "ttl_placeholder"))
                 .with_validate(validate_ttl),
@@ -428,6 +428,7 @@ impl ZedisKeyTree {
         })
         .text_sm()
         .p_1()
+        .pr(px(10.))
         .bg(cx.theme().sidebar)
         .text_color(cx.theme().sidebar_foreground)
         .h_full()

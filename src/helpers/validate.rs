@@ -19,6 +19,14 @@ pub fn validate_ttl(s: &str) -> bool {
     humantime::parse_duration(s).is_ok()
 }
 
-pub fn validate_key(s: &str) -> bool {
+pub fn validate_long_string(s: &str) -> bool {
     s.len() <= 4096
+}
+
+pub fn validate_common_string(s: &str) -> bool {
+    s.len() <= 255
+}
+
+pub fn validate_host(s: &str) -> bool {
+    s.len() <= 255 && s.is_ascii()
 }

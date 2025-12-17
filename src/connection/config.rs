@@ -13,7 +13,10 @@
 // limitations under the License.
 
 use crate::error::Error;
+use crate::helpers::decrypt;
+use crate::helpers::encrypt;
 use crate::helpers::get_or_create_config_dir;
+use crate::helpers::is_development;
 use gpui::Action;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,7 @@ use std::fmt;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -89,6 +93,9 @@ pub(crate) struct RedisServers {
 fn get_or_create_server_config() -> Result<PathBuf> {
     let config_dir = get_or_create_config_dir()?;
     let path = config_dir.join("redis-servers.toml");
+    if is_development() {
+        info!("config file: {}", path.display());
+    }
     if path.exists() {
         return Ok(path);
     }
@@ -103,11 +110,22 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         return Ok(vec![]);
     }
     let configs: RedisServers = toml::from_str(&value)?;
-    Ok(configs.servers)
+    let mut servers = configs.servers;
+    for server in servers.iter_mut() {
+        if let Some(password) = &server.password {
+            server.password = Some(decrypt(password).unwrap_or(password.clone()));
+        }
+    }
+    Ok(servers)
 }
 
 /// Saves the server configuration to the file.
-pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
+pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
+    for server in servers.iter_mut() {
+        if let Some(password) = &server.password {
+            server.password = Some(encrypt(password)?);
+        }
+    }
     let path = get_or_create_server_config()?;
     let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid { message: e.to_string() })?;
     fs::write(&path, value).await?;
@@ -116,17 +134,9 @@ pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
 
 /// Retrieves a single server configuration by name.
 pub(crate) fn get_config(id: &str) -> Result<RedisServer> {
-    let path = get_or_create_server_config()?;
-    let value = read_to_string(path)?;
-    // TODO 密码是否应该加密
-    // 是否使用toml
-    let configs: RedisServers = toml::from_str(&value)?;
-    let config = configs
-        .servers
-        .iter()
-        .find(|config| config.id == id)
-        .ok_or(Error::Invalid {
-            message: format!("Redis config not found: {}", id),
-        })?;
+    let servers = get_servers()?;
+    let config = servers.iter().find(|config| config.id == id).ok_or(Error::Invalid {
+        message: format!("Redis config not found: {id}"),
+    })?;
     Ok(config.clone())
 }

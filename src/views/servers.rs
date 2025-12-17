@@ -15,6 +15,9 @@
 use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::RedisServer;
+use crate::helpers::validate_common_string;
+use crate::helpers::validate_host;
+use crate::helpers::validate_long_string;
 use crate::states::Route;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
@@ -70,6 +73,7 @@ pub struct ZedisServers {
     host_state: Entity<InputState>,
     port_state: Entity<InputState>,
     password_state: Entity<InputState>,
+    master_name_state: Entity<InputState>,
     description_state: Entity<InputState>,
 
     /// Flag indicating if we're adding a new server (vs editing existing)
@@ -82,14 +86,33 @@ impl ZedisServers {
     /// Initializes all input field states with appropriate placeholders
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize input fields for server configuration form
-        let name_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "name_placeholder")));
-        let host_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "host_placeholder")));
+        let name_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "name_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let host_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "host_placeholder"))
+                .validate(|s, _cx| validate_host(s))
+        });
         let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "port_placeholder")));
-        let password_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "password_placeholder")));
-        let description_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "description_placeholder")));
-
+        let password_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "password_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+                .masked(true)
+        });
+        let description_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "description_placeholder"))
+                .validate(|s, _cx| validate_long_string(s))
+        });
+        let master_name_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "master_name_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
         info!("Creating new servers view");
 
         Self {
@@ -98,6 +121,7 @@ impl ZedisServers {
             host_state,
             port_state,
             password_state,
+            master_name_state,
             description_state,
             server_id: String::new(),
         }
@@ -144,18 +168,22 @@ impl ZedisServers {
         // let server = server.to_string();
         let locale = cx.global::<ZedisGlobalStore>().locale(cx).to_string();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();
             let server_state = server_state.clone();
             let server_id = server_id.clone();
 
-            dialog.confirm().child(message).on_ok(move |_, window, cx| {
-                server_state.update(cx, |state, cx| {
-                    state.remove_server(&server_id, cx);
-                });
-                window.close_dialog(cx);
-                true
-            })
+            dialog
+                .confirm()
+                .title(i18n_servers(cx, "remove_server_title"))
+                .child(message)
+                .on_ok(move |_, window, cx| {
+                    server_state.update(cx, |state, cx| {
+                        state.remove_server(&server_id, cx);
+                    });
+                    window.close_dialog(cx);
+                    true
+                })
         });
     }
     /// Open dialog to add new server or update existing server
@@ -168,6 +196,7 @@ impl ZedisServers {
         let host_state = self.host_state.clone();
         let port_state = self.port_state.clone();
         let password_state = self.password_state.clone();
+        let master_name_state = self.master_name_state.clone();
         let description_state = self.description_state.clone();
         let server_id = self.server_id.clone();
         let is_new = server_id.is_empty();
@@ -177,6 +206,7 @@ impl ZedisServers {
         let host_state_clone = host_state.clone();
         let port_state_clone = port_state.clone();
         let password_state_clone = password_state.clone();
+        let master_name_state_clone = master_name_state.clone();
         let description_state_clone = description_state.clone();
         let server_id_clone = server_id.clone();
 
@@ -188,6 +218,9 @@ impl ZedisServers {
                 .value()
                 .parse::<u16>()
                 .unwrap_or(DEFAULT_REDIS_PORT);
+            if name.is_empty() || host.is_empty() {
+                return false;
+            }
 
             let password_val = password_state_clone.read(cx).value();
             let password = if password_val.is_empty() {
@@ -195,7 +228,12 @@ impl ZedisServers {
             } else {
                 Some(password_val)
             };
-
+            let master_name_val = master_name_state_clone.read(cx).value();
+            let master_name = if master_name_val.is_empty() {
+                None
+            } else {
+                Some(master_name_val)
+            };
             let desc_val = description_state_clone.read(cx).value();
             let description = if desc_val.is_empty() { None } else { Some(desc_val) };
 
@@ -209,6 +247,7 @@ impl ZedisServers {
                         host: host.to_string(),
                         port,
                         password: password.map(|p| p.to_string()),
+                        master_name: master_name.map(|m| m.to_string()),
                         description: description.map(|d| d.to_string()),
                         ..current_server
                     },
@@ -235,6 +274,7 @@ impl ZedisServers {
             let port_label = i18n_common(cx, "port");
             let password_label = i18n_common(cx, "password");
             let description_label = i18n_common(cx, "description");
+            let master_name_label = i18n_servers(cx, "master_name");
 
             dialog
                 .title(title)
@@ -261,6 +301,7 @@ impl ZedisServers {
                                 // Password field with show/hide toggle
                                 .child(Input::new(&password_state).mask_toggle()),
                         )
+                        .child(field().label(master_name_label).child(Input::new(&master_name_state)))
                         .child(field().label(description_label).child(Input::new(&description_state)))
                 })
                 .on_ok({

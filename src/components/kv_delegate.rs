@@ -26,6 +26,7 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
+use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
 use gpui_component::Icon;
 use gpui_component::IconName;
@@ -170,7 +171,10 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
-        let label = Label::new(column.name.clone()).text_align(column.align);
+        let label = Label::new(column.name.clone())
+            .text_align(column.align)
+            .text_color(cx.theme().primary)
+            .text_sm();
         div()
             .size_full()
             .when(column.paddings.is_some(), |this| {

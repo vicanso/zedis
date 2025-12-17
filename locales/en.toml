@@ -57,8 +57,11 @@ star = "Star on GitHub"
 settings = "Settings"
 
 [servers]
+master_name = "Master Name"
+master_name_placeholder = "Enter master name, only for Sentinel"
 remove_prompt = "Are you sure you want to delete this server: %{server}?"
 add_server_title = "Add New Server"
+remove_server_title = "Remove Server"
 update_server_title = "Edit Server"
 add_server_description = "Configure connection details for a new Redis instance."
 update_tooltip = "Edit connection details"

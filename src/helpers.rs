@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::env;
+
 mod action;
 mod common;
 mod font;
@@ -24,6 +26,10 @@ pub use action::{MemuAction, new_hot_keys};
 pub use common::*;
 pub use font::get_font_family;
 pub use fs::get_or_create_config_dir;
-pub use string::fast_contains_ignore_case;
+pub use fs::is_app_store_build;
+pub use string::*;
 pub use time::unix_ts;
 pub use validate::*;
+pub fn is_development() -> bool {
+    env::var("RUST_ENV").unwrap_or_default() == "dev"
+}
