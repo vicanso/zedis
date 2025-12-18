@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::connection::QueryMode;
+use crate::connection::RedisClientDescription;
 use crate::connection::RedisServer;
 use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
@@ -161,6 +162,8 @@ pub struct ZedisServerState {
 
     /// Number of Redis nodes (master, replica) for cluster info
     nodes: (usize, usize),
+    /// Description of the nodes
+    nodes_description: Arc<RedisClientDescription>,
 
     /// Redis server version string
     version: SharedString,
@@ -379,6 +382,7 @@ impl ZedisServerState {
         self.server_id = SharedString::default();
         self.version = SharedString::default();
         self.nodes = (0, 0);
+        self.nodes_description = Arc::new(RedisClientDescription::default());
         self.dbsize = None;
         self.latency = None;
         self.key = None;
@@ -650,6 +654,10 @@ impl ZedisServerState {
     pub fn nodes(&self) -> (usize, usize) {
         self.nodes
     }
+    /// Get the description of the nodes
+    pub fn nodes_description(&self) -> Arc<RedisClientDescription> {
+        self.nodes_description.clone()
+    }
 
     /// Get the Redis server version string
     pub fn version(&self) -> &str {
@@ -862,8 +870,8 @@ impl ZedisServerState {
                     client.ping().await?;
                     let latency = start.elapsed();
                     let nodes = client.nodes();
-
-                    Ok((dbsize, latency, nodes, version))
+                    let nodes_description = client.nodes_description();
+                    Ok((dbsize, latency, nodes, nodes_description, version))
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading
@@ -872,10 +880,11 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, latency, nodes, version)) = result {
+                    if let Ok((dbsize, latency, nodes, nodes_description, version)) = result {
                         this.latency = Some(latency);
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
+                        this.nodes_description = Arc::new(nodes_description);
                         this.version = version.into();
                     };
 

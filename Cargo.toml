@@ -51,6 +51,7 @@ time = "0.3.44"
 toml = "0.9.8"
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
+url = "2.5.7"
 uuid = "1.19.0"
 
 

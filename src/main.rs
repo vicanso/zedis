@@ -232,16 +232,7 @@ fn main() {
         if let Some(theme) = app_store.theme(cx) {
             Theme::change(theme, None, cx);
         }
-        println!("primary display: {:?}", cx.primary_display());
-        // TODO 校验是否在显示区域
-        for item in cx.displays() {
-            println!("{:?}", item.bounds());
-            println!("{:?}", item.id());
-            println!("{:?}", item.uuid());
-            println!("{:?}", item.default_bounds());
-        }
         cx.set_global(app_store);
-
         cx.bind_keys(new_hot_keys());
         cx.on_action(|e: &MemuAction, cx: &mut App| match e {
             MemuAction::Quit => {

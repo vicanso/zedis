@@ -44,7 +44,7 @@ const LOADING_SKELETON_WIDTH: f32 = 600.0;
 const LOADING_SKELETON_SMALL_WIDTH: f32 = 100.0;
 const LOADING_SKELETON_MEDIUM_WIDTH: f32 = 220.0;
 const LOADING_SKELETON_LARGE_WIDTH: f32 = 420.0;
-const SERVERS_MARGIN: f32 = 4.0;
+const SERVERS_MARGIN: f32 = 16.0;
 
 /// Main content area component for the Zedis application
 ///

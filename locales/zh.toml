@@ -55,6 +55,9 @@ dark = "深色"
 system = "系统默认"
 star = "在 GitHub 上点赞"
 settings = "设置"
+server_type = "类型"
+master_nodes = "主节点"
+slave_nodes = "从节点"
 
 [servers]
 master_name = "主节点名称"

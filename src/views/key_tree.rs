@@ -122,6 +122,7 @@ impl ZedisKeyTree {
                 .clean_on_escape()
                 .placeholder(i18n_common(cx, "filter_placeholder"))
         });
+        // initial focus
         keyword_state.update(cx, |state, cx| {
             state.focus(window, cx);
         });
@@ -253,42 +254,58 @@ impl ZedisKeyTree {
         );
     }
 
-    /// Render the tree view or empty state message
-    ///
-    /// Displays:
-    /// - Tree structure with keys and folders (normal state)
-    /// - "Key not exists" message (Exact mode with expired key)
-    /// - Error or "no keys found" message (empty state)
-    fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Renders the colored badge for key types (String, Hash, etc.)
+    fn render_key_type_badge(&self, key_type: &KeyType) -> impl IntoElement {
+        if key_type == &KeyType::Unknown {
+            return div().into_any_element();
+        }
+
+        let color = key_type.color();
+        let mut bg = color;
+        bg.fade_out(KEY_TYPE_FADE_ALPHA);
+        let mut border = color;
+        border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
+
+        Label::new(key_type.as_str())
+            .text_xs()
+            .bg(bg)
+            .text_color(color)
+            .border_1()
+            .px_1()
+            .rounded_sm()
+            .border_color(border)
+            .into_any_element()
+    }
+    fn get_tree_status_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let server_state = self.server_state.read(cx);
+        // if scanning, return None
+        if server_state.scaning() {
+            return None;
+        }
+        if !self.state.is_empty && self.state.error.is_none() {
+            return None;
+        }
 
-        // Handle empty states when not scanning
-        if !server_state.scaning() && (self.state.is_empty || self.state.error.is_some()) {
-            // Special case: Exact mode with expired/non-existent key
-            if self.state.query_mode == QueryMode::Exact {
-                if let Some(value) = server_state.value()
-                    && value.is_expired()
-                {
-                    return h_flex()
-                        .w_full()
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .pt_5()
-                        .px_2()
-                        .child(Label::new(i18n_key_tree(cx, "key_not_exists")).text_sm())
-                        .into_any_element();
-                }
-                return h_flex().into_any_element();
+        let mut text = SharedString::default();
+
+        if self.state.query_mode == QueryMode::Exact {
+            if let Some(value) = server_state.value()
+                && value.is_expired()
+            {
+                text = i18n_key_tree(cx, "key_not_exists");
             }
-
-            // Show error message or generic "no keys found"
-            let text = self
+        } else {
+            text = self
                 .state
                 .error
                 .clone()
-                .unwrap_or_else(|| i18n_key_tree(cx, "no_keys_found"));
-            return div()
+                .unwrap_or_else(|| i18n_key_tree(cx, "no_keys_found"))
+        }
+        if text.is_empty() {
+            return Some(h_flex().into_any_element());
+        }
+        Some(
+            div()
                 .h_flex()
                 .w_full()
                 .items_center()
@@ -303,12 +320,54 @@ impl ZedisKeyTree {
                         .overflow_hidden()
                         .child(Label::new(text).text_sm().whitespace_normal()),
                 )
-                .into_any_element();
+                .into_any_element(),
+        )
+    }
+
+    fn new_handle_select_item<E: ?Sized>(
+        &self,
+        item_id: SharedString,
+        is_folder: bool,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&E, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, _, _window, cx| {
+            if is_folder {
+                if this.state.expanded_items.contains(&item_id) {
+                    // User clicked an expanded folder -> collapse it
+                    this.state.expanded_items.remove(&item_id);
+                } else {
+                    // User clicked a collapsed folder -> expand it and load data
+                    this.state.expanded_items.insert(item_id.clone());
+                    this.server_state.update(cx, |state, cx| {
+                        state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
+                    });
+                }
+            } else {
+                // Select Key
+                if this.server_state.read(cx).key().as_ref() != Some(&item_id) {
+                    this.server_state.update(cx, |state, cx| {
+                        state.select_key(item_id.clone(), cx);
+                    });
+                }
+            }
+        })
+    }
+
+    /// Render the tree view or empty state message
+    ///
+    /// Displays:
+    /// - Tree structure with keys and folders (normal state)
+    /// - "Key not exists" message (Exact mode with expired key)
+    /// - Error or "no keys found" message (empty state)
+    fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(status_view) = self.get_tree_status_view(cx) {
+            return status_view.into_any_element();
         }
+
         // Prepare colors and state for tree rendering
         let view = cx.entity();
         let yellow = cx.theme().colors.yellow;
-        let selected_key = server_state.key().unwrap_or_default();
+        let selected_key = self.server_state.read(cx).key().unwrap_or_default();
         let server_state = self.server_state.clone();
         let even_bg = cx.theme().background;
 
@@ -322,34 +381,14 @@ impl ZedisKeyTree {
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
         tree(&self.tree_state, move |ix, entry, _selected, _window, cx| {
-            view.update(cx, |_, cx| {
+            view.update(cx, |this, cx| {
                 let item = entry.item();
 
                 // Render appropriate icon based on item type
                 let icon = if !entry.is_folder() {
                     // Key item: Show type badge (String, List, etc.)
                     let key_type = server_state.read(cx).key_type(&item.id).unwrap_or(&KeyType::Unknown);
-
-                    if key_type == &KeyType::Unknown {
-                        div().into_any_element()
-                    } else {
-                        // Create colored badge with faded background and border
-                        let key_type_color = key_type.color();
-                        let mut key_type_bg = key_type_color;
-                        key_type_bg.fade_out(KEY_TYPE_FADE_ALPHA);
-                        let mut key_type_border = key_type_color;
-                        key_type_border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
-
-                        Label::new(key_type.as_str())
-                            .text_xs()
-                            .bg(key_type_bg)
-                            .text_color(key_type_color)
-                            .border_1()
-                            .px_1()
-                            .rounded_sm()
-                            .border_color(key_type_border)
-                            .into_any_element()
-                    }
+                    this.render_key_type_badge(key_type).into_any_element()
                 } else if entry.is_expanded() {
                     // Expanded folder: Show open folder icon
                     Icon::new(IconName::FolderOpen).text_color(yellow).into_any_element()
@@ -378,35 +417,6 @@ impl ZedisKeyTree {
                 // Only clone minimal data: id and folder flag
                 let item_id = item.id.clone();
                 let is_folder = item.is_folder();
-
-                let handle_select_item = cx.listener(move |this, _, _window, cx| {
-                    if is_folder {
-                        // Check REAL-TIME expanded state from our state management
-                        // Note: item.is_expanded() reflects render-time state from TreeState,
-                        // but we need to check if it's ACTUALLY in our expanded set
-                        let currently_in_expanded_set = this.state.expanded_items.contains(&item_id);
-
-                        if currently_in_expanded_set {
-                            // User clicked an expanded folder -> collapse it
-                            this.state.expanded_items.remove(&item_id);
-                        } else {
-                            // User clicked a collapsed folder -> expand it and load data
-                            this.state.expanded_items.insert(item_id.clone());
-                            this.server_state.update(cx, |state, cx| {
-                                state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
-                            });
-                        }
-                        return;
-                    }
-                    if this.server_state.read(cx).key() == Some(item_id.clone()) {
-                        return;
-                    }
-
-                    // Key click: Select the key for editing
-                    this.server_state.update(cx, |state, cx| {
-                        state.select_key(item_id.clone(), cx);
-                    });
-                });
                 ListItem::new(ix)
                     .w_full()
                     .bg(bg)
@@ -423,7 +433,7 @@ impl ZedisKeyTree {
                             .child(div().flex_1().text_ellipsis().child(item.label.clone()))
                             .child(count_label),
                     )
-                    .on_click(handle_select_item)
+                    .on_click(this.new_handle_select_item(item_id, is_folder, cx))
             })
         })
         .text_sm()

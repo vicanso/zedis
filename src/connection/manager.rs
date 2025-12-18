@@ -27,6 +27,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
 use tracing::info;
+use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -61,9 +62,23 @@ pub enum NodeRole {
 // Represents a single Redis node
 #[derive(Debug, Clone, Default)]
 struct RedisNode {
-    addr: String,
+    connection_url: String,
     role: NodeRole,
     master_name: Option<String>,
+}
+
+impl RedisNode {
+    pub fn host_port(&self) -> String {
+        let Ok(url) = Url::parse(&self.connection_url) else {
+            return self.connection_url.clone();
+        };
+        let host = url.host_str().unwrap_or_default().to_string();
+        if let Some(port) = url.port() {
+            format!("{}:{}", host, port)
+        } else {
+            host
+        }
+    }
 }
 
 // Information parsed from `CLUSTER NODES` command
@@ -161,10 +176,17 @@ async fn get_async_connection(client: &RClient) -> Result<RedisAsyncConn> {
 // TODO 是否在client中保存connection
 #[derive(Clone)]
 pub struct RedisClient {
+    server_type: ServerType,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
     version: String,
     connection: RedisAsyncConn,
+}
+#[derive(Debug, Clone, Default)]
+pub struct RedisClientDescription {
+    pub server_type: SharedString,
+    pub master_nodes: SharedString,
+    pub slave_nodes: SharedString,
 }
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -174,13 +196,32 @@ impl RedisClient {
         &self.version
     }
 
+    pub fn nodes_description(&self) -> RedisClientDescription {
+        let master_nodes: Vec<String> = self.master_nodes.iter().map(|node| node.host_port()).collect();
+        let slave_nodes: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|node| !master_nodes.contains(&node.host_port()))
+            .map(|node| node.host_port().clone())
+            .collect();
+        RedisClientDescription {
+            server_type: format!("{:?}", self.server_type).into(),
+            master_nodes: master_nodes.join(",").into(),
+            slave_nodes: slave_nodes.join(",").into(),
+        }
+    }
+
     /// Executes commands on all master nodes concurrently.
     /// # Arguments
     /// * `cmds` - A vector of commands to execute.
     /// # Returns
     /// * `Vec<T>` - A vector of results from the commands.
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
-        let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.addr.as_str()).collect();
+        let addrs: Vec<_> = self
+            .master_nodes
+            .iter()
+            .map(|item| item.connection_url.as_str())
+            .collect();
         let values = query_async_masters(addrs, cmds).await?;
         Ok(values)
     }
@@ -325,7 +366,7 @@ impl ConnectionManager {
                         tmp_config.host = item.ip.clone();
 
                         RedisNode {
-                            addr: tmp_config.get_connection_url(),
+                            connection_url: tmp_config.get_connection_url(),
                             role: item.role.clone(),
                             ..Default::default()
                         }
@@ -367,7 +408,7 @@ impl ConnectionManager {
                     tmp_config.port = port;
 
                     nodes.push(RedisNode {
-                        addr: tmp_config.get_connection_url(),
+                        connection_url: tmp_config.get_connection_url(),
                         role: NodeRole::Master,
                         master_name: Some(name.clone()),
                     });
@@ -384,7 +425,7 @@ impl ConnectionManager {
             }
             _ => Ok((
                 vec![RedisNode {
-                    addr: url,
+                    connection_url: url,
                     role: NodeRole::Master,
                     ..Default::default()
                 }],
@@ -403,12 +444,12 @@ impl ConnectionManager {
         let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
         let client = match server_type {
             ServerType::Cluster => {
-                let addrs: Vec<String> = nodes.iter().map(|n| n.addr.clone()).collect();
+                let addrs: Vec<String> = nodes.iter().map(|n| n.connection_url.clone()).collect();
                 let client = cluster::ClusterClient::new(addrs)?;
                 RClient::Cluster(client)
             }
             _ => {
-                let client = Client::open(nodes[0].addr.clone())?;
+                let client = Client::open(nodes[0].connection_url.clone())?;
                 RClient::Single(client)
             }
         };
@@ -420,6 +461,7 @@ impl ConnectionManager {
         info!(master_nodes = ?master_nodes, "server master nodes");
         let connection = get_async_connection(&client).await?;
         let mut client = RedisClient {
+            server_type: server_type.clone(),
             nodes,
             master_nodes,
             version: "".to_string(),

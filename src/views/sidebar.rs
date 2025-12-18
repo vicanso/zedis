@@ -435,7 +435,13 @@ impl ZedisSidebar {
                 .h(px(STAR_BUTTON_HEIGHT))
                 .w_full()
                 .tooltip(i18n_sidebar(cx, "star"))
-                .icon(Icon::new(IconName::GitHub))
+                .child(
+                    v_flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(IconName::GitHub))
+                        .child(Label::new("ZEDIS").text_xs()),
+                )
                 .on_click(cx.listener(move |_, _, _, cx| {
                     cx.open_url("https://github.com/vicanso/zedis");
                 })),

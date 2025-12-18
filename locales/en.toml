@@ -55,6 +55,9 @@ dark = "Dark"
 system = "System"
 star = "Star on GitHub"
 settings = "Settings"
+server_type = "Type"
+master_nodes = "Master"
+slave_nodes = "Slave"
 
 [servers]
 master_name = "Master Name"
