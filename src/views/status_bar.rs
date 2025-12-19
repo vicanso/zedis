@@ -12,35 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
-use crate::connection::RedisClientDescription;
-use crate::states::ErrorMessage;
-use crate::states::ServerEvent;
-use crate::states::ServerTask;
-use crate::states::ZedisServerState;
-use crate::states::i18n_common;
-use crate::states::i18n_sidebar;
-use crate::states::i18n_status_bar;
-use gpui::Entity;
-use gpui::Hsla;
-use gpui::SharedString;
-use gpui::Subscription;
-use gpui::Task;
-use gpui::TextAlign;
-use gpui::Window;
-use gpui::div;
-use gpui::prelude::*;
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Sizable;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::tooltip::Tooltip;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::{
+    assets::CustomIconName,
+    connection::RedisClientDescription,
+    states::{ErrorMessage, ServerEvent, ServerTask, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar},
+};
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use gpui_component::{
+    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    button::{Button, ButtonVariants},
+    h_flex,
+    label::Label,
+    tooltip::Tooltip,
+};
+use std::{sync::Arc, time::Duration};
 use tracing::info;
 
 /// Formats the database size and scan count string "count/total".

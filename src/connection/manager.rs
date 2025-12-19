@@ -12,20 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::async_connection::{RedisAsyncConn, query_async_masters};
-use super::config::get_config;
+use super::{
+    async_connection::{RedisAsyncConn, query_async_masters},
+    config::get_config,
+};
 use crate::error::Error;
 use dashmap::DashMap;
 use gpui::SharedString;
-use redis::AsyncConnectionConfig;
-use redis::FromRedisValue;
-use redis::cmd;
-use redis::{Client, Cmd, cluster};
-use redis::{InfoDict, Role};
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::sync::LazyLock;
-use std::time::Duration;
+use redis::{AsyncConnectionConfig, Client, Cmd, FromRedisValue, InfoDict, Role, cluster, cmd};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+    time::Duration,
+};
 use tracing::info;
 use url::Url;
 

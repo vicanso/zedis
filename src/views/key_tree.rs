@@ -12,41 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
-use crate::components::{FormDialog, FormField, open_add_form_dialog};
-use crate::connection::QueryMode;
-use crate::helpers::{validate_long_string, validate_ttl};
-use crate::states::KeyType;
-use crate::states::ZedisServerState;
-use crate::states::i18n_common;
-use crate::states::i18n_key_tree;
+use crate::{
+    assets::CustomIconName,
+    components::{FormDialog, FormField, open_add_form_dialog},
+    connection::QueryMode,
+    helpers::{validate_long_string, validate_ttl},
+    states::{KeyType, ZedisServerState, i18n_common, i18n_key_tree},
+};
 use ahash::AHashSet;
-use gpui::App;
-use gpui::AppContext;
-use gpui::Corner;
-use gpui::Entity;
-use gpui::Hsla;
-use gpui::SharedString;
-use gpui::Subscription;
-use gpui::Window;
-use gpui::div;
-use gpui::prelude::*;
-use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::StyledExt;
-use gpui_component::WindowExt;
-use gpui_component::button::ButtonVariants;
-use gpui_component::button::{Button, DropdownButton};
-use gpui_component::h_flex;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::label::Label;
-use gpui_component::list::ListItem;
-use gpui_component::tree::TreeState;
-use gpui_component::tree::tree;
-use gpui_component::v_flex;
+use gpui::{App, AppContext, Corner, Entity, Hsla, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui_component::{
+    ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
+    button::{Button, ButtonVariants, DropdownButton},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    label::Label,
+    list::ListItem,
+    tree::{TreeState, tree},
+    v_flex,
+};
 use std::rc::Rc;
 use tracing::info;
 
@@ -343,8 +327,9 @@ impl ZedisKeyTree {
                     });
                 }
             } else {
+                let is_selected = this.server_state.read(cx).key().as_ref() == Some(&item_id);
                 // Select Key
-                if this.server_state.read(cx).key().as_ref() != Some(&item_id) {
+                if !is_selected {
                     this.server_state.update(cx, |state, cx| {
                         state.select_key(item_id.clone(), cx);
                     });

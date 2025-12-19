@@ -12,40 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::AnyElement;
-use gpui::App;
-use gpui::ClickEvent;
-use gpui::ElementId;
-use gpui::Fill;
-use gpui::Window;
-use gpui::prelude::*;
-use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::button::Button;
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::list::ListItem;
+use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, SharedString, Window, prelude::*, px};
+use gpui_component::{ActiveTheme, Icon, button::Button, h_flex, label::Label, list::ListItem};
 
+/// Type alias for the click handler closure.
 type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
+/// A customizable Card component used to display grouped content.
+///
+/// It supports an icon, title, description, action buttons, a footer,
+/// and custom background styling. It wraps a `ListItem` to provide standard
+/// interactive behaviors.
 #[derive(IntoElement)]
 pub struct Card {
+    /// Unique identifier for the element.
     id: ElementId,
+    /// Optional leading icon.
     icon: Option<Icon>,
-    title: Option<String>,
-    description: Option<String>,
+    /// Main title text.
+    title: Option<SharedString>,
+    /// Secondary description text.
+    description: Option<SharedString>,
+    /// List of action buttons to display in the header.
     actions: Option<Vec<Button>>,
+    /// Handler for click events.
     on_click: Option<OnClick>,
+    /// Optional footer element.
     footer: Option<AnyElement>,
+    /// Custom background fill.
     bg: Option<Fill>,
 }
-
 impl Card {
+    /// Creates a new `Card` with the given element ID.
     pub fn new(id: impl Into<ElementId>) -> Self {
-        let id: ElementId = id.into();
         Self {
-            id,
+            id: id.into(),
             icon: None,
             title: None,
             description: None,
@@ -55,30 +56,45 @@ impl Card {
             bg: None,
         }
     }
+
+    /// Sets the leading icon for the card.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
         self
     }
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+
+    /// Sets the title text.
+    /// Accepts any type that can be converted into a `SharedString`.
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
         self
     }
-    pub fn description(mut self, description: impl Into<String>) -> Self {
+
+    /// Sets the description text displayed below the header.
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
         self
     }
+
+    /// Sets the action buttons displayed on the right side of the header.
     pub fn actions(mut self, actions: impl Into<Vec<Button>>) -> Self {
         self.actions = Some(actions.into());
         self
     }
+
+    /// Sets the click event handler for the card.
     pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Box::new(handler));
         self
     }
+
+    /// Sets a custom footer element at the bottom of the card.
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.footer = Some(footer.into_any_element());
         self
     }
+
+    /// Overrides the default background color/fill.
     pub fn bg(mut self, bg: impl Into<Fill>) -> Self {
         self.bg = Some(bg.into());
         self
@@ -87,41 +103,35 @@ impl Card {
 
 impl RenderOnce for Card {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let mut header = h_flex();
-        if let Some(icon) = self.icon {
-            header = header.child(icon);
-        }
-        if let Some(title) = self.title {
-            header = header.child(Label::new(title).ml_2().text_base().whitespace_normal());
-        }
-        if let Some(actions) = self.actions {
-            header = header.child(h_flex().flex_1().justify_end().children(actions));
-        }
+        // Construct the header row: Icon + Title + Spacer + Actions
+        let header = h_flex()
+            .when_some(self.icon, |this, icon| this.child(icon))
+            .when_some(self.title, |this, title| {
+                this.child(Label::new(title).ml_2().text_base().whitespace_normal())
+            })
+            // Use flex_1 to push actions to the right
+            .when_some(self.actions, |this, actions| {
+                this.child(h_flex().flex_1().justify_end().children(actions))
+            });
 
-        let mut item = ListItem::new(self.id)
+        // Construct the main card container using a declarative style
+        ListItem::new(self.id)
             .m_2()
             .border(px(1.))
             .border_color(cx.theme().border)
             .p_4()
             .rounded(cx.theme().radius)
-            .child(header);
-
-        if let Some(bg) = self.bg {
-            item = item.bg(bg);
-        }
-
-        if let Some(on_click) = self.on_click {
-            item = item.on_click(on_click);
-        }
-
-        if let Some(description) = self.description {
-            item = item.child(Label::new(description).text_sm().whitespace_normal());
-        }
-
-        if let Some(footer) = self.footer {
-            item = item.child(footer);
-        }
-
-        item
+            // Apply custom background if provided
+            .when_some(self.bg, |this, bg| this.bg(bg))
+            // Attach click handler if provided
+            .when_some(self.on_click, |this, handler| this.on_click(handler))
+            // Add Header
+            .child(header)
+            // Add Description
+            .when_some(self.description, |this, description| {
+                this.child(Label::new(description).text_sm().whitespace_normal())
+            })
+            // Add Footer
+            .when_some(self.footer, |this, footer| this.child(footer))
     }
 }

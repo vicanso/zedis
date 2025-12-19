@@ -14,16 +14,12 @@
 
 use crate::error::Error;
 use futures::future::try_join_all;
-use redis::Client;
-use redis::Cmd;
-use redis::Pipeline;
-use redis::RedisFuture;
-use redis::aio::ConnectionLike;
-use redis::aio::MultiplexedConnection;
-use redis::cluster_async::ClusterConnection;
-use redis::{FromRedisValue, Value};
-use std::sync::LazyLock;
-use std::time::Duration;
+use redis::{
+    Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
+    aio::{ConnectionLike, MultiplexedConnection},
+    cluster_async::ClusterConnection,
+};
+use std::{sync::LazyLock, time::Duration};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 

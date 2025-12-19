@@ -13,23 +13,9 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use chrono::Datelike;
-use chrono::Local;
-use gpui::App;
-use gpui::Bounds;
-use gpui::TitlebarOptions;
-use gpui::Window;
-use gpui::WindowBounds;
-use gpui::WindowKind;
-use gpui::WindowOptions;
-use gpui::prelude::*;
-use gpui::px;
-use gpui::size;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::v_flex;
+use chrono::{Datelike, Local};
+use gpui::{App, Bounds, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px, size};
+use gpui_component::{ActiveTheme, Icon, h_flex, label::Label, v_flex};
 
 struct About;
 

@@ -12,19 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::Error;
-use crate::helpers::decrypt;
-use crate::helpers::encrypt;
-use crate::helpers::get_or_create_config_dir;
-use crate::helpers::is_development;
+use crate::{
+    error::Error,
+    helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
+};
 use gpui::Action;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
-use std::fmt;
-use std::fs::read_to_string;
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{fmt, fs::read_to_string, path::PathBuf, str::FromStr};
 use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;

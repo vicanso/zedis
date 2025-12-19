@@ -430,7 +430,9 @@ impl Render for ZedisServers {
                     .icon(Icon::new(CustomIconName::DatabaseZap))
                     .title(title)
                     .bg(bg)
-                    .when(!description.is_empty(), |this| this.description(description))
+                    .when(!description.is_empty(), |this| {
+                        this.description(description.to_string())
+                    })
                     .when(!updated_at.is_empty(), |this| {
                         this.footer(
                             Label::new(updated_at)

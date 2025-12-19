@@ -12,43 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
-use crate::constants::SIDEBAR_WIDTH;
-use crate::states::Route;
-use crate::states::ServerEvent;
-use crate::states::ZedisAppState;
-use crate::states::ZedisGlobalStore;
-use crate::states::ZedisServerState;
-use crate::states::i18n_sidebar;
-use crate::states::save_app_state;
-use gpui::Action;
-use gpui::Context;
-use gpui::Corner;
-use gpui::Entity;
-use gpui::Pixels;
-use gpui::SharedString;
-use gpui::Subscription;
-use gpui::Window;
-use gpui::WindowAppearance;
-use gpui::div;
-use gpui::prelude::*;
-use gpui::px;
-use gpui::uniform_list;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Theme;
-use gpui_component::ThemeMode;
-use gpui_component::button::Button;
-use gpui_component::button::ButtonVariants;
-use gpui_component::label::Label;
-use gpui_component::list::ListItem;
-use gpui_component::menu::DropdownMenu;
-use gpui_component::v_flex;
+use crate::{
+    assets::CustomIconName,
+    constants::SIDEBAR_WIDTH,
+    states::{Route, ServerEvent, ZedisAppState, ZedisGlobalStore, ZedisServerState, i18n_sidebar, save_app_state},
+};
+use gpui::{
+    Action, Context, Corner, Entity, Pixels, SharedString, Subscription, Window, WindowAppearance, div, prelude::*, px,
+    uniform_list,
+};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, Theme, ThemeMode,
+    button::{Button, ButtonVariants},
+    label::Label,
+    list::ListItem,
+    menu::DropdownMenu,
+    v_flex,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tracing::error;
-use tracing::info;
+use tracing::{error, info};
 
 // Constants for UI layout
 const ICON_PADDING: Pixels = px(8.0);

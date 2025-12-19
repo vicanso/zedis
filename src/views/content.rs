@@ -12,32 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::get_key_tree_widths;
-use crate::states::Route;
-use crate::states::ZedisGlobalStore;
-use crate::states::ZedisServerState;
-use crate::states::i18n_common;
-use crate::states::save_app_state;
-use crate::views::ZedisEditor;
-use crate::views::ZedisKeyTree;
-use crate::views::ZedisServers;
-use gpui::Entity;
-use gpui::Pixels;
-use gpui::Subscription;
-use gpui::Window;
-use gpui::div;
-use gpui::prelude::*;
-use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::label::Label;
-use gpui_component::resizable::ResizableState;
-use gpui_component::resizable::h_resizable;
-use gpui_component::resizable::resizable_panel;
-use gpui_component::skeleton::Skeleton;
-use gpui_component::v_flex;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
+use crate::{
+    helpers::get_key_tree_widths,
+    states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
+    views::{ZedisEditor, ZedisKeyTree, ZedisServers},
+};
+use gpui::{Entity, Pixels, Subscription, Window, div, prelude::*, px};
+use gpui_component::{
+    ActiveTheme,
+    label::Label,
+    resizable::{ResizableState, h_resizable, resizable_panel},
+    skeleton::Skeleton,
+    v_flex,
+};
+use tracing::{debug, error, info};
 
 // Constants for UI dimensions
 const LOADING_SKELETON_WIDTH: f32 = 600.0;
