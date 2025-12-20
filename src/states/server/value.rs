@@ -12,21 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ServerEvent;
-use super::ServerTask;
-use super::ZedisServerState;
+use super::{ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::get_connection_manager;
 use bytes::Bytes;
 use chrono::Local;
-use gpui::Action;
-use gpui::Hsla;
-use gpui::SharedString;
-use gpui::prelude::*;
+use gpui::{Action, Hsla, SharedString, prelude::*};
 use redis::cmd;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
 
+/// Notification category for user feedback
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Default)]
 pub enum NotificationCategory {
     #[default]
@@ -36,6 +32,7 @@ pub enum NotificationCategory {
     Error,
 }
 
+/// Notification action that can be triggered in the UI
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action, Default)]
 pub struct NotificationAction {
     pub title: Option<SharedString>,
@@ -44,6 +41,7 @@ pub struct NotificationAction {
 }
 
 impl NotificationAction {
+    /// Creates a new info notification
     pub fn new_info(message: SharedString) -> Self {
         Self {
             category: NotificationCategory::Info,
@@ -51,6 +49,8 @@ impl NotificationAction {
             ..Default::default()
         }
     }
+
+    /// Creates a new success notification
     pub fn new_success(message: SharedString) -> Self {
         Self {
             category: NotificationCategory::Success,
@@ -58,6 +58,8 @@ impl NotificationAction {
             ..Default::default()
         }
     }
+
+    /// Creates a new warning notification
     pub fn new_warning(message: SharedString) -> Self {
         Self {
             category: NotificationCategory::Warning,
@@ -65,6 +67,8 @@ impl NotificationAction {
             ..Default::default()
         }
     }
+
+    /// Creates a new error notification
     pub fn new_error(message: SharedString) -> Self {
         Self {
             category: NotificationCategory::Error,
@@ -72,12 +76,15 @@ impl NotificationAction {
             ..Default::default()
         }
     }
+
+    /// Sets the title for the notification
     pub fn with_title(mut self, title: SharedString) -> Self {
         self.title = Some(title);
         self
     }
 }
 
+/// Redis value data variants for different data types
 #[derive(Debug, Clone)]
 pub enum RedisValueData {
     String(SharedString),
@@ -88,6 +95,7 @@ pub enum RedisValueData {
     Hash(Arc<RedisHashValue>),
 }
 
+/// Redis Set value structure with pagination support
 #[derive(Debug, Clone, Default)]
 pub struct RedisSetValue {
     pub keyword: Option<SharedString>,
@@ -97,13 +105,15 @@ pub struct RedisSetValue {
     pub done: bool,
 }
 
+/// Sort order for sorted sets
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub enum SortOrder {
     #[default]
-    Asc, // 升序 (默认)
-    Desc, // 降序
+    Asc, // Ascending order (default)
+    Desc, // Descending order
 }
 
+/// Redis Sorted Set value structure with pagination and sorting support
 #[derive(Debug, Clone, Default)]
 pub struct RedisZsetValue {
     pub keyword: Option<SharedString>,
@@ -114,6 +124,7 @@ pub struct RedisZsetValue {
     pub sort_order: SortOrder,
 }
 
+/// Redis Hash value structure with pagination support
 #[derive(Debug, Clone, Default)]
 pub struct RedisHashValue {
     pub cursor: u64,
@@ -123,6 +134,7 @@ pub struct RedisHashValue {
     pub values: Vec<(SharedString, SharedString)>,
 }
 
+/// Redis List value structure
 #[derive(Debug, Clone, Default)]
 pub struct RedisListValue {
     pub keyword: Option<SharedString>,
@@ -131,24 +143,31 @@ pub struct RedisListValue {
 }
 
 impl RedisValue {
+    /// Returns the list value if the data is a List type
     pub fn list_value(&self) -> Option<&Arc<RedisListValue>> {
         if let Some(RedisValueData::List(data)) = self.data.as_ref() {
             return Some(data);
         }
         None
     }
+
+    /// Returns the set value if the data is a Set type
     pub fn set_value(&self) -> Option<&Arc<RedisSetValue>> {
         if let Some(RedisValueData::Set(data)) = self.data.as_ref() {
             return Some(data);
         }
         None
     }
+
+    /// Returns the sorted set value if the data is a Zset type
     pub fn zset_value(&self) -> Option<&Arc<RedisZsetValue>> {
         if let Some(RedisValueData::Zset(data)) = self.data.as_ref() {
             return Some(data);
         }
         None
     }
+
+    /// Returns the hash value if the data is a Hash type
     pub fn hash_value(&self) -> Option<&Arc<RedisHashValue>> {
         if let Some(RedisValueData::Hash(data)) = self.data.as_ref() {
             return Some(data);
@@ -156,7 +175,8 @@ impl RedisValue {
         None
     }
 }
-// string, list, set, zset, hash, stream, and vectorset.
+
+/// Redis key types: string, list, set, zset, hash, stream, and vectorset
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum KeyType {
     #[default]
@@ -170,6 +190,7 @@ pub enum KeyType {
     Vectorset,
 }
 impl KeyType {
+    /// Returns the abbreviated string representation of the key type
     pub fn as_str(&self) -> &'static str {
         match self {
             KeyType::String => "STR",
@@ -183,20 +204,22 @@ impl KeyType {
         }
     }
 
+    /// Returns the color associated with this key type for UI display
     pub fn color(&self) -> Hsla {
         match self {
-            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),    // 蓝色系
-            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),      // 紫色系
-            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),      // 橙色系
-            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),       // 青色系
-            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),     // 红色系
-            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),    // 绿色系
-            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // 粉色系
-            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0),   // 灰色
+            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),    // Blue
+            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),      // Purple
+            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),      // Orange
+            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),       // Cyan
+            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),     // Red
+            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),    // Green
+            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // Pink
+            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0),   // Gray
         }
     }
 }
 
+/// Status of a Redis value operation
 #[derive(Clone, PartialEq, Default, Debug)]
 pub enum RedisValueStatus {
     #[default]
@@ -205,6 +228,7 @@ pub enum RedisValueStatus {
     Updating,
 }
 
+/// Redis value with metadata including type, data, expiration, and status
 #[derive(Debug, Clone, Default)]
 pub struct RedisValue {
     pub(crate) status: RedisValueStatus,
@@ -215,27 +239,43 @@ pub struct RedisValue {
 }
 
 impl RedisValue {
+    /// Checks if the value is currently being loaded or updated
     pub fn is_busy(&self) -> bool {
         !matches!(self.status, RedisValueStatus::Idle)
     }
+
+    /// Checks if the value is currently loading
     pub fn is_loading(&self) -> bool {
         matches!(self.status, RedisValueStatus::Loading)
     }
+
+    /// Returns the string value if the data is a String type
     pub fn string_value(&self) -> Option<SharedString> {
         if let Some(RedisValueData::String(value)) = self.data.as_ref() {
             return Some(value.clone());
         }
         None
     }
+
+    /// Returns the bytes value if the data is a Bytes type
     pub fn bytes_value(&self) -> Option<&[u8]> {
         if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
             return Some(value);
         }
         None
     }
+
+    /// Returns the size of the value in bytes
     pub fn size(&self) -> usize {
         self.size
     }
+
+    /// Returns the time-to-live duration for this key
+    ///
+    /// Returns None if no expiration is set.
+    /// Special Redis TTL codes:
+    /// - -1: No expiration set
+    /// - -2: Key does not exist or is expired
     pub fn ttl(&self) -> Option<chrono::Duration> {
         let expire_at = self.expire_at?;
 
@@ -248,19 +288,21 @@ impl RedisValue {
         let now = Local::now().timestamp();
         let remaining = expire_at.saturating_sub(now);
 
-        // If calculated remaining is 0 but it wasn't a special code, it means expired just now.
-        // We can treat it as expired (-2) or just 0.
-        // Keeping consistent with original logic: if < 0 (should imply logic error if saturating_sub used, but kept for safety)
         Some(chrono::Duration::seconds(remaining))
     }
+
+    /// Returns the key type
     pub fn key_type(&self) -> KeyType {
         self.key_type
     }
+
+    /// Checks if the key is expired (TTL = -2)
     pub fn is_expired(&self) -> bool {
         self.expire_at.is_some_and(|expire_at| expire_at == -2)
     }
 }
 
+/// Converts a string representation to a KeyType
 impl From<&str> for KeyType {
     fn from(value: &str) -> Self {
         match value {
@@ -277,11 +319,17 @@ impl From<&str> for KeyType {
 }
 
 impl ZedisServerState {
+    /// Saves a new value for a Redis string key
+    ///
+    /// This method updates the UI immediately with the new value and then
+    /// asynchronously persists it to Redis. If the save fails, the original
+    /// value is restored.
     pub fn save_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let Some(value) = self.value.as_mut() else {
             return;
         };
+
         let original_value = value.string_value().unwrap_or_default();
         value.status = RedisValueStatus::Updating;
         value.size = new_value.len();
@@ -303,7 +351,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
-                    // recover
+                    // Recover original value if save failed
                     if result.is_err() {
                         value.size = original_value.len();
                         value.data = Some(RedisValueData::String(original_value));

@@ -12,26 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ServerEvent;
-use super::ServerTask;
-use super::ZedisServerState;
-use super::hash::first_load_hash_value;
-use super::list::first_load_list_value;
-use super::set::first_load_set_value;
-use super::string::get_redis_value;
-use super::value::{KeyType, RedisValue, RedisValueStatus, SortOrder};
-use super::zset::first_load_zset_value;
-use crate::connection::QueryMode;
-use crate::connection::get_connection_manager;
-use crate::error::Error;
-use crate::helpers::unix_ts;
+use super::{
+    ServerEvent, ServerTask, ZedisServerState,
+    hash::first_load_hash_value,
+    list::first_load_list_value,
+    set::first_load_set_value,
+    string::get_redis_value,
+    value::{KeyType, RedisValue, RedisValueStatus, SortOrder},
+    zset::first_load_zset_value,
+};
+use crate::{
+    connection::{QueryMode, get_connection_manager},
+    error::Error,
+    helpers::unix_ts,
+};
 use futures::{StreamExt, stream};
-use gpui::SharedString;
-use gpui::prelude::*;
+use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
+
 const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
 
 impl ZedisServerState {

@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::KeyType;
-use super::value::{RedisValue, RedisValueData};
-use crate::connection::RedisAsyncConn;
-use crate::error::Error;
+use super::value::{KeyType, RedisValue, RedisValueData};
+use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
 use gpui::SharedString;
 use redis::cmd;
