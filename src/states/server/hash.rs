@@ -117,7 +117,9 @@ impl ZedisServerState {
                     {
                         let hash = Arc::make_mut(hash_data);
                         hash.size += count;
-                        cx.dispatch_action(&NotificationAction::new_success(msg).with_title(title));
+                        cx.emit(ServerEvent::Notification(
+                            NotificationAction::new_success(msg).with_title(title),
+                        ));
                         cx.emit(ServerEvent::ValueAdded(key_clone));
                     }
                 }

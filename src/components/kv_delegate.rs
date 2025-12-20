@@ -56,6 +56,11 @@ pub trait ZedisKvFetcher: 'static {
         0
     }
 
+    /// Returns the column indices that are readonly.
+    fn readonly_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+
     /// Returns true if the fetcher is finished loading data.
     fn is_done(&self) -> bool;
 
@@ -114,7 +119,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
             .enumerate()
             .map(|(index, item)| {
                 // Create input state for editable value columns
-                if item.ty == KvTableColumnType::Value {
+                if item.column_type == KvTableColumnType::Value {
                     value_states.insert(index, cx.new(|cx| InputState::new(window, cx).clean_on_escape()));
                 }
 
@@ -358,11 +363,11 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings));
 
-        let is_editing = self.editing_row.get() == Some(row_ix);
+        let is_editing = self.editing_row.get() == Some(row_ix) && !self.fetcher.readonly_columns().contains(&col_ix);
 
         // Handle special column types
         if let Some(table_column) = self.table_columns.get(col_ix) {
-            match table_column.ty {
+            match table_column.column_type {
                 // Index column: Display row number (1-based)
                 KvTableColumnType::Index => {
                     return base.child(Label::new((row_ix + 1).to_string()).text_align(column.align).w_full());

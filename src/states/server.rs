@@ -19,6 +19,7 @@ use crate::connection::get_connection_manager;
 use crate::connection::save_servers;
 use crate::error::Error;
 use crate::helpers::unix_ts;
+use crate::states::NotificationAction;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
@@ -353,6 +354,8 @@ pub enum ServerEvent {
     SoftWrapToggled(bool),
     /// An error occurred.
     ErrorOccurred(ErrorMessage),
+    /// A notification has been emitted.
+    Notification(NotificationAction),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}

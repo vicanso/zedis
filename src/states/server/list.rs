@@ -12,20 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ServerTask;
-use super::ZedisServerState;
-use super::value::RedisListValue;
-use super::value::RedisValue;
-use super::value::RedisValueStatus;
-use super::{KeyType, RedisValueData};
-use crate::connection::RedisAsyncConn;
-use crate::connection::get_connection_manager;
-use crate::error::Error;
-use crate::states::ServerEvent;
-use gpui::SharedString;
-use gpui::prelude::*;
-use redis::cmd;
-use redis::pipe;
+use super::{
+    KeyType, RedisValueData, ServerTask, ZedisServerState,
+    value::{RedisListValue, RedisValue, RedisValueStatus},
+};
+use crate::{
+    connection::{RedisAsyncConn, get_connection_manager},
+    error::Error,
+    states::ServerEvent,
+};
+use gpui::{SharedString, prelude::*};
+use redis::{cmd, pipe};
 use std::sync::Arc;
 use uuid::Uuid;
 

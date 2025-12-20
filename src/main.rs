@@ -2,12 +2,12 @@ use crate::connection::get_servers;
 use crate::helpers::is_app_store_build;
 use crate::helpers::is_development;
 use crate::helpers::{MemuAction, new_hot_keys};
+use crate::states::NotificationCategory;
 use crate::states::ServerEvent;
 use crate::states::ZedisAppState;
 use crate::states::ZedisGlobalStore;
 use crate::states::ZedisServerState;
 use crate::states::save_app_state;
-use crate::states::{NotificationAction, NotificationCategory};
 use crate::views::ZedisContent;
 use crate::views::ZedisSidebar;
 use crate::views::ZedisStatusBar;
@@ -74,10 +74,28 @@ impl Zedis {
         let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
         let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
         cx.subscribe(&server_state, |this, _server_state, event, cx| {
-            if let ServerEvent::ErrorOccurred(error) = event {
-                this.pending_notification = Some(Notification::error(error.message.clone()));
-                cx.notify();
+            match event {
+                ServerEvent::Notification(e) => {
+                    let message = e.message.clone();
+                    let mut notification = match e.category {
+                        NotificationCategory::Info => Notification::info(message),
+                        NotificationCategory::Success => Notification::success(message),
+                        NotificationCategory::Warning => Notification::warning(message),
+                        _ => Notification::error(message),
+                    };
+                    if let Some(title) = e.title.as_ref() {
+                        notification = notification.title(title);
+                    }
+                    this.pending_notification = Some(notification);
+                }
+                ServerEvent::ErrorOccurred(error) => {
+                    this.pending_notification = Some(Notification::error(error.message.clone()));
+                }
+                _ => {
+                    return;
+                }
             }
+            cx.notify();
         })
         .detach();
         cx.observe_window_appearance(window, |_this, _window, cx| {
@@ -157,19 +175,6 @@ impl Render for Zedis {
             )
             .children(dialog_layer)
             .children(notification_layer)
-            .on_action(cx.listener(|_this, e: &NotificationAction, window, cx| {
-                let message = e.message.clone();
-                let mut notification = match e.category {
-                    NotificationCategory::Info => Notification::info(message),
-                    NotificationCategory::Success => Notification::success(message),
-                    NotificationCategory::Warning => Notification::warning(message),
-                    _ => Notification::error(message),
-                };
-                if let Some(title) = e.title.as_ref() {
-                    notification = notification.title(title);
-                }
-                window.push_notification(notification, cx);
-            }))
     }
 }
 

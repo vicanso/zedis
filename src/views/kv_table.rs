@@ -50,7 +50,7 @@ pub enum KvTableColumnType {
 #[derive(Clone, Default)]
 pub struct KvTableColumn {
     /// Type of the column
-    pub ty: KvTableColumnType,
+    pub column_type: KvTableColumnType,
     /// Display name of the column
     pub name: SharedString,
     /// Optional fixed width in pixels
@@ -118,7 +118,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         columns.insert(
             0,
             KvTableColumn {
-                ty: KvTableColumnType::Index,
+                column_type: KvTableColumnType::Index,
                 name: INDEX_COLUMN_NAME.to_string().into(),
                 width: Some(80.),
                 align: Some(TextAlign::Right),
@@ -127,7 +127,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
         // Append action column at the end
         columns.push(KvTableColumn {
-            ty: KvTableColumnType::Action,
+            column_type: KvTableColumnType::Action,
             name: i18n_common(cx, "action"),
             width: Some(100.0),
             align: Some(TextAlign::Center),

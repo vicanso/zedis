@@ -107,12 +107,14 @@ add_value_title = "Add Set Member"
 add_value_tooltip = "Add new member to the Set"
 add_value_success = "Member Added"
 add_value_success_tips = "Success. Due to the unordered nature of Redis Sets and the incremental scan (SSCAN) used for this large dataset, the new item may appear in a later scan or after a full refresh."
+add_value_exists_tips = "Member already exists"
 
 [zset_editor]
 add_value_title = "Add Zset Value"
 add_value_tooltip = "Add new value to the Zset"
 add_value_success = "Value Added"
 add_value_success_tips = "Value added. Its position is determined by the score; you may need to refresh to view it."
+update_value_score_success_tips = "Score updated."
 
 [hash_editor]
 add_value_title = "Add Hash Field"

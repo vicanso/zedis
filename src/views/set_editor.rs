@@ -12,49 +12,60 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::components::FormDialog;
-use crate::components::FormField;
-use crate::components::ZedisKvFetcher;
-use crate::components::open_add_form_dialog;
-use crate::states::RedisValue;
-use crate::states::ZedisServerState;
-use crate::states::i18n_common;
-use crate::states::i18n_set_editor;
-use crate::views::KvTableColumn;
-use crate::views::ZedisKvTable;
-use gpui::App;
-use gpui::Entity;
-use gpui::SharedString;
-use gpui::Window;
-use gpui::div;
-use gpui::prelude::*;
+use crate::{
+    components::{FormDialog, FormField, ZedisKvFetcher, open_add_form_dialog},
+    states::{RedisValue, ZedisServerState, i18n_common, i18n_set_editor},
+    views::{KvTableColumn, ZedisKvTable},
+};
+use gpui::{App, Entity, SharedString, Window, div, prelude::*};
 use gpui_component::WindowExt;
 use std::rc::Rc;
 use tracing::info;
 
+/// Data adapter for Redis SET values to work with the KV table component.
+///
+/// This struct implements the `ZedisKvFetcher` trait to provide data access
+/// and operations for the table view.
 struct ZedisSetValues {
+    /// Current Redis SET value data
     value: RedisValue,
+    /// Reference to server state for executing Redis operations
     server_state: Entity<ZedisServerState>,
 }
 
 impl ZedisKvFetcher for ZedisSetValues {
+    /// Opens a dialog to add a new member to the SET.
+    ///
+    /// Creates a form with a single value input field and handles submission
+    /// by calling the server state's `add_set_value` method.
     fn handle_add_value(&self, window: &mut Window, cx: &mut App) {
         let server_state = self.server_state.clone();
+
+        // Create submission handler that extracts the value and calls Redis SADD
         let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
+            // Validate that a value was provided
             if values.is_empty() {
                 return false;
             }
+
+            // Execute the add operation on server state
             server_state.update(cx, |this, cx| {
                 this.add_set_value(values[0].clone(), cx);
             });
+
+            // Close the dialog on successful submission
             window.close_dialog(cx);
             true
         });
+
+        // Build form with a single value input field
         let fields = vec![
             FormField::new(i18n_common(cx, "value"))
                 .with_placeholder(i18n_common(cx, "value_placeholder"))
                 .with_focus(),
         ];
+
+        // Open the form dialog
         open_add_form_dialog(
             FormDialog {
                 title: i18n_set_editor(cx, "add_value_title"),
@@ -65,45 +76,61 @@ impl ZedisKvFetcher for ZedisSetValues {
             cx,
         );
     }
+
+    /// Returns the total cardinality of the SET (from Redis SCARD).
     fn count(&self) -> usize {
-        let Some(value) = self.value.set_value() else {
-            return 0;
-        };
-        value.size
+        self.value.set_value().map_or(0, |v| v.size)
     }
+
+    /// Creates a new data adapter instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         Self { server_state, value }
     }
+
+    /// Retrieves a cell value for the table at the given row and column.
+    ///
+    /// For SETs, there's only one column (the member value itself).
     fn get(&self, row_ix: usize, _col_ix: usize) -> Option<SharedString> {
-        let value = self.value.set_value()?;
-        value.values.get(row_ix).cloned()
-    }
-    fn rows_count(&self) -> usize {
-        let Some(value) = self.value.set_value() else {
-            return 0;
-        };
-        value.values.len()
-    }
-    fn is_done(&self) -> bool {
-        let Some(value) = self.value.set_value() else {
-            return false;
-        };
-        value.done
+        self.value.set_value()?.values.get(row_ix).cloned()
     }
 
+    /// Returns the number of currently loaded rows (not total SET size).
+    ///
+    /// This may be less than `count()` if pagination is in progress.
+    fn rows_count(&self) -> usize {
+        self.value.set_value().map_or(0, |v| v.values.len())
+    }
+
+    /// Checks if all SET members have been loaded via SSCAN.
+    ///
+    /// Returns `true` when the cursor has completed iteration (cursor == 0).
+    fn is_done(&self) -> bool {
+        self.value.set_value().is_some_and(|v| v.done)
+    }
+
+    /// Triggers loading of the next batch of SET members.
+    ///
+    /// Uses cursor-based pagination via SSCAN to load more values.
     fn load_more(&self, _window: &mut Window, cx: &mut App) {
         self.server_state.update(cx, |this, cx| {
             this.load_more_set_value(cx);
         });
     }
 
+    /// Applies a filter to SET members by pattern matching.
+    ///
+    /// Resets the scan and loads members matching the keyword pattern.
     fn filter(&self, keyword: SharedString, cx: &mut App) {
         self.server_state.update(cx, |this, cx| {
-            this.filter_set_value(keyword.clone(), cx);
+            this.filter_set_value(keyword, cx);
         });
     }
 
+    /// Removes a member from the SET at the given index.
+    ///
+    /// Executes Redis SREM command to delete the member.
     fn remove(&self, index: usize, cx: &mut App) {
+        // Get the SET value at the specified index
         let Some(set) = self.value.set_value() else {
             return;
         };
@@ -111,32 +138,45 @@ impl ZedisKvFetcher for ZedisSetValues {
             return;
         };
 
-        // set.values.get
+        // Execute removal operation
         self.server_state.update(cx, |this, cx| {
             this.remove_set_value(value.clone(), cx);
         });
     }
 }
 
+/// Main SET editor view component.
+///
+/// Provides a table-based UI for viewing and managing Redis SET values.
+/// Wraps the generic `ZedisKvTable` component with SET-specific configuration.
 pub struct ZedisSetEditor {
-    /// Reference to server state for Redis operations
+    /// The table component that renders the SET members
     table_state: Entity<ZedisKvTable<ZedisSetValues>>,
 }
+
 impl ZedisSetEditor {
+    /// Creates a new SET editor instance.
+    ///
+    /// # Arguments
+    /// * `server_state` - Reference to the server state for Redis operations
+    /// * `window` - GPUI window handle
+    /// * `cx` - GPUI context for component initialization
+    ///
+    /// # Returns
+    /// A new `ZedisSetEditor` instance with a single-column table
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Initialize the KV table with a single "Value" column
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisSetValues>::new(
-                vec![KvTableColumn::new("Value", None)],
-                server_state.clone(),
-                window,
-                cx,
-            )
+            ZedisKvTable::<ZedisSetValues>::new(vec![KvTableColumn::new("Value", None)], server_state, window, cx)
         });
-        info!("Creating new set editor view");
+
+        info!("Creating new SET editor view");
         Self { table_state }
     }
 }
+
 impl Render for ZedisSetEditor {
+    /// Renders the SET editor as a full-size container with the table.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(self.table_state.clone()).into_any_element()
     }
