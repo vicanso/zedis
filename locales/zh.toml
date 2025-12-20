@@ -121,6 +121,7 @@ add_value_title = "添加哈希字段"
 add_value_tooltip = "向哈希添加新字段"
 add_value_success = "字段添加成功"
 add_value_success_tips = "字段已添加。其位置由分数决定；您可能需要刷新才能看到它。"
+update_exist_field_value_success_tips = "字段值已更新。"
 
 
 [kv_table]
