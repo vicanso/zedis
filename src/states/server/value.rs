@@ -307,16 +307,16 @@ impl RedisValue {
 
     /// Returns the string value if the data is a String type
     pub fn string_value(&self) -> Option<SharedString> {
-        if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
+        if let Some(value) = self.bytes_value() {
             return value.text.clone();
         }
         None
     }
 
     /// Returns the bytes value if the data is a Bytes type
-    pub fn bytes_value(&self) -> Option<&[u8]> {
+    pub fn bytes_value(&self) -> Option<Arc<RedisBytesValue>> {
         if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
-            return Some(value.bytes.as_ref());
+            return Some(value.clone());
         }
         None
     }

@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::helpers::get_font_family;
-use crate::states::ServerEvent;
-use crate::states::{RedisValue, ZedisServerState};
+use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ZedisServerState};
 use gpui::AnyWindowHandle;
 use gpui::Entity;
 use gpui::SharedString;
@@ -28,6 +27,7 @@ use gpui_component::input::TabSize;
 use gpui_component::input::{Input, InputState};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
+use std::sync::Arc;
 use tracing::info;
 
 // Constants for editor configuration
@@ -63,6 +63,9 @@ pub struct ZedisStringEditor {
     /// Whether to soft wrap the editor
     soft_wrap: bool,
 
+    /// Whether the editor is readonly
+    readonly: bool,
+
     /// Whether the soft wrap has been changed
     soft_wrap_changed: bool,
 
@@ -70,11 +73,16 @@ pub struct ZedisStringEditor {
     _subscriptions: Vec<Subscription>,
 }
 
+enum ByteEditorData {
+    Text(SharedString),
+    Hex(SharedString),
+}
+
 /// Extract string value from Redis value, with hex fallback for binary data
 ///
-/// If the value is a string, returns it directly.
+/// If the value is a string, returns Text(SharedString).
 /// If the value is binary data, formats it as a hex dump with appropriate width
-/// based on viewport size.
+/// based on viewport size and returns Hex(SharedString).
 ///
 /// # Arguments
 /// * `window` - Window reference for viewport size calculation
@@ -82,35 +90,33 @@ pub struct ZedisStringEditor {
 ///
 /// # Returns
 /// String representation (either original string or hex dump)
-fn get_string_value(window: &Window, value: Option<&RedisValue>) -> SharedString {
+fn format_byte_editor_data(window: &Window, value: Option<Arc<RedisBytesValue>>) -> ByteEditorData {
     let Some(value) = value else {
-        return String::new().into();
+        return ByteEditorData::Text(SharedString::default());
     };
 
-    let mut string_value = value.string_value().unwrap_or_default();
-
-    // If string is empty but we have binary data, display as hex
-    if string_value.is_empty()
-        && let Some(data) = value.bytes_value()
-    {
-        // Adjust hex width based on viewport size
-        let width = window.viewport_size().width;
-        let hex_width = match width {
-            width if width < px(VIEWPORT_BREAKPOINT) => HEX_WIDTH_NARROW,
-            _ => HEX_WIDTH_WIDE,
-        };
-
-        // Configure hex dump format
-        let cfg = HexConfig {
-            title: false,
-            width: hex_width,
-            group: 0,
-            ..Default::default()
-        };
-        string_value = config_hex(&data, cfg).into()
+    if value.format != DataFormat::Bytes {
+        return ByteEditorData::Text(SharedString::default());
+    }
+    if let Some(text) = &value.text {
+        return ByteEditorData::Text(text.clone());
     }
 
-    string_value
+    // Adjust hex width based on viewport size
+    let width = window.viewport_size().width;
+    let hex_width = match width {
+        width if width < px(VIEWPORT_BREAKPOINT) => HEX_WIDTH_NARROW,
+        _ => HEX_WIDTH_WIDE,
+    };
+
+    // Configure hex dump format
+    let cfg = HexConfig {
+        title: false,
+        width: hex_width,
+        group: 0,
+        ..Default::default()
+    };
+    ByteEditorData::Hex(config_hex(&value.bytes, cfg).into())
 }
 
 impl ZedisStringEditor {
@@ -144,8 +150,15 @@ impl ZedisStringEditor {
         );
 
         // Get initial value (string or hex dump)
-        let value = get_string_value(window, server_state.read(cx).value());
+        let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
+        let readonly = redis_bytes_value.as_ref().is_some_and(|v| v.is_utf8);
+        let editor_data = format_byte_editor_data(window, redis_bytes_value);
         let soft_wrap = server_state.read(cx).soft_wrap();
+
+        let text_value = match editor_data {
+            ByteEditorData::Text(value) => value,
+            ByteEditorData::Hex(value) => value,
+        };
 
         // Configure code editor with JSON syntax highlighting
         let default_language = Language::from_str(DEFAULT_LANGUAGE);
@@ -160,7 +173,7 @@ impl ZedisStringEditor {
                 })
                 .searchable(true)
                 .soft_wrap(soft_wrap)
-                .default_value(value)
+                .default_value(text_value)
         });
 
         // Subscribe to editor changes to track modification state
@@ -186,6 +199,7 @@ impl ZedisStringEditor {
             editor,
             window_handle: window.window_handle(),
             server_state,
+            readonly,
             _subscriptions: subscriptions,
         }
     }
@@ -212,11 +226,18 @@ impl ZedisStringEditor {
         // Reset modification flag since we're loading a new value
         self.value_modified = false;
 
+        let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
+        self.readonly = redis_bytes_value.as_ref().is_some_and(|v| v.is_utf8);
+
         // Update editor with new value (requires window handle for hex width calculation)
         let _ = window_handle.update(cx, move |_, window, cx| {
             self.editor.update(cx, move |this, cx| {
-                let value = server_state.read(cx).value();
-                this.set_value(get_string_value(window, value), window, cx);
+                let editor_data = format_byte_editor_data(window, redis_bytes_value);
+                let value = match editor_data {
+                    ByteEditorData::Text(value) => value,
+                    ByteEditorData::Hex(value) => value,
+                };
+                this.set_value(value, window, cx);
                 cx.notify();
             });
         });
@@ -250,6 +271,8 @@ impl Render for ZedisStringEditor {
         Input::new(&self.editor)
             .flex_1()
             .bordered(false)
+            .disabled(self.readonly)
+            .appearance(false)
             .p_0()
             .w_full()
             .h_full()
