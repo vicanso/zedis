@@ -103,7 +103,6 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(addrs: Vec<&str>, cmd
         let cmd = cmds.get(index).unwrap_or(first_cmd).clone();
 
         async move {
-            // TODO get client connect from cache
             // Establish a multiplexed async connection to the specific node.
             let client = Client::open(addr)?;
             let mut conn = client.get_multiplexed_async_connection().await?;

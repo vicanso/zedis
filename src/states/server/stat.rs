@@ -66,6 +66,91 @@ pub struct RedisInfo {
     pub keyspace: HashMap<String, RedisKeySpaceStats>,
 }
 
+/// Aggregates metrics from multiple Redis Cluster nodes into a single global view.
+///
+/// Strategies:
+/// - **Sum**: Capacity (Memory, Keys) and Throughput (QPS, Network)
+/// - **Max**: Health indicators where the worst node defines the cluster state (Fragmentation).
+/// - **Static**: Version, OS (taken from the first node).
+pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
+    // Return default if no nodes are provided
+    if infos.is_empty() {
+        return RedisInfo::default();
+    }
+
+    let mut total = infos[0].clone();
+    if infos.len() == 1 {
+        return total;
+    }
+
+    // Temporary map to calculate weighted average for avg_ttl: DbName -> (TotalTTLProduct, TotalExpires)
+    let mut ttl_accumulator: HashMap<String, (u64, u64)> = HashMap::new();
+
+    for info in &infos {
+        // --- Clients (Sum) ---
+        total.connected_clients += info.connected_clients;
+        total.blocked_clients += info.blocked_clients;
+
+        // --- Memory (Sum) ---
+        total.used_memory += info.used_memory;
+        total.used_memory_rss += info.used_memory_rss;
+        total.maxmemory += info.maxmemory;
+
+        // --- Memory Health (Max) ---
+        // We take the maximum fragmentation ratio because the "worst" node
+        // determines the fragmentation risk of the cluster.
+        if info.mem_fragmentation_ratio > total.mem_fragmentation_ratio {
+            total.mem_fragmentation_ratio = info.mem_fragmentation_ratio;
+        }
+
+        // --- Stats (Sum) ---
+        total.total_connections_received += info.total_connections_received;
+        total.total_commands_processed += info.total_commands_processed;
+        total.instantaneous_ops_per_sec += info.instantaneous_ops_per_sec;
+        total.instantaneous_input_kbps += info.instantaneous_input_kbps;
+        total.instantaneous_output_kbps += info.instantaneous_output_kbps;
+        total.keyspace_hits += info.keyspace_hits;
+        total.keyspace_misses += info.keyspace_misses;
+        total.evicted_keys += info.evicted_keys;
+
+        // --- CPU (Sum) ---
+        // Accumulate total CPU time consumed by the entire cluster
+        total.used_cpu_sys += info.used_cpu_sys;
+        total.used_cpu_user += info.used_cpu_user;
+
+        // --- Keyspace (Sum & Weighted Avg) ---
+        for (db, stats) in &info.keyspace {
+            let entry = total.keyspace.entry(db.clone()).or_default();
+
+            // Sum keys and expires
+            entry.keys += stats.keys;
+            entry.expires += stats.expires;
+
+            // Prepare data for weighted average calculation of avg_ttl
+            if stats.expires > 0 {
+                let acc = ttl_accumulator.entry(db.clone()).or_insert((0, 0));
+                acc.0 += stats.avg_ttl * stats.expires; // Weighted product
+                acc.1 += stats.expires; // Total weight
+            }
+        }
+    }
+
+    // 2. Post-processing
+
+    // Re-calculate human-readable memory string based on the summed byte count
+    total.used_memory_human = humansize::format_size(total.used_memory, humansize::DECIMAL);
+
+    // Finalize avg_ttl calculation for each DB
+    for (db, stats) in total.keyspace.iter_mut() {
+        if let Some((weighted_sum, total_expires)) = ttl_accumulator.get(db)
+            && *total_expires > 0
+        {
+            stats.avg_ttl = weighted_sum / total_expires;
+        }
+    }
+
+    total
+}
 impl RedisInfo {
     pub fn parse(info_str: &str) -> Self {
         let mut info = RedisInfo::default();
@@ -172,15 +257,17 @@ impl ZedisServerState {
         let server_id_clone = server_id.clone();
 
         self.spawn(
-            ServerTask::Ping,
+            ServerTask::RefreshRedisInfo,
             move || async move {
                 let client = get_connection_manager().get_client(&server_id).await?;
                 let start = Instant::now();
                 client.ping().await?;
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
-                let info_str: String = cmd("INFO").arg("ALL").query_async(&mut conn).await?;
-                let mut info = RedisInfo::parse(&info_str);
-                info.latency = start.elapsed();
+                let latency = start.elapsed();
+
+                let list: Vec<String> = client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
+                let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
+                let mut info = aggregate_redis_info(infos);
+                info.latency = latency;
                 Ok(info)
             },
             move |this, result, cx| match result {

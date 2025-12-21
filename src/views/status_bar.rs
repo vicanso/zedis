@@ -141,7 +141,7 @@ impl ZedisStatusBar {
                 }
                 ServerEvent::TaskStarted(task) => {
                     // Clear error when a new task starts (except background ping)
-                    if *task != ServerTask::Ping {
+                    if *task != ServerTask::RefreshRedisInfo {
                         this.state.error = None;
                     }
                 }
@@ -173,7 +173,7 @@ impl ZedisStatusBar {
         self.state.server_id = state.server_id().to_string().into();
         self.state.latency = format_latency(Some(redis_info.latency), cx);
         self.state.used_memory = redis_info.used_memory_human.clone().into();
-        self.state.clients = format!("{} / {}", redis_info.connected_clients, redis_info.blocked_clients).into();
+        self.state.clients = format!("{} / {}", redis_info.blocked_clients, redis_info.connected_clients).into();
         self.state.nodes = format_nodes(state.nodes(), state.version());
         self.state.scan_finished = state.scan_completed();
         self.state.soft_wrap = state.soft_wrap();

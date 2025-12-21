@@ -215,8 +215,8 @@ pub struct ZedisServerState {
 /// Each variant represents a specific async operation that runs in the background
 #[derive(Clone, PartialEq, Debug)]
 pub enum ServerTask {
-    /// Health check - ping the Redis server
-    Ping,
+    /// Refresh the Redis server info
+    RefreshRedisInfo,
 
     /// Connect to and load metadata from a server
     SelectServer,
@@ -286,7 +286,7 @@ impl ServerTask {
     /// Get string representation of task (for logging and error messages)
     pub fn as_str(&self) -> &'static str {
         match self {
-            ServerTask::Ping => "ping",
+            ServerTask::RefreshRedisInfo => "refresh_redis_info",
             ServerTask::SelectServer => "select_server",
             ServerTask::RemoveServer => "remove_server",
             ServerTask::UpdateOrInsertServer => "update_or_insert_server",

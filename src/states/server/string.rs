@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{KeyType, RedisValue, RedisValueData};
+use super::value::{KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
 use gpui::SharedString;
 use redis::cmd;
 use serde_json::Value;
+use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -42,26 +43,36 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
     if value_bytes.is_empty() {
         return Ok(RedisValue {
             key_type: KeyType::String,
-            data: Some(RedisValueData::String(SharedString::default())),
+            data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                ..Default::default()
+            }))),
             size,
             ..Default::default()
         });
     }
-    let data = match String::from_utf8(value_bytes) {
+    let format = detect_format(&value_bytes);
+    let bytes = Bytes::from(value_bytes);
+    let data = match str::from_utf8(&bytes) {
         Ok(text) => {
             // Check if it's JSON and format it
-            if let Some(pretty) = pretty_json(&text) {
-                RedisValueData::String(pretty)
+            let text: SharedString = if let Some(pretty) = pretty_json(text) {
+                pretty
             } else {
-                // If not JSON, use the original text.
-                // Converting String to SharedString is efficient.
-                RedisValueData::String(text.into())
-            }
+                text.to_string().into()
+            };
+            RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                format,
+                bytes: bytes.clone(),
+                text: Some(text),
+            }))
         }
-        Err(e) => {
+        Err(_e) => {
             // Conversion failed (invalid UTF-8). Recover the original bytes.
-            let raw_bytes = e.into_bytes();
-            RedisValueData::Bytes(Bytes::from(raw_bytes))
+            RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                format,
+                bytes: bytes.clone(),
+                ..Default::default()
+            }))
         }
     };
     Ok(RedisValue {

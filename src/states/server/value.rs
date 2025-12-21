@@ -18,8 +18,10 @@ use bytes::Bytes;
 use chrono::Local;
 use gpui::{Action, Hsla, SharedString, prelude::*};
 use redis::cmd;
+use rmp_serde::decode::Deserializer;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::io::Cursor;
 use std::sync::Arc;
 
 /// Notification category for user feedback
@@ -84,11 +86,52 @@ impl NotificationAction {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy, Default)]
+pub enum DataFormat {
+    #[default]
+    Bytes,
+    Gzip,
+    Zstd,
+    MessagePack,
+    Protobuf,
+}
+
+fn is_valid_messagepack(bytes: &[u8]) -> bool {
+    let mut deserializer = Deserializer::new(Cursor::new(bytes));
+
+    match serde::de::IgnoredAny::deserialize(&mut deserializer) {
+        Ok(_) => deserializer.get_ref().position() == bytes.len() as u64,
+        Err(_) => false,
+    }
+}
+
+pub fn detect_format(bytes: &[u8]) -> DataFormat {
+    if bytes.is_empty() {
+        return DataFormat::Bytes;
+    }
+
+    // 1. Gzip (1F 8B)
+    if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
+        return DataFormat::Gzip;
+    }
+
+    // 2. Zstd (28 B5 2F FD - Little Endian)
+    if bytes.len() >= 4 && bytes[0] == 0x28 && bytes[1] == 0xB5 && bytes[2] == 0x2F && bytes[3] == 0xFD {
+        return DataFormat::Zstd;
+    }
+
+    // 3. MessagePack
+    if is_valid_messagepack(bytes) {
+        return DataFormat::MessagePack;
+    }
+
+    DataFormat::Bytes
+}
+
 /// Redis value data variants for different data types
 #[derive(Debug, Clone)]
 pub enum RedisValueData {
-    String(SharedString),
-    Bytes(Bytes),
+    Bytes(Arc<RedisBytesValue>),
     List(Arc<RedisListValue>),
     Set(Arc<RedisSetValue>),
     Zset(Arc<RedisZsetValue>),
@@ -140,6 +183,13 @@ pub struct RedisListValue {
     pub keyword: Option<SharedString>,
     pub size: usize,
     pub values: Vec<SharedString>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RedisBytesValue {
+    pub format: DataFormat,
+    pub bytes: Bytes,
+    pub text: Option<SharedString>,
 }
 
 impl RedisValue {
@@ -251,8 +301,8 @@ impl RedisValue {
 
     /// Returns the string value if the data is a String type
     pub fn string_value(&self) -> Option<SharedString> {
-        if let Some(RedisValueData::String(value)) = self.data.as_ref() {
-            return Some(value.clone());
+        if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
+            return value.text.clone();
         }
         None
     }
@@ -260,7 +310,7 @@ impl RedisValue {
     /// Returns the bytes value if the data is a Bytes type
     pub fn bytes_value(&self) -> Option<&[u8]> {
         if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
-            return Some(value);
+            return Some(value.bytes.as_ref());
         }
         None
     }
@@ -333,7 +383,11 @@ impl ZedisServerState {
         let original_value = value.string_value().unwrap_or_default();
         value.status = RedisValueStatus::Updating;
         value.size = new_value.len();
-        value.data = Some(RedisValueData::String(new_value.clone()));
+        value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+            bytes: Bytes::from(new_value.clone().to_string().into_bytes()),
+            text: Some(new_value.clone()),
+            ..Default::default()
+        })));
         let current_key = key.clone();
 
         cx.notify();
@@ -354,7 +408,11 @@ impl ZedisServerState {
                     // Recover original value if save failed
                     if result.is_err() {
                         value.size = original_value.len();
-                        value.data = Some(RedisValueData::String(original_value));
+                        value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                            bytes: Bytes::from(original_value.clone().to_string().into_bytes()),
+                            text: Some(original_value.clone()),
+                            ..Default::default()
+                        })));
                     }
                     cx.emit(ServerEvent::ValueUpdated(current_key));
                 }

@@ -28,7 +28,7 @@ score = "Score"
 loading = "Loading..."
 latency = "Latency"
 used_memory = "Used memory"
-clients = "Connected and blocked clients"
+clients = "Blocked & Connected clients"
 
 # --- General Placeholders ---
 key_placeholder = "Enter key"
