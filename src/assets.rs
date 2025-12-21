@@ -59,6 +59,8 @@ pub enum CustomIconName {
     CircleCheckBig,
     CircleDotDashed,
     X,
+    MemoryStick,
+    AudioWaveform,
 }
 
 impl CustomIconName {
@@ -83,6 +85,8 @@ impl CustomIconName {
             CustomIconName::CircleCheckBig => "icons/circle-check-big.svg",
             CustomIconName::CircleDotDashed => "icons/circle-dot-dashed.svg",
             CustomIconName::X => "icons/x.svg",
+            CustomIconName::MemoryStick => "icons/memory-stick.svg",
+            CustomIconName::AudioWaveform => "icons/audio-waveform.svg",
         }
         .into()
     }

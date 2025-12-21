@@ -20,6 +20,7 @@ use crate::connection::save_servers;
 use crate::error::Error;
 use crate::helpers::unix_ts;
 use crate::states::NotificationAction;
+use crate::states::server::stat::RedisInfo;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
@@ -30,8 +31,6 @@ use gpui_component::tree::TreeItem;
 use parking_lot::RwLock;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 use tracing::debug;
 use tracing::error;
 use uuid::Uuid;
@@ -41,6 +40,7 @@ pub mod hash;
 pub mod key;
 pub mod list;
 pub mod set;
+pub mod stat;
 pub mod string;
 pub mod value;
 pub mod zset;
@@ -146,6 +146,8 @@ pub enum RedisServerStatus {
 /// - Async task spawning and coordination
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
+    redis_info: Option<RedisInfo>,
+
     /// Currently selected server id
     server_id: SharedString,
 
@@ -168,9 +170,6 @@ pub struct ZedisServerState {
 
     /// Redis server version string
     version: SharedString,
-
-    /// Last measured latency to server
-    latency: Option<Duration>,
 
     /// List of all configured servers
     servers: Option<Vec<RedisServer>>,
@@ -347,8 +346,8 @@ pub enum ServerEvent {
     ServerListUpdated,
     /// Server metadata (info/dbsize) has been refreshed.
     ServerInfoUpdated(SharedString),
-    /// Periodic heartbeat received with latency.
-    HeartbeatReceived(Duration),
+    /// Periodic redis info updated.
+    ServerRedisInfoUpdated(SharedString),
 
     /// Soft wrap changed
     SoftWrapToggled(bool),
@@ -387,8 +386,8 @@ impl ZedisServerState {
         self.nodes = (0, 0);
         self.nodes_description = Arc::new(RedisClientDescription::default());
         self.dbsize = None;
-        self.latency = None;
         self.key = None;
+        self.redis_info = None;
         self.reset_scan();
     }
 
@@ -649,8 +648,8 @@ impl ZedisServerState {
     }
 
     /// Get the last measured latency to the server
-    pub fn latency(&self) -> Option<Duration> {
-        self.latency
+    pub fn redis_info(&self) -> Option<&RedisInfo> {
+        self.redis_info.as_ref()
     }
 
     /// Get cluster node counts (master, replica)
@@ -774,41 +773,6 @@ impl ZedisServerState {
         );
     }
 
-    // ===== Redis operations =====
-
-    /// Send a PING command to check server health and measure latency
-    ///
-    /// If ping fails, removes the cached client connection (it will be recreated on next use)
-    pub fn ping(&mut self, cx: &mut Context<Self>) {
-        if self.server_id.is_empty() {
-            return;
-        }
-
-        let server_id = self.server_id.clone();
-        let remove_server_id = server_id.clone();
-
-        self.spawn(
-            ServerTask::Ping,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id).await?;
-                let start = Instant::now();
-                client.ping().await?;
-                Ok(start.elapsed())
-            },
-            move |this, result, cx| match result {
-                Ok(latency) => {
-                    this.latency = Some(latency);
-                    cx.emit(ServerEvent::HeartbeatReceived(latency));
-                }
-                Err(e) => {
-                    // Connection is invalid, remove cached client
-                    get_connection_manager().remove_client(&remove_server_id);
-                    error!(error = %e, "Ping failed, client connection removed");
-                }
-            },
-            cx,
-        );
-    }
     /// Select and connect to a Redis server
     ///
     /// This initiates a connection and loads server metadata:
@@ -868,13 +832,10 @@ impl ZedisServerState {
 
                     // Gather server metadata
                     let dbsize = client.dbsize().await?;
-                    let start = Instant::now();
                     let version = client.version().to_string();
-                    client.ping().await?;
-                    let latency = start.elapsed();
                     let nodes = client.nodes();
                     let nodes_description = client.nodes_description();
-                    Ok((dbsize, latency, nodes, nodes_description, version))
+                    Ok((dbsize, nodes, nodes_description, version))
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading
@@ -883,8 +844,7 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, latency, nodes, nodes_description, version)) = result {
-                        this.latency = Some(latency);
+                    if let Ok((dbsize, nodes, nodes_description, version)) = result {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
                         this.nodes_description = Arc::new(nodes_description);

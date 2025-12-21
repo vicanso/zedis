@@ -40,7 +40,7 @@ fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
 }
 /// Formats the latency string and determines the color based on the delay.
 #[inline]
-fn format_latency(latency: Option<Duration>, cx: &mut Context<ZedisStatusBar>) -> (SharedString, Hsla) {
+fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (SharedString, Hsla) {
     if let Some(latency) = latency {
         let ms = latency.as_millis();
         let theme = cx.theme();
@@ -92,6 +92,8 @@ struct StatusBarState {
     server_id: SharedString,
     size: SharedString,
     latency: (SharedString, Hsla),
+    used_memory: SharedString,
+    clients: SharedString,
     nodes: SharedString,
     scan_finished: bool,
     soft_wrap: bool,
@@ -110,38 +112,17 @@ impl ZedisStatusBar {
     pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize state from the current server state
         // Read only necessary fields to avoid cloning the entire state if it's large
-        let (dbsize, scan_count, server_id, nodes, version, latency, scan_completed, soft_wrap, nodes_description) = {
-            let state = server_state.read(cx);
-            (
-                state.dbsize(),
-                state.scan_count(),
-                state.server_id().to_string(),
-                state.nodes(),
-                state.version().to_string(),
-                state.latency(),
-                state.scan_completed(),
-                state.soft_wrap(),
-                state.nodes_description(),
-            )
-        };
 
         let mut subscriptions = vec![];
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
-                ServerEvent::HeartbeatReceived(latency) => {
-                    this.state.latency = format_latency(Some(*latency), cx);
-                }
-                ServerEvent::ServerSelected(server_id) => {
-                    this.reset();
-                    let state = server_state.read(cx);
-                    this.state.server_id = server_id.clone();
-                    this.state.soft_wrap = state.soft_wrap();
+                ServerEvent::ServerRedisInfoUpdated(_) => {
+                    this.fill_state(server_state, cx);
                 }
                 ServerEvent::ServerInfoUpdated(_) => {
-                    let state = server_state.read(cx);
-                    this.state.nodes_description = format_nodes_description(state.nodes_description().clone(), cx);
-                    this.state.nodes = format_nodes(state.nodes(), state.version());
-                    this.state.latency = format_latency(state.latency(), cx);
+                    server_state.update(cx, |state, cx| {
+                        state.refresh_redis_info(cx);
+                    });
                 }
                 ServerEvent::KeyScanStarted(_) => {
                     this.state.scan_finished = false;
@@ -174,21 +155,29 @@ impl ZedisStatusBar {
             heartbeat_task: None,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
-            state: StatusBarState {
-                size: format_size(dbsize, scan_count),
-                server_id: server_id.into(),
-                latency: format_latency(latency, cx),
-                nodes: format_nodes(nodes, &version),
-                scan_finished: scan_completed,
-                soft_wrap,
-                nodes_description: format_nodes_description(nodes_description.clone(), cx),
-                ..Default::default()
-            },
+            state: StatusBarState { ..Default::default() },
         };
+        this.fill_state(server_state.clone(), cx);
         this.start_heartbeat(server_state, cx);
 
         info!("Creating new status bar view");
         this
+    }
+    fn fill_state(&mut self, server_state: Entity<ZedisServerState>, cx: &Context<Self>) {
+        self.reset();
+        let state = server_state.read(cx);
+        let Some(redis_info) = state.redis_info() else {
+            return;
+        };
+        self.state.size = format_size(state.dbsize(), state.scan_count());
+        self.state.server_id = state.server_id().to_string().into();
+        self.state.latency = format_latency(Some(redis_info.latency), cx);
+        self.state.used_memory = redis_info.used_memory_human.clone().into();
+        self.state.clients = format!("{} / {}", redis_info.connected_clients, redis_info.blocked_clients).into();
+        self.state.nodes = format_nodes(state.nodes(), state.version());
+        self.state.scan_finished = state.scan_completed();
+        self.state.soft_wrap = state.soft_wrap();
+        self.state.nodes_description = format_nodes_description(state.nodes_description().clone(), cx);
     }
     /// Reset the state to default
     fn reset(&mut self) {
@@ -201,7 +190,7 @@ impl ZedisStatusBar {
             loop {
                 cx.background_executor().timer(Duration::from_secs(30)).await;
                 let _ = server_state.update(cx, |state, cx| {
-                    state.ping(cx);
+                    state.refresh_redis_info(cx);
                 });
             }
         }));
@@ -257,6 +246,30 @@ impl ZedisStatusBar {
                     .text_color(self.state.latency.1)
                     .mr_4(),
             )
+            .child(
+                Button::new("zedis-status-bar-used-memory")
+                    .ghost()
+                    .disabled(true)
+                    .tooltip(i18n_common(cx, "used_memory"))
+                    .icon(
+                        Icon::new(CustomIconName::MemoryStick)
+                            .text_color(cx.theme().primary)
+                            .mr_1(),
+                    ),
+            )
+            .child(Label::new(self.state.used_memory.clone()).mr_4())
+            .child(
+                Button::new("zedis-status-bar-clients")
+                    .ghost()
+                    .disabled(true)
+                    .tooltip(i18n_common(cx, "clients"))
+                    .icon(
+                        Icon::new(CustomIconName::AudioWaveform)
+                            .text_color(cx.theme().primary)
+                            .mr_1(),
+                    ),
+            )
+            .child(Label::new(self.state.clients.clone()).mr_4())
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         Button::new("soft-wrap")

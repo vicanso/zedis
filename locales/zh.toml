@@ -27,6 +27,8 @@ permanent = "永久有效"
 score = "分数"
 loading = "加载中..."
 latency = "延迟"
+used_memory = "已使用内存"
+clients = "连接和阻塞客户端"
 
 # --- 通用占位符 ---
 key_placeholder = "输入键名"
