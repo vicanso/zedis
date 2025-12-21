@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
+use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
 use gpui::SharedString;
@@ -61,6 +61,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
                 text.to_string().into()
             };
             RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                is_utf8: format == DataFormat::Bytes,
                 format,
                 bytes: bytes.clone(),
                 text: Some(text),

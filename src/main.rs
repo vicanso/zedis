@@ -10,7 +10,6 @@ use crate::states::ZedisServerState;
 use crate::states::save_app_state;
 use crate::views::ZedisContent;
 use crate::views::ZedisSidebar;
-use crate::views::ZedisStatusBar;
 use crate::views::open_about_window;
 use gpui::App;
 use gpui::Application;
@@ -23,7 +22,6 @@ use gpui::Task;
 use gpui::Window;
 use gpui::WindowBounds;
 use gpui::WindowOptions;
-use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
@@ -33,7 +31,6 @@ use gpui_component::Theme;
 use gpui_component::WindowExt;
 use gpui_component::h_flex;
 use gpui_component::notification::Notification;
-use gpui_component::v_flex;
 use std::env;
 use std::str::FromStr;
 use tracing::Level;
@@ -65,12 +62,10 @@ pub struct Zedis {
     // views
     sidebar: Entity<ZedisSidebar>,
     content: Entity<ZedisContent>,
-    status_bar: Entity<ZedisStatusBar>,
 }
 
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
-        let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
         let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
         let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
         cx.subscribe(&server_state, |this, _server_state, event, cx| {
@@ -107,7 +102,6 @@ impl Zedis {
         .detach();
 
         Self {
-            status_bar,
             sidebar,
             save_task: None,
             content,
@@ -165,14 +159,7 @@ impl Render for Zedis {
             .bg(cx.theme().background)
             .size_full()
             .child(self.sidebar.clone())
-            .child(
-                v_flex()
-                    .id("main-container")
-                    .flex_1()
-                    .h_full()
-                    .child(div().flex_1().child(self.content.clone()))
-                    .child(self.status_bar.clone()),
-            )
+            .child(self.content.clone())
             .children(dialog_layer)
             .children(notification_layer)
     }

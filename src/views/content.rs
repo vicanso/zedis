@@ -15,7 +15,7 @@
 use crate::{
     helpers::get_key_tree_widths,
     states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
-    views::{ZedisEditor, ZedisKeyTree, ZedisServers},
+    views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisStatusBar},
 };
 use gpui::{Entity, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -50,6 +50,7 @@ pub struct ZedisContent {
     servers: Option<Entity<ZedisServers>>,
     value_editor: Option<Entity<ZedisEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
+    status_bar: Entity<ZedisStatusBar>,
 
     /// Persisted width of the key tree panel (resizable by user)
     key_tree_width: Pixels,
@@ -63,8 +64,9 @@ impl ZedisContent {
     ///
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
-    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
+        let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
 
         // Subscribe to global state changes for automatic view cleanup
         // This ensures we only keep views in memory that are currently relevant
@@ -97,6 +99,7 @@ impl ZedisContent {
 
         Self {
             server_state,
+            status_bar,
             servers: None,
             value_editor: None,
             key_tree: None,
@@ -224,16 +227,27 @@ impl Render for ZedisContent {
 
         // Route 1: Server management view
         if route == Route::Home {
-            return self.render_servers(window, cx).into_any_element();
+            return div()
+                .size_full()
+                .child(self.render_servers(window, cx))
+                .into_any_element();
         }
 
         // Route 2: Loading state (show skeleton while connecting/loading)
-        let server_state = self.server_state.read(cx);
-        if server_state.is_busy() {
-            return self.render_loading(window, cx).into_any_element();
-        }
+        let is_busy = self.server_state.read(cx).is_busy();
 
         // Route 3: Main editor interface
-        self.render_editor(window, cx).into_any_element()
+        v_flex()
+            .id("main-container")
+            .flex_1()
+            .h_full()
+            .when(is_busy, |this| this.child(self.render_loading(window, cx)))
+            .when(!is_busy, |this| {
+                this.child(div().flex_1().child(self.render_editor(window, cx)))
+            })
+            .child(self.status_bar.clone())
+            .into_any_element()
+
+        // self.render_editor(window, cx).into_any_element()
     }
 }

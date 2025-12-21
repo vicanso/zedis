@@ -90,6 +90,10 @@ impl NotificationAction {
 pub enum DataFormat {
     #[default]
     Bytes,
+    Jpeg,
+    Png,
+    Webp,
+    Avif,
     Gzip,
     Zstd,
     MessagePack,
@@ -109,23 +113,24 @@ pub fn detect_format(bytes: &[u8]) -> DataFormat {
     if bytes.is_empty() {
         return DataFormat::Bytes;
     }
-
-    // 1. Gzip (1F 8B)
-    if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
-        return DataFormat::Gzip;
+    let Some(kind) = infer::get(bytes) else {
+        return DataFormat::Bytes;
+    };
+    match kind.mime_type() {
+        "application/gzip" => DataFormat::Gzip,
+        "application/zstd" => DataFormat::Zstd,
+        "image/jpeg" => DataFormat::Jpeg,
+        "image/png" => DataFormat::Png,
+        "image/webp" => DataFormat::Webp,
+        "image/avif" => DataFormat::Avif,
+        _ => {
+            if is_valid_messagepack(bytes) {
+                DataFormat::MessagePack
+            } else {
+                DataFormat::Bytes
+            }
+        }
     }
-
-    // 2. Zstd (28 B5 2F FD - Little Endian)
-    if bytes.len() >= 4 && bytes[0] == 0x28 && bytes[1] == 0xB5 && bytes[2] == 0x2F && bytes[3] == 0xFD {
-        return DataFormat::Zstd;
-    }
-
-    // 3. MessagePack
-    if is_valid_messagepack(bytes) {
-        return DataFormat::MessagePack;
-    }
-
-    DataFormat::Bytes
 }
 
 /// Redis value data variants for different data types
@@ -187,6 +192,7 @@ pub struct RedisListValue {
 
 #[derive(Debug, Clone, Default)]
 pub struct RedisBytesValue {
+    pub is_utf8: bool,
     pub format: DataFormat,
     pub bytes: Bytes,
     pub text: Option<SharedString>,
