@@ -90,14 +90,32 @@ impl NotificationAction {
 pub enum DataFormat {
     #[default]
     Bytes,
+    Json,
+    Text,
     Jpeg,
     Png,
     Webp,
-    Avif,
     Gzip,
     Zstd,
     MessagePack,
     Protobuf,
+}
+
+impl DataFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DataFormat::Bytes => "bytes",
+            DataFormat::Json => "json",
+            DataFormat::Text => "text",
+            DataFormat::Jpeg => "jpeg",
+            DataFormat::Png => "png",
+            DataFormat::Webp => "webp",
+            DataFormat::Gzip => "gzip",
+            DataFormat::Zstd => "zstd",
+            DataFormat::MessagePack => "messagepack",
+            DataFormat::Protobuf => "protobuf",
+        }
+    }
 }
 
 fn is_valid_messagepack(bytes: &[u8]) -> bool {
@@ -122,7 +140,6 @@ pub fn detect_format(bytes: &[u8]) -> DataFormat {
         "image/jpeg" => DataFormat::Jpeg,
         "image/png" => DataFormat::Png,
         "image/webp" => DataFormat::Webp,
-        "image/avif" => DataFormat::Avif,
         _ => {
             if is_valid_messagepack(bytes) {
                 DataFormat::MessagePack
@@ -196,6 +213,12 @@ pub struct RedisBytesValue {
     pub format: DataFormat,
     pub bytes: Bytes,
     pub text: Option<SharedString>,
+}
+
+impl RedisBytesValue {
+    pub fn is_image(&self) -> bool {
+        matches!(self.format, DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp)
+    }
 }
 
 impl RedisValue {
@@ -306,8 +329,10 @@ impl RedisValue {
     }
 
     /// Returns the string value if the data is a String type
-    pub fn string_value(&self) -> Option<SharedString> {
-        if let Some(value) = self.bytes_value() {
+    pub fn bytes_string_value(&self) -> Option<SharedString> {
+        if let Some(value) = self.bytes_value()
+            && !value.is_utf8
+        {
             return value.text.clone();
         }
         None
@@ -386,7 +411,7 @@ impl ZedisServerState {
             return;
         };
 
-        let original_value = value.string_value().unwrap_or_default();
+        let original_value = value.bytes_string_value().unwrap_or_default();
         value.status = RedisValueStatus::Updating;
         value.size = new_value.len();
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {

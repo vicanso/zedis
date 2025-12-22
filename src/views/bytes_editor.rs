@@ -20,7 +20,8 @@ use gpui::SharedString;
 use gpui::Subscription;
 use gpui::Window;
 use gpui::prelude::*;
-use gpui::px;
+use gpui::{Image, ObjectFit, img};
+use gpui::{div, px};
 use gpui_component::highlighter::Language;
 use gpui_component::input::InputEvent;
 use gpui_component::input::TabSize;
@@ -47,7 +48,7 @@ const VIEWPORT_BREAKPOINT: f32 = 1400.0; // Pixel width to switch hex display wi
 /// - Soft wrap support
 /// - Automatic hex display for binary data
 /// - Tracks modification state
-pub struct ZedisStringEditor {
+pub struct ZedisBytesEditor {
     /// Reference to server state for Redis operations
     server_state: Entity<ZedisServerState>,
 
@@ -69,15 +70,28 @@ pub struct ZedisStringEditor {
     /// Whether the soft wrap has been changed
     soft_wrap_changed: bool,
 
+    /// The data to display in the editor
+    data: ByteEditorData,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
 
 enum ByteEditorData {
+    Image(Arc<Image>),
     Text(SharedString),
     Hex(SharedString),
 }
 
+impl ByteEditorData {
+    fn to_string(&self) -> Option<SharedString> {
+        match self {
+            ByteEditorData::Text(value) => Some(value.clone()),
+            ByteEditorData::Hex(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+}
 /// Extract string value from Redis value, with hex fallback for binary data
 ///
 /// If the value is a string, returns Text(SharedString).
@@ -94,10 +108,15 @@ fn format_byte_editor_data(window: &Window, value: Option<Arc<RedisBytesValue>>)
     let Some(value) = value else {
         return ByteEditorData::Text(SharedString::default());
     };
-
-    if value.format != DataFormat::Bytes {
-        return ByteEditorData::Text(SharedString::default());
+    if value.is_image() {
+        let data = match value.format {
+            DataFormat::Png => Image::from_bytes(gpui::ImageFormat::Png, value.bytes.to_vec()),
+            DataFormat::Webp => Image::from_bytes(gpui::ImageFormat::Webp, value.bytes.to_vec()),
+            _ => Image::from_bytes(gpui::ImageFormat::Jpeg, value.bytes.to_vec()),
+        };
+        return ByteEditorData::Image(Arc::new(data));
     }
+
     if let Some(text) = &value.text {
         return ByteEditorData::Text(text.clone());
     }
@@ -119,7 +138,7 @@ fn format_byte_editor_data(window: &Window, value: Option<Arc<RedisBytesValue>>)
     ByteEditorData::Hex(config_hex(&value.bytes, cfg).into())
 }
 
-impl ZedisStringEditor {
+impl ZedisBytesEditor {
     /// Create a new string editor with code editing capabilities
     ///
     /// Initializes a code editor with:
@@ -151,14 +170,9 @@ impl ZedisStringEditor {
 
         // Get initial value (string or hex dump)
         let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
-        let readonly = redis_bytes_value.as_ref().is_some_and(|v| v.is_utf8);
+        let readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8);
         let editor_data = format_byte_editor_data(window, redis_bytes_value);
         let soft_wrap = server_state.read(cx).soft_wrap();
-
-        let text_value = match editor_data {
-            ByteEditorData::Text(value) => value,
-            ByteEditorData::Hex(value) => value,
-        };
 
         // Configure code editor with JSON syntax highlighting
         let default_language = Language::from_str(DEFAULT_LANGUAGE);
@@ -173,7 +187,7 @@ impl ZedisStringEditor {
                 })
                 .searchable(true)
                 .soft_wrap(soft_wrap)
-                .default_value(text_value)
+                .default_value(editor_data.to_string().unwrap_or_default())
         });
 
         // Subscribe to editor changes to track modification state
@@ -183,7 +197,9 @@ impl ZedisStringEditor {
                 let redis_value = this.server_state.read(cx).value();
 
                 // Compare with original value to determine if modified
-                let original = redis_value.and_then(|r| r.string_value()).map_or("".into(), |v| v);
+                let original = redis_value
+                    .and_then(|r| r.bytes_string_value())
+                    .map_or("".into(), |v| v);
 
                 this.value_modified = original != value.as_str();
                 cx.notify();
@@ -196,6 +212,7 @@ impl ZedisStringEditor {
             value_modified: false,
             soft_wrap,
             soft_wrap_changed: false,
+            data: editor_data,
             editor,
             window_handle: window.window_handle(),
             server_state,
@@ -227,17 +244,13 @@ impl ZedisStringEditor {
         self.value_modified = false;
 
         let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
-        self.readonly = redis_bytes_value.as_ref().is_some_and(|v| v.is_utf8);
+        self.readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8);
 
         // Update editor with new value (requires window handle for hex width calculation)
         let _ = window_handle.update(cx, move |_, window, cx| {
             self.editor.update(cx, move |this, cx| {
                 let editor_data = format_byte_editor_data(window, redis_bytes_value);
-                let value = match editor_data {
-                    ByteEditorData::Text(value) => value,
-                    ByteEditorData::Hex(value) => value,
-                };
-                this.set_value(value, window, cx);
+                this.set_value(editor_data.to_string().unwrap_or_default(), window, cx);
                 cx.notify();
             });
         });
@@ -254,7 +267,7 @@ impl ZedisStringEditor {
     }
 }
 
-impl Render for ZedisStringEditor {
+impl Render for ZedisBytesEditor {
     /// Main render method - displays code editor with monospace font
     ///
     /// Renders a full-width, full-height code editor with:
@@ -268,17 +281,23 @@ impl Render for ZedisStringEditor {
             });
             self.soft_wrap_changed = false;
         }
-        Input::new(&self.editor)
-            .flex_1()
-            .bordered(false)
-            .disabled(self.readonly)
-            .appearance(false)
-            .p_0()
-            .w_full()
-            .h_full()
-            .font_family(get_font_family())
-            .text_size(px(EDITOR_FONT_SIZE))
-            .focus_bordered(false)
-            .into_any_element()
+        match &self.data {
+            ByteEditorData::Image(value) => div()
+                .size_full()
+                .child(img(value.clone()).object_fit(ObjectFit::Contain))
+                .into_any_element(),
+            _ => Input::new(&self.editor)
+                .flex_1()
+                .bordered(false)
+                .disabled(self.readonly)
+                .appearance(false)
+                .p_0()
+                .w_full()
+                .h_full()
+                .font_family(get_font_family())
+                .text_size(px(EDITOR_FONT_SIZE))
+                .focus_bordered(false)
+                .into_any_element(),
+        }
     }
 }

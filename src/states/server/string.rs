@@ -44,6 +44,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
         return Ok(RedisValue {
             key_type: KeyType::String,
             data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                is_utf8: true,
                 ..Default::default()
             }))),
             size,
@@ -55,13 +56,13 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
     let data = match str::from_utf8(&bytes) {
         Ok(text) => {
             // Check if it's JSON and format it
-            let text: SharedString = if let Some(pretty) = pretty_json(text) {
-                pretty
+            let (text, format): (SharedString, DataFormat) = if let Some(pretty) = pretty_json(text) {
+                (pretty, DataFormat::Json)
             } else {
-                text.to_string().into()
+                (text.to_string().into(), DataFormat::Text)
             };
             RedisValueData::Bytes(Arc::new(RedisBytesValue {
-                is_utf8: format == DataFormat::Bytes,
+                is_utf8: true,
                 format,
                 bytes: bytes.clone(),
                 text: Some(text),

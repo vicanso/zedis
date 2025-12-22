@@ -19,10 +19,10 @@ use crate::states::ZedisGlobalStore;
 use crate::states::i18n_common;
 use crate::states::i18n_editor;
 use crate::states::{KeyType, ZedisServerState};
+use crate::views::ZedisBytesEditor;
 use crate::views::ZedisHashEditor;
 use crate::views::ZedisListEditor;
 use crate::views::ZedisSetEditor;
-use crate::views::ZedisStringEditor;
 use crate::views::ZedisZsetEditor;
 use gpui::ClipboardItem;
 use gpui::Entity;
@@ -63,7 +63,7 @@ pub struct ZedisEditor {
 
     /// Type-specific editors for different Redis data types
     list_editor: Option<Entity<ZedisListEditor>>,
-    string_editor: Option<Entity<ZedisStringEditor>>,
+    bytes_editor: Option<Entity<ZedisBytesEditor>>,
     set_editor: Option<Entity<ZedisSetEditor>>,
     zset_editor: Option<Entity<ZedisZsetEditor>>,
     hash_editor: Option<Entity<ZedisHashEditor>>,
@@ -120,7 +120,7 @@ impl ZedisEditor {
         Self {
             server_state,
             list_editor: None,
-            string_editor: None,
+            bytes_editor: None,
             set_editor: None,
             zset_editor: None,
             hash_editor: None,
@@ -242,8 +242,8 @@ impl ZedisEditor {
         }
 
         // Add save button for string editor if value is modified
-        if let Some(string_editor) = &self.string_editor {
-            let value_modified = string_editor.read(cx).is_value_modified();
+        if let Some(bytes_editor) = &self.bytes_editor {
+            let value_modified = bytes_editor.read(cx).is_value_modified();
 
             btns.push(
                 Button::new("zedis-editor-save-key")
@@ -260,7 +260,7 @@ impl ZedisEditor {
                         let Some(key) = this.server_state.read(cx).key() else {
                             return;
                         };
-                        let Some(editor) = this.string_editor.as_ref() else {
+                        let Some(editor) = this.bytes_editor.as_ref() else {
                             return;
                         };
                         editor.clone().update(cx, move |state, cx| {
@@ -386,7 +386,7 @@ impl ZedisEditor {
     /// Clean up unused editors when switching between key types
     fn reset_editors(&mut self, key_type: KeyType) {
         if key_type != KeyType::String {
-            let _ = self.string_editor.take();
+            let _ = self.bytes_editor.take();
         }
         if key_type != KeyType::List {
             let _ = self.list_editor.take();
@@ -448,12 +448,12 @@ impl ZedisEditor {
                 editor.clone().into_any_element()
             }
             _ => {
-                // Default to string editor for String type and other types
+                // Default to bytes editor for String type and other types
                 self.reset_editors(KeyType::String);
 
-                let editor = self.string_editor.get_or_insert_with(|| {
-                    debug!("Creating new string editor");
-                    cx.new(|cx| ZedisStringEditor::new(self.server_state.clone(), window, cx))
+                let editor = self.bytes_editor.get_or_insert_with(|| {
+                    debug!("Creating new bytes editor");
+                    cx.new(|cx| ZedisBytesEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }

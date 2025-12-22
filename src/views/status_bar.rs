@@ -15,16 +15,20 @@
 use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
-    states::{ErrorMessage, ServerEvent, ServerTask, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar},
+    states::{
+        DataFormat, ErrorMessage, ServerEvent, ServerTask, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar,
+    },
 };
-use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use gpui::{Action, Corner, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     label::Label,
     tooltip::Tooltip,
 };
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
 use tracing::info;
 
@@ -98,7 +102,14 @@ struct StatusBarState {
     scan_finished: bool,
     soft_wrap: bool,
     nodes_description: SharedString,
+    data_format: Option<DataFormat>,
     error: Option<ErrorMessage>,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum KeyValueFormatAction {
+    Bytes,
+    Json,
 }
 
 pub struct ZedisStatusBar {
@@ -143,6 +154,12 @@ impl ZedisStatusBar {
                     // Clear error when a new task starts (except background ping)
                     if *task != ServerTask::RefreshRedisInfo {
                         this.state.error = None;
+                    }
+                }
+                ServerEvent::ValueLoaded(_) => {
+                    let state = server_state.read(cx);
+                    if let Some(value) = state.value().and_then(|item| item.bytes_value()) {
+                        this.state.data_format = Some(value.format);
                     }
                 }
                 _ => {
@@ -290,14 +307,33 @@ impl ZedisStatusBar {
         let Some(data) = &self.state.error else {
             return h_flex().flex_1();
         };
-        // 记录出错的显示
+        // error message is always on the right
         h_flex().flex_1().child(
             Label::new(data.message.clone())
+                .mr_2()
                 .w_full()
                 .text_xs()
                 .text_color(cx.theme().red)
                 .text_align(TextAlign::Right),
         )
+    }
+    fn render_data_format(&self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(date_format) = self.state.data_format else {
+            return div().into_any_element();
+        };
+
+        DropdownButton::new("dropdown")
+            .button(
+                Button::new("status-bar-select-data-format")
+                    .label(date_format.as_str())
+                    .ghost()
+                    .xsmall(),
+            )
+            .dropdown_menu_with_anchor(Corner::BottomLeft, |menu, _, _| {
+                menu.menu("Option 1", Box::new(KeyValueFormatAction::Bytes))
+                    .menu("Option 2", Box::new(KeyValueFormatAction::Json))
+            })
+            .into_any_element()
     }
 }
 
@@ -318,5 +354,6 @@ impl Render for ZedisStatusBar {
             .child(self.render_server_status(window, cx))
             .child(self.render_editor_settings(window, cx))
             .child(self.render_errors(window, cx))
+            .child(self.render_data_format(window, cx))
     }
 }

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod about;
+mod bytes_editor;
 mod content;
 mod editor;
 mod hash_editor;
@@ -23,10 +24,10 @@ mod servers;
 mod set_editor;
 mod sidebar;
 mod status_bar;
-mod string_editor;
 mod zset_editor;
 
 pub use about::open_about_window;
+pub use bytes_editor::ZedisBytesEditor;
 pub use content::ZedisContent;
 pub use editor::ZedisEditor;
 pub use hash_editor::ZedisHashEditor;
@@ -37,5 +38,4 @@ pub use servers::ZedisServers;
 pub use set_editor::ZedisSetEditor;
 pub use sidebar::ZedisSidebar;
 pub use status_bar::ZedisStatusBar;
-pub use string_editor::ZedisStringEditor;
 pub use zset_editor::ZedisZsetEditor;
