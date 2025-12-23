@@ -61,6 +61,7 @@ pub enum CustomIconName {
     X,
     MemoryStick,
     AudioWaveform,
+    Binary,
 }
 
 impl CustomIconName {
@@ -87,6 +88,7 @@ impl CustomIconName {
             CustomIconName::X => "icons/x.svg",
             CustomIconName::MemoryStick => "icons/memory-stick.svg",
             CustomIconName::AudioWaveform => "icons/audio-waveform.svg",
+            CustomIconName::Binary => "icons/binary.svg",
         }
         .into()
     }

@@ -127,14 +127,15 @@ fn is_valid_messagepack(bytes: &[u8]) -> bool {
     }
 }
 
-pub fn detect_format(bytes: &[u8]) -> DataFormat {
+pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
     if bytes.is_empty() {
-        return DataFormat::Bytes;
+        return (DataFormat::Bytes, None);
     }
     let Some(kind) = infer::get(bytes) else {
-        return DataFormat::Bytes;
+        return (DataFormat::Bytes, None);
     };
-    match kind.mime_type() {
+    let mime = kind.mime_type();
+    let format = match mime {
         "application/gzip" => DataFormat::Gzip,
         "application/zstd" => DataFormat::Zstd,
         "image/jpeg" => DataFormat::Jpeg,
@@ -147,7 +148,8 @@ pub fn detect_format(bytes: &[u8]) -> DataFormat {
                 DataFormat::Bytes
             }
         }
-    }
+    };
+    (format, Some(mime.to_string().into()))
 }
 
 /// Redis value data variants for different data types
@@ -212,6 +214,7 @@ pub struct RedisBytesValue {
     pub is_utf8: bool,
     pub format: DataFormat,
     pub bytes: Bytes,
+    pub mime: Option<SharedString>,
     pub text: Option<SharedString>,
 }
 
@@ -417,6 +420,7 @@ impl ZedisServerState {
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
             bytes: Bytes::from(new_value.clone().to_string().into_bytes()),
             text: Some(new_value.clone()),
+            is_utf8: true,
             ..Default::default()
         })));
         let current_key = key.clone();
@@ -442,12 +446,12 @@ impl ZedisServerState {
                         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
                             bytes: Bytes::from(original_value.clone().to_string().into_bytes()),
                             text: Some(original_value.clone()),
+                            is_utf8: true,
                             ..Default::default()
                         })));
                     }
                     cx.emit(ServerEvent::ValueUpdated(current_key));
                 }
-
                 cx.notify();
             },
             cx,

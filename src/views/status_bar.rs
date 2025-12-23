@@ -15,20 +15,16 @@
 use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
-    states::{
-        DataFormat, ErrorMessage, ServerEvent, ServerTask, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar,
-    },
+    states::{ErrorMessage, ServerEvent, ServerTask, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar},
 };
-use gpui::{Action, Corner, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable,
-    button::{Button, ButtonVariants, DropdownButton},
+    button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     tooltip::Tooltip,
 };
-use schemars::JsonSchema;
-use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
 use tracing::info;
 
@@ -89,10 +85,8 @@ fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Conte
 
 // --- Local State ---
 
-/// Local state for the status bar to cache formatted strings and colors.
-/// This prevents re-calculating strings on every render frame.
 #[derive(Default)]
-struct StatusBarState {
+struct StatusBarServerState {
     server_id: SharedString,
     size: SharedString,
     latency: (SharedString, Hsla),
@@ -102,14 +96,15 @@ struct StatusBarState {
     scan_finished: bool,
     soft_wrap: bool,
     nodes_description: SharedString,
-    data_format: Option<DataFormat>,
-    error: Option<ErrorMessage>,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-pub enum KeyValueFormatAction {
-    Bytes,
-    Json,
+/// Local state for the status bar to cache formatted strings and colors.
+/// This prevents re-calculating strings on every render frame.
+#[derive(Default)]
+struct StatusBarState {
+    server_state: StatusBarServerState,
+    data_format: Option<SharedString>,
+    error: Option<ErrorMessage>,
 }
 
 pub struct ZedisStatusBar {
@@ -136,16 +131,16 @@ impl ZedisStatusBar {
                     });
                 }
                 ServerEvent::KeyScanStarted(_) => {
-                    this.state.scan_finished = false;
+                    this.state.server_state.scan_finished = false;
                 }
                 ServerEvent::KeyScanFinished(_) => {
                     let state = server_state.read(cx);
-                    this.state.size = format_size(state.dbsize(), state.scan_count());
-                    this.state.scan_finished = true;
+                    this.state.server_state.size = format_size(state.dbsize(), state.scan_count());
+                    this.state.server_state.scan_finished = true;
                 }
                 ServerEvent::KeyScanPaged(_) => {
                     let state = server_state.read(cx);
-                    this.state.size = format_size(state.dbsize(), state.scan_count());
+                    this.state.server_state.size = format_size(state.dbsize(), state.scan_count());
                 }
                 ServerEvent::ErrorOccurred(error) => {
                     this.state.error = Some(error.clone());
@@ -159,7 +154,13 @@ impl ZedisStatusBar {
                 ServerEvent::ValueLoaded(_) => {
                     let state = server_state.read(cx);
                     if let Some(value) = state.value().and_then(|item| item.bytes_value()) {
-                        this.state.data_format = Some(value.format);
+                        let mut format = value.format.as_str().to_string();
+                        if let Some(mime) = &value.mime {
+                            format = format!("{}({})", format, mime);
+                        }
+                        this.state.data_format = Some(format.into());
+                    } else {
+                        this.state.data_format = None;
                     }
                 }
                 _ => {
@@ -181,24 +182,21 @@ impl ZedisStatusBar {
         this
     }
     fn fill_state(&mut self, server_state: Entity<ZedisServerState>, cx: &Context<Self>) {
-        self.reset();
         let state = server_state.read(cx);
         let Some(redis_info) = state.redis_info() else {
             return;
         };
-        self.state.size = format_size(state.dbsize(), state.scan_count());
-        self.state.server_id = state.server_id().to_string().into();
-        self.state.latency = format_latency(Some(redis_info.latency), cx);
-        self.state.used_memory = redis_info.used_memory_human.clone().into();
-        self.state.clients = format!("{} / {}", redis_info.blocked_clients, redis_info.connected_clients).into();
-        self.state.nodes = format_nodes(state.nodes(), state.version());
-        self.state.scan_finished = state.scan_completed();
-        self.state.soft_wrap = state.soft_wrap();
-        self.state.nodes_description = format_nodes_description(state.nodes_description().clone(), cx);
-    }
-    /// Reset the state to default
-    fn reset(&mut self) {
-        self.state = StatusBarState::default();
+        self.state.server_state = StatusBarServerState {
+            server_id: state.server_id().to_string().into(),
+            size: format_size(state.dbsize(), state.scan_count()),
+            latency: format_latency(Some(redis_info.latency), cx),
+            used_memory: redis_info.used_memory_human.clone().into(),
+            clients: format!("{} / {}", redis_info.blocked_clients, redis_info.connected_clients).into(),
+            nodes: format_nodes(state.nodes(), state.version()),
+            scan_finished: state.scan_completed(),
+            soft_wrap: state.soft_wrap(),
+            nodes_description: format_nodes_description(state.nodes_description().clone(), cx),
+        };
     }
     /// Start the heartbeat task
     fn start_heartbeat(&mut self, server_state: Entity<ZedisServerState>, cx: &mut Context<Self>) {
@@ -214,8 +212,9 @@ impl ZedisStatusBar {
     }
     /// Render the server status
     fn render_server_status(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_completed = self.state.scan_finished;
-        let nodes_description = self.state.nodes_description.clone();
+        let server_state = &self.state.server_state;
+        let is_completed = server_state.scan_finished;
+        let nodes_description = server_state.nodes_description.clone();
         h_flex()
             .items_center()
             .child(
@@ -236,13 +235,13 @@ impl ZedisStatusBar {
                         });
                     })),
             )
-            .child(Label::new(self.state.size.clone()).mr_4())
+            .child(Label::new(server_state.size.clone()).mr_4())
             .child(
                 div()
                     .child(
                         h_flex()
                             .child(Icon::new(CustomIconName::Network).text_color(cx.theme().primary).mr_1())
-                            .child(Label::new(self.state.nodes.clone()).mr_4()),
+                            .child(Label::new(server_state.nodes.clone()).mr_4()),
                     )
                     .id("zedis-servers")
                     .tooltip(move |window, cx| Tooltip::new(nodes_description.clone()).build(window, cx)),
@@ -259,8 +258,8 @@ impl ZedisStatusBar {
                     ),
             )
             .child(
-                Label::new(self.state.latency.0.clone())
-                    .text_color(self.state.latency.1)
+                Label::new(server_state.latency.0.clone())
+                    .text_color(server_state.latency.1)
                     .mr_4(),
             )
             .child(
@@ -274,7 +273,7 @@ impl ZedisStatusBar {
                             .mr_1(),
                     ),
             )
-            .child(Label::new(self.state.used_memory.clone()).mr_4())
+            .child(Label::new(server_state.used_memory.clone()).mr_4())
             .child(
                 Button::new("zedis-status-bar-clients")
                     .ghost()
@@ -286,21 +285,30 @@ impl ZedisStatusBar {
                             .mr_1(),
                     ),
             )
-            .child(Label::new(self.state.clients.clone()).mr_4())
+            .child(Label::new(server_state.clients.clone()))
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_state = &self.state.server_state;
         Button::new("soft-wrap")
             .ghost()
             .xsmall()
-            .when(self.state.soft_wrap, |this| this.icon(IconName::Check))
+            .when(server_state.soft_wrap, |this| this.icon(IconName::Check))
             .label(i18n_status_bar(cx, "soft_wrap"))
             .on_click(cx.listener(|this, _, _window, cx| {
-                this.state.soft_wrap = !this.state.soft_wrap;
+                this.state.server_state.soft_wrap = !this.state.server_state.soft_wrap;
                 this.server_state.update(cx, |state, cx| {
-                    state.set_soft_wrap(this.state.soft_wrap, cx);
+                    state.set_soft_wrap(this.state.server_state.soft_wrap, cx);
                 });
                 cx.notify();
             }))
+    }
+    fn render_data_format(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(data_format) = self.state.data_format.clone() else {
+            return h_flex().flex_1();
+        };
+        h_flex()
+            .child(Icon::new(CustomIconName::Binary).text_color(cx.theme().primary).mr_1())
+            .child(Label::new(data_format))
     }
     /// Render the error message
     fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -317,30 +325,12 @@ impl ZedisStatusBar {
                 .text_align(TextAlign::Right),
         )
     }
-    fn render_data_format(&self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(date_format) = self.state.data_format else {
-            return div().into_any_element();
-        };
-
-        DropdownButton::new("dropdown")
-            .button(
-                Button::new("status-bar-select-data-format")
-                    .label(date_format.as_str())
-                    .ghost()
-                    .xsmall(),
-            )
-            .dropdown_menu_with_anchor(Corner::BottomLeft, |menu, _, _| {
-                menu.menu("Option 1", Box::new(KeyValueFormatAction::Bytes))
-                    .menu("Option 2", Box::new(KeyValueFormatAction::Json))
-            })
-            .into_any_element()
-    }
 }
 
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("render status bar view");
-        if self.state.server_id.is_empty() {
+        if self.state.server_state.server_id.is_empty() {
             return h_flex();
         }
         h_flex()
@@ -348,12 +338,13 @@ impl Render for ZedisStatusBar {
             .text_sm()
             .py_1p5()
             .px_4()
+            .gap_4()
             .border_t_1()
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
             .child(self.render_server_status(window, cx))
             .child(self.render_editor_settings(window, cx))
-            .child(self.render_errors(window, cx))
             .child(self.render_data_format(window, cx))
+            .child(self.render_errors(window, cx))
     }
 }

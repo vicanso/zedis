@@ -13,19 +13,14 @@
 // limitations under the License.
 
 use crate::helpers::get_font_family;
-use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ZedisServerState};
-use gpui::AnyWindowHandle;
-use gpui::Entity;
-use gpui::SharedString;
-use gpui::Subscription;
-use gpui::Window;
-use gpui::prelude::*;
-use gpui::{Image, ObjectFit, img};
-use gpui::{div, px};
+use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ZedisGlobalStore, ZedisServerState};
+use gpui::{AnyWindowHandle, App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
+use gpui::{hsla, prelude::*};
 use gpui_component::highlighter::Language;
-use gpui_component::input::InputEvent;
-use gpui_component::input::TabSize;
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, TabSize};
+use gpui_component::label::Label;
+use gpui_component::list::{List, ListDelegate, ListItem, ListState};
+use gpui_component::{ActiveTheme, IndexPath, h_flex, v_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
 use std::sync::Arc;
@@ -36,8 +31,10 @@ const DEFAULT_TAB_SIZE: usize = 4;
 const DEFAULT_LANGUAGE: &str = "json";
 const EDITOR_FONT_SIZE: f32 = 12.0;
 const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for narrow viewports
+const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
 const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
-const VIEWPORT_BREAKPOINT: f32 = 1400.0; // Pixel width to switch hex display width
+const VIEWPORT_WIDE: f32 = 1800.0; // Pixel width to switch hex display width
+const VIEWPORT_MEDIUM: f32 = 1400.0; // Pixel width to switch hex display width
 
 /// String value editor component for Redis String data type
 ///
@@ -54,6 +51,9 @@ pub struct ZedisBytesEditor {
 
     /// Flag indicating if the value has been modified from original
     value_modified: bool,
+
+    /// State for hex viewer list
+    hex_viewer_state: Option<Entity<ListState<HexViewerListDelegate>>>,
 
     /// Code editor state with input handling
     editor: Entity<InputState>,
@@ -80,14 +80,13 @@ pub struct ZedisBytesEditor {
 enum ByteEditorData {
     Image(Arc<Image>),
     Text(SharedString),
-    Hex(SharedString),
+    Hex(HexViewerListDelegate),
 }
 
 impl ByteEditorData {
     fn to_string(&self) -> Option<SharedString> {
         match self {
             ByteEditorData::Text(value) => Some(value.clone()),
-            ByteEditorData::Hex(value) => Some(value.clone()),
             _ => None,
         }
     }
@@ -99,12 +98,12 @@ impl ByteEditorData {
 /// based on viewport size and returns Hex(SharedString).
 ///
 /// # Arguments
-/// * `window` - Window reference for viewport size calculation
 /// * `value` - Optional Redis value to extract string from
+/// * `cx` - App context for viewport size calculation
 ///
 /// # Returns
 /// String representation (either original string or hex dump)
-fn format_byte_editor_data(window: &Window, value: Option<Arc<RedisBytesValue>>) -> ByteEditorData {
+fn format_byte_editor_data(value: Option<Arc<RedisBytesValue>>, cx: &App) -> ByteEditorData {
     let Some(value) = value else {
         return ByteEditorData::Text(SharedString::default());
     };
@@ -122,9 +121,16 @@ fn format_byte_editor_data(window: &Window, value: Option<Arc<RedisBytesValue>>)
     }
 
     // Adjust hex width based on viewport size
-    let width = window.viewport_size().width;
+    let store = cx.global::<ZedisGlobalStore>().clone();
+    let width = store
+        .value(cx)
+        .bounds()
+        .map(|bounds| bounds.size.width)
+        .unwrap_or_default();
+
     let hex_width = match width {
-        width if width < px(VIEWPORT_BREAKPOINT) => HEX_WIDTH_NARROW,
+        width if width < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
+        width if width < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
         _ => HEX_WIDTH_WIDE,
     };
 
@@ -135,7 +141,69 @@ fn format_byte_editor_data(window: &Window, value: Option<Arc<RedisBytesValue>>)
         group: 0,
         ..Default::default()
     };
-    ByteEditorData::Hex(config_hex(&value.bytes, cfg).into())
+    let hex_data = config_hex(&value.bytes, cfg);
+
+    ByteEditorData::Hex(HexViewerListDelegate::new(&hex_data))
+}
+
+#[derive(Clone)]
+struct HexViewerListDelegate {
+    items: Vec<(SharedString, SharedString, SharedString)>,
+    selected_index: Option<IndexPath>,
+}
+
+impl HexViewerListDelegate {
+    fn new(data: &str) -> Self {
+        let items = data
+            .split("\n")
+            .flat_map(|item| {
+                let (address, value) = item.split_once(":")?;
+                let (hex_data, ascii_data) = value.trim_start().split_once("   ")?;
+                Some((
+                    address.to_uppercase().into(),
+                    hex_data.to_string().into(),
+                    ascii_data.to_string().into(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        Self {
+            items,
+            selected_index: None,
+        }
+    }
+}
+
+impl ListDelegate for HexViewerListDelegate {
+    type Item = ListItem;
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let address_color = if cx.theme().is_dark() {
+            hsla(0.1497, 1.0, 0.8078, 1.0)
+        } else {
+            hsla(0.0892, 0.9462, 0.4373, 1.0)
+        };
+        self.items.get(ix.row).map(|(address, hex_data, ascii_data)| {
+            ListItem::new(ix).py_0().px_2().child(
+                h_flex()
+                    .child(Label::new(address.clone()).text_color(address_color).mr_4())
+                    .child(Label::new(hex_data.clone()).mr_6())
+                    .child(Label::new(ascii_data.clone())),
+            )
+        })
+    }
+
+    fn set_selected_index(&mut self, ix: Option<IndexPath>, _window: &mut Window, _cx: &mut Context<ListState<Self>>) {
+        self.selected_index = ix;
+    }
 }
 
 impl ZedisBytesEditor {
@@ -154,11 +222,11 @@ impl ZedisBytesEditor {
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
                 ServerEvent::ValueLoaded(_) => {
-                    this.update_editor_value(cx);
+                    this.hex_viewer_state = None;
+                    this.update_editor_value(true, cx);
                 }
                 ServerEvent::ValueUpdated(_) => {
-                    this.value_modified = false;
-                    cx.notify();
+                    this.update_editor_value(false, cx);
                 }
                 ServerEvent::SoftWrapToggled(soft_wrap) => {
                     this.soft_wrap_changed = true;
@@ -171,7 +239,7 @@ impl ZedisBytesEditor {
         // Get initial value (string or hex dump)
         let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
         let readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8);
-        let editor_data = format_byte_editor_data(window, redis_bytes_value);
+        let editor_data = format_byte_editor_data(redis_bytes_value, cx);
         let soft_wrap = server_state.read(cx).soft_wrap();
 
         // Configure code editor with JSON syntax highlighting
@@ -194,12 +262,9 @@ impl ZedisBytesEditor {
         subscriptions.push(cx.subscribe(&editor, |this, _, event, cx| {
             if let InputEvent::Change = &event {
                 let value = this.editor.read(cx).value();
-                let redis_value = this.server_state.read(cx).value();
 
                 // Compare with original value to determine if modified
-                let original = redis_value
-                    .and_then(|r| r.bytes_string_value())
-                    .map_or("".into(), |v| v);
+                let original = this.data.to_string().unwrap_or_default();
 
                 this.value_modified = original != value.as_str();
                 cx.notify();
@@ -213,6 +278,7 @@ impl ZedisBytesEditor {
             soft_wrap,
             soft_wrap_changed: false,
             data: editor_data,
+            hex_viewer_state: None,
             editor,
             window_handle: window.window_handle(),
             server_state,
@@ -225,7 +291,7 @@ impl ZedisBytesEditor {
     ///
     /// Skips update if value is currently loading to prevent flickering.
     /// Resets the modification flag after updating to the new value.
-    fn update_editor_value(&mut self, cx: &mut Context<Self>) {
+    fn update_editor_value(&mut self, should_updated_editor: bool, cx: &mut Context<Self>) {
         // Prevent editor flickering by skipping value updates while loading
         if self
             .server_state
@@ -245,12 +311,22 @@ impl ZedisBytesEditor {
 
         let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
         self.readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8);
+        let editor_data = format_byte_editor_data(redis_bytes_value, cx);
+        if !matches!(editor_data, ByteEditorData::Hex(_)) {
+            self.hex_viewer_state = None;
+        }
 
+        let value = editor_data.to_string().unwrap_or_default();
+        self.data = editor_data;
+
+        if !should_updated_editor {
+            cx.notify();
+            return;
+        }
         // Update editor with new value (requires window handle for hex width calculation)
         let _ = window_handle.update(cx, move |_, window, cx| {
             self.editor.update(cx, move |this, cx| {
-                let editor_data = format_byte_editor_data(window, redis_bytes_value);
-                this.set_value(editor_data.to_string().unwrap_or_default(), window, cx);
+                this.set_value(value, window, cx);
                 cx.notify();
             });
         });
@@ -282,10 +358,25 @@ impl Render for ZedisBytesEditor {
             self.soft_wrap_changed = false;
         }
         match &self.data {
-            ByteEditorData::Image(value) => div()
+            ByteEditorData::Image(value) => v_flex()
+                .items_center()
+                .justify_center()
                 .size_full()
-                .child(img(value.clone()).object_fit(ObjectFit::Contain))
+                .child(
+                    img(value.clone())
+                        .w(px(500.))
+                        .h(px(500.))
+                        .object_fit(ObjectFit::Contain),
+                )
                 .into_any_element(),
+            ByteEditorData::Hex(value) => {
+                let state = self
+                    .hex_viewer_state
+                    .get_or_insert_with(|| cx.new(|cx| ListState::new(value.clone(), window, cx)))
+                    .clone();
+                List::new(&state).font_family(get_font_family()).into_any_element()
+            }
+
             _ => Input::new(&self.editor)
                 .flex_1()
                 .bordered(false)

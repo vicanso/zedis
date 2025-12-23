@@ -51,7 +51,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
             ..Default::default()
         });
     }
-    let format = detect_format(&value_bytes);
+    let (format, mime) = detect_format(&value_bytes);
     let bytes = Bytes::from(value_bytes);
     let data = match str::from_utf8(&bytes) {
         Ok(text) => {
@@ -64,6 +64,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
             RedisValueData::Bytes(Arc::new(RedisBytesValue {
                 is_utf8: true,
                 format,
+                mime,
                 bytes: bytes.clone(),
                 text: Some(text),
             }))
@@ -72,6 +73,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
             // Conversion failed (invalid UTF-8). Recover the original bytes.
             RedisValueData::Bytes(Arc::new(RedisBytesValue {
                 format,
+                mime,
                 bytes: bytes.clone(),
                 ..Default::default()
             }))
