@@ -18,7 +18,6 @@ use bytes::Bytes;
 use chrono::Local;
 use gpui::{Action, Hsla, SharedString, prelude::*};
 use redis::cmd;
-use rmp_serde::decode::Deserializer;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::io::Cursor;
@@ -98,7 +97,6 @@ pub enum DataFormat {
     Gzip,
     Zstd,
     MessagePack,
-    Protobuf,
 }
 
 impl DataFormat {
@@ -113,13 +111,12 @@ impl DataFormat {
             DataFormat::Gzip => "gzip",
             DataFormat::Zstd => "zstd",
             DataFormat::MessagePack => "messagepack",
-            DataFormat::Protobuf => "protobuf",
         }
     }
 }
 
 fn is_valid_messagepack(bytes: &[u8]) -> bool {
-    let mut deserializer = Deserializer::new(Cursor::new(bytes));
+    let mut deserializer = rmp_serde::decode::Deserializer::new(Cursor::new(bytes));
 
     match serde::de::IgnoredAny::deserialize(&mut deserializer) {
         Ok(_) => deserializer.get_ref().position() == bytes.len() as u64,
@@ -132,7 +129,12 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
         return (DataFormat::Bytes, None);
     }
     let Some(kind) = infer::get(bytes) else {
-        return (DataFormat::Bytes, None);
+        let format = if is_valid_messagepack(bytes) {
+            DataFormat::MessagePack
+        } else {
+            DataFormat::Bytes
+        };
+        return (format, None);
     };
     let mime = kind.mime_type();
     let format = match mime {
@@ -141,13 +143,7 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
         "image/jpeg" => DataFormat::Jpeg,
         "image/png" => DataFormat::Png,
         "image/webp" => DataFormat::Webp,
-        _ => {
-            if is_valid_messagepack(bytes) {
-                DataFormat::MessagePack
-            } else {
-                DataFormat::Bytes
-            }
-        }
+        _ => DataFormat::Bytes,
     };
     (format, Some(mime.to_string().into()))
 }
@@ -211,7 +207,6 @@ pub struct RedisListValue {
 
 #[derive(Debug, Clone, Default)]
 pub struct RedisBytesValue {
-    pub is_utf8: bool,
     pub format: DataFormat,
     pub bytes: Bytes,
     pub mime: Option<SharedString>,
@@ -221,6 +216,9 @@ pub struct RedisBytesValue {
 impl RedisBytesValue {
     pub fn is_image(&self) -> bool {
         matches!(self.format, DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp)
+    }
+    pub fn is_utf8_text(&self) -> bool {
+        matches!(self.format, DataFormat::Text | DataFormat::Json)
     }
 }
 
@@ -334,7 +332,7 @@ impl RedisValue {
     /// Returns the string value if the data is a String type
     pub fn bytes_string_value(&self) -> Option<SharedString> {
         if let Some(value) = self.bytes_value()
-            && !value.is_utf8
+            && value.is_utf8_text()
         {
             return value.text.clone();
         }
@@ -414,13 +412,18 @@ impl ZedisServerState {
             return;
         };
 
-        let original_value = value.bytes_string_value().unwrap_or_default();
+        let Some(original_bytes_value) = value.bytes_value() else {
+            return;
+        };
+        let format = original_bytes_value.format;
+        let original_size = value.size;
+
         value.status = RedisValueStatus::Updating;
         value.size = new_value.len();
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
             bytes: Bytes::from(new_value.clone().to_string().into_bytes()),
             text: Some(new_value.clone()),
-            is_utf8: true,
+            format,
             ..Default::default()
         })));
         let current_key = key.clone();
@@ -442,13 +445,8 @@ impl ZedisServerState {
                     value.status = RedisValueStatus::Idle;
                     // Recover original value if save failed
                     if result.is_err() {
-                        value.size = original_value.len();
-                        value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
-                            bytes: Bytes::from(original_value.clone().to_string().into_bytes()),
-                            text: Some(original_value.clone()),
-                            is_utf8: true,
-                            ..Default::default()
-                        })));
+                        value.size = original_size;
+                        value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
                     }
                     cx.emit(ServerEvent::ValueUpdated(current_key));
                 }

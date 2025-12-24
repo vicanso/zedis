@@ -15,8 +15,6 @@
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
-    constants::SIDEBAR_WIDTH,
-    helpers::get_key_tree_widths,
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_kv_table},
 };
 use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
@@ -110,9 +108,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// 4. Distributes remaining width evenly among flexible columns
     fn new_columns(mut columns: Vec<KvTableColumn>, window: &Window, cx: &mut Context<Self>) -> Vec<KvTableColumn> {
         // Calculate available width (window - sidebar - key tree - padding)
-        let window_width = window.viewport_size().width.as_f32();
-        let key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
-        let (key_tree_width, _, _) = get_key_tree_widths(key_tree_width);
+        let window_width = window.viewport_size().width;
 
         // Insert index column at the beginning
         columns.insert(
@@ -134,7 +130,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         });
 
         // Calculate remaining width and count columns without fixed width
-        let mut remaining_width = window_width - key_tree_width.as_f32() - SIDEBAR_WIDTH - 10.;
+        let content_width = cx
+            .global::<ZedisGlobalStore>()
+            .read(cx)
+            .content_width()
+            .unwrap_or(window_width);
+        let mut remaining_width = content_width.as_f32() - 10.;
         let mut flexible_columns = 0;
 
         for column in &columns {

@@ -243,15 +243,22 @@ impl ZedisEditor {
 
         // Add save button for string editor if value is modified
         if let Some(bytes_editor) = &self.bytes_editor {
-            let value_modified = bytes_editor.read(cx).is_value_modified();
+            let state = bytes_editor.read(cx);
+            let value_modified = state.is_value_modified();
+            let readonly = state.is_readonly();
+            let tooltip = if readonly {
+                i18n_editor(cx, "can_not_edit_value")
+            } else {
+                i18n_editor(cx, "save_data_tooltip")
+            };
 
             btns.push(
                 Button::new("zedis-editor-save-key")
                     .ml_2()
-                    .disabled(!value_modified || should_show_loading)
+                    .disabled(readonly || !value_modified || should_show_loading)
                     .outline()
                     .label(i18n_common(cx, "save"))
-                    .tooltip(i18n_editor(cx, "save_data_tooltip"))
+                    .tooltip(tooltip)
                     .icon(CustomIconName::FileCheckCorner)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if is_busy {

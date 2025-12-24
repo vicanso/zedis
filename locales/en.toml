@@ -80,6 +80,7 @@ save_data_tooltip = "Save changes to key value"
 delete_key_tooltip = "Delete key"
 copy_key_tooltip = "Copy key name"
 copied_key_to_clipboard = "Copied key name to clipboard"
+can_not_edit_value = "Can not edit the value in this format"
 
 [key_tree]
 no_keys_found = "No keys found"

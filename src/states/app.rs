@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::get_or_create_config_dir;
+use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
 use gpui::App;
 use gpui::AppContext;
 use gpui::Bounds;
@@ -21,7 +22,7 @@ use gpui::Context;
 use gpui::Entity;
 use gpui::Global;
 use gpui::Pixels;
-use gpui_component::ThemeMode;
+use gpui_component::{PixelsExt, ThemeMode};
 use locale_config::Locale;
 use serde::Deserialize;
 use serde::Serialize;
@@ -119,6 +120,12 @@ impl ZedisAppState {
     }
     pub fn key_tree_width(&self) -> Pixels {
         self.key_tree_width
+    }
+    pub fn content_width(&self) -> Option<Pixels> {
+        let bounds = self.bounds?;
+        let width = bounds.size.width.as_f32();
+        let (key_tree_width, _, _) = get_key_tree_widths(self.key_tree_width);
+        Some((width - SIDEBAR_WIDTH - key_tree_width.as_f32()).into())
     }
     pub fn set_key_tree_width(&mut self, width: Pixels) {
         self.key_tree_width = width;

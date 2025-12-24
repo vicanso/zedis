@@ -13,11 +13,14 @@
 // limitations under the License.
 
 use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
+use crate::helpers::decompress_zstd;
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
+use flate2::read::GzDecoder;
 use gpui::SharedString;
 use redis::cmd;
 use serde_json::Value;
+use std::io::Read;
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -44,44 +47,81 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
         return Ok(RedisValue {
             key_type: KeyType::String,
             data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
-                is_utf8: true,
+                format: DataFormat::Text,
                 ..Default::default()
             }))),
             size,
             ..Default::default()
         });
     }
-    let (format, mime) = detect_format(&value_bytes);
     let bytes = Bytes::from(value_bytes);
-    let data = match str::from_utf8(&bytes) {
-        Ok(text) => {
-            // Check if it's JSON and format it
-            let (text, format): (SharedString, DataFormat) = if let Some(pretty) = pretty_json(text) {
-                (pretty, DataFormat::Json)
+    let (mut format, mime) = detect_format(&bytes);
+    let text: Option<SharedString> = match format {
+        DataFormat::MessagePack => rmp_serde::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .map(SharedString::from),
+        DataFormat::Gzip => {
+            let mut decoder = GzDecoder::new(bytes.as_ref());
+            let mut decompressed_vec = Vec::new();
+
+            if decoder.read_to_end(&mut decompressed_vec).is_ok() {
+                match String::from_utf8(decompressed_vec) {
+                    Ok(s) => {
+                        if let Some(pretty) = pretty_json(&s) {
+                            format = DataFormat::Json;
+                            Some(pretty)
+                        } else {
+                            format = DataFormat::Text;
+                            Some(s.into())
+                        }
+                    }
+                    Err(_) => None,
+                }
             } else {
-                (text.to_string().into(), DataFormat::Text)
-            };
-            RedisValueData::Bytes(Arc::new(RedisBytesValue {
-                is_utf8: true,
-                format,
-                mime,
-                bytes: bytes.clone(),
-                text: Some(text),
-            }))
+                None
+            }
         }
-        Err(_e) => {
-            // Conversion failed (invalid UTF-8). Recover the original bytes.
-            RedisValueData::Bytes(Arc::new(RedisBytesValue {
-                format,
-                mime,
-                bytes: bytes.clone(),
-                ..Default::default()
-            }))
+        DataFormat::Zstd => {
+            if let Ok(decompressed_vec) = decompress_zstd(bytes.as_ref()) {
+                match String::from_utf8(decompressed_vec) {
+                    Ok(s) => {
+                        if let Some(pretty) = pretty_json(&s) {
+                            format = DataFormat::Json;
+                            Some(pretty)
+                        } else {
+                            format = DataFormat::Text;
+                            Some(s.into())
+                        }
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
         }
+        _ => match std::str::from_utf8(&bytes) {
+            Ok(s) => {
+                if let Some(pretty) = pretty_json(s) {
+                    format = DataFormat::Json;
+                    Some(pretty)
+                } else {
+                    format = DataFormat::Text;
+                    Some(s.to_string().into())
+                }
+            }
+            Err(_) => None,
+        },
     };
+
     Ok(RedisValue {
         key_type: KeyType::String,
-        data: Some(data),
+        data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+            format,
+            mime,
+            bytes,
+            text,
+        }))),
         size,
         ..Default::default()
     })

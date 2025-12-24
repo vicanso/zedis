@@ -14,27 +14,27 @@
 
 use crate::helpers::get_font_family;
 use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ZedisGlobalStore, ZedisServerState};
-use gpui::{AnyWindowHandle, App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
-use gpui::{hsla, prelude::*};
+use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
+use gpui::{div, hsla, prelude::*};
 use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, TabSize};
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_component::{ActiveTheme, IndexPath, h_flex, v_flex};
+use gpui_component::{ActiveTheme, IndexPath, h_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
 use std::sync::Arc;
 use tracing::info;
 
 // Constants for editor configuration
-const DEFAULT_TAB_SIZE: usize = 4;
+const DEFAULT_TAB_SIZE: usize = 2;
 const DEFAULT_LANGUAGE: &str = "json";
 const EDITOR_FONT_SIZE: f32 = 12.0;
 const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for narrow viewports
 const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
 const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
-const VIEWPORT_WIDE: f32 = 1800.0; // Pixel width to switch hex display width
-const VIEWPORT_MEDIUM: f32 = 1400.0; // Pixel width to switch hex display width
+const VIEWPORT_WIDE: f32 = 1400.0; // Pixel width to switch hex display width
+const VIEWPORT_MEDIUM: f32 = 1200.0; // Pixel width to switch hex display width
 
 /// String value editor component for Redis String data type
 ///
@@ -58,14 +58,14 @@ pub struct ZedisBytesEditor {
     /// Code editor state with input handling
     editor: Entity<InputState>,
 
-    /// Window handle for cross-window updates
-    window_handle: AnyWindowHandle,
-
     /// Whether to soft wrap the editor
     soft_wrap: bool,
 
     /// Whether the editor is readonly
     readonly: bool,
+
+    /// Whether to update the editor
+    should_update_editor: bool,
 
     /// Whether the soft wrap has been changed
     soft_wrap_changed: bool,
@@ -121,11 +121,10 @@ fn format_byte_editor_data(value: Option<Arc<RedisBytesValue>>, cx: &App) -> Byt
     }
 
     // Adjust hex width based on viewport size
-    let store = cx.global::<ZedisGlobalStore>().clone();
-    let width = store
-        .value(cx)
-        .bounds()
-        .map(|bounds| bounds.size.width)
+    let width = cx
+        .global::<ZedisGlobalStore>()
+        .read(cx)
+        .content_width()
         .unwrap_or_default();
 
     let hex_width = match width {
@@ -187,7 +186,7 @@ impl ListDelegate for HexViewerListDelegate {
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let address_color = if cx.theme().is_dark() {
-            hsla(0.1497, 1.0, 0.8078, 1.0)
+            hsla(0.108, 0.66, 0.69, 1.0)
         } else {
             hsla(0.0892, 0.9462, 0.4373, 1.0)
         };
@@ -195,7 +194,11 @@ impl ListDelegate for HexViewerListDelegate {
             ListItem::new(ix).py_0().px_2().child(
                 h_flex()
                     .child(Label::new(address.clone()).text_color(address_color).mr_4())
-                    .child(Label::new(hex_data.clone()).mr_6())
+                    .child(
+                        Label::new(hex_data.clone())
+                            .text_color(cx.theme().muted_foreground)
+                            .mr_6(),
+                    )
                     .child(Label::new(ascii_data.clone())),
             )
         })
@@ -222,11 +225,11 @@ impl ZedisBytesEditor {
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
                 ServerEvent::ValueLoaded(_) => {
-                    this.hex_viewer_state = None;
-                    this.update_editor_value(true, cx);
+                    this.update_editor_data(cx);
+                    this.should_update_editor = true;
                 }
                 ServerEvent::ValueUpdated(_) => {
-                    this.update_editor_value(false, cx);
+                    this.update_editor_data(cx);
                 }
                 ServerEvent::SoftWrapToggled(soft_wrap) => {
                     this.soft_wrap_changed = true;
@@ -236,10 +239,6 @@ impl ZedisBytesEditor {
             }),
         );
 
-        // Get initial value (string or hex dump)
-        let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
-        let readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8);
-        let editor_data = format_byte_editor_data(redis_bytes_value, cx);
         let soft_wrap = server_state.read(cx).soft_wrap();
 
         // Configure code editor with JSON syntax highlighting
@@ -255,7 +254,10 @@ impl ZedisBytesEditor {
                 })
                 .searchable(true)
                 .soft_wrap(soft_wrap)
-                .default_value(editor_data.to_string().unwrap_or_default())
+        });
+
+        editor.update(cx, |this, cx| {
+            this.focus(window, cx);
         });
 
         // Subscribe to editor changes to track modification state
@@ -273,25 +275,27 @@ impl ZedisBytesEditor {
 
         info!("Creating new string editor view");
 
-        Self {
+        let mut this = Self {
             value_modified: false,
             soft_wrap,
             soft_wrap_changed: false,
-            data: editor_data,
+            data: ByteEditorData::Text(SharedString::default()),
             hex_viewer_state: None,
             editor,
-            window_handle: window.window_handle(),
+            should_update_editor: true,
             server_state,
-            readonly,
+            readonly: false,
             _subscriptions: subscriptions,
-        }
+        };
+        this.update_editor_data(cx);
+        this
     }
 
-    /// Update editor value when server state changes
+    /// Update editor data when server state changes
     ///
     /// Skips update if value is currently loading to prevent flickering.
     /// Resets the modification flag after updating to the new value.
-    fn update_editor_value(&mut self, should_updated_editor: bool, cx: &mut Context<Self>) {
+    fn update_editor_data(&mut self, cx: &mut Context<Self>) {
         // Prevent editor flickering by skipping value updates while loading
         if self
             .server_state
@@ -303,38 +307,27 @@ impl ZedisBytesEditor {
             return;
         }
 
-        let window_handle = self.window_handle;
         let server_state = self.server_state.clone();
 
         // Reset modification flag since we're loading a new value
         self.value_modified = false;
 
         let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
-        self.readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8);
-        let editor_data = format_byte_editor_data(redis_bytes_value, cx);
-        if !matches!(editor_data, ByteEditorData::Hex(_)) {
+        self.readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8_text());
+        self.data = format_byte_editor_data(redis_bytes_value, cx);
+        if !matches!(self.data, ByteEditorData::Hex(_)) {
             self.hex_viewer_state = None;
         }
-
-        let value = editor_data.to_string().unwrap_or_default();
-        self.data = editor_data;
-
-        if !should_updated_editor {
-            cx.notify();
-            return;
-        }
-        // Update editor with new value (requires window handle for hex width calculation)
-        let _ = window_handle.update(cx, move |_, window, cx| {
-            self.editor.update(cx, move |this, cx| {
-                this.set_value(value, window, cx);
-                cx.notify();
-            });
-        });
     }
 
     /// Check if the current editor value differs from the original Redis value
     pub fn is_value_modified(&self) -> bool {
         self.value_modified
+    }
+
+    /// Check if the editor is readonly
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
     }
 
     /// Get the current editor value
@@ -358,14 +351,17 @@ impl Render for ZedisBytesEditor {
             self.soft_wrap_changed = false;
         }
         match &self.data {
-            ByteEditorData::Image(value) => v_flex()
-                .items_center()
-                .justify_center()
+            ByteEditorData::Image(value) => div()
                 .size_full()
+                .relative()
+                .overflow_hidden()
                 .child(
                     img(value.clone())
-                        .w(px(500.))
-                        .h(px(500.))
+                        .absolute()
+                        .inset_0()
+                        .max_w_full()
+                        .max_h_full()
+                        .m_auto()
                         .object_fit(ObjectFit::Contain),
                 )
                 .into_any_element(),
@@ -376,19 +372,27 @@ impl Render for ZedisBytesEditor {
                     .clone();
                 List::new(&state).font_family(get_font_family()).into_any_element()
             }
-
-            _ => Input::new(&self.editor)
-                .flex_1()
-                .bordered(false)
-                .disabled(self.readonly)
-                .appearance(false)
-                .p_0()
-                .w_full()
-                .h_full()
-                .font_family(get_font_family())
-                .text_size(px(EDITOR_FONT_SIZE))
-                .focus_bordered(false)
-                .into_any_element(),
+            _ => {
+                if self.should_update_editor {
+                    self.should_update_editor = false;
+                    let value = self.data.to_string().unwrap_or_default();
+                    self.editor.update(cx, move |this, cx| {
+                        this.set_value(value, window, cx);
+                    });
+                }
+                Input::new(&self.editor)
+                    .flex_1()
+                    .bordered(false)
+                    .disabled(self.readonly)
+                    .appearance(false)
+                    .p_0()
+                    .w_full()
+                    .h_full()
+                    .font_family(get_font_family())
+                    .text_size(px(EDITOR_FONT_SIZE))
+                    .focus_bordered(false)
+                    .into_any_element()
+            }
         }
     }
 }

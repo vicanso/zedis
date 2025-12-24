@@ -388,6 +388,7 @@ impl ZedisServerState {
         self.dbsize = None;
         self.key = None;
         self.redis_info = None;
+        self.value = None;
         self.reset_scan();
     }
 
