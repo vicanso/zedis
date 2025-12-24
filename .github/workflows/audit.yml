@@ -1,0 +1,29 @@
+name: Security Audit
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**/Cargo.toml"
+  schedule:
+    - cron: "0 16 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  security-audit:
+    permissions:
+      checks: write # for rustsec/audit-check to create check
+      contents: read # for actions/checkout to fetch code
+      issues: write # for rustsec/audit-check to create issues
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit Check
+        # https://github.com/rustsec/audit-check/issues/2
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GH_TOKEN }}

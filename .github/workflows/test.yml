@@ -1,0 +1,27 @@
+name: "test"
+on:
+  push:
+    # tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+    branches: [main]
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.92.0
+      - name: Install target
+        run: |
+          rustup update
+          rustup target add aarch64-apple-darwin
+      - name: release
+        run: |
+          cargo bundle --release  --features mimalloc
