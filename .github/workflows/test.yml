@@ -24,4 +24,5 @@ jobs:
           rustup target add aarch64-apple-darwin
       - name: release
         run: |
+          make release
           cargo bundle --release  --features mimalloc
