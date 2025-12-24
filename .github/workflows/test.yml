@@ -7,22 +7,45 @@ on:
 env:
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.92.0
 
 jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: setup node
-        uses: actions/setup-node@v4
-      - uses: actions-rs/toolchain@v1
+        uses: actions/setup-node@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.92.0
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install target
         run: |
           rustup update
           rustup target add aarch64-apple-darwin
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-build
       - name: release
         run: |
-          make release
+          cargo install cargo-bundle
           cargo bundle --release  --features mimalloc
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: setup node
+        uses: actions/setup-node@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: x86_64-pc-windows-msvc
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-build
+      - name: release
+        run: |
+          cargo build --release  --features mimalloc
