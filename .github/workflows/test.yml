@@ -51,3 +51,22 @@ jobs:
         run: |
           cargo build --release  --features mimalloc
           ls -lh target/release
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: setup node
+        uses: actions/setup-node@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: x86_64-unknown-linux-gnu
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-build
+      - name: release
+        run: |
+          cargo build --release  --features mimalloc
+          ls -lh target/release
