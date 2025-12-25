@@ -31,7 +31,8 @@ jobs:
         run: |
           cargo install cargo-bundle
           cargo bundle --release  --features mimalloc
-          ls -lh target/release/bundle/osx
+          mv target/release/bundle/osx/Zedis.app .
+          tar -czvf zedis-darwin-aarch64.tar.gz Zedis.app
   windows:
     runs-on: windows-latest
     steps:
@@ -50,13 +51,21 @@ jobs:
       - name: release
         run: |
           cargo build --release  --features mimalloc
-          ls -lh target/release
+          mv target/release/zedis.exe ./zedis.exe
+      - name: Zip
+        shell: powershell
+        run: |
+          Compress-Archive -Path zedis.exe -Destination zedis-windows.exe.zip
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: setup node
         uses: actions/setup-node@v6
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
