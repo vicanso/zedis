@@ -94,6 +94,7 @@ pub enum DataFormat {
     Jpeg,
     Png,
     Webp,
+    Gif,
     Gzip,
     Zstd,
     MessagePack,
@@ -108,6 +109,7 @@ impl DataFormat {
             DataFormat::Jpeg => "jpeg",
             DataFormat::Png => "png",
             DataFormat::Webp => "webp",
+            DataFormat::Gif => "gif",
             DataFormat::Gzip => "gzip",
             DataFormat::Zstd => "zstd",
             DataFormat::MessagePack => "messagepack",
@@ -143,6 +145,7 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
         "image/jpeg" => DataFormat::Jpeg,
         "image/png" => DataFormat::Png,
         "image/webp" => DataFormat::Webp,
+        "image/gif" => DataFormat::Gif,
         _ => DataFormat::Bytes,
     };
     (format, Some(mime.to_string().into()))
@@ -215,7 +218,10 @@ pub struct RedisBytesValue {
 
 impl RedisBytesValue {
     pub fn is_image(&self) -> bool {
-        matches!(self.format, DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp)
+        matches!(
+            self.format,
+            DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif
+        )
     }
     pub fn is_utf8_text(&self) -> bool {
         matches!(self.format, DataFormat::Text | DataFormat::Json)

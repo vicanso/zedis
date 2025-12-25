@@ -62,6 +62,16 @@ enum LocaleAction {
     Zh,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+enum FontSizeAction {
+    /// Increase font size
+    Increase,
+    /// Decrease font size
+    Decrease,
+    /// No action
+    None,
+}
+
 /// Update app state in background, persist to disk, and refresh UI
 ///
 /// This helper function abstracts the common pattern for updating global state:
@@ -306,6 +316,9 @@ impl ZedisSidebar {
             "zh" => LocaleAction::Zh,
             _ => LocaleAction::En,
         };
+        let current_font_size = store.font_size(cx);
+        let up_font_size = (current_font_size + 1.).min(20.);
+        let down_font_size = (current_font_size - 1.).max(10.);
 
         let btn = Button::new("zedis-sidebar-setting-btn")
             .ghost()
@@ -316,6 +329,7 @@ impl ZedisSidebar {
             .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
                 let theme_text = i18n_sidebar(cx, "theme");
                 let lang_text = i18n_sidebar(cx, "lang");
+                let font_size_text = i18n_sidebar(cx, "font_size");
 
                 // Theme submenu with light/dark/system options
                 menu.submenu_with_icon(
@@ -359,6 +373,39 @@ impl ZedisSidebar {
                                 current_locale == LocaleAction::En,
                                 Box::new(LocaleAction::En),
                                 |_window, _cx| Label::new("English").text_xs().p(LABEL_PADDING),
+                            )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(Icon::new(CustomIconName::ALargeSmall).px(ICON_PADDING).mr(ICON_MARGIN)),
+                    font_size_text,
+                    window,
+                    cx,
+                    move |submenu, _window, _cx| {
+                        submenu
+                            .menu_element_with_icon(
+                                CustomIconName::AArrowUp,
+                                Box::new(FontSizeAction::Increase),
+                                move |_window, cx| {
+                                    let text = format!(
+                                        "{}({})",
+                                        i18n_sidebar(cx, "font_size_increase"),
+                                        up_font_size.floor().clone()
+                                    );
+                                    Label::new(text).text_xs().p(LABEL_PADDING)
+                                },
+                            )
+                            .menu_element_with_icon(
+                                CustomIconName::AArrowDown,
+                                Box::new(FontSizeAction::Decrease),
+                                move |_window, cx| {
+                                    let text = format!(
+                                        "{}({})",
+                                        i18n_sidebar(cx, "font_size_decrease"),
+                                        down_font_size.floor().clone()
+                                    );
+                                    Label::new(text).text_xs().p(LABEL_PADDING)
+                                },
                             )
                     },
                 )
@@ -406,6 +453,19 @@ impl ZedisSidebar {
                 // Save locale preference and refresh UI
                 update_app_state_and_save(cx, "save_locale", move |state, _cx| {
                     state.set_locale(locale.to_string());
+                });
+            }))
+            .on_action(cx.listener(move |_this, e: &FontSizeAction, _window, cx| {
+                let action = *e;
+
+                let font_size = match action {
+                    FontSizeAction::Increase => Some(up_font_size),
+                    FontSizeAction::Decrease => Some(down_font_size),
+                    _ => None,
+                };
+                // Save locale preference and refresh UI
+                update_app_state_and_save(cx, "save_font_size", move |state, _cx| {
+                    state.set_font_size(font_size);
                 });
             }))
     }

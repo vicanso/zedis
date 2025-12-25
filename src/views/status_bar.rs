@@ -122,6 +122,9 @@ impl ZedisStatusBar {
         let mut subscriptions = vec![];
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
+                ServerEvent::ServerSelected(_) => {
+                    this.state.data_format = None;
+                }
                 ServerEvent::ServerRedisInfoUpdated(_) => {
                     this.fill_state(server_state, cx);
                 }

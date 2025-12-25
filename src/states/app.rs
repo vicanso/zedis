@@ -57,6 +57,7 @@ pub struct ZedisAppState {
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
     theme: Option<String>,
+    font_size: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +77,9 @@ impl ZedisGlobalStore {
     }
     pub fn locale<'a>(&self, cx: &'a App) -> &'a str {
         self.app_state.read(cx).locale.as_deref().unwrap_or("en")
+    }
+    pub fn font_size(&self, cx: &App) -> f32 {
+        self.app_state.read(cx).font_size.unwrap_or(12.0)
     }
     pub fn theme(&self, cx: &App) -> Option<ThemeMode> {
         self.app_state.read(cx).theme()
@@ -142,6 +146,12 @@ impl ZedisAppState {
             cx.notify();
         }
     }
+    pub fn font_size(&self) -> f32 {
+        self.font_size.unwrap_or(12.0)
+    }
+    pub fn set_font_size(&mut self, font_size: Option<f32>) {
+        self.font_size = font_size;
+    }
     fn theme(&self) -> Option<ThemeMode> {
         match self.theme.as_deref() {
             Some(LIGHT_THEME_MODE) => Some(ThemeMode::Light),
@@ -149,6 +159,7 @@ impl ZedisAppState {
             _ => None,
         }
     }
+
     pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
         self.bounds = Some(bounds);
     }

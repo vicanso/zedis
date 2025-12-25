@@ -31,6 +31,7 @@ jobs:
         run: |
           cargo install cargo-bundle
           cargo bundle --release  --features mimalloc
+          ls -lh target/release/bundle/osx
   windows:
     runs-on: windows-latest
     steps:
@@ -49,3 +50,4 @@ jobs:
       - name: release
         run: |
           cargo build --release  --features mimalloc
+          ls -lh target/release

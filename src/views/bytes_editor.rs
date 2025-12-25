@@ -29,7 +29,6 @@ use tracing::info;
 // Constants for editor configuration
 const DEFAULT_TAB_SIZE: usize = 2;
 const DEFAULT_LANGUAGE: &str = "json";
-const EDITOR_FONT_SIZE: f32 = 12.0;
 const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for narrow viewports
 const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
 const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
@@ -107,10 +106,14 @@ fn format_byte_editor_data(value: Option<Arc<RedisBytesValue>>, cx: &App) -> Byt
     let Some(value) = value else {
         return ByteEditorData::Text(SharedString::default());
     };
+    if value.bytes.is_empty() {
+        return ByteEditorData::Text(SharedString::default());
+    }
     if value.is_image() {
         let data = match value.format {
             DataFormat::Png => Image::from_bytes(gpui::ImageFormat::Png, value.bytes.to_vec()),
             DataFormat::Webp => Image::from_bytes(gpui::ImageFormat::Webp, value.bytes.to_vec()),
+            DataFormat::Gif => Image::from_bytes(gpui::ImageFormat::Gif, value.bytes.to_vec()),
             _ => Image::from_bytes(gpui::ImageFormat::Jpeg, value.bytes.to_vec()),
         };
         return ByteEditorData::Image(Arc::new(data));
@@ -344,6 +347,7 @@ impl Render for ZedisBytesEditor {
     /// - Monospace font for code readability
     /// - Customizable font size
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let font_size = cx.global::<ZedisGlobalStore>().read(cx).font_size();
         if self.soft_wrap_changed {
             self.editor.update(cx, |this, cx| {
                 this.set_soft_wrap(self.soft_wrap, window, cx);
@@ -353,17 +357,10 @@ impl Render for ZedisBytesEditor {
         match &self.data {
             ByteEditorData::Image(value) => div()
                 .size_full()
-                .relative()
-                .overflow_hidden()
-                .child(
-                    img(value.clone())
-                        .absolute()
-                        .inset_0()
-                        .max_w_full()
-                        .max_h_full()
-                        .m_auto()
-                        .object_fit(ObjectFit::Contain),
-                )
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(img(value.clone()).object_fit(ObjectFit::Contain).flex_shrink_0())
                 .into_any_element(),
             ByteEditorData::Hex(value) => {
                 let state = self
@@ -389,7 +386,7 @@ impl Render for ZedisBytesEditor {
                     .w_full()
                     .h_full()
                     .font_family(get_font_family())
-                    .text_size(px(EDITOR_FONT_SIZE))
+                    .text_size(px(font_size))
                     .focus_bordered(false)
                     .into_any_element()
             }
