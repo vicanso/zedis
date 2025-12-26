@@ -19,11 +19,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: Install target
+      - name: install target
         run: |
           rustup update
           rustup target add aarch64-apple-darwin
-      - name: Rust Cache
+      - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: macos-build
@@ -44,7 +44,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: x86_64-pc-windows-msvc
-      - name: Rust Cache
+      - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: windows-build
@@ -52,9 +52,10 @@ jobs:
         run: |
           cargo build --release  --features mimalloc
           mv target/release/zedis.exe ./zedis.exe
-      - name: Zip
+      - name: zip
         shell: powershell
         run: |
+          ls .
           Compress-Archive -Path zedis.exe -Destination zedis-windows.exe.zip
   linux:
     runs-on: ubuntu-latest
@@ -66,12 +67,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev
-      - name: Install Rust toolchain
+      - name: install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: x86_64-unknown-linux-gnu
-      - name: Rust Cache
+      - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: linux-build
@@ -79,3 +80,5 @@ jobs:
         run: |
           cargo build --release  --features mimalloc
           ls -lh target/release
+          mv target/release/zedis ./zedis
+          tar -czvf zedis-linux-x86_64.tar.gz zedis
