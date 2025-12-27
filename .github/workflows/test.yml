@@ -32,8 +32,22 @@ jobs:
           cargo install cargo-bundle
           cargo bundle --release  --features mimalloc
           mv target/release/bundle/osx/Zedis.app .
-          tar -czvf zedis-darwin-aarch64.tar.gz Zedis.app
-          ./.github/workflows/upload_asset.sh ./zedis-darwin-aarch64.tar.gz $GITHUB_TOKEN
+      - name: create dmg
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "Zedis Installer" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Zedis.app" 175 190 \
+            --hide-extension "Zedis.app" \
+            --app-drop-link 425 185 \
+            "Zedis-aarch64.dmg" \
+            "Zedis.app"
+      - name: upload asset
+        run: |
+          ./.github/workflows/upload_asset.sh ./Zedis-aarch64.dmg $GITHUB_TOKEN
 
   windows:
     runs-on: windows-latest
@@ -88,4 +102,6 @@ jobs:
           ls -lh target/release
           mv target/release/zedis ./zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
+      - name: upload asset
+        run: |
           ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN
