@@ -35,3 +35,7 @@ pub fn decompress_zstd(bytes: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| Error::Invalid { message: e.to_string() })?;
     Ok(decompressed_vec)
 }
+
+pub fn is_linux() -> bool {
+    cfg!(target_os = "linux")
+}

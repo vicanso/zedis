@@ -135,10 +135,7 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditor
         ViewMode::Hex => create_hex_view(),
 
         ViewMode::Plain => {
-            let text = value
-                .text
-                .clone()
-                .unwrap_or_else(|| String::from_utf8_lossy(&value.bytes).to_string().into());
+            let text = String::from_utf8_lossy(&value.bytes).to_string().into();
             ByteEditorData::Text(text)
         }
 
@@ -242,7 +239,7 @@ impl ZedisBytesEditor {
         // Subscribe to server state changes to update editor when value changes
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
-                ServerEvent::ValueLoaded(_) => {
+                ServerEvent::ValueLoaded(_) | ServerEvent::ValueModeViewUpdated(_) => {
                     this.update_editor_data(cx);
                     this.should_update_editor = true;
                 }

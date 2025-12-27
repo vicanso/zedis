@@ -549,7 +549,7 @@ impl ZedisServerState {
         if let Some(RedisValueData::Bytes(bytes_value)) = &mut value.data {
             let bytes_value = Arc::make_mut(bytes_value);
             bytes_value.view_mode = view_mode;
-            cx.emit(ServerEvent::ValueUpdated(key));
+            cx.emit(ServerEvent::ValueModeViewUpdated(key));
             cx.notify();
         }
     }

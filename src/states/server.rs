@@ -333,6 +333,8 @@ pub enum ServerEvent {
     ValueLoaded(SharedString),
     /// A key's value has been updated
     ValueUpdated(SharedString),
+    /// A key's value view mode has been updated
+    ValueModeViewUpdated(SharedString),
     /// Load more value
     ValuePaginationStarted(SharedString),
     /// Load more value

@@ -15,6 +15,7 @@
 use crate::{
     assets::CustomIconName,
     constants::SIDEBAR_WIDTH,
+    helpers::is_linux,
     states::{Route, ServerEvent, ZedisAppState, ZedisGlobalStore, ZedisServerState, i18n_sidebar, save_app_state},
 };
 use gpui::{
@@ -502,14 +503,17 @@ impl Render for ZedisSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("Rendering sidebar view");
 
-        v_flex()
+        let mut container = v_flex()
             .w(px(SIDEBAR_WIDTH))
             .id("sidebar-container")
             .justify_start()
             .h_full()
             .border_r_1()
-            .border_color(cx.theme().border)
-            .child(self.render_star(window, cx))
+            .border_color(cx.theme().border);
+        if is_linux() {
+            container = container.child(self.render_star(window, cx))
+        }
+        container
             .child(
                 // Server list takes up remaining vertical space
                 div().flex_1().size_full().child(self.render_server_list(window, cx)),

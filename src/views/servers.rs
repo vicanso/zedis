@@ -15,35 +15,18 @@
 use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::RedisServer;
-use crate::helpers::validate_common_string;
-use crate::helpers::validate_host;
-use crate::helpers::validate_long_string;
-use crate::states::Route;
-use crate::states::ZedisGlobalStore;
-use crate::states::ZedisServerState;
-use crate::states::i18n_common;
-use crate::states::i18n_servers;
-use gpui::App;
-use gpui::Entity;
-use gpui::Window;
-use gpui::div;
-use gpui::prelude::*;
-use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Colorize;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::WindowExt;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::form::field;
-use gpui_component::form::v_form;
-use gpui_component::input::Input;
-use gpui_component::input::InputState;
-use gpui_component::input::NumberInput;
-use gpui_component::label::Label;
+use crate::helpers::{validate_common_string, validate_host, validate_long_string};
+use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers};
+use gpui::{App, Entity, Window, div, prelude::*, px};
+use gpui_component::{
+    ActiveTheme, Colorize, Icon, IconName, WindowExt,
+    button::{Button, ButtonVariants},
+    form::{field, v_form},
+    input::{Input, InputState, NumberInput},
+    label::Label,
+};
 use rust_i18n::t;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 use substring::Substring;
 use tracing::info;
 

@@ -1,41 +1,22 @@
 use crate::connection::get_servers;
-use crate::helpers::is_app_store_build;
-use crate::helpers::is_development;
-use crate::helpers::{MemuAction, new_hot_keys};
-use crate::states::NotificationCategory;
-use crate::states::ServerEvent;
-use crate::states::ZedisAppState;
-use crate::states::ZedisGlobalStore;
-use crate::states::ZedisServerState;
-use crate::states::save_app_state;
-use crate::views::ZedisContent;
-use crate::views::ZedisSidebar;
-use crate::views::open_about_window;
-use gpui::App;
-use gpui::Application;
-use gpui::Bounds;
-use gpui::Entity;
-use gpui::Menu;
-use gpui::MenuItem;
-use gpui::Pixels;
-use gpui::Task;
-use gpui::Window;
-use gpui::WindowBounds;
-use gpui::WindowOptions;
-use gpui::prelude::*;
-use gpui::px;
-use gpui::size;
-use gpui_component::ActiveTheme;
-use gpui_component::Root;
-use gpui_component::Theme;
-use gpui_component::WindowExt;
-use gpui_component::h_flex;
-use gpui_component::notification::Notification;
-use std::env;
-use std::str::FromStr;
-use tracing::Level;
-use tracing::error;
-use tracing::info;
+use crate::helpers::{MemuAction, is_app_store_build, is_development, is_linux, new_hot_keys};
+use crate::states::{
+    NotificationCategory, ServerEvent, ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state,
+};
+use crate::views::{ZedisContent, ZedisSidebar, open_about_window};
+use gpui::{
+    App, Application, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, prelude::*, px, size,
+};
+use gpui_component::{
+    ActiveTheme, IconName, Root, Sizable, Theme, TitleBar, WindowExt,
+    button::{Button, ButtonVariants},
+    h_flex,
+    notification::Notification,
+    v_flex,
+};
+use std::{env, str::FromStr};
+use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[cfg(feature = "mimalloc")]
@@ -140,6 +121,20 @@ impl Zedis {
         });
         self.save_task = Some(task);
     }
+    fn render_titlebar(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        TitleBar::new()
+            // left side
+            .child(h_flex().flex_1())
+            .child(
+                h_flex().items_center().justify_end().px_2().gap_2().mr_2().child(
+                    Button::new("github")
+                        .icon(IconName::GitHub)
+                        .small()
+                        .ghost()
+                        .on_click(|_, _, cx| cx.open_url("https://github.com/vicanso/zedis")),
+                ),
+            )
+    }
 }
 
 impl Render for Zedis {
@@ -153,15 +148,23 @@ impl Render for Zedis {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
-
-        h_flex()
+        let content = h_flex()
             .id(PKG_NAME)
             .bg(cx.theme().background)
             .size_full()
             .child(self.sidebar.clone())
             .child(self.content.clone())
             .children(dialog_layer)
-            .children(notification_layer)
+            .children(notification_layer);
+        if is_linux() {
+            content
+        } else {
+            v_flex()
+                .id(PKG_NAME)
+                .size_full()
+                .child(self.render_titlebar(window, cx))
+                .child(content)
+        }
     }
 }
 
@@ -247,6 +250,12 @@ fn main() {
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+                    #[cfg(not(target_os = "linux"))]
+                    titlebar: Some(TitlebarOptions {
+                        title: None,
+                        appears_transparent: true,
+                        traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
+                    }),
                     show: true,
                     window_min_size: Some(size(px(600.), px(400.))),
                     ..Default::default()
