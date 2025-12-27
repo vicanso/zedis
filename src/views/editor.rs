@@ -162,7 +162,7 @@ impl ZedisEditor {
 
         let server_state = self.server_state.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
-            let locale = cx.global::<ZedisGlobalStore>().locale(cx);
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
             let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
             let server_state = server_state.clone();
             let key = key.clone();

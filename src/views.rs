@@ -24,6 +24,7 @@ mod servers;
 mod set_editor;
 mod sidebar;
 mod status_bar;
+mod title_bar;
 mod zset_editor;
 
 pub use about::open_about_window;
@@ -38,4 +39,5 @@ pub use servers::ZedisServers;
 pub use set_editor::ZedisSetEditor;
 pub use sidebar::ZedisSidebar;
 pub use status_bar::ZedisStatusBar;
+pub use title_bar::ZedisTitleBar;
 pub use zset_editor::ZedisZsetEditor;

@@ -36,6 +36,7 @@ pub fn decompress_zstd(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(decompressed_vec)
 }
 
+#[inline]
 pub fn is_linux() -> bool {
     cfg!(target_os = "linux")
 }

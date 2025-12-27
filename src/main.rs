@@ -1,20 +1,15 @@
 use crate::connection::get_servers;
 use crate::helpers::{MemuAction, is_app_store_build, is_development, is_linux, new_hot_keys};
 use crate::states::{
-    NotificationCategory, ServerEvent, ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state,
+    FONT_SIZE_LARGE, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, NotificationCategory, ServerEvent, ThemeAction,
+    ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state,
 };
-use crate::views::{ZedisContent, ZedisSidebar, open_about_window};
+use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
 use gpui::{
-    App, Application, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, prelude::*, px, size,
+    App, Application, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance,
+    WindowBounds, WindowOptions, prelude::*, px, size,
 };
-use gpui_component::{
-    ActiveTheme, IconName, Root, Sizable, Theme, TitleBar, WindowExt,
-    button::{Button, ButtonVariants},
-    h_flex,
-    notification::Notification,
-    v_flex,
-};
+use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
 use std::{env, str::FromStr};
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
@@ -36,6 +31,52 @@ mod helpers;
 mod states;
 mod views;
 
+/// Update app state in background, persist to disk, and refresh UI
+///
+/// This helper function abstracts the common pattern for updating global state:
+/// 1. Apply mutation to app state
+/// 2. Save updated state to disk asynchronously
+/// 3. Refresh all windows to apply changes
+///
+/// Used for theme and locale changes to ensure consistency across the app.
+///
+/// # Arguments
+/// * `cx` - Context for spawning async tasks
+/// * `action_name` - Human-readable action name for logging
+/// * `mutation` - Callback to modify the app state
+#[inline]
+fn update_app_state_and_save<F>(cx: &App, action_name: &'static str, mutation: F)
+where
+    F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
+{
+    let store = cx.global::<ZedisGlobalStore>().clone();
+
+    cx.spawn(async move |cx| {
+        // Step 1: Update global state with the mutation
+        let current_state = store.update(cx, |state, cx| {
+            mutation(state, cx);
+            state.clone() // Return clone for async persistence
+        });
+
+        // Step 2: Persist to disk in background executor
+        if let Ok(state) = current_state {
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(e) = save_app_state(&state) {
+                        error!(error = %e, action = action_name, "Failed to save state");
+                    } else {
+                        info!(action = action_name, "State saved successfully");
+                    }
+                })
+                .await;
+        }
+
+        // Step 3: Refresh windows to apply visual changes (theme/locale)
+        cx.update(|cx| cx.refresh_windows()).ok();
+    })
+    .detach();
+}
+
 pub struct Zedis {
     pending_notification: Option<Notification>,
     last_bounds: Bounds<Pixels>,
@@ -43,6 +84,7 @@ pub struct Zedis {
     // views
     sidebar: Entity<ZedisSidebar>,
     content: Entity<ZedisContent>,
+    title_bar: Option<Entity<ZedisTitleBar>>,
 }
 
 impl Zedis {
@@ -75,18 +117,24 @@ impl Zedis {
         })
         .detach();
         cx.observe_window_appearance(window, |_this, _window, cx| {
-            if cx.global::<ZedisGlobalStore>().theme(cx).is_none() {
+            if cx.global::<ZedisGlobalStore>().read(cx).theme().is_none() {
                 Theme::change(cx.window_appearance(), None, cx);
                 cx.refresh_windows();
             }
         })
         .detach();
+        let title_bar = if is_linux() {
+            None
+        } else {
+            Some(cx.new(|cx| ZedisTitleBar::new(window, cx)))
+        };
 
         Self {
             sidebar,
             save_task: None,
             content,
             pending_notification: None,
+            title_bar,
             last_bounds: Bounds::default(),
         }
     }
@@ -122,18 +170,10 @@ impl Zedis {
         self.save_task = Some(task);
     }
     fn render_titlebar(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        TitleBar::new()
-            // left side
-            .child(h_flex().flex_1())
-            .child(
-                h_flex().items_center().justify_end().px_2().gap_2().mr_2().child(
-                    Button::new("github")
-                        .icon(IconName::GitHub)
-                        .small()
-                        .ghost()
-                        .on_click(|_, _, cx| cx.open_url("https://github.com/vicanso/zedis")),
-                ),
-            )
+        let Some(title_bar) = self.title_bar.as_ref() else {
+            return h_flex().into_any_element();
+        };
+        title_bar.clone().into_any_element()
     }
 }
 
@@ -148,7 +188,8 @@ impl Render for Zedis {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
-        let content = h_flex()
+
+        let mut content = h_flex()
             .id(PKG_NAME)
             .bg(cx.theme().background)
             .size_full()
@@ -156,15 +197,67 @@ impl Render for Zedis {
             .child(self.content.clone())
             .children(dialog_layer)
             .children(notification_layer);
-        if is_linux() {
-            content
-        } else {
-            v_flex()
+
+        if !is_linux() {
+            content = v_flex()
                 .id(PKG_NAME)
                 .size_full()
                 .child(self.render_titlebar(window, cx))
                 .child(content)
         }
+        content
+            .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
+                let action = *e;
+
+                // Convert action to theme mode
+                let mode = match action {
+                    ThemeAction::Light => Some(ThemeMode::Light),
+                    ThemeAction::Dark => Some(ThemeMode::Dark),
+                    ThemeAction::System => None, // Follow OS theme
+                };
+
+                // Determine actual render mode (resolve System to Light/Dark)
+                let render_mode = match mode {
+                    Some(m) => m,
+                    None => match cx.window_appearance() {
+                        WindowAppearance::Light => ThemeMode::Light,
+                        _ => ThemeMode::Dark,
+                    },
+                };
+
+                // Apply theme immediately for instant visual feedback
+                Theme::change(render_mode, None, cx);
+
+                // Save preference to disk asynchronously
+                update_app_state_and_save(cx, "save_theme", move |state, _cx| {
+                    state.set_theme(mode);
+                });
+            }))
+            // Locale action handler - changes language and saves to disk
+            .on_action(cx.listener(|_this, e: &LocaleAction, _window, cx| {
+                let locale = match e {
+                    LocaleAction::Zh => "zh",
+                    LocaleAction::En => "en",
+                };
+
+                // Save locale preference and refresh UI
+                update_app_state_and_save(cx, "save_locale", move |state, _cx| {
+                    state.set_locale(locale.to_string());
+                });
+            }))
+            .on_action(cx.listener(move |_this, e: &FontSizeAction, _window, cx| {
+                let action = *e;
+
+                let font_size = match action {
+                    FontSizeAction::Large => Some(FONT_SIZE_LARGE),
+                    FontSizeAction::Small => Some(FONT_SIZE_SMALL),
+                    _ => None,
+                };
+                // Save locale preference and refresh UI
+                update_app_state_and_save(cx, "save_font_size", move |state, _cx| {
+                    state.set_font_size(font_size);
+                });
+            }))
     }
 }
 
@@ -224,7 +317,7 @@ fn main() {
         };
         let app_state = cx.new(|_| app_state);
         let app_store = ZedisGlobalStore::new(app_state);
-        if let Some(theme) = app_store.theme(cx) {
+        if let Some(theme) = app_store.read(cx).theme() {
             Theme::change(theme, None, cx);
         }
         cx.set_global(app_store);

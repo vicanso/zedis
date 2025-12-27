@@ -15,15 +15,10 @@
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
-use gpui::App;
-use gpui::AppContext;
-use gpui::Bounds;
-use gpui::Context;
-use gpui::Entity;
-use gpui::Global;
-use gpui::Pixels;
+use gpui::{Action, App, AppContext, Bounds, Context, Entity, Global, Pixels};
 use gpui_component::{PixelsExt, ThemeMode};
 use locale_config::Locale;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -35,6 +30,37 @@ pub enum Route {
     #[default]
     Home,
     Editor,
+}
+
+pub const FONT_SIZE_LARGE: f32 = 16.;
+pub const FONT_SIZE_MEDIUM: f32 = 14.;
+pub const FONT_SIZE_SMALL: f32 = 12.;
+
+/// Theme selection actions for the settings menu
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ThemeAction {
+    /// Light theme mode
+    Light,
+    /// Dark theme mode
+    Dark,
+    /// Follow system theme
+    System,
+}
+
+/// Locale/language selection actions for the settings menu
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum LocaleAction {
+    /// English language
+    En,
+    /// Chinese language
+    Zh,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum FontSizeAction {
+    Large,
+    Medium,
+    Small,
 }
 
 const LIGHT_THEME_MODE: &str = "light";
@@ -74,15 +100,6 @@ impl ZedisGlobalStore {
     }
     pub fn value(&self, cx: &App) -> ZedisAppState {
         self.app_state.read(cx).clone()
-    }
-    pub fn locale<'a>(&self, cx: &'a App) -> &'a str {
-        self.app_state.read(cx).locale.as_deref().unwrap_or("en")
-    }
-    pub fn font_size(&self, cx: &App) -> f32 {
-        self.app_state.read(cx).font_size.unwrap_or(12.0)
-    }
-    pub fn theme(&self, cx: &App) -> Option<ThemeMode> {
-        self.app_state.read(cx).theme()
     }
     pub fn update<R, C: AppContext>(
         &self,
@@ -147,17 +164,20 @@ impl ZedisAppState {
         }
     }
     pub fn font_size(&self) -> f32 {
-        self.font_size.unwrap_or(12.0)
+        self.font_size.unwrap_or(14.0)
     }
     pub fn set_font_size(&mut self, font_size: Option<f32>) {
         self.font_size = font_size;
     }
-    fn theme(&self) -> Option<ThemeMode> {
+    pub fn theme(&self) -> Option<ThemeMode> {
         match self.theme.as_deref() {
             Some(LIGHT_THEME_MODE) => Some(ThemeMode::Light),
             Some(DARK_THEME_MODE) => Some(ThemeMode::Dark),
             _ => None,
         }
+    }
+    pub fn locale(&self) -> &str {
+        self.locale.as_deref().unwrap_or("en")
     }
 
     pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {

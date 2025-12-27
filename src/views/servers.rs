@@ -149,7 +149,7 @@ impl ZedisServers {
         let server_id = server_id.to_string();
 
         // let server = server.to_string();
-        let locale = cx.global::<ZedisGlobalStore>().locale(cx).to_string();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();

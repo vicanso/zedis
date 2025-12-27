@@ -16,23 +16,21 @@ use crate::{
     assets::CustomIconName,
     constants::SIDEBAR_WIDTH,
     helpers::is_linux,
-    states::{Route, ServerEvent, ZedisAppState, ZedisGlobalStore, ZedisServerState, i18n_sidebar, save_app_state},
+    states::{
+        FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, Route, ServerEvent,
+        ThemeAction, ZedisGlobalStore, ZedisServerState, i18n_sidebar,
+    },
 };
-use gpui::{
-    Action, Context, Corner, Entity, Pixels, SharedString, Subscription, Window, WindowAppearance, div, prelude::*, px,
-    uniform_list,
-};
+use gpui::{Context, Corner, Entity, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Theme, ThemeMode,
+    ActiveTheme, Icon, IconName, ThemeMode,
     button::{Button, ButtonVariants},
     label::Label,
     list::ListItem,
     menu::DropdownMenu,
     v_flex,
 };
-use schemars::JsonSchema;
-use serde::Deserialize;
-use tracing::{error, info};
+use tracing::info;
 
 // Constants for UI layout
 const ICON_PADDING: Pixels = px(8.0);
@@ -42,82 +40,6 @@ const STAR_BUTTON_HEIGHT: f32 = 48.0;
 const SETTINGS_BUTTON_HEIGHT: f32 = 44.0;
 const SERVER_LIST_ITEM_BORDER_WIDTH: f32 = 3.0;
 const SETTINGS_ICON_SIZE: f32 = 18.0;
-
-/// Theme selection actions for the settings menu
-#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-enum ThemeAction {
-    /// Light theme mode
-    Light,
-    /// Dark theme mode
-    Dark,
-    /// Follow system theme
-    System,
-}
-
-/// Locale/language selection actions for the settings menu
-#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-enum LocaleAction {
-    /// English language
-    En,
-    /// Chinese language
-    Zh,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-enum FontSizeAction {
-    /// Increase font size
-    Increase,
-    /// Decrease font size
-    Decrease,
-    /// No action
-    None,
-}
-
-/// Update app state in background, persist to disk, and refresh UI
-///
-/// This helper function abstracts the common pattern for updating global state:
-/// 1. Apply mutation to app state
-/// 2. Save updated state to disk asynchronously
-/// 3. Refresh all windows to apply changes
-///
-/// Used for theme and locale changes to ensure consistency across the app.
-///
-/// # Arguments
-/// * `cx` - Context for spawning async tasks
-/// * `action_name` - Human-readable action name for logging
-/// * `mutation` - Callback to modify the app state
-#[inline]
-fn update_app_state_and_save<F>(cx: &mut Context<ZedisSidebar>, action_name: &'static str, mutation: F)
-where
-    F: FnOnce(&mut ZedisAppState, &mut Context<ZedisAppState>) + Send + 'static + Clone,
-{
-    let store = cx.global::<ZedisGlobalStore>().clone();
-
-    cx.spawn(async move |_, cx| {
-        // Step 1: Update global state with the mutation
-        let current_state = store.update(cx, |state, cx| {
-            mutation(state, cx);
-            state.clone() // Return clone for async persistence
-        });
-
-        // Step 2: Persist to disk in background executor
-        if let Ok(state) = current_state {
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(e) = save_app_state(&state) {
-                        error!(error = %e, action = action_name, "Failed to save state");
-                    } else {
-                        info!(action = action_name, "State saved successfully");
-                    }
-                })
-                .await;
-        }
-
-        // Step 3: Refresh windows to apply visual changes (theme/locale)
-        cx.update(|cx| cx.refresh_windows()).ok();
-    })
-    .detach();
-}
 
 /// Internal state for sidebar component
 ///
@@ -302,24 +224,22 @@ impl ZedisSidebar {
     ///
     /// Changes are saved to disk and applied immediately across all windows.
     fn render_settings_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = cx.global::<ZedisGlobalStore>();
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
 
         // Determine currently selected theme mode
-        let current_action = match store.theme(cx) {
+        let current_action = match store.theme() {
             Some(ThemeMode::Light) => ThemeAction::Light,
             Some(ThemeMode::Dark) => ThemeAction::Dark,
             _ => ThemeAction::System,
         };
 
         // Determine currently selected locale
-        let locale = store.locale(cx);
+        let locale = store.locale();
         let current_locale = match locale {
             "zh" => LocaleAction::Zh,
             _ => LocaleAction::En,
         };
-        let current_font_size = store.font_size(cx);
-        let up_font_size = (current_font_size + 1.).min(20.);
-        let down_font_size = (current_font_size - 1.).max(10.);
+        let current_font_size = store.font_size();
 
         let btn = Button::new("zedis-sidebar-setting-btn")
             .ghost()
@@ -384,91 +304,34 @@ impl ZedisSidebar {
                     cx,
                     move |submenu, _window, _cx| {
                         submenu
-                            .menu_element_with_icon(
-                                CustomIconName::AArrowUp,
-                                Box::new(FontSizeAction::Increase),
+                            .menu_element_with_check(
+                                current_font_size == FONT_SIZE_LARGE,
+                                Box::new(FontSizeAction::Large),
                                 move |_window, cx| {
-                                    let text = format!(
-                                        "{}({})",
-                                        i18n_sidebar(cx, "font_size_increase"),
-                                        up_font_size.floor().clone()
-                                    );
+                                    let text = i18n_sidebar(cx, "font_size_large");
                                     Label::new(text).text_xs().p(LABEL_PADDING)
                                 },
                             )
-                            .menu_element_with_icon(
-                                CustomIconName::AArrowDown,
-                                Box::new(FontSizeAction::Decrease),
+                            .menu_element_with_check(
+                                current_font_size == FONT_SIZE_MEDIUM,
+                                Box::new(FontSizeAction::Medium),
                                 move |_window, cx| {
-                                    let text = format!(
-                                        "{}({})",
-                                        i18n_sidebar(cx, "font_size_decrease"),
-                                        down_font_size.floor().clone()
-                                    );
+                                    let text = i18n_sidebar(cx, "font_size_medium");
+                                    Label::new(text).text_xs().p(LABEL_PADDING)
+                                },
+                            )
+                            .menu_element_with_check(
+                                current_font_size == FONT_SIZE_SMALL,
+                                Box::new(FontSizeAction::Small),
+                                move |_window, cx| {
+                                    let text = i18n_sidebar(cx, "font_size_small");
                                     Label::new(text).text_xs().p(LABEL_PADDING)
                                 },
                             )
                     },
                 )
             });
-
-        div()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(btn)
-            // Theme action handler - applies theme and saves to disk
-            .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
-                let action = *e;
-
-                // Convert action to theme mode
-                let mode = match action {
-                    ThemeAction::Light => Some(ThemeMode::Light),
-                    ThemeAction::Dark => Some(ThemeMode::Dark),
-                    ThemeAction::System => None, // Follow OS theme
-                };
-
-                // Determine actual render mode (resolve System to Light/Dark)
-                let render_mode = match mode {
-                    Some(m) => m,
-                    None => match cx.window_appearance() {
-                        WindowAppearance::Light => ThemeMode::Light,
-                        _ => ThemeMode::Dark,
-                    },
-                };
-
-                // Apply theme immediately for instant visual feedback
-                Theme::change(render_mode, None, cx);
-
-                // Save preference to disk asynchronously
-                update_app_state_and_save(cx, "save_theme", move |state, _cx| {
-                    state.set_theme(mode);
-                });
-            }))
-            // Locale action handler - changes language and saves to disk
-            .on_action(cx.listener(|_this, e: &LocaleAction, _window, cx| {
-                let locale = match e {
-                    LocaleAction::Zh => "zh",
-                    LocaleAction::En => "en",
-                };
-
-                // Save locale preference and refresh UI
-                update_app_state_and_save(cx, "save_locale", move |state, _cx| {
-                    state.set_locale(locale.to_string());
-                });
-            }))
-            .on_action(cx.listener(move |_this, e: &FontSizeAction, _window, cx| {
-                let action = *e;
-
-                let font_size = match action {
-                    FontSizeAction::Increase => Some(up_font_size),
-                    FontSizeAction::Decrease => Some(down_font_size),
-                    _ => None,
-                };
-                // Save locale preference and refresh UI
-                update_app_state_and_save(cx, "save_font_size", move |state, _cx| {
-                    state.set_font_size(font_size);
-                });
-            }))
+        div().border_t_1().border_color(cx.theme().border).child(btn)
     }
 
     /// Render GitHub star button (link to repository)
@@ -503,21 +366,18 @@ impl Render for ZedisSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("Rendering sidebar view");
 
-        let mut container = v_flex()
+        v_flex()
             .w(px(SIDEBAR_WIDTH))
             .id("sidebar-container")
             .justify_start()
             .h_full()
             .border_r_1()
-            .border_color(cx.theme().border);
-        if is_linux() {
-            container = container.child(self.render_star(window, cx))
-        }
-        container
+            .border_color(cx.theme().border)
+            .when(!is_linux(), |this| this.child(self.render_star(window, cx)))
             .child(
                 // Server list takes up remaining vertical space
                 div().flex_1().size_full().child(self.render_server_list(window, cx)),
             )
-            .child(self.render_settings_button(window, cx))
+            .when(is_linux(), |this| this.child(self.render_settings_button(window, cx)))
     }
 }
