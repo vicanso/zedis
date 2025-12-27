@@ -15,11 +15,14 @@
 use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
-    states::{ErrorMessage, ServerEvent, ServerTask, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar},
+    states::{
+        ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar,
+    },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -110,12 +113,14 @@ struct StatusBarState {
 pub struct ZedisStatusBar {
     state: StatusBarState,
 
+    viewer_mode_state: Entity<SelectState<SearchableVec<SharedString>>>,
+    should_reset_viewer_mode: bool,
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 impl ZedisStatusBar {
-    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize state from the current server state
         // Read only necessary fields to avoid cloning the entire state if it's large
 
@@ -156,6 +161,7 @@ impl ZedisStatusBar {
                 }
                 ServerEvent::ValueLoaded(_) => {
                     let state = server_state.read(cx);
+                    this.should_reset_viewer_mode = true;
                     if let Some(value) = state.value().and_then(|item| item.bytes_value()) {
                         let mut format = value.format.as_str().to_string();
                         if let Some(mime) = &value.mime {
@@ -172,10 +178,37 @@ impl ZedisStatusBar {
             }
             cx.notify();
         }));
+        let viewer_mode_state = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    ViewMode::Auto.as_str().into(),
+                    ViewMode::Plain.as_str().into(),
+                    ViewMode::Hex.as_str().into(),
+                ]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        subscriptions.push(cx.subscribe_in(
+            &viewer_mode_state,
+            window,
+            |view, _state, event: &SelectEvent<SearchableVec<SharedString>>, _window, cx| match event {
+                SelectEvent::Confirm(value) => {
+                    if let Some(selected_value) = value {
+                        view.server_state.update(cx, |state, cx| {
+                            state.update_bytes_value_view_mode(selected_value.clone(), cx);
+                        });
+                    }
+                }
+            },
+        ));
         let mut this = Self {
             heartbeat_task: None,
+            viewer_mode_state,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
+            should_reset_viewer_mode: false,
             state: StatusBarState { ..Default::default() },
         };
         this.fill_state(server_state.clone(), cx);
@@ -307,11 +340,20 @@ impl ZedisStatusBar {
     }
     fn render_data_format(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(data_format) = self.state.data_format.clone() else {
-            return h_flex().flex_1();
+            return h_flex();
         };
         h_flex()
             .child(Icon::new(CustomIconName::Binary).text_color(cx.theme().primary).mr_1())
             .child(Label::new(data_format))
+    }
+    fn render_viewer_mode(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.state.data_format.is_none() {
+            return h_flex();
+        };
+        let label = i18n_status_bar(cx, "viewer");
+        h_flex()
+            .child(Label::new(label).mr_1())
+            .child(Select::new(&self.viewer_mode_state).appearance(false))
     }
     /// Render the error message
     fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -336,6 +378,12 @@ impl Render for ZedisStatusBar {
         if self.state.server_state.server_id.is_empty() {
             return h_flex();
         }
+        if self.should_reset_viewer_mode {
+            self.viewer_mode_state.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+            });
+            self.should_reset_viewer_mode = false;
+        }
         h_flex()
             .justify_between()
             .text_sm()
@@ -348,6 +396,7 @@ impl Render for ZedisStatusBar {
             .child(self.render_server_status(window, cx))
             .child(self.render_editor_settings(window, cx))
             .child(self.render_data_format(window, cx))
+            .child(self.render_viewer_mode(window, cx))
             .child(self.render_errors(window, cx))
     }
 }

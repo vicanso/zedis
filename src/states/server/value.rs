@@ -91,6 +91,7 @@ pub enum DataFormat {
     Bytes,
     Json,
     Text,
+    Svg,
     Jpeg,
     Png,
     Webp,
@@ -106,6 +107,7 @@ impl DataFormat {
             DataFormat::Bytes => "bytes",
             DataFormat::Json => "json",
             DataFormat::Text => "text",
+            DataFormat::Svg => "svg",
             DataFormat::Jpeg => "jpeg",
             DataFormat::Png => "png",
             DataFormat::Webp => "webp",
@@ -118,12 +120,60 @@ impl DataFormat {
 }
 
 fn is_valid_messagepack(bytes: &[u8]) -> bool {
-    let mut deserializer = rmp_serde::decode::Deserializer::new(Cursor::new(bytes));
+    if bytes.is_empty() {
+        return false;
+    }
 
+    let first_byte = bytes[0];
+
+    let is_container = 
+        // FixMap (0x80 - 0x8F)
+        (0x80..=0x8f).contains(&first_byte)|| 
+        // FixArray (0x90 - 0x9F)
+        (0x90..=0x9f).contains(&first_byte) || 
+        // Array16 (0xdc), Array32 (0xdd)
+        first_byte == 0xdc || first_byte == 0xdd || 
+        // Map16 (0xde), Map32 (0xdf)
+        first_byte == 0xde || first_byte == 0xdf;
+
+    if !is_container {
+        return false;
+    }
+
+    let mut deserializer = rmp_serde::decode::Deserializer::new(Cursor::new(bytes));
     match serde::de::IgnoredAny::deserialize(&mut deserializer) {
         Ok(_) => deserializer.get_ref().position() == bytes.len() as u64,
         Err(_) => false,
     }
+}
+
+fn is_svg(bytes: &[u8]) -> bool {
+    // only check 4kb
+    let check_len = std::cmp::min(bytes.len(), 4096); 
+    let Ok(header_str) = std::str::from_utf8(&bytes[0..check_len]) else {
+        return false;
+    };
+
+    let trimmed = header_str.trim();
+
+    // starts with <svg
+    // starts with <?xml
+    // starts with <!DOCTYPE
+    
+
+    let has_xml_header = trimmed.starts_with("<?xml");
+    let has_doctype = trimmed.starts_with("<!DOCTYPE");
+    let starts_with_svg_tag = trimmed.starts_with("<svg");
+
+    if starts_with_svg_tag {
+        return true;
+    }
+
+    if (has_xml_header || has_doctype) && trimmed.contains("<svg") {
+        return true;
+    }
+
+    false
 }
 
 pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
@@ -131,12 +181,13 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
         return (DataFormat::Bytes, None);
     }
     let Some(kind) = infer::get(bytes) else {
-        let format = if is_valid_messagepack(bytes) {
-            DataFormat::MessagePack
+        return if is_svg(bytes) {
+            (DataFormat::Svg, Some("image/svg+xml".to_string().into()))
+        } else if is_valid_messagepack(bytes) {
+            (DataFormat::MessagePack, None)
         } else {
-            DataFormat::Bytes
+            (DataFormat::Bytes, None)
         };
-        return (format, None);
     };
     let mime = kind.mime_type();
     let format = match mime {
@@ -207,6 +258,30 @@ pub struct RedisListValue {
     pub size: usize,
     pub values: Vec<SharedString>,
 }
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ViewMode {
+    #[default]
+    Auto,
+    Plain,
+    Hex,
+}
+
+impl ViewMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ViewMode::Auto => "Auto",
+            ViewMode::Plain => "Plain",
+            ViewMode::Hex => "Hex",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Plain" => ViewMode::Plain,
+            "Hex" => ViewMode::Hex,
+            _ => ViewMode::Auto,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct RedisBytesValue {
@@ -214,13 +289,15 @@ pub struct RedisBytesValue {
     pub bytes: Bytes,
     pub mime: Option<SharedString>,
     pub text: Option<SharedString>,
+    pub view_mode: ViewMode,
 }
 
 impl RedisBytesValue {
     pub fn is_image(&self) -> bool {
         matches!(
             self.format,
-            DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif
+            DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif |
+            DataFormat::Svg
         )
     }
     pub fn is_utf8_text(&self) -> bool {
@@ -460,5 +537,20 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+
+    pub fn update_bytes_value_view_mode(&mut self, view_mode: SharedString, cx: &mut Context<Self>) {
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        let view_mode = ViewMode::from_str(view_mode.as_str());
+        let key = self.key.clone().unwrap_or_default();
+        // Directly modify the data in place
+        if let Some(RedisValueData::Bytes(bytes_value)) = &mut value.data {
+            let bytes_value = Arc::make_mut(bytes_value);
+            bytes_value.view_mode = view_mode;
+            cx.emit(ServerEvent::ValueUpdated(key));
+            cx.notify();
+        }
     }
 }

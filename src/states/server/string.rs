@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
+use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, ViewMode, detect_format};
 use crate::helpers::decompress_zstd;
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
@@ -100,6 +100,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
                 None
             }
         }
+        DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
         _ => match std::str::from_utf8(&bytes) {
             Ok(s) => {
                 if let Some(pretty) = pretty_json(s) {
@@ -121,6 +122,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
             mime,
             bytes,
             text,
+            view_mode: ViewMode::default(),
         }))),
         size,
         ..Default::default()

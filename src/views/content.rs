@@ -243,7 +243,13 @@ impl Render for ZedisContent {
             .h_full()
             .when(is_busy, |this| this.child(self.render_loading(window, cx)))
             .when(!is_busy, |this| {
-                this.child(div().flex_1().child(self.render_editor(window, cx)))
+                this.child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(self.render_editor(window, cx)),
+                )
             })
             .child(self.status_bar.clone())
             .into_any_element()

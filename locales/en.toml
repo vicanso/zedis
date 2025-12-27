@@ -99,6 +99,7 @@ add_key_title = "Add Key"
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"
 soft_wrap = "Soft Wrap"
+viewer = "Viewer:"
 
 [list_editor]
 positon = "Position"

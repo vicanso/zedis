@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::helpers::get_font_family;
-use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ZedisGlobalStore, ZedisServerState};
+use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState};
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
 use gpui::{div, hsla, prelude::*};
 use gpui_component::highlighter::Language;
@@ -33,7 +33,7 @@ const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for narrow viewports
 const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
 const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
 const VIEWPORT_WIDE: f32 = 1400.0; // Pixel width to switch hex display width
-const VIEWPORT_MEDIUM: f32 = 1200.0; // Pixel width to switch hex display width
+const VIEWPORT_MEDIUM: f32 = 1000.0; // Pixel width to switch hex display width
 
 /// String value editor component for Redis String data type
 ///
@@ -102,52 +102,67 @@ impl ByteEditorData {
 ///
 /// # Returns
 /// String representation (either original string or hex dump)
-fn format_byte_editor_data(value: Option<Arc<RedisBytesValue>>, cx: &App) -> ByteEditorData {
-    let Some(value) = value else {
-        return ByteEditorData::Text(SharedString::default());
-    };
+fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditorData {
     if value.bytes.is_empty() {
         return ByteEditorData::Text(SharedString::default());
     }
-    if value.is_image() {
-        let data = match value.format {
-            DataFormat::Png => Image::from_bytes(gpui::ImageFormat::Png, value.bytes.to_vec()),
-            DataFormat::Webp => Image::from_bytes(gpui::ImageFormat::Webp, value.bytes.to_vec()),
-            DataFormat::Gif => Image::from_bytes(gpui::ImageFormat::Gif, value.bytes.to_vec()),
-            _ => Image::from_bytes(gpui::ImageFormat::Jpeg, value.bytes.to_vec()),
+
+    let create_hex_view = || {
+        let width = cx
+            .global::<ZedisGlobalStore>()
+            .read(cx)
+            .content_width()
+            .unwrap_or_default();
+
+        let hex_width = match width {
+            w if w < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
+            w if w < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
+            _ => HEX_WIDTH_WIDE,
         };
-        return ByteEditorData::Image(Arc::new(data));
-    }
 
-    if let Some(text) = &value.text {
-        return ByteEditorData::Text(text.clone());
-    }
+        let cfg = HexConfig {
+            title: false,
+            width: hex_width,
+            group: 0,
+            ..Default::default()
+        };
 
-    // Adjust hex width based on viewport size
-    let width = cx
-        .global::<ZedisGlobalStore>()
-        .read(cx)
-        .content_width()
-        .unwrap_or_default();
-
-    let hex_width = match width {
-        width if width < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
-        width if width < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
-        _ => HEX_WIDTH_WIDE,
+        let hex_data = config_hex(&value.bytes, cfg);
+        ByteEditorData::Hex(HexViewerListDelegate::new(&hex_data))
     };
 
-    // Configure hex dump format
-    let cfg = HexConfig {
-        title: false,
-        width: hex_width,
-        group: 0,
-        ..Default::default()
-    };
-    let hex_data = config_hex(&value.bytes, cfg);
+    match value.view_mode {
+        ViewMode::Hex => create_hex_view(),
 
-    ByteEditorData::Hex(HexViewerListDelegate::new(&hex_data))
+        ViewMode::Plain => {
+            let text = value
+                .text
+                .clone()
+                .unwrap_or_else(|| String::from_utf8_lossy(&value.bytes).to_string().into());
+            ByteEditorData::Text(text)
+        }
+
+        _ => {
+            if value.is_image() {
+                let format = match value.format {
+                    DataFormat::Png => gpui::ImageFormat::Png,
+                    DataFormat::Webp => gpui::ImageFormat::Webp,
+                    DataFormat::Gif => gpui::ImageFormat::Gif,
+                    DataFormat::Svg => gpui::ImageFormat::Svg,
+                    _ => gpui::ImageFormat::Jpeg,
+                };
+                let data = Image::from_bytes(format, value.bytes.to_vec());
+                return ByteEditorData::Image(Arc::new(data));
+            }
+
+            if let Some(text) = &value.text {
+                return ByteEditorData::Text(text.clone());
+            }
+
+            create_hex_view()
+        }
+    }
 }
-
 #[derive(Clone)]
 struct HexViewerListDelegate {
     items: Vec<(SharedString, SharedString, SharedString)>,
@@ -316,8 +331,13 @@ impl ZedisBytesEditor {
         self.value_modified = false;
 
         let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
-        self.readonly = redis_bytes_value.as_ref().is_some_and(|v| !v.is_utf8_text());
-        self.data = format_byte_editor_data(redis_bytes_value, cx);
+        if let Some(redis_bytes_value) = &redis_bytes_value {
+            self.readonly = !redis_bytes_value.is_utf8_text();
+            self.data = format_byte_editor_data(redis_bytes_value, cx);
+        } else {
+            self.data = ByteEditorData::Text(SharedString::default());
+        }
+
         if !matches!(self.data, ByteEditorData::Hex(_)) {
             self.hex_viewer_state = None;
         }
@@ -360,6 +380,7 @@ impl Render for ZedisBytesEditor {
                 .flex()
                 .items_center()
                 .justify_center()
+                .overflow_hidden()
                 .child(img(value.clone()).object_fit(ObjectFit::Contain).flex_shrink_0())
                 .into_any_element(),
             ByteEditorData::Hex(value) => {
