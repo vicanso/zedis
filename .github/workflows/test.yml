@@ -33,6 +33,8 @@ jobs:
           cargo bundle --release  --features mimalloc
           mv target/release/bundle/osx/Zedis.app .
           tar -czvf zedis-darwin-aarch64.tar.gz Zedis.app
+          ./.github/workflows/upload_asset.sh ./zedis-darwin-aarch64.tar.gz $GITHUB_TOKEN
+
   windows:
     runs-on: windows-latest
     steps:
@@ -57,6 +59,10 @@ jobs:
         run: |
           ls .
           Compress-Archive -Path zedis.exe -Destination zedis-windows.exe.zip
+      - name: upload asset
+        shell: bash
+        run: |
+          ./.github/workflows/upload_asset.sh ./zedis-windows.exe.zip $GITHUB_TOKEN
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -82,3 +88,4 @@ jobs:
           ls -lh target/release
           mv target/release/zedis ./zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
+          ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN

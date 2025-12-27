@@ -373,7 +373,7 @@ impl Render for ZedisSidebar {
             .h_full()
             .border_r_1()
             .border_color(cx.theme().border)
-            .when(!is_linux(), |this| this.child(self.render_star(window, cx)))
+            .when(is_linux(), |this| this.child(self.render_star(window, cx)))
             .child(
                 // Server list takes up remaining vertical space
                 div().flex_1().size_full().child(self.render_server_list(window, cx)),
