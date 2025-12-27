@@ -14,7 +14,6 @@
 
 use crate::{
     assets::CustomIconName,
-    constants::SIDEBAR_WIDTH,
     helpers::is_linux,
     states::{
         FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, Route, ServerEvent,
@@ -367,10 +366,9 @@ impl Render for ZedisSidebar {
         tracing::debug!("Rendering sidebar view");
 
         v_flex()
-            .w(px(SIDEBAR_WIDTH))
+            .size_full()
             .id("sidebar-container")
             .justify_start()
-            .h_full()
             .border_r_1()
             .border_color(cx.theme().border)
             .when(is_linux(), |this| this.child(self.render_star(window, cx)))

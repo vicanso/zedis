@@ -1,4 +1,5 @@
 use crate::connection::get_servers;
+use crate::constants::SIDEBAR_WIDTH;
 use crate::helpers::{MemuAction, is_app_store_build, is_development, is_linux, new_hot_keys};
 use crate::states::{
     FONT_SIZE_LARGE, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, NotificationCategory, ServerEvent, ThemeAction,
@@ -7,7 +8,7 @@ use crate::states::{
 use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
 use gpui::{
     App, Application, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance,
-    WindowBounds, WindowOptions, prelude::*, px, size,
+    WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
 use std::{env, str::FromStr};
@@ -193,7 +194,7 @@ impl Render for Zedis {
             .id(PKG_NAME)
             .bg(cx.theme().background)
             .size_full()
-            .child(self.sidebar.clone())
+            .child(div().w(px(SIDEBAR_WIDTH)).h_full().child(self.sidebar.clone()))
             .child(self.content.clone())
             .children(dialog_layer)
             .children(notification_layer);

@@ -224,24 +224,18 @@ impl Render for ZedisContent {
     /// 3. Otherwise -> show editor interface (key tree + value editor)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
+        let base = v_flex().id("main-container").flex_1().h_full();
 
         // Route 1: Server management view
         if route == Route::Home {
-            return div()
-                .size_full()
-                .child(self.render_servers(window, cx))
-                .into_any_element();
+            return base.child(self.render_servers(window, cx)).into_any_element();
         }
 
         // Route 2: Loading state (show skeleton while connecting/loading)
         let is_busy = self.server_state.read(cx).is_busy();
 
         // Route 3: Main editor interface
-        v_flex()
-            .id("main-container")
-            .flex_1()
-            .h_full()
-            .when(is_busy, |this| this.child(self.render_loading(window, cx)))
+        base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
             .when(!is_busy, |this| {
                 this.child(
                     div()
