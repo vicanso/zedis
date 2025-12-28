@@ -20,6 +20,7 @@ use crate::error::Error;
 use dashmap::DashMap;
 use gpui::SharedString;
 use redis::{AsyncConnectionConfig, Client, Cmd, FromRedisValue, InfoDict, Role, cluster, cmd};
+use semver::Version;
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
@@ -178,7 +179,7 @@ pub struct RedisClient {
     server_type: ServerType,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
-    version: String,
+    version: Version,
     connection: RedisAsyncConn,
 }
 #[derive(Debug, Clone, Default)]
@@ -191,8 +192,8 @@ impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
         (self.master_nodes.len(), self.nodes.len())
     }
-    pub fn version(&self) -> &str {
-        &self.version
+    pub fn version(&self) -> String {
+        self.version.to_string()
     }
 
     pub fn nodes_description(&self) -> RedisClientDescription {
@@ -208,6 +209,20 @@ impl RedisClient {
             master_nodes: master_nodes.join(",").into(),
             slave_nodes: slave_nodes.join(",").into(),
         }
+    }
+    /// Returns the connection to the Redis server.
+    /// # Returns
+    /// * `RedisAsyncConn` - The connection to the Redis server.
+    pub fn connection(&self) -> RedisAsyncConn {
+        self.connection.clone()
+    }
+    /// Checks if the client version is at least the given version.
+    /// # Arguments
+    /// * `version` - The version to check.
+    /// # Returns
+    /// * `bool` - True if the client version is at least the given version, false otherwise.
+    pub fn is_at_least_version(&self, version: &str) -> bool {
+        self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
     }
 
     /// Executes commands on all master nodes concurrently.
@@ -463,7 +478,7 @@ impl ConnectionManager {
             server_type: server_type.clone(),
             nodes,
             master_nodes,
-            version: "".to_string(),
+            version: Version::new(0, 0, 0),
             connection,
         };
         let mut conn = client.connection.clone();
@@ -481,11 +496,12 @@ impl ConnectionManager {
                         }
                     }
                 }
-                version
+                Version::parse(&version).unwrap_or(Version::new(0, 0, 0))
             }
             _ => {
                 let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                info.get::<String>("redis_version").unwrap_or_default()
+                let version = info.get::<String>("redis_version").unwrap_or_default();
+                Version::parse(&version).unwrap_or(Version::new(0, 0, 0))
             }
         };
         // Cache the client

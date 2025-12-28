@@ -518,22 +518,19 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::SaveValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
-                if ttl > 0 {
-                    let _: () = cmd("SET")
-                        .arg(key.as_str())
-                        .arg(new_value.as_str())
-                        .arg("PX")
-                        .arg(ttl)
-                        .query_async(&mut conn)
-                        .await?;
+                let client = get_connection_manager().get_client(&server_id).await?;
+                let mut conn = client.connection();
+                let mut binding = cmd("SET");
+                let mut cmd = binding.arg(key.as_str()).arg(new_value.as_str());
+                // keep ttl if the version is at least 6.0.0
+                cmd = if client.is_at_least_version("6.0.0") {
+                    cmd.arg("KEEPTTL")
+                } else if ttl > 0 {
+                    cmd.arg("PX").arg(ttl)
                 } else {
-                    let _: () = cmd("SET")
-                        .arg(key.as_str())
-                        .arg(new_value.as_str())
-                        .query_async(&mut conn)
-                        .await?;
-                }
+                    cmd
+                };
+                let _: () = cmd.query_async(&mut conn).await?;
                 Ok(new_value)
             },
             move |this, result, cx| {
