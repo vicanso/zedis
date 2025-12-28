@@ -126,13 +126,13 @@ fn is_valid_messagepack(bytes: &[u8]) -> bool {
 
     let first_byte = bytes[0];
 
-    let is_container = 
+    let is_container =
         // FixMap (0x80 - 0x8F)
-        (0x80..=0x8f).contains(&first_byte)|| 
+        (0x80..=0x8f).contains(&first_byte)||
         // FixArray (0x90 - 0x9F)
-        (0x90..=0x9f).contains(&first_byte) || 
+        (0x90..=0x9f).contains(&first_byte) ||
         // Array16 (0xdc), Array32 (0xdd)
-        first_byte == 0xdc || first_byte == 0xdd || 
+        first_byte == 0xdc || first_byte == 0xdd ||
         // Map16 (0xde), Map32 (0xdf)
         first_byte == 0xde || first_byte == 0xdf;
 
@@ -149,7 +149,7 @@ fn is_valid_messagepack(bytes: &[u8]) -> bool {
 
 fn is_svg(bytes: &[u8]) -> bool {
     // only check 4kb
-    let check_len = std::cmp::min(bytes.len(), 4096); 
+    let check_len = std::cmp::min(bytes.len(), 4096);
     let Ok(header_str) = std::str::from_utf8(&bytes[0..check_len]) else {
         return false;
     };
@@ -159,7 +159,6 @@ fn is_svg(bytes: &[u8]) -> bool {
     // starts with <svg
     // starts with <?xml
     // starts with <!DOCTYPE
-    
 
     let has_xml_header = trimmed.starts_with("<?xml");
     let has_doctype = trimmed.starts_with("<!DOCTYPE");
@@ -296,8 +295,7 @@ impl RedisBytesValue {
     pub fn is_image(&self) -> bool {
         matches!(
             self.format,
-            DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif |
-            DataFormat::Svg
+            DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif | DataFormat::Svg
         )
     }
     pub fn is_utf8_text(&self) -> bool {
@@ -452,6 +450,10 @@ impl RedisValue {
         // Calculate remaining time
         let now = Local::now().timestamp();
         let remaining = expire_at.saturating_sub(now);
+        // if the remaining time is less than 0, return expired
+        if remaining < 0 {
+            return Some(chrono::Duration::seconds(-2));
+        }
 
         Some(chrono::Duration::seconds(remaining))
     }
@@ -510,17 +512,28 @@ impl ZedisServerState {
             ..Default::default()
         })));
         let current_key = key.clone();
+        let ttl = value.ttl().map(|ttl| ttl.num_milliseconds()).unwrap_or_default();
 
         cx.notify();
         self.spawn(
             ServerTask::SaveValue,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id).await?;
-                let _: () = cmd("SET")
-                    .arg(key.as_str())
-                    .arg(new_value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+                if ttl > 0 {
+                    let _: () = cmd("SET")
+                        .arg(key.as_str())
+                        .arg(new_value.as_str())
+                        .arg("PX")
+                        .arg(ttl)
+                        .query_async(&mut conn)
+                        .await?;
+                } else {
+                    let _: () = cmd("SET")
+                        .arg(key.as_str())
+                        .arg(new_value.as_str())
+                        .query_async(&mut conn)
+                        .await?;
+                }
                 Ok(new_value)
             },
             move |this, result, cx| {

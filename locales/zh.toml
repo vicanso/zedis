@@ -100,6 +100,8 @@ add_key_title = "添加键"
 scan_completed = "扫描完成"
 scan_more_keys = "继续扫描更多键"
 soft_wrap = "软换行"
+soft_wrap_tooltip = "启用软换行以显示长行"
+data_format_tooltip = "数据格式"
 viewer = "视图:"
 
 [list_editor]

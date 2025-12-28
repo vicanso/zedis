@@ -100,6 +100,8 @@ add_key_title = "Add Key"
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"
 soft_wrap = "Soft Wrap"
+soft_wrap_tooltip = "Enable soft wrap for long lines"
+data_format_tooltip = "Data format"
 viewer = "Viewer:"
 
 [list_editor]

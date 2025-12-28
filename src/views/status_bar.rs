@@ -303,25 +303,19 @@ impl ZedisStatusBar {
                     .ghost()
                     .disabled(true)
                     .tooltip(i18n_common(cx, "used_memory"))
-                    .icon(
-                        Icon::new(CustomIconName::MemoryStick)
-                            .text_color(cx.theme().primary)
-                            .mr_1(),
-                    ),
+                    .icon(Icon::new(CustomIconName::MemoryStick))
+                    .text_color(cx.theme().primary)
+                    .label(server_state.used_memory.clone()),
             )
-            .child(Label::new(server_state.used_memory.clone()).mr_4())
             .child(
                 Button::new("zedis-status-bar-clients")
                     .ghost()
                     .disabled(true)
+                    .text_color(cx.theme().primary)
                     .tooltip(i18n_common(cx, "clients"))
-                    .icon(
-                        Icon::new(CustomIconName::AudioWaveform)
-                            .text_color(cx.theme().primary)
-                            .mr_1(),
-                    ),
+                    .icon(Icon::new(CustomIconName::AudioWaveform))
+                    .label(server_state.clients.clone()),
             )
-            .child(Label::new(server_state.clients.clone()))
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
@@ -329,6 +323,7 @@ impl ZedisStatusBar {
             .ghost()
             .xsmall()
             .when(server_state.soft_wrap, |this| this.icon(IconName::Check))
+            .tooltip(i18n_status_bar(cx, "soft_wrap_tooltip"))
             .label(i18n_status_bar(cx, "soft_wrap"))
             .on_click(cx.listener(|this, _, _window, cx| {
                 this.state.server_state.soft_wrap = !this.state.server_state.soft_wrap;
@@ -340,11 +335,16 @@ impl ZedisStatusBar {
     }
     fn render_data_format(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(data_format) = self.state.data_format.clone() else {
-            return h_flex();
+            return h_flex().into_any_element();
         };
-        h_flex()
-            .child(Icon::new(CustomIconName::Binary).text_color(cx.theme().primary).mr_1())
-            .child(Label::new(data_format))
+        Button::new("data-format")
+            .ghost()
+            .disabled(true)
+            .text_color(cx.theme().primary)
+            .tooltip(i18n_status_bar(cx, "data_format_tooltip"))
+            .icon(Icon::new(CustomIconName::Binary))
+            .label(data_format)
+            .into_any_element()
     }
     fn render_viewer_mode(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.state.data_format.is_none() {
@@ -389,7 +389,7 @@ impl Render for ZedisStatusBar {
             .text_sm()
             .py_1p5()
             .px_4()
-            .gap_4()
+            .gap_2()
             .border_t_1()
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
