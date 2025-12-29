@@ -80,7 +80,7 @@ impl ZedisTitleBar {
 }
 
 impl Render for ZedisTitleBar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // right actions container
         let right_actions = h_flex().items_center().justify_end().px_2().gap_2().mr_2();
 
@@ -92,6 +92,7 @@ impl Render for ZedisTitleBar {
                 right_actions
                     .child(
                         Button::new("settings")
+                            .tooltip(i18n_sidebar(cx, "settings_tooltip"))
                             .icon(IconName::Settings2)
                             .small()
                             .ghost()
@@ -100,6 +101,7 @@ impl Render for ZedisTitleBar {
                     )
                     .child(
                         Button::new("github")
+                            .tooltip(i18n_sidebar(cx, "github_tooltip"))
                             .icon(IconName::GitHub)
                             .small()
                             .ghost()

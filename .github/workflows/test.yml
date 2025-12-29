@@ -8,6 +8,7 @@ env:
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.92.0
+  APP_NAME: Zedis
 
 jobs:
   macos:
@@ -19,35 +20,70 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: install target
+      - name: install tools
         run: |
           rustup update
           rustup target add aarch64-apple-darwin
+          cargo install cargo-bundle
+          brew install create-dmg
+      - name: Import Code-Signing Certificates
+        env:
+          p12_certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          p12_password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          # create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+
+          # import certificate
+          echo "$p12_certificate" | base64 --decode > certificate.p12
+          security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$p12_password" -T /usr/bin/codesign
+          
+          # prevent system popup asking for password
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+          
+          # set as default keychain
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: macos-build
       - name: release
         run: |
-          cargo install cargo-bundle
           cargo bundle --release  --features mimalloc
-          mv target/release/bundle/osx/Zedis.app .
+      - name: sign app
+        env:
+          CERT_NAME: ${{ secrets.MACOS_CERTIFICATE_NAME }}
+        run: |
+          echo "Signing App with identity: $CERT_NAME"
+          # --options runtime: enable Hardened Runtime (required for notarization)
+          # --entitlements: specify entitlement file
+          codesign --force --deep --verbose --options runtime --timestamp \
+            --entitlements Entitlements.plist \
+            --sign "$CERT_NAME" \
+            "target/release/bundle/osx/${{ env.APP_NAME }}.app"
       - name: create dmg
         run: |
-          brew install create-dmg
+          mkdir -p release
+          # 使用 create-dmg 工具生成安装包
           create-dmg \
-            --volname "Zedis Installer" \
+            --volname "${{ env.APP_NAME }} Installer" \
+            --volicon "assets/icon.icns" \
             --window-pos 200 120 \
-            --window-size 600 400 \
+            --window-size 800 400 \
             --icon-size 100 \
-            --icon "Zedis.app" 175 190 \
-            --hide-extension "Zedis.app" \
-            --app-drop-link 425 185 \
-            "Zedis-aarch64.dmg" \
-            "Zedis.app"
+            --icon "${{ env.APP_NAME }}.app" 200 190 \
+            --hide-extension "${{ env.APP_NAME }}.app" \
+            --app-drop-link 600 185 \
+            "release/${{ env.APP_NAME }}-aarch64.dmg" \
+            "target/release/bundle/osx/${{ env.APP_NAME }}.app"
+      - name: staple DMG
+        run: xcrun stapler staple "release/${{ env.APP_NAME }}-aarch64.dmg"
       - name: upload asset
         run: |
-          ./.github/workflows/upload_asset.sh ./Zedis-aarch64.dmg $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./release/${{ env.APP_NAME }}-aarch64.dmg $GITHUB_TOKEN
 
   windows:
     runs-on: windows-latest

@@ -64,6 +64,8 @@ settings = "Settings"
 server_type = "Type"
 master_nodes = "Master"
 slave_nodes = "Slave"
+settings_tooltip = "Open settings"
+github_tooltip = "Star on gitHub"
 
 [servers]
 master_name = "Master Name"
