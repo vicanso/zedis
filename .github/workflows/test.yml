@@ -78,6 +78,16 @@ jobs:
             --app-drop-link 600 185 \
             "release/${{ env.APP_NAME }}-aarch64.dmg" \
             "target/release/bundle/osx/${{ env.APP_NAME }}.app"
+      - name: notarize dmg
+        run: |
+          echo "Submitting DMG for notarization..."
+          xcrun notarytool submit "release/${{ env.APP_NAME }}-aarch64.dmg" \
+            --apple-id "$AC_USERNAME" \
+            --password "$AC_PASSWORD" \
+            --team-id "$AC_TEAM_ID" \
+            --wait
+      - name: wait for propagation
+        run: sleep 30
       - name: staple DMG
         run: xcrun stapler staple "release/${{ env.APP_NAME }}-aarch64.dmg"
       - name: upload asset
