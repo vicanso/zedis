@@ -70,7 +70,6 @@ jobs:
           # 使用 create-dmg 工具生成安装包
           create-dmg \
             --volname "${{ env.APP_NAME }} Installer" \
-            --volicon "assets/icon.icns" \
             --window-pos 200 120 \
             --window-size 800 400 \
             --icon-size 100 \
