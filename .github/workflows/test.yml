@@ -114,6 +114,8 @@ jobs:
         with:
           key: windows-build
       - name: release
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
           cargo build --release  --features mimalloc
           mv target/release/zedis.exe ./zedis.exe
