@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::get_servers;
 use crate::constants::SIDEBAR_WIDTH;
 use crate::helpers::{MemuAction, is_app_store_build, is_development, is_linux, new_hot_keys};
@@ -284,7 +285,6 @@ fn init_logger() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 }
 
-#[cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 fn main() {
     init_logger();
     let app = Application::new().with_assets(assets::Assets);
