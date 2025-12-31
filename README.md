@@ -2,6 +2,8 @@
 
 A High-Performance, GPU-Accelerated Redis Client Built with **Rust** 🦀 and **GPUI** ⚡️
 
+![Zedis](./assets/zedis.png)
+
 ---
 
 ## 📖 Introduction
