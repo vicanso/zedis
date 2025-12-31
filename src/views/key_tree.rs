@@ -1,4 +1,4 @@
-// Copyright 2025 Tree xie.
+// Copyright 2026 Tree xie.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -166,7 +166,12 @@ impl ZedisKeyTree {
 
         // Auto-expand all folders if key count is small
         let expand_all = server_state.scan_count() < AUTO_EXPAND_THRESHOLD;
+        let start = std::time::Instant::now();
         let items = server_state.key_tree(&self.state.expanded_items, expand_all);
+        tracing::debug!(
+            "Key tree build time: {:?}",
+            std::time::Instant::now().duration_since(start)
+        );
 
         // Clear expanded items if tree is now empty
         if items.is_empty() {

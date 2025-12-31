@@ -1,7 +1,7 @@
 name: "test"
 on:
   push:
-    # tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
     branches: [main]
 
 env:
@@ -95,6 +95,7 @@ jobs:
       - name: staple DMG
         run: xcrun stapler staple "release/${{ env.APP_NAME }}-aarch64.dmg"
       - name: upload asset
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           ./.github/workflows/upload_asset.sh ./release/${{ env.APP_NAME }}-aarch64.dmg $GITHUB_TOKEN
 
@@ -125,6 +126,7 @@ jobs:
           ls .
           Compress-Archive -Path zedis.exe -Destination zedis-windows.exe.zip
       - name: upload asset
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-windows.exe.zip $GITHUB_TOKEN
@@ -154,5 +156,6 @@ jobs:
           mv target/release/zedis ./zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
       - name: upload asset
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN

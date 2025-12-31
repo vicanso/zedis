@@ -1,4 +1,4 @@
-// Copyright 2025 Tree xie.
+// Copyright 2026 Tree xie.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -593,7 +593,7 @@ impl ZedisServerState {
             expanded_items: &AHashSet<SharedString>,
             expand_all: bool,
         ) -> Vec<TreeItem> {
-            let mut children_vec = Vec::new();
+            let mut children_vec = Vec::with_capacity(children_map.len());
 
             for (short_name, internal_node) in children_map {
                 // Create tree item with full path as ID and short name as label

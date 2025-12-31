@@ -284,6 +284,7 @@ fn init_logger() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 }
 
+#[cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 fn main() {
     init_logger();
     let app = Application::new().with_assets(assets::Assets);

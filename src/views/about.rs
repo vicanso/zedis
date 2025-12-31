@@ -1,4 +1,4 @@
-// Copyright 2025 Tree xie.
+// Copyright 2026 Tree xie.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 impl Render for About {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let year = Local::now().year().to_string();
+        let years = if year == "2026" { "2026" } else { "2026 - {year}" };
         v_flex()
             .size_full()
             .flex_col()
@@ -45,7 +46,7 @@ impl Render for About {
                     .text_color(cx.theme().muted_foreground),
             )
             .child(
-                Label::new(format!("© 2025 - {year} Tree xie. All rights reserved."))
+                Label::new(format!("© {years} Tree xie. All rights reserved."))
                     .text_xs()
                     .text_color(cx.theme().muted_foreground),
             )

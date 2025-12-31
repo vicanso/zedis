@@ -1,4 +1,4 @@
-// Copyright 2025 Tree xie.
+// Copyright 2026 Tree xie.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ use std::{
     sync::LazyLock,
     time::Duration,
 };
-use tracing::info;
+use tracing::{debug, info};
 use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -279,6 +279,7 @@ impl RedisClient {
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
     pub async fn scan(&self, cursors: Vec<u64>, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<SharedString>)> {
+        debug!("scan, cursors: {cursors:?}, pattern: {pattern}, count: {count}");
         let cmds: Vec<Cmd> = cursors
             .iter()
             .map(|cursor| {

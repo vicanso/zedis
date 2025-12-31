@@ -1,4 +1,4 @@
-// Copyright 2025 Tree xie.
+// Copyright 2026 Tree xie.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,6 +44,7 @@ impl ZedisServerState {
         // Filter keys that need type resolution
         let binding = prefix.unwrap_or_default();
         let prefix = binding.as_str();
+        debug!("fill key types: {prefix}");
         let mut keys = self
             .keys
             .iter()
@@ -51,7 +52,7 @@ impl ZedisServerState {
                 if *value != KeyType::Unknown {
                     return None;
                 }
-                if prefix.is_empty() || !key.starts_with(prefix) {
+                if prefix.is_empty() {
                     return Some(key.clone());
                 };
                 let suffix = key.strip_prefix(prefix)?;
@@ -61,6 +62,7 @@ impl ZedisServerState {
                 }
                 Some(key.clone())
             })
+            .take(2000)
             .collect::<Vec<SharedString>>();
         if keys.is_empty() {
             return;
@@ -77,6 +79,7 @@ impl ZedisServerState {
                     .map(|key| {
                         let mut conn_clone = conn.clone();
                         let key = key.clone();
+                        debug!("fill key types: {key}");
                         async move {
                             let t: String = cmd("TYPE")
                                 .arg(key.as_str())
@@ -210,7 +213,23 @@ impl ZedisServerState {
     /// Optimized for populating directory-like structures in the key view.
     pub fn scan_prefix(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
         // Avoid reloading if already loaded
-        if self.loaded_prefixes.contains(&prefix) {
+        let mut key_type_full_loaded = false;
+        let mut key_full_loaded = false;
+        for key in self.loaded_prefixes.iter() {
+            if prefix.as_str() == key.as_str() {
+                key_type_full_loaded = true;
+                break;
+            }
+            if prefix.as_str().starts_with(key.as_str()) {
+                key_full_loaded = true;
+            }
+        }
+        if key_type_full_loaded {
+            return;
+        }
+        if key_full_loaded {
+            self.loaded_prefixes.insert(prefix.clone());
+            self.fill_key_types(Some(prefix), cx);
             return;
         }
         // If global scan is complete, we might just need to resolve types
@@ -230,6 +249,7 @@ impl ZedisServerState {
                 // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;
                 let mut result_keys = vec![];
+                let mut done = false;
                 // Attempt to fetch keys in a loop (up to 20 iterations)
                 // to gather a sufficient amount without blocking for too long.
                 for _ in 0..20 {
@@ -241,17 +261,25 @@ impl ZedisServerState {
                     result_keys.extend(keys);
                     // Break if scan cycle finishes
                     if new_cursor.iter().sum::<u64>() == 0 {
+                        done = true;
                         break;
                     }
                     cursors = Some(new_cursor);
                 }
 
-                Ok(result_keys)
+                Ok((result_keys, done))
             },
             move |this, result, cx| {
-                if let Ok(keys) = result {
-                    debug!(prefix = prefix.as_str(), count = keys.len(), "scan prefix success");
-                    this.loaded_prefixes.insert(prefix.clone());
+                if let Ok((keys, done)) = result {
+                    debug!(
+                        prefix = prefix.as_str(),
+                        count = keys.len(),
+                        done,
+                        "scan prefix success"
+                    );
+                    if done {
+                        this.loaded_prefixes.insert(prefix.clone());
+                    }
                     this.extend_keys(keys);
                 }
                 cx.notify();
@@ -263,6 +291,7 @@ impl ZedisServerState {
                 } else {
                     this.fill_key_types(Some(prefix.clone()), cx);
                 }
+                cx.emit(ServerEvent::KeyScanPaged(prefix.clone()));
             },
             cx,
         );
@@ -340,12 +369,19 @@ impl ZedisServerState {
                         if !value.is_expired()
                             && let Some(key) = this.key.as_ref()
                         {
+                            let mut should_refresh_key_tree = false;
                             if let Some(k) = this.keys.get_mut(key) {
-                                *k = value.key_type();
+                                if *k != value.key_type {
+                                    should_refresh_key_tree = true;
+                                    *k = value.key_type();
+                                }
                             } else {
+                                should_refresh_key_tree = true;
                                 this.keys.insert(key.clone(), value.key_type());
                             }
-                            this.key_tree_id = Uuid::now_v7().to_string().into();
+                            if should_refresh_key_tree {
+                                this.key_tree_id = Uuid::now_v7().to_string().into();
+                            }
                         }
                         this.value = Some(value);
                     }
