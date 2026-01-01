@@ -1,3 +1,5 @@
+[中文](./README_zh.md) | English
+
 # Zedis
 
 A High-Performance, GPU-Accelerated Redis Client Built with **Rust** 🦀 and **GPUI** ⚡️

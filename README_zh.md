@@ -1,3 +1,5 @@
+中文 | [English](./README.md)
+
 # Zedis
 
 一个使用 **Rust** 🦀 和 **GPUI** ⚡️ 构建的高性能、GPU 加速的 Redis 客户端
