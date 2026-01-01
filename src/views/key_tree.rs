@@ -19,16 +19,18 @@ use crate::{
     helpers::{validate_long_string, validate_ttl},
     states::{KeyType, ZedisServerState, i18n_common, i18n_key_tree},
 };
-use ahash::AHashSet;
-use gpui::{App, AppContext, Corner, Entity, Hsla, SharedString, Subscription, Window, div, prelude::*, px};
+use ahash::{AHashMap, AHashSet};
+use gpui::{
+    App, AppContext, Corner, Entity, Hsla, SharedString, Subscription, WeakEntity, Window, div, prelude::*, px,
+};
+use gpui_component::IndexPath;
+use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
-    list::ListItem,
-    tree::{TreeState, tree},
     v_flex,
 };
 use std::rc::Rc;
@@ -59,6 +61,225 @@ struct KeyTreeState {
     expanded_items: AHashSet<SharedString>,
 }
 
+#[derive(Default, Debug, Clone)]
+struct KeyTreeItem {
+    id: SharedString,
+    label: SharedString,
+    depth: usize,
+    key_type: KeyType,
+    expanded: bool,
+    children_count: usize,
+    is_folder: bool,
+}
+
+fn new_key_tree_items(
+    mut keys: Vec<(SharedString, KeyType)>,
+    expand_all: bool,
+    expanded_items: AHashSet<SharedString>,
+) -> Vec<KeyTreeItem> {
+    keys.sort_unstable_by_key(|(k, _)| k.clone());
+    let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
+    let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
+
+    let split_char = ":";
+
+    let mut collapsed_prefix: Option<SharedString> = None;
+
+    for (key, key_type) in keys {
+        // no colon in the key, it's a simple key
+        if !key.contains(split_char) {
+            items.insert(
+                key.clone(),
+                KeyTreeItem {
+                    id: key.clone(),
+                    label: key.clone(),
+                    key_type,
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+        // for better performance, we skip the keys that are already collapsed
+        if let Some(collapsed_prefix) = &collapsed_prefix
+            && key.starts_with(collapsed_prefix.as_str())
+        {
+            continue;
+        }
+        let mut dir = SharedString::default();
+        let mut key_tree_item: Option<KeyTreeItem> = None;
+        for (index, k) in key.split(':').enumerate() {
+            // if key_tre_item is not None, it means we are in a folder
+            // because it's not the last part of the key
+            if let Some(key_tree_item) = key_tree_item.take() {
+                // key_tree_item.is_folder = true;
+                let entry = items.entry(key_tree_item.id.clone()).or_insert_with(|| key_tree_item);
+                entry.is_folder = true;
+                entry.children_count += 1;
+            }
+
+            let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
+            if !expanded {
+                collapsed_prefix = Some(dir.clone());
+                break;
+            }
+            let name: SharedString = k.to_string().into();
+            dir = if index == 0 {
+                name.clone()
+            } else {
+                format!("{}:{}", dir, k).into()
+            };
+            key_tree_item = Some(KeyTreeItem {
+                id: dir.clone(),
+                label: name.clone(),
+                key_type,
+                depth: index,
+                expanded,
+                ..Default::default()
+            });
+        }
+        if let Some(key_tree_item) = key_tree_item.take() {
+            items.insert(key_tree_item.id.clone(), key_tree_item);
+        }
+    }
+
+    let mut children_map: AHashMap<String, Vec<KeyTreeItem>> = AHashMap::new();
+
+    for item in items.into_values() {
+        let parent_id = if let Some((parent, _)) = item.id.rsplit_once(':') {
+            parent
+        } else {
+            ""
+        };
+        children_map.entry(parent_id.to_string()).or_default().push(item);
+    }
+
+    let mut result = Vec::new();
+
+    fn build_sorted_list(parent_id: &str, map: &mut AHashMap<String, Vec<KeyTreeItem>>, result: &mut Vec<KeyTreeItem>) {
+        if let Some(mut children) = map.remove(parent_id) {
+            children.sort_unstable_by(|a, b| b.is_folder.cmp(&a.is_folder).then_with(|| a.label.cmp(&b.label)));
+
+            for child in children {
+                let child_id = child.id.to_string();
+                result.push(child);
+                build_sorted_list(&child_id, map, result);
+            }
+        }
+    }
+
+    build_sorted_list("", &mut children_map, &mut result);
+
+    result
+}
+
+struct KeyTreeDelegate {
+    items: Vec<KeyTreeItem>,
+    selected_index: Option<IndexPath>,
+    parent: WeakEntity<ZedisKeyTree>,
+}
+
+impl KeyTreeDelegate {
+    /// Renders the colored badge for key types (String, Hash, etc.)
+    fn render_key_type_badge(&self, key_type: &KeyType) -> impl IntoElement {
+        if key_type == &KeyType::Unknown {
+            return div().into_any_element();
+        }
+
+        let color = key_type.color();
+        let mut bg = color;
+        bg.fade_out(KEY_TYPE_FADE_ALPHA);
+        let mut border = color;
+        border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
+
+        Label::new(key_type.as_str())
+            .text_xs()
+            .bg(bg)
+            .text_color(color)
+            .border_1()
+            .px_1()
+            .rounded_sm()
+            .border_color(border)
+            .into_any_element()
+    }
+}
+
+impl ListDelegate for KeyTreeDelegate {
+    type Item = ListItem;
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let yellow = cx.theme().colors.yellow;
+        let entry = self.items.get(ix.row)?;
+        let icon = if !entry.is_folder {
+            // Key item: Show type badge (String, List, etc.)
+            self.render_key_type_badge(&entry.key_type).into_any_element()
+        } else if entry.expanded {
+            // Expanded folder: Show open folder icon
+            Icon::new(IconName::FolderOpen).text_color(yellow).into_any_element()
+        } else {
+            // Collapsed folder: Show closed folder icon
+            Icon::new(IconName::Folder).text_color(yellow).into_any_element()
+        };
+
+        let even_bg = cx.theme().background;
+
+        // Zebra striping for better readability
+        let odd_bg = if cx.theme().is_dark() {
+            Hsla::white().alpha(STRIPE_BACKGROUND_ALPHA_DARK)
+        } else {
+            Hsla::black().alpha(STRIPE_BACKGROUND_ALPHA_LIGHT)
+        };
+
+        // Show child count for folders
+        let count_label = if entry.is_folder {
+            Label::new(entry.children_count.to_string())
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+        } else {
+            Label::new("")
+        };
+
+        let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
+
+        let parent = self.parent.clone();
+        let id = entry.id.clone();
+        let is_folder = entry.is_folder;
+        Some(
+            ListItem::new(ix)
+                .w_full()
+                .bg(bg)
+                .py_1()
+                .px_2()
+                .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(icon)
+                        .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
+                        .child(count_label),
+                )
+                .on_click(move |_, _window, cx| {
+                    let id = id.clone();
+                    let _ = parent.update(cx, move |view: &mut ZedisKeyTree, cx| {
+                        view.select_item(id, is_folder, cx);
+                    });
+                }),
+        )
+    }
+
+    fn set_selected_index(&mut self, ix: Option<IndexPath>, _window: &mut Window, _cx: &mut Context<ListState<Self>>) {
+        self.selected_index = ix;
+    }
+}
+
 /// Key tree view component for browsing and filtering Redis keys
 ///
 /// Displays Redis keys in a hierarchical tree structure with:
@@ -74,8 +295,11 @@ pub struct ZedisKeyTree {
     /// Reference to server state for Redis operations
     server_state: Entity<ZedisServerState>,
 
-    /// Tree component state for rendering hierarchical structure
-    tree_state: Entity<TreeState>,
+    /// Delegate for the key tree list
+    // key_tree_delegate: Entity<KeyTreeDelegate>,
+
+    /// State for the key tree list
+    key_tree_list_state: Entity<ListState<KeyTreeDelegate>>,
 
     /// Input field state for keyword filtering
     keyword_state: Entity<InputState>,
@@ -96,9 +320,6 @@ impl ZedisKeyTree {
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
             this.update_key_tree(cx);
         }));
-
-        // Initialize tree state for hierarchical rendering
-        let tree_state = cx.new(|cx| TreeState::new(cx));
 
         // Initialize keyword search input with placeholder
         let keyword_state = cx.new(|cx| {
@@ -124,6 +345,12 @@ impl ZedisKeyTree {
 
         info!(server_id, "Creating new key tree view");
 
+        let delegate = KeyTreeDelegate {
+            items: Vec::new(),
+            selected_index: None,
+            parent: cx.entity().downgrade(),
+        };
+
         let mut this = Self {
             state: KeyTreeState {
                 query_mode,
@@ -131,7 +358,7 @@ impl ZedisKeyTree {
                 expanded_items: AHashSet::with_capacity(EXPANDED_ITEMS_INITIAL_CAPACITY),
                 ..Default::default()
             },
-            tree_state,
+            key_tree_list_state: cx.new(|cx| ListState::new(delegate, window, cx)),
             keyword_state,
             server_state,
             _subscriptions: subscriptions,
@@ -150,41 +377,44 @@ impl ZedisKeyTree {
     /// if the total key count is below the threshold.
     fn update_key_tree(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
+        let key_tree_id = server_state.key_tree_id();
 
         tracing::debug!(
             key_tree_server_id = server_state.server_id(),
-            key_tree_id = server_state.key_tree_id(),
+            key_tree_id,
             "Server state updated"
         );
 
         self.state.query_mode = server_state.query_mode();
 
         // Skip rebuild if tree ID hasn't changed (same keys)
-        if self.state.key_tree_id == server_state.key_tree_id() {
+        if self.state.key_tree_id == key_tree_id {
             return;
         }
 
         // Auto-expand all folders if key count is small
         let expand_all = server_state.scan_count() < AUTO_EXPAND_THRESHOLD;
-        let start = std::time::Instant::now();
-        let items = server_state.key_tree(&self.state.expanded_items, expand_all);
-        tracing::debug!(
-            "Key tree build time: {:?}",
-            std::time::Instant::now().duration_since(start)
-        );
+        let keys_snapshot: Vec<(SharedString, KeyType)> =
+            server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let expanded_items = self.state.expanded_items.clone();
 
-        // Clear expanded items if tree is now empty
-        if items.is_empty() {
-            self.state.expanded_items.clear();
-        }
+        self.key_tree_list_state.update(cx, move |_state, cx| {
+            cx.spawn(async move |handle, cx| {
+                let task = cx.background_spawn(async move {
+                    let start = std::time::Instant::now();
+                    let items = new_key_tree_items(keys_snapshot, expand_all, expanded_items);
+                    tracing::debug!("Key tree build time: {:?}", start.elapsed());
+                    items
+                });
 
-        // Update empty state (only if not currently scanning)
-        self.state.is_empty = items.is_empty() && !server_state.scaning();
+                let result = task.await;
 
-        // Update tree component with new items
-        self.tree_state.update(cx, |state, cx| {
-            state.set_items(items, cx);
-            cx.notify();
+                handle.update(cx, |this, cx| {
+                    this.delegate_mut().items = result;
+                    cx.notify();
+                })
+            })
+            .detach();
         });
     }
 
@@ -243,28 +473,6 @@ impl ZedisKeyTree {
         );
     }
 
-    /// Renders the colored badge for key types (String, Hash, etc.)
-    fn render_key_type_badge(&self, key_type: &KeyType) -> impl IntoElement {
-        if key_type == &KeyType::Unknown {
-            return div().into_any_element();
-        }
-
-        let color = key_type.color();
-        let mut bg = color;
-        bg.fade_out(KEY_TYPE_FADE_ALPHA);
-        let mut border = color;
-        border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
-
-        Label::new(key_type.as_str())
-            .text_xs()
-            .bg(bg)
-            .text_color(color)
-            .border_1()
-            .px_1()
-            .rounded_sm()
-            .border_color(border)
-            .into_any_element()
-    }
     fn get_tree_status_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let server_state = self.server_state.read(cx);
         // if scanning, return None
@@ -313,34 +521,29 @@ impl ZedisKeyTree {
         )
     }
 
-    fn new_handle_select_item<E: ?Sized>(
-        &self,
-        item_id: SharedString,
-        is_folder: bool,
-        cx: &mut Context<Self>,
-    ) -> impl Fn(&E, &mut Window, &mut App) + 'static {
-        cx.listener(move |this, _, _window, cx| {
-            if is_folder {
-                if this.state.expanded_items.contains(&item_id) {
-                    // User clicked an expanded folder -> collapse it
-                    this.state.expanded_items.remove(&item_id);
-                } else {
-                    // User clicked a collapsed folder -> expand it and load data
-                    this.state.expanded_items.insert(item_id.clone());
-                    this.server_state.update(cx, |state, cx| {
-                        state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
-                    });
-                }
+    fn select_item(&mut self, item_id: SharedString, is_folder: bool, cx: &mut Context<Self>) {
+        if is_folder {
+            if self.state.expanded_items.contains(&item_id) {
+                // User clicked an expanded folder -> collapse it
+                self.state.expanded_items.remove(&item_id);
             } else {
-                let is_selected = this.server_state.read(cx).key().as_ref() == Some(&item_id);
-                // Select Key
-                if !is_selected {
-                    this.server_state.update(cx, |state, cx| {
-                        state.select_key(item_id.clone(), cx);
-                    });
-                }
+                // User clicked a collapsed folder -> expand it and load data
+                self.state.expanded_items.insert(item_id.clone());
+                self.server_state.update(cx, |state, cx| {
+                    state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
+                });
             }
-        })
+            self.update_key_tree(cx);
+        } else {
+            let is_selected = self.server_state.read(cx).key().as_ref() == Some(&item_id);
+            // Select Key
+            if !is_selected {
+                self.server_state.update(cx, |state, cx| {
+                    state.select_key(item_id.clone(), cx);
+                });
+            }
+            self.update_key_tree(cx);
+        }
     }
 
     /// Render the tree view or empty state message
@@ -353,86 +556,13 @@ impl ZedisKeyTree {
         if let Some(status_view) = self.get_tree_status_view(cx) {
             return status_view.into_any_element();
         }
-
-        // Prepare colors and state for tree rendering
-        let view = cx.entity();
-        let yellow = cx.theme().colors.yellow;
-        let selected_key = self.server_state.read(cx).key().unwrap_or_default();
-        let server_state = self.server_state.clone();
-        let even_bg = cx.theme().background;
-
-        // Zebra striping for better readability
-        let odd_bg = if cx.theme().is_dark() {
-            Hsla::white().alpha(STRIPE_BACKGROUND_ALPHA_DARK)
-        } else {
-            Hsla::black().alpha(STRIPE_BACKGROUND_ALPHA_LIGHT)
-        };
-
-        let list_active_color = cx.theme().list_active;
-        let list_active_border_color = cx.theme().list_active_border;
-        tree(&self.tree_state, move |ix, entry, _selected, _window, cx| {
-            view.update(cx, |this, cx| {
-                let item = entry.item();
-
-                // Render appropriate icon based on item type
-                let icon = if !entry.is_folder() {
-                    // Key item: Show type badge (String, List, etc.)
-                    let key_type = server_state.read(cx).key_type(&item.id).unwrap_or(&KeyType::Unknown);
-                    this.render_key_type_badge(key_type).into_any_element()
-                } else if entry.is_expanded() {
-                    // Expanded folder: Show open folder icon
-                    Icon::new(IconName::FolderOpen).text_color(yellow).into_any_element()
-                } else {
-                    // Collapsed folder: Show closed folder icon
-                    Icon::new(IconName::Folder).text_color(yellow).into_any_element()
-                };
-                // Determine background color: selected > zebra striping
-                let bg = if item.id == selected_key {
-                    list_active_color
-                } else if ix % 2 == 0 {
-                    even_bg
-                } else {
-                    odd_bg
-                };
-
-                // Show child count for folders
-                let count_label = if entry.is_folder() {
-                    Label::new(item.children.len().to_string())
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                } else {
-                    Label::new("")
-                };
-
-                // Only clone minimal data: id and folder flag
-                let item_id = item.id.clone();
-                let is_folder = item.is_folder();
-                ListItem::new(ix)
-                    .w_full()
-                    .bg(bg)
-                    .py_1()
-                    .px_2()
-                    .pl(px(TREE_INDENT_BASE) * entry.depth() + px(TREE_INDENT_OFFSET))
-                    .when(item.id == selected_key, |this| {
-                        this.border_r_3().border_color(list_active_border_color)
-                    })
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(icon)
-                            .child(div().flex_1().text_ellipsis().child(item.label.clone()))
-                            .child(count_label),
-                    )
-                    .on_click(this.new_handle_select_item(item_id, is_folder, cx))
-            })
-        })
-        .text_sm()
-        .p_1()
-        .pr(px(10.))
-        .bg(cx.theme().sidebar)
-        .text_color(cx.theme().sidebar_foreground)
-        .h_full()
-        .into_any_element()
+        div()
+            .p_1()
+            .bg(cx.theme().sidebar)
+            .text_color(cx.theme().sidebar_foreground)
+            .h_full()
+            .child(List::new(&self.key_tree_list_state))
+            .into_any_element()
     }
     /// Render the search/filter input bar with query mode selector
     ///

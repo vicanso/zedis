@@ -27,7 +27,6 @@ use chrono::Local;
 use gpui::EventEmitter;
 use gpui::SharedString;
 use gpui::prelude::*;
-use gpui_component::tree::TreeItem;
 use parking_lot::RwLock;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -49,69 +48,6 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 // Constants for state management
 const MAX_ERROR_MESSAGES: usize = 10; // Maximum error messages to keep in memory
-const KEY_SEPARATOR: &str = ":"; // Redis key namespace separator
-
-/// Node in the hierarchical key tree structure
-///
-/// Uses a trie-like structure to organize Redis keys by their colon-separated
-/// namespaces. For example, "user:123:profile" becomes a tree:
-/// - user (folder)
-///   - 123 (folder)
-///     - profile (key)
-#[derive(Debug, Default)]
-struct KeyNode {
-    /// Full path from root (e.g., "dir1:dir2")
-    full_path: SharedString,
-
-    /// Whether this node represents an actual Redis key (vs just a namespace folder)
-    is_key: bool,
-
-    /// Child nodes (map key is the short name, e.g., "dir2")
-    children: AHashMap<SharedString, KeyNode>,
-}
-
-impl KeyNode {
-    /// Create a new child node with the given full path
-    fn new(full_path: SharedString) -> Self {
-        Self {
-            full_path,
-            is_key: false,
-            children: AHashMap::new(),
-        }
-    }
-
-    /// Recursively insert a key (by parts) into the tree
-    ///
-    /// # Arguments
-    /// * `parts` - Iterator of remaining path parts (e.g., ["dir2", "name"])
-    ///
-    /// # Example
-    /// For key "user:123:profile" split by ":", inserts:
-    /// - "user" as folder -> "123" as folder -> "profile" as key
-    fn insert(&mut self, mut parts: std::str::Split<'_, &str>) {
-        // If no more parts, this node is a terminal key
-        let Some(part_name) = parts.next() else {
-            self.is_key = true;
-            return;
-        };
-
-        // Build full path for the child node
-        let child_full_path = if self.full_path.is_empty() {
-            part_name.to_string().into()
-        } else {
-            format!("{}:{}", self.full_path, part_name).into()
-        };
-
-        // Get or create child node and continue insertion
-        let child_node = self
-            .children
-            .entry(part_name.to_string().into())
-            .or_insert_with(|| KeyNode::new(child_full_path));
-
-        child_node.insert(parts);
-    }
-}
-
 /// Error message with categorization and timestamp
 #[derive(Debug, Clone)]
 pub struct ErrorMessage {
@@ -554,82 +490,7 @@ impl ZedisServerState {
     pub fn query_mode(&self) -> QueryMode {
         self.query_mode
     }
-    /// Build hierarchical tree structure from flat Redis keys
-    ///
-    /// Converts keys like "user:123:name", "user:456:age" into a tree:
-    /// - user (folder)
-    ///   - 123 (folder)
-    ///     - name (key)
-    ///   - 456 (folder)
-    ///     - age (key)
-    ///
-    /// # Arguments
-    /// * `expanded_items` - Set of folder paths that should be shown expanded
-    /// * `expand_all` - If true, expand all folders regardless of expanded_items
-    ///
-    /// # Returns
-    /// Vector of tree items sorted with folders first, then alphabetically
-    pub fn key_tree(&self, expanded_items: &AHashSet<SharedString>, expand_all: bool) -> Vec<TreeItem> {
-        let keys = self.keys.keys();
 
-        // Build trie structure from all keys
-        let mut root_trie_node = KeyNode {
-            full_path: SharedString::default(),
-            is_key: false,
-            children: AHashMap::new(),
-        };
-
-        for key in keys {
-            root_trie_node.insert(key.split(KEY_SEPARATOR));
-        }
-
-        /// Convert the trie structure to a flat vector of TreeItems
-        ///
-        /// Recursively processes children and sorts them:
-        /// 1. Folders (directories) before keys
-        /// 2. Alphabetically by name within each category
-        fn convert_map_to_vec_tree(
-            children_map: &AHashMap<SharedString, KeyNode>,
-            expanded_items: &AHashSet<SharedString>,
-            expand_all: bool,
-        ) -> Vec<TreeItem> {
-            let mut children_vec = Vec::with_capacity(children_map.len());
-
-            for (short_name, internal_node) in children_map {
-                // Create tree item with full path as ID and short name as label
-                let mut node = TreeItem::new(internal_node.full_path.clone(), short_name.clone());
-
-                // Set expanded state
-                if expand_all || expanded_items.contains(&internal_node.full_path) {
-                    node = node.expanded(true);
-                }
-
-                // Recursively build children
-                let node = node.children(convert_map_to_vec_tree(
-                    &internal_node.children,
-                    expanded_items,
-                    expand_all,
-                ));
-                children_vec.push(node);
-            }
-
-            // Sort: folders first (reverse), then alphabetically by ID
-            children_vec.sort_unstable_by(|a, b| {
-                let a_is_dir = !a.children.is_empty();
-                let b_is_dir = !b.children.is_empty();
-
-                // Folders before files (reverse comparison)
-                let type_ordering = a_is_dir.cmp(&b_is_dir).reverse();
-
-                // Then alphabetically
-                type_ordering.then_with(|| a.id.cmp(&b.id))
-            });
-
-            children_vec
-        }
-
-        convert_map_to_vec_tree(&root_trie_node.children, expanded_items, expand_all)
-    }
     /// Check if the current scan has completed
     pub fn scan_completed(&self) -> bool {
         self.scan_completed
@@ -699,6 +560,10 @@ impl ZedisServerState {
     /// Get the currently selected key name
     pub fn key(&self) -> Option<SharedString> {
         self.key.clone()
+    }
+    /// Get the map of all loaded keys and their types
+    pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
+        &self.keys
     }
 
     /// Get the value data for the currently selected key
