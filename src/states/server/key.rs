@@ -79,7 +79,6 @@ impl ZedisServerState {
                     .map(|key| {
                         let mut conn_clone = conn.clone();
                         let key = key.clone();
-                        debug!("fill key types: {key}");
                         async move {
                             let t: String = cmd("TYPE")
                                 .arg(key.as_str())

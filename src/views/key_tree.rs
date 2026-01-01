@@ -83,8 +83,10 @@ fn new_key_tree_items(
 
     let split_char = ":";
 
+    let mut collapsed_prefix: Option<SharedString> = None;
+
     for (key, key_type) in keys {
-        let mut dir = SharedString::default();
+        // no colon in the key, it's a simple key
         if !key.contains(split_char) {
             items.insert(
                 key.clone(),
@@ -97,6 +99,13 @@ fn new_key_tree_items(
             );
             continue;
         }
+        // for better performance, we skip the keys that are already collapsed
+        if let Some(collapsed_prefix) = &collapsed_prefix
+            && key.starts_with(collapsed_prefix.as_str())
+        {
+            continue;
+        }
+        let mut dir = SharedString::default();
         let mut key_tree_item: Option<KeyTreeItem> = None;
         for (index, k) in key.split(':').enumerate() {
             // if key_tre_item is not None, it means we are in a folder
@@ -110,6 +119,7 @@ fn new_key_tree_items(
 
             let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
             if !expanded {
+                collapsed_prefix = Some(dir.clone());
                 break;
             }
             let name: SharedString = k.to_string().into();
@@ -131,16 +141,35 @@ fn new_key_tree_items(
             items.insert(key_tree_item.id.clone(), key_tree_item);
         }
     }
-    let mut values = items.into_values().collect::<Vec<KeyTreeItem>>();
-    values.sort_unstable_by_key(|item| {
-        if item.is_folder || item.id.contains(":") {
-            format!("0{}", item.id)
-        } else {
-            format!("1{}", item.id)
-        }
-    });
 
-    values
+    let mut children_map: AHashMap<String, Vec<KeyTreeItem>> = AHashMap::new();
+
+    for item in items.into_values() {
+        let parent_id = if let Some((parent, _)) = item.id.rsplit_once(':') {
+            parent
+        } else {
+            ""
+        };
+        children_map.entry(parent_id.to_string()).or_default().push(item);
+    }
+
+    let mut result = Vec::new();
+
+    fn build_sorted_list(parent_id: &str, map: &mut AHashMap<String, Vec<KeyTreeItem>>, result: &mut Vec<KeyTreeItem>) {
+        if let Some(mut children) = map.remove(parent_id) {
+            children.sort_unstable_by(|a, b| b.is_folder.cmp(&a.is_folder).then_with(|| a.label.cmp(&b.label)));
+
+            for child in children {
+                let child_id = child.id.to_string();
+                result.push(child);
+                build_sorted_list(&child_id, map, result);
+            }
+        }
+    }
+
+    build_sorted_list("", &mut children_map, &mut result);
+
+    result
 }
 
 struct KeyTreeDelegate {
@@ -371,8 +400,12 @@ impl ZedisKeyTree {
 
         self.key_tree_list_state.update(cx, move |_state, cx| {
             cx.spawn(async move |handle, cx| {
-                let task =
-                    cx.background_spawn(async move { new_key_tree_items(keys_snapshot, expand_all, expanded_items) });
+                let task = cx.background_spawn(async move {
+                    let start = std::time::Instant::now();
+                    let items = new_key_tree_items(keys_snapshot, expand_all, expanded_items);
+                    tracing::debug!("Key tree build time: {:?}", start.elapsed());
+                    items
+                });
 
                 let result = task.await;
 
@@ -525,7 +558,6 @@ impl ZedisKeyTree {
         }
         div()
             .p_1()
-            .pr(px(10.))
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .h_full()
