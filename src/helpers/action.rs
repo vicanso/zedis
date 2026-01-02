@@ -23,13 +23,94 @@ pub enum MemuAction {
     About,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum EditorAction {
+    Save,
+    Reload,
+}
+
+pub fn humanize_keystroke(keystroke: &str) -> String {
+    let parts = keystroke.split('-');
+    let mut display_text = String::new();
+
+    #[cfg(target_os = "macos")]
+    let separator = "";
+    #[cfg(not(target_os = "macos"))]
+    let separator = "+";
+
+    for (i, part) in parts.enumerate() {
+        if i > 0 {
+            display_text.push_str(separator);
+        }
+
+        let symbol = match part {
+            "cmd" => {
+                #[cfg(target_os = "macos")]
+                {
+                    "⌘"
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    "Ctrl"
+                }
+            }
+            "ctrl" => {
+                #[cfg(target_os = "macos")]
+                {
+                    "⌃"
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    "Ctrl"
+                }
+            }
+            "alt" => {
+                #[cfg(target_os = "macos")]
+                {
+                    "⌥"
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    "Alt"
+                }
+            }
+            "shift" => {
+                #[cfg(target_os = "macos")]
+                {
+                    "⇧"
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    "Shift"
+                }
+            }
+            "enter" => "Enter",
+            "space" => "Space",
+            "backspace" => {
+                #[cfg(target_os = "macos")]
+                {
+                    "⌫"
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    "Backspace"
+                }
+            }
+            c => {
+                display_text.push_str(&c.to_uppercase());
+                continue;
+            }
+        };
+        display_text.push_str(symbol);
+    }
+
+    display_text
+}
+
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
-        // macOS 使用 Cmd+Q
-        #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
-        // Windows/Linux 使用 Ctrl+Q
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-q", MemuAction::Quit, None),
+        KeyBinding::new("cmd-s", EditorAction::Save, None),
+        KeyBinding::new("cmd-r", EditorAction::Reload, None),
     ]
 }

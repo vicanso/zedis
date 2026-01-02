@@ -55,6 +55,9 @@ pub struct ZedisContent {
     /// Persisted width of the key tree panel (resizable by user)
     key_tree_width: Pixels,
 
+    /// Cached current route to avoid unnecessary updates
+    current_route: Route,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -72,6 +75,10 @@ impl ZedisContent {
         // This ensures we only keep views in memory that are currently relevant
         subscriptions.push(cx.observe(&cx.global::<ZedisGlobalStore>().state(), |this, model, cx| {
             let route = model.read(cx).route();
+            if route == this.current_route {
+                return;
+            }
+            this.current_route = route;
 
             // Clean up servers view when not on home route
             if route != Route::Home && this.servers.is_some() {
@@ -94,12 +101,15 @@ impl ZedisContent {
         }));
 
         // Restore persisted key tree width from global state
-        let key_tree_width = cx.global::<ZedisGlobalStore>().read(cx).key_tree_width();
+        let global_store = cx.global::<ZedisGlobalStore>().read(cx);
+        let key_tree_width = global_store.key_tree_width();
+        let route = global_store.route();
         info!("Creating new content view");
 
         Self {
             server_state,
             status_bar,
+            current_route: route,
             servers: None,
             value_editor: None,
             key_tree: None,

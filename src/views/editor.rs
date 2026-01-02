@@ -12,44 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
-use crate::helpers::validate_ttl;
-use crate::states::ServerEvent;
-use crate::states::ZedisGlobalStore;
-use crate::states::i18n_common;
-use crate::states::i18n_editor;
-use crate::states::{KeyType, ZedisServerState};
-use crate::views::ZedisBytesEditor;
-use crate::views::ZedisHashEditor;
-use crate::views::ZedisListEditor;
-use crate::views::ZedisSetEditor;
-use crate::views::ZedisZsetEditor;
-use gpui::ClipboardItem;
-use gpui::Entity;
-use gpui::SharedString;
-use gpui::Subscription;
-use gpui::Window;
-use gpui::div;
-use gpui::prelude::*;
-use gpui::px;
-use gpui_component::Icon;
-use gpui_component::button::Button;
-use gpui_component::h_flex;
-use gpui_component::input::Input;
-use gpui_component::input::InputEvent;
-use gpui_component::input::InputState;
-use gpui_component::label::Label;
-use gpui_component::notification::Notification;
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::v_flex;
-use gpui_component::{ActiveTheme, IconName};
-use gpui_component::{Disableable, WindowExt};
+use crate::{
+    assets::CustomIconName,
+    helpers::{EditorAction, humanize_keystroke, validate_ttl},
+    states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
+    views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
+};
+use gpui::{ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui_component::{
+    ActiveTheme, Disableable, Icon, IconName, WindowExt,
+    button::Button,
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    label::Label,
+    notification::Notification,
+    scroll::ScrollableElement,
+    v_flex,
+};
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
-use std::time::Duration;
-use std::time::Instant;
-use tracing::debug;
-use tracing::info;
+use std::time::{Duration, Instant};
+use tracing::{debug, info};
 
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
@@ -188,6 +171,25 @@ impl ZedisEditor {
             state.select_key(key, cx);
         });
     }
+    fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        let is_busy = server_state.value().map(|v| v.is_busy()).unwrap_or(false);
+        if is_busy {
+            return;
+        }
+        let Some(key) = server_state.key() else {
+            return;
+        };
+        let Some(editor) = self.bytes_editor.as_ref() else {
+            return;
+        };
+        editor.clone().update(cx, move |state, cx| {
+            let value = state.value(cx);
+            self.server_state.update(cx, move |state, cx| {
+                state.save_value(key, value, cx);
+            });
+        });
+    }
     /// Render the key information bar with actions (copy, save, TTL, delete)
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
@@ -246,11 +248,12 @@ impl ZedisEditor {
             let state = bytes_editor.read(cx);
             let value_modified = state.is_value_modified();
             let readonly = state.is_readonly();
-            let tooltip = if readonly {
+            let mut tooltip = if readonly {
                 i18n_editor(cx, "can_not_edit_value")
             } else {
                 i18n_editor(cx, "save_data_tooltip")
             };
+            tooltip = format!("{tooltip} ({})", humanize_keystroke("cmd-s")).into();
 
             btns.push(
                 Button::new("zedis-editor-save-key")
@@ -260,22 +263,8 @@ impl ZedisEditor {
                     .label(i18n_common(cx, "save"))
                     .tooltip(tooltip)
                     .icon(CustomIconName::FileCheckCorner)
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        if is_busy {
-                            return;
-                        }
-                        let Some(key) = this.server_state.read(cx).key() else {
-                            return;
-                        };
-                        let Some(editor) = this.bytes_editor.as_ref() else {
-                            return;
-                        };
-                        editor.clone().update(cx, move |state, cx| {
-                            let value = state.value(cx);
-                            this.server_state.update(cx, move |state, cx| {
-                                state.save_value(key, value, cx);
-                            });
-                        });
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.save(window, cx);
                     }))
                     .into_any_element(),
             );
@@ -329,13 +318,19 @@ impl ZedisEditor {
             btns.push(ttl_btn);
         }
 
+        let reload_tooltip: SharedString = format!(
+            "{} ({})",
+            i18n_editor(cx, "reload_key_tooltip"),
+            humanize_keystroke("cmd-r")
+        )
+        .into();
         // reload
         btns.push(
             Button::new("zedis-editor-reload-key")
                 .ml_2()
                 .outline()
                 .disabled(should_show_loading)
-                .tooltip(i18n_editor(cx, "reload_key_tooltip"))
+                .tooltip(reload_tooltip)
                 .icon(CustomIconName::RotateCw)
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.reload(window, cx);
@@ -483,6 +478,14 @@ impl Render for ZedisEditor {
             .h_full()
             .child(self.render_select_key(cx))
             .child(self.render_editor(window, cx))
+            .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
+                EditorAction::Save => {
+                    this.save(window, cx);
+                }
+                EditorAction::Reload => {
+                    this.reload(window, cx);
+                }
+            }))
             .into_any_element()
     }
 }

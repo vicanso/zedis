@@ -22,7 +22,7 @@ mod string;
 mod time;
 mod validate;
 
-pub use action::{MemuAction, new_hot_keys};
+pub use action::*;
 pub use common::*;
 pub use font::get_font_family;
 pub use fs::get_or_create_config_dir;
