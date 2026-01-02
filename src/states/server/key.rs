@@ -44,7 +44,7 @@ impl ZedisServerState {
         // Filter keys that need type resolution
         let binding = prefix.unwrap_or_default();
         let prefix = binding.as_str();
-        debug!("fill key types: {prefix}");
+        let count = self.keys.len();
         let mut keys = self
             .keys
             .iter()
@@ -53,7 +53,12 @@ impl ZedisServerState {
                     return None;
                 }
                 if prefix.is_empty() {
-                    return Some(key.clone());
+                    // if no prefix, only fill keys that are not in a subdirectory
+                    // or if the count is less than 1000
+                    if count < 1000 || !key.contains(":") {
+                        return Some(key.clone());
+                    }
+                    return None;
                 };
                 let suffix = key.strip_prefix(prefix)?;
                 // Skip if the key is in a deeper subdirectory (contains delimiter)
@@ -64,6 +69,7 @@ impl ZedisServerState {
             })
             .take(2000)
             .collect::<Vec<SharedString>>();
+        debug!(prefix, size = keys.len(), "fill key types");
         if keys.is_empty() {
             return;
         }
