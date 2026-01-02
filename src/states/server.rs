@@ -250,6 +250,7 @@ impl ServerTask {
 }
 
 /// Events emitted by server state for reactive UI updates
+#[derive(Debug)]
 pub enum ServerEvent {
     /// A new background task has started.
     TaskStarted(ServerTask),
@@ -264,8 +265,8 @@ pub enum ServerEvent {
     KeyScanPaged(SharedString),
     /// Key scan operation has fully completed.
     KeyScanFinished(SharedString),
-    /// Key collapse
-    KeyCollapse,
+    /// Key collapse all
+    KeyCollapseAll,
 
     /// A key's value has been fetched (initial load).
     ValueLoaded(SharedString),

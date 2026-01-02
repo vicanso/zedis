@@ -312,7 +312,7 @@ impl ZedisKeyTree {
             this.update_key_tree(false, cx);
         }));
         subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
-            if let ServerEvent::KeyCollapse = event {
+            if let ServerEvent::KeyCollapseAll = event {
                 this.state.expanded_items.clear();
                 this.update_key_tree(true, cx);
             }

@@ -262,7 +262,7 @@ impl ZedisStatusBar {
                     .mr_1()
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.server_state.update(cx, |state, cx| {
-                            state.collapse_keys(cx);
+                            state.collapse_all_keys(cx);
                         });
                     })),
             )

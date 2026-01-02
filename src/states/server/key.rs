@@ -189,9 +189,9 @@ impl ZedisServerState {
             _ => self.scan(keyword, cx),
         }
     }
-    /// Collapse keys
-    pub fn collapse_keys(&mut self, cx: &mut Context<Self>) {
-        cx.emit(ServerEvent::KeyCollapse);
+    /// Collapse all keys
+    pub fn collapse_all_keys(&mut self, cx: &mut Context<Self>) {
+        cx.emit(ServerEvent::KeyCollapseAll);
     }
     /// Initiates a new scan for keys matching the keyword.
     pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
