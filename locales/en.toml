@@ -99,6 +99,7 @@ category = "Category"
 add_key_title = "Add Key"
 
 [status_bar]
+collapse_keys = "Collapse keys"
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"
 soft_wrap = "Soft Wrap"

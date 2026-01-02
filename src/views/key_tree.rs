@@ -17,7 +17,7 @@ use crate::{
     components::{FormDialog, FormField, open_add_form_dialog},
     connection::QueryMode,
     helpers::{validate_long_string, validate_ttl},
-    states::{KeyType, ZedisServerState, i18n_common, i18n_key_tree},
+    states::{KeyType, ServerEvent, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -40,7 +40,7 @@ use tracing::info;
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
 const TREE_INDENT_OFFSET: f32 = 8.0; // Additional offset for all items
 const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
-const AUTO_EXPAND_THRESHOLD: usize = 20; // Auto-expand tree if fewer than this many keys
+const AUTO_EXPAND_THRESHOLD: usize = 100; // Auto-expand tree if fewer than this many keys
 const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges
 const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
@@ -83,8 +83,6 @@ fn new_key_tree_items(
 
     let split_char = ":";
 
-    let mut collapsed_prefix: Option<SharedString> = None;
-
     for (key, key_type) in keys {
         // no colon in the key, it's a simple key
         if !key.contains(split_char) {
@@ -99,19 +97,13 @@ fn new_key_tree_items(
             );
             continue;
         }
-        // for better performance, we skip the keys that are already collapsed
-        if let Some(collapsed_prefix) = &collapsed_prefix
-            && key.starts_with(collapsed_prefix.as_str())
-        {
-            continue;
-        }
-        let mut dir = SharedString::default();
+
+        let mut dir = String::with_capacity(50);
         let mut key_tree_item: Option<KeyTreeItem> = None;
-        for (index, k) in key.split(':').enumerate() {
+        for (index, k) in key.split(split_char).enumerate() {
             // if key_tre_item is not None, it means we are in a folder
             // because it's not the last part of the key
             if let Some(key_tree_item) = key_tree_item.take() {
-                // key_tree_item.is_folder = true;
                 let entry = items.entry(key_tree_item.id.clone()).or_insert_with(|| key_tree_item);
                 entry.is_folder = true;
                 entry.children_count += 1;
@@ -119,17 +111,16 @@ fn new_key_tree_items(
 
             let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
             if !expanded {
-                collapsed_prefix = Some(dir.clone());
                 break;
             }
             let name: SharedString = k.to_string().into();
-            dir = if index == 0 {
-                name.clone()
-            } else {
-                format!("{}:{}", dir, k).into()
+            if index != 0 {
+                dir.push_str(split_char);
             };
+            dir.push_str(k);
+
             key_tree_item = Some(KeyTreeItem {
-                id: dir.clone(),
+                id: dir.clone().into(),
                 label: name.clone(),
                 key_type,
                 depth: index,
@@ -144,16 +135,16 @@ fn new_key_tree_items(
 
     let mut children_map: AHashMap<String, Vec<KeyTreeItem>> = AHashMap::new();
 
+    let mut result = Vec::with_capacity(items.len());
+
     for item in items.into_values() {
-        let parent_id = if let Some((parent, _)) = item.id.rsplit_once(':') {
+        let parent_id = if let Some((parent, _)) = item.id.rsplit_once(split_char) {
             parent
         } else {
             ""
         };
         children_map.entry(parent_id.to_string()).or_default().push(item);
     }
-
-    let mut result = Vec::new();
 
     fn build_sorted_list(parent_id: &str, map: &mut AHashMap<String, Vec<KeyTreeItem>>, result: &mut Vec<KeyTreeItem>) {
         if let Some(mut children) = map.remove(parent_id) {
@@ -318,7 +309,13 @@ impl ZedisKeyTree {
 
         // Subscribe to server state changes to rebuild tree when keys change
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
-            this.update_key_tree(cx);
+            this.update_key_tree(false, cx);
+        }));
+        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
+            if let ServerEvent::KeyCollapse = event {
+                this.state.expanded_items.clear();
+                this.update_key_tree(true, cx);
+            }
         }));
 
         // Initialize keyword search input with placeholder
@@ -365,7 +362,7 @@ impl ZedisKeyTree {
         };
 
         // Initial tree build
-        this.update_key_tree(cx);
+        this.update_key_tree(true, cx);
 
         this
     }
@@ -375,7 +372,7 @@ impl ZedisKeyTree {
     /// Rebuilds the tree only if the tree ID has changed (indicating new keys loaded).
     /// Preserves expanded folder state across rebuilds. Auto-expands all folders
     /// if the total key count is below the threshold.
-    fn update_key_tree(&mut self, cx: &mut Context<Self>) {
+    fn update_key_tree(&mut self, force_update: bool, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let key_tree_id = server_state.key_tree_id();
 
@@ -388,9 +385,10 @@ impl ZedisKeyTree {
         self.state.query_mode = server_state.query_mode();
 
         // Skip rebuild if tree ID hasn't changed (same keys)
-        if self.state.key_tree_id == key_tree_id {
+        if !force_update && self.state.key_tree_id == key_tree_id {
             return;
         }
+        self.state.key_tree_id = key_tree_id.to_string().into();
 
         // Auto-expand all folders if key count is small
         let expand_all = server_state.scan_count() < AUTO_EXPAND_THRESHOLD;
@@ -533,7 +531,7 @@ impl ZedisKeyTree {
                     state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
                 });
             }
-            self.update_key_tree(cx);
+            self.update_key_tree(true, cx);
         } else {
             let is_selected = self.server_state.read(cx).key().as_ref() == Some(&item_id);
             // Select Key
@@ -542,7 +540,6 @@ impl ZedisKeyTree {
                     state.select_key(item_id.clone(), cx);
                 });
             }
-            self.update_key_tree(cx);
         }
     }
 

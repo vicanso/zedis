@@ -254,6 +254,19 @@ impl ZedisStatusBar {
         h_flex()
             .items_center()
             .child(
+                Button::new("zedis-status-bar-key-collapse")
+                    .outline()
+                    .small()
+                    .tooltip(i18n_status_bar(cx, "collapse_keys"))
+                    .icon(CustomIconName::ListChecvronsDownUp)
+                    .mr_1()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| {
+                            state.collapse_keys(cx);
+                        });
+                    })),
+            )
+            .child(
                 Button::new("zedis-status-bar-scan-more")
                     .outline()
                     .small()

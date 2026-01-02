@@ -100,6 +100,7 @@ category = "类型"
 add_key_title = "添加键"
 
 [status_bar]
+collapse_keys = "折叠键列表"
 scan_completed = "扫描完成"
 scan_more_keys = "继续扫描更多键"
 soft_wrap = "软换行"

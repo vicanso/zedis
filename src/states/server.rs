@@ -264,6 +264,8 @@ pub enum ServerEvent {
     KeyScanPaged(SharedString),
     /// Key scan operation has fully completed.
     KeyScanFinished(SharedString),
+    /// Key collapse
+    KeyCollapse,
 
     /// A key's value has been fetched (initial load).
     ValueLoaded(SharedString),

@@ -63,6 +63,7 @@ pub enum CustomIconName {
     AudioWaveform,
     Binary,
     ALargeSmall,
+    ListChecvronsDownUp,
 }
 
 impl CustomIconName {
@@ -91,6 +92,7 @@ impl CustomIconName {
             CustomIconName::AudioWaveform => "icons/audio-waveform.svg",
             CustomIconName::Binary => "icons/binary.svg",
             CustomIconName::ALargeSmall => "icons/a-large-small.svg",
+            CustomIconName::ListChecvronsDownUp => "icons/list-chevrons-down-up.svg",
         }
         .into()
     }
