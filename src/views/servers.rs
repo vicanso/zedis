@@ -55,6 +55,7 @@ pub struct ZedisServers {
     name_state: Entity<InputState>,
     host_state: Entity<InputState>,
     port_state: Entity<InputState>,
+    username_state: Entity<InputState>,
     password_state: Entity<InputState>,
     master_name_state: Entity<InputState>,
     description_state: Entity<InputState>,
@@ -80,6 +81,11 @@ impl ZedisServers {
                 .validate(|s, _cx| validate_host(s))
         });
         let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "port_placeholder")));
+        let username_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "username_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
         let password_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_common(cx, "password_placeholder"))
@@ -103,6 +109,7 @@ impl ZedisServers {
             name_state,
             host_state,
             port_state,
+            username_state,
             password_state,
             master_name_state,
             description_state,
@@ -121,7 +128,9 @@ impl ZedisServers {
         self.host_state.update(cx, |state, cx| {
             state.set_value(server.host.clone(), window, cx);
         });
-
+        self.username_state.update(cx, |state, cx| {
+            state.set_value(server.username.clone().unwrap_or_default(), window, cx);
+        });
         // Only set port if non-zero (use placeholder for 0)
         if server.port != 0 {
             self.port_state.update(cx, |state, cx| {
@@ -178,6 +187,7 @@ impl ZedisServers {
         let name_state = self.name_state.clone();
         let host_state = self.host_state.clone();
         let port_state = self.port_state.clone();
+        let username_state = self.username_state.clone();
         let password_state = self.password_state.clone();
         let master_name_state = self.master_name_state.clone();
         let description_state = self.description_state.clone();
@@ -188,6 +198,7 @@ impl ZedisServers {
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
         let port_state_clone = port_state.clone();
+        let username_state_clone = username_state.clone();
         let password_state_clone = password_state.clone();
         let master_name_state_clone = master_name_state.clone();
         let description_state_clone = description_state.clone();
@@ -211,6 +222,12 @@ impl ZedisServers {
             } else {
                 Some(password_val)
             };
+            let username_val = username_state_clone.read(cx).value();
+            let username = if username_val.is_empty() {
+                None
+            } else {
+                Some(username_val)
+            };
             let master_name_val = master_name_state_clone.read(cx).value();
             let master_name = if master_name_val.is_empty() {
                 None
@@ -229,6 +246,7 @@ impl ZedisServers {
                         name: name.to_string(),
                         host: host.to_string(),
                         port,
+                        username: username.map(|u| u.to_string()),
                         password: password.map(|p| p.to_string()),
                         master_name: master_name.map(|m| m.to_string()),
                         description: description.map(|d| d.to_string()),
@@ -255,6 +273,7 @@ impl ZedisServers {
             let name_label = i18n_common(cx, "name");
             let host_label = i18n_common(cx, "host");
             let port_label = i18n_common(cx, "port");
+            let username_label = i18n_common(cx, "username");
             let password_label = i18n_common(cx, "password");
             let description_label = i18n_common(cx, "description");
             let master_name_label = i18n_servers(cx, "master_name");
@@ -278,6 +297,7 @@ impl ZedisServers {
                         )
                         .child(field().label(host_label).child(Input::new(&host_state)))
                         .child(field().label(port_label).child(NumberInput::new(&port_state)))
+                        .child(field().label(username_label).child(Input::new(&username_state)))
                         .child(
                             field()
                                 .label(password_label)

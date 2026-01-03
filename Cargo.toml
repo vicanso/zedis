@@ -34,6 +34,7 @@ infer = "0.19.0"
 locale_config = "0.3.0"
 mimalloc = { version = "0.1.48", optional = true }
 parking_lot = "0.12.5"
+percent-encoding = "2.3.2"
 pretty-hex = "0.4.1"
 redis = { version = "1.0.2", features = [
     "cluster",

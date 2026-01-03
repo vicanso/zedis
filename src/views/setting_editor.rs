@@ -12,17 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save};
-use gpui::{Entity, Subscription, Window, prelude::*, px};
+use crate::{
+    helpers::get_or_create_config_dir,
+    states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
+};
+use gpui::{Entity, Subscription, Window, prelude::*};
 use gpui_component::{
     form::{field, v_form},
-    input::{InputEvent, InputState, NumberInput},
+    input::{Input, InputEvent, InputState, NumberInput},
     label::Label,
     v_flex,
 };
 
 pub struct ZedisSettingEditor {
     max_key_tree_depth_state: Entity<InputState>,
+    config_dir_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -36,6 +40,8 @@ impl ZedisSettingEditor {
                 .default_value(max_key_tree_depth.to_string())
         });
 
+        let config_dir = get_or_create_config_dir().unwrap_or_default();
+
         let mut subscriptions = Vec::new();
         subscriptions.push(
             cx.subscribe_in(&max_key_tree_depth_state, window, |_view, state, event, _window, cx| {
@@ -48,9 +54,12 @@ impl ZedisSettingEditor {
                 }
             }),
         );
+        let config_dir_state =
+            cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
 
         Self {
             _subscriptions: subscriptions,
+            config_dir_state,
             max_key_tree_depth_state,
         }
     }
@@ -62,11 +71,19 @@ impl Render for ZedisSettingEditor {
             .p_5()
             .child(Label::new(i18n_settings(cx, "title")).text_3xl().mb_2())
             .child(
-                v_form().flex_1().columns(2).label_width(px(120.)).child(
-                    field()
-                        .label(i18n_settings(cx, "max_key_tree_depth"))
-                        .child(NumberInput::new(&self.max_key_tree_depth_state)),
-                ),
+                v_form()
+                    .flex_1()
+                    .columns(2)
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "max_key_tree_depth"))
+                            .child(NumberInput::new(&self.max_key_tree_depth_state)),
+                    )
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "config_dir"))
+                            .child(Input::new(&self.config_dir_state).disabled(true)),
+                    ),
             )
     }
 }

@@ -17,6 +17,7 @@ use crate::{
     helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
 };
 use gpui::Action;
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
@@ -62,6 +63,7 @@ pub struct RedisServer {
     pub name: String,
     pub host: String,
     pub port: u16,
+    pub username: Option<String>,
     pub password: Option<String>,
     pub master_name: Option<String>,
     pub description: Option<String>,
@@ -72,9 +74,17 @@ pub struct RedisServer {
 impl RedisServer {
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
-        match &self.password {
-            Some(pwd) => format!("redis://:{pwd}@{}:{}", self.host, self.port),
-            None => format!("redis://{}:{}", self.host, self.port),
+        match (&self.password, &self.username) {
+            (Some(pwd), Some(username)) => {
+                let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
+                let username_enc = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
+                format!("redis://{username_enc}:{pwd_enc}@{}:{}", self.host, self.port)
+            }
+            (Some(pwd), None) => {
+                let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
+                format!("redis://:{pwd_enc}@{}:{}", self.host, self.port)
+            }
+            _ => format!("redis://{}:{}", self.host, self.port),
         }
     }
 }
