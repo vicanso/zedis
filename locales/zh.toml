@@ -61,6 +61,7 @@ font_size_medium = "中 (默认)"
 font_size_small = "小"
 star = "在 GitHub 上点赞"
 settings = "设置"
+other_settings = "其他设置"
 server_type = "类型"
 master_nodes = "主节点"
 slave_nodes = "从节点"
@@ -141,3 +142,8 @@ update_exist_field_value_success_tips = "字段值已更新。"
 [kv_table]
 search_tooltip = "点击开始增量扫描 (SCAN)"
 add_value_tooltip = "添加新值"
+
+[settings]
+title = "其他设置"
+max_key_tree_depth = "最大键树深度"
+max_key_tree_depth_placeholder = "输入最大键树深度 (默认: 5)"

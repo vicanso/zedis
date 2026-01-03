@@ -61,6 +61,7 @@ font_size_medium = "Medium (default)"
 font_size_small = "Small"
 star = "Star on GitHub"
 settings = "Settings"
+other_settings = "Other settings"
 server_type = "Type"
 master_nodes = "Master"
 slave_nodes = "Slave"
@@ -139,3 +140,8 @@ update_exist_field_value_success_tips = "Field value updated."
 [kv_table]
 search_tooltip = "Click to start incremental search (SCAN)"
 add_value_tooltip = "Add new value"
+
+[settings]
+title = "Other settings"
+max_key_tree_depth = "Max Key Tree Depth"
+max_key_tree_depth_placeholder = "Enter max key tree depth (default: 5)"

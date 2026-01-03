@@ -15,7 +15,7 @@
 use crate::{
     helpers::get_key_tree_widths,
     states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
-    views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisStatusBar},
+    views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
 use gpui::{Entity, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -48,6 +48,7 @@ pub struct ZedisContent {
 
     /// Cached views - lazily initialized and cleared when switching routes
     servers: Option<Entity<ZedisServers>>,
+    settings: Option<Entity<ZedisSettingEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
@@ -112,6 +113,7 @@ impl ZedisContent {
             current_route: route,
             servers: None,
             value_editor: None,
+            settings: None,
             key_tree: None,
             key_tree_width,
             _subscriptions: subscriptions,
@@ -132,6 +134,16 @@ impl ZedisContent {
             .clone();
 
         div().m(px(SERVERS_MARGIN)).child(servers)
+    }
+    fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = self
+            .settings
+            .get_or_insert_with(|| {
+                debug!("Creating new settings view");
+                cx.new(|cx| ZedisSettingEditor::new(window, cx))
+            })
+            .clone();
+        div().child(settings)
     }
     /// Render a loading skeleton screen with animated placeholders
     ///
@@ -237,27 +249,29 @@ impl Render for ZedisContent {
         let base = v_flex().id("main-container").flex_1().h_full();
 
         // Route 1: Server management view
-        if route == Route::Home {
-            return base.child(self.render_servers(window, cx)).into_any_element();
+        match route {
+            Route::Home => base.child(self.render_servers(window, cx)).into_any_element(),
+            Route::Settings => base.child(self.render_settings(window, cx)).into_any_element(),
+            _ => {
+                // Route 2: Loading state (show skeleton while connecting/loading)
+                let is_busy = self.server_state.read(cx).is_busy();
+
+                // Route 3: Main editor interface
+                base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
+                    .when(!is_busy, |this| {
+                        this.child(
+                            div().flex_1().w_full().relative().child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .size_full()
+                                    .child(self.render_editor(window, cx)),
+                            ),
+                        )
+                    })
+                    .child(self.status_bar.clone())
+                    .into_any_element()
+            }
         }
-
-        // Route 2: Loading state (show skeleton while connecting/loading)
-        let is_busy = self.server_state.read(cx).is_busy();
-
-        // Route 3: Main editor interface
-        base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
-            .when(!is_busy, |this| {
-                this.child(
-                    div().flex_1().w_full().relative().child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .size_full()
-                            .child(self.render_editor(window, cx)),
-                    ),
-                )
-            })
-            .child(self.status_bar.clone())
-            .into_any_element()
     }
 }

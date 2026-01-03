@@ -22,6 +22,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
+use tracing::{error, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -62,6 +63,10 @@ pub enum FontSizeAction {
     Large,
     Medium,
     Small,
+}
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum SettingsAction {
+    Editor,
 }
 
 const LIGHT_THEME_MODE: &str = "light";
@@ -211,4 +216,50 @@ impl ZedisAppState {
     pub fn set_locale(&mut self, locale: String) {
         self.locale = Some(locale);
     }
+}
+
+/// Update app state in background, persist to disk, and refresh UI
+///
+/// This helper function abstracts the common pattern for updating global state:
+/// 1. Apply mutation to app state
+/// 2. Save updated state to disk asynchronously
+/// 3. Refresh all windows to apply changes
+///
+/// Used for theme and locale changes to ensure consistency across the app.
+///
+/// # Arguments
+/// * `cx` - Context for spawning async tasks
+/// * `action_name` - Human-readable action name for logging
+/// * `mutation` - Callback to modify the app state
+#[inline]
+pub fn update_app_state_and_save<F>(cx: &App, action_name: &'static str, mutation: F)
+where
+    F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
+{
+    let store = cx.global::<ZedisGlobalStore>().clone();
+
+    cx.spawn(async move |cx| {
+        // Step 1: Update global state with the mutation
+        let current_state = store.update(cx, |state, cx| {
+            mutation(state, cx);
+            state.clone() // Return clone for async persistence
+        });
+
+        // Step 2: Persist to disk in background executor
+        if let Ok(state) = current_state {
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(e) = save_app_state(&state) {
+                        error!(error = %e, action = action_name, "Failed to save state");
+                    } else {
+                        info!(action = action_name, "State saved successfully");
+                    }
+                })
+                .await;
+        }
+
+        // Step 3: Refresh windows to apply visual changes (theme/locale)
+        cx.update(|cx| cx.refresh_windows()).ok();
+    })
+    .detach();
 }

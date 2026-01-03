@@ -13,14 +13,15 @@
 // limitations under the License.
 
 use crate::states::{
-    FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, ThemeAction, ZedisGlobalStore,
-    i18n_sidebar,
+    FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, SettingsAction, ThemeAction,
+    ZedisGlobalStore, i18n_sidebar,
 };
 use gpui::{App, Context, Corner, Window, prelude::*};
 use gpui_component::{
-    IconName, Sizable, ThemeMode, TitleBar,
+    Icon, IconName, Sizable, ThemeMode, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
+    label::Label,
     menu::{DropdownMenu, PopupMenu},
 };
 
@@ -75,6 +76,12 @@ impl ZedisTitleBar {
                 i18n_sidebar(cx, "system"),
                 theme.is_none(),
                 Box::new(ThemeAction::System),
+            )
+            .separator()
+            .menu_element_with_icon(
+                Icon::new(IconName::Settings2),
+                Box::new(SettingsAction::Editor),
+                move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
             )
     }
 }

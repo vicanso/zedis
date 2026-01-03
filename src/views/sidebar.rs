@@ -14,10 +14,10 @@
 
 use crate::{
     assets::CustomIconName,
-    helpers::is_linux,
+    helpers::{is_development, is_linux},
     states::{
         FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, Route, ServerEvent,
-        ThemeAction, ZedisGlobalStore, ZedisServerState, i18n_sidebar,
+        SettingsAction, ThemeAction, ZedisGlobalStore, ZedisServerState, i18n_sidebar,
     },
 };
 use gpui::{Context, Corner, Entity, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
@@ -154,6 +154,11 @@ impl ZedisSidebar {
         let view = cx.entity();
         let servers = self.state.server_names.clone();
         let current_server_id_clone = self.state.server_id.clone();
+        let is_match_route = matches!(
+            cx.global::<ZedisGlobalStore>().read(cx).route(),
+            Route::Home | Route::Editor
+        );
+
         let home_label = i18n_sidebar(cx, "home");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
@@ -164,7 +169,7 @@ impl ZedisSidebar {
                     let (server_id, server_name) = servers.get(index).cloned().unwrap_or_default();
 
                     let is_home = server_id.is_empty();
-                    let is_current = server_id == current_server_id_clone;
+                    let is_current = is_match_route && server_id == current_server_id_clone;
 
                     // Display "Home" for empty server_name, otherwise use server name
                     let name = if server_name.is_empty() {
@@ -329,6 +334,11 @@ impl ZedisSidebar {
                             )
                     },
                 )
+                .menu_element_with_icon(
+                    Icon::new(IconName::Settings2),
+                    Box::new(SettingsAction::Editor),
+                    move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")).p(LABEL_PADDING),
+                )
             });
         div().border_t_1().border_color(cx.theme().border).child(btn)
     }
@@ -364,6 +374,7 @@ impl Render for ZedisSidebar {
     /// 3. Settings button (theme & language)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("Rendering sidebar view");
+        let show_settings_button = is_linux() || is_development();
 
         v_flex()
             .size_full()
@@ -371,11 +382,13 @@ impl Render for ZedisSidebar {
             .justify_start()
             .border_r_1()
             .border_color(cx.theme().border)
-            .when(is_linux(), |this| this.child(self.render_star(window, cx)))
+            .when(show_settings_button, |this| this.child(self.render_star(window, cx)))
             .child(
                 // Server list takes up remaining vertical space
                 div().flex_1().size_full().child(self.render_server_list(window, cx)),
             )
-            .when(is_linux(), |this| this.child(self.render_settings_button(window, cx)))
+            .when(show_settings_button, |this| {
+                this.child(self.render_settings_button(window, cx))
+            })
     }
 }
