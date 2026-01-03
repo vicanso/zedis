@@ -190,6 +190,29 @@ impl ZedisEditor {
             });
         });
     }
+    fn toggle_ttl_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        let Some(value) = server_state.value() else {
+            return;
+        };
+        let is_busy = value.is_busy();
+        if is_busy {
+            return;
+        }
+        let ttl: SharedString = value.ttl().unwrap_or_default().to_string().into();
+        self.ttl_edit_mode = true;
+        self.ttl_input_state.update(cx, move |state, cx| {
+            // Clear value if permanent, otherwise use current TTL
+            let value = if humantime::parse_duration(&ttl).is_err() {
+                SharedString::default()
+            } else {
+                ttl.clone()
+            };
+            state.set_value(value, window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
     /// Render the key information bar with actions (copy, save, TTL, delete)
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
@@ -296,22 +319,7 @@ impl ZedisEditor {
                     .label(ttl.clone())
                     .icon(CustomIconName::Clock3)
                     .on_click(cx.listener(move |this, _event, window, cx| {
-                        if is_busy {
-                            return;
-                        }
-                        let ttl = ttl.clone();
-                        this.ttl_edit_mode = true;
-                        this.ttl_input_state.update(cx, move |state, cx| {
-                            // Clear value if permanent, otherwise use current TTL
-                            let value = if humantime::parse_duration(&ttl).is_err() {
-                                SharedString::default()
-                            } else {
-                                ttl.clone()
-                            };
-                            state.set_value(value, window, cx);
-                            state.focus(window, cx);
-                        });
-                        cx.notify();
+                        this.toggle_ttl_edit_mode(window, cx);
                     }))
                     .into_any_element()
             };
@@ -484,6 +492,9 @@ impl Render for ZedisEditor {
                 }
                 EditorAction::Reload => {
                     this.reload(window, cx);
+                }
+                EditorAction::UpdateTtl => {
+                    this.toggle_ttl_edit_mode(window, cx);
                 }
                 _ => {}
             }))
