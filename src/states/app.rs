@@ -84,6 +84,7 @@ pub struct ZedisAppState {
     key_tree_width: Pixels,
     theme: Option<String>,
     font_size: Option<f32>,
+    max_key_tree_depth: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +166,16 @@ impl ZedisAppState {
     }
     pub fn font_size(&self) -> f32 {
         self.font_size.unwrap_or(14.0)
+    }
+    pub fn max_key_tree_depth(&self) -> usize {
+        self.max_key_tree_depth.unwrap_or(5)
+    }
+    pub fn set_max_key_tree_depth(&mut self, max_key_tree_depth: usize) {
+        if max_key_tree_depth == 0 {
+            self.max_key_tree_depth = None;
+            return;
+        }
+        self.max_key_tree_depth = Some(max_key_tree_depth);
     }
     pub fn set_font_size(&mut self, font_size: Option<f32>) {
         self.font_size = font_size;

@@ -17,7 +17,7 @@ use crate::{
     components::{FormDialog, FormField, open_add_form_dialog},
     connection::QueryMode,
     helpers::{validate_long_string, validate_ttl},
-    states::{KeyType, ServerEvent, ZedisServerState, i18n_common, i18n_key_tree},
+    states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -76,6 +76,7 @@ fn new_key_tree_items(
     mut keys: Vec<(SharedString, KeyType)>,
     expand_all: bool,
     expanded_items: AHashSet<SharedString>,
+    max_key_tree_depth: usize,
 ) -> Vec<KeyTreeItem> {
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
@@ -101,7 +102,7 @@ fn new_key_tree_items(
         let mut dir = String::with_capacity(50);
         let mut key_tree_item: Option<KeyTreeItem> = None;
         // max levels of depth
-        for (index, k) in key.splitn(5, split_char).enumerate() {
+        for (index, k) in key.splitn(max_key_tree_depth, split_char).enumerate() {
             // if key_tre_item is not None, it means we are in a folder
             // because it's not the last part of the key
             if let Some(key_tree_item) = key_tree_item.take() {
@@ -395,10 +396,11 @@ impl ZedisKeyTree {
         let expanded_items = self.state.expanded_items.clone();
 
         self.key_tree_list_state.update(cx, move |_state, cx| {
+            let max_key_tree_depth = cx.global::<ZedisGlobalStore>().value(cx).max_key_tree_depth();
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
-                    let items = new_key_tree_items(keys_snapshot, expand_all, expanded_items);
+                    let items = new_key_tree_items(keys_snapshot, expand_all, expanded_items, max_key_tree_depth);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
                 });
