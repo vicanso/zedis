@@ -485,6 +485,7 @@ impl Render for ZedisEditor {
                 EditorAction::Reload => {
                     this.reload(window, cx);
                 }
+                _ => {}
             }))
             .into_any_element()
     }
