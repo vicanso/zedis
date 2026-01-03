@@ -100,7 +100,8 @@ fn new_key_tree_items(
 
         let mut dir = String::with_capacity(50);
         let mut key_tree_item: Option<KeyTreeItem> = None;
-        for (index, k) in key.split(split_char).enumerate() {
+        // max levels of depth
+        for (index, k) in key.splitn(5, split_char).enumerate() {
             // if key_tre_item is not None, it means we are in a folder
             // because it's not the last part of the key
             if let Some(key_tree_item) = key_tree_item.take() {
@@ -138,11 +139,8 @@ fn new_key_tree_items(
     let mut result = Vec::with_capacity(items.len());
 
     for item in items.into_values() {
-        let parent_id = if let Some((parent, _)) = item.id.rsplit_once(split_char) {
-            parent
-        } else {
-            ""
-        };
+        let size = item.id.len() - item.label.len();
+        let parent_id = if size == 0 { "" } else { &item.id[..(size - 1)] };
         children_map.entry(parent_id.to_string()).or_default().push(item);
     }
 
