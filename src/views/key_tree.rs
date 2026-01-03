@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, open_add_form_dialog},
     connection::QueryMode,
-    helpers::{validate_long_string, validate_ttl},
+    helpers::{EditorAction, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
@@ -655,6 +655,11 @@ impl Render for ZedisKeyTree {
 
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
+            }))
+            .on_action(cx.listener(move |this, event: &EditorAction, window, cx| {
+                if event == &EditorAction::Create {
+                    this.handle_add_key(window, cx);
+                }
             }))
     }
 }

@@ -30,6 +30,7 @@ pub enum Route {
     #[default]
     Home,
     Editor,
+    Settings,
 }
 
 pub const FONT_SIZE_LARGE: f32 = 16.;

@@ -25,6 +25,7 @@ pub enum MemuAction {
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum EditorAction {
+    Create,
     Save,
     Reload,
 }
@@ -112,5 +113,6 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
         KeyBinding::new("cmd-s", EditorAction::Save, None),
         KeyBinding::new("cmd-r", EditorAction::Reload, None),
+        KeyBinding::new("cmd-n", EditorAction::Create, None),
     ]
 }
