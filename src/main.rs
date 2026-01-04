@@ -119,7 +119,7 @@ impl Zedis {
                 if let Err(e) = save_app_state(&value) {
                     error!(error = %e, "save window bounds fail",);
                 } else {
-                    info!("save window bounds success");
+                    info!(bounds = ?new_bounds, "save window bounds success");
                 }
             })
             .await;

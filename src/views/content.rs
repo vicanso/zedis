@@ -197,6 +197,10 @@ impl ZedisContent {
             })
             .clone();
 
+        let mut right_panel = resizable_panel();
+        if let Some(content_width) = cx.global::<ZedisGlobalStore>().read(cx).content_width() {
+            right_panel = right_panel.size(content_width);
+        }
         let (key_tree_width, min_width, max_width) = get_key_tree_widths(self.key_tree_width);
 
         h_resizable("editor-container")
@@ -209,7 +213,7 @@ impl ZedisContent {
             )
             .child(
                 // Right panel: Value editor (takes remaining space)
-                resizable_panel().child(value_editor),
+                right_panel.child(value_editor),
             )
             .on_resize(cx.listener(move |this, event: &Entity<ResizableState>, _window, cx| {
                 // Get the new width from the resize event
