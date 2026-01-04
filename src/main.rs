@@ -144,6 +144,9 @@ impl Render for Zedis {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
+        if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels() {
+            window.set_rem_size(font_size);
+        }
 
         let mut content = h_flex()
             .id(PKG_NAME)

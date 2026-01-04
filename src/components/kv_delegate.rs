@@ -359,7 +359,6 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
-        let font_size = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels();
         let base = h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings));
@@ -393,7 +392,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
 
         // Default: Render value as label
         let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
-        base.child(Label::new(value).text_size(px(font_size)).text_align(column.align))
+        base.child(Label::new(value).text_align(column.align))
     }
     /// Returns whether all data has been loaded (end of file).
     fn is_eof(&self, _: &App) -> bool {

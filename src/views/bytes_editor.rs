@@ -364,7 +364,6 @@ impl Render for ZedisBytesEditor {
     /// - Monospace font for code readability
     /// - Customizable font size
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font_size = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels();
         if self.soft_wrap_changed {
             self.editor.update(cx, |this, cx| {
                 this.set_soft_wrap(self.soft_wrap, window, cx);
@@ -404,7 +403,6 @@ impl Render for ZedisBytesEditor {
                     .w_full()
                     .h_full()
                     .font_family(get_font_family())
-                    .text_size(px(font_size))
                     .focus_bordered(false)
                     .into_any_element()
             }

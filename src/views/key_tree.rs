@@ -242,10 +242,8 @@ impl ListDelegate for KeyTreeDelegate {
         let parent = self.parent.clone();
         let id = entry.id.clone();
         let is_folder = entry.is_folder;
-        let font_size = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels();
         Some(
             ListItem::new(ix)
-                .text_size(px(font_size))
                 .w_full()
                 .bg(bg)
                 .py_1()
