@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::states::{
-    FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, SettingsAction, ThemeAction,
-    ZedisGlobalStore, i18n_sidebar,
+    FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
 };
 use gpui::{App, Context, Corner, Window, prelude::*};
 use gpui_component::{
@@ -41,17 +40,17 @@ impl ZedisTitleBar {
             .label(i18n_sidebar(cx, "font_size"))
             .menu_with_check(
                 i18n_sidebar(cx, "font_size_large"),
-                font_size == FONT_SIZE_LARGE,
+                font_size == FontSize::Large,
                 Box::new(FontSizeAction::Large),
             )
             .menu_with_check(
                 i18n_sidebar(cx, "font_size_medium"),
-                font_size == FONT_SIZE_MEDIUM,
+                font_size == FontSize::Medium,
                 Box::new(FontSizeAction::Medium),
             )
             .menu_with_check(
                 i18n_sidebar(cx, "font_size_small"),
-                font_size == FONT_SIZE_SMALL,
+                font_size == FontSize::Small,
                 Box::new(FontSizeAction::Small),
             )
             .separator()

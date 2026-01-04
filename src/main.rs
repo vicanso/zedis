@@ -3,9 +3,8 @@ use crate::connection::get_servers;
 use crate::constants::SIDEBAR_WIDTH;
 use crate::helpers::{MemuAction, is_app_store_build, is_development, is_linux, new_hot_keys};
 use crate::states::{
-    FONT_SIZE_LARGE, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent,
-    SettingsAction, ThemeAction, ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state,
-    update_app_state_and_save,
+    FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
+    ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
 };
 use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
 use gpui::{
@@ -206,8 +205,8 @@ impl Render for Zedis {
                 let action = *e;
 
                 let font_size = match action {
-                    FontSizeAction::Large => Some(FONT_SIZE_LARGE),
-                    FontSizeAction::Small => Some(FONT_SIZE_SMALL),
+                    FontSizeAction::Large => Some(FontSize::Large),
+                    FontSizeAction::Small => Some(FontSize::Small),
                     _ => None,
                 };
                 // Save locale preference and refresh UI

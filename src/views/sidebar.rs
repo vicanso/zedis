@@ -16,8 +16,8 @@ use crate::{
     assets::CustomIconName,
     helpers::{is_development, is_linux},
     states::{
-        FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, FontSizeAction, LocaleAction, Route, ServerEvent,
-        SettingsAction, ThemeAction, ZedisGlobalStore, ZedisServerState, i18n_sidebar,
+        FontSize, FontSizeAction, LocaleAction, Route, ServerEvent, SettingsAction, ThemeAction, ZedisGlobalStore,
+        ZedisServerState, i18n_sidebar,
     },
 };
 use gpui::{Context, Corner, Entity, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
@@ -309,7 +309,7 @@ impl ZedisSidebar {
                     move |submenu, _window, _cx| {
                         submenu
                             .menu_element_with_check(
-                                current_font_size == FONT_SIZE_LARGE,
+                                current_font_size == FontSize::Large,
                                 Box::new(FontSizeAction::Large),
                                 move |_window, cx| {
                                     let text = i18n_sidebar(cx, "font_size_large");
@@ -317,7 +317,7 @@ impl ZedisSidebar {
                                 },
                             )
                             .menu_element_with_check(
-                                current_font_size == FONT_SIZE_MEDIUM,
+                                current_font_size == FontSize::Medium,
                                 Box::new(FontSizeAction::Medium),
                                 move |_window, cx| {
                                     let text = i18n_sidebar(cx, "font_size_medium");
@@ -325,7 +325,7 @@ impl ZedisSidebar {
                                 },
                             )
                             .menu_element_with_check(
-                                current_font_size == FONT_SIZE_SMALL,
+                                current_font_size == FontSize::Small,
                                 Box::new(FontSizeAction::Small),
                                 move |_window, cx| {
                                     let text = i18n_sidebar(cx, "font_size_small");

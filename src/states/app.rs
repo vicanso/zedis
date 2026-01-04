@@ -34,9 +34,22 @@ pub enum Route {
     Settings,
 }
 
-pub const FONT_SIZE_LARGE: f32 = 16.;
-pub const FONT_SIZE_MEDIUM: f32 = 14.;
-pub const FONT_SIZE_SMALL: f32 = 12.;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub enum FontSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+impl FontSize {
+    pub fn to_pixels(self) -> f32 {
+        match self {
+            FontSize::Small => 14.0,
+            FontSize::Medium => 16.0,
+            FontSize::Large => 18.0,
+        }
+    }
+}
 
 /// Theme selection actions for the settings menu
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -89,7 +102,7 @@ pub struct ZedisAppState {
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
     theme: Option<String>,
-    font_size: Option<f32>,
+    font_size: Option<FontSize>,
     max_key_tree_depth: Option<usize>,
 }
 
@@ -170,8 +183,8 @@ impl ZedisAppState {
             cx.notify();
         }
     }
-    pub fn font_size(&self) -> f32 {
-        self.font_size.unwrap_or(14.0)
+    pub fn font_size(&self) -> FontSize {
+        self.font_size.unwrap_or(FontSize::Medium)
     }
     pub fn max_key_tree_depth(&self) -> usize {
         self.max_key_tree_depth.unwrap_or(5)
@@ -183,7 +196,7 @@ impl ZedisAppState {
         }
         self.max_key_tree_depth = Some(max_key_tree_depth);
     }
-    pub fn set_font_size(&mut self, font_size: Option<f32>) {
+    pub fn set_font_size(&mut self, font_size: Option<FontSize>) {
         self.font_size = font_size;
     }
     pub fn theme(&self) -> Option<ThemeMode> {
