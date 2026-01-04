@@ -42,11 +42,11 @@ pub enum FontSize {
     Large,
 }
 impl FontSize {
-    pub fn to_pixels(self) -> f32 {
+    pub fn to_pixels(self) -> Option<f32> {
         match self {
-            FontSize::Small => 14.0,
-            FontSize::Medium => 16.0,
-            FontSize::Large => 18.0,
+            FontSize::Small => Some(14.0),
+            FontSize::Medium => None,
+            FontSize::Large => Some(18.0),
         }
     }
 }
