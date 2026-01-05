@@ -310,12 +310,18 @@ impl ZedisEditor {
                     .into_any_element()
             } else {
                 // Show TTL button that switches to edit mode on click
+                let ttl_tooltip: SharedString = format!(
+                    "{} ({})",
+                    i18n_editor(cx, "update_ttl_tooltip"),
+                    humanize_keystroke("cmd-t")
+                )
+                .into();
                 Button::new("zedis-editor-ttl-btn")
                     .ml_2()
                     .outline()
                     .w(px(TTL_INPUT_MAX_WIDTH))
                     .disabled(should_show_loading)
-                    .tooltip(i18n_editor(cx, "update_ttl_tooltip"))
+                    .tooltip(ttl_tooltip)
                     .label(ttl.clone())
                     .icon(CustomIconName::Clock3)
                     .on_click(cx.listener(move |this, _event, window, cx| {

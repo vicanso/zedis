@@ -29,6 +29,7 @@ pub enum EditorAction {
     Save,
     Reload,
     UpdateTtl,
+    Cmd,
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {
@@ -116,5 +117,6 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-r", EditorAction::Reload, None),
         KeyBinding::new("cmd-n", EditorAction::Create, None),
         KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
+        KeyBinding::new("cmd-j", EditorAction::Cmd, None),
     ]
 }

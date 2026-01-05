@@ -325,6 +325,8 @@ impl ZedisServerState {
         self.server_id = SharedString::default();
         self.version = SharedString::default();
         self.nodes = (0, 0);
+        self.keys.clear();
+        self.key_tree_id = SharedString::default();
         self.nodes_description = Arc::new(RedisClientDescription::default());
         self.dbsize = None;
         self.key = None;

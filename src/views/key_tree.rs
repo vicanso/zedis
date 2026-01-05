@@ -406,7 +406,6 @@ impl ZedisKeyTree {
                 });
 
                 let result = task.await;
-
                 handle.update(cx, |this, cx| {
                     this.delegate_mut().items = result;
                     cx.notify();
