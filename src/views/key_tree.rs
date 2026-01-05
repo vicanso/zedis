@@ -21,7 +21,8 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, Hsla, SharedString, Subscription, WeakEntity, Window, div, prelude::*, px,
+    App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, WeakEntity, Window, div,
+    prelude::*, px,
 };
 use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
@@ -59,6 +60,8 @@ struct KeyTreeState {
     error: Option<SharedString>,
     /// Set of expanded folder paths (persisted during tree rebuilds)
     expanded_items: AHashSet<SharedString>,
+    /// Index path to scroll to when the tree is updated
+    scroll_to_index: Option<IndexPath>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -366,6 +369,11 @@ impl ZedisKeyTree {
         this
     }
 
+    fn reset(&mut self, _cx: &mut Context<Self>) {
+        self.state.expanded_items.clear();
+        self.state.scroll_to_index = Some(IndexPath::new(0));
+    }
+
     /// Update the key tree structure when server state changes
     ///
     /// Rebuilds the tree only if the tree ID has changed (indicating new keys loaded).
@@ -395,6 +403,8 @@ impl ZedisKeyTree {
             server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
         let expanded_items = self.state.expanded_items.clone();
 
+        let view_handle = cx.entity().downgrade();
+
         self.key_tree_list_state.update(cx, move |_state, cx| {
             let max_key_tree_depth = cx.global::<ZedisGlobalStore>().value(cx).max_key_tree_depth();
             cx.spawn(async move |handle, cx| {
@@ -406,6 +416,11 @@ impl ZedisKeyTree {
                 });
 
                 let result = task.await;
+                if result.is_empty() {
+                    let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, _cx| {
+                        view.reset(cx);
+                    });
+                }
                 handle.update(cx, |this, cx| {
                     this.delegate_mut().items = result;
                     cx.notify();
@@ -639,6 +654,11 @@ impl ZedisKeyTree {
 impl Render for ZedisKeyTree {
     /// Main render method - displays search bar and tree structure
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(scroll_to_index) = self.state.scroll_to_index.take() {
+            self.key_tree_list_state.update(cx, |state, cx| {
+                state.scroll_to_item(scroll_to_index, ScrollStrategy::Top, window, cx);
+            });
+        }
         v_flex()
             .h_full()
             .w_full()
