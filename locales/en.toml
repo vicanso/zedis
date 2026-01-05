@@ -80,6 +80,11 @@ update_server_title = "Edit Server"
 add_server_description = "Configure connection details for a new Redis instance."
 update_tooltip = "Edit connection details"
 remove_tooltip = "Delete this server configuration"
+test_connection = "Test Connection"
+test_connection_tooltip = "Test connection to Redis server"
+test_connection_success = "Connection successful!"
+test_connection_failed = "Connection failed: %{error}"
+testing_connection = "Testing..."
 
 [editor]
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"

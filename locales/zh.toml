@@ -79,6 +79,11 @@ update_server_title = "编辑服务器"
 add_server_description = "配置新 Redis 实例的连接详情。"
 update_tooltip = "编辑连接详情"
 remove_tooltip = "删除此服务器配置"
+test_connection = "测试连接"
+test_connection_tooltip = "测试 Redis 服务器连接"
+test_connection_success = "连接成功！"
+test_connection_failed = "连接失败: %{error}"
+testing_connection = "测试中..."
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"

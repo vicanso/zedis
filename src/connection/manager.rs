@@ -520,3 +520,19 @@ impl ConnectionManager {
 pub fn get_connection_manager() -> &'static ConnectionManager {
     &CONNECTION_MANAGER
 }
+
+/// Tests connection to a Redis server using the provided configuration.
+/// Returns Ok(()) if connection is successful, or an error message if it fails.
+/// Uses a 15-second timeout to prevent UI from hanging on unreachable servers.
+pub async fn test_connection(server: &super::RedisServer) -> Result<()> {
+    let url = server.get_connection_url();
+    let client = Client::open(url)?;
+
+    // Use timeout to prevent hanging on unreachable servers
+    let conn_config = AsyncConnectionConfig::new().set_connection_timeout(Some(Duration::from_secs(15)));
+    let mut conn = client
+        .get_multiplexed_async_connection_with_config(&conn_config)
+        .await?;
+    let _: () = cmd("PING").query_async(&mut conn).await?;
+    Ok(())
+}
