@@ -17,15 +17,14 @@ use crate::components::Card;
 use crate::connection::{test_connection, RedisServer};
 use crate::helpers::{validate_common_string, validate_host, validate_long_string};
 use crate::states::{i18n_common, i18n_servers, Route, ZedisGlobalStore, ZedisServerState};
-use gpui::{div, prelude::*, px, Animation, AnimationExt, App, Corner, Entity, Window};
+use gpui::{div, prelude::*, px, App, Entity, Window};
 use gpui_component::{
-    animation::cubic_bezier,
     button::{Button, ButtonVariants},
     form::{field, v_form},
     h_flex,
     input::{Input, InputState, NumberInput},
     label::Label,
-    popover::Popover,
+    notification::Notification,
     ActiveTheme, Colorize, Icon, IconName, Sizable, WindowExt,
 };
 use rust_i18n::t;
@@ -51,13 +50,12 @@ enum TestConnectionState {
     Failed,
 }
 
-/// Test connection result for popover display
+/// Test connection result for status icon display
 #[derive(Clone, Default)]
 struct TestConnectionResult {
     state: TestConnectionState,
-    message: String,
-    show_popover: bool,
-    closing: bool,
+    error_message: Option<String>,
+    notification_pending: bool,
 }
 
 /// Build a RedisServer from input states for testing connection
@@ -88,13 +86,12 @@ fn build_server_from_inputs(
 fn execute_test_connection(
     server: RedisServer,
     test_result: Rc<RefCell<TestConnectionResult>>,
-    locale: String,
     cx: &mut App,
 ) {
     {
         let mut result = test_result.borrow_mut();
         result.state = TestConnectionState::Testing;
-        result.message.clear();
+        result.notification_pending = false;
     }
 
     cx.spawn(async move |cx| {
@@ -103,49 +100,18 @@ fn execute_test_connection(
             .await;
 
         cx.update(|cx| {
-            let (new_state, msg) = match result {
-                Ok(()) => {
-                    let msg = t!("servers.test_connection_success", locale = locale).to_string();
-                    (TestConnectionState::Success, msg)
+            let mut test_result_ref = test_result.borrow_mut();
+            match result {
+                Ok(_) => {
+                    test_result_ref.state = TestConnectionState::Success;
+                    test_result_ref.error_message = None;
                 }
                 Err(e) => {
-                    let msg =
-                        t!("servers.test_connection_failed", error = e.to_string(), locale = locale)
-                            .to_string();
-                    (TestConnectionState::Failed, msg)
+                    test_result_ref.state = TestConnectionState::Failed;
+                    test_result_ref.error_message = Some(e.to_string());
                 }
-            };
-            {
-                let mut r = test_result.borrow_mut();
-                r.state = new_state;
-                r.message = msg;
-                r.show_popover = true;
             }
-            cx.refresh_windows();
-        })
-        .ok();
-
-        // Auto-dismiss popover after 3 seconds
-        cx.background_spawn(async {
-            smol::Timer::after(std::time::Duration::from_secs(3)).await;
-        })
-        .await;
-
-        cx.update(|cx| {
-            test_result.borrow_mut().closing = true;
-            cx.refresh_windows();
-        })
-        .ok();
-
-        cx.background_spawn(async {
-            smol::Timer::after(std::time::Duration::from_millis(200)).await;
-        })
-        .await;
-
-        cx.update(|cx| {
-            let mut r = test_result.borrow_mut();
-            r.show_popover = false;
-            r.closing = false;
+            test_result_ref.notification_pending = true;
             cx.refresh_windows();
         })
         .ok();
@@ -380,13 +346,7 @@ impl ZedisServers {
         });
 
         // Reset test connection state when opening dialog
-        {
-            let mut result = self.test_result.borrow_mut();
-            result.state = TestConnectionState::Idle;
-            result.message.clear();
-            result.show_popover = false;
-            result.closing = false;
-        }
+        self.test_result.borrow_mut().state = TestConnectionState::Idle;
         let test_result = self.test_result.clone();
 
         let focus_handle_done = Cell::new(false);
@@ -452,12 +412,31 @@ impl ZedisServers {
                     // Use component-level test connection result
                     let test_result = test_result.clone();
 
-                    move |_, _window, _, cx| {
+                    move |_, _, window, cx| {
                         let submit_label = i18n_common(cx, "submit");
                         let cancel_label = i18n_common(cx, "cancel");
                         let test_label = i18n_servers(cx, "test_connection");
-                        let test_tooltip = i18n_servers(cx, "test_connection_tooltip");
                         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+
+                        // Check for pending notification and push it
+                        {
+                            let mut test_result_ref = test_result.borrow_mut();
+                            if test_result_ref.notification_pending {
+                                test_result_ref.notification_pending = false;
+                                let notification = match test_result_ref.state {
+                                    TestConnectionState::Success => {
+                                        Notification::success(i18n_servers(cx, "test_connection_success"))
+                                    }
+                                    TestConnectionState::Failed => {
+                                        let error_msg = test_result_ref.error_message.clone().unwrap_or_default();
+                                        let msg = t!("servers.test_connection_failed", error = error_msg, locale = locale).to_string();
+                                        Notification::error(msg)
+                                    }
+                                    _ => return vec![],
+                                };
+                                window.push_notification(notification, cx);
+                            }
+                        }
 
                         let test_name_state = name_state.clone();
                         let test_host_state = host_state.clone();
@@ -466,13 +445,7 @@ impl ZedisServers {
                         let test_password_state = password_state.clone();
                         let test_master_name_state = master_name_state.clone();
 
-                        let current_result = test_result.borrow();
-                        let current_state = current_result.state;
-                        let result_message = current_result.message.clone();
-                        let show_popover = current_result.show_popover;
-                        let closing = current_result.closing;
-                        drop(current_result);
-
+                        let current_state = test_result.borrow().state;
                         let is_testing = current_state == TestConnectionState::Testing;
                         let show_status_icon = current_state == TestConnectionState::Success
                             || current_state == TestConnectionState::Failed;
@@ -480,11 +453,9 @@ impl ZedisServers {
 
                         let test_button = Button::new("test")
                             .label(test_label)
-                            .tooltip(test_tooltip)
                             .loading(is_testing)
                             .on_click({
                                 let test_result = test_result.clone();
-                                let locale = locale.clone();
                                 move |_, _window, cx| {
                                     let host = test_host_state.read(cx).value();
                                     if host.is_empty() {
@@ -508,82 +479,14 @@ impl ZedisServers {
                                         if master_name_val.is_empty() { None } else { Some(&master_name_val) },
                                     );
 
-                                    execute_test_connection(server, test_result.clone(), locale.clone(), cx);
+                                    execute_test_connection(server, test_result.clone(), cx);
                                 }
                             });
 
                         let left_side = h_flex()
                             .gap_2()
                             .items_center()
-                            .child(
-                                Popover::new("test-connection-popover")
-                                    .anchor(Corner::BottomLeft)
-                                    .open(show_popover)
-                                    .appearance(false)
-                                    .trigger(test_button)
-                                    .content({
-                                        let result_message = result_message.clone();
-                                        move |_, _, cx| {
-                                            let (icon, text_color, border_color) = if is_success {
-                                                (
-                                                    Icon::new(CustomIconName::CircleCheckBig)
-                                                        .xsmall()
-                                                        .text_color(cx.theme().success),
-                                                    cx.theme().success,
-                                                    cx.theme().success,
-                                                )
-                                            } else {
-                                                (
-                                                    Icon::new(CustomIconName::X)
-                                                        .xsmall()
-                                                        .text_color(cx.theme().danger),
-                                                    cx.theme().danger,
-                                                    cx.theme().danger,
-                                                )
-                                            };
-
-                                            div()
-                                                .id("test-tooltip")
-                                                .flex()
-                                                .flex_col()
-                                                .items_center()
-                                                .mb_1()
-                                                .child(
-                                                    h_flex()
-                                                        .gap_2()
-                                                        .items_center()
-                                                        .py_1p5()
-                                                        .px_3()
-                                                        .bg(cx.theme().popover)
-                                                        .border_1()
-                                                        .border_color(border_color)
-                                                        .rounded_md()
-                                                        .shadow_md()
-                                                        .child(icon)
-                                                        .child(Label::new(result_message.clone()).text_color(text_color)),
-                                                )
-                                                .child(
-                                                    Label::new("▼")
-                                                        .text_color(border_color)
-                                                        .text_xs()
-                                                        .mt(px(-4.)),
-                                                )
-                                                .with_animation(
-                                                    gpui::ElementId::NamedInteger("fade".into(), closing as u64),
-                                                    Animation::new(std::time::Duration::from_secs_f64(0.2))
-                                                        .with_easing(cubic_bezier(0.4, 0., 0.2, 1.)),
-                                                    move |this, delta| {
-                                                        if closing {
-                                                            this.opacity(1.0 - delta)
-                                                        } else {
-                                                            this.opacity(delta)
-                                                        }
-                                                    },
-                                                )
-                                                .into_any_element()
-                                        }
-                                    }),
-                            )
+                            .child(test_button)
                             .when(show_status_icon, |this| {
                                 let status_icon = if is_success {
                                     Icon::new(CustomIconName::CircleCheckBig)
