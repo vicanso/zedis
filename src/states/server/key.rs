@@ -21,6 +21,7 @@ use super::{
     value::{KeyType, RedisValue, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
+use crate::states::ZedisGlobalStore;
 use crate::{
     connection::{QueryMode, get_connection_manager},
     error::Error,
@@ -45,6 +46,8 @@ impl ZedisServerState {
         let binding = prefix.unwrap_or_default();
         let prefix = binding.as_str();
         let count = self.keys.len();
+        let binding = cx.global::<ZedisGlobalStore>().value(cx);
+        let separator = binding.key_separator();
         let mut keys = self
             .keys
             .iter()
@@ -55,14 +58,14 @@ impl ZedisServerState {
                 if prefix.is_empty() {
                     // if no prefix, only fill keys that are not in a subdirectory
                     // or if the count is less than 1000
-                    if count < 1000 || !key.contains(":") {
+                    if count < 1000 || !key.contains(separator) {
                         return Some(key.clone());
                     }
                     return None;
                 };
                 let suffix = key.strip_prefix(prefix)?;
                 // Skip if the key is in a deeper subdirectory (contains delimiter)
-                if suffix.contains(":") {
+                if suffix.contains(separator) {
                     return None;
                 }
                 Some(key.clone())

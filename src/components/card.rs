@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, SharedString, Window, prelude::*, px};
+use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, SharedString, Window, div, prelude::*, px};
 use gpui_component::{ActiveTheme, Icon, button::Button, h_flex, label::Label, list::ListItem};
 
 /// Type alias for the click handler closure.
@@ -107,11 +107,16 @@ impl RenderOnce for Card {
         let header = h_flex()
             .when_some(self.icon, |this, icon| this.child(icon))
             .when_some(self.title, |this, title| {
-                this.child(Label::new(title).ml_2().text_base().whitespace_normal())
+                this.child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(Label::new(title).ml_2().text_base().whitespace_nowrap().text_ellipsis()),
+                )
             })
             // Use flex_1 to push actions to the right
             .when_some(self.actions, |this, actions| {
-                this.child(h_flex().flex_1().justify_end().children(actions))
+                this.child(h_flex().flex_shrink_0().justify_end().children(actions))
             });
 
         // Construct the main card container using a declarative style

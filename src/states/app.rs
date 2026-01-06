@@ -104,6 +104,7 @@ pub struct ZedisAppState {
     theme: Option<String>,
     font_size: Option<FontSize>,
     max_key_tree_depth: Option<usize>,
+    key_separator: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +229,16 @@ impl ZedisAppState {
     }
     pub fn set_locale(&mut self, locale: String) {
         self.locale = Some(locale);
+    }
+    pub fn key_separator(&self) -> &str {
+        self.key_separator.as_deref().unwrap_or(":")
+    }
+    pub fn set_key_separator(&mut self, key_separator: String) {
+        if key_separator.is_empty() {
+            self.key_separator = None;
+            return;
+        }
+        self.key_separator = Some(key_separator);
     }
 }
 

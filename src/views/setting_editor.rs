@@ -26,6 +26,7 @@ use gpui_component::{
 
 pub struct ZedisSettingEditor {
     max_key_tree_depth_state: Entity<InputState>,
+    key_separator_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -34,10 +35,16 @@ impl ZedisSettingEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let max_key_tree_depth = store.max_key_tree_depth();
+        let key_separator = store.key_separator().to_string();
         let max_key_tree_depth_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "max_key_tree_depth_placeholder"))
                 .default_value(max_key_tree_depth.to_string())
+        });
+        let key_separator_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, "key_separator_placeholder"))
+                .default_value(key_separator)
         });
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
@@ -54,12 +61,23 @@ impl ZedisSettingEditor {
                 }
             }),
         );
+        subscriptions.push(
+            cx.subscribe_in(&key_separator_state, window, |_view, state, event, _window, cx| {
+                if let InputEvent::Blur = &event {
+                    let text = state.read(cx).value();
+                    update_app_state_and_save(cx, "save_key_separator", move |state, _cx| {
+                        state.set_key_separator(text.to_string());
+                    });
+                }
+            }),
+        );
         let config_dir_state =
             cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
 
         Self {
             _subscriptions: subscriptions,
             config_dir_state,
+            key_separator_state,
             max_key_tree_depth_state,
         }
     }
@@ -78,6 +96,11 @@ impl Render for ZedisSettingEditor {
                         field()
                             .label(i18n_settings(cx, "max_key_tree_depth"))
                             .child(NumberInput::new(&self.max_key_tree_depth_state)),
+                    )
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "key_separator"))
+                            .child(Input::new(&self.key_separator_state)),
                     )
                     .child(
                         field()
