@@ -37,6 +37,13 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 - **Responsive**: Split-pane layout that adapts to any window size.
 
 
+🚧 Development Status
+
+Zedis is currently in early active development. To maintain development velocity and architectural flexibility, we are not accepting Pull Requests at this time.
+
+We will open up for contributions once the core architecture stabilizes. Please Star or Watch the repository to stay updated!
+
+
 ## 📄 License
 
 This project is Licensed under [Apache License, Version 2.0](./LICENSE).
