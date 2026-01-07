@@ -24,3 +24,6 @@ msrv:
 
 bloat:
 	cargo bloat --release --crates --bin zedis
+
+version:
+	git cliff --unreleased --tag v0.1.6 --prepend CHANGELOG.md
