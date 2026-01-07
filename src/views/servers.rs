@@ -17,18 +17,19 @@ use crate::components::Card;
 use crate::connection::RedisServer;
 use crate::helpers::{validate_common_string, validate_host, validate_long_string};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers};
-use gpui::{App, Entity, Window, div, prelude::*, px};
+use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
-    input::{Input, InputState, NumberInput},
+    input::{Input, InputEvent, InputState, NumberInput},
     label::Label,
 };
 use rust_i18n::t;
 use std::{cell::Cell, rc::Rc};
 use substring::Substring;
 use tracing::info;
+use url::Url;
 
 // Constants for UI layout
 const DEFAULT_REDIS_PORT: u16 = 6379;
@@ -37,6 +38,37 @@ const VIEWPORT_BREAKPOINT_MEDIUM: f32 = 1200.0; // Two columns
 const UPDATED_AT_SUBSTRING_LENGTH: usize = 10; // Length of date string to display
 const THEME_LIGHTEN_AMOUNT_DARK: f32 = 1.0;
 const THEME_DARKEN_AMOUNT_LIGHT: f32 = 0.02;
+
+#[derive(Debug, Clone, Default)]
+struct RedisUrl {
+    host: String,
+    port: Option<u16>,
+    username: String,
+    password: Option<String>,
+}
+
+fn parse_url(host: SharedString) -> RedisUrl {
+    let input_to_parse = if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("redis://{host}")
+    };
+    if let Ok(u) = Url::parse(input_to_parse.as_str()) {
+        let host = u.host_str().unwrap_or("");
+        let port = u.port();
+        RedisUrl {
+            host: host.to_string(),
+            port,
+            username: u.username().to_string(),
+            password: u.password().map(|p| p.to_string()),
+        }
+    } else {
+        RedisUrl {
+            host: host.to_string(),
+            ..Default::default()
+        }
+    }
+}
 
 /// Server management view component
 ///
@@ -62,6 +94,8 @@ pub struct ZedisServers {
 
     /// Flag indicating if we're adding a new server (vs editing existing)
     server_id: String,
+
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisServers {
@@ -81,6 +115,7 @@ impl ZedisServers {
                 .validate(|s, _cx| validate_host(s))
         });
         let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "port_placeholder")));
+
         let username_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_common(cx, "username_placeholder"))
@@ -102,6 +137,39 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "master_name_placeholder"))
                 .validate(|s, _cx| validate_common_string(s))
         });
+
+        let port_state_clone = port_state.clone();
+        let username_state_clone = username_state.clone();
+        let password_state_clone = password_state.clone();
+        let mut subscriptions = vec![];
+        subscriptions.push(
+            cx.subscribe_in(&host_state, window, move |_view, state, event, window, cx| {
+                if let InputEvent::Blur = event {
+                    let host = state.read(cx).value();
+                    let info = parse_url(host.clone());
+                    if info.host != host {
+                        state.update(cx, |state, cx| {
+                            state.set_value(info.host, window, cx);
+                        });
+                        if let Some(port) = info.port {
+                            port_state_clone.update(cx, |state, cx| {
+                                state.set_value(port.to_string(), window, cx);
+                            });
+                        }
+                        if !info.username.is_empty() {
+                            username_state_clone.update(cx, |state, cx| {
+                                state.set_value(info.username, window, cx);
+                            });
+                        }
+                        if let Some(password) = info.password {
+                            password_state_clone.update(cx, |state, cx| {
+                                state.set_value(password, window, cx);
+                            });
+                        }
+                    }
+                }
+            }),
+        );
         info!("Creating new servers view");
 
         Self {
@@ -114,6 +182,7 @@ impl ZedisServers {
             master_name_state,
             description_state,
             server_id: String::new(),
+            _subscriptions: subscriptions,
         }
     }
     /// Fill input fields with server data for editing
