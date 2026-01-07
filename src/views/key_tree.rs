@@ -25,7 +25,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::IndexPath;
-use gpui_component::list::{List, ListDelegate, ListItem, ListState};
+use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
@@ -348,6 +348,12 @@ impl ZedisKeyTree {
             selected_index: None,
             parent: cx.entity().downgrade(),
         };
+        let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
+        subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| {
+            if let ListEvent::Select(ix) = &event {
+                view.select_item_by_index(ix, cx);
+            }
+        }));
 
         let mut this = Self {
             state: KeyTreeState {
@@ -356,7 +362,7 @@ impl ZedisKeyTree {
                 expanded_items: AHashSet::with_capacity(EXPANDED_ITEMS_INITIAL_CAPACITY),
                 ..Default::default()
             },
-            key_tree_list_state: cx.new(|cx| ListState::new(delegate, window, cx)),
+            key_tree_list_state,
             keyword_state,
             server_state,
             _subscriptions: subscriptions,
@@ -538,6 +544,18 @@ impl ZedisKeyTree {
                 )
                 .into_any_element(),
         )
+    }
+
+    fn select_item_by_index(&mut self, ix: &IndexPath, cx: &mut Context<Self>) {
+        let Some((id, is_folder)) = self.key_tree_list_state.update(cx, |state, _cx| {
+            let item = state.delegate().items.get(ix.row)?;
+            let id = item.id.clone();
+            let is_folder = item.is_folder;
+            Some((id, is_folder))
+        }) else {
+            return;
+        };
+        self.select_item(id, is_folder, cx);
     }
 
     fn select_item(&mut self, item_id: SharedString, is_folder: bool, cx: &mut Context<Self>) {

@@ -271,10 +271,6 @@ impl ZedisBytesEditor {
                 .soft_wrap(soft_wrap)
         });
 
-        editor.update(cx, |this, cx| {
-            this.focus(window, cx);
-        });
-
         // Subscribe to editor changes to track modification state
         subscriptions.push(cx.subscribe(&editor, |this, _, event, cx| {
             if let InputEvent::Change = &event {
