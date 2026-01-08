@@ -21,8 +21,7 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, WeakEntity, Window, div,
-    prelude::*, px,
+    App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
@@ -167,7 +166,6 @@ fn new_key_tree_items(
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
     selected_index: Option<IndexPath>,
-    parent: WeakEntity<ZedisKeyTree>,
 }
 
 impl KeyTreeDelegate {
@@ -241,9 +239,6 @@ impl ListDelegate for KeyTreeDelegate {
 
         let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
 
-        let parent = self.parent.clone();
-        let id = entry.id.clone();
-        let is_folder = entry.is_folder;
         Some(
             ListItem::new(ix)
                 .w_full()
@@ -257,13 +252,7 @@ impl ListDelegate for KeyTreeDelegate {
                         .child(icon)
                         .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
                         .child(count_label),
-                )
-                .on_click(move |_, _window, cx| {
-                    let id = id.clone();
-                    let _ = parent.update(cx, move |view: &mut ZedisKeyTree, cx| {
-                        view.select_item(id, is_folder, cx);
-                    });
-                }),
+                ),
         )
     }
 
@@ -346,13 +335,16 @@ impl ZedisKeyTree {
         let delegate = KeyTreeDelegate {
             items: Vec::new(),
             selected_index: None,
-            parent: cx.entity().downgrade(),
         };
         let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
-        subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| {
-            if let ListEvent::Select(ix) = &event {
-                view.select_item_by_index(ix, cx);
+        subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| match event {
+            ListEvent::Select(ix) => {
+                view.select_item_by_index(ix, false, cx);
             }
+            ListEvent::Confirm(ix) => {
+                view.select_item_by_index(ix, true, cx);
+            }
+            _ => {}
         }));
 
         let mut this = Self {
@@ -546,7 +538,7 @@ impl ZedisKeyTree {
         )
     }
 
-    fn select_item_by_index(&mut self, ix: &IndexPath, cx: &mut Context<Self>) {
+    fn select_item_by_index(&mut self, ix: &IndexPath, toggle: bool, cx: &mut Context<Self>) {
         let Some((id, is_folder)) = self.key_tree_list_state.update(cx, |state, _cx| {
             let item = state.delegate().items.get(ix.row)?;
             let id = item.id.clone();
@@ -555,12 +547,15 @@ impl ZedisKeyTree {
         }) else {
             return;
         };
-        self.select_item(id, is_folder, cx);
+        self.select_item(id, is_folder, toggle, cx);
     }
 
-    fn select_item(&mut self, item_id: SharedString, is_folder: bool, cx: &mut Context<Self>) {
+    fn select_item(&mut self, item_id: SharedString, is_folder: bool, toggle: bool, cx: &mut Context<Self>) {
         if is_folder {
             if self.state.expanded_items.contains(&item_id) {
+                if !toggle {
+                    return;
+                }
                 // User clicked an expanded folder -> collapse it
                 self.state.expanded_items.remove(&item_id);
             } else {
