@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::get_servers;
 use crate::constants::SIDEBAR_WIDTH;
-use crate::helpers::{MemuAction, is_app_store_build, is_development, is_linux, new_hot_keys};
+use crate::helpers::{MemuAction, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
     FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
@@ -41,6 +41,7 @@ pub struct Zedis {
     sidebar: Entity<ZedisSidebar>,
     content: Entity<ZedisContent>,
     title_bar: Option<Entity<ZedisTitleBar>>,
+    theme_update_task: Option<Task<()>>,
 }
 
 impl Zedis {
@@ -72,18 +73,18 @@ impl Zedis {
             cx.notify();
         })
         .detach();
-        cx.observe_window_appearance(window, |_this, _window, cx| {
+        cx.observe_window_appearance(window, |this, _window, cx| {
             if cx.global::<ZedisGlobalStore>().read(cx).theme().is_none() {
-                Theme::change(cx.window_appearance(), None, cx);
-                cx.refresh_windows();
+                this.theme_update_task = Some(cx.spawn(async move |_this, cx| {
+                    let _ = cx.update(|cx| {
+                        Theme::change(cx.window_appearance(), None, cx);
+                        cx.refresh_windows();
+                    });
+                }));
             }
         })
         .detach();
-        let title_bar = if is_linux() {
-            None
-        } else {
-            Some(cx.new(|cx| ZedisTitleBar::new(window, cx)))
-        };
+        let title_bar = Some(cx.new(|cx| ZedisTitleBar::new(window, cx)));
 
         Self {
             sidebar,
@@ -91,6 +92,7 @@ impl Zedis {
             content,
             pending_notification: None,
             title_bar,
+            theme_update_task: None,
             last_bounds: Bounds::default(),
         }
     }
@@ -148,22 +150,20 @@ impl Render for Zedis {
             window.set_rem_size(font_size);
         }
 
-        let mut content = h_flex()
+        let content = v_flex()
             .id(PKG_NAME)
-            .bg(cx.theme().background)
             .size_full()
-            .child(div().w(px(SIDEBAR_WIDTH)).h_full().child(self.sidebar.clone()))
-            .child(self.content.clone())
-            .children(dialog_layer)
-            .children(notification_layer);
-
-        if !is_linux() {
-            content = v_flex()
-                .id(PKG_NAME)
-                .size_full()
-                .child(self.render_titlebar(window, cx))
-                .child(content)
-        }
+            .child(self.render_titlebar(window, cx))
+            .child(
+                h_flex()
+                    .id(PKG_NAME)
+                    .bg(cx.theme().background)
+                    .size_full()
+                    .child(div().w(px(SIDEBAR_WIDTH)).h_full().child(self.sidebar.clone()))
+                    .child(self.content.clone())
+                    .children(dialog_layer)
+                    .children(notification_layer),
+            );
         content
             .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let action = *e;

@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    helpers::{is_development, is_linux},
+    helpers::is_development,
     states::{
         FontSize, FontSizeAction, LocaleAction, Route, ServerEvent, SettingsAction, ThemeAction, ZedisGlobalStore,
         ZedisServerState, i18n_sidebar,
@@ -374,7 +374,7 @@ impl Render for ZedisSidebar {
     /// 3. Settings button (theme & language)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tracing::debug!("Rendering sidebar view");
-        let show_settings_button = is_linux() || is_development();
+        let show_settings_button = is_development();
 
         v_flex()
             .size_full()
