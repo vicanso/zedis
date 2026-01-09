@@ -2049,6 +2049,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-rustls"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f2f12607f92c69b12ed746fabf9ca4f5c482cba46679c1a75b874ed7c26adb"
+dependencies = [
+ "futures-io",
+ "rustls",
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "futures-sink"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4742,6 +4753,7 @@ dependencies = [
  "cfg-if",
  "combine",
  "crc16",
+ "futures-rustls",
  "futures-util",
  "itoa",
  "log",
@@ -4749,6 +4761,8 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rand 0.9.2",
+ "rustls",
+ "rustls-native-certs",
  "ryu",
  "sha1_smol",
  "smol",

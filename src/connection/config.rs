@@ -70,21 +70,24 @@ pub struct RedisServer {
     pub updated_at: Option<String>,
     pub query_mode: Option<String>,
     pub soft_wrap: Option<bool>,
+    pub tls: Option<bool>,
 }
 impl RedisServer {
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
+        let scheme = if self.tls.unwrap_or(false) { "rediss" } else { "redis" };
+
         match (&self.password, &self.username) {
             (Some(pwd), Some(username)) => {
                 let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
                 let username_enc = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
-                format!("redis://{username_enc}:{pwd_enc}@{}:{}", self.host, self.port)
+                format!("{scheme}://{username_enc}:{pwd_enc}@{}:{}", self.host, self.port)
             }
             (Some(pwd), None) => {
                 let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
-                format!("redis://:{pwd_enc}@{}:{}", self.host, self.port)
+                format!("{scheme}://:{pwd_enc}@{}:{}", self.host, self.port)
             }
-            _ => format!("redis://{}:{}", self.host, self.port),
+            _ => format!("{scheme}://{}:{}", self.host, self.port),
         }
     }
 }

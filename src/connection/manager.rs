@@ -26,7 +26,7 @@ use std::{
     sync::LazyLock,
     time::Duration,
 };
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -359,12 +359,23 @@ impl ConnectionManager {
                 // Retry without password if auth failed and config might allow empty password
                 // or simply to handle sentinel cases which often have no auth
                 if config.password.is_none() || !e.to_string().contains("AuthenticationFailed") {
-                    return Err(e);
+                    error!("detect server type failed: {e:?}, use standalone mode");
+                    return Ok((
+                        vec![RedisNode {
+                            connection_url: url,
+                            role: NodeRole::Master,
+                            ..Default::default()
+                        }],
+                        ServerType::Standalone,
+                    ));
                 }
                 let mut tmp_config = config.clone();
                 tmp_config.password = None;
                 client = Client::open(tmp_config.get_connection_url())?;
-                detect_server_type(&client).await?
+                detect_server_type(&client).await.unwrap_or_else(|e| {
+                    error!("detect server type failed: {e:?}, use standalone mode");
+                    ServerType::Standalone
+                })
             }
         };
         match server_type {
@@ -468,12 +479,13 @@ impl ConnectionManager {
                 RClient::Single(client)
             }
         };
-        let master_nodes = nodes
+        let master_nodes: Vec<RedisNode> = nodes
             .iter()
             .filter(|node| node.role == NodeRole::Master)
             .cloned()
             .collect();
-        info!(master_nodes = ?master_nodes, "server master nodes");
+        let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();
+        info!(master_nodes = ?master_nodes_description, "server master nodes");
         let connection = get_async_connection(&client).await?;
         let mut client = RedisClient {
             server_type: server_type.clone(),

@@ -21,6 +21,7 @@ use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px}
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput},
     label::Label,
@@ -94,6 +95,8 @@ pub struct ZedisServers {
 
     /// Flag indicating if we're adding a new server (vs editing existing)
     server_id: String,
+
+    server_enable_tls: bool,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -182,6 +185,7 @@ impl ZedisServers {
             master_name_state,
             description_state,
             server_id: String::new(),
+            server_enable_tls: false,
             _subscriptions: subscriptions,
         }
     }
@@ -213,6 +217,7 @@ impl ZedisServers {
         self.description_state.update(cx, |state, cx| {
             state.set_value(server.description.clone().unwrap_or_default(), window, cx);
         });
+        self.server_enable_tls = server.tls.unwrap_or(false);
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -263,6 +268,9 @@ impl ZedisServers {
         let server_id = self.server_id.clone();
         let is_new = server_id.is_empty();
 
+        // Create shared state for TLS checkbox
+        let server_enable_tls = Rc::new(Cell::new(self.server_enable_tls));
+
         let server_state_clone = server_state.clone();
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
@@ -272,6 +280,7 @@ impl ZedisServers {
         let master_name_state_clone = master_name_state.clone();
         let description_state_clone = description_state.clone();
         let server_id_clone = server_id.clone();
+        let server_enable_tls_for_submit = server_enable_tls.clone();
 
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             let name = name_state_clone.read(cx).value();
@@ -319,6 +328,7 @@ impl ZedisServers {
                         password: password.map(|p| p.to_string()),
                         master_name: master_name.map(|m| m.to_string()),
                         description: description.map(|d| d.to_string()),
+                        tls: Some(server_enable_tls_for_submit.get()),
                         ..current_server
                     },
                     cx,
@@ -344,6 +354,8 @@ impl ZedisServers {
             let port_label = i18n_common(cx, "port");
             let username_label = i18n_common(cx, "username");
             let password_label = i18n_common(cx, "password");
+            let tls_label = i18n_common(cx, "tls");
+            let tls_check_label = i18n_common(cx, "tls_check_label");
             let description_label = i18n_common(cx, "description");
             let master_name_label = i18n_servers(cx, "master_name");
 
@@ -373,6 +385,16 @@ impl ZedisServers {
                                 // Password field with show/hide toggle
                                 .child(Input::new(&password_state).mask_toggle()),
                         )
+                        .child(field().label(tls_label).child({
+                            let server_enable_tls = server_enable_tls.clone();
+                            Checkbox::new("redis-server-tls")
+                                .label(tls_check_label)
+                                .checked(server_enable_tls.get())
+                                .on_click(move |checked, _, cx| {
+                                    server_enable_tls.set(*checked);
+                                    cx.stop_propagation();
+                                })
+                        }))
                         .child(field().label(master_name_label).child(Input::new(&master_name_state)))
                         .child(field().label(description_label).child(Input::new(&description_state)))
                 })
