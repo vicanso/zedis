@@ -149,7 +149,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: linux-build
+      - name: install appimagetool
+        run: |
+          wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          
+          chmod +x appimagetool
+          sudo mv appimagetool /usr/local/bin/
       - name: release
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           cargo install cargo-appimage
           cargo build --release  --features mimalloc

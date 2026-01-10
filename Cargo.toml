@@ -91,4 +91,5 @@ OriginalFilename = "zedis.exe"
 LegalCopyright = "Copyright © 2026 Tree xie. All rights reserved."
 
 [package.metadata.appimage]
-assets = ["icons/zedis.png", "assets/zedis.desktop"]
+icon = "icons/zedis.png"
+assets = ["assets/zedis.desktop"]
