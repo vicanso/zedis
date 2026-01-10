@@ -128,7 +128,7 @@ impl ZedisStatusBar {
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
                 ServerEvent::ServerSelected(_) => {
-                    this.state.data_format = None;
+                    this.reset();
                 }
                 ServerEvent::ServerRedisInfoUpdated(_) => {
                     this.fill_state(server_state, cx);
@@ -217,17 +217,32 @@ impl ZedisStatusBar {
         info!("Creating new status bar view");
         this
     }
+    fn reset(&mut self) {
+        self.state.server_state = StatusBarServerState::default();
+        self.state.data_format = None;
+        self.state.error = None;
+    }
     fn fill_state(&mut self, server_state: Entity<ZedisServerState>, cx: &Context<Self>) {
         let state = server_state.read(cx);
         let Some(redis_info) = state.redis_info() else {
             return;
         };
+        let clients = if redis_info.connected_clients == 0 {
+            "--".to_string()
+        } else {
+            format!("{} / {}", redis_info.blocked_clients, redis_info.connected_clients)
+        };
+        let used_memory = if redis_info.used_memory == 0 {
+            "--".to_string()
+        } else {
+            redis_info.used_memory_human.clone()
+        };
         self.state.server_state = StatusBarServerState {
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
             latency: format_latency(Some(redis_info.latency), cx),
-            used_memory: redis_info.used_memory_human.clone().into(),
-            clients: format!("{} / {}", redis_info.blocked_clients, redis_info.connected_clients).into(),
+            used_memory: used_memory.into(),
+            clients: clients.into(),
             nodes: format_nodes(state.nodes(), state.version()),
             scan_finished: state.scan_completed(),
             soft_wrap: state.soft_wrap(),
@@ -304,12 +319,9 @@ impl ZedisStatusBar {
                         Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
                             .text_color(cx.theme().primary)
                             .mr_1(),
-                    ),
-            )
-            .child(
-                Label::new(server_state.latency.0.clone())
+                    )
                     .text_color(server_state.latency.1)
-                    .mr_4(),
+                    .label(server_state.latency.0.clone()),
             )
             .child(
                 Button::new("zedis-status-bar-used-memory")
