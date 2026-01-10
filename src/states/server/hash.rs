@@ -162,6 +162,7 @@ impl ZedisServerState {
         cx.notify();
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let key_clone = key.clone();
         let new_field_clone = new_field.clone();
         let new_value_clone = new_value.clone();
@@ -170,7 +171,7 @@ impl ZedisServerState {
             ServerTask::AddSetValue,
             // Async operation: execute HSET on Redis
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // HSET returns 1 if new field created, 0 if existing field updated
                 let count: usize = cmd("HSET")
@@ -272,6 +273,7 @@ impl ZedisServerState {
         cx.notify();
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let remove_field_clone = remove_field.clone();
         let key_clone = key.clone();
 
@@ -279,7 +281,7 @@ impl ZedisServerState {
             ServerTask::RemoveHashValue,
             // Async operation: execute HDEL on Redis
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // HDEL returns number of fields removed (0 if doesn't exist, 1 if removed)
                 let count: usize = cmd("HDEL")
@@ -340,6 +342,7 @@ impl ZedisServerState {
         };
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
 
         let key_clone = key.clone();
@@ -348,7 +351,7 @@ impl ZedisServerState {
             ServerTask::LoadMoreValue,
             // Async operation: fetch next batch using HSCAN
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // Use larger batch size when filtering to reduce round trips
                 let count = if keyword.is_some() { 1000 } else { 100 };

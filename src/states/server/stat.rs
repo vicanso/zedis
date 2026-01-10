@@ -254,12 +254,13 @@ impl ZedisServerState {
         }
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let server_id_clone = server_id.clone();
 
         self.spawn(
             ServerTask::RefreshRedisInfo,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id).await?;
+                let client = get_connection_manager().get_client(&server_id, db).await?;
                 let start = Instant::now();
                 client.ping().await?;
                 let latency = start.elapsed();

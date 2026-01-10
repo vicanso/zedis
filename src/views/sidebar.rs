@@ -87,7 +87,7 @@ impl ZedisSidebar {
         // Subscribe to server events for reactive updates
         subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
             match event {
-                ServerEvent::ServerSelected(server_id) => {
+                ServerEvent::ServerSelected(server_id, _) => {
                     // Update current selection highlight
                     this.state.server_id = server_id.clone();
                 }
@@ -210,7 +210,7 @@ impl ZedisSidebar {
                                 });
 
                                 this.server_state.update(cx, |state, cx| {
-                                    state.select(server_id.clone(), cx);
+                                    state.select(server_id.clone(), 0, cx);
                                 });
                             });
                         })

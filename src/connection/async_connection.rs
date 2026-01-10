@@ -18,6 +18,7 @@ use redis::{
     Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
     aio::{ConnectionLike, MultiplexedConnection},
     cluster_async::ClusterConnection,
+    cmd,
 };
 use std::{sync::LazyLock, time::Duration};
 
@@ -92,7 +93,11 @@ impl ConnectionLike for RedisAsyncConn {
 /// * `addrs` - A vector of Redis connection strings (e.g., "redis://127.0.0.1").
 /// * `cmds` - A vector of commands to execute. If there are fewer commands than addresses,
 ///   the first command is reused for the remaining addresses.
-pub(crate) async fn query_async_masters<T: FromRedisValue>(addrs: Vec<&str>, cmds: Vec<Cmd>) -> Result<Vec<T>> {
+pub(crate) async fn query_async_masters<T: FromRedisValue>(
+    addrs: Vec<&str>,
+    db: usize,
+    cmds: Vec<Cmd>,
+) -> Result<Vec<T>> {
     let first_cmd = cmds.first().ok_or_else(|| Error::Invalid {
         message: "Commands are empty".to_string(),
     })?;
@@ -100,15 +105,18 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(addrs: Vec<&str>, cmd
         // Clone data to move ownership into the async block.
         let addr = addr.to_string();
         // Use the specific command for this index, or fallback to the first command.
-        let cmd = cmds.get(index).unwrap_or(first_cmd).clone();
+        let current_cmd = cmds.get(index).unwrap_or(first_cmd).clone();
 
         async move {
             // Establish a multiplexed async connection to the specific node.
             let client = Client::open(addr)?;
             let mut conn = client.get_multiplexed_async_connection().await?;
+            if db != 0 {
+                let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
+            }
 
             // Execute the command asynchronously.
-            let value: T = cmd.query_async(&mut conn).await?;
+            let value: T = current_cmd.query_async(&mut conn).await?;
 
             Ok::<T, Error>(value)
         }

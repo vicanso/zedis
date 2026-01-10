@@ -81,12 +81,13 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Updating;
         cx.notify();
         let server_id = self.server_id.clone();
+        let db = self.db;
         let key_clone = key.clone();
         self.spawn(
             ServerTask::RemoveListValue,
             move || async move {
                 let unique_marker = Uuid::new_v4().to_string();
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let _: () = pipe()
                     .atomic()
                     .cmd("LSET")
@@ -141,11 +142,12 @@ impl ZedisServerState {
 
         cx.notify();
         let server_id = self.server_id.clone();
+        let db = self.db;
         let key_clone = key.clone();
         self.spawn(
             ServerTask::PushListValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let cmd_name = if is_lpush { "LPUSH" } else { "RPUSH" };
 
                 let _: () = cmd(cmd_name)
@@ -207,6 +209,7 @@ impl ZedisServerState {
         // Optimization: We don't clone the entire value here.
         // We only need basic info for the background task.
         let server_id = self.server_id.clone();
+        let db = self.db;
 
         // Prepare data for the async block (move ownership)
         let key_clone = key.clone();
@@ -216,7 +219,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::UpdateListValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // 1. Optimistic Lock Check: Get current value
                 let current_value: String = cmd("LINDEX")
@@ -280,6 +283,7 @@ impl ZedisServerState {
         };
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         // Calculate pagination
         let start = current_len;
         let stop = start + 99; // Load 100 items
@@ -288,7 +292,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::LoadMoreValue,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 // Fetch only the new items
                 let new_values = get_redis_list_value(&mut conn, &key, start, stop).await?;
                 Ok(new_values)

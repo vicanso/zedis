@@ -508,7 +508,7 @@ impl Render for ZedisServers {
 
                     // Connect to server
                     this.server_state.update(cx, |state, cx| {
-                        state.select(select_server_id.into(), cx);
+                        state.select(select_server_id.into(), 0, cx);
                     });
 
                     // Navigate to editor view

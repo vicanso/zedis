@@ -87,6 +87,12 @@ pub struct ZedisServerState {
     /// Currently selected server id
     server_id: SharedString,
 
+    /// Whether the server supports database selection
+    supports_db_selection: bool,
+
+    /// Currently selected database
+    db: usize,
+
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
 
@@ -282,7 +288,7 @@ pub enum ServerEvent {
     ValueAdded(SharedString),
 
     /// User selected a different server
-    ServerSelected(SharedString),
+    ServerSelected(SharedString, usize),
     /// Server list config has been modified (add/remove/edit).
     ServerListUpdated,
     /// Server metadata (info/dbsize) has been refreshed.
@@ -540,6 +546,11 @@ impl ZedisServerState {
         &self.server_id
     }
 
+    /// Get whether the server supports database selection
+    pub fn supports_db_selection(&self) -> bool {
+        self.supports_db_selection
+    }
+
     /// Get whether to soft wrap the editor
     pub fn soft_wrap(&self) -> bool {
         self.soft_wrap
@@ -658,12 +669,14 @@ impl ZedisServerState {
     ///
     /// # Arguments
     /// * `server_id` - Server id to connect to
+    /// * `db` - Database to connect to
     /// * `cx` - Context for spawning async tasks and state updates
-    pub fn select(&mut self, server_id: SharedString, cx: &mut Context<Self>) {
+    pub fn select(&mut self, server_id: SharedString, db: usize, cx: &mut Context<Self>) {
         // Only proceed if selecting a different server
-        if self.server_id != server_id {
+        if self.server_id != server_id || self.db != db {
             self.reset();
             self.server_id = server_id.clone();
+            self.db = db;
             let (query_mode, soft_wrap) = self
                 .server(server_id.as_str())
                 .map(|server_config| {
@@ -683,7 +696,7 @@ impl ZedisServerState {
             self.soft_wrap = soft_wrap;
 
             debug!(server_id = self.server_id.as_str(), "Selecting server");
-            cx.emit(ServerEvent::ServerSelected(server_id));
+            cx.emit(ServerEvent::ServerSelected(server_id, db));
             cx.notify();
 
             if self.server_id.is_empty() {
@@ -697,18 +710,20 @@ impl ZedisServerState {
 
             let server_id_clone = self.server_id.clone();
             let counting_server_id = server_id_clone.clone();
+            let db = self.db;
 
             self.spawn(
                 ServerTask::SelectServer,
                 move || async move {
-                    let client = get_connection_manager().get_client(&server_id_clone).await?;
+                    let client = get_connection_manager().get_client(&server_id_clone, db).await?;
 
                     // Gather server metadata
                     let dbsize = client.dbsize().await?;
                     let version = client.version().to_string();
                     let nodes = client.nodes();
                     let nodes_description = client.nodes_description();
-                    Ok((dbsize, nodes, nodes_description, version))
+                    let supports_db_selection = client.supports_db_selection();
+                    Ok((dbsize, nodes, nodes_description, version, supports_db_selection))
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading
@@ -717,11 +732,12 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, nodes, nodes_description, version)) = result {
+                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection)) = result {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
                         this.nodes_description = Arc::new(nodes_description);
                         this.version = version.into();
+                        this.supports_db_selection = supports_db_selection;
                     };
 
                     let server_id = this.server_id.clone();

@@ -20,7 +20,7 @@ use crate::{
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
-use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
     button::{Button, ButtonVariants},
@@ -90,6 +90,7 @@ fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Conte
 
 #[derive(Default)]
 struct StatusBarServerState {
+    supports_db_selection: bool,
     server_id: SharedString,
     size: SharedString,
     latency: (SharedString, Hsla),
@@ -99,6 +100,22 @@ struct StatusBarServerState {
     scan_finished: bool,
     soft_wrap: bool,
     nodes_description: SharedString,
+}
+
+#[derive(Debug, Clone)]
+struct DbInfo {
+    label: SharedString,
+    db: usize,
+}
+
+impl SelectItem for DbInfo {
+    type Value = usize;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.db
+    }
 }
 
 /// Local state for the status bar to cache formatted strings and colors.
@@ -114,6 +131,7 @@ pub struct ZedisStatusBar {
     state: StatusBarState,
 
     viewer_mode_state: Entity<SelectState<SearchableVec<SharedString>>>,
+    db_state: Entity<SelectState<Vec<DbInfo>>>,
     should_reset_viewer_mode: bool,
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
@@ -127,8 +145,8 @@ impl ZedisStatusBar {
         let mut subscriptions = vec![];
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
-                ServerEvent::ServerSelected(_) => {
-                    this.reset();
+                ServerEvent::ServerSelected(server_id, _) => {
+                    this.reset(server_id.clone());
                 }
                 ServerEvent::ServerRedisInfoUpdated(_) => {
                     this.fill_state(server_state, cx);
@@ -190,6 +208,7 @@ impl ZedisStatusBar {
                 cx,
             )
         });
+
         subscriptions.push(cx.subscribe_in(
             &viewer_mode_state,
             window,
@@ -203,9 +222,33 @@ impl ZedisStatusBar {
                 }
             },
         ));
+
+        let db_items = (0..16)
+            .map(|db| DbInfo {
+                label: format!("DB: {}", db).into(),
+                db,
+            })
+            .collect::<Vec<_>>();
+        let db_state = cx.new(|cx| SelectState::new(db_items, Some(IndexPath::new(0)), window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &db_state,
+            window,
+            |view, _state, event: &SelectEvent<Vec<DbInfo>>, _window, cx| match event {
+                SelectEvent::Confirm(value) => {
+                    if let Some(db) = value {
+                        view.server_state.update(cx, |state, cx| {
+                            let server_id = state.server_id().to_string();
+                            state.select(server_id.into(), *db, cx);
+                        });
+                    }
+                }
+            },
+        ));
+
         let mut this = Self {
             heartbeat_task: None,
             viewer_mode_state,
+            db_state,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
             should_reset_viewer_mode: false,
@@ -217,8 +260,12 @@ impl ZedisStatusBar {
         info!("Creating new status bar view");
         this
     }
-    fn reset(&mut self) {
-        self.state.server_state = StatusBarServerState::default();
+    fn reset(&mut self, server_id: SharedString) {
+        if self.state.server_state.server_id != server_id {
+            self.state.server_state = StatusBarServerState::default();
+        } else {
+            self.state.server_state.size = SharedString::default();
+        }
         self.state.data_format = None;
         self.state.error = None;
     }
@@ -238,6 +285,7 @@ impl ZedisStatusBar {
             redis_info.used_memory_human.clone()
         };
         self.state.server_state = StatusBarServerState {
+            supports_db_selection: state.supports_db_selection(),
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
             latency: format_latency(Some(redis_info.latency), cx),
@@ -268,6 +316,9 @@ impl ZedisStatusBar {
         let nodes_description = server_state.nodes_description.clone();
         h_flex()
             .items_center()
+            .when(server_state.supports_db_selection, |this| {
+                this.child(Select::new(&self.db_state).mr_2().mt_1().small())
+            })
             .child(
                 Button::new("zedis-status-bar-key-collapse")
                     .outline()

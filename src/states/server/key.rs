@@ -77,12 +77,13 @@ impl ZedisServerState {
             return;
         }
         let server_id = self.server_id.clone();
+        let db = self.db;
         keys.sort_unstable();
         // Spawn a background task to fetch types concurrently
         self.spawn(
             ServerTask::FillKeyTypes,
             move || async move {
-                let conn = get_connection_manager().get_connection(&server_id).await?;
+                let conn = get_connection_manager().get_connection(&server_id, db).await?;
                 // Use a stream to execute commands concurrently with backpressure
                 let types: Vec<(SharedString, String)> = stream::iter(keys.iter().cloned())
                     .map(|key| {
@@ -133,10 +134,11 @@ impl ZedisServerState {
 
         let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
+        let db = self.db;
         self.spawn(
             ServerTask::ScanKeys,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id).await?;
+                let client = get_connection_manager().get_client(&server_id, db).await?;
                 let pattern = if keyword.is_empty() {
                     "*".to_string()
                 } else {
@@ -252,11 +254,12 @@ impl ZedisServerState {
         cx.emit(ServerEvent::KeyScanStarted(prefix.clone()));
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let pattern = format!("{}*", prefix);
         self.spawn(
             ServerTask::ScanPrefix,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id).await?;
+                let client = get_connection_manager().get_client(&server_id, db).await?;
                 let count = 10_000;
                 // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;
@@ -329,12 +332,13 @@ impl ZedisServerState {
         cx.notify();
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let current_key = key.clone();
 
         self.spawn(
             ServerTask::Selectkey,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let (t, ttl): (String, i64) = pipe()
                     .cmd("TYPE")
                     .arg(key.as_str())
@@ -410,6 +414,7 @@ impl ZedisServerState {
     /// Deletes a specified key.
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
+        let db = self.db;
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -419,7 +424,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::DeleteKey,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
                 Ok(())
             },
@@ -445,6 +450,7 @@ impl ZedisServerState {
             return;
         }
         let server_id = self.server_id.clone();
+        let db = self.db;
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -476,7 +482,7 @@ impl ZedisServerState {
                         message: parse_fail_error,
                     });
                 }
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let _: () = cmd("EXPIRE")
                     .arg(key.as_str())
                     .arg(new_ttl.as_secs())
@@ -499,12 +505,13 @@ impl ZedisServerState {
 
     pub fn add_key(&mut self, category: SharedString, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
+        let db = self.db;
         let key_type = KeyType::from(category.to_lowercase().as_str());
         let key_clone = key.clone();
         self.spawn(
             ServerTask::AddKey,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let exists: bool = cmd("EXISTS").arg(key.as_str()).query_async(&mut conn).await?;
                 let ttl_duration = if ttl.is_empty() {
                     None

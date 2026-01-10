@@ -219,6 +219,7 @@ impl ZedisServerState {
         cx.notify();
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let key_clone = key.clone();
         let new_value_clone = new_value.clone();
 
@@ -226,7 +227,7 @@ impl ZedisServerState {
             ServerTask::AddZsetValue,
             // Async operation: execute ZADD on Redis
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // ZADD returns number of new elements added (0 if updating existing)
                 let count: usize = cmd("ZADD")
@@ -363,6 +364,7 @@ impl ZedisServerState {
         let cursor = zset.cursor;
 
         let server_id = self.server_id.clone();
+        let db = self.db;
 
         // Calculate range for pagination (load 100 items)
         let start = current_len;
@@ -376,7 +378,7 @@ impl ZedisServerState {
             ServerTask::LoadMoreValue,
             // Async operation: fetch next batch using appropriate strategy
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 if keyword.is_empty() {
                     // No filter: use range-based pagination
@@ -454,6 +456,7 @@ impl ZedisServerState {
         cx.notify();
 
         let server_id = self.server_id.clone();
+        let db = self.db;
         let remove_value_clone = remove_value.clone();
         let key_clone = key.clone();
 
@@ -461,7 +464,7 @@ impl ZedisServerState {
             ServerTask::RemoveZsetValue,
             // Async operation: execute ZREM on Redis
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id).await?;
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // ZREM removes the member and returns success
                 let _: () = cmd("ZREM")

@@ -154,13 +154,16 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Establishes an asynchronous connection based on the client type.
-async fn get_async_connection(client: &RClient) -> Result<RedisAsyncConn> {
+async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncConn> {
     match client {
         RClient::Single(client) => {
             let cfg = AsyncConnectionConfig::default()
                 .set_connection_timeout(Some(CONNECTION_TIMEOUT))
                 .set_response_timeout(Some(RESPONSE_TIMEOUT));
-            let conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
+            let mut conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
+            if db != 0 {
+                let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
+            }
             Ok(RedisAsyncConn::Single(conn))
         }
         RClient::Cluster(client) => {
@@ -176,6 +179,7 @@ async fn get_async_connection(client: &RClient) -> Result<RedisAsyncConn> {
 // TODO 是否在client中保存connection
 #[derive(Clone)]
 pub struct RedisClient {
+    db: usize,
     server_type: ServerType,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
@@ -194,6 +198,9 @@ impl RedisClient {
     }
     pub fn version(&self) -> String {
         self.version.to_string()
+    }
+    pub fn supports_db_selection(&self) -> bool {
+        self.server_type != ServerType::Cluster
     }
 
     pub fn nodes_description(&self) -> RedisClientDescription {
@@ -236,7 +243,7 @@ impl RedisClient {
             .iter()
             .map(|item| item.connection_url.as_str())
             .collect();
-        let values = query_async_masters(addrs, cmds).await?;
+        let values = query_async_masters(addrs, self.db, cmds).await?;
         Ok(values)
     }
     /// Calculates the total DB size across all masters.
@@ -463,8 +470,9 @@ impl ConnectionManager {
         self.clients.remove(name);
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
-    pub async fn get_client(&self, server_id: &str) -> Result<RedisClient> {
-        if let Some(client) = self.clients.get(server_id) {
+    pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
+        let key = format!("{}:{}", server_id, db);
+        if let Some(client) = self.clients.get(&key) {
             return Ok(client.clone());
         }
         let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
@@ -486,8 +494,10 @@ impl ConnectionManager {
             .collect();
         let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();
         info!(master_nodes = ?master_nodes_description, "server master nodes");
-        let connection = get_async_connection(&client).await?;
+        let connection = get_async_connection(&client, db).await?;
+
         let mut client = RedisClient {
+            db,
             server_type: server_type.clone(),
             nodes,
             master_nodes,
@@ -517,13 +527,14 @@ impl ConnectionManager {
                 Version::parse(&version).unwrap_or(Version::new(0, 0, 0))
             }
         };
+
         // Cache the client
-        self.clients.insert(server_id.to_string(), client.clone());
+        self.clients.insert(key, client.clone());
         Ok(client)
     }
     /// Shorthand to get an async connection directly.
-    pub async fn get_connection(&self, server_id: &str) -> Result<RedisAsyncConn> {
-        let client = self.get_client(server_id).await?;
+    pub async fn get_connection(&self, server_id: &str, db: usize) -> Result<RedisAsyncConn> {
+        let client = self.get_client(server_id, db).await?;
         Ok(client.connection.clone())
     }
 }
