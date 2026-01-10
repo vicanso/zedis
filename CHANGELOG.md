@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.6](https://github.com/vicanso/pingap/compare/v0.1.5..v0.1.6) - 2026-01-10
+
+### ⛰️  Features
+
+- *(connection)* Support tls connection ([#12](https://github.com/orhun/git-cliff/issues/12)) - ([818c64e](https://github.com/vicanso/pingap/commit/818c64ebc89ef0cdd8819b5f43db961d5ebf63fc))
+- *(db)* Support database selection - ([896c33e](https://github.com/vicanso/pingap/commit/896c33ede689f6d8f9f77d5f534c256dab8b8f66))
+
+### 🐛 Bug Fixes
+
+- *(linux)* Fix crash when window opens ([#10](https://github.com/orhun/git-cliff/issues/10)) - ([117c23a](https://github.com/vicanso/pingap/commit/117c23aba544b8dc699a87223f958f36083e2dd2))
+
+### 🚜 Refactor
+
+- *(status-bar)* Reset status bar on database switch - ([cc9f11a](https://github.com/vicanso/pingap/commit/cc9f11ad6bbb46281fef42bde53e246c7fd43418))
+- *(tree)* Improve select and confirm event handling - ([9c09587](https://github.com/vicanso/pingap/commit/9c095874af9b3cf17b1f338a5540cada2d886e58))
+
+### 📚 Documentation
+
+- Add Homebrew installation guide ([#8](https://github.com/orhun/git-cliff/issues/8)) - ([7af91a5](https://github.com/vicanso/pingap/commit/7af91a55d964a5f9361c4981a0a832707ff2dd13))
+- Update readme - ([6c0b20a](https://github.com/vicanso/pingap/commit/6c0b20a6f11f17ee42a707d4bb337debd1e552a5))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(flatpak)* Add initial configuration (untested) - ([521b117](https://github.com/vicanso/pingap/commit/521b117d930b936f7afdc0ef0a51c9072359672f))
+- *(linux)* Install appimagetool and update build config - ([095f502](https://github.com/vicanso/pingap/commit/095f5026b6eb1f6fb4c3d5b40ceae165f3aa0fbc))
+- *(linux)* Add app image build support - ([ae1aedf](https://github.com/vicanso/pingap/commit/ae1aedfdf2a911df3d0ef9d15a84ced5c155cffa))
+
 ## [0.1.6](https://github.com/vicanso/pingap/compare/v0.1.5..v0.1.6) - 2026-01-07
 
 ### ⛰️  Features
