@@ -14,6 +14,16 @@
 
 与处理大数据集时容易感到卡顿的基于 Electron 的客户端不同，Zedis 基于 **GPUI**（驱动 [Zed Editor](https://zed.dev) 的同一渲染引擎）构建。这确保了原生的、60 FPS 的流畅体验，即使在浏览数百万个键时，内存占用也极低。
 
+## 📦 安装方式
+
+### macOS
+推荐使用 Homebrew 安装：
+
+```bash
+brew tap vicanso/zedis
+brew install --cask zedis
+```
+
 ## ✨ 功能特性
 
 ### 🚀 极速性能

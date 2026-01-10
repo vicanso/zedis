@@ -17,6 +17,16 @@ A High-Performance, GPU-Accelerated Redis Client Built with **Rust** 🦀 and **
 
 Unlike Electron-based clients that can feel sluggish with large datasets, Zedis is built on **GPUI** (the same rendering engine powering the [Zed Editor](https://zed.dev)). This ensures a native, 60 FPS experience with minimal memory footprint, even when browsing millions of keys.
 
+## 📦 Installation
+
+### macOS
+The recommended way to install Zedis is via Homebrew:
+
+```bash
+brew tap vicanso/zedis
+brew install --cask zedis
+```
+
 ## ✨ Features
 
 ### 🚀 Blazing Fast
