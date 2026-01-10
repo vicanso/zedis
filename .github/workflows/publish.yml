@@ -151,8 +151,10 @@ jobs:
           key: linux-build
       - name: release
         run: |
+          cargo install cargo-appimage
           cargo build --release  --features mimalloc
           ls -lh target/release
+          cargo appimage
           mv target/release/zedis ./zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
       - name: upload asset
