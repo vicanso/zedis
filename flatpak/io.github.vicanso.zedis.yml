@@ -1,0 +1,33 @@
+app-id: io.github.vicanso.zedis
+runtime: org.freedesktop.Platform
+runtime-version: '23.08' # 或者是最新的稳定版
+sdk: org.freedesktop.Sdk
+command: zedis
+finish-args:
+  # 允许访问网络 (Redis 需要)
+  - --share=network
+  # 允许访问 X11/Wayland (GUI 需要)
+  - --socket=fallback-x11
+  - --socket=wayland
+  # 允许 GPU 加速 (GPUI 必须！)
+  - --device=dri
+  # 允许访问用户配置目录 (保存连接信息)
+  - --filesystem=xdg-config/zedis:create
+
+modules:
+  - name: zedis
+    buildsystem: simple
+    build-commands:
+      # 这里是把编译好的二进制拷贝到 /app/bin
+      - cargo build --release --offline --features mimalloc
+      - install -D target/release/zedis /app/bin/zedis
+      # 安装图标和 desktop 文件
+      - install -D assets/linux/zedis.desktop /app/share/applications/io.github.vicanso.zedis.desktop
+      - install -D assets/linux/zedis.png /app/share/icons/hicolor/512x512/apps/io.github.vicanso.zedis.png
+      - install -D -m0644 io.github.vicanso.zedis.metainfo.xml /app/share/metainfo/io.github.vicanso.zedis.metainfo.xml
+    sources:
+      # 1. 包含生成的 cargo 依赖源
+      - cargo-sources.json
+      # 2. 包含你的源代码
+      - type: dir
+        path: .

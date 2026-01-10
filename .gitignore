@@ -26,3 +26,5 @@ target
 # Added by cargo
 
 /target
+
+cargo-sources.json

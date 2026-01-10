@@ -160,12 +160,14 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           cargo install cargo-appimage
-          cargo build --release  --features mimalloc
+          cargo build --release --features mimalloc
           ls -lh target/release
           cargo appimage
           mv target/release/zedis ./zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
+          mv target/appimage/zedis.AppImage ./zedis-x86_64.AppImage
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./zedis-x86_64.AppImage $GITHUB_TOKEN
