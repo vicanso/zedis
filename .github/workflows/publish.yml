@@ -12,7 +12,18 @@ env:
 
 jobs:
   macos:
-    runs-on: macos-latest
+    name: release-${{ matrix.dmg_suffix }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            dmg_suffix: aarch64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            dmg_suffix: x64
     steps:
       - uses: actions/checkout@v6
       - name: setup node
@@ -20,10 +31,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
       - name: install tools
         run: |
           rustup update
-          rustup target add aarch64-apple-darwin
           cargo install cargo-bundle
           brew install create-dmg
       - name: Import Code-Signing Certificates
@@ -49,10 +60,10 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-build
+          key: macos-build-${{ matrix.target }}
       - name: release
         run: |
-          cargo bundle --release  --features mimalloc
+          cargo bundle --release --target ${{ matrix.target }} --features mimalloc
       - name: sign app
         env:
           CERT_NAME: ${{ secrets.MACOS_CERTIFICATE_NAME }}
@@ -63,10 +74,12 @@ jobs:
           codesign --force --deep --verbose --options runtime --timestamp \
             --entitlements Entitlements.plist \
             --sign "$CERT_NAME" \
-            "target/release/bundle/osx/${{ env.APP_NAME }}.app"
+            "target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
       - name: create dmg
         run: |
           mkdir -p release
+          DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
+          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
           # 使用 create-dmg 工具生成安装包
           create-dmg \
             --volname "${{ env.APP_NAME }} Installer" \
@@ -76,16 +89,17 @@ jobs:
             --icon "${{ env.APP_NAME }}.app" 200 190 \
             --hide-extension "${{ env.APP_NAME }}.app" \
             --app-drop-link 600 185 \
-            "release/${{ env.APP_NAME }}-aarch64.dmg" \
-            "target/release/bundle/osx/${{ env.APP_NAME }}.app"
+            "$DMG_NAME" \
+            "$APP_PATH"
       - name: notarize dmg
         env:
           AC_USERNAME: ${{ secrets.AC_USERNAME }}
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
           AC_TEAM_ID: ${{ secrets.AC_TEAM_ID }}
         run: |
+          DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
           echo "Submitting DMG for notarization..."
-          xcrun notarytool submit "release/${{ env.APP_NAME }}-aarch64.dmg" \
+          xcrun notarytool submit "$DMG_NAME" \
             --apple-id "$AC_USERNAME" \
             --password "$AC_PASSWORD" \
             --team-id "$AC_TEAM_ID" \
@@ -93,11 +107,14 @@ jobs:
       - name: wait for propagation
         run: sleep 30
       - name: staple DMG
-        run: xcrun stapler staple "release/${{ env.APP_NAME }}-aarch64.dmg"
+        run: |
+          DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
+          xcrun stapler staple "$DMG_NAME"
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          ./.github/workflows/upload_asset.sh ./release/${{ env.APP_NAME }}-aarch64.dmg $GITHUB_TOKEN
+          DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
+          ./.github/workflows/upload_asset.sh "$DMG_NAME" $GITHUB_TOKEN
 
   windows:
     runs-on: windows-latest
