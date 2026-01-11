@@ -467,10 +467,12 @@ impl ConnectionManager {
             ServerType::Cluster => {
                 let addrs: Vec<String> = nodes.iter().map(|n| n.server.get_connection_url()).collect();
                 let mut builder = cluster::ClusterClientBuilder::new(addrs);
-                if let Some(node) = nodes.first()
-                    && let Some(certificates) = node.server.tls_certificates()
-                {
+                let node = &nodes[0];
+                if let Some(certificates) = node.server.tls_certificates() {
                     builder = builder.certs(certificates);
+                }
+                if node.server.insecure.unwrap_or(false) {
+                    builder = builder.danger_accept_invalid_hostnames(true);
                 }
                 RClient::Cluster(builder.build()?)
             }

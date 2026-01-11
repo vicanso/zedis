@@ -103,6 +103,7 @@ pub struct ZedisServers {
     server_id: String,
 
     server_enable_tls: Rc<Cell<bool>>,
+    server_insecure_tls: Rc<Cell<bool>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -214,6 +215,7 @@ impl ZedisServers {
             description_state,
             server_id: String::new(),
             server_enable_tls: Rc::new(Cell::new(false)),
+            server_insecure_tls: Rc::new(Cell::new(false)),
             _subscriptions: subscriptions,
         }
     }
@@ -255,6 +257,7 @@ impl ZedisServers {
             state.set_value(server.root_cert.clone().unwrap_or_default(), window, cx);
         });
         self.server_enable_tls.set(server.tls.unwrap_or(false));
+        self.server_insecure_tls.set(server.insecure.unwrap_or(false));
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -310,7 +313,7 @@ impl ZedisServers {
 
         // Create shared state for TLS checkbox
         let server_enable_tls = self.server_enable_tls.clone();
-
+        let server_insecure_tls = self.server_insecure_tls.clone();
         let server_state_clone = server_state.clone();
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
@@ -324,6 +327,7 @@ impl ZedisServers {
         let root_cert_state_clone = root_cert_state.clone();
         let server_id_clone = server_id.clone();
         let server_enable_tls_for_submit = self.server_enable_tls.clone();
+        let server_insecure_tls_for_submit = self.server_insecure_tls.clone();
 
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             let name = name_state_clone.read(cx).value();
@@ -374,6 +378,12 @@ impl ZedisServers {
                 (None, None, None)
             };
 
+            let insecure_tls = if server_insecure_tls_for_submit.get() {
+                Some(true)
+            } else {
+                None
+            };
+
             let master_name_val = master_name_state_clone.read(cx).value();
             let master_name = if master_name_val.is_empty() {
                 None
@@ -396,7 +406,8 @@ impl ZedisServers {
                         password: password.map(|p| p.to_string()),
                         master_name: master_name.map(|m| m.to_string()),
                         description: description.map(|d| d.to_string()),
-                        tls: Some(enable_tls),
+                        tls: if enable_tls { Some(enable_tls) } else { None },
+                        insecure: insecure_tls,
                         client_cert: client_cert.map(|c| c.to_string()),
                         client_key: client_key.map(|k| k.to_string()),
                         root_cert: root_cert.map(|r| r.to_string()),
@@ -427,6 +438,8 @@ impl ZedisServers {
             let password_label = i18n_common(cx, "password");
             let tls_label = i18n_common(cx, "tls");
             let tls_check_label = i18n_common(cx, "tls_check_label");
+            let insecure_tls_label = i18n_common(cx, "insecure_tls");
+            let insecure_tls_check_label = i18n_common(cx, "insecure_tls_check_label");
             let client_cert_label = i18n_common(cx, "client_cert");
             let client_key_label = i18n_common(cx, "client_key");
             let root_cert_label = i18n_common(cx, "root_cert");
@@ -472,6 +485,16 @@ impl ZedisServers {
 
                     if server_enable_tls.get() {
                         form = form
+                            .child(field().label(insecure_tls_label).child({
+                                let server_insecure_tls = server_insecure_tls.clone();
+                                Checkbox::new("redis-server-insecure-tls")
+                                    .label(insecure_tls_check_label)
+                                    .checked(server_insecure_tls.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_insecure_tls.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
                             .child(field().label(client_cert_label).child(Input::new(&client_cert_state)))
                             .child(field().label(client_key_label).child(Input::new(&client_key_state)))
                             .child(field().label(root_cert_label).child(Input::new(&root_cert_state)));

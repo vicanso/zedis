@@ -72,6 +72,7 @@ pub struct RedisServer {
     pub query_mode: Option<String>,
     pub soft_wrap: Option<bool>,
     pub tls: Option<bool>,
+    pub insecure: Option<bool>,
     pub client_cert: Option<String>,
     pub client_key: Option<String>,
     pub root_cert: Option<String>,
@@ -79,9 +80,10 @@ pub struct RedisServer {
 impl RedisServer {
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
-        let scheme = if self.tls.unwrap_or(false) { "rediss" } else { "redis" };
+        let tls = self.tls.unwrap_or(false);
+        let scheme = if tls { "rediss" } else { "redis" };
 
-        match (&self.password, &self.username) {
+        let url = match (&self.password, &self.username) {
             (Some(pwd), Some(username)) => {
                 let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
                 let username_enc = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
@@ -92,7 +94,12 @@ impl RedisServer {
                 format!("{scheme}://:{pwd_enc}@{}:{}", self.host, self.port)
             }
             _ => format!("{scheme}://{}:{}", self.host, self.port),
+        };
+        if tls && self.insecure.unwrap_or(false) {
+            return format!("{url}/#insecure");
         }
+
+        url
     }
     pub fn tls_certificates(&self) -> Option<TlsCertificates> {
         if !self.tls.unwrap_or(false) {
