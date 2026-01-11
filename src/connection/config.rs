@@ -18,6 +18,7 @@ use crate::{
 };
 use gpui::Action;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use redis::{ClientTlsConfig, TlsCertificates};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
@@ -71,6 +72,9 @@ pub struct RedisServer {
     pub query_mode: Option<String>,
     pub soft_wrap: Option<bool>,
     pub tls: Option<bool>,
+    pub client_cert: Option<String>,
+    pub client_key: Option<String>,
+    pub root_cert: Option<String>,
 }
 impl RedisServer {
     /// Generates the connection URL based on host, port, and optional password.
@@ -89,6 +93,25 @@ impl RedisServer {
             }
             _ => format!("{scheme}://{}:{}", self.host, self.port),
         }
+    }
+    pub fn tls_certificates(&self) -> Option<TlsCertificates> {
+        if !self.tls.unwrap_or(false) {
+            return None;
+        }
+        let mut client_tls = None;
+        if let Some(client_cert) = self.client_cert.clone()
+            && let Some(client_key) = self.client_key.clone()
+        {
+            client_tls = Some(ClientTlsConfig {
+                client_cert: client_cert.as_bytes().to_vec(),
+                client_key: client_key.as_bytes().to_vec(),
+            });
+        }
+        let root_cert = self.root_cert.clone().map(|root_cert| root_cert.as_bytes().to_vec());
+        if client_tls.is_none() && root_cert.is_none() {
+            return None;
+        }
+        Some(TlsCertificates { client_tls, root_cert })
     }
 }
 

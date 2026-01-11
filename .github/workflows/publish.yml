@@ -12,7 +12,7 @@ env:
 
 jobs:
   macos:
-    name: release-${{ matrix.dmg_suffix }}
+    name: macos-${{ matrix.dmg_suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,7 +23,7 @@ jobs:
             dmg_suffix: aarch64
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            dmg_suffix: x64
+            dmg_suffix: x86_64
     steps:
       - uses: actions/checkout@v6
       - name: setup node

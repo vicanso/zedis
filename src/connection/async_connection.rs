@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::config::RedisServer;
 use crate::error::Error;
 use futures::future::try_join_all;
 use redis::{
@@ -28,6 +29,16 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     let value = std::env::var("REDIS_DELAY").unwrap_or_default();
     humantime::parse_duration(&value).ok()
 });
+
+pub fn open_client(config: &RedisServer) -> Result<Client> {
+    let url = config.get_connection_url();
+    let client = if let Some(certificates) = config.tls_certificates() {
+        Client::build_with_tls(url, certificates)?
+    } else {
+        Client::open(url)?
+    };
+    Ok(client)
+}
 
 /// A wrapper enum for Redis asynchronous connections.
 ///
@@ -94,7 +105,7 @@ impl ConnectionLike for RedisAsyncConn {
 /// * `cmds` - A vector of commands to execute. If there are fewer commands than addresses,
 ///   the first command is reused for the remaining addresses.
 pub(crate) async fn query_async_masters<T: FromRedisValue>(
-    addrs: Vec<&str>,
+    addrs: Vec<RedisServer>,
     db: usize,
     cmds: Vec<Cmd>,
 ) -> Result<Vec<T>> {
@@ -103,13 +114,13 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
     })?;
     let tasks = addrs.into_iter().enumerate().map(|(index, addr)| {
         // Clone data to move ownership into the async block.
-        let addr = addr.to_string();
+        // let addr = addr.to_string();
         // Use the specific command for this index, or fallback to the first command.
         let current_cmd = cmds.get(index).unwrap_or(first_cmd).clone();
 
         async move {
             // Establish a multiplexed async connection to the specific node.
-            let client = Client::open(addr)?;
+            let client = open_client(&addr)?;
             let mut conn = client.get_multiplexed_async_connection().await?;
             if db != 0 {
                 let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;

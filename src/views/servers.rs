@@ -25,6 +25,7 @@ use gpui_component::{
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput},
     label::Label,
+    scroll::ScrollableElement,
 };
 use rust_i18n::t;
 use std::{cell::Cell, rc::Rc};
@@ -46,6 +47,7 @@ struct RedisUrl {
     port: Option<u16>,
     username: String,
     password: Option<String>,
+    tls: bool,
 }
 
 fn parse_url(host: SharedString) -> RedisUrl {
@@ -62,6 +64,7 @@ fn parse_url(host: SharedString) -> RedisUrl {
             port,
             username: u.username().to_string(),
             password: u.password().map(|p| p.to_string()),
+            tls: u.scheme() == "rediss",
         }
     } else {
         RedisUrl {
@@ -90,13 +93,16 @@ pub struct ZedisServers {
     port_state: Entity<InputState>,
     username_state: Entity<InputState>,
     password_state: Entity<InputState>,
+    client_cert_state: Entity<InputState>,
+    client_key_state: Entity<InputState>,
+    root_cert_state: Entity<InputState>,
     master_name_state: Entity<InputState>,
     description_state: Entity<InputState>,
 
     /// Flag indicating if we're adding a new server (vs editing existing)
     server_id: String,
 
-    server_enable_tls: bool,
+    server_enable_tls: Rc<Cell<bool>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -130,6 +136,24 @@ impl ZedisServers {
                 .validate(|s, _cx| validate_common_string(s))
                 .masked(true)
         });
+        let (cert_min_rows, cert_max_rows) = (2, 100);
+
+        let client_cert_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_common(cx, "client_cert_placeholder"))
+        });
+        let client_key_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_common(cx, "client_key_placeholder"))
+        });
+        let root_cert_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_common(cx, "root_cert_placeholder"))
+        });
+
         let description_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_common(cx, "description_placeholder"))
@@ -146,11 +170,12 @@ impl ZedisServers {
         let password_state_clone = password_state.clone();
         let mut subscriptions = vec![];
         subscriptions.push(
-            cx.subscribe_in(&host_state, window, move |_view, state, event, window, cx| {
+            cx.subscribe_in(&host_state, window, move |view, state, event, window, cx| {
                 if let InputEvent::Blur = event {
                     let host = state.read(cx).value();
                     let info = parse_url(host.clone());
                     if info.host != host {
+                        view.server_enable_tls.set(info.tls);
                         state.update(cx, |state, cx| {
                             state.set_value(info.host, window, cx);
                         });
@@ -182,10 +207,13 @@ impl ZedisServers {
             port_state,
             username_state,
             password_state,
+            client_cert_state,
+            client_key_state,
+            root_cert_state,
             master_name_state,
             description_state,
             server_id: String::new(),
-            server_enable_tls: false,
+            server_enable_tls: Rc::new(Cell::new(false)),
             _subscriptions: subscriptions,
         }
     }
@@ -217,7 +245,16 @@ impl ZedisServers {
         self.description_state.update(cx, |state, cx| {
             state.set_value(server.description.clone().unwrap_or_default(), window, cx);
         });
-        self.server_enable_tls = server.tls.unwrap_or(false);
+        self.client_cert_state.update(cx, |state, cx| {
+            state.set_value(server.client_cert.clone().unwrap_or_default(), window, cx);
+        });
+        self.client_key_state.update(cx, |state, cx| {
+            state.set_value(server.client_key.clone().unwrap_or_default(), window, cx);
+        });
+        self.root_cert_state.update(cx, |state, cx| {
+            state.set_value(server.root_cert.clone().unwrap_or_default(), window, cx);
+        });
+        self.server_enable_tls.set(server.tls.unwrap_or(false));
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -265,11 +302,14 @@ impl ZedisServers {
         let password_state = self.password_state.clone();
         let master_name_state = self.master_name_state.clone();
         let description_state = self.description_state.clone();
+        let client_cert_state = self.client_cert_state.clone();
+        let client_key_state = self.client_key_state.clone();
+        let root_cert_state = self.root_cert_state.clone();
         let server_id = self.server_id.clone();
         let is_new = server_id.is_empty();
 
         // Create shared state for TLS checkbox
-        let server_enable_tls = Rc::new(Cell::new(self.server_enable_tls));
+        let server_enable_tls = self.server_enable_tls.clone();
 
         let server_state_clone = server_state.clone();
         let name_state_clone = name_state.clone();
@@ -279,8 +319,11 @@ impl ZedisServers {
         let password_state_clone = password_state.clone();
         let master_name_state_clone = master_name_state.clone();
         let description_state_clone = description_state.clone();
+        let client_cert_state_clone = client_cert_state.clone();
+        let client_key_state_clone = client_key_state.clone();
+        let root_cert_state_clone = root_cert_state.clone();
         let server_id_clone = server_id.clone();
-        let server_enable_tls_for_submit = server_enable_tls.clone();
+        let server_enable_tls_for_submit = self.server_enable_tls.clone();
 
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             let name = name_state_clone.read(cx).value();
@@ -306,6 +349,31 @@ impl ZedisServers {
             } else {
                 Some(username_val)
             };
+            let enable_tls = server_enable_tls_for_submit.get();
+            let (client_cert, client_key, root_cert) = if enable_tls {
+                let client_cert_val = client_cert_state_clone.read(cx).value();
+                let client_cert = if client_cert_val.is_empty() {
+                    None
+                } else {
+                    Some(client_cert_val)
+                };
+                let client_key_val = client_key_state_clone.read(cx).value();
+                let client_key = if client_key_val.is_empty() {
+                    None
+                } else {
+                    Some(client_key_val)
+                };
+                let root_cert_val = root_cert_state_clone.read(cx).value();
+                let root_cert = if root_cert_val.is_empty() {
+                    None
+                } else {
+                    Some(root_cert_val)
+                };
+                (client_cert, client_key, root_cert)
+            } else {
+                (None, None, None)
+            };
+
             let master_name_val = master_name_state_clone.read(cx).value();
             let master_name = if master_name_val.is_empty() {
                 None
@@ -328,7 +396,10 @@ impl ZedisServers {
                         password: password.map(|p| p.to_string()),
                         master_name: master_name.map(|m| m.to_string()),
                         description: description.map(|d| d.to_string()),
-                        tls: Some(server_enable_tls_for_submit.get()),
+                        tls: Some(enable_tls),
+                        client_cert: client_cert.map(|c| c.to_string()),
+                        client_key: client_key.map(|k| k.to_string()),
+                        root_cert: root_cert.map(|r| r.to_string()),
                         ..current_server
                     },
                     cx,
@@ -356,6 +427,9 @@ impl ZedisServers {
             let password_label = i18n_common(cx, "password");
             let tls_label = i18n_common(cx, "tls");
             let tls_check_label = i18n_common(cx, "tls_check_label");
+            let client_cert_label = i18n_common(cx, "client_cert");
+            let client_key_label = i18n_common(cx, "client_key");
+            let root_cert_label = i18n_common(cx, "root_cert");
             let description_label = i18n_common(cx, "description");
             let master_name_label = i18n_servers(cx, "master_name");
 
@@ -369,7 +443,7 @@ impl ZedisServers {
                         });
                         focus_handle_done.set(true);
                     }
-                    v_form()
+                    let mut form = v_form()
                         .child(
                             field()
                                 .label(name_label)
@@ -394,9 +468,24 @@ impl ZedisServers {
                                     server_enable_tls.set(*checked);
                                     cx.stop_propagation();
                                 })
-                        }))
+                        }));
+
+                    if server_enable_tls.get() {
+                        form = form
+                            .child(field().label(client_cert_label).child(Input::new(&client_cert_state)))
+                            .child(field().label(client_key_label).child(Input::new(&client_key_state)))
+                            .child(field().label(root_cert_label).child(Input::new(&root_cert_state)));
+                    }
+
+                    form = form
                         .child(field().label(master_name_label).child(Input::new(&master_name_state)))
-                        .child(field().label(description_label).child(Input::new(&description_state)))
+                        .child(field().label(description_label).child(Input::new(&description_state)));
+
+                    div()
+                        .id("servers-scrollable-container")
+                        .max_h(px(600.0))
+                        .child(form)
+                        .overflow_y_scrollbar()
                 })
                 .on_ok({
                     let handle = handle_submit.clone();

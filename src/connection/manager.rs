@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use super::{
-    async_connection::{RedisAsyncConn, query_async_masters},
-    config::get_config,
+    async_connection::{RedisAsyncConn, open_client, query_async_masters},
+    config::{RedisServer, get_config},
 };
 use crate::error::Error;
 use dashmap::DashMap;
@@ -27,7 +27,6 @@ use std::{
     time::Duration,
 };
 use tracing::{debug, error, info};
-use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -62,22 +61,15 @@ pub enum NodeRole {
 // Represents a single Redis node
 #[derive(Debug, Clone, Default)]
 struct RedisNode {
-    connection_url: String,
+    server: RedisServer,
+    // connection_url: String,
     role: NodeRole,
     master_name: Option<String>,
 }
 
 impl RedisNode {
     pub fn host_port(&self) -> String {
-        let Ok(url) = Url::parse(&self.connection_url) else {
-            return self.connection_url.clone();
-        };
-        let host = url.host_str().unwrap_or_default().to_string();
-        if let Some(port) = url.port() {
-            format!("{}:{}", host, port)
-        } else {
-            host
-        }
+        format!("{}:{}", self.server.host, self.server.port)
     }
 }
 
@@ -238,11 +230,7 @@ impl RedisClient {
     /// # Returns
     /// * `Vec<T>` - A vector of results from the commands.
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
-        let addrs: Vec<_> = self
-            .master_nodes
-            .iter()
-            .map(|item| item.connection_url.as_str())
-            .collect();
+        let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
         let values = query_async_masters(addrs, self.db, cmds).await?;
         Ok(values)
     }
@@ -356,8 +344,7 @@ impl ConnectionManager {
     /// Discovers Redis nodes and server type based on initial configuration.
     async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_config(name)?;
-        let url = config.get_connection_url();
-        let mut client = Client::open(url.clone())?;
+        let mut client = open_client(&config)?;
         // Attempt to connect and detect server type
         // Handles logic to retry without password if authentication fails
         let server_type = match detect_server_type(&client).await {
@@ -369,7 +356,7 @@ impl ConnectionManager {
                     error!("detect server type failed: {e:?}, use standalone mode");
                     return Ok((
                         vec![RedisNode {
-                            connection_url: url,
+                            server: config.clone(),
                             role: NodeRole::Master,
                             ..Default::default()
                         }],
@@ -378,7 +365,7 @@ impl ConnectionManager {
                 }
                 let mut tmp_config = config.clone();
                 tmp_config.password = None;
-                client = Client::open(tmp_config.get_connection_url())?;
+                client = open_client(&tmp_config)?;
                 detect_server_type(&client).await.unwrap_or_else(|e| {
                     error!("detect server type failed: {e:?}, use standalone mode");
                     ServerType::Standalone
@@ -399,7 +386,7 @@ impl ConnectionManager {
                         tmp_config.host = item.ip.clone();
 
                         RedisNode {
-                            connection_url: tmp_config.get_connection_url(),
+                            server: tmp_config,
                             role: item.role.clone(),
                             ..Default::default()
                         }
@@ -441,7 +428,7 @@ impl ConnectionManager {
                     tmp_config.port = port;
 
                     nodes.push(RedisNode {
-                        connection_url: tmp_config.get_connection_url(),
+                        server: tmp_config,
                         role: NodeRole::Master,
                         master_name: Some(name.clone()),
                     });
@@ -458,7 +445,7 @@ impl ConnectionManager {
             }
             _ => Ok((
                 vec![RedisNode {
-                    connection_url: url,
+                    server: config.clone(),
                     role: NodeRole::Master,
                     ..Default::default()
                 }],
@@ -478,12 +465,17 @@ impl ConnectionManager {
         let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
         let client = match server_type {
             ServerType::Cluster => {
-                let addrs: Vec<String> = nodes.iter().map(|n| n.connection_url.clone()).collect();
-                let client = cluster::ClusterClient::new(addrs)?;
-                RClient::Cluster(client)
+                let addrs: Vec<String> = nodes.iter().map(|n| n.server.get_connection_url()).collect();
+                let mut builder = cluster::ClusterClientBuilder::new(addrs);
+                if let Some(node) = nodes.first()
+                    && let Some(certificates) = node.server.tls_certificates()
+                {
+                    builder = builder.certs(certificates);
+                }
+                RClient::Cluster(builder.build()?)
             }
             _ => {
-                let client = Client::open(nodes[0].connection_url.clone())?;
+                let client = open_client(&nodes[0].server.clone())?;
                 RClient::Single(client)
             }
         };
