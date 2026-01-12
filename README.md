@@ -23,7 +23,6 @@ Unlike Electron-based clients that can feel sluggish with large datasets, Zedis 
 The recommended way to install Zedis is via Homebrew:
 
 ```bash
-brew tap vicanso/zedis
 brew install --cask zedis
 ```
 

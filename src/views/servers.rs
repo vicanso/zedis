@@ -15,7 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::RedisServer;
-use crate::helpers::{validate_common_string, validate_host, validate_long_string};
+use crate::helpers::{is_windows, validate_common_string, validate_host, validate_long_string};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -23,7 +23,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     form::{field, v_form},
-    input::{Input, InputEvent, InputState, NumberInput},
+    input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     scroll::ScrollableElement,
 };
@@ -199,6 +199,24 @@ impl ZedisServers {
                 }
             }),
         );
+        subscriptions.push(cx.subscribe_in(&port_state, window, |view, state, event, window, cx| {
+            let NumberInputEvent::Step(action) = event;
+
+            let Ok(current_val) = view.port_state.read(cx).value().parse::<u16>() else {
+                return;
+            };
+
+            let new_val = match action {
+                StepAction::Increment => current_val.saturating_add(1),
+                StepAction::Decrement => current_val.saturating_sub(1),
+            };
+
+            if new_val != current_val {
+                state.update(cx, |input, cx| {
+                    input.set_value(new_val.to_string(), window, cx);
+                });
+            }
+        }));
         info!("Creating new servers view");
 
         Self {
@@ -520,7 +538,11 @@ impl ZedisServers {
                         let submit_label = i18n_common(cx, "submit");
                         let cancel_label = i18n_common(cx, "cancel");
 
-                        vec![
+                        let mut buttons = vec![
+                            // Cancel button - closes dialog without saving
+                            Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
                             // Submit button - validates and saves server configuration
                             Button::new("ok").primary().label(submit_label).on_click({
                                 let handle = handle.clone();
@@ -528,11 +550,12 @@ impl ZedisServers {
                                     handle.clone()(window, cx);
                                 }
                             }),
-                            // Cancel button - closes dialog without saving
-                            Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
-                                window.close_dialog(cx);
-                            }),
-                        ]
+                        ];
+
+                        if is_windows() {
+                            buttons.reverse();
+                        }
+                        buttons
                     }
                 })
         });

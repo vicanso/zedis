@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::is_windows;
 use crate::states::i18n_common;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
 use gpui_component::{
@@ -227,7 +228,11 @@ pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut Ap
                 move |_, _, _, cx| {
                     let confirm_label = i18n_common(cx, "confirm");
                     let cancel_label = i18n_common(cx, "cancel");
-                    vec![
+                    let mut buttons = vec![
+                        // Cancel button - closes dialog without saving
+                        Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
+                            window.close_dialog(cx);
+                        }),
                         // Submit button - validates and saves server configuration
                         Button::new("ok").primary().label(confirm_label).on_click({
                             let do_submit = do_submit.clone();
@@ -235,11 +240,11 @@ pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut Ap
                                 do_submit.clone()(window, cx);
                             }
                         }),
-                        // Cancel button - closes dialog without saving
-                        Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
-                    ]
+                    ];
+                    if is_windows() {
+                        buttons.reverse();
+                    }
+                    buttons
                 }
             })
     });

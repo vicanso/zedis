@@ -33,3 +33,7 @@ pub use validate::*;
 pub fn is_development() -> bool {
     env::var("RUST_ENV").unwrap_or_default() == "dev"
 }
+
+pub fn is_windows() -> bool {
+    cfg!(target_os = "windows")
+}

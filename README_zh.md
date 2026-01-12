@@ -20,7 +20,6 @@
 推荐使用 Homebrew 安装：
 
 ```bash
-brew tap vicanso/zedis
 brew install --cask zedis
 ```
 
