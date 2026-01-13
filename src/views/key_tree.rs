@@ -48,6 +48,8 @@ const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for
 
 #[derive(Default)]
 struct KeyTreeState {
+    /// current keyword
+    keyword: SharedString,
     server_id: SharedString,
     /// Unique ID for the current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
@@ -76,6 +78,7 @@ struct KeyTreeItem {
 
 fn new_key_tree_items(
     mut keys: Vec<(SharedString, KeyType)>,
+    keyword: SharedString,
     expand_all: bool,
     expanded_items: AHashSet<SharedString>,
     separator: &str,
@@ -86,6 +89,9 @@ fn new_key_tree_items(
     let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
 
     for (key, key_type) in keys {
+        if !keyword.is_empty() && !key.contains(keyword.as_str()) {
+            continue;
+        }
         // no colon in the key, it's a simple key
         if !key.contains(separator) {
             items.insert(
@@ -401,6 +407,7 @@ impl ZedisKeyTree {
         let expanded_items = self.state.expanded_items.clone();
 
         let view_handle = cx.entity().downgrade();
+        let keyword = self.state.keyword.clone();
 
         self.key_tree_list_state.update(cx, move |_state, cx| {
             let app_state = cx.global::<ZedisGlobalStore>().value(cx);
@@ -411,6 +418,7 @@ impl ZedisKeyTree {
                     let start = std::time::Instant::now();
                     let items = new_key_tree_items(
                         keys_snapshot,
+                        keyword,
                         expand_all,
                         expanded_items,
                         &separator,
@@ -446,6 +454,7 @@ impl ZedisKeyTree {
         }
 
         let keyword = self.keyword_state.read(cx).value();
+        self.state.keyword = keyword.clone();
         self.server_state.update(cx, move |handle, cx| {
             handle.handle_filter(keyword, cx);
         });
