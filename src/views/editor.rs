@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    helpers::{EditorAction, humanize_keystroke, validate_ttl},
+    helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
 };
@@ -62,6 +62,17 @@ pub struct ZedisEditor {
     _subscriptions: Vec<Subscription>,
 }
 
+fn format_ttl_string(ttl: &str) -> String {
+    let trimmed = ttl.trim();
+
+    let ends_with_digit = trimmed.chars().last().is_some_and(|c| c.is_ascii_digit());
+
+    if ends_with_digit {
+        return format!("{}s", trimmed);
+    }
+    trimmed.to_string()
+}
+
 impl ZedisEditor {
     /// Create a new editor instance with event subscriptions
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -70,7 +81,12 @@ impl ZedisEditor {
         // Initialize TTL input field with placeholder
         let ttl_input_state = cx.new(|cx| {
             InputState::new(window, cx)
-                .validate(|s, _cx| validate_ttl(s))
+                .validate(|s, _cx| {
+                    if s.is_empty() {
+                        return true;
+                    }
+                    validate_ttl(&format_ttl_string(s))
+                })
                 .clean_on_escape()
                 .placeholder(i18n_common(cx, "ttl_placeholder"))
         });
@@ -129,10 +145,10 @@ impl ZedisEditor {
         }
 
         self.ttl_edit_mode = false;
-        let ttl = self.ttl_input_state.read(cx).value();
+        let ttl = format_ttl_string(&self.ttl_input_state.read(cx).value());
 
         self.server_state.update(cx, move |state, cx| {
-            state.update_key_ttl(key, ttl, cx);
+            state.update_key_ttl(key, ttl.into(), cx);
         });
         cx.notify();
     }
@@ -237,18 +253,11 @@ impl ZedisEditor {
                 } else if seconds < 0 {
                     i18n_common(cx, "permanent")
                 } else {
-                    humantime::format_duration(Duration::from_secs(seconds as u64))
-                        .to_string()
-                        .into()
+                    format_duration(Duration::from_secs(seconds as u64)).into()
                 }
             } else {
                 "--".into()
-            }
-            .split_whitespace()
-            .take(2) // Only show first 2 words (e.g., "3 days" instead of "3 days 5 hours")
-            .collect::<Vec<&str>>()
-            .join(" ")
-            .into();
+            };
 
             size = format_size(value.size() as u64, DECIMAL).into();
         }

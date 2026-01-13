@@ -25,6 +25,7 @@ use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, Nonce, OsRng},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use std::time::Duration;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -168,4 +169,29 @@ pub fn decrypt(cipher_text: &str) -> Result<String> {
 
     // Convert decrypted bytes to UTF-8 string
     String::from_utf8(plaintext_bytes).map_err(|e| Error::Invalid { message: e.to_string() })
+}
+
+const SECONDS_PER_DAY: u64 = 86400;
+const SECONDS_PER_HOUR: u64 = 3600;
+const SECONDS_PER_MINUTE: u64 = 60;
+
+pub fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+
+    if seconds >= SECONDS_PER_DAY {
+        let days = seconds as f64 / SECONDS_PER_DAY as f64;
+        return format!("{:.1}d", days);
+    }
+
+    if seconds >= SECONDS_PER_HOUR {
+        let hours = seconds as f64 / SECONDS_PER_HOUR as f64;
+        return format!("{:.1}h", hours);
+    }
+
+    if seconds >= SECONDS_PER_MINUTE {
+        let minutes = seconds as f64 / SECONDS_PER_MINUTE as f64;
+        return format!("{:.1}m", minutes);
+    }
+
+    format!("{}s", seconds)
 }
