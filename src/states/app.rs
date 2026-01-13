@@ -105,6 +105,7 @@ pub struct ZedisAppState {
     font_size: Option<FontSize>,
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
+    max_truncate_length: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +240,12 @@ impl ZedisAppState {
             return;
         }
         self.key_separator = Some(key_separator);
+    }
+    pub fn max_truncate_length(&self) -> usize {
+        self.max_truncate_length.unwrap_or(1000)
+    }
+    pub fn set_max_truncate_length(&mut self, max_truncate_length: usize) {
+        self.max_truncate_length = Some(max_truncate_length);
     }
 }
 

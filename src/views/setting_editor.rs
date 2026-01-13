@@ -19,7 +19,7 @@ use crate::{
 use gpui::{Entity, Subscription, Window, prelude::*};
 use gpui_component::{
     form::{field, v_form},
-    input::{Input, InputEvent, InputState, NumberInput},
+    input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     v_flex,
 };
@@ -27,6 +27,7 @@ use gpui_component::{
 pub struct ZedisSettingEditor {
     max_key_tree_depth_state: Entity<InputState>,
     key_separator_state: Entity<InputState>,
+    max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -36,6 +37,7 @@ impl ZedisSettingEditor {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let max_key_tree_depth = store.max_key_tree_depth();
         let key_separator = store.key_separator().to_string();
+        let max_truncate_length = store.max_truncate_length();
         let max_key_tree_depth_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "max_key_tree_depth_placeholder"))
@@ -45,6 +47,11 @@ impl ZedisSettingEditor {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "key_separator_placeholder"))
                 .default_value(key_separator)
+        });
+        let max_truncate_length_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, "max_truncate_length_placeholder"))
+                .default_value(max_truncate_length.to_string())
         });
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
@@ -62,6 +69,27 @@ impl ZedisSettingEditor {
             }),
         );
         subscriptions.push(
+            cx.subscribe_in(&max_key_tree_depth_state, window, |_view, state, event, window, cx| {
+                let NumberInputEvent::Step(action) = event;
+
+                let Ok(current_val) = state.read(cx).value().parse::<u16>() else {
+                    return;
+                };
+
+                let new_val = match action {
+                    StepAction::Increment => current_val.saturating_add(1),
+                    StepAction::Decrement => current_val.saturating_sub(1),
+                };
+
+                if new_val != current_val {
+                    state.update(cx, |input, cx| {
+                        input.set_value(new_val.to_string(), window, cx);
+                    });
+                }
+            }),
+        );
+
+        subscriptions.push(
             cx.subscribe_in(&key_separator_state, window, |_view, state, event, _window, cx| {
                 if let InputEvent::Blur = &event {
                     let text = state.read(cx).value();
@@ -71,12 +99,31 @@ impl ZedisSettingEditor {
                 }
             }),
         );
+
+        subscriptions.push(cx.subscribe_in(
+            &max_truncate_length_state,
+            window,
+            |_view, state, event, _window, cx| {
+                if let InputEvent::Blur = &event {
+                    let Ok(value) = state.read(cx).value().parse::<usize>() else {
+                        return;
+                    };
+                    if value < 10 {
+                        return;
+                    };
+                    update_app_state_and_save(cx, "save_max_truncate_length", move |state, _cx| {
+                        state.set_max_truncate_length(value);
+                    });
+                }
+            },
+        ));
         let config_dir_state =
             cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
 
         Self {
             _subscriptions: subscriptions,
             config_dir_state,
+            max_truncate_length_state,
             key_separator_state,
             max_key_tree_depth_state,
         }
@@ -101,6 +148,11 @@ impl Render for ZedisSettingEditor {
                         field()
                             .label(i18n_settings(cx, "key_separator"))
                             .child(Input::new(&self.key_separator_state)),
+                    )
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "max_truncate_length"))
+                            .child(Input::new(&self.max_truncate_length_state)),
                     )
                     .child(
                         field()

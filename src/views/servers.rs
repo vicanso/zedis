@@ -199,10 +199,10 @@ impl ZedisServers {
                 }
             }),
         );
-        subscriptions.push(cx.subscribe_in(&port_state, window, |view, state, event, window, cx| {
+        subscriptions.push(cx.subscribe_in(&port_state, window, |_view, state, event, window, cx| {
             let NumberInputEvent::Step(action) = event;
 
-            let Ok(current_val) = view.port_state.read(cx).value().parse::<u16>() else {
+            let Ok(current_val) = state.read(cx).value().parse::<u16>() else {
                 return;
             };
 

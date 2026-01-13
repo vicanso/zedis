@@ -25,15 +25,13 @@ use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-const MAX_STRING_LEN: usize = 1024;
-
-fn truncate_long_strings(v: &mut Value, truncated: &mut bool) {
+fn truncate_long_strings(max_truncate_length: usize, v: &mut Value, truncated: &mut bool) {
     match v {
         Value::String(s) => {
-            if s.len() > MAX_STRING_LEN {
+            if s.len() > max_truncate_length {
                 let char_count = s.chars().count();
-                if char_count > MAX_STRING_LEN {
-                    let mut new_s: String = s.chars().take(MAX_STRING_LEN).collect();
+                if char_count > max_truncate_length {
+                    let mut new_s: String = s.chars().take(max_truncate_length).collect();
                     new_s.push_str(&format!("...(Total {} chars, content hidden)", char_count));
                     *s = new_s;
                     *truncated = true;
@@ -42,12 +40,12 @@ fn truncate_long_strings(v: &mut Value, truncated: &mut bool) {
         }
         Value::Array(arr) => {
             for item in arr {
-                truncate_long_strings(item, truncated);
+                truncate_long_strings(max_truncate_length, item, truncated);
             }
         }
         Value::Object(map) => {
             for val in map.values_mut() {
-                truncate_long_strings(val, truncated);
+                truncate_long_strings(max_truncate_length, val, truncated);
             }
         }
         _ => {}
@@ -56,14 +54,14 @@ fn truncate_long_strings(v: &mut Value, truncated: &mut bool) {
 
 /// Attempts to format a string as pretty-printed JSON.
 /// Returns None if the string is not valid JSON or doesn't look like JSON.
-fn pretty_json(value: &str) -> Option<(SharedString, bool)> {
+fn pretty_json(value: &str, max_truncate_length: usize) -> Option<(SharedString, bool)> {
     let trimmed = value.trim();
     if !((trimmed.starts_with('{') && trimmed.ends_with('}')) || (trimmed.starts_with('[') && trimmed.ends_with(']'))) {
         return None;
     }
     let mut json_value = serde_json::from_str::<Value>(value).ok()?;
     let mut truncated = false;
-    truncate_long_strings(&mut json_value, &mut truncated);
+    truncate_long_strings(max_truncate_length, &mut json_value, &mut truncated);
     let pretty_str = serde_json::to_string_pretty(&json_value).ok()?;
 
     Some((pretty_str.into(), truncated))
@@ -71,7 +69,11 @@ fn pretty_json(value: &str) -> Option<(SharedString, bool)> {
 
 /// Fetch a string value from Redis.
 /// Returns a RedisValue with the string value and the size.
-pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
+pub(crate) async fn get_redis_value(
+    conn: &mut RedisAsyncConn,
+    key: &str,
+    max_truncate_length: usize,
+) -> Result<RedisValue> {
     let value_bytes: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
     let size = value_bytes.len();
     if value_bytes.is_empty() {
@@ -99,7 +101,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
             if decoder.read_to_end(&mut decompressed_vec).is_ok() {
                 match String::from_utf8(decompressed_vec) {
                     Ok(s) => {
-                        if let Some((pretty, truncated)) = pretty_json(&s) {
+                        if let Some((pretty, truncated)) = pretty_json(&s, max_truncate_length) {
                             if truncated {
                                 format = DataFormat::JsonTruncated;
                             } else {
@@ -121,7 +123,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
             if let Ok(decompressed_vec) = decompress_zstd(bytes.as_ref()) {
                 match String::from_utf8(decompressed_vec) {
                     Ok(s) => {
-                        if let Some((pretty, truncated)) = pretty_json(&s) {
+                        if let Some((pretty, truncated)) = pretty_json(&s, max_truncate_length) {
                             if truncated {
                                 format = DataFormat::JsonTruncated;
                             } else {
@@ -142,7 +144,7 @@ pub(crate) async fn get_redis_value(conn: &mut RedisAsyncConn, key: &str) -> Res
         DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
         _ => match std::str::from_utf8(&bytes) {
             Ok(s) => {
-                if let Some((pretty, truncated)) = pretty_json(s) {
+                if let Some((pretty, truncated)) = pretty_json(s, max_truncate_length) {
                     if truncated {
                         format = DataFormat::JsonTruncated;
                     } else {

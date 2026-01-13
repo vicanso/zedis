@@ -334,6 +334,7 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let current_key = key.clone();
+        let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
 
         self.spawn(
             ServerTask::Selectkey,
@@ -362,7 +363,7 @@ impl ZedisServerState {
 
                 let key_type = KeyType::from(t.as_str());
                 let mut redis_value = match key_type {
-                    KeyType::String => get_redis_value(&mut conn, &key).await,
+                    KeyType::String => get_redis_value(&mut conn, &key, max_truncate_length).await,
                     KeyType::List => first_load_list_value(&mut conn, &key).await,
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
                     KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
