@@ -90,7 +90,7 @@ pub enum DataFormat {
     #[default]
     Bytes,
     Json,
-    JsonTruncated,
+    Preview,
     Text,
     Svg,
     Jpeg,
@@ -107,7 +107,7 @@ impl DataFormat {
         match self {
             DataFormat::Bytes => "bytes",
             DataFormat::Json => "json",
-            DataFormat::JsonTruncated => "json_truncated",
+            DataFormat::Preview => "preview",
             DataFormat::Text => "text",
             DataFormat::Svg => "svg",
             DataFormat::Jpeg => "jpeg",

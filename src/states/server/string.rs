@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, ViewMode, detect_format};
+use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
 use crate::helpers::decompress_zstd;
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
@@ -67,6 +67,67 @@ fn pretty_json(value: &str, max_truncate_length: usize) -> Option<(SharedString,
     Some((pretty_str.into(), truncated))
 }
 
+fn format_text(data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, SharedString)> {
+    match std::str::from_utf8(data) {
+        Ok(s) => {
+            if let Some((pretty, truncated)) = pretty_json(s, max_truncate_length) {
+                let format = if truncated {
+                    DataFormat::Preview
+                } else {
+                    DataFormat::Json
+                };
+                Some((format, pretty))
+            } else {
+                Some((DataFormat::Text, s.to_string().into()))
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+impl RedisBytesValue {
+    pub fn detect_and_update(&mut self, max_truncate_length: usize) {
+        let data = self.bytes.as_ref();
+        if data.is_empty() {
+            return;
+        }
+
+        let (initial_format, mime) = detect_format(data);
+        self.mime = mime;
+
+        let process_decompressed = |decompressed: Option<Vec<u8>>| {
+            decompressed
+                .and_then(|vec| format_text(&vec, max_truncate_length).map(|(_, text)| (DataFormat::Preview, text)))
+        };
+
+        let result = match initial_format {
+            DataFormat::MessagePack => rmp_serde::from_slice::<serde_json::Value>(data)
+                .ok()
+                .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                .map(|s| (DataFormat::Preview, SharedString::from(s))),
+
+            DataFormat::Gzip => process_decompressed({
+                let mut decoder = GzDecoder::new(data);
+                let mut vec = Vec::with_capacity(data.len() * 2);
+                decoder.read_to_end(&mut vec).ok().map(|_| vec)
+            }),
+
+            DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
+
+            DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
+
+            _ => format_text(data, max_truncate_length),
+        };
+
+        if let Some((new_format, text)) = result {
+            self.format = new_format;
+            self.text = Some(text);
+        } else {
+            self.format = initial_format;
+        }
+    }
+}
+
 /// Fetch a string value from Redis.
 /// Returns a RedisValue with the string value and the size.
 pub(crate) async fn get_redis_value(
@@ -76,99 +137,15 @@ pub(crate) async fn get_redis_value(
 ) -> Result<RedisValue> {
     let value_bytes: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
     let size = value_bytes.len();
-    if value_bytes.is_empty() {
-        return Ok(RedisValue {
-            key_type: KeyType::String,
-            data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
-                format: DataFormat::Text,
-                ..Default::default()
-            }))),
-            size,
-            ..Default::default()
-        });
-    }
-    let bytes = Bytes::from(value_bytes);
-    let (mut format, mime) = detect_format(&bytes);
-    let text: Option<SharedString> = match format {
-        DataFormat::MessagePack => rmp_serde::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|v| serde_json::to_string_pretty(&v).ok())
-            .map(SharedString::from),
-        DataFormat::Gzip => {
-            let mut decoder = GzDecoder::new(bytes.as_ref());
-            let mut decompressed_vec = Vec::new();
-
-            if decoder.read_to_end(&mut decompressed_vec).is_ok() {
-                match String::from_utf8(decompressed_vec) {
-                    Ok(s) => {
-                        if let Some((pretty, truncated)) = pretty_json(&s, max_truncate_length) {
-                            if truncated {
-                                format = DataFormat::JsonTruncated;
-                            } else {
-                                format = DataFormat::Json;
-                            }
-                            Some(pretty)
-                        } else {
-                            format = DataFormat::Text;
-                            Some(s.into())
-                        }
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        }
-        DataFormat::Zstd => {
-            if let Ok(decompressed_vec) = decompress_zstd(bytes.as_ref()) {
-                match String::from_utf8(decompressed_vec) {
-                    Ok(s) => {
-                        if let Some((pretty, truncated)) = pretty_json(&s, max_truncate_length) {
-                            if truncated {
-                                format = DataFormat::JsonTruncated;
-                            } else {
-                                format = DataFormat::Json;
-                            }
-                            Some(pretty)
-                        } else {
-                            format = DataFormat::Text;
-                            Some(s.into())
-                        }
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        }
-        DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
-        _ => match std::str::from_utf8(&bytes) {
-            Ok(s) => {
-                if let Some((pretty, truncated)) = pretty_json(s, max_truncate_length) {
-                    if truncated {
-                        format = DataFormat::JsonTruncated;
-                    } else {
-                        format = DataFormat::Json;
-                    }
-                    Some(pretty)
-                } else {
-                    format = DataFormat::Text;
-                    Some(s.to_string().into())
-                }
-            }
-            Err(_) => None,
-        },
+    let mut data = RedisBytesValue {
+        format: DataFormat::Text,
+        bytes: Bytes::from(value_bytes),
+        ..Default::default()
     };
-
+    data.detect_and_update(max_truncate_length);
     Ok(RedisValue {
         key_type: KeyType::String,
-        data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
-            format,
-            mime,
-            bytes,
-            text,
-            view_mode: ViewMode::default(),
-        }))),
+        data: Some(RedisValueData::Bytes(Arc::new(data))),
         size,
         ..Default::default()
     })
