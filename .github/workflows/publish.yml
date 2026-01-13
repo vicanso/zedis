@@ -181,10 +181,13 @@ jobs:
           ls -lh target/release
           cargo appimage
           mv target/release/zedis ./zedis
+          chmod +x zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
           mv target/appimage/zedis.AppImage ./zedis-x86_64.AppImage
+          chmod +x zedis-x86_64.AppImage
+          tar -czvf zedis-x86_64.AppImage.tar.gz zedis-x86_64.AppImage
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./zedis-x86_64.AppImage $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./zedis-x86_64.AppImage.tar.gz $GITHUB_TOKEN
