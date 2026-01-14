@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Zedis
 Exec=zedis
-Icon=zedis
+Icon=icon
 Type=Application
 Categories=Development;Database;
 Comment=A High-Performance Redis Client

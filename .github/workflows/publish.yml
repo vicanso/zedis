@@ -179,10 +179,10 @@ jobs:
           cargo install cargo-appimage
           cargo build --release --features mimalloc
           ls -lh target/release
-          cargo appimage
           mv target/release/zedis ./zedis
           chmod +x zedis
           tar -czvf zedis-linux-x86_64.tar.gz zedis
+          cargo appimage --features mimalloc
           mv target/appimage/zedis.AppImage ./zedis-x86_64.AppImage
           chmod +x zedis-x86_64.AppImage
           tar -czvf zedis-x86_64.AppImage.tar.gz zedis-x86_64.AppImage
