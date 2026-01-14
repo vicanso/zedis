@@ -316,6 +316,18 @@ impl ZedisStatusBar {
         let nodes_description = server_state.nodes_description.clone();
         h_flex()
             .items_center()
+            .child(
+                Button::new("zedis-status-bar-server-terminal")
+                    .outline()
+                    .small()
+                    .icon(IconName::SquareTerminal)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| {
+                            state.toggle_terminal(cx);
+                        });
+                    }))
+                    .mr_2(),
+            )
             .when(server_state.supports_db_selection, |this| {
                 this.child(Select::new(&self.db_state).mr_2().mt_1().small())
             })

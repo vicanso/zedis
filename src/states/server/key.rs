@@ -318,6 +318,7 @@ impl ZedisServerState {
         if key.is_empty() {
             return;
         }
+        self.terminal = false;
         // only set loading status if the value exists for better performance
         // prevent editor flickering
         if let Some(value) = self.value.as_mut() {

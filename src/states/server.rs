@@ -84,6 +84,9 @@ pub enum RedisServerStatus {
 pub struct ZedisServerState {
     redis_info: Option<RedisInfo>,
 
+    /// Whether the terminal is open
+    terminal: bool,
+
     /// Currently selected server id
     server_id: SharedString,
 
@@ -263,6 +266,9 @@ pub enum ServerEvent {
     /// A background task has completed.
     TaskFinished(SharedString),
 
+    /// Terminal toggled
+    TerminalToggled(bool),
+
     /// A key has been selected for viewing/editing
     KeySelected(SharedString),
     /// Key scan operation has started
@@ -339,6 +345,7 @@ impl ZedisServerState {
         self.redis_info = None;
         self.value = None;
         self.reset_scan();
+        self.terminal = false;
     }
 
     /// Add new keys to the key map (deduplicating automatically)
@@ -465,6 +472,15 @@ impl ZedisServerState {
 
     // ===== Public accessor methods =====
 
+    pub fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    pub fn toggle_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal = !self.terminal;
+        cx.emit(ServerEvent::TerminalToggled(self.terminal));
+    }
+
     /// Check if the server is currently busy with an operation
     pub fn is_busy(&self) -> bool {
         !matches!(self.server_status, RedisServerStatus::Idle)
@@ -544,6 +560,10 @@ impl ZedisServerState {
     /// Get the currently selected server id
     pub fn server_id(&self) -> &str {
         &self.server_id
+    }
+    /// Get the currently selected database
+    pub fn db(&self) -> usize {
+        self.db
     }
 
     /// Get whether the server supports database selection

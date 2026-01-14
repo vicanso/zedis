@@ -25,6 +25,7 @@ use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, Nonce, OsRng},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use redis::Value;
 use std::time::Duration;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -194,4 +195,47 @@ pub fn format_duration(duration: Duration) -> String {
     }
 
     format!("{}s", seconds)
+}
+
+pub fn redis_value_to_string(v: &Value) -> String {
+    match v {
+        Value::Nil => "(nil)".to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::SimpleString(s) => s.clone(),
+        Value::Okay => "OK".to_string(),
+        Value::Double(f) => f.to_string(),
+        Value::Boolean(b) => b.to_string(),
+
+        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).to_string(),
+
+        Value::Array(items) => {
+            let elements: Vec<String> = items.iter().map(redis_value_to_string).collect();
+            format!("[{}]", elements.join(", "))
+        }
+        Value::Set(items) => {
+            let elements: Vec<String> = items.iter().map(redis_value_to_string).collect();
+            format!("Set({})", elements.join(", "))
+        }
+        Value::Map(items) => {
+            let elements: Vec<String> = items
+                .iter()
+                .map(|(k, v)| format!("{}: {}", redis_value_to_string(k), redis_value_to_string(v)))
+                .collect();
+            format!("{{{}}}", elements.join(", "))
+        }
+
+        Value::VerbatimString { text, .. } => text.clone(),
+
+        Value::Attribute { data, .. } => redis_value_to_string(data),
+
+        Value::BigNumber(n) => format!("{:?}", n),
+
+        Value::ServerError(e) => format!("(error) {}", e),
+
+        Value::Push { kind, data } => {
+            let elements: Vec<String> = data.iter().map(redis_value_to_string).collect();
+            format!("Push({:?}): [{}]", kind, elements.join(", "))
+        }
+        _ => "Unsupported".to_string(),
+    }
 }

@@ -13,19 +13,24 @@
 // limitations under the License.
 
 use crate::{
-    helpers::get_key_tree_widths,
-    states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
+    connection::get_connection_manager,
+    error::Error,
+    helpers::{get_key_tree_widths, redis_value_to_string},
+    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
-use gpui::{Entity, Pixels, Subscription, Window, div, prelude::*, px};
+use gpui::{Entity, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme,
+    input::{Input, InputEvent, InputState},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
     skeleton::Skeleton,
     v_flex,
 };
+use redis::cmd;
 use tracing::{debug, error, info};
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 // Constants for UI dimensions
 const LOADING_SKELETON_WIDTH: f32 = 600.0;
@@ -33,6 +38,8 @@ const LOADING_SKELETON_SMALL_WIDTH: f32 = 100.0;
 const LOADING_SKELETON_MEDIUM_WIDTH: f32 = 220.0;
 const LOADING_SKELETON_LARGE_WIDTH: f32 = 420.0;
 const SERVERS_MARGIN: f32 = 8.0;
+const CMD_LABEL: &str = "$";
+const CMD_CLEAR: &str = "clear";
 
 /// Main content area component for the Zedis application
 ///
@@ -51,7 +58,11 @@ pub struct ZedisContent {
     settings: Option<Entity<ZedisSettingEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
+    should_focus_cmd_input: bool,
     status_bar: Entity<ZedisStatusBar>,
+    cmd_output_scroll_handle: ScrollHandle,
+    cmd_input_state: Entity<InputState>,
+    cmd_outputs: Vec<SharedString>,
 
     /// Persisted width of the key tree panel (resizable by user)
     key_tree_width: Pixels,
@@ -101,10 +112,34 @@ impl ZedisContent {
             cx.notify();
         }));
 
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+                ServerEvent::TerminalToggled(terminal) => {
+                    this.should_focus_cmd_input = *terminal;
+                }
+                ServerEvent::ServerSelected(_, _) => {
+                    this.reset_cmd_state(cx);
+                }
+                _ => {}
+            }),
+        );
+
         // Restore persisted key tree width from global state
         let global_store = cx.global::<ZedisGlobalStore>().read(cx);
         let key_tree_width = global_store.key_tree_width();
         let route = global_store.route();
+        let cmd_input_state = cx.new(|cx| InputState::new(window, cx));
+        subscriptions.push(
+            cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let cmd = state.read(cx).value();
+                    state.update(cx, |state, cx| {
+                        state.set_value(SharedString::default(), window, cx);
+                    });
+                    this.execute_command(cmd, cx);
+                }
+            }),
+        );
         info!("Creating new content view");
 
         Self {
@@ -115,9 +150,62 @@ impl ZedisContent {
             value_editor: None,
             settings: None,
             key_tree: None,
+            cmd_outputs: Vec::with_capacity(5),
             key_tree_width,
+            cmd_input_state,
+            should_focus_cmd_input: false,
+            cmd_output_scroll_handle: ScrollHandle::new(),
             _subscriptions: subscriptions,
         }
+    }
+    fn reset_cmd_state(&mut self, _cx: &mut Context<Self>) {
+        self.cmd_outputs.clear();
+        self.cmd_output_scroll_handle = ScrollHandle::new();
+    }
+    fn execute_command(&mut self, command: SharedString, cx: &mut Context<Self>) {
+        if command.is_empty() {
+            return;
+        }
+        if command == CMD_CLEAR {
+            self.reset_cmd_state(cx);
+            return;
+        }
+        let server_state = self.server_state.read(cx);
+        let server_id = server_state.server_id().to_string();
+        let db = server_state.db();
+        cx.spawn(async move |handle, cx| {
+            let command_clone = command.clone();
+            let task = cx.background_spawn(async move {
+                let parts: Vec<_> = command.split_whitespace().map(|s| s.to_string()).collect();
+                if parts.is_empty() {
+                    return Ok(SharedString::default());
+                }
+                let cmd_name = parts[0].clone();
+                let args = parts[1..].to_vec();
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let data: redis::Value = cmd(&cmd_name).arg(&args).query_async(&mut conn).await?;
+                Ok(redis_value_to_string(&data).into())
+            });
+            let result: Result<SharedString> = task.await;
+            let content: SharedString = match result {
+                Ok(result) => result,
+                Err(e) => e.to_string().into(),
+            };
+
+            handle.update(cx, |this, cx| {
+                this.cmd_outputs.extend(vec![
+                    format!("{CMD_LABEL} {command_clone}").into(),
+                    content,
+                    SharedString::default(),
+                ]);
+                let scroll_handle = this.cmd_output_scroll_handle.clone();
+                cx.notify();
+                cx.defer(move |_app| {
+                    scroll_handle.scroll_to_bottom();
+                });
+            })
+        })
+        .detach();
     }
     /// Render the server management view (home page)
     ///
@@ -179,15 +267,6 @@ impl ZedisContent {
     fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.clone();
 
-        // Lazily initialize value editor - reuse existing or create new
-        let value_editor = self
-            .value_editor
-            .get_or_insert_with(|| {
-                debug!("Creating new value editor view");
-                cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
-            })
-            .clone();
-
         // Lazily initialize key tree - reuse existing or create new
         let key_tree = self
             .key_tree
@@ -202,6 +281,48 @@ impl ZedisContent {
             right_panel = right_panel.size(content_width);
         }
         let (key_tree_width, min_width, max_width) = get_key_tree_widths(self.key_tree_width);
+        let right_panel_content = if server_state.read(cx).is_terminal() {
+            if self.should_focus_cmd_input {
+                self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
+                self.should_focus_cmd_input = false;
+            }
+
+            v_flex()
+                .w_full()
+                .h_full()
+                .child(
+                    div()
+                        .id("cmd-output-scrollable-container")
+                        .track_scroll(&self.cmd_output_scroll_handle)
+                        .flex_1()
+                        .w_full()
+                        .overflow_y_scroll()
+                        .child(
+                            v_flex().p_2().gap_1().children(
+                                self.cmd_outputs
+                                    .iter()
+                                    .map(|line| div().child(Label::new(line.clone()))),
+                            ),
+                        ),
+                )
+                .child(
+                    div().w_full().border_t_1().border_color(cx.theme().border).child(
+                        Input::new(&self.cmd_input_state)
+                            .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                            .appearance(false),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            let value_editor = self
+                .value_editor
+                .get_or_insert_with(|| {
+                    debug!("Creating new value editor view");
+                    cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
+                })
+                .clone();
+            value_editor.into_any_element()
+        };
 
         h_resizable("editor-container")
             .child(
@@ -211,10 +332,7 @@ impl ZedisContent {
                     .size_range(min_width..max_width)
                     .child(key_tree),
             )
-            .child(
-                // Right panel: Value editor (takes remaining space)
-                right_panel.child(value_editor),
-            )
+            .child(right_panel.child(right_panel_content))
             .on_resize(cx.listener(move |this, event: &Entity<ResizableState>, _window, cx| {
                 // Get the new width from the resize event
                 let Some(width) = event.read(cx).sizes().first() else {
