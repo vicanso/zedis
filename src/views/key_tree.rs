@@ -307,12 +307,20 @@ impl ZedisKeyTree {
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
             this.update_key_tree(false, cx);
         }));
-        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
-            if let ServerEvent::KeyCollapseAll = event {
-                this.state.expanded_items.clear();
-                this.update_key_tree(true, cx);
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+                ServerEvent::KeyCollapseAll => {
+                    this.state.expanded_items.clear();
+                    this.update_key_tree(true, cx);
+                }
+                ServerEvent::ServerSelected(_, _) => {
+                    this.reset(cx);
+                }
+                _ => {
+                    return;
+                }
+            }),
+        );
 
         // Initialize keyword search input with placeholder
         let keyword_state = cx.new(|cx| {
@@ -373,6 +381,9 @@ impl ZedisKeyTree {
     }
 
     fn reset(&mut self, _cx: &mut Context<Self>) {
+        self.state = KeyTreeState::default();
+    }
+    fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
         self.state.scroll_to_index = Some(IndexPath::new(0));
     }
@@ -431,7 +442,7 @@ impl ZedisKeyTree {
                 let result = task.await;
                 if result.is_empty() {
                     let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
-                        view.reset(cx);
+                        view.reset_expand(cx);
                     });
                 }
                 handle.update(cx, |this, cx| {
