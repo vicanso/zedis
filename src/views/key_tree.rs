@@ -316,9 +316,7 @@ impl ZedisKeyTree {
                 ServerEvent::ServerSelected(_, _) => {
                     this.reset(cx);
                 }
-                _ => {
-                    return;
-                }
+                _ => {}
             }),
         );
 

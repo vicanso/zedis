@@ -18,8 +18,10 @@ use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
 use flate2::read::GzDecoder;
 use gpui::SharedString;
+use lz4_flex::block::decompress_size_prepended;
 use redis::cmd;
 use serde_json::Value;
+use snap::read::FrameDecoder;
 use std::io::Read;
 use std::sync::Arc;
 
@@ -114,9 +116,21 @@ impl RedisBytesValue {
 
             DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
 
+            DataFormat::Snappy => process_decompressed({
+                let mut decoder = FrameDecoder::new(data);
+                let mut vec = Vec::with_capacity(data.len() * 2);
+                decoder.read_to_end(&mut vec).ok().map(|_| vec)
+            }),
+
             DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
-            _ => format_text(data, max_truncate_length),
+            _ => {
+                if let Ok(decompressed) = decompress_size_prepended(data) {
+                    process_decompressed(Some(decompressed))
+                } else {
+                    format_text(data, max_truncate_length)
+                }
+            }
         };
 
         if let Some((new_format, text)) = result {

@@ -3436,6 +3436,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
+
+[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5608,6 +5614,12 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
+
+[[package]]
+name = "snap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
 name = "socket2"
@@ -7985,6 +7997,7 @@ dependencies = [
  "humantime",
  "infer",
  "locale_config",
+ "lz4_flex",
  "mimalloc",
  "parking_lot",
  "percent-encoding",
@@ -8000,6 +8013,7 @@ dependencies = [
  "serde_json",
  "smol",
  "snafu",
+ "snap",
  "substring",
  "time",
  "toml 0.9.10+spec-1.1.0",

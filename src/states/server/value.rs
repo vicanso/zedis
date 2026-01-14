@@ -99,6 +99,7 @@ pub enum DataFormat {
     Gif,
     Gzip,
     Zstd,
+    Snappy,
     MessagePack,
 }
 
@@ -115,6 +116,7 @@ impl DataFormat {
             DataFormat::Webp => "webp",
             DataFormat::Gif => "gif",
             DataFormat::Gzip => "gzip",
+            DataFormat::Snappy => "snappy",
             DataFormat::Zstd => "zstd",
             DataFormat::MessagePack => "messagepack",
         }
@@ -177,12 +179,21 @@ fn is_svg(bytes: &[u8]) -> bool {
     false
 }
 
+fn is_snappy_framed(bytes: &[u8]) -> bool {
+    if bytes.len() < 10 {
+        return false;
+    }
+    bytes.starts_with(&[0xFF, 0x06, 0x00, 0x00, 0x73, 0x4E, 0x61, 0x50, 0x70, 0x59])
+}
+
 pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
     if bytes.is_empty() {
         return (DataFormat::Bytes, None);
     }
     let Some(kind) = infer::get(bytes) else {
-        return if is_svg(bytes) {
+        return if is_snappy_framed(bytes) {
+            (DataFormat::Snappy, Some("application/snappy".to_string().into()))
+        } else if is_svg(bytes) {
             (DataFormat::Svg, Some("image/svg+xml".to_string().into()))
         } else if is_valid_messagepack(bytes) {
             (DataFormat::MessagePack, None)
