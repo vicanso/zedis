@@ -15,11 +15,11 @@
 use crate::{
     connection::get_connection_manager,
     error::Error,
-    helpers::{get_key_tree_widths, redis_value_to_string},
+    helpers::{EditorAction, get_key_tree_widths, redis_value_to_string},
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
-use gpui::{Entity, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme,
     input::{Input, InputEvent, InputState},
@@ -69,6 +69,7 @@ pub struct ZedisContent {
 
     /// Cached current route to avoid unnecessary updates
     current_route: Route,
+    focus_handle: FocusHandle,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -81,6 +82,8 @@ impl ZedisContent {
     /// switching routes to optimize memory usage.
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window);
         let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
 
         // Subscribe to global state changes for automatic view cleanup
@@ -155,6 +158,7 @@ impl ZedisContent {
             cmd_input_state,
             should_focus_cmd_input: false,
             cmd_output_scroll_handle: ScrollHandle::new(),
+            focus_handle,
             _subscriptions: subscriptions,
         }
     }
@@ -200,7 +204,7 @@ impl ZedisContent {
                 ]);
                 let scroll_handle = this.cmd_output_scroll_handle.clone();
                 cx.notify();
-                cx.defer(move |_app| {
+                cx.defer(move |_cx| {
                     scroll_handle.scroll_to_bottom();
                 });
             })
@@ -368,7 +372,11 @@ impl Render for ZedisContent {
     /// 3. Otherwise -> show editor interface (key tree + value editor)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
-        let base = v_flex().id("main-container").flex_1().h_full();
+        let base = v_flex()
+            .id("main-container")
+            .track_focus(&self.focus_handle)
+            .flex_1()
+            .h_full();
 
         // Route 1: Server management view
         match route {
@@ -392,6 +400,16 @@ impl Render for ZedisContent {
                         )
                     })
                     .child(self.status_bar.clone())
+                    .on_action(cx.listener(move |this, event: &EditorAction, _window, cx| match event {
+                        EditorAction::UpdateTtl | EditorAction::Reload | EditorAction::Create => {
+                            this.server_state.update(cx, move |state, cx| {
+                                state.emit_editor_action(*event, cx);
+                            });
+                        }
+                        _ => {
+                            cx.propagate();
+                        }
+                    }))
                     .into_any_element()
             }
         }

@@ -291,6 +291,9 @@ pub struct ZedisKeyTree {
     /// Input field state for keyword filtering
     keyword_state: Entity<InputState>,
 
+    /// Whether to enter add key mode
+    should_enter_add_key_mode: Option<bool>,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -315,6 +318,12 @@ impl ZedisKeyTree {
                 }
                 ServerEvent::ServerSelected(_, _) => {
                     this.reset(cx);
+                }
+                ServerEvent::EditonActionTriggered(action) => {
+                    if action == &EditorAction::Create {
+                        this.should_enter_add_key_mode = Some(true);
+                        cx.notify();
+                    }
                 }
                 _ => {}
             }),
@@ -369,6 +378,7 @@ impl ZedisKeyTree {
             key_tree_list_state,
             keyword_state,
             server_state,
+            should_enter_add_key_mode: None,
             _subscriptions: subscriptions,
         };
 
@@ -506,6 +516,10 @@ impl ZedisKeyTree {
             window,
             cx,
         );
+        let entity_id = cx.entity_id();
+        cx.defer(move |cx| {
+            cx.notify(entity_id);
+        });
     }
 
     fn get_tree_status_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -697,6 +711,9 @@ impl Render for ZedisKeyTree {
                 state.scroll_to_item(scroll_to_index, ScrollStrategy::Top, window, cx);
             });
         }
+        if let Some(true) = self.should_enter_add_key_mode.take() {
+            self.handle_add_key(window, cx);
+        }
         v_flex()
             .h_full()
             .w_full()
@@ -712,11 +729,6 @@ impl Render for ZedisKeyTree {
 
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
-            }))
-            .on_action(cx.listener(move |this, event: &EditorAction, window, cx| {
-                if event == &EditorAction::Create {
-                    this.handle_add_key(window, cx);
-                }
             }))
     }
 }

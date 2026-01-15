@@ -159,7 +159,13 @@ impl Render for Zedis {
                     .id(PKG_NAME)
                     .bg(cx.theme().background)
                     .size_full()
-                    .child(div().w(px(SIDEBAR_WIDTH)).h_full().child(self.sidebar.clone()))
+                    .child(
+                        div()
+                            .w(px(SIDEBAR_WIDTH))
+                            .flex_none()
+                            .h_full()
+                            .child(self.sidebar.clone()),
+                    )
                     .child(self.content.clone())
                     .children(dialog_layer)
                     .children(notification_layer),

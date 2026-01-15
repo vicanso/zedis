@@ -12,19 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::QueryMode;
-use crate::connection::RedisClientDescription;
-use crate::connection::RedisServer;
-use crate::connection::get_connection_manager;
-use crate::connection::save_servers;
+use crate::connection::{QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers};
 use crate::error::Error;
 use crate::helpers::unix_ts;
-use crate::states::NotificationAction;
+use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::stat::RedisInfo;
 use ahash::AHashMap;
 use ahash::AHashSet;
 use chrono::Local;
-use gpui::EventEmitter;
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
@@ -35,6 +30,7 @@ use tracing::error;
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 
+pub mod event;
 pub mod hash;
 pub mod key;
 pub mod list;
@@ -154,163 +150,6 @@ pub struct ZedisServerState {
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
 }
-
-/// Background task types for Redis operations
-///
-/// Each variant represents a specific async operation that runs in the background
-#[derive(Clone, PartialEq, Debug)]
-pub enum ServerTask {
-    /// Refresh the Redis server info
-    RefreshRedisInfo,
-
-    /// Connect to and load metadata from a server
-    SelectServer,
-
-    /// Remove a server from configuration
-    RemoveServer,
-
-    /// Update the server query mode
-    UpdateServerQueryMode,
-
-    /// Update the server soft wrap
-    UpdateServerSoftWrap,
-
-    /// Add new server or update existing server configuration
-    UpdateOrInsertServer,
-
-    /// Fill in key types for unknown keys
-    FillKeyTypes,
-
-    /// Load value data for a selected key
-    Selectkey,
-
-    /// Delete a key from Redis
-    DeleteKey,
-
-    /// Scan for keys matching pattern
-    ScanKeys,
-
-    /// Scan keys with a specific prefix (for lazy folder loading)
-    ScanPrefix,
-
-    /// Add a new key
-    AddKey,
-    /// Update TTL (time-to-live) for a key
-    UpdateKeyTtl,
-
-    /// Delete an item from a list
-    RemoveListValue,
-
-    /// Update a value in a list
-    UpdateListValue,
-
-    /// Push a value to a list
-    PushListValue,
-
-    /// Load more items
-    LoadMoreValue,
-
-    /// Add a value to a set
-    AddSetValue,
-    /// Remove a value from a set
-    RemoveSetValue,
-
-    /// Add a value to a zset
-    AddZsetValue,
-    /// Remove a value from a zset
-    RemoveZsetValue,
-
-    /// Remove a value from a hash
-    RemoveHashValue,
-
-    /// Save edited value back to Redis
-    SaveValue,
-}
-
-impl ServerTask {
-    /// Get string representation of task (for logging and error messages)
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ServerTask::RefreshRedisInfo => "refresh_redis_info",
-            ServerTask::SelectServer => "select_server",
-            ServerTask::RemoveServer => "remove_server",
-            ServerTask::UpdateOrInsertServer => "update_or_insert_server",
-            ServerTask::FillKeyTypes => "fill_key_types",
-            ServerTask::Selectkey => "select_key",
-            ServerTask::DeleteKey => "delete_key",
-            ServerTask::ScanKeys => "scan_keys",
-            ServerTask::ScanPrefix => "scan_prefix",
-            ServerTask::AddKey => "add_key",
-            ServerTask::UpdateKeyTtl => "update_key_ttl",
-            ServerTask::RemoveListValue => "remove_list_value",
-            ServerTask::UpdateListValue => "update_list_value",
-            ServerTask::LoadMoreValue => "load_more_value",
-            ServerTask::SaveValue => "save_value",
-            ServerTask::UpdateServerQueryMode => "update_server_query_mode",
-            ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
-            ServerTask::PushListValue => "push_list_value",
-            ServerTask::AddSetValue => "add_set_value",
-            ServerTask::RemoveSetValue => "remove_set_value",
-            ServerTask::AddZsetValue => "add_zset_value",
-            ServerTask::RemoveZsetValue => "remove_zset_value",
-            ServerTask::RemoveHashValue => "remove_hash_value",
-        }
-    }
-}
-
-/// Events emitted by server state for reactive UI updates
-#[derive(Debug)]
-pub enum ServerEvent {
-    /// A new background task has started.
-    TaskStarted(ServerTask),
-    /// A background task has completed.
-    TaskFinished(SharedString),
-
-    /// Terminal toggled
-    TerminalToggled(bool),
-
-    /// A key has been selected for viewing/editing
-    KeySelected(SharedString),
-    /// Key scan operation has started
-    KeyScanStarted(SharedString),
-    /// Key scan found a new batch of keys.
-    KeyScanPaged(SharedString),
-    /// Key scan operation has fully completed.
-    KeyScanFinished(SharedString),
-    /// Key collapse all
-    KeyCollapseAll,
-
-    /// A key's value has been fetched (initial load).
-    ValueLoaded(SharedString),
-    /// A key's value has been updated
-    ValueUpdated(SharedString),
-    /// A key's value view mode has been updated
-    ValueModeViewUpdated(SharedString),
-    /// Load more value
-    ValuePaginationStarted(SharedString),
-    /// Load more value
-    ValuePaginationFinished(SharedString),
-    /// Add a value to a set、list、hash、zset
-    ValueAdded(SharedString),
-
-    /// User selected a different server
-    ServerSelected(SharedString, usize),
-    /// Server list config has been modified (add/remove/edit).
-    ServerListUpdated,
-    /// Server metadata (info/dbsize) has been refreshed.
-    ServerInfoUpdated(SharedString),
-    /// Periodic redis info updated.
-    ServerRedisInfoUpdated(SharedString),
-
-    /// Soft wrap changed
-    SoftWrapToggled(bool),
-    /// An error occurred.
-    ErrorOccurred(ErrorMessage),
-    /// A notification has been emitted.
-    Notification(NotificationAction),
-}
-
-impl EventEmitter<ServerEvent> for ZedisServerState {}
 
 impl ZedisServerState {
     /// Create a new server state instance

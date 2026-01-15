@@ -36,7 +36,7 @@ use tracing::{debug, info};
 
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
-const TTL_INPUT_MAX_WIDTH: f32 = 130.0;
+const TTL_INPUT_MAX_WIDTH: f32 = 100.0;
 
 /// Main editor component for displaying and editing Redis key values
 /// Supports different key types (String, List, etc.) with type-specific editors
@@ -52,6 +52,7 @@ pub struct ZedisEditor {
     hash_editor: Option<Entity<ZedisHashEditor>>,
 
     /// TTL editing state
+    should_enter_ttl_edit_mode: Option<bool>,
     ttl_edit_mode: bool,
     ttl_input_state: Entity<InputState>,
 
@@ -92,11 +93,24 @@ impl ZedisEditor {
         });
 
         // Subscribe to server events to track when keys are selected
-        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, _cx| {
-            if let ServerEvent::KeySelected(_) = event {
-                this.selected_key_at = Some(Instant::now());
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+                ServerEvent::KeySelected(_) => {
+                    this.selected_key_at = Some(Instant::now());
+                }
+                ServerEvent::EditonActionTriggered(action) => match action {
+                    EditorAction::UpdateTtl => {
+                        this.should_enter_ttl_edit_mode = Some(true);
+                        cx.notify();
+                    }
+                    EditorAction::Reload => {
+                        this.reload(cx);
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }),
+        );
 
         // Subscribe to TTL input events for Enter key and blur
         subscriptions.push(cx.subscribe_in(
@@ -125,6 +139,7 @@ impl ZedisEditor {
             hash_editor: None,
             ttl_edit_mode: false,
             ttl_input_state,
+            should_enter_ttl_edit_mode: None,
             _subscriptions: subscriptions,
             selected_key_at: None,
         }
@@ -179,7 +194,7 @@ impl ZedisEditor {
                 })
         });
     }
-    fn reload(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.server_state.read(cx).key() else {
             return;
         };
@@ -206,7 +221,7 @@ impl ZedisEditor {
             });
         });
     }
-    fn toggle_ttl_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn enter_ttl_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let Some(value) = server_state.value() else {
             return;
@@ -334,7 +349,7 @@ impl ZedisEditor {
                     .label(ttl.clone())
                     .icon(CustomIconName::Clock3)
                     .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.toggle_ttl_edit_mode(window, cx);
+                        this.enter_ttl_edit_mode(window, cx);
                     }))
                     .into_any_element()
             };
@@ -355,8 +370,8 @@ impl ZedisEditor {
                 .disabled(should_show_loading)
                 .tooltip(reload_tooltip)
                 .icon(CustomIconName::RotateCw)
-                .on_click(cx.listener(move |this, _event, window, cx| {
-                    this.reload(window, cx);
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.reload(cx);
                 }))
                 .into_any_element(),
         );
@@ -495,6 +510,9 @@ impl Render for ZedisEditor {
         if server_state.key().is_none() {
             return v_flex().into_any_element();
         }
+        if let Some(true) = self.should_enter_ttl_edit_mode.take() {
+            self.enter_ttl_edit_mode(window, cx);
+        }
 
         v_flex()
             .w_full()
@@ -505,13 +523,9 @@ impl Render for ZedisEditor {
                 EditorAction::Save => {
                     this.save(window, cx);
                 }
-                EditorAction::Reload => {
-                    this.reload(window, cx);
+                _ => {
+                    cx.propagate();
                 }
-                EditorAction::UpdateTtl => {
-                    this.toggle_ttl_edit_mode(window, cx);
-                }
-                _ => {}
             }))
             .into_any_element()
     }
