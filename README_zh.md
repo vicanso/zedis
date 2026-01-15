@@ -31,7 +31,7 @@ brew install --cask zedis
 
 ### 🧠 智能数据查看器
 Zedis 自动检测内容类型 (`ViewerMode::Auto`) 并以最适合的格式进行渲染：
-- **自动解压**：透明地检测并解压 **GZIP** 和 **ZSTD** 数据，让您可以直接查看实际内容（例如，压缩的 JSON 会被自动解包并格式化显示）。
+- **自动解压**：透明地检测并解压 **LZ4**, **SNAPPY**, **GZIP** 和 **ZSTD** 数据，让您可以直接查看实际内容（例如，压缩的 JSON 会被自动解包并格式化显示）。
 - **JSON**：自动 **美化（Pretty-printing）** 并支持完整的 **语法高亮**，以获得更好的可读性。
 - **MessagePack**：将二进制 MsgPack 数据反序列化为易读的类 JSON 格式。
 - **图片**：原生预览存储的图片（`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`）。

@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.8](https://github.com/vicanso/pingap/compare/v0.1.7..v0.1.8) - 2026-01-15
+
+### ⛰️  Features
+
+- *(cli)* Support redis-cli style interactive mode ([#14](https://github.com/orhun/git-cliff/issues/14)) - ([2c36916](https://github.com/vicanso/pingap/commit/2c369163bad518a40c9e57c30525bb1226e16fd3))
+- *(connection)* Support insecure tls mode (skip certificate verification) ([#12](https://github.com/orhun/git-cliff/issues/12)) - ([95c25cd](https://github.com/vicanso/pingap/commit/95c25cdcc46aadb5a3c1b22dbd0387ef02ca20d6))
+- *(connection)* Implement full tls support (standard tls  & mTls) ([#12](https://github.com/orhun/git-cliff/issues/12)) - ([3cfa099](https://github.com/vicanso/pingap/commit/3cfa099bfb7e2f0e5c0610966523dbb8f19638c1))
+- *(json)* Support json truncated format - ([be70525](https://github.com/vicanso/pingap/commit/be705255fee09126fd1e10babb30cdce2adfa83d))
+- *(value)* Support lz4 and snappy formats - ([6c9b598](https://github.com/vicanso/pingap/commit/6c9b598a353527346ed3d25a7aee286448062883))
+
+### 🐛 Bug Fixes
+
+- *(filter)* Fix display logic for keyword filtering - ([a56e526](https://github.com/vicanso/pingap/commit/a56e5265edc1e3732b04556f763b7c8a39ad4225))
+- *(keytree)* Reset state on database switch - ([24d72b7](https://github.com/vicanso/pingap/commit/24d72b798a7ecee57533ad57431b32f1e59103ab))
+- *(ui)* Align dialog button order with os standards - ([cdd90fe](https://github.com/vicanso/pingap/commit/cdd90feb0c9b27d431af8e6306cf4af86ea45a61))
+
+### 🚜 Refactor
+
+- *(editor)* Make hotkeys global within the editor - ([f3a603d](https://github.com/vicanso/pingap/commit/f3a603d4e7c4de84ea90fcfb4463138e3e11ebd8))
+- *(editor)* Improve ttl display format - ([c99b7a8](https://github.com/vicanso/pingap/commit/c99b7a8c7dccf083a379b9a28c9cee222e3b7691))
+- *(editor)* Optimize type auto-detection for bytes - ([39a68ab](https://github.com/vicanso/pingap/commit/39a68abb942c0ad469d119acbb54fb23f80c5d59))
+- *(editor)* Support configuring max length for json string values - ([f7863f4](https://github.com/vicanso/pingap/commit/f7863f4c9792c3cc7601c6160f787a1df3380c0b))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(linux)* Update build script - ([0e2d887](https://github.com/vicanso/pingap/commit/0e2d887a950944e9027125d121525ebe6bfe0f8e))
+- *(linux)* Make binary executable - ([b08b791](https://github.com/vicanso/pingap/commit/b08b79106ed7b66dbc7cc528cdb44685946fcb26))
+- *(macos)* Build both aarch64 and x86_64 targets - ([bd0d77c](https://github.com/vicanso/pingap/commit/bd0d77c7820a325c1bc76e1ae92d1dba4a0c17dd))
+
 ## [0.1.6](https://github.com/vicanso/pingap/compare/v0.1.5..v0.1.6) - 2026-01-10
 
 ### ⛰️  Features

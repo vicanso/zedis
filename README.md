@@ -34,7 +34,7 @@ brew install --cask zedis
 
 ### 🧠 Smart Data Viewer
 Zedis automatically detects content types (`ViewerMode::Auto`) and renders them in the most useful format:
-- **Automatic Decompression**: Transparently detects and decompresses **GZIP** and **ZSTD** data, allowing you to view the actual content (e.g., compressed JSON will be automatically unpacked and pretty-printed).
+- **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP** and **ZSTD** data, allowing you to view the actual content (e.g., compressed JSON will be automatically unpacked and pretty-printed).
 - **JSON**: Automatic **pretty-printing** with full **syntax highlighting** for better readability.
 - **MessagePack**: deserializes binary MsgPack data into a readable JSON-like format.
 - **Images**: Native preview for stored images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`).
