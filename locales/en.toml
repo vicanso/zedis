@@ -112,6 +112,7 @@ category = "Category"
 add_key_title = "Add Key"
 
 [status_bar]
+toggle_terminal_tooltip = "Toggle redis terminal"
 collapse_keys = "Collapse keys"
 scan_completed = "Scan completed"
 scan_more_keys = "Scan more keys"

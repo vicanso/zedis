@@ -15,7 +15,7 @@
 use crate::{
     connection::get_connection_manager,
     error::Error,
-    helpers::{EditorAction, get_key_tree_widths, redis_value_to_string},
+    helpers::{EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string},
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
@@ -40,6 +40,14 @@ const LOADING_SKELETON_LARGE_WIDTH: f32 = 420.0;
 const SERVERS_MARGIN: f32 = 8.0;
 const CMD_LABEL: &str = "$";
 const CMD_CLEAR: &str = "clear";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const ZEDIS_LOGO: &str = r#" __________ ____ ___ ____  
+|__  / ____|  _ \_ _/ ___| 
+  / /|  _| | | | | |\___ \    ZEDIS Native Redis GUI v{VERSION}
+ / /_| |___| |_| | | ___) |
+/____|_____|____/___|____/ 
+"#;
 
 /// Main content area component for the Zedis application
 ///
@@ -58,7 +66,6 @@ pub struct ZedisContent {
     settings: Option<Entity<ZedisSettingEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
-    should_focus_cmd_input: bool,
     status_bar: Entity<ZedisStatusBar>,
     cmd_output_scroll_handle: ScrollHandle,
     cmd_input_state: Entity<InputState>,
@@ -69,6 +76,8 @@ pub struct ZedisContent {
 
     /// Cached current route to avoid unnecessary updates
     current_route: Route,
+    should_focus: Option<bool>,
+    should_focus_cmd_input: Option<bool>,
     focus_handle: FocusHandle,
 
     /// Event subscriptions for reactive updates
@@ -118,7 +127,13 @@ impl ZedisContent {
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
                 ServerEvent::TerminalToggled(terminal) => {
-                    this.should_focus_cmd_input = *terminal;
+                    this.should_focus = Some(true);
+                    if *terminal {
+                        this.should_focus_cmd_input = Some(true);
+                    } else {
+                        this.should_focus_cmd_input = None;
+                    }
+                    cx.notify();
                 }
                 ServerEvent::ServerSelected(_, _) => {
                     this.reset_cmd_state(cx);
@@ -156,7 +171,8 @@ impl ZedisContent {
             cmd_outputs: Vec::with_capacity(5),
             key_tree_width,
             cmd_input_state,
-            should_focus_cmd_input: false,
+            should_focus: None,
+            should_focus_cmd_input: None,
             cmd_output_scroll_handle: ScrollHandle::new(),
             focus_handle,
             _subscriptions: subscriptions,
@@ -164,6 +180,12 @@ impl ZedisContent {
     }
     fn reset_cmd_state(&mut self, _cx: &mut Context<Self>) {
         self.cmd_outputs.clear();
+        self.cmd_outputs.extend(
+            ZEDIS_LOGO
+                .replace("{VERSION}", VERSION)
+                .lines()
+                .map(|line| line.to_string().into()),
+        );
         self.cmd_output_scroll_handle = ScrollHandle::new();
     }
     fn execute_command(&mut self, command: SharedString, cx: &mut Context<Self>) {
@@ -285,48 +307,48 @@ impl ZedisContent {
             right_panel = right_panel.size(content_width);
         }
         let (key_tree_width, min_width, max_width) = get_key_tree_widths(self.key_tree_width);
-        let right_panel_content = if server_state.read(cx).is_terminal() {
-            if self.should_focus_cmd_input {
-                self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
-                self.should_focus_cmd_input = false;
-            }
+        let right_panel_content =
+            if server_state.read(cx).is_terminal() {
+                if let Some(true) = self.should_focus_cmd_input.take() {
+                    self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
+                }
+                let font_family: SharedString = get_font_family().into();
 
-            v_flex()
-                .w_full()
-                .h_full()
-                .child(
-                    div()
-                        .id("cmd-output-scrollable-container")
-                        .track_scroll(&self.cmd_output_scroll_handle)
-                        .flex_1()
-                        .w_full()
-                        .overflow_y_scroll()
-                        .child(
-                            v_flex().p_2().gap_1().children(
-                                self.cmd_outputs
-                                    .iter()
-                                    .map(|line| div().child(Label::new(line.clone()))),
+                v_flex()
+                    .w_full()
+                    .h_full()
+                    .child(
+                        div()
+                            .id("cmd-output-scrollable-container")
+                            .track_scroll(&self.cmd_output_scroll_handle)
+                            .flex_1()
+                            .w_full()
+                            .overflow_y_scroll()
+                            .child(
+                                v_flex().p_2().gap_1().children(self.cmd_outputs.iter().map(|line| {
+                                    div().child(Label::new(line.clone()).font_family(font_family.clone()))
+                                })),
                             ),
+                    )
+                    .child(
+                        div().w_full().border_t_1().border_color(cx.theme().border).child(
+                            Input::new(&self.cmd_input_state)
+                                .font_family(font_family)
+                                .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                                .appearance(false),
                         ),
-                )
-                .child(
-                    div().w_full().border_t_1().border_color(cx.theme().border).child(
-                        Input::new(&self.cmd_input_state)
-                            .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
-                            .appearance(false),
-                    ),
-                )
-                .into_any_element()
-        } else {
-            let value_editor = self
-                .value_editor
-                .get_or_insert_with(|| {
-                    debug!("Creating new value editor view");
-                    cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
-                })
-                .clone();
-            value_editor.into_any_element()
-        };
+                    )
+                    .into_any_element()
+            } else {
+                let value_editor = self
+                    .value_editor
+                    .get_or_insert_with(|| {
+                        debug!("Creating new value editor view");
+                        cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
+                    })
+                    .clone();
+                value_editor.into_any_element()
+            };
 
         h_resizable("editor-container")
             .child(
@@ -372,6 +394,9 @@ impl Render for ZedisContent {
     /// 3. Otherwise -> show editor interface (key tree + value editor)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
+        if let Some(true) = self.should_focus.take() {
+            self.focus_handle.focus(window);
+        }
         let base = v_flex()
             .id("main-container")
             .track_focus(&self.focus_handle)
@@ -404,6 +429,11 @@ impl Render for ZedisContent {
                         EditorAction::UpdateTtl | EditorAction::Reload | EditorAction::Create => {
                             this.server_state.update(cx, move |state, cx| {
                                 state.emit_editor_action(*event, cx);
+                            });
+                        }
+                        EditorAction::Cmd => {
+                            this.server_state.update(cx, |state, cx| {
+                                state.toggle_terminal(cx);
                             });
                         }
                         _ => {

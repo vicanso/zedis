@@ -112,6 +112,7 @@ category = "类型"
 add_key_title = "添加键"
 
 [status_bar]
+toggle_terminal_tooltip = "切换redis控制台"
 collapse_keys = "折叠键列表"
 scan_completed = "扫描完成"
 scan_more_keys = "继续扫描更多键"
@@ -132,7 +133,7 @@ add_value_tooltip = "向列表添加新值"
 add_value_title = "添加集合成员"
 add_value_tooltip = "向集合添加新成员"
 add_value_success = "成员添加成功"
-add_value_success_tips = "已添加成功。由于 Redis 集合（Set）的无序特性以及用于处理大型数据集的增量扫描（SSCAN）机制，新项目可能会在后续扫描中或完全刷新后才会出现。”"
+add_value_success_tips = "已添加成功。由于 Redis 集合（Set）的无序特性以及用于处理大型数据集的增量扫描（SSCAN）机制，新添加的数据可能会在后续扫描中或完全刷新后才会出现。”"
 add_value_exists_tips = "成员已存在"
 
 [zset_editor]

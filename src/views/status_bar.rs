@@ -15,6 +15,7 @@
 use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
+    helpers::humanize_keystroke,
     states::{
         ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar,
     },
@@ -314,12 +315,18 @@ impl ZedisStatusBar {
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
         let nodes_description = server_state.nodes_description.clone();
+        let terminal_tooltip = format!(
+            "{} ({})",
+            i18n_status_bar(cx, "toggle_terminal_tooltip"),
+            humanize_keystroke("cmd-j")
+        );
         h_flex()
             .items_center()
             .child(
                 Button::new("zedis-status-bar-server-terminal")
                     .outline()
                     .small()
+                    .tooltip(terminal_tooltip)
                     .icon(IconName::SquareTerminal)
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.server_state.update(cx, |state, cx| {
