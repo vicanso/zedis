@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use super::{
-    async_connection::{RedisAsyncConn, open_client, query_async_masters},
+    async_connection::{RedisAsyncConn, open_single_connection, query_async_masters},
     config::{RedisServer, get_config},
 };
 use crate::error::Error;
 use dashmap::DashMap;
 use gpui::SharedString;
-use redis::{AsyncConnectionConfig, Client, Cmd, FromRedisValue, InfoDict, Role, cluster, cmd};
+use redis::{Cmd, FromRedisValue, InfoDict, Role, aio::MultiplexedConnection, cluster, cmd};
 use semver::Version;
 use std::{
     collections::{HashMap, HashSet},
@@ -44,7 +44,7 @@ enum ServerType {
 // Wrapper for the underlying Redis client
 #[derive(Clone)]
 enum RClient {
-    Single(Client),
+    Single(RedisServer),
     Cluster(cluster::ClusterClient),
 }
 
@@ -148,14 +148,8 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Establishes an asynchronous connection based on the client type.
 async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncConn> {
     match client {
-        RClient::Single(client) => {
-            let cfg = AsyncConnectionConfig::default()
-                .set_connection_timeout(Some(CONNECTION_TIMEOUT))
-                .set_response_timeout(Some(RESPONSE_TIMEOUT));
-            let mut conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
-            if db != 0 {
-                let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
-            }
+        RClient::Single(config) => {
+            let conn = open_single_connection(config, db).await?;
             Ok(RedisAsyncConn::Single(conn))
         }
         RClient::Cluster(client) => {
@@ -313,8 +307,7 @@ pub struct ConnectionManager {
 /// * `client` - The Redis client to check the server type.
 /// # Returns
 /// * `ServerType` - The type of the Redis server.
-async fn detect_server_type(client: &Client) -> Result<ServerType> {
-    let mut conn = client.get_multiplexed_async_connection().await?;
+async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerType> {
     // Check if it's a Sentinel
     // Note: `ROLE` command might not exist on old Redis versions, consider fallback if needed.
     // Assuming modern Redis here.
@@ -344,37 +337,33 @@ impl ConnectionManager {
     /// Discovers Redis nodes and server type based on initial configuration.
     async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_config(name)?;
-        let mut client = open_client(&config)?;
-        // Attempt to connect and detect server type
-        // Handles logic to retry without password if authentication fails
-        let server_type = match detect_server_type(&client).await {
-            Ok(server_type) => server_type,
-            Err(e) => {
-                // Retry without password if auth failed and config might allow empty password
-                // or simply to handle sentinel cases which often have no auth
-                if config.password.is_none() || !e.to_string().contains("AuthenticationFailed") {
-                    error!("detect server type failed: {e:?}, use standalone mode");
-                    return Ok((
-                        vec![RedisNode {
-                            server: config.clone(),
-                            role: NodeRole::Master,
-                            ..Default::default()
-                        }],
-                        ServerType::Standalone,
-                    ));
+        let (mut conn, server_type) = {
+            let conn = match open_single_connection(&config, 0).await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    if !e.to_string().contains("AuthenticationFailed") {
+                        error!("detect server type failed: {e:?}, use standalone mode");
+                        return Ok((
+                            vec![RedisNode {
+                                server: config.clone(),
+                                role: NodeRole::Master,
+                                ..Default::default()
+                            }],
+                            ServerType::Standalone,
+                        ));
+                    }
+                    // sentinel without password
+                    // detect server type again
+                    let mut tmp_config = config.clone();
+                    tmp_config.password = None;
+                    open_single_connection(&tmp_config, 0).await?
                 }
-                let mut tmp_config = config.clone();
-                tmp_config.password = None;
-                client = open_client(&tmp_config)?;
-                detect_server_type(&client).await.unwrap_or_else(|e| {
-                    error!("detect server type failed: {e:?}, use standalone mode");
-                    ServerType::Standalone
-                })
-            }
+            };
+            let server_type = detect_server_type(conn.clone()).await?;
+            (conn, server_type)
         };
         match server_type {
             ServerType::Cluster => {
-                let mut conn = client.get_multiplexed_async_connection().await?;
                 // Fetch cluster topology
                 let nodes: String = cmd("CLUSTER").arg("NODES").query_async(&mut conn).await?;
                 // Parse nodes and convert to RedisNode
@@ -395,7 +384,7 @@ impl ConnectionManager {
                 Ok((nodes, server_type))
             }
             ServerType::Sentinel => {
-                let mut conn = client.get_multiplexed_async_connection().await?;
+                // let mut conn = client.get_multiplexed_async_connection().await?;
                 // Fetch masters from Sentinel
                 let masters_response: Vec<HashMap<String, String>> =
                     cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
@@ -476,10 +465,7 @@ impl ConnectionManager {
                 }
                 RClient::Cluster(builder.build()?)
             }
-            _ => {
-                let client = open_client(&nodes[0].server.clone())?;
-                RClient::Single(client)
-            }
+            _ => RClient::Single(nodes[0].server.clone()),
         };
         let master_nodes: Vec<RedisNode> = nodes
             .iter()

@@ -22,6 +22,8 @@ use redis::{ClientTlsConfig, TlsCertificates};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::{fmt, fs::read_to_string, path::PathBuf, str::FromStr};
 use tracing::info;
 
@@ -58,7 +60,7 @@ impl FromStr for QueryMode {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Clone, Serialize)]
+#[derive(Debug, Default, Deserialize, Clone, Serialize, Hash, Eq, PartialEq)]
 pub struct RedisServer {
     pub id: String,
     pub name: String,
@@ -76,8 +78,18 @@ pub struct RedisServer {
     pub client_cert: Option<String>,
     pub client_key: Option<String>,
     pub root_cert: Option<String>,
+    pub ssh_tunnel: Option<bool>,
+    pub ssh_addr: Option<String>,
+    pub ssh_username: Option<String>,
+    pub ssh_password: Option<String>,
+    pub ssh_key: Option<String>,
 }
 impl RedisServer {
+    pub fn get_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
         let tls = self.tls.unwrap_or(false);
@@ -154,6 +166,12 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         if let Some(password) = &server.password {
             server.password = Some(decrypt(password).unwrap_or(password.clone()));
         }
+        if let Some(ssh_password) = &server.ssh_password {
+            server.ssh_password = Some(decrypt(ssh_password).unwrap_or(ssh_password.clone()));
+        }
+        if let Some(ssh_key) = &server.ssh_key {
+            server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
+        }
     }
     Ok(servers)
 }
@@ -163,6 +181,12 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     for server in servers.iter_mut() {
         if let Some(password) = &server.password {
             server.password = Some(encrypt(password)?);
+        }
+        if let Some(ssh_password) = &server.ssh_password {
+            server.ssh_password = Some(encrypt(ssh_password)?);
+        }
+        if let Some(ssh_key) = &server.ssh_key {
+            server.ssh_key = Some(encrypt(ssh_key)?);
         }
     }
     let path = get_or_create_server_config()?;

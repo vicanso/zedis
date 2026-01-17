@@ -97,6 +97,10 @@ pub struct ZedisServers {
     client_key_state: Entity<InputState>,
     root_cert_state: Entity<InputState>,
     master_name_state: Entity<InputState>,
+    ssh_addr_state: Entity<InputState>,
+    ssh_username_state: Entity<InputState>,
+    ssh_password_state: Entity<InputState>,
+    ssh_key_state: Entity<InputState>,
     description_state: Entity<InputState>,
 
     /// Flag indicating if we're adding a new server (vs editing existing)
@@ -104,6 +108,7 @@ pub struct ZedisServers {
 
     server_enable_tls: Rc<Cell<bool>>,
     server_insecure_tls: Rc<Cell<bool>>,
+    server_ssh_tunnel: Rc<Cell<bool>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -154,7 +159,27 @@ impl ZedisServers {
                 .auto_grow(cert_min_rows, cert_max_rows)
                 .placeholder(i18n_common(cx, "root_cert_placeholder"))
         });
-
+        let ssh_addr_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "ssh_addr_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let ssh_username_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "ssh_username_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let ssh_password_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "ssh_password_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+                .masked(true)
+        });
+        let ssh_key_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_servers(cx, "ssh_key_placeholder"))
+        });
         let description_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_common(cx, "description_placeholder"))
@@ -230,10 +255,15 @@ impl ZedisServers {
             client_key_state,
             root_cert_state,
             master_name_state,
+            ssh_addr_state,
+            ssh_username_state,
+            ssh_password_state,
+            ssh_key_state,
             description_state,
             server_id: String::new(),
             server_enable_tls: Rc::new(Cell::new(false)),
             server_insecure_tls: Rc::new(Cell::new(false)),
+            server_ssh_tunnel: Rc::new(Cell::new(false)),
             _subscriptions: subscriptions,
         }
     }
@@ -274,8 +304,21 @@ impl ZedisServers {
         self.root_cert_state.update(cx, |state, cx| {
             state.set_value(server.root_cert.clone().unwrap_or_default(), window, cx);
         });
+        self.ssh_addr_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_addr.clone().unwrap_or_default(), window, cx);
+        });
+        self.ssh_username_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_username.clone().unwrap_or_default(), window, cx);
+        });
+        self.ssh_password_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_password.clone().unwrap_or_default(), window, cx);
+        });
+        self.ssh_key_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_key.clone().unwrap_or_default(), window, cx);
+        });
         self.server_enable_tls.set(server.tls.unwrap_or(false));
         self.server_insecure_tls.set(server.insecure.unwrap_or(false));
+        self.server_ssh_tunnel.set(server.ssh_tunnel.unwrap_or(false));
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -328,10 +371,14 @@ impl ZedisServers {
         let root_cert_state = self.root_cert_state.clone();
         let server_id = self.server_id.clone();
         let is_new = server_id.is_empty();
-
+        let ssh_addr_state = self.ssh_addr_state.clone();
+        let ssh_username_state = self.ssh_username_state.clone();
+        let ssh_password_state = self.ssh_password_state.clone();
+        let ssh_key_state = self.ssh_key_state.clone();
         // Create shared state for TLS checkbox
         let server_enable_tls = self.server_enable_tls.clone();
         let server_insecure_tls = self.server_insecure_tls.clone();
+        let server_ssh_tunnel = self.server_ssh_tunnel.clone();
         let server_state_clone = server_state.clone();
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
@@ -343,9 +390,14 @@ impl ZedisServers {
         let client_cert_state_clone = client_cert_state.clone();
         let client_key_state_clone = client_key_state.clone();
         let root_cert_state_clone = root_cert_state.clone();
+        let ssh_addr_state_clone = ssh_addr_state.clone();
+        let ssh_username_state_clone = ssh_username_state.clone();
+        let ssh_password_state_clone = ssh_password_state.clone();
+        let ssh_key_state_clone = ssh_key_state.clone();
         let server_id_clone = server_id.clone();
         let server_enable_tls_for_submit = self.server_enable_tls.clone();
         let server_insecure_tls_for_submit = self.server_insecure_tls.clone();
+        let server_ssh_tunnel_for_submit = server_ssh_tunnel.clone();
 
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             let name = name_state_clone.read(cx).value();
@@ -411,6 +463,32 @@ impl ZedisServers {
             let desc_val = description_state_clone.read(cx).value();
             let description = if desc_val.is_empty() { None } else { Some(desc_val) };
 
+            let ssh_tunnel = server_ssh_tunnel_for_submit.get();
+            let ssh_addr_val = ssh_addr_state_clone.read(cx).value();
+            let ssh_addr = if ssh_addr_val.is_empty() {
+                None
+            } else {
+                Some(ssh_addr_val)
+            };
+            let ssh_username_val = ssh_username_state_clone.read(cx).value();
+            let ssh_username = if ssh_username_val.is_empty() {
+                None
+            } else {
+                Some(ssh_username_val)
+            };
+            let ssh_password_val = ssh_password_state_clone.read(cx).value();
+            let ssh_password = if ssh_password_val.is_empty() {
+                None
+            } else {
+                Some(ssh_password_val)
+            };
+            let ssh_key_val = ssh_key_state_clone.read(cx).value();
+            let ssh_key = if ssh_key_val.is_empty() {
+                None
+            } else {
+                Some(ssh_key_val)
+            };
+
             server_state_clone.update(cx, |state, cx| {
                 let current_server = state.server(server_id_clone.as_str()).cloned().unwrap_or_default();
 
@@ -429,6 +507,11 @@ impl ZedisServers {
                         client_cert: client_cert.map(|c| c.to_string()),
                         client_key: client_key.map(|k| k.to_string()),
                         root_cert: root_cert.map(|r| r.to_string()),
+                        ssh_tunnel: if ssh_tunnel { Some(ssh_tunnel) } else { None },
+                        ssh_addr: ssh_addr.map(|a| a.to_string()),
+                        ssh_username: ssh_username.map(|u| u.to_string()),
+                        ssh_password: ssh_password.map(|p| p.to_string()),
+                        ssh_key: ssh_key.map(|k| k.to_string()),
                         ..current_server
                     },
                     cx,
@@ -463,7 +546,12 @@ impl ZedisServers {
             let root_cert_label = i18n_common(cx, "root_cert");
             let description_label = i18n_common(cx, "description");
             let master_name_label = i18n_servers(cx, "master_name");
-
+            let ssh_addr_label = i18n_servers(cx, "ssh_addr");
+            let ssh_username_label = i18n_servers(cx, "ssh_username");
+            let ssh_password_label = i18n_servers(cx, "ssh_password");
+            let ssh_key_label = i18n_servers(cx, "ssh_key");
+            let ssh_tunnel_label = i18n_servers(cx, "ssh_tunnel");
+            let ssh_tunnel_check_label = i18n_servers(cx, "ssh_tunnel_check_label");
             dialog
                 .title(title)
                 .overlay(true)
@@ -516,6 +604,23 @@ impl ZedisServers {
                             .child(field().label(client_cert_label).child(Input::new(&client_cert_state)))
                             .child(field().label(client_key_label).child(Input::new(&client_key_state)))
                             .child(field().label(root_cert_label).child(Input::new(&root_cert_state)));
+                    }
+                    form = form.child(field().label(ssh_tunnel_label).child({
+                        let server_ssh_tunnel = server_ssh_tunnel.clone();
+                        Checkbox::new("redis-server-ssh-tunnel")
+                            .label(ssh_tunnel_check_label)
+                            .checked(server_ssh_tunnel.get())
+                            .on_click(move |checked, _, cx| {
+                                server_ssh_tunnel.set(*checked);
+                                cx.stop_propagation();
+                            })
+                    }));
+                    if server_ssh_tunnel.get() {
+                        form = form
+                            .child(field().label(ssh_addr_label).child(Input::new(&ssh_addr_state)))
+                            .child(field().label(ssh_username_label).child(Input::new(&ssh_username_state)))
+                            .child(field().label(ssh_password_label).child(Input::new(&ssh_password_state)))
+                            .child(field().label(ssh_key_label).child(Input::new(&ssh_key_state)));
                     }
 
                     form = form

@@ -14,9 +14,10 @@
 
 use super::config::RedisServer;
 use crate::error::Error;
+use dashmap::DashMap;
 use futures::future::try_join_all;
 use redis::{
-    Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
+    AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
     aio::{ConnectionLike, MultiplexedConnection},
     cluster_async::ClusterConnection,
     cmd,
@@ -25,12 +26,38 @@ use std::{sync::LazyLock, time::Duration};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
 static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     let value = std::env::var("REDIS_DELAY").unwrap_or_default();
     humantime::parse_duration(&value).ok()
 });
 
-pub fn open_client(config: &RedisServer) -> Result<Client> {
+static CONNECTION_POOL: LazyLock<DashMap<(u64, usize), MultiplexedConnection>> = LazyLock::new(DashMap::new);
+
+pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<MultiplexedConnection> {
+    let hash = config.get_hash();
+    let key = (hash, db);
+    if let Some(conn) = CONNECTION_POOL.get(&key) {
+        let mut conn = conn.clone();
+        if let Ok(()) = cmd("PING").query_async(&mut conn).await {
+            return Ok(conn.clone());
+        }
+    }
+    let client = open_single_client(config)?;
+    let cfg = AsyncConnectionConfig::default()
+        .set_connection_timeout(Some(CONNECTION_TIMEOUT))
+        .set_response_timeout(Some(RESPONSE_TIMEOUT));
+    let mut conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
+    if db != 0 {
+        let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
+    }
+    CONNECTION_POOL.insert(key, conn.clone());
+    Ok(conn)
+}
+
+fn open_single_client(config: &RedisServer) -> Result<Client> {
     let url = config.get_connection_url();
     let client = if let Some(certificates) = config.tls_certificates() {
         Client::build_with_tls(url, certificates)?
@@ -120,11 +147,7 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
 
         async move {
             // Establish a multiplexed async connection to the specific node.
-            let client = open_client(&addr)?;
-            let mut conn = client.get_multiplexed_async_connection().await?;
-            if db != 0 {
-                let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
-            }
+            let mut conn = open_single_connection(&addr, db).await?;
 
             // Execute the command asynchronously.
             let value: T = current_cmd.query_async(&mut conn).await?;
