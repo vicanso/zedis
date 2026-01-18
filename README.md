@@ -41,6 +41,10 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 - **Hex View**: Adaptive 8/16-byte hex dump for analyzing raw binary data.
 - **Text**: UTF-8 validation with large text support.
 
+### 🛡️ Secure Access
+- **SSH Tunneling**: Securely access private Redis instances via bastion hosts. Supports authentication via Password, Private Key, and SSH Agent.
+- **TLS/SSL**: Full support for SSL/TLS encrypted connections, including options for custom CA, Client Certificates, and Private Keys.
+
 ### 🎨 Modern Experience
 - **Cross-Platform**: Powered by GPUI, Zedis delivers a consistent, high-performance native experience across **macOS**, **Windows**, and **Linux**.
 - **Smart Topology Detection**: Automatically identifies and adapts to **Standalone**, **Cluster**, or **Sentinel** modes. Just connect to an entry node, and Zedis handles the topology mapping without complex configuration.
