@@ -15,6 +15,7 @@
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
+use crate::helpers::get_home_dir;
 use dashmap::DashMap;
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::{Handle, Handler};
@@ -238,13 +239,20 @@ async fn new_ssh_session(addr: &str, user: &str, key: Option<&str>, password: Op
 
     // Authenticate using provided credentials
     let auth_res = if let Some(key) = key {
+        let key = if key.starts_with("~")
+            && let Some(home_dir) = get_home_dir()
+        {
+            format!("{}{}", home_dir.to_string_lossy(), key[1..].to_string())
+        } else {
+            key.to_string()
+        };
         // Public key authentication
-        let key_pair = if Path::new(key).exists() {
+        let key_pair = if Path::new(&key).exists() {
             // Load key from file path
             load_secret_key(key, None)?
         } else {
             // Decode key from string content
-            decode_secret_key(key, password)?
+            decode_secret_key(&key, password)?
         };
         let key = Arc::new(key_pair);
         let key_with_alg = PrivateKeyWithHashAlg::new(key, None);

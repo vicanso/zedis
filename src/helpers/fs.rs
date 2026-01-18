@@ -20,7 +20,7 @@
 //! - Configuration directory management with migration support
 
 use crate::error::Error;
-use directories::ProjectDirs;
+use directories::{ProjectDirs, UserDirs};
 use home::home_dir;
 use std::{
     env, fs,
@@ -96,6 +96,14 @@ pub fn is_app_store_build() -> bool {
     receipt_path.push("receipt");
 
     receipt_path.exists()
+}
+
+pub fn get_home_dir() -> Option<PathBuf> {
+    if is_app_store_build() {
+        return None;
+    }
+    let dirs = UserDirs::new()?;
+    Some(dirs.home_dir().to_path_buf())
 }
 
 /// Gets or creates the application's configuration directory.
