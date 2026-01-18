@@ -22,12 +22,16 @@ pub enum Error {
     Redis { source: redis::RedisError },
     #[snafu(display("IO error: {source}"))]
     Io { source: std::io::Error },
-    #[snafu(display("Serde JSON error: {source}"))]
+    #[snafu(display("Serde json error: {source}"))]
     SerdeJson { source: serde_json::Error },
-    #[snafu(display("Serde TOML error: {source}"))]
+    #[snafu(display("Serde toml error: {source}"))]
     TomlDe { source: toml::de::Error },
-    #[snafu(display("TOML serialize error: {source}"))]
+    #[snafu(display("Toml serialize error: {source}"))]
     TomlSe { source: toml::ser::Error },
+    #[snafu(display("Ssh error: {source}"))]
+    Ssh { source: russh::Error },
+    #[snafu(display("Key error: {source}"))]
+    Key { source: russh::keys::Error },
 }
 
 impl From<redis::RedisError> for Error {
@@ -57,5 +61,17 @@ impl From<toml::de::Error> for Error {
 impl From<toml::ser::Error> for Error {
     fn from(source: toml::ser::Error) -> Self {
         Error::TomlSe { source }
+    }
+}
+
+impl From<russh::Error> for Error {
+    fn from(source: russh::Error) -> Self {
+        Error::Ssh { source }
+    }
+}
+
+impl From<russh::keys::Error> for Error {
+    fn from(source: russh::keys::Error) -> Self {
+        Error::Key { source }
     }
 }

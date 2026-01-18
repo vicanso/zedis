@@ -13,16 +13,19 @@
 // limitations under the License.
 
 use super::config::RedisServer;
+use super::ssh_stream::SshRedisStream;
+use super::ssh_tunnel::{get_or_init_ssh_session, run_in_tokio};
 use crate::error::Error;
 use dashmap::DashMap;
 use futures::future::try_join_all;
 use redis::{
-    AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
+    AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisConnectionInfo, RedisFuture, Value,
     aio::{ConnectionLike, MultiplexedConnection},
     cluster_async::ClusterConnection,
     cmd,
 };
 use std::{sync::LazyLock, time::Duration};
+use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -34,31 +37,128 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     humantime::parse_duration(&value).ok()
 });
 
+/// Global connection pool that caches Redis connections.
+/// Key: (config_hash, database_number), Value: MultiplexedConnection
 static CONNECTION_POOL: LazyLock<DashMap<(u64, usize), MultiplexedConnection>> = LazyLock::new(DashMap::new);
 
+/// Opens a Redis connection through an SSH tunnel.
+///
+/// This function establishes an SSH session using the provided configuration,
+/// creates a TCP channel through the SSH tunnel to the Redis server,
+/// wraps it in a Redis-compatible stream, and authenticates if credentials are provided.
+///
+/// # Arguments
+///
+/// * `config` - Redis server configuration containing SSH and Redis connection details
+///
+/// # Returns
+///
+/// A multiplexed Redis connection ready for use
+async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
+    // Extract SSH tunnel configuration
+    let ssh_addr = config.ssh_addr.clone().unwrap_or_default();
+    let ssh_user = config.ssh_username.clone().unwrap_or_default();
+    let ssh_key = config.ssh_key.clone().unwrap_or_default();
+    let ssh_password = config.ssh_password.clone().unwrap_or_default();
+    // Extract Redis server details
+    let host = config.host.to_string();
+    let port = config.port;
+    let username = config.username.clone();
+    let password = config.password.clone();
+    run_in_tokio(async move {
+        // Get or initialize an SSH session
+        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, Some(&ssh_key), Some(&ssh_password)).await?;
+        // Open a direct TCP channel through the SSH tunnel to the Redis server
+        let channel = session
+            .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
+            .await?;
+        // Wrap the SSH channel in a Redis-compatible stream
+        let compat_stream = SshRedisStream::new(channel.into_stream());
+        let info = RedisConnectionInfo::default();
+        // Create a multiplexed connection with the stream
+        let (mut connection, driver) = MultiplexedConnection::new(&info, compat_stream).await?;
+        // Spawn a background task to drive the connection
+        tokio::spawn(async move {
+            driver.await;
+            info!("Redis driver task finished");
+        });
+        // Authenticate with Redis if password is provided
+        if let Some(password) = password {
+            let mut auth_cmd = cmd("AUTH");
+            // Use ACL authentication (username + password) if username is provided
+            if let Some(user) = username {
+                auth_cmd.arg(user);
+            }
+            auth_cmd.arg(password);
+            let _: () = auth_cmd.query_async(&mut connection).await?;
+        }
+
+        Ok(connection)
+    })
+    .await
+}
+
+/// Opens a single Redis connection with connection pooling support.
+///
+/// This function attempts to reuse an existing connection from the pool if available
+/// and healthy. If not, it creates a new connection (either through SSH tunnel or direct).
+/// The connection is then configured to use the specified database.
+///
+/// # Arguments
+///
+/// * `config` - Redis server configuration
+/// * `db` - Database number to select (0-15 typically)
+///
+/// # Returns
+///
+/// A multiplexed Redis connection connected to the specified database
 pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<MultiplexedConnection> {
+    // Generate a unique key for this connection based on config hash and database number
     let hash = config.get_hash();
     let key = (hash, db);
+    // Try to reuse an existing connection from the pool
     if let Some(conn) = CONNECTION_POOL.get(&key) {
         let mut conn = conn.clone();
+        // Verify the connection is still alive with a PING
         if let Ok(()) = cmd("PING").query_async(&mut conn).await {
             return Ok(conn.clone());
         }
     }
-    let client = open_single_client(config)?;
-    let cfg = AsyncConnectionConfig::default()
-        .set_connection_timeout(Some(CONNECTION_TIMEOUT))
-        .set_response_timeout(Some(RESPONSE_TIMEOUT));
-    let mut conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
+    // Create a new connection: SSH tunnel or direct connection
+    let mut conn = if config.is_ssh_tunnel() {
+        open_single_ssh_tunnel_connection(config).await?
+    } else {
+        let client = open_single_client(config)?;
+        // Configure connection with timeouts
+        let cfg = AsyncConnectionConfig::default()
+            .set_connection_timeout(Some(CONNECTION_TIMEOUT))
+            .set_response_timeout(Some(RESPONSE_TIMEOUT));
+        client.get_multiplexed_async_connection_with_config(&cfg).await?
+    };
+    // Select the specified database if not the default (db 0)
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
     }
+    // Cache the connection in the pool for future reuse
     CONNECTION_POOL.insert(key, conn.clone());
     Ok(conn)
 }
 
+/// Creates a Redis client from the server configuration.
+///
+/// This function builds either a TLS-enabled or regular Redis client
+/// based on the configuration.
+///
+/// # Arguments
+///
+/// * `config` - Redis server configuration
+///
+/// # Returns
+///
+/// A Redis client ready to establish connections
 fn open_single_client(config: &RedisServer) -> Result<Client> {
     let url = config.get_connection_url();
+    // Build client with TLS if certificates are provided
     let client = if let Some(certificates) = config.tls_certificates() {
         Client::build_with_tls(url, certificates)?
     } else {

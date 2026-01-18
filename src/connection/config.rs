@@ -90,6 +90,9 @@ impl RedisServer {
         self.hash(&mut hasher);
         hasher.finish()
     }
+    pub fn is_ssh_tunnel(&self) -> bool {
+        self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
+    }
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
         let tls = self.tls.unwrap_or(false);

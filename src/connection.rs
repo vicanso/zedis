@@ -15,6 +15,8 @@
 mod async_connection;
 mod config;
 mod manager;
+mod ssh_stream;
+mod ssh_tunnel;
 
 pub use async_connection::RedisAsyncConn;
 pub use config::{QueryMode, RedisServer, get_servers, save_servers};
