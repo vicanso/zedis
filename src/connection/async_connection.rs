@@ -13,19 +13,18 @@
 // limitations under the License.
 
 use super::config::RedisServer;
-use super::ssh_stream::SshRedisStream;
-use super::ssh_tunnel::{get_or_init_ssh_session, run_in_tokio};
+use super::ssh_cluster_connection::SshMultiplexedConnection;
+use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
 use dashmap::DashMap;
 use futures::future::try_join_all;
 use redis::{
-    AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisConnectionInfo, RedisFuture, Value,
+    AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
     aio::{ConnectionLike, MultiplexedConnection},
     cluster_async::ClusterConnection,
     cmd,
 };
 use std::{sync::LazyLock, time::Duration};
-use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -40,63 +39,6 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
 /// Global connection pool that caches Redis connections.
 /// Key: (config_hash, database_number), Value: MultiplexedConnection
 static CONNECTION_POOL: LazyLock<DashMap<(u64, usize), MultiplexedConnection>> = LazyLock::new(DashMap::new);
-
-/// Opens a Redis connection through an SSH tunnel.
-///
-/// This function establishes an SSH session using the provided configuration,
-/// creates a TCP channel through the SSH tunnel to the Redis server,
-/// wraps it in a Redis-compatible stream, and authenticates if credentials are provided.
-///
-/// # Arguments
-///
-/// * `config` - Redis server configuration containing SSH and Redis connection details
-///
-/// # Returns
-///
-/// A multiplexed Redis connection ready for use
-async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
-    // Extract SSH tunnel configuration
-    let ssh_addr = config.ssh_addr.clone().unwrap_or_default();
-    let ssh_user = config.ssh_username.clone().unwrap_or_default();
-    let ssh_key = config.ssh_key.clone().unwrap_or_default();
-    let ssh_password = config.ssh_password.clone().unwrap_or_default();
-    // Extract Redis server details
-    let host = config.host.to_string();
-    let port = config.port;
-    let username = config.username.clone();
-    let password = config.password.clone();
-    run_in_tokio(async move {
-        // Get or initialize an SSH session
-        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, Some(&ssh_key), Some(&ssh_password)).await?;
-        // Open a direct TCP channel through the SSH tunnel to the Redis server
-        let channel = session
-            .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
-            .await?;
-        // Wrap the SSH channel in a Redis-compatible stream
-        let compat_stream = SshRedisStream::new(channel.into_stream());
-        let info = RedisConnectionInfo::default();
-        // Create a multiplexed connection with the stream
-        let (mut connection, driver) = MultiplexedConnection::new(&info, compat_stream).await?;
-        // Spawn a background task to drive the connection
-        tokio::spawn(async move {
-            driver.await;
-            info!("Redis driver task finished");
-        });
-        // Authenticate with Redis if password is provided
-        if let Some(password) = password {
-            let mut auth_cmd = cmd("AUTH");
-            // Use ACL authentication (username + password) if username is provided
-            if let Some(user) = username {
-                auth_cmd.arg(user);
-            }
-            auth_cmd.arg(password);
-            let _: () = auth_cmd.query_async(&mut connection).await?;
-        }
-
-        Ok(connection)
-    })
-    .await
-}
 
 /// Opens a single Redis connection with connection pooling support.
 ///
@@ -176,6 +118,7 @@ fn open_single_client(config: &RedisServer) -> Result<Client> {
 pub enum RedisAsyncConn {
     Single(MultiplexedConnection),
     Cluster(ClusterConnection),
+    SshCluster(ClusterConnection<SshMultiplexedConnection>),
 }
 
 impl ConnectionLike for RedisAsyncConn {
@@ -184,6 +127,7 @@ impl ConnectionLike for RedisAsyncConn {
         let cmd_future = match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_command(cmd),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_command(cmd),
+            RedisAsyncConn::SshCluster(conn) => conn.req_packed_command(cmd),
         };
         if let Some(delay) = *DELAY {
             return Box::pin(async move {
@@ -203,6 +147,7 @@ impl ConnectionLike for RedisAsyncConn {
         let cmd_future = match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_commands(cmd, offset, count),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
+            RedisAsyncConn::SshCluster(conn) => conn.req_packed_commands(cmd, offset, count),
         };
         if let Some(delay) = *DELAY {
             return Box::pin(async move {
@@ -217,6 +162,7 @@ impl ConnectionLike for RedisAsyncConn {
         match self {
             RedisAsyncConn::Single(conn) => conn.get_db(),
             RedisAsyncConn::Cluster(_) => 0,
+            RedisAsyncConn::SshCluster(conn) => conn.get_db(),
         }
     }
 }

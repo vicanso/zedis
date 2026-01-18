@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::config::RedisServer;
+use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
 use dashmap::DashMap;
+use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::{Handle, Handler};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
@@ -109,6 +112,7 @@ impl Handler for ClientHandler {
     /// TODO: Implement proper validation against ~/.ssh/known_hosts
     async fn check_server_key(&mut self, _server_public_key: &PublicKey) -> Result<bool, Self::Error> {
         // TODO validate server public key (~/.ssh/known_hosts)
+        info!(host = self.host, port = self.port, "check server key");
         Ok(true)
     }
 }
@@ -264,4 +268,66 @@ async fn new_ssh_session(addr: &str, user: &str, key: Option<&str>, password: Op
     info!(addr, user, "ssh session established");
 
     Ok(session)
+}
+
+/// Opens a Redis connection through an SSH tunnel.
+///
+/// This function establishes an SSH session using the provided configuration,
+/// creates a TCP channel through the SSH tunnel to the Redis server,
+/// wraps it in a Redis-compatible stream, and authenticates if credentials are provided.
+///
+/// # Arguments
+///
+/// * `config` - Redis server configuration containing SSH and Redis connection details
+///
+/// # Returns
+///
+/// A multiplexed Redis connection ready for use
+pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
+    // Extract SSH tunnel configuration
+    let ssh_addr = config.ssh_addr.clone().unwrap_or_default();
+    let ssh_user = config.ssh_username.clone().unwrap_or_default();
+    let ssh_key = config.ssh_key.clone().unwrap_or_default();
+    let ssh_password = config.ssh_password.clone().unwrap_or_default();
+    // Extract Redis server details
+    let host = config.host.to_string();
+    let port = config.port;
+    let username = config.username.clone();
+    let password = config.password.clone();
+    run_in_tokio(async move {
+        // Get or initialize an SSH session
+        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, Some(&ssh_key), Some(&ssh_password)).await?;
+        // Open a direct TCP channel through the SSH tunnel to the Redis server
+        let channel = session
+            .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
+            .await?;
+        info!(ssh_addr, ssh_user, "open direct tcpip success");
+        // Wrap the SSH channel in a Redis-compatible stream
+        let compat_stream = SshRedisStream::new(channel.into_stream());
+        let info = RedisConnectionInfo::default();
+        let conn_config = redis::AsyncConnectionConfig::new()
+            .set_connection_timeout(Some(Duration::from_secs(10)))
+            .set_response_timeout(Some(Duration::from_secs(30)));
+        // Create a multiplexed connection with the stream
+        let (mut connection, driver) =
+            MultiplexedConnection::new_with_config(&info, compat_stream, conn_config).await?;
+        // Spawn a background task to drive the connection
+        tokio::spawn(async move {
+            driver.await;
+            info!("Redis driver task finished");
+        });
+        // Authenticate with Redis if password is provided
+        if let Some(password) = password {
+            let mut auth_cmd = cmd("AUTH");
+            // Use ACL authentication (username + password) if username is provided
+            if let Some(user) = username {
+                auth_cmd.arg(user);
+            }
+            auth_cmd.arg(password);
+            let _: () = auth_cmd.query_async(&mut connection).await?;
+        }
+
+        Ok(connection)
+    })
+    .await
 }

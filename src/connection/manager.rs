@@ -15,6 +15,7 @@
 use super::{
     async_connection::{RedisAsyncConn, open_single_connection, query_async_masters},
     config::{RedisServer, get_config},
+    ssh_cluster_connection::SshMultiplexedConnection,
 };
 use crate::error::Error;
 use dashmap::DashMap;
@@ -46,6 +47,7 @@ enum ServerType {
 enum RClient {
     Single(RedisServer),
     Cluster(cluster::ClusterClient),
+    SshCluster(cluster::ClusterClient),
 }
 
 // Node roles in a Redis setup
@@ -158,6 +160,11 @@ async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncC
                 .set_response_timeout(RESPONSE_TIMEOUT);
             let conn = client.get_async_connection_with_config(cfg).await?;
             Ok(RedisAsyncConn::Cluster(conn))
+        }
+        RClient::SshCluster(client) => {
+            let conn: redis::cluster_async::ClusterConnection<SshMultiplexedConnection> =
+                client.get_async_generic_connection().await?;
+            Ok(RedisAsyncConn::SshCluster(conn))
         }
     }
 }
@@ -463,7 +470,13 @@ impl ConnectionManager {
                 if node.server.insecure.unwrap_or(false) {
                     builder = builder.danger_accept_invalid_hostnames(true);
                 }
-                RClient::Cluster(builder.build()?)
+                if node.server.is_ssh_tunnel() {
+                    builder = builder.username(server_id);
+
+                    RClient::SshCluster(builder.build()?)
+                } else {
+                    RClient::Cluster(builder.build()?)
+                }
             }
             _ => RClient::Single(nodes[0].server.clone()),
         };

@@ -15,6 +15,7 @@
 mod async_connection;
 mod config;
 mod manager;
+mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
 
