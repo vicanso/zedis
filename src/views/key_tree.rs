@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    components::{FormDialog, FormField, open_add_form_dialog},
+    components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::QueryMode,
     helpers::{EditorAction, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
@@ -526,6 +526,9 @@ impl ZedisKeyTree {
         let server_state = self.server_state.read(cx);
         // if scanning, return None
         if server_state.scaning() {
+            if self.key_tree_list_state.read(cx).delegate().items.is_empty() {
+                return Some(div().m_5().child(SkeletonLoading::new()).into_any_element());
+            }
             return None;
         }
         if !self.state.is_empty && self.state.error.is_none() {
@@ -619,6 +622,7 @@ impl ZedisKeyTree {
         if let Some(status_view) = self.get_tree_status_view(cx) {
             return status_view.into_any_element();
         }
+
         div()
             .p_1()
             .bg(cx.theme().sidebar)

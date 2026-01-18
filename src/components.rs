@@ -15,7 +15,9 @@
 mod card;
 mod dialog;
 mod kv_delegate;
+mod skeleton_loading;
 
 pub use card::Card;
 pub use dialog::*;
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};
+pub use skeleton_loading::SkeletonLoading;

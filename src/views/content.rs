@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use crate::{
+    components::SkeletonLoading,
     connection::get_connection_manager,
     error::Error,
     helpers::{EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string},
-    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
+    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
@@ -25,7 +26,6 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
-    skeleton::Skeleton,
     v_flex,
 };
 use redis::cmd;
@@ -34,9 +34,6 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 // Constants for UI dimensions
 const LOADING_SKELETON_WIDTH: f32 = 600.0;
-const LOADING_SKELETON_SMALL_WIDTH: f32 = 100.0;
-const LOADING_SKELETON_MEDIUM_WIDTH: f32 = 220.0;
-const LOADING_SKELETON_LARGE_WIDTH: f32 = 420.0;
 const SERVERS_MARGIN: f32 = 8.0;
 const CMD_LABEL: &str = "$";
 const CMD_CLEAR: &str = "clear";
@@ -263,25 +260,13 @@ impl ZedisContent {
     ///
     /// Displayed when the application is busy (e.g., connecting to Redis server,
     /// loading keys). Provides visual feedback that something is happening.
-    fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().w_full().h_full().items_center().justify_center().child(
-            v_flex()
-                .gap_2()
-                .w(px(LOADING_SKELETON_WIDTH))
-                // Variable-width skeletons create a more natural loading appearance
-                .child(Skeleton::new().w(px(LOADING_SKELETON_WIDTH)).h_4().rounded_md())
-                .child(Skeleton::new().w(px(LOADING_SKELETON_SMALL_WIDTH)).h_4().rounded_md())
-                .child(Skeleton::new().w(px(LOADING_SKELETON_MEDIUM_WIDTH)).h_4().rounded_md())
-                .child(Skeleton::new().w(px(LOADING_SKELETON_LARGE_WIDTH)).h_4().rounded_md())
-                .child(Skeleton::new().w(px(LOADING_SKELETON_WIDTH)).h_4().rounded_md())
-                .child(
-                    Label::new(i18n_common(cx, "loading"))
-                        .w_full()
-                        .text_color(cx.theme().muted_foreground)
-                        .mt_2()
-                        .text_align(gpui::TextAlign::Center),
-                ),
-        )
+    fn render_loading(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .h_full()
+            .items_center()
+            .justify_center()
+            .child(div().w(px(LOADING_SKELETON_WIDTH)).child(SkeletonLoading::new()))
     }
     /// Render the main editor interface with resizable panels
     ///

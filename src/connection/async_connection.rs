@@ -192,6 +192,9 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
         let current_cmd = cmds.get(index).unwrap_or(first_cmd).clone();
 
         async move {
+            if let Some(delay) = *DELAY {
+                smol::Timer::after(delay).await;
+            }
             // Establish a multiplexed async connection to the specific node.
             let mut conn = open_single_connection(&addr, db).await?;
 
