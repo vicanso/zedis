@@ -111,9 +111,20 @@ impl Handler for ClientHandler {
     ///
     /// Currently accepts all server keys without validation.
     /// TODO: Implement proper validation against ~/.ssh/known_hosts
-    async fn check_server_key(&mut self, _server_public_key: &PublicKey) -> Result<bool, Self::Error> {
-        // TODO validate server public key (~/.ssh/known_hosts)
+    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
         info!(host = self.host, port = self.port, "check server key");
+        let Ok(public_key) = server_public_key.to_openssh() else {
+            return Ok(false);
+        };
+        let Some(home) = get_home_dir() else {
+            return Ok(true);
+        };
+        let known_hosts = home.join(".ssh/known_hosts");
+        if known_hosts.exists() {
+            let known_hosts = std::fs::read_to_string(known_hosts)?;
+            // simply check if the public key is in the known_hosts file
+            return Ok(known_hosts.contains(public_key.as_str()));
+        }
         Ok(true)
     }
 }
@@ -164,12 +175,7 @@ async fn is_alive(session: Arc<SshHandle>) -> bool {
 /// # Returns
 ///
 /// An Arc-wrapped SSH session handle ready for use
-pub async fn get_or_init_ssh_session(
-    addr: &str,
-    user: &str,
-    key: Option<&str>,
-    password: Option<&str>,
-) -> Result<Arc<SshHandle>> {
+pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<Arc<SshHandle>> {
     // Generate unique identifier for this SSH connection
     let id = format!("{user}@{addr}");
     // Check cache for existing session
@@ -212,7 +218,7 @@ pub async fn get_or_init_ssh_session(
 ///    - Otherwise, decodes the key from the string content
 /// 2. Password: If only `password` is provided, uses password authentication
 /// 3. Error: If neither key nor password is provided, returns an error
-async fn new_ssh_session(addr: &str, user: &str, key: Option<&str>, password: Option<&str>) -> Result<SshHandle> {
+async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<SshHandle> {
     // Configure SSH client with keepalive to maintain connection
     let config = russh::client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
@@ -238,11 +244,11 @@ async fn new_ssh_session(addr: &str, user: &str, key: Option<&str>, password: Op
     let mut session = russh::client::connect(config, (host, port), handler).await?;
 
     // Authenticate using provided credentials
-    let auth_res = if let Some(key) = key {
+    let auth_res = if !key.is_empty() {
         let key = if key.starts_with("~")
             && let Some(home_dir) = get_home_dir()
         {
-            format!("{}{}", home_dir.to_string_lossy(), key[1..].to_string())
+            format!("{}{}", home_dir.to_string_lossy(), &key[1..])
         } else {
             key.to_string()
         };
@@ -252,12 +258,12 @@ async fn new_ssh_session(addr: &str, user: &str, key: Option<&str>, password: Op
             load_secret_key(key, None)?
         } else {
             // Decode key from string content
-            decode_secret_key(&key, password)?
+            decode_secret_key(&key, None)?
         };
         let key = Arc::new(key_pair);
         let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
         session.authenticate_publickey(user, key_with_alg).await?
-    } else if let Some(password) = password {
+    } else if !password.is_empty() {
         // Password authentication
         session.authenticate_password(user, password).await?
     } else {
@@ -304,7 +310,7 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
     let password = config.password.clone();
     run_in_tokio(async move {
         // Get or initialize an SSH session
-        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, Some(&ssh_key), Some(&ssh_password)).await?;
+        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password).await?;
         // Open a direct TCP channel through the SSH tunnel to the Redis server
         let channel = session
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
