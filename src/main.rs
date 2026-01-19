@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::get_servers;
 use crate::constants::SIDEBAR_WIDTH;
-use crate::helpers::{MemuAction, is_app_store_build, is_development, new_hot_keys};
+use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
     FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
@@ -258,6 +258,9 @@ fn init_logger() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
+
 fn main() {
     init_logger();
     let app = Application::new().with_assets(assets::Assets);
@@ -271,7 +274,22 @@ fn main() {
             error!(error = %e, "get servers fail",);
         }
     }
-    info!(is_app_store_build = is_app_store_build(), "detect app build");
+    let config_dir = if let Ok(dir) = get_or_create_config_dir() {
+        dir.to_string_lossy().to_string()
+    } else {
+        "--".to_string()
+    };
+    let info = os_info::get();
+    let os = format!("{}-{}", info.os_type().to_string(), info.version().to_string());
+    info!(
+        version = VERSION,
+        git_sha = GIT_SHA,
+        os,
+        arch = info.architecture().unwrap_or_default().to_string(),
+        config_dir,
+        is_app_store_build = is_app_store_build(),
+        "zedis launch"
+    );
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
