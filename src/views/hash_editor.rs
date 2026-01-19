@@ -219,12 +219,21 @@ impl ZedisHashEditor {
     /// # Returns
     /// A new `ZedisHashEditor` instance with a two-column table (Field and Value)
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let window_width = window.viewport_size().width.to_f64();
+        let field_width = if window_width > 1800. {
+            0.2
+        } else if window_width > 1400. {
+            0.3
+        } else {
+            0.4
+        };
+
         // Initialize the KV table with two columns: field and value
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisHashValues>::new(
                 vec![
-                    KvTableColumn::new("Field", None), // Field name column (flexible width)
-                    KvTableColumn::new("Value", None), // Field value column (flexible width)
+                    KvTableColumn::new("Field", Some(field_width)), // Field name column (flexible width)
+                    KvTableColumn::new("Value", None),              // Field value column (flexible width)
                 ],
                 server_state,
                 window,

@@ -138,8 +138,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let mut remaining_width = content_width.as_f32() - 10.;
         let mut flexible_columns = 0;
 
-        for column in &columns {
-            if let Some(width) = column.width {
+        for column in columns.iter_mut() {
+            if let Some(mut width) = column.width {
+                if width < 1.0 {
+                    width = remaining_width * width;
+                    column.width = Some(width);
+                }
                 remaining_width -= width;
             } else {
                 flexible_columns += 1;
