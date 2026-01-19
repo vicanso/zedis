@@ -454,7 +454,8 @@ impl ConnectionManager {
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
     pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
-        let key = format!("{}:{}", server_id, db);
+        let config = get_config(server_id)?;
+        let key = format!("{:x}:{}", config.get_hash(), db);
         if let Some(client) = self.clients.get(&key) {
             return Ok(client.clone());
         }
