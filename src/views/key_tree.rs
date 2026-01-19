@@ -112,13 +112,14 @@ fn new_key_tree_items(
         for (index, k) in key.splitn(max_key_tree_depth, separator).enumerate() {
             // if key_tre_item is not None, it means we are in a folder
             // because it's not the last part of the key
+            let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
             if let Some(key_tree_item) = key_tree_item.take() {
                 let entry = items.entry(key_tree_item.id.clone()).or_insert_with(|| key_tree_item);
                 entry.is_folder = true;
                 entry.children_count += 1;
+                entry.expanded = expanded;
             }
 
-            let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
             if !expanded {
                 break;
             }
