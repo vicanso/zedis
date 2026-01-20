@@ -13,7 +13,10 @@
 // limitations under the License.
 
 use super::{
-    async_connection::{RedisAsyncConn, open_single_connection, query_async_masters},
+    async_connection::{
+        RedisAsyncConn, get_redis_connection_timeout, get_redis_response_timeout, open_single_connection,
+        query_async_masters,
+    },
     config::{RedisServer, get_config},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
@@ -25,7 +28,6 @@ use semver::Version;
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
-    time::Duration,
 };
 use tracing::{debug, error, info};
 
@@ -144,9 +146,6 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     Ok(nodes)
 }
 
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// Establishes an asynchronous connection based on the client type.
 async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncConn> {
     match client {
@@ -156,8 +155,8 @@ async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncC
         }
         RClient::Cluster(client) => {
             let cfg = cluster::ClusterConfig::default()
-                .set_connection_timeout(CONNECTION_TIMEOUT)
-                .set_response_timeout(RESPONSE_TIMEOUT);
+                .set_connection_timeout(get_redis_connection_timeout())
+                .set_response_timeout(get_redis_response_timeout());
             let conn = client.get_async_connection_with_config(cfg).await?;
             Ok(RedisAsyncConn::Cluster(conn))
         }

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    helpers::get_or_create_config_dir,
+    helpers::{get_or_create_config_dir, parse_duration},
     states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
 use gpui::{Entity, Subscription, Window, prelude::*};
@@ -29,6 +29,8 @@ pub struct ZedisSettingEditor {
     key_separator_state: Entity<InputState>,
     max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
+    redis_connection_timeout_state: Entity<InputState>,
+    redis_response_timeout_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -38,6 +40,8 @@ impl ZedisSettingEditor {
         let max_key_tree_depth = store.max_key_tree_depth();
         let key_separator = store.key_separator().to_string();
         let max_truncate_length = store.max_truncate_length();
+        let redis_connection_timeout = store.redis_connection_timeout();
+        let redis_response_timeout = store.redis_response_timeout();
         let max_key_tree_depth_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "max_key_tree_depth_placeholder"))
@@ -52,6 +56,16 @@ impl ZedisSettingEditor {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "max_truncate_length_placeholder"))
                 .default_value(max_truncate_length.to_string())
+        });
+        let redis_connection_timeout_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, "redis_connection_timeout_placeholder"))
+                .default_value(redis_connection_timeout)
+        });
+        let redis_response_timeout_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, "redis_response_timeout_placeholder"))
+                .default_value(redis_response_timeout)
         });
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
@@ -68,6 +82,32 @@ impl ZedisSettingEditor {
                 }
             }),
         );
+        subscriptions.push(cx.subscribe_in(
+            &redis_connection_timeout_state,
+            window,
+            |_view, state, event, _window, cx| {
+                if let InputEvent::Blur = &event {
+                    let text = state.read(cx).value();
+                    let duration = parse_duration(&text).ok();
+                    update_app_state_and_save(cx, "save_redis_connection_timeout", move |state, _cx| {
+                        state.set_redis_connection_timeout(duration);
+                    });
+                }
+            },
+        ));
+        subscriptions.push(cx.subscribe_in(
+            &redis_response_timeout_state,
+            window,
+            |_view, state, event, _window, cx| {
+                if let InputEvent::Blur = &event {
+                    let text = state.read(cx).value();
+                    let duration = parse_duration(&text).ok();
+                    update_app_state_and_save(cx, "save_redis_response_timeout", move |state, _cx| {
+                        state.set_redis_response_timeout(duration);
+                    });
+                }
+            },
+        ));
         subscriptions.push(
             cx.subscribe_in(&max_key_tree_depth_state, window, |_view, state, event, window, cx| {
                 let NumberInputEvent::Step(action) = event;
@@ -126,6 +166,8 @@ impl ZedisSettingEditor {
             max_truncate_length_state,
             key_separator_state,
             max_key_tree_depth_state,
+            redis_response_timeout_state,
+            redis_connection_timeout_state,
         }
     }
 }
@@ -148,6 +190,16 @@ impl Render for ZedisSettingEditor {
                         field()
                             .label(i18n_settings(cx, "key_separator"))
                             .child(Input::new(&self.key_separator_state)),
+                    )
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "redis_connection_timeout"))
+                            .child(Input::new(&self.redis_connection_timeout_state)),
+                    )
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "redis_response_timeout"))
+                            .child(Input::new(&self.redis_response_timeout_state)),
                     )
                     .child(
                         field()

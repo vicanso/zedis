@@ -25,7 +25,7 @@ use crate::states::ZedisGlobalStore;
 use crate::{
     connection::{QueryMode, get_connection_manager},
     error::Error,
-    helpers::unix_ts,
+    helpers::{parse_duration, unix_ts},
 };
 use futures::{StreamExt, stream};
 use gpui::{SharedString, prelude::*};
@@ -470,14 +470,10 @@ impl ZedisServerState {
 
         let mut new_ttl = Duration::ZERO;
         let mut parse_fail_error = "".to_string();
-        if let Ok(secs) = ttl.parse::<u64>() {
-            new_ttl = Duration::from_secs(secs);
-        } else {
-            match humantime::parse_duration(&ttl) {
-                Ok(ttl) => new_ttl = ttl,
-                Err(err) => {
-                    parse_fail_error = err.to_string();
-                }
+        match parse_duration(&ttl) {
+            Ok(ttl) => new_ttl = ttl,
+            Err(err) => {
+                parse_fail_error = err.to_string();
             }
         }
 

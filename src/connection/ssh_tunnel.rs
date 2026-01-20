@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::async_connection::{get_redis_connection_timeout, get_redis_response_timeout};
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
@@ -320,8 +321,8 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
         let compat_stream = SshRedisStream::new(channel.into_stream());
         let info = RedisConnectionInfo::default();
         let conn_config = redis::AsyncConnectionConfig::new()
-            .set_connection_timeout(Some(Duration::from_secs(10)))
-            .set_response_timeout(Some(Duration::from_secs(30)));
+            .set_connection_timeout(Some(get_redis_connection_timeout()))
+            .set_response_timeout(Some(get_redis_response_timeout()));
         // Create a multiplexed connection with the stream
         let (mut connection, driver) =
             MultiplexedConnection::new_with_config(&info, compat_stream, conn_config).await?;

@@ -12,9 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::error::Error;
 use chrono::Local;
+use std::time::Duration;
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Helper function to get current Unix timestamp in seconds.
 pub fn unix_ts() -> i64 {
     Local::now().timestamp()
+}
+
+/// Parse a duration string into a Duration.
+pub fn parse_duration(s: &str) -> Result<Duration> {
+    if let Ok(secs) = s.parse::<u64>() {
+        return Ok(Duration::from_secs(secs));
+    }
+    humantime::parse_duration(s).map_err(|e| Error::Invalid { message: e.to_string() })
 }

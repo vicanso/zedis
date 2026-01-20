@@ -27,7 +27,7 @@ pub use common::*;
 pub use font::get_font_family;
 pub use fs::{get_home_dir, get_or_create_config_dir, is_app_store_build};
 pub use string::*;
-pub use time::unix_ts;
+pub use time::{parse_duration, unix_ts};
 pub use validate::*;
 pub fn is_development() -> bool {
     env::var("RUST_ENV").unwrap_or_default() == "dev"

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::{set_redis_connection_timeout, set_redis_response_timeout};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
@@ -22,6 +23,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{error, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -106,6 +108,8 @@ pub struct ZedisAppState {
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
     max_truncate_length: Option<usize>,
+    redis_connection_timeout: Option<Duration>,
+    redis_response_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +160,13 @@ impl ZedisAppState {
         }
         state.route = Route::Home;
 
+        if let Some(redis_connection_timeout) = state.redis_connection_timeout {
+            set_redis_connection_timeout(redis_connection_timeout);
+        }
+        if let Some(redis_response_timeout) = state.redis_response_timeout {
+            set_redis_response_timeout(redis_response_timeout);
+        }
+
         Ok(state)
     }
     pub fn new() -> Self {
@@ -197,6 +208,12 @@ impl ZedisAppState {
             return;
         }
         self.max_key_tree_depth = Some(max_key_tree_depth);
+    }
+    pub fn set_redis_connection_timeout(&mut self, redis_connection_timeout: Option<Duration>) {
+        self.redis_connection_timeout = redis_connection_timeout;
+    }
+    pub fn set_redis_response_timeout(&mut self, redis_response_timeout: Option<Duration>) {
+        self.redis_response_timeout = redis_response_timeout;
     }
     pub fn set_font_size(&mut self, font_size: Option<FontSize>) {
         self.font_size = font_size;
@@ -246,6 +263,16 @@ impl ZedisAppState {
     }
     pub fn set_max_truncate_length(&mut self, max_truncate_length: usize) {
         self.max_truncate_length = Some(max_truncate_length);
+    }
+    pub fn redis_connection_timeout(&self) -> String {
+        self.redis_connection_timeout
+            .map(|timeout| timeout.as_secs().to_string())
+            .unwrap_or_default()
+    }
+    pub fn redis_response_timeout(&self) -> String {
+        self.redis_response_timeout
+            .map(|timeout| timeout.as_secs().to_string())
+            .unwrap_or_default()
     }
 }
 

@@ -16,6 +16,7 @@ use super::config::RedisServer;
 use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures::future::try_join_all;
 use redis::{
@@ -24,12 +25,10 @@ use redis::{
     cluster_async::ClusterConnection,
     cmd,
 };
+use std::sync::Arc;
 use std::{sync::LazyLock, time::Duration};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     let value = std::env::var("REDIS_DELAY").unwrap_or_default();
@@ -39,6 +38,43 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
 /// Global connection pool that caches Redis connections.
 /// Key: (config_hash, database_number), Value: MultiplexedConnection
 static CONNECTION_POOL: LazyLock<DashMap<(u64, usize), MultiplexedConnection>> = LazyLock::new(DashMap::new);
+
+struct RedisConfig {
+    connection_timeout: Duration,
+    response_timeout: Duration,
+}
+
+static GLOBAL_REDIS_CONFIG: LazyLock<ArcSwap<RedisConfig>> = LazyLock::new(|| {
+    ArcSwap::from_pointee(RedisConfig {
+        connection_timeout: Duration::from_secs(30),
+        response_timeout: Duration::from_secs(60),
+    })
+});
+
+pub fn set_redis_connection_timeout(timeout: Duration) {
+    let current = GLOBAL_REDIS_CONFIG.load();
+    let new_config = RedisConfig {
+        connection_timeout: timeout,
+        response_timeout: current.response_timeout,
+    };
+    GLOBAL_REDIS_CONFIG.store(Arc::new(new_config));
+}
+pub fn set_redis_response_timeout(timeout: Duration) {
+    let current = GLOBAL_REDIS_CONFIG.load();
+    let new_config = RedisConfig {
+        connection_timeout: current.connection_timeout,
+        response_timeout: timeout,
+    };
+    GLOBAL_REDIS_CONFIG.store(Arc::new(new_config));
+}
+
+pub fn get_redis_connection_timeout() -> Duration {
+    GLOBAL_REDIS_CONFIG.load().connection_timeout
+}
+
+pub fn get_redis_response_timeout() -> Duration {
+    GLOBAL_REDIS_CONFIG.load().response_timeout
+}
 
 /// Opens a single Redis connection with connection pooling support.
 ///
@@ -73,8 +109,8 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
         let client = open_single_client(config)?;
         // Configure connection with timeouts
         let cfg = AsyncConnectionConfig::default()
-            .set_connection_timeout(Some(CONNECTION_TIMEOUT))
-            .set_response_timeout(Some(RESPONSE_TIMEOUT));
+            .set_connection_timeout(Some(get_redis_connection_timeout()))
+            .set_response_timeout(Some(get_redis_response_timeout()));
         client.get_multiplexed_async_connection_with_config(&cfg).await?
     };
     // Select the specified database if not the default (db 0)
