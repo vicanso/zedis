@@ -16,15 +16,18 @@ use crate::{
     error::Error,
     helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
 };
+use arc_swap::ArcSwap;
 use gpui::Action;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::{fmt, fs::read_to_string, path::PathBuf, str::FromStr};
+use std::sync::Arc;
+use std::{fmt, fs::read_to_string, path::PathBuf, str::FromStr, sync::LazyLock};
 use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -157,6 +160,9 @@ fn get_or_create_server_config() -> Result<PathBuf> {
     Ok(path)
 }
 
+static SERVER_CONFIG_MAP: LazyLock<ArcSwap<HashMap<String, RedisServer>>> =
+    LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
+
 pub fn get_servers() -> Result<Vec<RedisServer>> {
     let path = get_or_create_server_config()?;
     let value = read_to_string(path)?;
@@ -165,6 +171,7 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
     }
     let configs: RedisServers = toml::from_str(&value)?;
     let mut servers = configs.servers;
+    let mut configs = HashMap::new();
     for server in servers.iter_mut() {
         if let Some(password) = &server.password {
             server.password = Some(decrypt(password).unwrap_or(password.clone()));
@@ -175,12 +182,15 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
         }
+        configs.insert(server.id.clone(), server.clone());
     }
+    SERVER_CONFIG_MAP.store(Arc::new(configs));
     Ok(servers)
 }
 
 /// Saves the server configuration to the file.
 pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
+    let mut configs = HashMap::new();
     for server in servers.iter_mut() {
         if let Some(password) = &server.password {
             server.password = Some(encrypt(password)?);
@@ -191,7 +201,9 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(encrypt(ssh_key)?);
         }
+        configs.insert(server.id.clone(), server.clone());
     }
+    SERVER_CONFIG_MAP.store(Arc::new(configs));
     let path = get_or_create_server_config()?;
     let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid { message: e.to_string() })?;
     fs::write(&path, value).await?;
@@ -199,7 +211,10 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
 }
 
 /// Retrieves a single server configuration by name.
-pub(crate) fn get_config(id: &str) -> Result<RedisServer> {
+pub fn get_config(id: &str) -> Result<RedisServer> {
+    if let Some(server) = SERVER_CONFIG_MAP.load().get(id) {
+        return Ok(server.clone());
+    }
     let servers = get_servers()?;
     let config = servers.iter().find(|config| config.id == id).ok_or(Error::Invalid {
         message: format!("Redis config not found: {id}"),

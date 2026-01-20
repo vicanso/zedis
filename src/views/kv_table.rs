@@ -141,7 +141,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         for column in columns.iter_mut() {
             if let Some(mut width) = column.width {
                 if width < 1.0 {
-                    width = remaining_width * width;
+                    width *= remaining_width;
                     column.width = Some(width);
                 }
                 remaining_width -= width;

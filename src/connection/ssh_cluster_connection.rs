@@ -46,14 +46,13 @@ impl Connect for SshMultiplexedConnection {
     where
         T: IntoConnectionInfo + Send + 'a,
     {
-        // 019bc56a-c857-7df2-8996-71dd17b63212
         Box::pin(async move {
             let connection_info = info.into_connection_info()?;
             let id = connection_info.redis_settings().username().unwrap_or_default();
             let mut config =
                 get_config(id).map_err(|e| (ErrorKind::InvalidClientConfig, "get_config", e.to_string()))?;
             let (target_host, target_port) = match connection_info.addr() {
-                redis::ConnectionAddr::Tcp(h, p) => (h, p),
+                redis::ConnectionAddr::Tcp(host, port) => (host, port),
                 redis::ConnectionAddr::TcpTls { host, port, .. } => (host, port),
                 _ => {
                     return Err(RedisError::from((

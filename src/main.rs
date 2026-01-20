@@ -280,7 +280,7 @@ fn main() {
         "--".to_string()
     };
     let info = os_info::get();
-    let os = format!("{}-{}", info.os_type().to_string(), info.version().to_string());
+    let os = format!("{}-{}", info.os_type(), info.version());
     info!(
         version = VERSION,
         git_sha = GIT_SHA,
