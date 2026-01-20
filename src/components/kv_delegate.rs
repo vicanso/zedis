@@ -90,6 +90,8 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     table_columns: Vec<KvTableColumn>,
     /// State tracking if an async operation (like delete/load) is in progress.
     processing: Rc<Cell<bool>>,
+    /// Whether the delegate is readonly
+    readonly: bool,
     /// The data source provider.
     fetcher: Arc<T>,
     /// Column definitions for the UI component.
@@ -149,7 +151,12 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
             processing: Rc::new(Cell::new(false)),
             editing_row: Cell::new(None),
             edit_focus_done: false,
+            readonly: false,
         }
+    }
+
+    pub fn enable_readonly(&mut self) {
+        self.readonly = true;
     }
 
     /// Returns a cloned Arc reference to the current fetcher.
@@ -243,7 +250,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 .mr_2()
                 .icon(icon)
                 .tooltip(i18n_common(cx, "update_tooltip"))
-                .disabled(processing.get())
+                .disabled(self.readonly || processing.get())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if is_editing {
                         this.delegate_mut().handle_update_row(row_ix, window, cx);
@@ -280,7 +287,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 .ghost()
                 .icon(Icon::new(CustomIconName::FileXCorner))
                 .tooltip(i18n_common(cx, "remove_tooltip"))
-                .disabled(processing.get())
+                .disabled(self.readonly || processing.get())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let processing = this.delegate_mut().processing.clone();
                     let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();

@@ -284,6 +284,7 @@ impl ZedisBytesEditor {
             }
         }));
 
+        let readonly = server_state.read(cx).readonly();
         info!("Creating new string editor view");
 
         let mut this = Self {
@@ -295,7 +296,7 @@ impl ZedisBytesEditor {
             editor,
             should_update_editor: true,
             server_state,
-            readonly: false,
+            readonly,
             _subscriptions: subscriptions,
         };
         this.update_editor_data(cx);
@@ -308,24 +309,19 @@ impl ZedisBytesEditor {
     /// Resets the modification flag after updating to the new value.
     fn update_editor_data(&mut self, cx: &mut Context<Self>) {
         // Prevent editor flickering by skipping value updates while loading
-        if self
-            .server_state
-            .read(cx)
-            .value()
-            .map(|value| value.is_loading())
-            .unwrap_or(false)
-        {
+        let server_state = self.server_state.read(cx);
+        let value = server_state.value();
+        if value.map(|value| value.is_loading()).unwrap_or(false) {
             return;
         }
 
-        let server_state = self.server_state.clone();
-
         // Reset modification flag since we're loading a new value
         self.value_modified = false;
+        let readonly = server_state.readonly();
 
-        let redis_bytes_value = server_state.read(cx).value().and_then(|v| v.bytes_value());
+        let redis_bytes_value = value.and_then(|v| v.bytes_value());
         if let Some(redis_bytes_value) = &redis_bytes_value {
-            self.readonly = !redis_bytes_value.is_utf8_text();
+            self.readonly = readonly || !redis_bytes_value.is_utf8_text();
             self.data = format_byte_editor_data(redis_bytes_value, cx);
         } else {
             self.data = ByteEditorData::Text(SharedString::default());

@@ -92,6 +92,9 @@ pub struct ZedisServerState {
     /// Currently selected database
     db: usize,
 
+    /// Whether the server is readonly
+    readonly: bool,
+
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
 
@@ -333,6 +336,11 @@ impl ZedisServerState {
     /// Get the current key tree ID (changes when keys are reloaded)
     pub fn key_tree_id(&self) -> &str {
         &self.key_tree_id
+    }
+
+    /// Get whether the server is readonly
+    pub fn readonly(&self) -> bool {
+        self.readonly
     }
 
     /// Set the query mode (All/Prefix/Exact)
@@ -582,7 +590,15 @@ impl ZedisServerState {
                     let nodes = client.nodes();
                     let nodes_description = client.nodes_description();
                     let supports_db_selection = client.supports_db_selection();
-                    Ok((dbsize, nodes, nodes_description, version, supports_db_selection))
+                    let readonly = client.readonly();
+                    Ok((
+                        dbsize,
+                        nodes,
+                        nodes_description,
+                        version,
+                        supports_db_selection,
+                        readonly,
+                    ))
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading
@@ -591,12 +607,13 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection)) = result {
+                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection, readonly)) = result {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
                         this.nodes_description = Arc::new(nodes_description);
                         this.version = version.into();
                         this.supports_db_selection = supports_db_selection;
+                        this.readonly = readonly;
                     };
 
                     let server_id = this.server_id.clone();

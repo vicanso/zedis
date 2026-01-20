@@ -171,6 +171,7 @@ async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncC
 // TODO 是否在client中保存connection
 #[derive(Clone)]
 pub struct RedisClient {
+    readonly: bool,
     db: usize,
     server_type: ServerType,
     nodes: Vec<RedisNode>,
@@ -193,6 +194,9 @@ impl RedisClient {
     }
     pub fn supports_db_selection(&self) -> bool {
         self.server_type != ServerType::Cluster
+    }
+    pub fn readonly(&self) -> bool {
+        self.readonly
     }
 
     pub fn nodes_description(&self) -> RedisClientDescription {
@@ -331,6 +335,37 @@ async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerTyp
         Ok(ServerType::Cluster)
     } else {
         Ok(ServerType::Standalone)
+    }
+}
+
+async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
+    let user: String = cmd("ACL")
+        .arg("WHOAMI")
+        .query_async(&mut conn)
+        .await
+        .unwrap_or_default();
+    if user.is_empty() {
+        return false;
+    }
+    let result: redis::RedisResult<String> = cmd("ACL")
+        .arg("DRYRUN")
+        .arg(user)
+        .arg("SET")
+        .arg("zedis")
+        .arg("treexie")
+        .query_async(&mut conn)
+        .await;
+    match result {
+        Ok(res) => res != "OK",
+
+        Err(e) => {
+            if let Some(code) = e.code()
+                && code == "NOPERM"
+            {
+                return true;
+            }
+            false
+        }
     }
 }
 
@@ -491,6 +526,7 @@ impl ConnectionManager {
 
         let mut client = RedisClient {
             db,
+            readonly: safe_check_user_readonly(connection.clone()).await,
             server_type: server_type.clone(),
             nodes,
             master_nodes,

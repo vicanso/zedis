@@ -89,6 +89,7 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     loading: bool,
     /// Flag indicating the selected key has changed (triggers input reset)
     key_changed: bool,
+    readonly: bool,
     /// Event subscriptions for server state and input changes
     _subscriptions: Vec<Subscription>,
 }
@@ -218,12 +219,17 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
         }));
 
+        let readonly = server_state.read(cx).readonly();
         // Initialize table data and state
         let fetcher = Self::new_values(server_state, cx);
         let done = fetcher.is_done();
         let items_count = fetcher.rows_count();
         let total_count = fetcher.count();
-        let delegate = ZedisKvDelegate::new(Self::new_columns(columns, window, cx), fetcher, window, cx);
+        let mut delegate = ZedisKvDelegate::new(Self::new_columns(columns, window, cx), fetcher, window, cx);
+        if readonly {
+            delegate.enable_readonly();
+        }
+
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         info!("Creating new key value table view");
@@ -236,6 +242,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             done,
             loading: false,
             key_changed: false,
+            readonly,
             _subscriptions: subscriptions,
         }
     }
@@ -310,6 +317,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                             .child(
                                 Button::new("add-value-btn")
                                     .icon(CustomIconName::FilePlusCorner)
+                                    .disabled(self.readonly)
                                     .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
                                     .on_click(handle_add_value),
                             )

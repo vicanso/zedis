@@ -59,6 +59,8 @@ pub struct ZedisEditor {
     /// Track when a key was selected to handle loading states smoothly
     selected_key_at: Option<Instant>,
 
+    readonly: bool,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -94,9 +96,12 @@ impl ZedisEditor {
 
         // Subscribe to server events to track when keys are selected
         subscriptions.push(
-            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+            cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeySelected(_) => {
                     this.selected_key_at = Some(Instant::now());
+                }
+                ServerEvent::ServerInfoUpdated(_) => {
+                    this.readonly = server_state.read(cx).readonly();
                 }
                 ServerEvent::EditonActionTriggered(action) => match action {
                     EditorAction::UpdateTtl => {
@@ -128,6 +133,7 @@ impl ZedisEditor {
             },
         ));
 
+        let readonly = server_state.read(cx).readonly();
         info!("Creating new editor view");
 
         Self {
@@ -137,6 +143,7 @@ impl ZedisEditor {
             set_editor: None,
             zset_editor: None,
             hash_editor: None,
+            readonly,
             ttl_edit_mode: false,
             ttl_input_state,
             should_enter_ttl_edit_mode: None,
@@ -305,7 +312,7 @@ impl ZedisEditor {
             btns.push(
                 Button::new("zedis-editor-save-key")
                     .ml_2()
-                    .disabled(readonly || !value_modified || should_show_loading)
+                    .disabled(self.readonly || !value_modified || should_show_loading)
                     .outline()
                     .label(i18n_common(cx, "save"))
                     .tooltip(tooltip)
@@ -344,7 +351,7 @@ impl ZedisEditor {
                     .ml_2()
                     .outline()
                     .w(px(TTL_INPUT_MAX_WIDTH))
-                    .disabled(should_show_loading)
+                    .disabled(self.readonly || should_show_loading)
                     .tooltip(ttl_tooltip)
                     .label(ttl.clone())
                     .icon(CustomIconName::Clock3)
@@ -381,7 +388,7 @@ impl ZedisEditor {
             Button::new("zedis-editor-delete-key")
                 .ml_2()
                 .outline()
-                .disabled(should_show_loading)
+                .disabled(self.readonly || should_show_loading)
                 .tooltip(i18n_editor(cx, "delete_key_tooltip"))
                 .icon(IconName::CircleX)
                 .on_click(cx.listener(move |this, _event, window, cx| {
