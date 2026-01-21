@@ -82,6 +82,7 @@ pub struct RedisServer {
     pub client_key: Option<String>,
     pub root_cert: Option<String>,
     pub ssh_tunnel: Option<bool>,
+    pub readonly: Option<bool>,
     pub ssh_addr: Option<String>,
     pub ssh_username: Option<String>,
     pub ssh_password: Option<String>,
@@ -95,6 +96,9 @@ impl RedisServer {
     }
     pub fn is_ssh_tunnel(&self) -> bool {
         self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
+    }
+    pub fn readonly(&self) -> bool {
+        self.readonly.unwrap_or(false)
     }
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {

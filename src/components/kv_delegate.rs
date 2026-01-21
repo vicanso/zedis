@@ -249,7 +249,11 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 .ghost()
                 .mr_2()
                 .icon(icon)
-                .tooltip(i18n_common(cx, "update_tooltip"))
+                .tooltip(if self.readonly {
+                    i18n_common(cx, "disable_in_readonly")
+                } else {
+                    i18n_common(cx, "update_tooltip")
+                })
                 .disabled(self.readonly || processing.get())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if is_editing {
@@ -286,7 +290,11 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 .small()
                 .ghost()
                 .icon(Icon::new(CustomIconName::FileXCorner))
-                .tooltip(i18n_common(cx, "remove_tooltip"))
+                .tooltip(if self.readonly {
+                    i18n_common(cx, "disable_in_readonly")
+                } else {
+                    i18n_common(cx, "remove_tooltip")
+                })
                 .disabled(self.readonly || processing.get())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let processing = this.delegate_mut().processing.clone();

@@ -136,6 +136,7 @@ pub struct ZedisStatusBar {
     should_reset_viewer_mode: bool,
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
+    readonly: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl ZedisStatusBar {
@@ -153,6 +154,7 @@ impl ZedisStatusBar {
                     this.fill_state(server_state, cx);
                 }
                 ServerEvent::ServerInfoUpdated(_) => {
+                    this.readonly = server_state.read(cx).readonly();
                     server_state.update(cx, |state, cx| {
                         state.refresh_redis_info(cx);
                     });
@@ -245,6 +247,7 @@ impl ZedisStatusBar {
                 }
             },
         ));
+        let readonly = server_state.read(cx).readonly();
 
         let mut this = Self {
             heartbeat_task: None,
@@ -254,6 +257,7 @@ impl ZedisStatusBar {
             _subscriptions: subscriptions,
             should_reset_viewer_mode: false,
             state: StatusBarState { ..Default::default() },
+            readonly,
         };
         this.fill_state(server_state.clone(), cx);
         this.start_heartbeat(server_state, cx);
@@ -320,6 +324,7 @@ impl ZedisStatusBar {
             i18n_status_bar(cx, "toggle_terminal_tooltip"),
             humanize_keystroke("cmd-j")
         );
+        let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
         h_flex()
             .items_center()
             .child(
@@ -338,6 +343,20 @@ impl ZedisStatusBar {
             .when(server_state.supports_db_selection, |this| {
                 this.child(Select::new(&self.db_state).mr_2().mt_1().small())
             })
+            .child(
+                Button::new("zedis-status-bar-server-toggle-readonly")
+                    .outline()
+                    .small()
+                    .tooltip(readonly_tooltip)
+                    .when(self.readonly, |this| this.icon(Icon::new(CustomIconName::Lock)))
+                    .when(!self.readonly, |this| this.icon(Icon::new(CustomIconName::LockOpen)))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| {
+                            state.toggle_readonly(cx);
+                        });
+                    }))
+                    .mr_2(),
+            )
             .child(
                 Button::new("zedis-status-bar-key-collapse")
                     .outline()

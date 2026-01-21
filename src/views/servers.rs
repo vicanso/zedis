@@ -109,6 +109,7 @@ pub struct ZedisServers {
     server_enable_tls: Rc<Cell<bool>>,
     server_insecure_tls: Rc<Cell<bool>>,
     server_ssh_tunnel: Rc<Cell<bool>>,
+    server_readonly: Rc<Cell<bool>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -264,6 +265,7 @@ impl ZedisServers {
             server_enable_tls: Rc::new(Cell::new(false)),
             server_insecure_tls: Rc::new(Cell::new(false)),
             server_ssh_tunnel: Rc::new(Cell::new(false)),
+            server_readonly: Rc::new(Cell::new(false)),
             _subscriptions: subscriptions,
         }
     }
@@ -319,6 +321,7 @@ impl ZedisServers {
         self.server_enable_tls.set(server.tls.unwrap_or(false));
         self.server_insecure_tls.set(server.insecure.unwrap_or(false));
         self.server_ssh_tunnel.set(server.ssh_tunnel.unwrap_or(false));
+        self.server_readonly.set(server.readonly.unwrap_or(false));
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -398,7 +401,8 @@ impl ZedisServers {
         let server_enable_tls_for_submit = self.server_enable_tls.clone();
         let server_insecure_tls_for_submit = self.server_insecure_tls.clone();
         let server_ssh_tunnel_for_submit = server_ssh_tunnel.clone();
-
+        let server_readonly = self.server_readonly.clone();
+        let server_readonly_for_submit = server_readonly.clone();
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             let name = name_state_clone.read(cx).value();
             let host = host_state_clone.read(cx).value();
@@ -489,6 +493,12 @@ impl ZedisServers {
                 Some(ssh_key_val)
             };
 
+            let readonly = if server_readonly_for_submit.get() {
+                Some(true)
+            } else {
+                None
+            };
+
             server_state_clone.update(cx, |state, cx| {
                 let current_server = state.server(server_id_clone.as_str()).cloned().unwrap_or_default();
 
@@ -512,6 +522,7 @@ impl ZedisServers {
                         ssh_username: ssh_username.map(|u| u.to_string()),
                         ssh_password: ssh_password.map(|p| p.to_string()),
                         ssh_key: ssh_key.map(|k| k.to_string()),
+                        readonly,
                         ..current_server
                     },
                     cx,
@@ -552,6 +563,8 @@ impl ZedisServers {
             let ssh_key_label = i18n_servers(cx, "ssh_key");
             let ssh_tunnel_label = i18n_servers(cx, "ssh_tunnel");
             let ssh_tunnel_check_label = i18n_servers(cx, "ssh_tunnel_check_label");
+            let readonly_label = i18n_servers(cx, "readonly");
+            let readonly_check_label = i18n_servers(cx, "readonly_check_label");
             dialog
                 .title(title)
                 .overlay(true)
@@ -578,6 +591,16 @@ impl ZedisServers {
                                 // Password field with show/hide toggle
                                 .child(Input::new(&password_state).mask_toggle()),
                         )
+                        .child(field().label(readonly_label).child({
+                            let server_readonly = server_readonly.clone();
+                            Checkbox::new("redis-server-readonly")
+                                .label(readonly_check_label)
+                                .checked(server_readonly.get())
+                                .on_click(move |checked, _, cx| {
+                                    server_readonly.set(*checked);
+                                    cx.stop_propagation();
+                                })
+                        }))
                         .child(field().label(tls_label).child({
                             let server_enable_tls = server_enable_tls.clone();
                             Checkbox::new("redis-server-tls")

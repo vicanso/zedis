@@ -36,6 +36,16 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 // Global singleton for ConnectionManager
 static CONNECTION_MANAGER: LazyLock<ConnectionManager> = LazyLock::new(ConnectionManager::new);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AccessMode {
+    #[default]
+    ReadWrite,
+    // readonly mode(config)
+    SafeMode,
+    // acl limit
+    StrictReadOnly,
+}
+
 // Enum representing the type of Redis server
 #[derive(Debug, Clone, PartialEq)]
 enum ServerType {
@@ -171,7 +181,7 @@ async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncC
 // TODO 是否在client中保存connection
 #[derive(Clone)]
 pub struct RedisClient {
-    readonly: bool,
+    access_mode: AccessMode,
     db: usize,
     server_type: ServerType,
     nodes: Vec<RedisNode>,
@@ -195,8 +205,8 @@ impl RedisClient {
     pub fn supports_db_selection(&self) -> bool {
         self.server_type != ServerType::Cluster
     }
-    pub fn readonly(&self) -> bool {
-        self.readonly
+    pub fn access_mode(&self) -> AccessMode {
+        self.access_mode
     }
 
     pub fn nodes_description(&self) -> RedisClientDescription {
@@ -523,10 +533,16 @@ impl ConnectionManager {
         let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();
         info!(master_nodes = ?master_nodes_description, "server master nodes");
         let connection = get_async_connection(&client, db).await?;
-
+        let access_mode = if safe_check_user_readonly(connection.clone()).await {
+            AccessMode::StrictReadOnly
+        } else if config.readonly.unwrap_or(false) {
+            AccessMode::SafeMode
+        } else {
+            AccessMode::ReadWrite
+        };
         let mut client = RedisClient {
             db,
-            readonly: safe_check_user_readonly(connection.clone()).await,
+            access_mode,
             server_type: server_type.clone(),
             nodes,
             master_nodes,

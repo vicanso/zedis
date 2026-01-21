@@ -64,6 +64,8 @@ pub enum CustomIconName {
     Binary,
     ALargeSmall,
     ListChecvronsDownUp,
+    Lock,
+    LockOpen,
 }
 
 impl CustomIconName {
@@ -93,6 +95,8 @@ impl CustomIconName {
             CustomIconName::Binary => "icons/binary.svg",
             CustomIconName::ALargeSmall => "icons/a-large-small.svg",
             CustomIconName::ListChecvronsDownUp => "icons/list-chevrons-down-up.svg",
+            CustomIconName::Lock => "icons/lock.svg",
+            CustomIconName::LockOpen => "icons/lock-open.svg",
         }
         .into()
     }

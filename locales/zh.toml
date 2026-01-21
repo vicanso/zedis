@@ -36,6 +36,7 @@ loading = "加载中..."
 latency = "延迟"
 used_memory = "已使用内存"
 clients = "阻塞 & 连接客户端"
+disable_in_readonly = "只读模式下不可用"
 
 # --- 通用占位符 ---
 key_placeholder = "输入键名"
@@ -100,6 +101,8 @@ ssh_addr_placeholder = "输入 SSH 地址"
 ssh_username_placeholder = "输入 SSH 用户名"
 ssh_password_placeholder = "输入 SSH 密码"
 ssh_key_placeholder = "输入 SSH 密钥"
+readonly = "只读"
+readonly_check_label = "启用只读"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
@@ -130,6 +133,7 @@ soft_wrap = "软换行"
 soft_wrap_tooltip = "启用软换行以显示长行"
 data_format_tooltip = "数据格式"
 viewer = "视图:"
+toggle_readonly_tooltip = "切换只读模式 (当前会话)"
 
 [list_editor]
 positon = "位置"

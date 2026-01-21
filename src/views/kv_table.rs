@@ -318,7 +318,11 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                 Button::new("add-value-btn")
                                     .icon(CustomIconName::FilePlusCorner)
                                     .disabled(self.readonly)
-                                    .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
+                                    .tooltip(if self.readonly {
+                                        i18n_common(cx, "disable_in_readonly")
+                                    } else {
+                                        i18n_kv_table(cx, "add_value_tooltip")
+                                    })
                                     .on_click(handle_add_value),
                             )
                             .child(

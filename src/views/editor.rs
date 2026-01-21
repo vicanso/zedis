@@ -302,12 +302,18 @@ impl ZedisEditor {
             let state = bytes_editor.read(cx);
             let value_modified = state.is_value_modified();
             let readonly = state.is_readonly();
-            let mut tooltip = if readonly {
+            let tooltip = if self.readonly {
+                i18n_common(cx, "disable_in_readonly")
+            } else if readonly {
                 i18n_editor(cx, "can_not_edit_value")
             } else {
-                i18n_editor(cx, "save_data_tooltip")
+                format!(
+                    "{} ({})",
+                    i18n_editor(cx, "save_data_tooltip"),
+                    humanize_keystroke("cmd-s")
+                )
+                .into()
             };
-            tooltip = format!("{tooltip} ({})", humanize_keystroke("cmd-s")).into();
 
             btns.push(
                 Button::new("zedis-editor-save-key")
@@ -341,12 +347,16 @@ impl ZedisEditor {
                     .into_any_element()
             } else {
                 // Show TTL button that switches to edit mode on click
-                let ttl_tooltip: SharedString = format!(
-                    "{} ({})",
-                    i18n_editor(cx, "update_ttl_tooltip"),
-                    humanize_keystroke("cmd-t")
-                )
-                .into();
+                let ttl_tooltip: SharedString = if self.readonly {
+                    i18n_common(cx, "disable_in_readonly")
+                } else {
+                    format!(
+                        "{} ({})",
+                        i18n_editor(cx, "update_ttl_tooltip"),
+                        humanize_keystroke("cmd-t")
+                    )
+                    .into()
+                };
                 Button::new("zedis-editor-ttl-btn")
                     .ml_2()
                     .outline()
@@ -389,7 +399,11 @@ impl ZedisEditor {
                 .ml_2()
                 .outline()
                 .disabled(self.readonly || should_show_loading)
-                .tooltip(i18n_editor(cx, "delete_key_tooltip"))
+                .tooltip(if self.readonly {
+                    i18n_common(cx, "disable_in_readonly")
+                } else {
+                    i18n_editor(cx, "delete_key_tooltip")
+                })
                 .icon(IconName::CircleX)
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     if is_busy {

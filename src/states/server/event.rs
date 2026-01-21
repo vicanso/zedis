@@ -179,6 +179,15 @@ impl EventEmitter<ServerEvent> for ZedisServerState {}
 
 impl ZedisServerState {
     pub fn emit_editor_action(&self, event: EditorAction, cx: &mut Context<Self>) {
+        let readonly = self.readonly();
+        if readonly
+            && matches!(
+                event,
+                EditorAction::Create | EditorAction::Save | EditorAction::UpdateTtl
+            )
+        {
+            return;
+        }
         cx.emit(ServerEvent::EditonActionTriggered(event));
     }
 }

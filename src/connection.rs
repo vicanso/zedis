@@ -21,4 +21,4 @@ mod ssh_tunnel;
 
 pub use async_connection::{RedisAsyncConn, set_redis_connection_timeout, set_redis_response_timeout};
 pub use config::{QueryMode, RedisServer, get_servers, save_servers};
-pub use manager::{RedisClientDescription, get_connection_manager};
+pub use manager::{AccessMode, RedisClientDescription, get_connection_manager};

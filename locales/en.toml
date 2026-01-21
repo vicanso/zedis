@@ -37,6 +37,8 @@ loading = "Loading..."
 latency = "Latency"
 used_memory = "Used memory"
 clients = "Blocked & Connected clients"
+disable_in_readonly = "Disabled in read-only mode"
+
 
 # --- General Placeholders ---
 key_placeholder = "Enter key"
@@ -100,6 +102,8 @@ ssh_addr_placeholder = "Enter ssh address"
 ssh_username_placeholder = "Enter ssh username"
 ssh_password_placeholder = "Enter ssh password"
 ssh_key_placeholder = "Enter ssh key"
+readonly = "Readonly"
+readonly_check_label = "Enable readonly"
 
 [editor]
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"
@@ -130,6 +134,7 @@ soft_wrap = "Soft Wrap"
 soft_wrap_tooltip = "Enable soft wrap for long lines"
 data_format_tooltip = "Data format"
 viewer = "Viewer:"
+toggle_readonly_tooltip = "Toggle read-only mode (Current session only)"
 
 [list_editor]
 positon = "Position"
