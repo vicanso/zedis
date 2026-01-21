@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use tracing::info;
+
 mod async_connection;
 mod config;
 mod manager;
@@ -22,3 +24,19 @@ mod ssh_tunnel;
 pub use async_connection::{RedisAsyncConn, set_redis_connection_timeout, set_redis_response_timeout};
 pub use config::{QueryMode, RedisServer, get_servers, save_servers};
 pub use manager::{AccessMode, RedisClientDescription, get_connection_manager};
+pub fn clear_expired_cache() {
+    let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
+    if removed_count > 0 {
+        info!(removed_count, total_count, "clear expired redis connection")
+    }
+
+    let (removed_count, total_count) = manager::clear_expired_clients();
+    if removed_count > 0 {
+        info!(removed_count, total_count, "clear expired redis client")
+    }
+
+    let (removed_count, total_count) = ssh_tunnel::clear_expired_ssh_sessions();
+    if removed_count > 0 {
+        info!(removed_count, total_count, "clear expired ssh session")
+    }
+}

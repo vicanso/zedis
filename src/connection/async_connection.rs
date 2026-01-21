@@ -16,8 +16,8 @@ use super::config::RedisServer;
 use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
+use crate::helpers::TtlCache;
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use futures::future::try_join_all;
 use redis::{
     AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
@@ -37,7 +37,13 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
 
 /// Global connection pool that caches Redis connections.
 /// Key: (config_hash, database_number), Value: MultiplexedConnection
-static CONNECTION_POOL: LazyLock<DashMap<(u64, usize), MultiplexedConnection>> = LazyLock::new(DashMap::new);
+static CONNECTION_POOL: LazyLock<TtlCache<(u64, usize), MultiplexedConnection>> =
+    LazyLock::new(|| TtlCache::new(Duration::from_secs(5 * 60)));
+
+/// Clears expired connections from the connection pool.
+pub fn clear_expired_connection_pool() -> (usize, usize) {
+    CONNECTION_POOL.clear_expired()
+}
 
 struct RedisConfig {
     connection_timeout: Duration,

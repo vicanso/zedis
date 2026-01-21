@@ -21,13 +21,14 @@ use super::{
     ssh_cluster_connection::SshMultiplexedConnection,
 };
 use crate::error::Error;
-use dashmap::DashMap;
+use crate::helpers::TtlCache;
 use gpui::SharedString;
 use redis::{Cmd, FromRedisValue, InfoDict, Role, aio::MultiplexedConnection, cluster, cmd};
 use semver::Version;
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
+    time::Duration,
 };
 use tracing::{debug, error, info};
 
@@ -318,7 +319,7 @@ impl RedisClient {
 }
 
 pub struct ConnectionManager {
-    clients: DashMap<String, RedisClient>,
+    clients: TtlCache<String, RedisClient>,
 }
 
 /// Detects the type of Redis server (Sentinel, Cluster, or Standalone).
@@ -382,7 +383,7 @@ async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
-            clients: DashMap::new(),
+            clients: TtlCache::new(Duration::from_secs(5 * 60)),
         }
     }
     /// Discovers Redis nodes and server type based on initial configuration.
@@ -494,7 +495,7 @@ impl ConnectionManager {
         }
     }
     pub fn remove_client(&self, name: &str) {
-        self.clients.remove(name);
+        self.clients.remove(&name.to_string());
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
     pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
@@ -587,4 +588,9 @@ impl ConnectionManager {
 /// Global accessor for the connection manager.
 pub fn get_connection_manager() -> &'static ConnectionManager {
     &CONNECTION_MANAGER
+}
+
+/// Clears expired clients from the connection manager.
+pub fn clear_expired_clients() -> (usize, usize) {
+    CONNECTION_MANAGER.clients.clear_expired()
 }

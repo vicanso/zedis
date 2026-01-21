@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use crate::connection::get_servers;
+use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
@@ -12,7 +12,7 @@ use gpui::{
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
-use std::{env, str::FromStr};
+use std::{env, str::FromStr, time::Duration};
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -42,6 +42,7 @@ pub struct Zedis {
     content: Entity<ZedisContent>,
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
+    _clear_expired_cache: Option<Task<()>>,
 }
 
 impl Zedis {
@@ -84,6 +85,12 @@ impl Zedis {
             }
         })
         .detach();
+        let clear_expired_cache = Some(cx.spawn(async move |_this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(30)).await;
+                clear_expired_cache();
+            }
+        }));
         let title_bar = Some(cx.new(|cx| ZedisTitleBar::new(window, cx)));
 
         Self {
@@ -93,6 +100,7 @@ impl Zedis {
             pending_notification: None,
             title_bar,
             theme_update_task: None,
+            _clear_expired_cache: clear_expired_cache,
             last_bounds: Bounds::default(),
         }
     }

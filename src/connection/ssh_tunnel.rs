@@ -16,8 +16,7 @@ use super::async_connection::{get_redis_connection_timeout, get_redis_response_t
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
-use crate::helpers::get_home_dir;
-use dashmap::DashMap;
+use crate::helpers::{TtlCache, get_home_dir};
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::{Handle, Handler};
 use russh::keys::ssh_key::PublicKey;
@@ -134,7 +133,8 @@ type SshHandle = Handle<ClientHandler>;
 
 /// Global cache of SSH sessions keyed by "user@host:port" identifier.
 /// This prevents creating duplicate SSH connections to the same server.
-static SSH_SESSION: LazyLock<DashMap<String, Arc<SshHandle>>> = LazyLock::new(DashMap::new);
+static SSH_SESSION: LazyLock<TtlCache<String, Arc<SshHandle>>> =
+    LazyLock::new(|| TtlCache::new(Duration::from_secs(5 * 60)));
 
 /// Checks if an SSH session is still alive and functional.
 ///
@@ -180,7 +180,7 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
     // Generate unique identifier for this SSH connection
     let id = format!("{user}@{addr}");
     // Check cache for existing session
-    let cached_session = SSH_SESSION.get(&id).map(|entry| entry.value().clone());
+    let cached_session = SSH_SESSION.get(&id);
     if let Some(session) = cached_session {
         // Validate the cached session is still alive
         if is_alive(session.clone()).await {
@@ -345,4 +345,9 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
         Ok(connection)
     })
     .await
+}
+
+/// Clears expired SSH sessions from the cache.
+pub fn clear_expired_ssh_sessions() -> (usize, usize) {
+    SSH_SESSION.clear_expired()
 }
