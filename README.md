@@ -26,6 +26,14 @@ The recommended way to install Zedis is via Homebrew:
 brew install --cask zedis
 ```
 
+### Windows
+
+```bash
+scoop bucket add extras
+scoop install zedis
+```
+
+
 ## ✨ Features
 
 ### 🚀 Blazing Fast

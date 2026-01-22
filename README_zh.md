@@ -23,6 +23,13 @@
 brew install --cask zedis
 ```
 
+### Windows
+
+```bash
+scoop bucket add extras
+scoop install zedis
+```
+
 ## ✨ 功能特性
 
 ### 🚀 极速性能
