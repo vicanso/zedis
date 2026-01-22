@@ -379,7 +379,7 @@ impl ZedisServerState {
                     .query_async::<u64>(&mut conn)
                     .await
                 {
-                    redis_value.size = memory_usage as usize;
+                    redis_value.size = memory_usage;
                 }
 
                 redis_value.expire_at = expire_at;

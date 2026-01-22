@@ -409,7 +409,7 @@ pub struct RedisValue {
     pub(crate) key_type: KeyType,
     pub(crate) data: Option<RedisValueData>,
     pub(crate) expire_at: Option<i64>,
-    pub(crate) size: usize,
+    pub(crate) size: u64,
 }
 
 impl RedisValue {
@@ -442,7 +442,7 @@ impl RedisValue {
     }
 
     /// Returns the size of the value in bytes
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> u64 {
         self.size
     }
 
@@ -518,7 +518,6 @@ impl ZedisServerState {
         let original_size = value.size;
 
         value.status = RedisValueStatus::Updating;
-        value.size = new_value.len();
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
             bytes: Bytes::from(new_value.clone().to_string().into_bytes()),
             text: Some(new_value.clone()),
@@ -535,23 +534,38 @@ impl ZedisServerState {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let mut conn = client.connection();
                 let mut binding = cmd("SET");
-                let mut cmd = binding.arg(key.as_str()).arg(new_value.as_str());
+                let mut new_cmd = binding.arg(key.as_str()).arg(new_value.as_str());
                 // keep ttl if the version is at least 6.0.0
-                cmd = if client.is_at_least_version("6.0.0") {
-                    cmd.arg("KEEPTTL")
+                new_cmd = if client.is_at_least_version("6.0.0") {
+                    new_cmd.arg("KEEPTTL")
                 } else if ttl > 0 {
-                    cmd.arg("PX").arg(ttl)
+                    new_cmd.arg("PX").arg(ttl)
                 } else {
-                    cmd
+                    new_cmd
                 };
-                let _: () = cmd.query_async(&mut conn).await?;
-                Ok(new_value)
+                let _: () = new_cmd.query_async(&mut conn).await?;
+
+                let mut size = None;
+                if let Ok(memory_usage) = cmd("MEMORY")
+                    .arg("USAGE")
+                    .arg(key.as_str())
+                    .query_async::<u64>(&mut conn)
+                    .await
+                {
+                    size = Some(memory_usage);
+                }
+
+                Ok(size)
             },
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
-                    // Recover original value if save failed
-                    if result.is_err() {
+                    if let Ok(result_size) = result {
+                        if let Some(size) = result_size {
+                            value.size = size;
+                        }
+                    } else {
+                        // Recover original value if save failed
                         value.size = original_size;
                         value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
                     }

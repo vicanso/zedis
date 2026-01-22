@@ -150,7 +150,6 @@ pub(crate) async fn get_redis_value(
     max_truncate_length: usize,
 ) -> Result<RedisValue> {
     let value_bytes: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
-    let size = value_bytes.len();
     let mut data = RedisBytesValue {
         format: DataFormat::Text,
         bytes: Bytes::from(value_bytes),
@@ -160,7 +159,6 @@ pub(crate) async fn get_redis_value(
     Ok(RedisValue {
         key_type: KeyType::String,
         data: Some(RedisValueData::Bytes(Arc::new(data))),
-        size,
         ..Default::default()
     })
 }

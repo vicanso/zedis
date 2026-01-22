@@ -281,7 +281,7 @@ impl ZedisEditor {
                 "--".into()
             };
 
-            size = format_size(value.size() as u64, DECIMAL).into();
+            size = format_size(value.size(), DECIMAL).into();
         }
 
         // Show loading only if busy and not recently selected (avoid flashing)
