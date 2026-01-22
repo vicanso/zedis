@@ -24,7 +24,7 @@ use std::{
 
 static APP_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     Instant::now().duration_since(*APP_START).as_secs()
 }
 

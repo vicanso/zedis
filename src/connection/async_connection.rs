@@ -16,7 +16,7 @@ use super::config::RedisServer;
 use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
-use crate::helpers::TtlCache;
+use crate::helpers::{TtlCache, now_secs};
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use redis::{
@@ -25,7 +25,10 @@ use redis::{
     cluster_async::ClusterConnection,
     cmd,
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::{sync::LazyLock, time::Duration};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -35,9 +38,30 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     humantime::parse_duration(&value).ok()
 });
 
+struct MultiplexedConnectionCache {
+    conn: MultiplexedConnection,
+    chech_time: AtomicU64,
+}
+
+impl MultiplexedConnectionCache {
+    async fn get_connection(&self) -> Option<MultiplexedConnection> {
+        let now = now_secs();
+        let last_check = self.chech_time.load(Ordering::Relaxed);
+        if now - last_check < 60 {
+            return Some(self.conn.clone());
+        }
+        let mut conn = self.conn.clone();
+        if let Ok(()) = cmd("PING").query_async(&mut conn).await {
+            self.chech_time.store(now, Ordering::Relaxed);
+            return Some(conn);
+        }
+        None
+    }
+}
+
 /// Global connection pool that caches Redis connections.
 /// Key: (config_hash, database_number), Value: MultiplexedConnection
-static CONNECTION_POOL: LazyLock<TtlCache<(u64, usize), MultiplexedConnection>> =
+static CONNECTION_POOL: LazyLock<TtlCache<(u64, usize), Arc<MultiplexedConnectionCache>>> =
     LazyLock::new(|| TtlCache::new(Duration::from_secs(5 * 60)));
 
 /// Clears expired connections from the connection pool.
@@ -101,12 +125,10 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
     let hash = config.get_hash();
     let key = (hash, db);
     // Try to reuse an existing connection from the pool
-    if let Some(conn) = CONNECTION_POOL.get(&key) {
-        let mut conn = conn.clone();
-        // Verify the connection is still alive with a PING
-        if let Ok(()) = cmd("PING").query_async(&mut conn).await {
-            return Ok(conn.clone());
-        }
+    if let Some(conn) = CONNECTION_POOL.get(&key)
+        && let Some(conn) = conn.get_connection().await
+    {
+        return Ok(conn);
     }
     // Create a new connection: SSH tunnel or direct connection
     let mut conn = if config.is_ssh_tunnel() {
@@ -124,7 +146,13 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
     }
     // Cache the connection in the pool for future reuse
-    CONNECTION_POOL.insert(key, conn.clone());
+    CONNECTION_POOL.insert(
+        key,
+        Arc::new(MultiplexedConnectionCache {
+            conn: conn.clone(),
+            chech_time: AtomicU64::new(now_secs()),
+        }),
+    );
     Ok(conn)
 }
 
