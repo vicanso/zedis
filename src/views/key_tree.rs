@@ -641,6 +641,7 @@ impl ZedisKeyTree {
     /// - Clearable input (X button appears when text entered)
     fn render_keyword_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
+        let readonly = server_state.readonly();
         let scaning = server_state.scaning();
         let server_id = server_state.server_id();
         if server_id != self.state.server_id.as_str() {
@@ -699,6 +700,8 @@ impl ZedisKeyTree {
             .child(keyword_input)
             .child(
                 Button::new("key-tree-add-btn")
+                    .disabled(readonly)
+                    .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
                     .outline()
                     .icon(CustomIconName::FilePlusCorner)
                     .on_click(cx.listener(|this, _, window, cx| {
