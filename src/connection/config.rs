@@ -196,6 +196,7 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
 pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     let mut configs = HashMap::new();
     for server in servers.iter_mut() {
+        configs.insert(server.id.clone(), server.clone());
         if let Some(password) = &server.password {
             server.password = Some(encrypt(password)?);
         }
@@ -205,7 +206,6 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(encrypt(ssh_key)?);
         }
-        configs.insert(server.id.clone(), server.clone());
     }
     SERVER_CONFIG_MAP.store(Arc::new(configs));
     let path = get_or_create_server_config()?;
