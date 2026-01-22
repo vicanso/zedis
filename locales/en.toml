@@ -104,6 +104,9 @@ ssh_password_placeholder = "Enter ssh password"
 ssh_key_placeholder = "Enter ssh key"
 readonly = "Readonly"
 readonly_check_label = "Enable readonly"
+tab_general = "General"
+tab_tls = "SSL/TLS"
+tab_ssh = "SSH Tunnel"
 
 [editor]
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"

@@ -184,11 +184,14 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
     if let Some(session) = cached_session {
         // Validate the cached session is still alive
         if is_alive(session.clone()).await {
+            info!(id, "get ssh session from cache");
             return Ok(session);
         }
     }
+    info!(id, "start to create new ssh session");
     // Create new session if none exists or cached session is dead
     let session = new_ssh_session(addr, user, key, password).await?;
+    info!(id, "new ssh session established");
     let session = Arc::new(session);
     // Cache the new session for future reuse
     SSH_SESSION.insert(id, session.clone());
@@ -222,7 +225,7 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
 async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<SshHandle> {
     // Configure SSH client with keepalive to maintain connection
     let config = russh::client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_interval: Some(Duration::from_secs(5 * 60)),
         ..Default::default()
     };
     let config = Arc::new(config);
@@ -280,7 +283,6 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
             message: format!("Ssh authentication failed, {auth_res:?}"),
         });
     }
-    info!(addr, user, "ssh session established");
 
     Ok(session)
 }

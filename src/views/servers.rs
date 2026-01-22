@@ -26,6 +26,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     scroll::ScrollableElement,
+    tab::{Tab, TabBar},
 };
 use rust_i18n::t;
 use std::{cell::Cell, rc::Rc};
@@ -533,8 +534,11 @@ impl ZedisServers {
             true
         });
 
+        let tab_selected_index = cx.new(|_cx| 0_usize);
+
         let focus_handle_done = Cell::new(false);
         window.open_dialog(cx, move |dialog, window, cx| {
+            let tab_selected_index_clone = tab_selected_index.clone();
             // Set dialog title based on add/update mode
             let title = if is_new {
                 i18n_servers(cx, "add_server_title")
@@ -565,6 +569,10 @@ impl ZedisServers {
             let ssh_tunnel_check_label = i18n_servers(cx, "ssh_tunnel_check_label");
             let readonly_label = i18n_servers(cx, "readonly");
             let readonly_check_label = i18n_servers(cx, "readonly_check_label");
+            let tab_general_label = i18n_servers(cx, "tab_general");
+            let tab_tls_label = i18n_servers(cx, "tab_tls");
+            let tab_ssh_label = i18n_servers(cx, "tab_ssh");
+            let current_tab_index = *tab_selected_index.read(cx);
             dialog
                 .title(title)
                 .overlay(true)
@@ -575,45 +583,19 @@ impl ZedisServers {
                         });
                         focus_handle_done.set(true);
                     }
-                    let mut form = v_form()
-                        .child(
-                            field()
-                                .label(name_label)
-                                // Name is read-only when editing existing server
-                                .child(Input::new(&name_state)),
-                        )
-                        .child(field().label(host_label).child(Input::new(&host_state)))
-                        .child(field().label(port_label).child(NumberInput::new(&port_state)))
-                        .child(field().label(username_label).child(Input::new(&username_state)))
-                        .child(
-                            field()
-                                .label(password_label)
-                                // Password field with show/hide toggle
-                                .child(Input::new(&password_state).mask_toggle()),
-                        )
-                        .child(field().label(readonly_label).child({
-                            let server_readonly = server_readonly.clone();
-                            Checkbox::new("redis-server-readonly")
-                                .label(readonly_check_label)
-                                .checked(server_readonly.get())
-                                .on_click(move |checked, _, cx| {
-                                    server_readonly.set(*checked);
-                                    cx.stop_propagation();
-                                })
-                        }))
-                        .child(field().label(tls_label).child({
-                            let server_enable_tls = server_enable_tls.clone();
-                            Checkbox::new("redis-server-tls")
-                                .label(tls_check_label)
-                                .checked(server_enable_tls.get())
-                                .on_click(move |checked, _, cx| {
-                                    server_enable_tls.set(*checked);
-                                    cx.stop_propagation();
-                                })
-                        }));
-
-                    if server_enable_tls.get() {
-                        form = form
+                    let mut form = v_form();
+                    form = match current_tab_index {
+                        1 => form
+                            .child(field().label(tls_label).child({
+                                let server_enable_tls = server_enable_tls.clone();
+                                Checkbox::new("redis-server-tls")
+                                    .label(tls_check_label)
+                                    .checked(server_enable_tls.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_enable_tls.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
                             .child(field().label(insecure_tls_label).child({
                                 let server_insecure_tls = server_insecure_tls.clone();
                                 Checkbox::new("redis-server-insecure-tls")
@@ -626,33 +608,75 @@ impl ZedisServers {
                             }))
                             .child(field().label(client_cert_label).child(Input::new(&client_cert_state)))
                             .child(field().label(client_key_label).child(Input::new(&client_key_state)))
-                            .child(field().label(root_cert_label).child(Input::new(&root_cert_state)));
-                    }
-                    form = form.child(field().label(ssh_tunnel_label).child({
-                        let server_ssh_tunnel = server_ssh_tunnel.clone();
-                        Checkbox::new("redis-server-ssh-tunnel")
-                            .label(ssh_tunnel_check_label)
-                            .checked(server_ssh_tunnel.get())
-                            .on_click(move |checked, _, cx| {
-                                server_ssh_tunnel.set(*checked);
-                                cx.stop_propagation();
-                            })
-                    }));
-                    if server_ssh_tunnel.get() {
-                        form = form
+                            .child(field().label(root_cert_label).child(Input::new(&root_cert_state))),
+                        2 => form
+                            .child(field().label(ssh_tunnel_label).child({
+                                let server_ssh_tunnel = server_ssh_tunnel.clone();
+                                Checkbox::new("redis-server-ssh-tunnel")
+                                    .label(ssh_tunnel_check_label)
+                                    .checked(server_ssh_tunnel.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_ssh_tunnel.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
                             .child(field().label(ssh_addr_label).child(Input::new(&ssh_addr_state)))
                             .child(field().label(ssh_username_label).child(Input::new(&ssh_username_state)))
-                            .child(field().label(ssh_password_label).child(Input::new(&ssh_password_state)))
-                            .child(field().label(ssh_key_label).child(Input::new(&ssh_key_state)));
-                    }
-
-                    form = form
-                        .child(field().label(master_name_label).child(Input::new(&master_name_state)))
-                        .child(field().label(description_label).child(Input::new(&description_state)));
+                            .child(
+                                field()
+                                    .label(ssh_password_label)
+                                    .child(Input::new(&ssh_password_state).mask_toggle()),
+                            )
+                            .child(field().label(ssh_key_label).child(Input::new(&ssh_key_state))),
+                        _ => {
+                            form.child(
+                                field()
+                                    .label(name_label)
+                                    // Name is read-only when editing existing server
+                                    .child(Input::new(&name_state)),
+                            )
+                            .child(field().label(host_label).child(Input::new(&host_state)))
+                            .child(field().label(port_label).child(NumberInput::new(&port_state)))
+                            .child(field().label(username_label).child(Input::new(&username_state)))
+                            .child(
+                                field()
+                                    .label(password_label)
+                                    // Password field with show/hide toggle
+                                    .child(Input::new(&password_state).mask_toggle()),
+                            )
+                            .child(field().label(readonly_label).child({
+                                let server_readonly = server_readonly.clone();
+                                Checkbox::new("redis-server-readonly")
+                                    .label(readonly_check_label)
+                                    .checked(server_readonly.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_readonly.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
+                            .child(field().label(master_name_label).child(Input::new(&master_name_state)))
+                            .child(field().label(description_label).child(Input::new(&description_state)))
+                        }
+                    };
 
                     div()
                         .id("servers-scrollable-container")
                         .max_h(px(600.0))
+                        .child(
+                            TabBar::new("tabs")
+                                .underline()
+                                .mb_3()
+                                .selected_index(*tab_selected_index.read(cx))
+                                .on_click(move |selected_index, _, cx| {
+                                    tab_selected_index_clone.update(cx, |state, cx| {
+                                        *state = *selected_index;
+                                        cx.notify();
+                                    });
+                                })
+                                .child(Tab::new().label(tab_general_label).p_1())
+                                .child(Tab::new().label(tab_tls_label).p_1())
+                                .child(Tab::new().label(tab_ssh_label).p_1()),
+                        )
                         .child(form)
                         .overflow_y_scrollbar()
                 })

@@ -103,6 +103,9 @@ ssh_password_placeholder = "输入 SSH 密码"
 ssh_key_placeholder = "输入 SSH 密钥"
 readonly = "只读"
 readonly_check_label = "启用只读"
+tab_general = "常规"
+tab_tls = "SSL/TLS"
+tab_ssh = "SSH 隧道"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
