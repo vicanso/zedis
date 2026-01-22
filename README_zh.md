@@ -30,6 +30,12 @@ scoop bucket add extras
 scoop install zedis
 ```
 
+### Arch linux
+
+```bash
+yay -S zedis-bin
+```
+
 ## ✨ 功能特性
 
 ### 🚀 极速性能

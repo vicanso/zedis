@@ -33,6 +33,12 @@ scoop bucket add extras
 scoop install zedis
 ```
 
+### Arch linux
+
+```bash
+yay -S zedis-bin
+```
+
 
 ## ✨ Features
 
