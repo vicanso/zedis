@@ -35,6 +35,7 @@ jobs:
       - name: install tools
         run: |
           rustup update
+          rustup component add clippy
           cargo install cargo-bundle
           cargo install typos-cli
           brew install create-dmg
