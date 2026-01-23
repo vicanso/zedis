@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
+use crate::db::init_database;
 use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
     FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
@@ -28,6 +29,7 @@ mod assets;
 mod components;
 mod connection;
 mod constants;
+mod db;
 mod error;
 mod helpers;
 mod states;
@@ -281,6 +283,9 @@ fn main() {
         Err(e) => {
             error!(error = %e, "get servers fail",);
         }
+    }
+    if let Err(e) = init_database() {
+        error!(error = %e, "init database fail",);
     }
     let config_dir = if let Ok(dir) = get_or_create_config_dir() {
         dir.to_string_lossy().to_string()

@@ -16,12 +16,14 @@ use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::QueryMode,
+    db::HistoryManager,
     helpers::{EditorAction, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, Window, div, prelude::*, px,
+    Action, App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, Window, div, prelude::*,
+    px,
 };
 use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
@@ -33,6 +35,8 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 use tracing::info;
 
@@ -45,6 +49,9 @@ const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type ba
 const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
 const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+struct SearchHistory(pub SharedString);
 
 #[derive(Default)]
 struct KeyTreeState {
@@ -469,12 +476,24 @@ impl ZedisKeyTree {
     /// current query mode. Ignores if a scan is already in progress.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         // Don't trigger filter while already scanning
-        if self.server_state.read(cx).scaning() {
+        let server_state = self.server_state.read(cx);
+        if server_state.scaning() {
             return;
         }
 
         let keyword = self.keyword_state.read(cx).value();
         self.state.keyword = keyword.clone();
+
+        let server_id_clone = server_state.server_id().to_string();
+        let keyword_clone = keyword.clone();
+        cx.spawn(async move |_, cx| {
+            let _ = cx
+                .background_spawn(async move {
+                    let _ = HistoryManager::add_record(server_id_clone.as_str(), keyword_clone.as_str());
+                })
+                .await;
+        })
+        .detach();
         self.server_state.update(cx, move |handle, cx| {
             handle.handle_filter(keyword, cx);
         });
@@ -640,6 +659,7 @@ impl ZedisKeyTree {
     /// - Search button (with loading state during scan)
     /// - Clearable input (X button appears when text entered)
     fn render_keyword_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
         let readonly = server_state.readonly();
         let scaning = server_state.scaning();
@@ -660,19 +680,32 @@ impl ZedisKeyTree {
         };
         let query_mode_dropdown = DropdownButton::new("dropdown")
             .button(Button::new("key-tree-query-mode-btn").ghost().px_2().icon(icon))
-            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _, _| {
-                // Build menu with checkmarks for current mode
-                menu.menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
-                    Label::new(i18n_key_tree(cx, "query_mode_all")).ml_2().text_xs()
-                })
-                .menu_element_with_check(query_mode == QueryMode::Prefix, Box::new(QueryMode::Prefix), |_, cx| {
-                    Label::new(i18n_key_tree(cx, "query_mode_prefix")).ml_2().text_xs()
-                })
-                .menu_element_with_check(
-                    query_mode == QueryMode::Exact,
-                    Box::new(QueryMode::Exact),
-                    |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")).ml_2().text_xs(),
-                )
+            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, window, cx| {
+                let mut menu = menu.label(i18n_key_tree(cx, "search_history"));
+                let keywords = server_state_clone.read(cx).search_history();
+                for keyword in keywords {
+                    menu = menu.menu_element(Box::new(SearchHistory(keyword.clone())), move |_, _cx| {
+                        Label::new(keyword.clone())
+                    });
+                }
+                menu.separator()
+                    .submenu(i18n_key_tree(cx, "query_mode"), window, cx, move |submenu, _, _| {
+                        // Build menu with checkmarks for current mode
+                        submenu
+                            .menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
+                                Label::new(i18n_key_tree(cx, "query_mode_all")).ml_2().text_xs()
+                            })
+                            .menu_element_with_check(
+                                query_mode == QueryMode::Prefix,
+                                Box::new(QueryMode::Prefix),
+                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_prefix")).ml_2().text_xs(),
+                            )
+                            .menu_element_with_check(
+                                query_mode == QueryMode::Exact,
+                                Box::new(QueryMode::Exact),
+                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")).ml_2().text_xs(),
+                            )
+                    })
             });
         // Search button (shows loading spinner during scan)
         let search_btn = Button::new("key-tree-search-btn")
@@ -737,6 +770,13 @@ impl Render for ZedisKeyTree {
 
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
+            }))
+            .on_action(cx.listener(|this, e: &SearchHistory, window, cx| {
+                let keyword = e.0.clone();
+                this.keyword_state.update(cx, |state, cx| {
+                    state.set_value(keyword, window, cx);
+                });
+                this.handle_filter(cx);
             }))
     }
 }

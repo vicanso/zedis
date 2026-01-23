@@ -48,24 +48,28 @@ yay -S zedis-bin
 
 ### 🧠 Smart Data Viewer
 Zedis automatically detects content types (`ViewerMode::Auto`) and renders them in the most useful format:
-- **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP** and **ZSTD** data, allowing you to view the actual content (e.g., compressed JSON will be automatically unpacked and pretty-printed).
-- **JSON**: Automatic **pretty-printing** with full **syntax highlighting** for better readability.
-- **MessagePack**: deserializes binary MsgPack data into a readable JSON-like format.
+- **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP**, and **ZSTD** data (e.g., compressed JSON is automatically unpacked and pretty-printed).
+- **JSON**: Automatic **pretty-printing** with full **syntax highlighting**.
+- **MessagePack**: Deserializes binary MsgPack data into a readable JSON-like format.
 - **Images**: Native preview for stored images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`).
 - **Hex View**: Adaptive 8/16-byte hex dump for analyzing raw binary data.
 - **Text**: UTF-8 validation with large text support.
 
-### 🛡️ Secure Access
+### 🛡️ Safety & Security
+- **Read-only Mode**: Mark connections as **Read-only** to prevent accidental writes or deletions. Perfect for inspecting production environments with total peace of mind.
 - **SSH Tunneling**: Securely access private Redis instances via bastion hosts. Supports authentication via Password, Private Key, and SSH Agent.
-- **TLS/SSL**: Full support for SSL/TLS encrypted connections, including options for custom CA, Client Certificates, and Private Keys.
+- **TLS/SSL**: Full support for encrypted connections, including custom CA, Client Certificates, and Private Keys.
+
+### ⚡ Productivity
+- **Search History**: Automatically records your search queries locally. History is **connection-scoped**, ensuring production queries never pollute your local development workflow.
+- **Quick Recall**: Instantly access recent keywords via a smart dropdown, speeding up your debugging sessions.
 
 ### 🎨 Modern Experience
-- **Cross-Platform**: Powered by GPUI, Zedis delivers a consistent, high-performance native experience across **macOS**, **Windows**, and **Linux**.
-- **Smart Topology Detection**: Automatically identifies and adapts to **Standalone**, **Cluster**, or **Sentinel** modes. Just connect to an entry node, and Zedis handles the topology mapping without complex configuration.
+- **Cross-Platform**: Powered by GPUI, Zedis delivers a consistent, native experience across **macOS**, **Windows**, and **Linux**.
+- **Smart Topology Detection**: Automatically identifies **Standalone**, **Cluster**, or **Sentinel** modes. Connect to any node, and Zedis handles the topology mapping automatically.
 - **Themes**: Pre-loaded with **Light**, **Dark**, and **System** themes.
 - **I18n**: Full support for **English** and **Chinese (Simplified)**.
 - **Responsive**: Split-pane layout that adapts to any window size.
-
 
 🚧 Development Status
 

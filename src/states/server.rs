@@ -15,6 +15,7 @@
 use crate::connection::{
     AccessMode, QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers,
 };
+use crate::db::HistoryManager;
 use crate::error::Error;
 use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
@@ -87,6 +88,9 @@ pub struct ZedisServerState {
 
     /// Currently selected server id
     server_id: SharedString,
+
+    /// Search history
+    search_history: Vec<SharedString>,
 
     /// Whether the server supports database selection
     supports_db_selection: bool,
@@ -340,6 +344,11 @@ impl ZedisServerState {
         &self.key_tree_id
     }
 
+    /// Get the search history
+    pub fn search_history(&self) -> Vec<SharedString> {
+        self.search_history.clone()
+    }
+
     /// Get whether the server is readonly
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
@@ -577,6 +586,9 @@ impl ZedisServerState {
             self.soft_wrap = soft_wrap;
 
             debug!(server_id = self.server_id.as_str(), "Selecting server");
+            if let Ok(history) = HistoryManager::records(server_id.as_str()) {
+                self.search_history = history;
+            }
             cx.emit(ServerEvent::ServerSelected(server_id, db));
             cx.notify();
 

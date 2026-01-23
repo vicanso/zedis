@@ -478,7 +478,10 @@ impl ConnectionManager {
                 let unique_masters: HashSet<_> = nodes.iter().filter_map(|n| n.master_name.as_ref()).collect();
                 if unique_masters.len() > 1 {
                     return Err(Error::Invalid {
-                        message: "Multiple masters found in Sentinel, please specify master_name".into(),
+                        message: format!(
+                            "Multiple masters found in Sentinel, please specify master_name, master_names: {unique_masters:?}"
+                        )
+                        .into(),
                     });
                 }
 

@@ -40,6 +40,7 @@ os_info = "3.14.0"
 parking_lot = "0.12.5"
 percent-encoding = "2.3.2"
 pretty-hex = "0.4.1"
+redb = "3.1.0"
 redis = { version = "1.0.2", features = [
     "cluster",
     "cluster-async",
