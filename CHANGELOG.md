@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.1.9](https://github.com/vicanso/pingap/compare/v0.1.8..v0.1.9) - 2026-01-23
+
+### ⛰️  Features
+
+- *(config)* Support connection and response timeouts - ([3a7e2c7](https://github.com/vicanso/pingap/commit/3a7e2c7967969227826553444006632cc2223207))
+- *(connection)* Periodically prune idle connections - ([52775e9](https://github.com/vicanso/pingap/commit/52775e9104cff9e2c9821c3b3f0d5ffdbd853f1b))
+- *(connection)* Support temporarily toggling read-only mode - ([f61930b](https://github.com/vicanso/pingap/commit/f61930bb467635afa2749961345e613f00d8a3ed))
+- *(editor)* Support read-only mode - ([95d1ba0](https://github.com/vicanso/pingap/commit/95d1ba0e7237b0ccec41fbe10362f994802454eb))
+- *(keytree)* Support search history - ([8ee5460](https://github.com/vicanso/pingap/commit/8ee5460eea5cb38bbd11c3ea2a80ef0d67f88cc0))
+- *(keytree)* Disable new button in read-only mode - ([6077a63](https://github.com/vicanso/pingap/commit/6077a6322d75f8faa569107731fb56cdf16ff6fd))
+- *(redis)* Use MEMORY USAGE to query value memory ([#21](https://github.com/orhun/git-cliff/issues/21)) - ([81491ee](https://github.com/vicanso/pingap/commit/81491eea711881d4d09cb5698388daa5d9e36573))
+- *(ssh)* Support tunnel for cluster ([#17](https://github.com/orhun/git-cliff/issues/17)) - ([6398c92](https://github.com/vicanso/pingap/commit/6398c92d069874e5c3ca4f972c7cb04b4fc33efa))
+- *(ssh)* Support tunnel for Standalone and Sentinel ([#17](https://github.com/orhun/git-cliff/issues/17)) - ([c207a94](https://github.com/vicanso/pingap/commit/c207a94e7e2d956fea6e814850040637ff1649a1))
+- *(ui)* Add skeleton loading for key tree ([#19](https://github.com/orhun/git-cliff/issues/19)) - ([97a0f83](https://github.com/vicanso/pingap/commit/97a0f83e5dd78c7e4ee9ebf7c6452a632ae3cd59))
+
+### 🐛 Bug Fixes
+
+- *(bytes)* Fix incorrect key memory calculation - ([bccd5fe](https://github.com/vicanso/pingap/commit/bccd5fee57c4c3afa066d66aba034a253b871c02))
+- *(config)* Fix global config cache - ([c977931](https://github.com/vicanso/pingap/commit/c977931e15580c96e20bfee57954c2d253924cf8))
+- *(ui)* Fix directory tree toggle icon - ([2c8fffb](https://github.com/vicanso/pingap/commit/2c8fffb71eb300cd92fb2eb36c5cfc4b49af940c))
+- *(ui)* Shorten text display to fix layout ([#20](https://github.com/orhun/git-cliff/issues/20)) - ([c9765e5](https://github.com/vicanso/pingap/commit/c9765e580567a9b5fab296491e1ab2bc26ccfc3b))
+- Fix clippy error - ([e1c4d68](https://github.com/vicanso/pingap/commit/e1c4d683ed3cf1ec37d58abfbca55e5e193a2f9e))
+
+### 🚜 Refactor
+
+- *(client)* Use config hash as cache key - ([c2c8d76](https://github.com/vicanso/pingap/commit/c2c8d76c6c1712c056386f0f18d2054f7141eb21))
+- *(config)* Organize redis server config into tabs - ([4a7035b](https://github.com/vicanso/pingap/commit/4a7035b42ed1d10955e527be996adace6cfe827c))
+- *(config)* Add global cache for redis server configs - ([4cd4d07](https://github.com/vicanso/pingap/commit/4cd4d074213a49577f299f51f840b6f44424a238))
+- *(connection)* Optimize connection reuse - ([e60b5a9](https://github.com/vicanso/pingap/commit/e60b5a99eea0e8deeb29e28aaf6eb8a7ba7166d8))
+- *(editor)* Optimize redis-cli shortcuts - ([b499b3f](https://github.com/vicanso/pingap/commit/b499b3f215b81d75dc49d4f813ade6e52e18d7f6))
+- *(log)* Enhance startup logs with os, git hash, and version - ([9ed10fd](https://github.com/vicanso/pingap/commit/9ed10fd802a2d8a69a3f69aad31de65b96c2bf23))
+- *(ssh)* Optimize connection health check - ([1863e8f](https://github.com/vicanso/pingap/commit/1863e8fd73672e20483a3eac0593ce53cc51525f))
+- *(ssh)* Enforce ssh host key checking for tunnels - ([c6a8303](https://github.com/vicanso/pingap/commit/c6a8303361c88a207eec34eb1ee5146eccc7192e))
+- *(ssh)* Support `~` in file paths - ([80aef95](https://github.com/vicanso/pingap/commit/80aef95f1f9d83eb85eca11ab88172122dd71997))
+- *(table)* Adjust hash table column widths - ([e08a1bc](https://github.com/vicanso/pingap/commit/e08a1bc1d5c682fd2da0574320a95df023832357))
+
+### 📚 Documentation
+
+- *(readme)* Add arch linux installation instructions ([#24](https://github.com/orhun/git-cliff/issues/24)) - ([d021b4e](https://github.com/vicanso/pingap/commit/d021b4e576a9d633fa71a146702a778989da49cf))
+- *(readme)* Add windows installation instructions ([#23](https://github.com/orhun/git-cliff/issues/23)) - ([c91715f](https://github.com/vicanso/pingap/commit/c91715f336d69bc5919544fed5b69d593892bf4c))
+- Update feature list with ssh and tls support - ([387e924](https://github.com/vicanso/pingap/commit/387e92429771161c984461f40e0e400f73a7da65))
+
+### ⚙️ Miscellaneous Tasks
+
+- Add clippy - ([7e29082](https://github.com/vicanso/pingap/commit/7e29082d5b5345825916d97757184c548b1ab04a))
+- Add typeos - ([dbff453](https://github.com/vicanso/pingap/commit/dbff45378a8e890b9d74490447de17b1637d9d81))
+
 ## [0.1.8](https://github.com/vicanso/pingap/compare/v0.1.7..v0.1.8) - 2026-01-15
 
 ### ⛰️  Features
