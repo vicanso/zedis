@@ -327,7 +327,7 @@ impl ZedisKeyTree {
                 ServerEvent::ServerSelected(_, _) => {
                     this.reset(cx);
                 }
-                ServerEvent::EditonActionTriggered(action) => {
+                ServerEvent::EditionActionTriggered(action) => {
                     if action == &EditorAction::Create {
                         this.should_enter_add_key_mode = Some(true);
                         cx.notify();

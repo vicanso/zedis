@@ -103,7 +103,7 @@ impl ZedisEditor {
                 ServerEvent::ServerInfoUpdated(_) => {
                     this.readonly = server_state.read(cx).readonly();
                 }
-                ServerEvent::EditonActionTriggered(action) => match action {
+                ServerEvent::EditionActionTriggered(action) => match action {
                     EditorAction::UpdateTtl => {
                         this.should_enter_ttl_edit_mode = Some(true);
                         cx.notify();

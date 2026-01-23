@@ -36,6 +36,7 @@ jobs:
         run: |
           rustup update
           cargo install cargo-bundle
+          cargo install typos-cli
           brew install create-dmg
       - name: Import Code-Signing Certificates
         env:

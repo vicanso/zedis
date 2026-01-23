@@ -172,7 +172,7 @@ pub enum ServerEvent {
     Notification(NotificationAction),
 
     /// Trigger Action
-    EditonActionTriggered(EditorAction),
+    EditionActionTriggered(EditorAction),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}
@@ -188,6 +188,6 @@ impl ZedisServerState {
         {
             return;
         }
-        cx.emit(ServerEvent::EditonActionTriggered(event));
+        cx.emit(ServerEvent::EditionActionTriggered(event));
     }
 }
