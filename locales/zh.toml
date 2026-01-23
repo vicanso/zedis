@@ -141,7 +141,7 @@ viewer = "视图:"
 toggle_readonly_tooltip = "切换只读模式 (当前会话)"
 
 [list_editor]
-positon = "位置"
+position = "位置"
 update_tooltip = "更新列表项"
 delete_tooltip = "删除列表项"
 delete_list_item_prompt = "您确定要删除此列表项: %{value} (行号 %{row}) 吗？"

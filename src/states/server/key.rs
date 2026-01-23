@@ -180,7 +180,7 @@ impl ZedisServerState {
                     this.scan_keys(processing_server, processing_keyword, cx);
                     return cx.notify();
                 }
-                this.scaning = false;
+                this.scanning = false;
                 cx.notify();
                 if this.keys.len() == 1
                     && let Some(key) = this.keys.keys().next()
@@ -211,7 +211,7 @@ impl ZedisServerState {
     /// Initiates a new scan for keys matching the keyword.
     pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan();
-        self.scaning = true;
+        self.scanning = true;
         self.keyword = keyword.clone();
         cx.emit(ServerEvent::KeyScanStarted(keyword.clone()));
         cx.notify();

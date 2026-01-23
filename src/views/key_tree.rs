@@ -117,7 +117,7 @@ fn new_key_tree_items(
         let mut key_tree_item: Option<KeyTreeItem> = None;
         // max levels of depth
         for (index, k) in key.splitn(max_key_tree_depth, separator).enumerate() {
-            // if key_tre_item is not None, it means we are in a folder
+            // if key_tree_item is not None, it means we are in a folder
             // because it's not the last part of the key
             let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
             if let Some(key_tree_item) = key_tree_item.take() {
@@ -477,7 +477,7 @@ impl ZedisKeyTree {
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         // Don't trigger filter while already scanning
         let server_state = self.server_state.read(cx);
-        if server_state.scaning() {
+        if server_state.scanning() {
             return;
         }
 
@@ -545,7 +545,7 @@ impl ZedisKeyTree {
     fn get_tree_status_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let server_state = self.server_state.read(cx);
         // if scanning, return None
-        if server_state.scaning() {
+        if server_state.scanning() {
             if self.key_tree_list_state.read(cx).delegate().items.is_empty() {
                 return Some(div().m_5().child(SkeletonLoading::new()).into_any_element());
             }
@@ -662,7 +662,7 @@ impl ZedisKeyTree {
         let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
         let readonly = server_state.readonly();
-        let scaning = server_state.scaning();
+        let scanning = server_state.scanning();
         let server_id = server_state.server_id();
         if server_id != self.state.server_id.as_str() {
             self.state.server_id = server_id.to_string().into();
@@ -711,8 +711,8 @@ impl ZedisKeyTree {
         let search_btn = Button::new("key-tree-search-btn")
             .ghost()
             .tooltip(i18n_key_tree(cx, "search_tooltip"))
-            .loading(scaning)
-            .disabled(scaning)
+            .loading(scanning)
+            .disabled(scanning)
             .icon(IconName::Search)
             .on_click(cx.listener(|this, _, _, cx| {
                 this.handle_filter(cx);

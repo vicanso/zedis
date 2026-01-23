@@ -71,11 +71,11 @@ impl<K: Eq + Hash + Debug, V: Clone> TtlCache<K, V> {
         let now = now_secs();
         let mut count = 0;
         self.cache.retain(|_, item| {
-            let availabled = item.expired_at.load(Ordering::Relaxed) > now;
-            if !availabled {
+            let available = item.expired_at.load(Ordering::Relaxed) > now;
+            if !available {
                 count += 1;
             }
-            availabled
+            available
         });
         (count, self.cache.len())
     }

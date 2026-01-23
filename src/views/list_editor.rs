@@ -175,7 +175,7 @@ impl ZedisKvFetcher for ZedisListValues {
 
         let fields = vec![
             // Position choice: RPUSH (right/end) or LPUSH (left/start)
-            FormField::new(i18n_list_editor(cx, "positon")).with_options(vec!["RPUSH".into(), "LPUSH".into()]),
+            FormField::new(i18n_list_editor(cx, "position")).with_options(vec!["RPUSH".into(), "LPUSH".into()]),
             // Value input field
             FormField::new(i18n_common(cx, "value"))
                 .with_placeholder(i18n_common(cx, "value_placeholder"))

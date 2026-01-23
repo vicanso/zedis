@@ -138,7 +138,7 @@ pub struct ZedisServerState {
     cursors: Option<Vec<u64>>,
 
     /// Whether a scan operation is in progress
-    scaning: bool,
+    scanning: bool,
 
     /// Whether the current scan has completed
     scan_completed: bool,
@@ -174,7 +174,7 @@ impl ZedisServerState {
         self.cursors = None;
         self.keys.clear();
         self.key_tree_id = Uuid::now_v7().to_string().into();
-        self.scaning = false;
+        self.scanning = false;
         self.scan_completed = false;
         self.scan_times = 0;
         self.loaded_prefixes.clear();
@@ -394,8 +394,8 @@ impl ZedisServerState {
     }
 
     /// Check if a scan is currently in progress
-    pub fn scaning(&self) -> bool {
-        self.scaning
+    pub fn scanning(&self) -> bool {
+        self.scanning
     }
 
     /// Get the total database size (number of keys)
@@ -598,7 +598,7 @@ impl ZedisServerState {
 
             // Set loading state
             self.server_status = RedisServerStatus::Loading;
-            self.scaning = true;
+            self.scanning = true;
             cx.notify();
 
             let server_id_clone = self.server_id.clone();
@@ -652,7 +652,7 @@ impl ZedisServerState {
                     if this.query_mode == QueryMode::All {
                         this.scan_keys(server_id, SharedString::default(), cx);
                     } else {
-                        this.scaning = false;
+                        this.scanning = false;
                         cx.notify();
                     }
                 },

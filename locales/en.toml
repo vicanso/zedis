@@ -142,7 +142,7 @@ viewer = "Viewer:"
 toggle_readonly_tooltip = "Toggle read-only mode (Current session only)"
 
 [list_editor]
-positon = "Position"
+position = "Position"
 update_tooltip = "Update list item"
 delete_tooltip = "Delete list item"
 delete_list_item_prompt = "Are you sure you want to delete this list item: %{value} (Row %{row})?"

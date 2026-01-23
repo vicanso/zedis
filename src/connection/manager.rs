@@ -480,8 +480,7 @@ impl ConnectionManager {
                     return Err(Error::Invalid {
                         message: format!(
                             "Multiple masters found in Sentinel, please specify master_name, master_names: {unique_masters:?}"
-                        )
-                        .into(),
+                        ),
                     });
                 }
 

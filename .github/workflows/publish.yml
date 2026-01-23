@@ -63,6 +63,7 @@ jobs:
           key: macos-build-${{ matrix.target }}
       - name: release
         run: |
+          make lint
           cargo bundle --release --target ${{ matrix.target }} --features mimalloc
       - name: sign app
         env:
