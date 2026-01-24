@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::error::Error;
-use crate::helpers::get_or_create_config_dir;
+use crate::helpers::{get_or_create_config_dir, is_development};
 use redb::{Database, TableDefinition};
 use std::sync::OnceLock;
 
@@ -35,7 +35,11 @@ fn get_database() -> Result<&'static Database> {
 
 pub fn init_database() -> Result<()> {
     let dir = get_or_create_config_dir()?;
-    let db_path = dir.join("zedis.redb");
+    let db_path = if is_development() {
+        dir.join("zedis-dev.redb")
+    } else {
+        dir.join("zedis.redb")
+    };
     let db = Database::create(db_path)?;
     let write_txn = db.begin_write()?;
     {
