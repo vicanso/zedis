@@ -49,6 +49,10 @@ impl ZedisKvFetcher for ZedisHashValues {
         Self { server_state, value }
     }
 
+    fn is_form_editor(&self) -> bool {
+        true
+    }
+
     /// Retrieves a cell value for the table at the given row and column.
     ///
     /// Column layout:
@@ -232,8 +236,8 @@ impl ZedisHashEditor {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisHashValues>::new(
                 vec![
-                    KvTableColumn::new("Field", Some(field_width)), // Field name column (flexible width)
-                    KvTableColumn::new("Value", None),              // Field value column (flexible width)
+                    KvTableColumn::new("Field", Some(field_width)).with_readonly(true), // Field name column (flexible width)
+                    KvTableColumn::new("Value", None), // Field value column (flexible width)
                 ],
                 server_state,
                 window,

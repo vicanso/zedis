@@ -32,6 +32,9 @@ pub const INDEX_COLUMN_NAME: &str = "#";
 /// Trait defining the data fetching and manipulation interface for Key-Value data.
 /// Implementers allow the `ZedisKvDelegate` to display and edit various Redis data types (Hash, Set, List, ZSet).
 pub trait ZedisKvFetcher: 'static {
+    fn is_form_editor(&self) -> bool {
+        false
+    }
     /// Retrieves a value for a specific cell in the table.
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
 
@@ -83,6 +86,8 @@ pub trait ZedisKvFetcher: 'static {
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
 
+pub type OnEditHandler = Box<dyn Fn(usize, Vec<SharedString>, &mut Window, &mut App) + 'static>;
+
 /// A Table Delegate that manages the display and editing of Key-Value pairs.
 /// It bridges the UI (Table) and the Data Source (ZedisKvFetcher).
 pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
@@ -102,6 +107,8 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     value_states: HashMap<usize, Entity<InputState>>,
     /// Flag to ensure focus is applied only once when entering edit mode.
     edit_focus_done: bool,
+    /// Callback function to be called when editing a row.
+    on_edit: Option<OnEditHandler>,
 }
 
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
@@ -112,7 +119,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     /// * `fetcher` - Data source implementing ZedisKvFetcher trait
     /// * `window` - GPUI window context
     /// * `cx` - GPUI application context
-    pub fn new(columns: Vec<KvTableColumn>, fetcher: T, window: &mut Window, cx: &mut App) -> Self {
+    pub fn new(columns: Vec<KvTableColumn>, fetcher: Arc<T>, window: &mut Window, cx: &mut App) -> Self {
         let mut value_states = HashMap::new();
 
         // Convert KvTableColumns to UI Columns and initialize input states
@@ -147,16 +154,21 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
             table_columns: columns,
             columns: ui_columns,
             value_states,
-            fetcher: Arc::new(fetcher),
+            fetcher,
             processing: Rc::new(Cell::new(false)),
             editing_row: Cell::new(None),
             edit_focus_done: false,
             readonly: false,
+            on_edit: None,
         }
     }
 
     pub fn enable_readonly(&mut self) {
         self.readonly = true;
+    }
+
+    pub fn set_on_edit(&mut self, on_edit: Option<OnEditHandler>) {
+        self.on_edit = on_edit;
     }
 
     /// Returns a cloned Arc reference to the current fetcher.
@@ -177,6 +189,20 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         self.editing_row.set(None);
     }
 
+    fn get_edit_values(&self, row_ix: usize) -> Vec<(usize, SharedString)> {
+        let mut values = Vec::new();
+        let fetcher = self.fetcher();
+        let mut columns = self.value_states.keys().cloned().collect::<Vec<_>>();
+        // keep the order of the columns
+        columns.sort_unstable();
+        for col_ix in columns {
+            if let Some(value) = fetcher.get(row_ix, col_ix) {
+                values.push((col_ix, value));
+            }
+        }
+        values
+    }
+
     /// Enters edit mode for the specified row, populating input fields with current values.
     ///
     /// # Arguments
@@ -186,10 +212,10 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         self.editing_row.set(Some(row_ix));
 
         // Populate input fields with current values from fetcher
-        let fetcher = self.fetcher();
-        for (col_ix, state) in &self.value_states {
-            if let Some(value) = fetcher.get(row_ix, *col_ix) {
-                state.update(cx, |input, cx| input.set_value(value, window, cx));
+        let values = self.get_edit_values(row_ix);
+        for (col_ix, value) in values.iter() {
+            if let Some(state) = self.value_states.get(col_ix) {
+                state.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
             }
         }
     }
@@ -256,7 +282,10 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 })
                 .disabled(self.readonly || processing.get())
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    if is_editing {
+                    let values = this.delegate_mut().get_edit_values(row_ix);
+                    if let Some(on_edit_handler) = this.delegate_mut().on_edit.as_ref() {
+                        on_edit_handler(row_ix, values.into_iter().map(|(_, value)| value).collect(), window, cx);
+                    } else if is_editing {
                         this.delegate_mut().handle_update_row(row_ix, window, cx);
                     } else {
                         this.delegate_mut().handle_edit_row(row_ix, window, cx);

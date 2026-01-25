@@ -21,19 +21,21 @@ use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, PixelsExt,
     button::{Button, ButtonVariants},
+    form::{field, v_form},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     table::{Table, TableState},
     v_flex,
 };
+use std::sync::Arc;
 use tracing::info;
 
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
 
 /// Defines the type of table column for different purposes.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub enum KvTableColumnType {
     /// Standard value column displaying data
     #[default]
@@ -45,8 +47,10 @@ pub enum KvTableColumnType {
 }
 
 /// Configuration for a table column including name, width, and alignment.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct KvTableColumn {
+    /// Whether the column is readonly
+    pub readonly: bool,
     /// Type of the column
     pub column_type: KvTableColumnType,
     /// Display name of the column
@@ -66,7 +70,12 @@ impl KvTableColumn {
             ..Default::default()
         }
     }
+    pub fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
 }
+
 /// A generic table view for displaying Redis key-value data.
 ///
 /// This component handles:
@@ -89,7 +98,16 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     loading: bool,
     /// Flag indicating the selected key has changed (triggers input reset)
     key_changed: bool,
+    /// Whether the table is readonly
     readonly: bool,
+    /// The row index that is being edited
+    edit_row: Option<usize>,
+    /// Columns configuration
+    edit_columns: Vec<KvTableColumn>,
+    /// Input states for editable cells, keyed by column index.
+    value_states: Vec<Entity<InputState>>,
+    /// Fetcher instance
+    fetcher: Arc<T>,
     /// Event subscriptions for server state and input changes
     _subscriptions: Vec<Subscription>,
 }
@@ -119,6 +137,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 name: INDEX_COLUMN_NAME.to_string().into(),
                 width: Some(80.),
                 align: Some(TextAlign::Right),
+                ..Default::default()
             },
         );
 
@@ -128,6 +147,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             name: i18n_common(cx, "action"),
             width: Some(100.0),
             align: Some(TextAlign::Center),
+            ..Default::default()
         });
 
         // Calculate remaining width and count columns without fixed width
@@ -225,13 +245,36 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let done = fetcher.is_done();
         let items_count = fetcher.rows_count();
         let total_count = fetcher.count();
-        let mut delegate = ZedisKvDelegate::new(Self::new_columns(columns, window, cx), fetcher, window, cx);
+        let edit_columns = columns
+            .iter()
+            .filter(|column| column.column_type == KvTableColumnType::Value)
+            .cloned()
+            .collect::<Vec<_>>();
+        let fetcher = Arc::new(fetcher);
+        let mut delegate = ZedisKvDelegate::new(
+            Self::new_columns(columns.clone(), window, cx),
+            fetcher.clone(),
+            window,
+            cx,
+        );
         if readonly {
             delegate.enable_readonly();
         }
 
-        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+        if fetcher.is_form_editor() {
+            let view = cx.entity();
+            delegate.set_on_edit(Some(Box::new(move |row_ix, values, window, cx| {
+                view.update(cx, |state, cx| {
+                    state.set_edit_values(row_ix, values, window, cx);
+                });
+            })));
+        }
 
+        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+        let value_states = edit_columns
+            .iter()
+            .map(|_column| cx.new(|cx| InputState::new(window, cx).auto_grow(1, 10).clean_on_escape()))
+            .collect::<Vec<_>>();
         info!("Creating new key value table view");
 
         Self {
@@ -242,9 +285,35 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             done,
             loading: false,
             key_changed: false,
+            edit_row: None,
+            value_states,
             readonly,
+            fetcher,
+            edit_columns,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn set_edit_values(
+        &mut self,
+        row_ix: usize,
+        values: Vec<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.edit_row == Some(row_ix) {
+            self.edit_row = None;
+            return;
+        }
+        self.edit_row = Some(row_ix);
+        self.value_states.iter().enumerate().for_each(|(index, state)| {
+            state.update(cx, |input, cx| {
+                let Some(value) = values.get(index) else {
+                    return;
+                };
+                input.set_value(value.clone(), window, cx);
+            });
+        });
     }
 
     /// Triggers a filter operation using the current keyword from the input field.
@@ -254,6 +323,61 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.table_state.update(cx, |state, cx| {
             state.delegate().fetcher().filter(keyword, cx);
         });
+    }
+    fn handle_update_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row_ix) = self.edit_row else {
+            return;
+        };
+        let mut values = Vec::with_capacity(self.value_states.len());
+        for state in self.value_states.iter() {
+            let value = state.read(cx).value();
+            values.push(value);
+        }
+        self.fetcher.handle_update_value(row_ix, values, window, cx);
+        self.edit_row = None;
+    }
+    /// Renders the edit form for the current row.
+    fn render_edit_form(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut form = v_form();
+        for (index, column) in self.edit_columns.iter().enumerate() {
+            let Some(value_state) = self.value_states.get(index) else {
+                continue;
+            };
+            form = form.child(
+                field()
+                    .label(column.name.clone())
+                    .child(Input::new(value_state).disabled(column.readonly)),
+            );
+        }
+        form.child(
+            field().child(
+                h_flex()
+                    .id("kv-table-edit-form-btn-group")
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        Button::new("cancel-edit-btn")
+                            .h(px(30.))
+                            .icon(IconName::CircleX)
+                            .label("Cancel")
+                            .flex_1()
+                            .on_click(cx.listener(|this, _, _, _cx| {
+                                this.edit_row = None;
+                            })),
+                    )
+                    .child(
+                        Button::new("save-edit-btn")
+                            .h(px(30.))
+                            .icon(IconName::Check)
+                            .label("Save")
+                            .flex_1()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.handle_update_row(window, cx);
+                            })),
+                    ),
+            ),
+        )
+        .into_any_element()
     }
 }
 impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
@@ -296,6 +420,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         v_flex()
             .h_full()
             .w_full()
+            .relative()
             // Main table area
             .child(
                 div().size_full().flex_1().child(
@@ -341,6 +466,26 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                             .text_color(text_color),
                     ),
             )
+            .when(self.edit_row.is_some(), |this| {
+                this.child(
+                    div()
+                        .id("kv-table-on-edit-overlay")
+                        .absolute()
+                        .top_1_2()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().background)
+                        .p_2()
+                        .overflow_y_scroll()
+                        .child(self.render_edit_form(cx))
+                        .on_click(cx.listener(|_this, _, _, cx| {
+                            cx.stop_propagation();
+                        })),
+                )
+            })
             .into_any_element()
     }
 }
