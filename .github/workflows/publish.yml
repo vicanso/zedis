@@ -72,12 +72,37 @@ jobs:
           CERT_NAME: ${{ secrets.MACOS_CERTIFICATE_NAME }}
         run: |
           echo "Signing App with identity: $CERT_NAME"
+          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
           # --options runtime: enable Hardened Runtime (required for notarization)
           # --entitlements: specify entitlement file
           codesign --force --deep --verbose --options runtime --timestamp \
             --entitlements Entitlements.plist \
             --sign "$CERT_NAME" \
-            "target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
+            "$APP_PATH"
+      - name: notarize and staple app
+        env:
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+          AC_TEAM_ID: ${{ secrets.AC_TEAM_ID }}
+        run: |
+          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
+          ZIP_PATH="app_notarize.zip"
+          
+          echo "1. Zipping App for notarization..."
+          # notarytool 只接受 zip/dmg，不接受 .app 文件夹，所以必须先压缩
+          # --keepParent 很重要，解压后必须还是 .app 结构
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+          
+          echo "2. Submitting App Zip for notarization..."
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$AC_USERNAME" \
+            --password "$AC_PASSWORD" \
+            --team-id "$AC_TEAM_ID" \
+            --wait
+          
+          echo "3. Stapling ticket to Original App..."
+          # 关键点：把票据钉回原来的 .app 文件里
+          xcrun stapler staple "$APP_PATH"
       - name: create dmg
         run: |
           mkdir -p release
