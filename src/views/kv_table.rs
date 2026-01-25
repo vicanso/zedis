@@ -18,10 +18,11 @@ use crate::{
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_kv_table},
 };
 use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
+use gpui_component::highlighter::Language;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, PixelsExt,
     button::{Button, ButtonVariants},
-    form::{field, v_form},
+    form::field,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -273,7 +274,19 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
         let value_states = edit_columns
             .iter()
-            .map(|_column| cx.new(|cx| InputState::new(window, cx).auto_grow(1, 10).clean_on_escape()))
+            .map(|column| {
+                cx.new(|cx| {
+                    if column.readonly {
+                        InputState::new(window, cx)
+                    } else {
+                        InputState::new(window, cx)
+                            .code_editor(Language::from_str("json").name())
+                            .line_number(true)
+                            .indent_guides(true)
+                            .soft_wrap(true)
+                    }
+                })
+            })
             .collect::<Vec<_>>();
         info!("Creating new key value table view");
 
@@ -338,43 +351,59 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     }
     /// Renders the edit form for the current row.
     fn render_edit_form(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut form = v_form();
+        let mut form = v_flex().size_full().gap_3();
         for (index, column) in self.edit_columns.iter().enumerate() {
             let Some(value_state) = self.value_states.get(index) else {
                 continue;
             };
-            form = form.child(
-                field()
-                    .label(column.name.clone())
-                    .child(Input::new(value_state).disabled(column.readonly)),
-            );
+            let input = Input::new(value_state).disabled(column.readonly).h_full();
+
+            let inner_content = if index != 0 {
+                v_flex()
+                    .size_full()
+                    .gap_1()
+                    .child(Label::new(column.name.clone()))
+                    .child(div().flex_1().size_full().child(input))
+                    .into_any_element()
+            } else {
+                field().label(column.name.clone()).child(input).into_any_element()
+            };
+
+            let wrapped_field = v_flex()
+                .w_full()
+                .child(inner_content)
+                .when(index != 0, |this| this.flex_1().h_full());
+
+            form = form.child(wrapped_field);
         }
         form.child(
-            field().child(
-                h_flex()
-                    .id("kv-table-edit-form-btn-group")
-                    .w_full()
-                    .gap_2()
-                    .child(
-                        Button::new("cancel-edit-btn")
-                            .h(px(30.))
-                            .icon(IconName::CircleX)
-                            .label("Cancel")
-                            .flex_1()
-                            .on_click(cx.listener(|this, _, _, _cx| {
-                                this.edit_row = None;
-                            })),
-                    )
-                    .child(
-                        Button::new("save-edit-btn")
-                            .h(px(30.))
-                            .icon(IconName::Check)
-                            .label("Save")
-                            .flex_1()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.handle_update_row(window, cx);
-                            })),
-                    ),
+            div().flex_none().child(
+                field().child(
+                    h_flex()
+                        .id("kv-table-edit-form-btn-group")
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-edit-btn")
+                                .h(px(30.))
+                                .icon(IconName::CircleX)
+                                .label("Cancel")
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, _cx| {
+                                    this.edit_row = None;
+                                })),
+                        )
+                        .child(
+                            Button::new("save-edit-btn")
+                                .h(px(30.))
+                                .icon(IconName::Check)
+                                .label("Save")
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.handle_update_row(window, cx);
+                                })),
+                        ),
+                ),
             ),
         )
         .into_any_element()
@@ -479,7 +508,8 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                         .border_color(cx.theme().border)
                         .bg(cx.theme().background)
                         .p_2()
-                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
                         .child(self.render_edit_form(cx))
                         .on_click(cx.listener(|_this, _, _, cx| {
                             cx.stop_propagation();
