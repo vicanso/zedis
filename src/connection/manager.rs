@@ -51,8 +51,18 @@ pub enum AccessMode {
 #[derive(Debug, Clone, PartialEq)]
 enum ServerType {
     Standalone,
-    Cluster,
     Sentinel,
+    Cluster,
+}
+
+impl From<usize> for ServerType {
+    fn from(value: usize) -> Self {
+        match value {
+            2 => ServerType::Sentinel,
+            3 => ServerType::Cluster,
+            _ => ServerType::Standalone,
+        }
+    }
 }
 
 // Wrapper for the underlying Redis client
@@ -411,8 +421,22 @@ impl ConnectionManager {
                     open_single_connection(&tmp_config, 0).await?
                 }
             };
-            let server_type = detect_server_type(conn.clone()).await?;
-            (conn, server_type)
+            if let Some(server_type) = config.server_type
+                && server_type > 0
+            {
+                (conn, server_type.into())
+            } else {
+                match detect_server_type(conn.clone()).await {
+                    Ok(server_type) => (conn, server_type),
+                    Err(e) => {
+                        if !e.to_string().contains("Command is not available") {
+                            return Err(e);
+                        }
+                        error!("detect server type failed: {e:?}, use standalone mode");
+                        (conn, ServerType::Standalone)
+                    }
+                }
+            }
         };
         match server_type {
             ServerType::Cluster => {

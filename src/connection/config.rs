@@ -71,6 +71,7 @@ pub struct RedisServer {
     pub port: u16,
     pub username: Option<String>,
     pub password: Option<String>,
+    pub server_type: Option<usize>,
     pub master_name: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,

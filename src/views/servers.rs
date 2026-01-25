@@ -25,6 +25,7 @@ use gpui_component::{
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
+    radio::RadioGroup,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
 };
@@ -94,6 +95,7 @@ pub struct ZedisServers {
     port_state: Entity<InputState>,
     username_state: Entity<InputState>,
     password_state: Entity<InputState>,
+    server_type_state: Entity<usize>,
     client_cert_state: Entity<InputState>,
     client_key_state: Entity<InputState>,
     root_cert_state: Entity<InputState>,
@@ -192,6 +194,7 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "master_name_placeholder"))
                 .validate(|s, _cx| validate_common_string(s))
         });
+        let server_type_state = cx.new(|_cx| 0_usize);
 
         let port_state_clone = port_state.clone();
         let username_state_clone = username_state.clone();
@@ -253,6 +256,7 @@ impl ZedisServers {
             port_state,
             username_state,
             password_state,
+            server_type_state,
             client_cert_state,
             client_key_state,
             root_cert_state,
@@ -323,6 +327,9 @@ impl ZedisServers {
         self.server_insecure_tls.set(server.insecure.unwrap_or(false));
         self.server_ssh_tunnel.set(server.ssh_tunnel.unwrap_or(false));
         self.server_readonly.set(server.readonly.unwrap_or(false));
+        self.server_type_state.update(cx, |state, _cx| {
+            *state = server.server_type.unwrap_or(0);
+        });
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -384,6 +391,7 @@ impl ZedisServers {
         let server_insecure_tls = self.server_insecure_tls.clone();
         let server_ssh_tunnel = self.server_ssh_tunnel.clone();
         let server_state_clone = server_state.clone();
+        let server_type_state = self.server_type_state.clone();
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
         let port_state_clone = port_state.clone();
@@ -404,6 +412,7 @@ impl ZedisServers {
         let server_ssh_tunnel_for_submit = server_ssh_tunnel.clone();
         let server_readonly = self.server_readonly.clone();
         let server_readonly_for_submit = server_readonly.clone();
+        let server_type_state_clone = server_type_state.clone();
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             let name = name_state_clone.read(cx).value();
             let host = host_state_clone.read(cx).value();
@@ -499,6 +508,8 @@ impl ZedisServers {
             } else {
                 None
             };
+            let server_type = *server_type_state.read(cx);
+            let server_type = if server_type > 0 { Some(server_type) } else { None };
 
             server_state_clone.update(cx, |state, cx| {
                 let current_server = state.server(server_id_clone.as_str()).cloned().unwrap_or_default();
@@ -511,6 +522,7 @@ impl ZedisServers {
                         port,
                         username: username.map(|u| u.to_string()),
                         password: password.map(|p| p.to_string()),
+                        server_type,
                         master_name: master_name.map(|m| m.to_string()),
                         description: description.map(|d| d.to_string()),
                         tls: if enable_tls { Some(enable_tls) } else { None },
@@ -572,6 +584,8 @@ impl ZedisServers {
             let tab_general_label = i18n_servers(cx, "tab_general");
             let tab_tls_label = i18n_servers(cx, "tab_tls");
             let tab_ssh_label = i18n_servers(cx, "tab_ssh");
+            let server_type_label = i18n_servers(cx, "server_type");
+            let server_type_list = i18n_servers(cx, "server_type_list");
             let current_tab_index = *tab_selected_index.read(cx);
             dialog
                 .title(title)
@@ -584,6 +598,7 @@ impl ZedisServers {
                         focus_handle_done.set(true);
                     }
                     let mut form = v_form();
+                    let server_type_state_clone = server_type_state_clone.clone();
                     form = match current_tab_index {
                         1 => form
                             .child(field().label(tls_label).child({
@@ -654,6 +669,23 @@ impl ZedisServers {
                                         cx.stop_propagation();
                                     })
                             }))
+                            .child(
+                                field().label(server_type_label).child(
+                                    RadioGroup::horizontal("horizontal-group")
+                                        .children(
+                                            server_type_list
+                                                .split(" ")
+                                                .map(|s| s.to_string())
+                                                .collect::<Vec<String>>(),
+                                        )
+                                        .selected_index(Some(*server_type_state_clone.read(cx)))
+                                        .on_click(move |index, _, cx| {
+                                            server_type_state_clone.update(cx, |state, _cx| {
+                                                *state = *index;
+                                            });
+                                        }),
+                                ),
+                            )
                             .child(field().label(master_name_label).child(Input::new(&master_name_state)))
                             .child(field().label(description_label).child(Input::new(&description_state)))
                         }
