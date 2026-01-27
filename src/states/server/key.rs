@@ -17,8 +17,8 @@ use super::{
     hash::first_load_hash_value,
     list::first_load_list_value,
     set::first_load_set_value,
-    string::get_redis_value,
-    value::{KeyType, RedisValue, RedisValueStatus, SortOrder},
+    string::get_redis_bytes_value,
+    value::{KeyType, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
 use crate::db::add_normalize_history;
@@ -31,6 +31,7 @@ use crate::{
 use futures::{StreamExt, stream};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
@@ -368,7 +369,15 @@ impl ZedisServerState {
 
                 let key_type = KeyType::from(t.as_str());
                 let mut redis_value = match key_type {
-                    KeyType::String => get_redis_value(&mut conn, &key, max_truncate_length).await,
+                    KeyType::String => {
+                        let mut data = get_redis_bytes_value(&mut conn, &key).await?;
+                        data.detect_and_update(server_id.as_str(), key.as_str(), max_truncate_length);
+                        Ok(RedisValue {
+                            key_type: KeyType::String,
+                            data: Some(RedisValueData::Bytes(Arc::new(data))),
+                            ..Default::default()
+                        })
+                    }
                     KeyType::List => first_load_list_value(&mut conn, &key).await,
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
                     KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
@@ -283,6 +284,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                             .code_editor(Language::from_str("json").name())
                             .line_number(true)
                             .indent_guides(true)
+                            .searchable(true)
                             .soft_wrap(true)
                     }
                 })
@@ -356,7 +358,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let Some(value_state) = self.value_states.get(index) else {
                 continue;
             };
-            let input = Input::new(value_state).disabled(column.readonly).h_full();
+            let input = Input::new(value_state)
+                .disabled(column.readonly)
+                .h_full()
+                .p_0()
+                .font_family(get_font_family())
+                .focus_bordered(false);
 
             let inner_content = if index != 0 {
                 v_flex()

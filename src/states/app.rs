@@ -34,6 +34,7 @@ pub enum Route {
     Home,
     Editor,
     Settings,
+    Protos,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -82,6 +83,7 @@ pub enum FontSizeAction {
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum SettingsAction {
     Editor,
+    Protos,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

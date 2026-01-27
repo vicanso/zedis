@@ -18,7 +18,7 @@ use crate::{
     error::Error,
     helpers::{EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string},
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
-    views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
+    views::{ZedisEditor, ZedisKeyTree, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -60,7 +60,8 @@ pub struct ZedisContent {
 
     /// Cached views - lazily initialized and cleared when switching routes
     servers: Option<Entity<ZedisServers>>,
-    settings: Option<Entity<ZedisSettingEditor>>,
+    setting_editor: Option<Entity<ZedisSettingEditor>>,
+    proto_editor: Option<Entity<ZedisProtoEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
@@ -82,6 +83,19 @@ pub struct ZedisContent {
 }
 
 impl ZedisContent {
+    fn clear_views(&mut self) {
+        let route = self.current_route;
+        if route != Route::Editor {
+            self.key_tree.take();
+            self.value_editor.take();
+        }
+        if route != Route::Settings {
+            self.setting_editor.take();
+        }
+        if route != Route::Protos {
+            self.proto_editor.take();
+        }
+    }
     /// Create a new content view with route-aware view management
     ///
     /// Sets up subscriptions to automatically clean up cached views when
@@ -101,22 +115,23 @@ impl ZedisContent {
             }
             this.current_route = route;
 
-            // Clean up servers view when not on home route
-            if route != Route::Home && this.servers.is_some() {
-                info!("Cleaning up servers view (route changed)");
-                let _ = this.servers.take();
-            }
+            this.clear_views();
+            // // Clean up servers view when not on home route
+            // if route != Route::Home && this.servers.is_some() {
+            //     info!("Cleaning up servers view (route changed)");
+            //     let _ = this.servers.take();
+            // }
 
-            // Clean up editor views when not on editor route
-            if route != Route::Editor {
-                info!("Cleaning up key tree and value editor view (route changed)");
-                if this.value_editor.is_some() {
-                    let _ = this.value_editor.take();
-                }
-                if this.key_tree.is_some() {
-                    let _ = this.key_tree.take();
-                }
-            }
+            // // Clean up editor views when not on editor route
+            // if route != Route::Editor {
+            //     info!("Cleaning up key tree and value editor view (route changed)");
+            //     if this.value_editor.is_some() {
+            //         let _ = this.value_editor.take();
+            //     }
+            //     if this.key_tree.is_some() {
+            //         let _ = this.key_tree.take();
+            //     }
+            // }
 
             cx.notify();
         }));
@@ -163,7 +178,7 @@ impl ZedisContent {
             current_route: route,
             servers: None,
             value_editor: None,
-            settings: None,
+            setting_editor: None,
             key_tree: None,
             cmd_outputs: Vec::with_capacity(5),
             key_tree_width,
@@ -172,6 +187,7 @@ impl ZedisContent {
             should_focus_cmd_input: None,
             cmd_output_scroll_handle: ScrollHandle::new(),
             focus_handle,
+            proto_editor: None,
             _subscriptions: subscriptions,
         }
     }
@@ -248,13 +264,23 @@ impl ZedisContent {
     }
     fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self
-            .settings
+            .setting_editor
             .get_or_insert_with(|| {
                 debug!("Creating new settings view");
                 cx.new(|cx| ZedisSettingEditor::new(window, cx))
             })
             .clone();
         div().child(settings)
+    }
+    fn render_proto_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let proto_editor = self
+            .proto_editor
+            .get_or_insert_with(|| {
+                debug!("Creating new proto editor view");
+                cx.new(|cx| ZedisProtoEditor::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(proto_editor)
     }
     /// Render a loading skeleton screen with animated placeholders
     ///
@@ -392,6 +418,7 @@ impl Render for ZedisContent {
         match route {
             Route::Home => base.child(self.render_servers(window, cx)).into_any_element(),
             Route::Settings => base.child(self.render_settings(window, cx)).into_any_element(),
+            Route::Protos => base.child(self.render_proto_editor(window, cx)).into_any_element(),
             _ => {
                 // Route 2: Loading state (show skeleton while connecting/loading)
                 let is_busy = self.server_state.read(cx).is_busy();

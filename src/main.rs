@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
-use crate::db::init_database;
+use crate::db::{ProtoManager, init_database};
 use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
     FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
@@ -235,10 +235,16 @@ impl Render for Zedis {
             }))
             .on_action(cx.listener(move |_this, e: &SettingsAction, _window, cx| {
                 let action = *e;
+                let mut route = None;
                 if action == SettingsAction::Editor {
+                    route = Some(Route::Settings);
+                } else if action == SettingsAction::Protos {
+                    route = Some(Route::Protos);
+                }
+                if let Some(route) = route {
                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                         store.update(cx, |state, cx| {
-                            state.go_to(Route::Settings, cx);
+                            state.go_to(route, cx);
                         });
                     });
                 }
@@ -371,6 +377,15 @@ fn main() {
             )?;
 
             Ok::<_, anyhow::Error>(())
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            cx.background_spawn(async move {
+                if let Err(e) = ProtoManager::init() {
+                    error!(error = %e, "init protos fail",);
+                }
+            })
+            .await;
         })
         .detach();
     });

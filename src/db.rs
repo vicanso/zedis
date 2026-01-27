@@ -18,10 +18,13 @@ use redb::{Database, TableDefinition};
 use std::sync::OnceLock;
 
 mod history_manager;
+mod protos;
 
 pub use history_manager::*;
+pub use protos::*;
 
 const HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
+const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -44,6 +47,7 @@ pub fn init_database() -> Result<()> {
     let write_txn = db.begin_write()?;
     {
         write_txn.open_table(HISTORY_TABLE)?;
+        write_txn.open_table(PROTO_TABLE)?;
     }
     write_txn.commit()?;
     DATABASE.set(db).map_err(|_| Error::Invalid {

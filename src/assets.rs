@@ -66,6 +66,7 @@ pub enum CustomIconName {
     ListChecvronsDownUp,
     Lock,
     LockOpen,
+    SwatchBook,
 }
 
 impl CustomIconName {
@@ -97,6 +98,7 @@ impl CustomIconName {
             CustomIconName::ListChecvronsDownUp => "icons/list-chevrons-down-up.svg",
             CustomIconName::Lock => "icons/lock.svg",
             CustomIconName::LockOpen => "icons/lock-open.svg",
+            CustomIconName::SwatchBook => "icons/swatch-book.svg",
         }
         .into()
     }

@@ -46,6 +46,15 @@ pub enum Error {
 
     #[snafu(display("Redb storage error: {source}"))]
     RedbStorage { source: redb::StorageError },
+
+    #[snafu(display("Protox error: {source}"))]
+    Protox { source: protox::Error },
+
+    #[snafu(display("Prost reflect descriptor error: {source}"))]
+    ProstReflectDescriptor { source: prost_reflect::DescriptorError },
+
+    #[snafu(display("Prost reflect decode error: {source}"))]
+    ProstReflectDecode { source: prost_reflect::prost::DecodeError },
 }
 
 impl From<redis::RedisError> for Error {
@@ -123,5 +132,23 @@ impl From<redb::CommitError> for Error {
 impl From<redb::StorageError> for Error {
     fn from(source: redb::StorageError) -> Self {
         Error::RedbStorage { source }
+    }
+}
+
+impl From<protox::Error> for Error {
+    fn from(source: protox::Error) -> Self {
+        Error::Protox { source }
+    }
+}
+
+impl From<prost_reflect::DescriptorError> for Error {
+    fn from(source: prost_reflect::DescriptorError) -> Self {
+        Error::ProstReflectDescriptor { source }
+    }
+}
+
+impl From<prost_reflect::prost::DecodeError> for Error {
+    fn from(source: prost_reflect::prost::DecodeError) -> Self {
+        Error::ProstReflectDecode { source }
     }
 }

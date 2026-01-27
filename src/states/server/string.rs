@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
+use super::value::{DataFormat, RedisBytesValue, detect_format};
+use crate::db::ProtoManager;
 use crate::helpers::decompress_zstd;
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
@@ -23,7 +24,6 @@ use redis::cmd;
 use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
-use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -88,7 +88,7 @@ fn format_text(data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, S
 }
 
 impl RedisBytesValue {
-    pub fn detect_and_update(&mut self, max_truncate_length: usize) {
+    pub fn detect_and_update(&mut self, server_id: &str, key: &str, max_truncate_length: usize) {
         let data = self.bytes.as_ref();
         if data.is_empty() {
             return;
@@ -125,7 +125,11 @@ impl RedisBytesValue {
             DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
             _ => {
-                if let Ok(decompressed) = decompress_size_prepended(data) {
+                if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
+                    && let Ok(data) = ProtoManager::decode_data(&id, data)
+                {
+                    Some((DataFormat::Preview, SharedString::from(data)))
+                } else if let Ok(decompressed) = decompress_size_prepended(data) {
                     process_decompressed(Some(decompressed))
                 } else {
                     format_text(data, max_truncate_length)
@@ -142,23 +146,24 @@ impl RedisBytesValue {
     }
 }
 
-/// Fetch a string value from Redis.
-/// Returns a RedisValue with the string value and the size.
-pub(crate) async fn get_redis_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    max_truncate_length: usize,
-) -> Result<RedisValue> {
+pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisBytesValue> {
     let value_bytes: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
-    let mut data = RedisBytesValue {
+    Ok(RedisBytesValue {
         format: DataFormat::Text,
         bytes: Bytes::from(value_bytes),
         ..Default::default()
-    };
-    data.detect_and_update(max_truncate_length);
-    Ok(RedisValue {
-        key_type: KeyType::String,
-        data: Some(RedisValueData::Bytes(Arc::new(data))),
-        ..Default::default()
     })
 }
+
+// pub(crate) async fn get_redis_value(
+//     mut data: RedisBytesValue,
+//     key: &str,
+//     max_truncate_length: usize,
+// ) -> Result<RedisValue> {
+//     data.detect_and_update(key, max_truncate_length);
+//     Ok(RedisValue {
+//         key_type: KeyType::String,
+//         data: Some(RedisValueData::Bytes(Arc::new(data))),
+//         ..Default::default()
+//     })
+// }
