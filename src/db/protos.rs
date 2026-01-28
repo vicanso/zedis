@@ -48,6 +48,16 @@ impl From<usize> for MatchMode {
     }
 }
 
+impl From<MatchMode> for usize {
+    fn from(value: MatchMode) -> Self {
+        match value {
+            MatchMode::Prefix => 0,
+            MatchMode::Suffix => 1,
+            MatchMode::Regex => 2,
+            MatchMode::Exact => 3,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtoConfig {
     pub server_id: String,
@@ -96,9 +106,35 @@ impl ProtoManager {
 
         Ok(())
     }
-    pub fn list_protos() -> Vec<ProtoConfig> {
+    pub fn list_protos_with_id() -> Vec<(String, ProtoConfig)> {
         let cache = &PROTO_META_CACHE;
-        cache.iter().map(|item| item.value().clone()).collect::<Vec<_>>()
+        cache
+            .iter()
+            .map(|item| (item.key().clone(), item.value().clone()))
+            .collect::<Vec<_>>()
+    }
+    pub fn get_proto(id: &str) -> Result<ProtoConfig> {
+        let db = get_database()?;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(PROTO_TABLE)?;
+        let Some(v) = table.get(id)? else {
+            return Err(Error::Invalid {
+                message: "proto not found".to_string(),
+            });
+        };
+        let proto: ProtoConfig = serde_json::from_slice(v.value())?;
+        Ok(proto)
+    }
+    pub fn delete_proto(id: &str) -> Result<()> {
+        let db = get_database()?;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(PROTO_TABLE)?;
+            table.remove(id)?;
+        }
+        write_txn.commit()?;
+        PROTO_META_CACHE.remove(id);
+        Ok(())
     }
     pub fn match_key_to_name(server_id: &str, key: &str) -> Option<String> {
         let cache = &PROTO_META_CACHE;
@@ -121,7 +157,7 @@ impl ProtoManager {
         })?;
         Some(item.key().to_string())
     }
-    pub fn add_proto(id: &str, mut proto: ProtoConfig) -> Result<()> {
+    pub fn upsert_proto(id: &str, mut proto: ProtoConfig) -> Result<()> {
         if proto.name.is_empty() {
             return Err(Error::Invalid {
                 message: "proto name is empty".to_string(),
@@ -152,17 +188,17 @@ impl ProtoManager {
             let proto: ProtoConfig = serde_json::from_slice(v.value())?;
             proto
         };
-        let Some(content) = proto.content else {
+        let content = proto.content.unwrap_or_default();
+        if content.trim().is_empty() {
             return Err(Error::Invalid {
                 message: "proto content is empty".to_string(),
             });
         };
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
-        let content = content.trim();
         let mut files = Vec::new();
         if content.ends_with(".proto") {
-            files.push(Path::new(content).to_path_buf());
+            files.push(Path::new(&content).to_path_buf());
         } else {
             let file_path = temp_path.join(proto.name);
             fs::write(&file_path, content)?;

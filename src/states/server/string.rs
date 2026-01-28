@@ -128,7 +128,7 @@ impl RedisBytesValue {
                 if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
                     && let Ok(data) = ProtoManager::decode_data(&id, data)
                 {
-                    Some((DataFormat::Preview, SharedString::from(data)))
+                    Some((DataFormat::Protobuf, SharedString::from(data)))
                 } else if let Ok(decompressed) = decompress_size_prepended(data) {
                     process_decompressed(Some(decompressed))
                 } else {

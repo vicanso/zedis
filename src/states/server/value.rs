@@ -100,6 +100,7 @@ pub enum DataFormat {
     Gzip,
     Zstd,
     Snappy,
+    Protobuf,
     MessagePack,
 }
 
@@ -118,6 +119,7 @@ impl DataFormat {
             DataFormat::Gzip => "gzip",
             DataFormat::Snappy => "snappy",
             DataFormat::Zstd => "zstd",
+            DataFormat::Protobuf => "protobuf",
             DataFormat::MessagePack => "messagepack",
         }
     }
