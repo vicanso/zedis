@@ -349,6 +349,10 @@ impl ZedisServerState {
         self.search_history.clone()
     }
 
+    pub fn clear_search_history(&mut self, _cx: &mut Context<Self>) {
+        self.search_history.clear();
+    }
+
     /// Get whether the server is readonly
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)

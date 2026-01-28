@@ -67,6 +67,7 @@ pub enum CustomIconName {
     Lock,
     LockOpen,
     SwatchBook,
+    Eraser,
 }
 
 impl CustomIconName {
@@ -99,6 +100,7 @@ impl CustomIconName {
             CustomIconName::Lock => "icons/lock.svg",
             CustomIconName::LockOpen => "icons/lock-open.svg",
             CustomIconName::SwatchBook => "icons/swatch-book.svg",
+            CustomIconName::Eraser => "icons/eraser.svg",
         }
         .into()
     }

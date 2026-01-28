@@ -49,6 +49,7 @@ yay -S zedis-bin
 Zedis 自动检测内容类型 (`ViewerMode::Auto`) 并以最直观的格式呈现：
 - **自动解压**：透明检测并解压 **LZ4**、**SNAPPY**、**GZIP** 和 **ZSTD** 数据（例如：压缩的 JSON 会被自动解压并格式化显示）。
 - **JSON**：支持自动 **格式化美化 (Pretty-print)** 和完整的 **语法高亮**。
+- **Protobuf**：支持反序列化 Protobuf 数据并自动 **格式化美化 (Pretty-print)** 和完整的 **语法高亮**。
 - **MessagePack**：将二进制 MsgPack 数据反序列化为易读的类 JSON 格式。
 - **图片预览**：原生支持存储图片的预览 (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`)。
 - **Hex 视图**：自适应 8/16 字节的十六进制转储 (Hex Dump)，便于分析原始二进制数据。

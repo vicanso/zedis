@@ -50,8 +50,11 @@ const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
 const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
-struct SearchHistory(pub SharedString);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+enum SearchHistoryAction {
+    Search(SharedString),
+    Clear,
+}
 
 #[derive(Default)]
 struct KeyTreeState {
@@ -498,6 +501,21 @@ impl ZedisKeyTree {
             handle.handle_filter(keyword, cx);
         });
     }
+    fn handle_clear_history(&mut self, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        let server_id = server_state.server_id().to_string();
+        self.server_state.update(cx, |state, cx| {
+            state.clear_search_history(cx);
+        });
+        cx.spawn(async move |_, cx| {
+            let _ = cx
+                .background_spawn(async move {
+                    let _ = HistoryManager::clear_history(server_id.as_str());
+                })
+                .await;
+        })
+        .detach();
+    }
 
     fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let category_list = ["String", "List", "Set", "Zset", "Hash"];
@@ -683,10 +701,18 @@ impl ZedisKeyTree {
             .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, window, cx| {
                 let mut menu = menu.label(i18n_key_tree(cx, "search_history"));
                 let keywords = server_state_clone.read(cx).search_history();
+                let no_keywords = keywords.is_empty();
                 for keyword in keywords {
-                    menu = menu.menu_element(Box::new(SearchHistory(keyword.clone())), move |_, _cx| {
+                    menu = menu.menu_element(Box::new(SearchHistoryAction::Search(keyword.clone())), move |_, _cx| {
                         Label::new(keyword.clone())
                     });
+                }
+                if !no_keywords {
+                    menu = menu.menu_element_with_icon(
+                        CustomIconName::Eraser,
+                        Box::new(SearchHistoryAction::Clear),
+                        move |_, cx| Label::new(i18n_key_tree(cx, "clear_history")),
+                    );
                 }
                 menu.separator()
                     .submenu(i18n_key_tree(cx, "query_mode"), window, cx, move |submenu, _, _| {
@@ -771,12 +797,16 @@ impl Render for ZedisKeyTree {
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
             }))
-            .on_action(cx.listener(|this, e: &SearchHistory, window, cx| {
-                let keyword = e.0.clone();
-                this.keyword_state.update(cx, |state, cx| {
-                    state.set_value(keyword, window, cx);
-                });
-                this.handle_filter(cx);
+            .on_action(cx.listener(|this, e: &SearchHistoryAction, window, cx| match e {
+                SearchHistoryAction::Search(keyword) => {
+                    this.keyword_state.update(cx, |state, cx| {
+                        state.set_value(keyword, window, cx);
+                    });
+                    this.handle_filter(cx);
+                }
+                SearchHistoryAction::Clear => {
+                    this.handle_clear_history(cx);
+                }
             }))
     }
 }

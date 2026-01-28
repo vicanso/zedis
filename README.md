@@ -52,6 +52,7 @@ yay -S zedis-bin
 Zedis automatically detects content types (`ViewerMode::Auto`) and renders them in the most useful format:
 - **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP**, and **ZSTD** data (e.g., compressed JSON is automatically unpacked and pretty-printed).
 - **JSON**: Automatic **pretty-printing** with full **syntax highlighting**.
+- **Protobuf**: Deserializes Protobuf data and automatically **pretty-printing** with full **syntax highlighting**.
 - **MessagePack**: Deserializes binary MsgPack data into a readable JSON-like format.
 - **Images**: Native preview for stored images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`).
 - **Hex View**: Adaptive 8/16-byte hex dump for analyzing raw binary data.

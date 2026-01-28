@@ -132,6 +132,7 @@ query_mode_prefix = "^ Prefix"
 query_mode_exact = "= Exact Match"
 category = "Category"
 add_key_title = "Add Key"
+clear_history = "Clear History"
 
 [status_bar]
 toggle_terminal_tooltip = "Toggle redis terminal"

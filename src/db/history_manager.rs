@@ -80,4 +80,16 @@ impl HistoryManager {
         HISTORY_CACHE.insert(server_id.to_string(), history.clone());
         Ok(history)
     }
+
+    pub fn clear_history(server_id: &str) -> Result<()> {
+        HISTORY_CACHE.remove(server_id);
+        let db = get_database()?;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(HISTORY_TABLE)?;
+            table.remove(server_id)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
 }

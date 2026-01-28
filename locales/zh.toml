@@ -131,6 +131,7 @@ query_mode_prefix = "^ 前缀匹配"
 query_mode_exact = "= 精确匹配"
 category = "类型"
 add_key_title = "添加键"
+clear_history = "清空搜索"
 
 [status_bar]
 toggle_terminal_tooltip = "切换redis控制台"
