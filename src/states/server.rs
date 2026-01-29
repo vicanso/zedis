@@ -264,6 +264,7 @@ impl ZedisServerState {
     {
         cx.emit(ServerEvent::TaskStarted(name.clone()));
         debug!(name = name.as_str(), "Spawning background task");
+        let server_id = self.server_id.clone();
 
         cx.spawn(async move |handle, cx| {
             // Run task in background executor (thread pool)
@@ -275,7 +276,10 @@ impl ZedisServerState {
                 if let Err(e) = &result {
                     let message = format!("{} failed", name.as_str());
                     error!(error = %e, message);
-                    this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
+                    // only add error message if the server id is the same as the current server id
+                    if this.server_id == server_id {
+                        this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
+                    }
                 }
                 callback(this, result, cx);
             })
