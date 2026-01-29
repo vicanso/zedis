@@ -194,7 +194,7 @@ impl ZedisEditor {
                 .on_ok(move |_, window, cx| {
                     let key = key.clone();
                     server_state.update(cx, move |state, cx| {
-                        state.delete_key(key, cx);
+                        state.delete_select_key(key, cx);
                     });
                     window.close_dialog(cx);
                     true

@@ -33,8 +33,10 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    menu::ContextMenuExt,
     v_flex,
 };
+use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
@@ -51,9 +53,12 @@ const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for d
 const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
-enum SearchHistoryAction {
+enum KeyTreeAction {
     Search(SharedString),
     Clear,
+    DeleteMultipleKeys,
+    DeleteKey(SharedString),
+    DeleteFolder(SharedString),
 }
 
 #[derive(Default)]
@@ -183,6 +188,8 @@ fn new_key_tree_items(
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
     selected_index: Option<IndexPath>,
+    enabled_multiple_selection: bool,
+    selected_items: AHashSet<SharedString>,
 }
 
 impl KeyTreeDelegate {
@@ -207,6 +214,13 @@ impl KeyTreeDelegate {
             .rounded_sm()
             .border_color(border)
             .into_any_element()
+    }
+    fn toggle_multiple_selection(&mut self, cx: &mut Context<ListState<Self>>) {
+        self.enabled_multiple_selection = !self.enabled_multiple_selection;
+        if self.enabled_multiple_selection {
+            self.selected_items.clear();
+        }
+        cx.notify();
     }
 }
 
@@ -255,7 +269,16 @@ impl ListDelegate for KeyTreeDelegate {
         };
 
         let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
-
+        let show_check_icon = self.enabled_multiple_selection && !entry.is_folder;
+        let selected = if show_check_icon && let Some(item) = self.items.get(ix.row) {
+            let id = &item.id;
+            self.selected_items.contains(id)
+        } else {
+            false
+        };
+        let selected_items_count = self.selected_items.len();
+        let id = entry.id.clone();
+        let is_folder = entry.is_folder;
         Some(
             ListItem::new(ix)
                 .w_full()
@@ -264,16 +287,62 @@ impl ListDelegate for KeyTreeDelegate {
                 .px_2()
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
-                    h_flex()
+                    div()
+                        .context_menu(move |mut menu, _window, _cx| {
+                            let id = id.clone();
+                            if selected && selected_items_count > 1 {
+                                let text = t!("key_tree.delete_keys_tooltip", count = selected_items_count);
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::ListX,
+                                    Box::new(KeyTreeAction::DeleteMultipleKeys),
+                                    move |_, _cx| Label::new(text.clone()),
+                                );
+                            } else {
+                                menu = if is_folder {
+                                    menu.menu_element_with_icon(
+                                        CustomIconName::X,
+                                        Box::new(KeyTreeAction::DeleteFolder(id)),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
+                                    )
+                                } else {
+                                    menu.menu_element_with_icon(
+                                        CustomIconName::X,
+                                        Box::new(KeyTreeAction::DeleteKey(id)),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
+                                    )
+                                };
+                            }
+                            menu
+                        })
+                        .h_flex()
                         .gap_2()
                         .child(icon)
                         .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
+                        .when(show_check_icon, |this| {
+                            let icon = if selected {
+                                CustomIconName::SquareCheck
+                            } else {
+                                CustomIconName::Square
+                            };
+                            this.child(Icon::new(icon))
+                        })
                         .child(count_label),
                 ),
         )
     }
 
     fn set_selected_index(&mut self, ix: Option<IndexPath>, _window: &mut Window, _cx: &mut Context<ListState<Self>>) {
+        if self.enabled_multiple_selection
+            && let Some(ix) = ix
+            && let Some(item) = self.items.get(ix.row)
+        {
+            let id = &item.id;
+            if self.selected_items.contains(id) {
+                self.selected_items.remove(id);
+            } else {
+                self.selected_items.insert(id.clone());
+            }
+        }
         self.selected_index = ix;
     }
 }
@@ -366,7 +435,9 @@ impl ZedisKeyTree {
 
         let delegate = KeyTreeDelegate {
             items: Vec::new(),
+            enabled_multiple_selection: false,
             selected_index: None,
+            selected_items: AHashSet::with_capacity(5),
         };
         let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
         subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| match event {
@@ -465,6 +536,7 @@ impl ZedisKeyTree {
                     });
                 }
                 handle.update(cx, |this, cx| {
+                    this.delegate_mut().selected_items.clear();
                     this.delegate_mut().items = result;
                     cx.notify();
                 })
@@ -703,14 +775,14 @@ impl ZedisKeyTree {
                 let keywords = server_state_clone.read(cx).search_history();
                 let no_keywords = keywords.is_empty();
                 for keyword in keywords {
-                    menu = menu.menu_element(Box::new(SearchHistoryAction::Search(keyword.clone())), move |_, _cx| {
+                    menu = menu.menu_element(Box::new(KeyTreeAction::Search(keyword.clone())), move |_, _cx| {
                         Label::new(keyword.clone())
                     });
                 }
                 if !no_keywords {
                     menu = menu.menu_element_with_icon(
                         CustomIconName::Eraser,
-                        Box::new(SearchHistoryAction::Clear),
+                        Box::new(KeyTreeAction::Clear),
                         move |_, cx| Label::new(i18n_key_tree(cx, "clear_history")),
                     );
                 }
@@ -736,7 +808,6 @@ impl ZedisKeyTree {
         // Search button (shows loading spinner during scan)
         let search_btn = Button::new("key-tree-search-btn")
             .ghost()
-            .tooltip(i18n_key_tree(cx, "search_tooltip"))
             .loading(scanning)
             .disabled(scanning)
             .icon(IconName::Search)
@@ -758,9 +829,21 @@ impl ZedisKeyTree {
             .border_color(cx.theme().border)
             .child(keyword_input)
             .child(
+                Button::new("key-tree-toggle-checked-btn")
+                    .mr_2()
+                    .outline()
+                    .icon(CustomIconName::ListCheck)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.key_tree_list_state.update(cx, |state, cx| {
+                            state.delegate_mut().toggle_multiple_selection(cx);
+                        });
+                    })),
+            )
+            .child(
                 Button::new("key-tree-add-btn")
                     .disabled(readonly)
                     .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
+                    .when(!readonly, |this| this.tooltip(i18n_key_tree(cx, "add_key_tooltip")))
                     .outline()
                     .icon(CustomIconName::FilePlusCorner)
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -797,15 +880,33 @@ impl Render for ZedisKeyTree {
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
             }))
-            .on_action(cx.listener(|this, e: &SearchHistoryAction, window, cx| match e {
-                SearchHistoryAction::Search(keyword) => {
+            .on_action(cx.listener(|this, e: &KeyTreeAction, window, cx| match e {
+                KeyTreeAction::Search(keyword) => {
                     this.keyword_state.update(cx, |state, cx| {
                         state.set_value(keyword, window, cx);
                     });
                     this.handle_filter(cx);
                 }
-                SearchHistoryAction::Clear => {
+                KeyTreeAction::Clear => {
                     this.handle_clear_history(cx);
+                }
+                KeyTreeAction::DeleteMultipleKeys => {
+                    this.key_tree_list_state.update(cx, |state, cx| {
+                        let keys = state.delegate().selected_items.iter().cloned().collect();
+                        this.server_state.update(cx, |state, cx| {
+                            state.unlink_key(keys, cx);
+                        });
+                    });
+                }
+                KeyTreeAction::DeleteKey(id) => {
+                    this.server_state.update(cx, |state, cx| {
+                        state.delete_key(id.clone(), cx);
+                    });
+                }
+                KeyTreeAction::DeleteFolder(id) => {
+                    this.server_state.update(cx, |state, cx| {
+                        state.delete_folder(id.clone(), cx);
+                    });
                 }
             }))
     }

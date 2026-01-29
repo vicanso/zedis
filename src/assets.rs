@@ -69,6 +69,10 @@ pub enum CustomIconName {
     SwatchBook,
     Eraser,
     Save,
+    ListCheck,
+    Square,
+    SquareCheck,
+    ListX,
 }
 
 impl CustomIconName {
@@ -103,6 +107,10 @@ impl CustomIconName {
             CustomIconName::SwatchBook => "icons/swatch-book.svg",
             CustomIconName::Eraser => "icons/eraser.svg",
             CustomIconName::Save => "icons/save.svg",
+            CustomIconName::ListCheck => "icons/list-check.svg",
+            CustomIconName::Square => "icons/square.svg",
+            CustomIconName::SquareCheck => "icons/square-check.svg",
+            CustomIconName::ListX => "icons/list-x.svg",
         }
         .into()
     }

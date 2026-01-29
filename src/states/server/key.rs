@@ -435,15 +435,9 @@ impl ZedisServerState {
             cx,
         );
     }
-    /// Deletes a specified key.
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
-        let Some(value) = self.value.as_mut() else {
-            return;
-        };
-        value.status = RedisValueStatus::Updating;
-        cx.notify();
         let remove_key = key.clone();
         self.spawn(
             ServerTask::DeleteKey,
@@ -467,6 +461,90 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+    pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let separator = cx.global::<ZedisGlobalStore>().value(cx).key_separator().to_string();
+        let prefix = format!("{folder}{separator}");
+        let pattern = format!("{prefix}*");
+        self.spawn(
+            ServerTask::DeleteKeys,
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let count = 10_000;
+                let mut cursors: Option<Vec<u64>> = None;
+                // Attempt to fetch keys in a loop (up to 20 iterations)
+                // to gather a sufficient amount without blocking for too long.
+                for _ in 0..20 {
+                    let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
+                        client.scan(cursors, &pattern, count).await?
+                    } else {
+                        client.first_scan(&pattern, count).await?
+                    };
+                    if !keys.is_empty() {
+                        let mut pipe = redis::pipe();
+                        for key in keys {
+                            pipe.cmd("UNLINK").arg(key.as_str());
+                        }
+                        let mut conn = client.connection();
+                        let _: () = pipe.query_async(&mut conn).await?;
+                    }
+
+                    // Break if scan cycle finishes
+                    if new_cursor.iter().sum::<u64>() == 0 {
+                        break;
+                    }
+                    cursors = Some(new_cursor);
+                }
+
+                Ok(())
+            },
+            move |this, result, cx| {
+                if let Ok(()) = result {
+                    this.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
+                    // Force refresh of the key tree view
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+    pub fn unlink_key(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let remove_keys = keys.clone();
+        self.spawn(
+            ServerTask::DeleteKeys,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let mut pipe = redis::pipe();
+                for key in keys {
+                    pipe.cmd("UNLINK").arg(key.as_str());
+                }
+                let _: () = pipe.query_async(&mut conn).await?;
+                Ok(())
+            },
+            move |this, result, cx| {
+                if let Ok(()) = result {
+                    this.keys.retain(|key, _| !remove_keys.contains(key));
+                    // Force refresh of the key tree view
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+    /// Deletes a specified key.
+    pub fn delete_select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
+        cx.notify();
+        self.delete_key(key, cx);
     }
     /// Updates the TTL (expiration) for a key.
     pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {

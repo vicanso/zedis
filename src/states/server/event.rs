@@ -49,6 +49,12 @@ pub enum ServerTask {
     /// Delete a key from Redis
     DeleteKey,
 
+    /// Delete a folder from Redis
+    DeleteFolder,
+
+    /// Delete multiple keys from Redis
+    DeleteKeys,
+
     /// Scan for keys matching pattern
     ScanKeys,
 
@@ -100,6 +106,8 @@ impl ServerTask {
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",
             ServerTask::DeleteKey => "delete_key",
+            ServerTask::DeleteKeys => "delete_keys",
+            ServerTask::DeleteFolder => "delete_folder",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",
             ServerTask::AddKey => "add_key",
