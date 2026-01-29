@@ -290,14 +290,20 @@ impl ZedisServers {
             state.set_value(server.username.clone().unwrap_or_default(), window, cx);
         });
         // Only set port if non-zero (use placeholder for 0)
-        if server.port != 0 {
-            self.port_state.update(cx, |state, cx| {
-                state.set_value(server.port.to_string(), window, cx);
-            });
-        }
+        let port = if server.port != 0 {
+            server.port.to_string()
+        } else {
+            String::new()
+        };
+        self.port_state.update(cx, |state, cx| {
+            state.set_value(port, window, cx);
+        });
 
         self.password_state.update(cx, |state, cx| {
             state.set_value(server.password.clone().unwrap_or_default(), window, cx);
+        });
+        self.master_name_state.update(cx, |state, cx| {
+            state.set_value(server.master_name.clone().unwrap_or_default(), window, cx);
         });
         self.description_state.update(cx, |state, cx| {
             state.set_value(server.description.clone().unwrap_or_default(), window, cx);

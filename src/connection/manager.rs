@@ -531,18 +531,22 @@ impl ConnectionManager {
             return Ok(client.clone());
         }
         let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
+        let Some(first_node) = nodes.first() else {
+            return Err(Error::Invalid {
+                message: "no nodes found".to_string(),
+            });
+        };
         let client = match server_type {
             ServerType::Cluster => {
                 let addrs: Vec<String> = nodes.iter().map(|n| n.server.get_connection_url()).collect();
                 let mut builder = cluster::ClusterClientBuilder::new(addrs);
-                let node = &nodes[0];
-                if let Some(certificates) = node.server.tls_certificates() {
+                if let Some(certificates) = first_node.server.tls_certificates() {
                     builder = builder.certs(certificates);
                 }
-                if node.server.insecure.unwrap_or(false) {
+                if first_node.server.insecure.unwrap_or(false) {
                     builder = builder.danger_accept_invalid_hostnames(true);
                 }
-                if node.server.is_ssh_tunnel() {
+                if first_node.server.is_ssh_tunnel() {
                     builder = builder.username(server_id);
 
                     RClient::SshCluster(builder.build()?)
@@ -550,7 +554,7 @@ impl ConnectionManager {
                     RClient::Cluster(builder.build()?)
                 }
             }
-            _ => RClient::Single(nodes[0].server.clone()),
+            _ => RClient::Single(first_node.server.clone()),
         };
         let master_nodes: Vec<RedisNode> = nodes
             .iter()
