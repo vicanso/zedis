@@ -177,6 +177,8 @@ update_exist_field_value_success_tips = "Field value updated."
 [kv_table]
 search_tooltip = "Click to start incremental search (SCAN)"
 add_value_tooltip = "Add new value"
+cancel = "Canel"
+save = "Save"
 
 [settings]
 title = "Settings"

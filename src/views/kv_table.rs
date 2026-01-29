@@ -383,29 +383,30 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
             form = form.child(wrapped_field);
         }
+        let cancel_label = i18n_common(cx, "cancel");
+        let save_label = i18n_common(cx, "save");
         form.child(
             div().flex_none().child(
                 field().child(
                     h_flex()
                         .id("kv-table-edit-form-btn-group")
                         .w_full()
+                        .items_center()
+                        .justify_end()
                         .gap_2()
                         .child(
                             Button::new("cancel-edit-btn")
-                                .h(px(30.))
                                 .icon(IconName::CircleX)
-                                .label("Cancel")
-                                .flex_1()
+                                .label(cancel_label)
                                 .on_click(cx.listener(|this, _, _, _cx| {
                                     this.edit_row = None;
                                 })),
                         )
                         .child(
                             Button::new("save-edit-btn")
-                                .h(px(30.))
-                                .icon(IconName::Check)
-                                .label("Save")
-                                .flex_1()
+                                .primary()
+                                .icon(CustomIconName::Save)
+                                .label(save_label)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.handle_update_row(window, cx);
                                 })),

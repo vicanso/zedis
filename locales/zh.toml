@@ -177,6 +177,8 @@ update_exist_field_value_success_tips = "字段值已更新。"
 [kv_table]
 search_tooltip = "点击开始增量扫描 (SCAN)"
 add_value_tooltip = "添加新值"
+cancel = "取消"
+save = "保存"
 
 [settings]
 title = "设置"

@@ -20,11 +20,11 @@ use crate::states::ZedisServerState;
 use crate::states::i18n_proto_editor;
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::h_flex;
 use gpui_component::highlighter::Language;
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use gpui_component::{IconName, h_flex};
 use gpui_component::{
     IndexPath, WindowExt,
     form::{field, v_form},
@@ -515,6 +515,7 @@ impl ZedisProtoEditor {
                     .gap_2()
                     .child(
                         Button::new("proto-editor-btn-cancel")
+                            .icon(IconName::CircleX)
                             .label(i18n_proto_editor(cx, "cancel"))
                             .on_click(cx.listener(|this, _, _, _cx| {
                                 this.view_mode = ViewMode::Table;
@@ -523,6 +524,7 @@ impl ZedisProtoEditor {
                     .child(
                         Button::new("proto-editor-btn-save")
                             .primary()
+                            .icon(CustomIconName::Save)
                             .label(i18n_proto_editor(cx, "save"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle_save(window, cx);
