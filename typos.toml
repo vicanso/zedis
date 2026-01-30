@@ -5,4 +5,4 @@ extend-ignore-re = [
 ]
 
 [files]
-extend-exclude = ["*.md", "*.toml"]
+extend-exclude = ["*.md", "*.toml", "assets/**"]

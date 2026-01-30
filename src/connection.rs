@@ -15,6 +15,7 @@
 use tracing::info;
 
 mod async_connection;
+mod command;
 mod config;
 mod manager;
 mod ssh_cluster_connection;
@@ -40,3 +41,4 @@ pub fn clear_expired_cache() {
         info!(removed_count, total_count, "clear expired ssh session")
     }
 }
+pub use command::*;

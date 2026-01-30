@@ -8,6 +8,7 @@ use std::borrow::Cow;
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
+#[include = "commands.json"]
 pub struct Assets;
 
 impl AssetSource for Assets {

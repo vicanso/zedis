@@ -14,7 +14,7 @@
 
 use crate::{
     components::SkeletonLoading,
-    connection::get_connection_manager,
+    connection::{get_command_description, get_connection_manager, list_commands},
     error::Error,
     helpers::{EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string},
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
@@ -68,6 +68,9 @@ pub struct ZedisContent {
     cmd_output_scroll_handle: ScrollHandle,
     cmd_input_state: Entity<InputState>,
     cmd_outputs: Vec<SharedString>,
+    redis_commands: Vec<SharedString>,
+    cmd_suggestions: Vec<String>,
+    cmd_suggestion_index: Option<usize>,
 
     /// Persisted width of the key tree panel (resizable by user)
     key_tree_width: Pixels,
@@ -116,22 +119,6 @@ impl ZedisContent {
             this.current_route = route;
 
             this.clear_views();
-            // // Clean up servers view when not on home route
-            // if route != Route::Home && this.servers.is_some() {
-            //     info!("Cleaning up servers view (route changed)");
-            //     let _ = this.servers.take();
-            // }
-
-            // // Clean up editor views when not on editor route
-            // if route != Route::Editor {
-            //     info!("Cleaning up key tree and value editor view (route changed)");
-            //     if this.value_editor.is_some() {
-            //         let _ = this.value_editor.take();
-            //     }
-            //     if this.key_tree.is_some() {
-            //         let _ = this.key_tree.take();
-            //     }
-            // }
 
             cx.notify();
         }));
@@ -147,6 +134,9 @@ impl ZedisContent {
                     }
                     cx.notify();
                 }
+                ServerEvent::ServerInfoUpdated(_) => {
+                    this.update_redis_commands(cx);
+                }
                 ServerEvent::ServerSelected(_, _) => {
                     this.reset_cmd_state(cx);
                 }
@@ -160,14 +150,46 @@ impl ZedisContent {
         let route = global_store.route();
         let cmd_input_state = cx.new(|cx| InputState::new(window, cx));
         subscriptions.push(
-            cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
+            cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| match event {
+                InputEvent::PressEnter { .. } => {
                     let cmd = state.read(cx).value();
+                    let mut selected_cmd = "".to_string();
+                    if let Some(index) = this.cmd_suggestion_index
+                        && let Some(suggestion) = this.cmd_suggestions.get(index)
+                        && !cmd.starts_with(suggestion)
+                    {
+                        selected_cmd = suggestion.clone();
+                    }
+
+                    if !selected_cmd.is_empty() && !cmd.starts_with(selected_cmd.as_str()) {
+                        this.apply_suggestion(window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     state.update(cx, |state, cx| {
                         state.set_value(SharedString::default(), window, cx);
                     });
+                    this.cmd_suggestions.clear();
+                    this.cmd_suggestion_index = None;
                     this.execute_command(cmd, cx);
                 }
+                InputEvent::Change => {
+                    let value = state.read(cx).value().to_string();
+                    if !value.is_empty()
+                        && !value.contains(' ')
+                        && let Some(last) = value.chars().last()
+                        && let Some(index) = last.to_digit(10)
+                        && index <= this.cmd_suggestions.len() as u32
+                    {
+                        this.cmd_suggestion_index = Some((index - 1) as usize);
+                        this.apply_suggestion(window, cx);
+                        return;
+                    }
+
+                    this.update_suggestions(value);
+                    cx.notify();
+                }
+                _ => {}
             }),
         );
         info!("Creating new content view");
@@ -181,8 +203,11 @@ impl ZedisContent {
             setting_editor: None,
             key_tree: None,
             cmd_outputs: Vec::with_capacity(5),
+            redis_commands: Vec::new(),
             key_tree_width,
             cmd_input_state,
+            cmd_suggestions: Vec::new(),
+            cmd_suggestion_index: None,
             should_focus: None,
             should_focus_cmd_input: None,
             cmd_output_scroll_handle: ScrollHandle::new(),
@@ -200,6 +225,75 @@ impl ZedisContent {
                 .map(|line| line.to_string().into()),
         );
         self.cmd_output_scroll_handle = ScrollHandle::new();
+    }
+    fn update_redis_commands(&mut self, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        let version = server_state.version();
+        let commands = list_commands(version);
+        self.redis_commands = commands;
+    }
+
+    /// Update command suggestions based on the current input
+    fn update_suggestions(&mut self, input: String) {
+        self.cmd_suggestions.clear();
+        self.cmd_suggestion_index = None;
+
+        if input.is_empty() {
+            return;
+        }
+
+        // Get the words from input
+        let words: Vec<&str> = input.split_whitespace().collect();
+        if words.is_empty() {
+            return;
+        }
+
+        // Try to match with progressively more words to support multi-word commands
+        // like "ACL GETUSER", "CLUSTER INFO", etc.
+        // We try from the longest possible command (up to 3 words) down to 1 word
+        let max_words = words.len().min(3); // Redis commands typically have at most 3 words
+
+        for word_count in (1..=max_words).rev() {
+            let cmd_input = words[..word_count].join(" ").to_uppercase();
+
+            // Find commands that start with this input
+            let matches: Vec<String> = self
+                .redis_commands
+                .iter()
+                .filter(|cmd| cmd.as_str().starts_with(&cmd_input))
+                .take(5)
+                .map(|cmd| cmd.to_string())
+                .collect();
+
+            // If we found matches, use them
+            if !matches.is_empty() {
+                self.cmd_suggestions = matches;
+                self.cmd_suggestion_index = self.cmd_suggestions.iter().position(|cmd| cmd == &cmd_input);
+                return;
+            }
+        }
+    }
+
+    /// Apply the currently selected suggestion or the first one
+    fn apply_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cmd_suggestions.is_empty() {
+            return;
+        }
+
+        let suggestion = if let Some(index) = self.cmd_suggestion_index {
+            self.cmd_suggestions.get(index).cloned()
+        } else {
+            self.cmd_suggestions.first().cloned()
+        };
+
+        if let Some(cmd) = suggestion {
+            self.cmd_input_state.update(cx, |state, cx| {
+                state.set_value(SharedString::from(cmd), window, cx);
+            });
+            self.cmd_suggestions.clear();
+            self.cmd_suggestion_index = None;
+            cx.notify();
+        }
     }
     fn execute_command(&mut self, command: SharedString, cx: &mut Context<Self>) {
         if command.is_empty() {
@@ -318,48 +412,123 @@ impl ZedisContent {
             right_panel = right_panel.size(content_width);
         }
         let (key_tree_width, min_width, max_width) = get_key_tree_widths(self.key_tree_width);
-        let right_panel_content =
-            if server_state.read(cx).is_terminal() {
-                if let Some(true) = self.should_focus_cmd_input.take() {
-                    self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
+        let right_panel_content = if server_state.read(cx).is_terminal() {
+            if let Some(true) = self.should_focus_cmd_input.take() {
+                self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
+            }
+            let font_family: SharedString = get_font_family().into();
+            let handle_suggestion_key_down = cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+                if this.cmd_suggestions.is_empty() {
+                    return;
                 }
-                let font_family: SharedString = get_font_family().into();
+                let keystroke = &event.keystroke;
+                let max = this.cmd_suggestions.len() - 1;
+                let new_index = match keystroke.key.as_str() {
+                    "down" => {
+                        if let Some(current) = this.cmd_suggestion_index {
+                            Some((current + 1).min(max))
+                        } else {
+                            Some(0)
+                        }
+                    }
+                    "up" => {
+                        if let Some(current) = this.cmd_suggestion_index {
+                            if current > 0 { Some(current - 1) } else { Some(max) }
+                        } else {
+                            Some(max)
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(new_index) = new_index {
+                    this.cmd_suggestion_index = Some(new_index);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            });
 
-                v_flex()
-                    .w_full()
-                    .h_full()
-                    .child(
-                        div()
-                            .id("cmd-output-scrollable-container")
-                            .track_scroll(&self.cmd_output_scroll_handle)
-                            .flex_1()
-                            .w_full()
-                            .overflow_y_scroll()
-                            .child(
-                                v_flex().p_2().gap_1().children(self.cmd_outputs.iter().map(|line| {
-                                    div().child(Label::new(line.clone()).font_family(font_family.clone()))
-                                })),
+            v_flex()
+                .w_full()
+                .h_full()
+                .child(
+                    div()
+                        .id("cmd-output-scrollable-container")
+                        .track_scroll(&self.cmd_output_scroll_handle)
+                        .flex_1()
+                        .w_full()
+                        .overflow_y_scroll()
+                        .child(
+                            v_flex().p_2().gap_1().children(
+                                self.cmd_outputs
+                                    .iter()
+                                    .map(|line| div().child(Label::new(line.clone()).font_family(font_family.clone()))),
                             ),
-                    )
-                    .child(
-                        div().w_full().border_t_1().border_color(cx.theme().border).child(
-                            Input::new(&self.cmd_input_state)
-                                .font_family(font_family)
-                                .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
-                                .appearance(false),
                         ),
-                    )
-                    .into_any_element()
-            } else {
-                let value_editor = self
-                    .value_editor
-                    .get_or_insert_with(|| {
-                        debug!("Creating new value editor view");
-                        cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
-                    })
-                    .clone();
-                value_editor.into_any_element()
-            };
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .when(!self.cmd_suggestions.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .bg(cx.theme().background)
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .p_1()
+                                    .child(v_flex().gap_0p5().children(self.cmd_suggestions.iter().enumerate().map(
+                                        |(idx, cmd)| {
+                                            let is_selected = self.cmd_suggestion_index == Some(idx);
+                                            let text = format!("{}: {cmd}", idx + 1);
+
+                                            let (summary, syntax) = get_command_description(cmd).unwrap_or_default();
+                                            let make_label = |text: SharedString| {
+                                                Label::new(text)
+                                                    .font_family(font_family.clone())
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground)
+                                            };
+                                            div()
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_sm()
+                                                .when(is_selected, |this| this.bg(cx.theme().selection))
+                                                .child(
+                                                    Label::new(text)
+                                                        .font_family(font_family.clone())
+                                                        .text_color(cx.theme().foreground),
+                                                )
+                                                .child(make_label(syntax))
+                                                .child(make_label(summary))
+                                        },
+                                    ))),
+                            )
+                        })
+                        .child(
+                            div()
+                                .w_full()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .on_key_down(handle_suggestion_key_down)
+                                .child(
+                                    Input::new(&self.cmd_input_state)
+                                        .font_family(font_family)
+                                        .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                                        .appearance(false),
+                                ),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            let value_editor = self
+                .value_editor
+                .get_or_insert_with(|| {
+                    debug!("Creating new value editor view");
+                    cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx))
+                })
+                .clone();
+            value_editor.into_any_element()
+        };
 
         h_resizable("editor-container")
             .child(
