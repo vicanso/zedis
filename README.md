@@ -60,12 +60,13 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 
 ### 🛡️ Safety & Security
 - **Read-only Mode**: Mark connections as **Read-only** to prevent accidental writes or deletions. Perfect for inspecting production environments with total peace of mind.
-- **SSH Tunneling**: Securely access private Redis instances via bastion hosts. Supports authentication via Password, Private Key, and SSH Agent.
+- **SSH Tunneling**: Securely access private Redis instances via bastion hosts. Supports authentication via Password, Private Key.
 - **TLS/SSL**: Full support for encrypted connections, including custom CA, Client Certificates, and Private Keys.
 
 ### ⚡ Productivity
 - **Search History**: Automatically records your search queries locally. History is **connection-scoped**, ensuring production queries never pollute your local development workflow.
-- **Quick Recall**: Instantly access recent keywords via a smart dropdown, speeding up your debugging sessions.
+- **Batch Operations**: Support selecting multiple keys for batch deletion or deleting keys with a specific prefix to simplify bulk data management.
+
 
 ### 🎨 Modern Experience
 - **Cross-Platform**: Powered by GPUI, Zedis delivers a consistent, native experience across **macOS**, **Windows**, and **Linux**.

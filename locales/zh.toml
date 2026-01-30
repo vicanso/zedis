@@ -135,6 +135,7 @@ clear_history = "清空搜索"
 delete_keys_tooltip = "删除 %{count} 个键"
 delete_key_tooltip = "删除键"
 delete_folder_tooltip = "删除此文件夹中的所有键"
+toggle_multi_select_mode_tooltip = "切换多选模式"
 
 [status_bar]
 toggle_terminal_tooltip = "切换redis控制台"

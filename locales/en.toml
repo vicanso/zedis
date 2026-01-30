@@ -136,6 +136,7 @@ clear_history = "Clear History"
 delete_keys_tooltip = "Delete %{count} keys"
 delete_key_tooltip = "Delete key"
 delete_folder_tooltip = "Delete all keys in this folder"
+toggle_multi_select_mode_tooltip = "Toggle multi-select mode"
 
 [status_bar]
 toggle_terminal_tooltip = "Toggle redis terminal"

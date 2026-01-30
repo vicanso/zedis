@@ -831,8 +831,13 @@ impl ZedisKeyTree {
             .child(
                 Button::new("key-tree-toggle-checked-btn")
                     .mr_2()
+                    .disabled(readonly)
                     .outline()
                     .icon(CustomIconName::ListCheck)
+                    .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
+                    .when(!readonly, |this| {
+                        this.tooltip(i18n_key_tree(cx, "toggle_multi_select_mode_tooltip"))
+                    })
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.key_tree_list_state.update(cx, |state, cx| {
                             state.delegate_mut().toggle_multiple_selection(cx);
