@@ -370,7 +370,11 @@ impl ZedisServerState {
             );
             return;
         }
-        self.access_mode = AccessMode::ReadWrite;
+        if self.access_mode == AccessMode::ReadWrite {
+            self.access_mode = AccessMode::SafeMode;
+        } else {
+            self.access_mode = AccessMode::ReadWrite;
+        }
         cx.emit(ServerEvent::ServerInfoUpdated(self.server_id.clone()));
     }
 
