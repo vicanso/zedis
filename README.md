@@ -9,7 +9,7 @@ A High-Performance, GPU-Accelerated Redis Client Built with **Rust** 🦀 and **
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/vicanso/zedis/total)
 
 
-![Zedis](./assets/zedis.png)
+![Zedis](./assets/demo.gif)
 
 ---
 

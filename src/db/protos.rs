@@ -210,7 +210,12 @@ impl ProtoManager {
         if target_message.is_empty()
             && let Some(message) = pool.all_messages().next()
         {
-            target_message = message.name().to_string();
+            let package = message.parent_file().package_name().to_string();
+            if package.is_empty() {
+                target_message = message.name().to_string();
+            } else {
+                target_message = format!("{}.{}", package, message.name());
+            }
         }
         if target_message.is_empty() {
             return Err(Error::Invalid {

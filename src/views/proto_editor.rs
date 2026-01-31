@@ -80,14 +80,6 @@ impl ProtoTableDelegate {
         F1: Fn(usize, &mut Window, &mut Context<TableState<ProtoTableDelegate>>) + Send + Sync + 'static,
         F2: Fn(usize, &mut Window, &mut Context<TableState<ProtoTableDelegate>>) + Send + Sync + 'static,
     {
-        // let columns = vec![
-        //     Column::new("server_name", "Server Name").width(px(150.)),
-        //     Column::new("name", "Name").width(px(150.)),
-        //     Column::new("match_pattern", "Match Pattern").width(px(200.)),
-        //     Column::new("mode", "Mode").width(px(100.)),
-        //     Column::new("target_message", "Target Message").width(px(200.)),
-        //     Column::new("actions", "Actions").width(px(150.)),
-        // ];
         Self {
             data,
             columns,
@@ -274,7 +266,7 @@ impl ZedisProtoEditor {
             table_state,
             protos,
             servers: servers_for_delegate,
-            server_id: SharedString::default(),
+            server_id: server_id.into(),
             needs_table_recreate: None,
             edit_proto_id: None,
             _subscriptions: subscriptions,
