@@ -16,7 +16,9 @@ use crate::{
     components::SkeletonLoading,
     connection::{get_command_description, get_connection_manager, list_commands},
     error::Error,
-    helpers::{EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string},
+    helpers::{
+        EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string, starts_with_ignore_ascii_case,
+    },
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
@@ -156,12 +158,12 @@ impl ZedisContent {
                     let mut selected_cmd = "".to_string();
                     if let Some(index) = this.cmd_suggestion_index
                         && let Some(suggestion) = this.cmd_suggestions.get(index)
-                        && !cmd.starts_with(suggestion)
+                        && !starts_with_ignore_ascii_case(cmd.as_str(), suggestion)
                     {
                         selected_cmd = suggestion.clone();
                     }
 
-                    if !selected_cmd.is_empty() && !cmd.starts_with(selected_cmd.as_str()) {
+                    if !selected_cmd.is_empty() {
                         this.apply_suggestion(window, cx);
                         cx.stop_propagation();
                         return;

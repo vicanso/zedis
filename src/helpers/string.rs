@@ -239,3 +239,14 @@ pub fn redis_value_to_string(v: &Value) -> String {
         _ => "Unsupported".to_string(),
     }
 }
+
+pub fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if haystack.len() < needle.len() {
+        return false;
+    }
+
+    match haystack.get(..needle.len()) {
+        Some(sub) => sub.eq_ignore_ascii_case(needle),
+        None => false,
+    }
+}
