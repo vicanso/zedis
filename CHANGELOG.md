@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.2.1](https://github.com/vicanso/zedis/compare/v0.1.9..v0.2.1) - 2026-01-31
+
+### ⛰️  Features
+
+- *(cli)* Support redis command completion - ([019f38a](https://github.com/vicanso/zedis/commit/019f38a791651f063843e2568e3797dd6fbc8726))
+- *(key)* Support batch deletion of keys ([#25](https://github.com/orhun/git-cliff/issues/25)) - ([4c531f2](https://github.com/vicanso/zedis/commit/4c531f2019c3918077658cf23a9b0f3280fe87b3))
+- *(search)* Support clearing search history - ([a0dce97](https://github.com/vicanso/zedis/commit/a0dce9790d02b6b088b795dafddaf2aa2d799b9d))
+- Support proto parsing - ([c921d82](https://github.com/vicanso/zedis/commit/c921d829492afed3ab1eea5851c77bc90fad34c6))
+- Support specifying run mode - ([293b9c9](https://github.com/vicanso/zedis/commit/293b9c9f80fd332c37ae551bdfeb5c4661241e24))
+
+### 🐛 Bug Fixes
+
+- *(cli)* Make command matching case-insensitive - ([3e63989](https://github.com/vicanso/zedis/commit/3e63989472d380024105721f5ec7ff6ba0c5ecff))
+- *(config)* Correct default value for proto server - ([2e62259](https://github.com/vicanso/zedis/commit/2e6225968d5860bda94761bbb8fd4335ab2e7cba))
+- *(keytree)* Fix read-only mode toggle - ([e51e984](https://github.com/vicanso/zedis/commit/e51e984b5db3474057615400363ad5328bd006b4))
+- *(log)* Filter error messages by current server - ([0830f5d](https://github.com/vicanso/zedis/commit/0830f5dd4dcaf173f635bd8679843f75f93817cf))
+- *(sentinel)* Fix master name of sentinel mode - ([fcca322](https://github.com/vicanso/zedis/commit/fcca322fc8d90999b38ce253de58d785b0ea12a7))
+
+### 🚜 Refactor
+
+- *(db)* Use separate redb path for development - ([4d29ca7](https://github.com/vicanso/zedis/commit/4d29ca783405dcb3b714df9dbfffb9ed7efabd3c))
+- *(editor)* Use code editor for hash value editing - ([e286464](https://github.com/vicanso/zedis/commit/e286464e1efc673d0f4ce8b21c27a3a157c83815))
+- *(editor)* Optimize hash editor interface - ([29e88a4](https://github.com/vicanso/zedis/commit/29e88a4bdb408f4d2ee2b5ccac0641d74e8c89f3))
+- *(proto)* Improve auto-detection logic - ([791c4ae](https://github.com/vicanso/zedis/commit/791c4aed8e06644add4750647a810be70e64d488))
+- *(ui)* Add tooltip for multi-select mode - ([c0e6dfd](https://github.com/vicanso/zedis/commit/c0e6dfd2b618be78011ab93603674ade183e4dea))
+- *(ui)* Optimize layout of form action buttons - ([f8f42a3](https://github.com/vicanso/zedis/commit/f8f42a3e17028f8097537e8fe75884d68c9c6752))
+
+### ⚙️ Miscellaneous Tasks
+
+- Version 0.2.0 - ([3ff5390](https://github.com/vicanso/zedis/commit/3ff5390fd5d43a8590e187cbbc2f1a363ef0dac0))
+- Notarize and staple app - ([b24ba3d](https://github.com/vicanso/zedis/commit/b24ba3d2437340ed310e4d7f9c7767aaed7f738d))
+- Upgrade rust toolchain to 1.93.0 and update deps - ([f9aa1d2](https://github.com/vicanso/zedis/commit/f9aa1d2f75fc423f56d9ecd1153af87af13cb117))
+
 ## [0.2.0](https://github.com/vicanso/zedis/compare/v0.1.9..v0.2.0) - 2026-01-31
 
 ### ⛰️  Features
