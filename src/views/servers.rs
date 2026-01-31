@@ -563,6 +563,7 @@ impl ZedisServers {
             } else {
                 i18n_servers(cx, "update_server_title")
             };
+            let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
 
             // Prepare field labels
             let name_label = i18n_common(cx, "name");
@@ -699,7 +700,7 @@ impl ZedisServers {
 
                     div()
                         .id("servers-scrollable-container")
-                        .max_h(px(600.0))
+                        .max_h(max_h)
                         .child(
                             TabBar::new("tabs")
                                 .underline()
