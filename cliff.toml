@@ -14,7 +14,7 @@ header = """
 # https://keats.github.io/tera/docs/#introduction
 body = """
 {%- macro remote_url() -%}
-  https://github.com/vicanso/pingap
+  https://github.com/vicanso/zedis
 {%- endmacro -%}
 
 {% macro print_commit(commit) -%}
