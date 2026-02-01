@@ -27,12 +27,15 @@ use gpui_component::table::{Column, Table, TableDelegate, TableState};
 use gpui_component::{IconName, h_flex};
 use gpui_component::{
     IndexPath, WindowExt,
+    alert::Alert,
     form::{field, v_form},
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     select::{Select, SelectEvent, SelectItem, SelectState},
+    text::TextView,
     v_flex,
 };
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
@@ -172,6 +175,7 @@ pub struct ZedisProtoEditor {
     match_mode_select_state: Entity<usize>,
     content_state: Entity<InputState>,
     target_message_state: Entity<InputState>,
+    field_errors: Entity<HashMap<String, SharedString>>,
 
     protos: Arc<Vec<(String, ProtoConfig)>>,
     servers: Vec<KeyValueOption>,
@@ -246,11 +250,34 @@ impl ZedisProtoEditor {
             .map(IndexPath::new);
         let servers_for_delegate = servers.clone();
         let server_select_state = cx.new(|cx| SelectState::new(servers, found, window, cx));
-        subscriptions.push(cx.subscribe(&server_select_state, |this, _, event, _cx| {
+        let field_errors = cx.new(|_cx| HashMap::new());
+
+        let field_errors_clone = field_errors.clone();
+        subscriptions.push(cx.subscribe(&server_select_state, move |this, view, event, cx| {
             if let SelectEvent::Confirm(Some(server_id)) = event {
                 this.server_id = server_id.clone();
+                let id = view.entity_id().to_string();
+                if field_errors_clone.read(cx).get(&id).is_some() {
+                    field_errors_clone.update(cx, |state, _cx| {
+                        state.remove(&id);
+                    });
+                }
             }
         }));
+        for item in [name_state.clone(), match_pattern_state.clone()] {
+            subscriptions.push(
+                cx.subscribe_in(&item.clone(), window, move |view, _state, event, _window, cx| {
+                    if let InputEvent::Blur = event {
+                        let id = item.entity_id().to_string();
+                        if view.field_errors.read(cx).get(&id).is_some() {
+                            view.field_errors.update(cx, |state, _cx| {
+                                state.remove(&id);
+                            });
+                        }
+                    }
+                }),
+            );
+        }
 
         let protos = Arc::new(protos);
         let table_state = Self::create_table_state(protos.clone(), servers_for_delegate.clone(), window, cx);
@@ -269,6 +296,7 @@ impl ZedisProtoEditor {
             server_id: server_id.into(),
             needs_table_recreate: None,
             edit_proto_id: None,
+            field_errors,
             _subscriptions: subscriptions,
         }
     }
@@ -277,20 +305,45 @@ impl ZedisProtoEditor {
         let server_id = self.server_id.clone();
         let name = self.name_state.read(cx).value();
         let match_pattern = self.match_pattern_state.read(cx).value();
-        let match_mode = self.match_mode_select_state.read(cx);
+        let match_mode = self.match_mode_select_state.read(cx).to_owned();
         let content = self.content_state.read(cx).value();
         let target_message = self.target_message_state.read(cx).value();
-        if server_id.is_empty() || name.is_empty() || match_pattern.is_empty() {
-            // TODO: show error message
-            error!(server_id = %server_id, name = %name, match_pattern = %match_pattern, "invalid proto config");
+        let field_errors = self.field_errors.clone();
+        field_errors.update(cx, |state, _cx| {
+            state.clear();
+        });
+
+        if server_id.is_empty() {
+            field_errors.update(cx, |state, _cx| {
+                state.insert(
+                    self.server_select_state.entity_id().to_string(),
+                    "server is required".into(),
+                );
+            });
+        }
+        if name.is_empty() {
+            field_errors.update(cx, |state, _cx| {
+                state.insert(self.name_state.entity_id().to_string(), "name is required".into());
+            });
+        }
+        if match_pattern.is_empty() {
+            field_errors.update(cx, |state, _cx| {
+                state.insert(
+                    self.match_pattern_state.entity_id().to_string(),
+                    "match pattern is required".into(),
+                );
+            });
+        }
+        if !field_errors.read(cx).is_empty() {
             return;
         }
+
         let id = self.edit_proto_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let config = ProtoConfig {
             server_id: server_id.to_string(),
             name: name.to_string(),
             match_pattern: match_pattern.to_string(),
-            mode: (*match_mode).into(),
+            mode: match_mode.into(),
             content: Some(content.to_string()),
             target_message: Some(target_message.to_string()),
         };
@@ -434,7 +487,7 @@ impl ZedisProtoEditor {
             })
         });
     }
-    fn render_edit_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let match_mode_select_state_clone = self.match_mode_select_state.clone();
         let match_mode_select_state = self.match_mode_select_state.read(cx);
         v_flex()
@@ -500,6 +553,25 @@ impl ZedisProtoEditor {
                         ),
                 ),
             )
+            .when(!self.field_errors.read(cx).is_empty(), |this| {
+                let title = i18n_proto_editor(cx, "field_errors_title");
+                let list = self
+                    .field_errors
+                    .read(cx)
+                    .values()
+                    .map(|value| format!("- {value}"))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                let markdown = t!("proto_editor.field_errors_message", errors = list);
+                this.child(
+                    Alert::error(
+                        "proto-editor-form-errors",
+                        TextView::markdown("proto-editor-form-errors-message", markdown, window, cx),
+                    )
+                    .title(title)
+                    .mt_4(),
+                )
+            })
             .child(
                 h_flex()
                     .w_full()

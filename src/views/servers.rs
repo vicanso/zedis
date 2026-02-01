@@ -20,6 +20,7 @@ use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
+    alert::Alert,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     form::{field, v_form},
@@ -28,8 +29,10 @@ use gpui_component::{
     radio::RadioGroup,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
+    text::TextView,
 };
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::{cell::Cell, rc::Rc};
 use substring::Substring;
 use tracing::info;
@@ -105,6 +108,7 @@ pub struct ZedisServers {
     ssh_password_state: Entity<InputState>,
     ssh_key_state: Entity<InputState>,
     description_state: Entity<InputState>,
+    field_errors: Entity<HashMap<String, SharedString>>,
 
     /// Flag indicating if we're adding a new server (vs editing existing)
     server_id: String,
@@ -247,6 +251,24 @@ impl ZedisServers {
                 });
             }
         }));
+        let field_errors = cx.new(|_cx| HashMap::new());
+
+        // add validation error subscription
+        for item in [name_state.clone(), host_state.clone()] {
+            subscriptions.push(
+                cx.subscribe_in(&item.clone(), window, move |view, _state, event, _window, cx| {
+                    if let InputEvent::Blur = event {
+                        let id = item.entity_id().to_string();
+                        if view.field_errors.read(cx).get(&id).is_some() {
+                            view.field_errors.update(cx, |state, _cx| {
+                                state.remove(&id);
+                            });
+                        }
+                    }
+                }),
+            );
+        }
+
         info!("Creating new servers view");
 
         Self {
@@ -266,6 +288,7 @@ impl ZedisServers {
             ssh_password_state,
             ssh_key_state,
             description_state,
+            field_errors,
             server_id: String::new(),
             server_enable_tls: Rc::new(Cell::new(false)),
             server_insecure_tls: Rc::new(Cell::new(false)),
@@ -419,7 +442,12 @@ impl ZedisServers {
         let server_readonly = self.server_readonly.clone();
         let server_readonly_for_submit = server_readonly.clone();
         let server_type_state_clone = server_type_state.clone();
+        let field_errors = self.field_errors.clone();
+        let field_errors_clone = field_errors.clone();
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
+            field_errors.update(cx, |state, _cx| {
+                state.clear();
+            });
             let name = name_state_clone.read(cx).value();
             let host = host_state_clone.read(cx).value();
             let port = port_state_clone
@@ -427,7 +455,19 @@ impl ZedisServers {
                 .value()
                 .parse::<u16>()
                 .unwrap_or(DEFAULT_REDIS_PORT);
-            if name.is_empty() || host.is_empty() {
+            if name.is_empty() {
+                let id = name_state_clone.entity_id().to_string();
+                field_errors.update(cx, |state, _cx| {
+                    state.insert(id, "name is required".into());
+                });
+            }
+            if host.is_empty() {
+                let id = host_state_clone.entity_id().to_string();
+                field_errors.update(cx, |state, _cx| {
+                    state.insert(id, "host is required".into());
+                });
+            }
+            if !field_errors.read(cx).is_empty() {
                 return false;
             }
 
@@ -556,6 +596,7 @@ impl ZedisServers {
 
         let focus_handle_done = Cell::new(false);
         window.open_dialog(cx, move |dialog, window, cx| {
+            // let field_errors_clone = field_errors.clone();
             let tab_selected_index_clone = tab_selected_index.clone();
             // Set dialog title based on add/update mode
             let title = if is_new {
@@ -653,11 +694,12 @@ impl ZedisServers {
                         _ => {
                             form.child(
                                 field()
+                                    .required(true)
                                     .label(name_label)
                                     // Name is read-only when editing existing server
                                     .child(Input::new(&name_state)),
                             )
-                            .child(field().label(host_label).child(Input::new(&host_state)))
+                            .child(field().required(true).label(host_label).child(Input::new(&host_state)))
                             .child(field().label(port_label).child(NumberInput::new(&port_state)))
                             .child(field().label(username_label).child(Input::new(&username_state)))
                             .child(
@@ -717,6 +759,24 @@ impl ZedisServers {
                                 .child(Tab::new().label(tab_ssh_label).p_1()),
                         )
                         .child(form)
+                        .when(!field_errors_clone.read(cx).is_empty(), |this| {
+                            let title = i18n_servers(cx, "field_errors_title");
+                            let list = field_errors_clone
+                                .read(cx)
+                                .values()
+                                .map(|value| format!("- {value}"))
+                                .collect::<Vec<String>>()
+                                .join("\n");
+                            let markdown = t!("servers.field_errors_message", errors = list);
+                            this.child(
+                                Alert::error(
+                                    "servers-form-errors",
+                                    TextView::markdown("servers-form-errors-message", markdown, window, cx),
+                                )
+                                .title(title)
+                                .mt_4(),
+                            )
+                        })
                         .overflow_y_scrollbar()
                 })
                 .on_ok({
