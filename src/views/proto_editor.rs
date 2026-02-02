@@ -174,7 +174,7 @@ pub struct ZedisProtoEditor {
     match_pattern_state: Entity<InputState>,
     match_mode_select_state: Entity<usize>,
     content_state: Entity<InputState>,
-    target_message_state: Entity<InputState>,
+    target_message_state: Entity<SelectState<Vec<String>>>,
     field_errors: Entity<HashMap<String, SharedString>>,
 
     protos: Arc<Vec<(String, ProtoConfig)>>,
@@ -242,7 +242,7 @@ impl ZedisProtoEditor {
                 .searchable(true)
                 .soft_wrap(true)
         });
-        let target_message_state = cx.new(|cx| InputState::new(window, cx));
+        let target_message_state = cx.new(|cx| SelectState::new(vec![], None, window, cx));
         let match_mode_select_state = cx.new(|_cx| 0_usize);
         let found = servers
             .iter()
@@ -278,6 +278,23 @@ impl ZedisProtoEditor {
                 }),
             );
         }
+        subscriptions.push(
+            cx.subscribe_in(&content_state, window, move |view, state, event, window, cx| {
+                if let InputEvent::Change = event {
+                    let content = state.read(cx).value();
+                    let messages = match ProtoManager::parse_protobuf(&content) {
+                        Ok((_, messages)) => messages,
+                        Err(e) => {
+                            error!(error = %e, "parse protobuf fail",);
+                            vec![]
+                        }
+                    };
+                    view.target_message_state.update(cx, move |state, cx| {
+                        state.set_items(messages, window, cx);
+                    });
+                }
+            }),
+        );
 
         let protos = Arc::new(protos);
         let table_state = Self::create_table_state(protos.clone(), servers_for_delegate.clone(), window, cx);
@@ -307,7 +324,12 @@ impl ZedisProtoEditor {
         let match_pattern = self.match_pattern_state.read(cx).value();
         let match_mode = self.match_mode_select_state.read(cx).to_owned();
         let content = self.content_state.read(cx).value();
-        let target_message = self.target_message_state.read(cx).value();
+        let target_message = self
+            .target_message_state
+            .read(cx)
+            .selected_value()
+            .map(|item| item.to_string())
+            .unwrap_or_default();
         let field_errors = self.field_errors.clone();
         field_errors.update(cx, |state, _cx| {
             state.clear();
@@ -393,7 +415,7 @@ impl ZedisProtoEditor {
             *state = 0;
         });
         self.target_message_state.update(cx, |state, cx| {
-            state.set_value(String::new(), window, cx);
+            state.set_selected_index(None, window, cx);
         });
         self.content_state.update(cx, |state, cx| {
             state.set_value(String::new(), window, cx);
@@ -425,13 +447,22 @@ impl ZedisProtoEditor {
         self.match_mode_select_state.update(cx, |state, _cx| {
             *state = proto.mode.clone().into();
         });
+        let content = proto.content.clone().unwrap_or_default();
 
+        let target_message = proto.target_message.clone().unwrap_or_default();
         self.target_message_state.update(cx, |state, cx| {
-            state.set_value(proto.target_message.clone().unwrap_or_default(), window, cx);
+            if let Ok((_, messages)) = ProtoManager::parse_protobuf(&content) {
+                let found = messages
+                    .iter()
+                    .position(|item| *item == target_message)
+                    .map(IndexPath::new);
+                state.set_items(messages, window, cx);
+                state.set_selected_index(found, window, cx);
+            }
         });
 
         self.content_state.update(cx, |state, cx| {
-            state.set_value(proto.content.clone().unwrap_or_default(), window, cx);
+            state.set_value(content, window, cx);
         });
         self.view_mode = ViewMode::Edit;
     }
@@ -532,8 +563,7 @@ impl ZedisProtoEditor {
                     .child(
                         field()
                             .label(i18n_proto_editor(cx, "target_message"))
-                            .child(Input::new(&self.target_message_state))
-                            .col_span(2),
+                            .child(Select::new(&self.target_message_state)),
                     ),
             )
             .child(

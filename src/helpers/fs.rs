@@ -22,6 +22,7 @@
 use crate::error::Error;
 use directories::{ProjectDirs, UserDirs};
 use home::home_dir;
+use path_absolutize::Absolutize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -160,4 +161,21 @@ pub fn get_or_create_config_dir() -> Result<PathBuf> {
     }
 
     Ok(config_dir.to_path_buf())
+}
+
+pub fn resolve_path(path: &str) -> String {
+    if path.is_empty() {
+        return "".to_string();
+    }
+    let mut p = path.to_string();
+    if p.starts_with('~')
+        && let Some(home) = get_home_dir()
+    {
+        p = home.to_string_lossy().to_string() + &p[1..];
+    }
+    if let Ok(p) = Path::new(&p).absolutize() {
+        p.to_string_lossy().to_string()
+    } else {
+        p
+    }
 }

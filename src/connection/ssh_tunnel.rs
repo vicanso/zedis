@@ -16,7 +16,7 @@ use super::async_connection::{get_redis_connection_timeout, get_redis_response_t
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
-use crate::helpers::{TtlCache, get_home_dir};
+use crate::helpers::{TtlCache, get_home_dir, resolve_path};
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::{Handle, Handler};
 use russh::keys::ssh_key::PublicKey;
@@ -249,13 +249,7 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
 
     // Authenticate using provided credentials
     let auth_res = if !key.is_empty() {
-        let key = if key.starts_with("~")
-            && let Some(home_dir) = get_home_dir()
-        {
-            format!("{}{}", home_dir.to_string_lossy(), &key[1..])
-        } else {
-            key.to_string()
-        };
+        let key = resolve_path(key);
         // Public key authentication
         let key_pair = if Path::new(&key).exists() {
             // Load key from file path

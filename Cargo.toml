@@ -38,6 +38,7 @@ lz4_flex = { version = "0.12.0", default-features = false }
 mimalloc = { version = "0.1.48", optional = true }
 os_info = "3.14.0"
 parking_lot = "0.12.5"
+path-absolutize = "3.1.1"
 percent-encoding = "2.3.2"
 pretty-hex = "0.4.1"
 prost-reflect = { version = "0.16.3", features = ["serde"] }
