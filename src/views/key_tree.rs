@@ -25,10 +25,9 @@ use gpui::{
     Action, App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, Window, div, prelude::*,
     px,
 };
-use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -823,6 +822,7 @@ impl ZedisKeyTree {
             .prefix(query_mode_dropdown)
             .suffix(search_btn)
             .cleanable(true);
+        let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
         h_flex()
             .p_2()
             .border_b_1()
@@ -834,6 +834,7 @@ impl ZedisKeyTree {
                     .disabled(readonly)
                     .outline()
                     .icon(CustomIconName::ListCheck)
+                    .when(enabled_multiple_selection, |this| this.primary())
                     .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
                     .when(!readonly, |this| {
                         this.tooltip(i18n_key_tree(cx, "toggle_multi_select_mode_tooltip"))
