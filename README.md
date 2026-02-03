@@ -60,7 +60,7 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 
 ### 🛡️ Safety & Security
 - **Read-only Mode**: Mark connections as **Read-only** to prevent accidental writes or deletions. Perfect for inspecting production environments with total peace of mind.
-- **SSH Tunneling**: Securely access private Redis instances via bastion hosts. Supports authentication via Password, Private Key.
+- **SSH Tunneling**: Securely access private Redis instances via bastion hosts. Supports authentication via Password, Private Key, and SSH Agent.
 - **TLS/SSL**: Full support for encrypted connections, including custom CA, Client Certificates, and Private Keys.
 
 ### ⚡ Productivity

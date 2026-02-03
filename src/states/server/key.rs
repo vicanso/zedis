@@ -136,6 +136,7 @@ impl ZedisServerState {
 
         let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
+        let key_scan_count = cx.global::<ZedisGlobalStore>().read(cx).key_scan_count() as u64;
         let db = self.db;
         self.spawn(
             ServerTask::ScanKeys,
@@ -147,7 +148,11 @@ impl ZedisServerState {
                     format!("*{}*", keyword)
                 };
                 // Adjust count based on keyword specificity
-                let count = if keyword.is_empty() { 2_000 } else { 10_000 };
+                let count = if keyword.is_empty() {
+                    (key_scan_count / 5).max(1000)
+                } else {
+                    key_scan_count
+                };
                 if let Some(cursors) = cursors {
                     client.scan(cursors, &pattern, count).await
                 } else {
@@ -261,12 +266,11 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let pattern = format!("{}*", prefix);
+        let key_scan_count = cx.global::<ZedisGlobalStore>().read(cx).key_scan_count() as u64;
         self.spawn(
             ServerTask::ScanPrefix,
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                let count = 10_000;
-                // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;
                 let mut result_keys = vec![];
                 let mut done = false;
@@ -274,9 +278,9 @@ impl ZedisServerState {
                 // to gather a sufficient amount without blocking for too long.
                 for _ in 0..20 {
                     let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(cursors, &pattern, count).await?
+                        client.scan(cursors, &pattern, key_scan_count).await?
                     } else {
-                        client.first_scan(&pattern, count).await?
+                        client.first_scan(&pattern, key_scan_count).await?
                     };
                     result_keys.extend(keys);
                     // Break if scan cycle finishes

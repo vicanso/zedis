@@ -16,9 +16,9 @@ use crate::{
     helpers::{get_or_create_config_dir, parse_duration},
     states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
-use gpui::{Entity, Subscription, Window, prelude::*};
+use gpui::{Entity, Subscription, Window, prelude::*, px};
 use gpui_component::{
-    form::{field, v_form},
+    form::{Field, field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     v_flex,
@@ -29,12 +29,47 @@ pub struct ZedisSettingEditor {
     key_separator_state: Entity<InputState>,
     max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
+    key_scan_count_state: Entity<InputState>,
     redis_connection_timeout_state: Entity<InputState>,
     redis_response_timeout_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisSettingEditor {
+    fn create_input_state(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        placeholder_key: &str,
+        default_val: String,
+        validate: Option<fn(&str) -> bool>,
+    ) -> Entity<InputState> {
+        cx.new(|cx| {
+            let mut state = InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, placeholder_key))
+                .default_value(default_val);
+
+            if let Some(v) = validate {
+                state = state.validate(move |s, _| v(s));
+            }
+            state
+        })
+    }
+    fn bind_blur_save<F>(
+        cx: &mut Context<Self>,
+        state: &Entity<InputState>,
+        window: &Window,
+        mut save_action: F,
+    ) -> Subscription
+    where
+        F: FnMut(String, &mut Context<Self>) + 'static,
+    {
+        cx.subscribe_in(state, window, move |_view, state, event, _window, cx| {
+            if let InputEvent::Blur = event {
+                let text = state.read(cx).value();
+                save_action(text.to_string(), cx);
+            }
+        })
+    }
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let max_key_tree_depth = store.max_key_tree_depth();
@@ -42,70 +77,82 @@ impl ZedisSettingEditor {
         let max_truncate_length = store.max_truncate_length();
         let redis_connection_timeout = store.redis_connection_timeout();
         let redis_response_timeout = store.redis_response_timeout();
-        let max_key_tree_depth_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(i18n_settings(cx, "max_key_tree_depth_placeholder"))
-                .default_value(max_key_tree_depth.to_string())
-        });
-        let key_separator_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(i18n_settings(cx, "key_separator_placeholder"))
-                .default_value(key_separator)
-        });
-        let max_truncate_length_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(i18n_settings(cx, "max_truncate_length_placeholder"))
-                .default_value(max_truncate_length.to_string())
-        });
-        let redis_connection_timeout_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(i18n_settings(cx, "redis_connection_timeout_placeholder"))
-                .default_value(redis_connection_timeout)
-        });
-        let redis_response_timeout_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(i18n_settings(cx, "redis_response_timeout_placeholder"))
-                .default_value(redis_response_timeout)
-        });
+        let key_scan_count = store.key_scan_count();
+        let max_key_tree_depth_state = Self::create_input_state(
+            window,
+            cx,
+            "max_key_tree_depth_placeholder",
+            max_key_tree_depth.to_string(),
+            None,
+        );
+        let key_separator_state =
+            Self::create_input_state(window, cx, "key_separator_placeholder", key_separator, None);
+        let key_scan_count_state = Self::create_input_state(
+            window,
+            cx,
+            "key_scan_count_placeholder",
+            key_scan_count.to_string(),
+            Some(|s| s.parse::<usize>().is_ok()),
+        );
+        let max_truncate_length_state = Self::create_input_state(
+            window,
+            cx,
+            "max_truncate_length_placeholder",
+            max_truncate_length.to_string(),
+            Some(|s| s.parse::<usize>().is_ok()),
+        );
+        let redis_connection_timeout_state = Self::create_input_state(
+            window,
+            cx,
+            "redis_connection_timeout_placeholder",
+            redis_connection_timeout,
+            None,
+        );
+        let redis_response_timeout_state = Self::create_input_state(
+            window,
+            cx,
+            "redis_response_timeout_placeholder",
+            redis_response_timeout,
+            None,
+        );
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
 
         let mut subscriptions = Vec::new();
-        subscriptions.push(
-            cx.subscribe_in(&max_key_tree_depth_state, window, |_view, state, event, _window, cx| {
-                if let InputEvent::Blur = &event {
-                    let text = state.read(cx).value();
-                    let value = text.parse::<i64>().unwrap_or_default();
-                    update_app_state_and_save(cx, "save_max_key_tree_depth", move |state, _cx| {
-                        state.set_max_key_tree_depth(value as usize);
-                    });
-                }
-            }),
-        );
-        subscriptions.push(cx.subscribe_in(
-            &redis_connection_timeout_state,
+        subscriptions.push(Self::bind_blur_save(
+            cx,
+            &max_key_tree_depth_state,
             window,
-            |_view, state, event, _window, cx| {
-                if let InputEvent::Blur = &event {
-                    let text = state.read(cx).value();
-                    let duration = parse_duration(&text).ok();
-                    update_app_state_and_save(cx, "save_redis_connection_timeout", move |state, _cx| {
-                        state.set_redis_connection_timeout(duration);
-                    });
-                }
+            |text, cx| {
+                let value = text.parse::<i64>().unwrap_or_default();
+                update_app_state_and_save(cx, "save_max_key_tree_depth", move |state, _| {
+                    state.set_max_key_tree_depth(value as usize);
+                });
             },
         ));
-        subscriptions.push(cx.subscribe_in(
+
+        // Redis Connection Timeout
+        subscriptions.push(Self::bind_blur_save(
+            cx,
+            &redis_connection_timeout_state,
+            window,
+            |text, cx| {
+                let duration = parse_duration(&text).ok();
+                update_app_state_and_save(cx, "save_redis_connection_timeout", move |state, _| {
+                    state.set_redis_connection_timeout(duration);
+                });
+            },
+        ));
+        // Redis Response Timeout
+        subscriptions.push(Self::bind_blur_save(
+            cx,
             &redis_response_timeout_state,
             window,
-            |_view, state, event, _window, cx| {
-                if let InputEvent::Blur = &event {
-                    let text = state.read(cx).value();
-                    let duration = parse_duration(&text).ok();
-                    update_app_state_and_save(cx, "save_redis_response_timeout", move |state, _cx| {
-                        state.set_redis_response_timeout(duration);
-                    });
-                }
+            |text, cx| {
+                let duration = parse_duration(&text).ok();
+                update_app_state_and_save(cx, "save_redis_response_timeout", move |state, _| {
+                    state.set_redis_response_timeout(duration);
+                });
             },
         ));
         subscriptions.push(
@@ -129,29 +176,34 @@ impl ZedisSettingEditor {
             }),
         );
 
-        subscriptions.push(
-            cx.subscribe_in(&key_separator_state, window, |_view, state, event, _window, cx| {
-                if let InputEvent::Blur = &event {
-                    let text = state.read(cx).value();
-                    update_app_state_and_save(cx, "save_key_separator", move |state, _cx| {
-                        state.set_key_separator(text.to_string());
-                    });
-                }
-            }),
-        );
+        // Key Separator
+        subscriptions.push(Self::bind_blur_save(cx, &key_separator_state, window, |text, cx| {
+            update_app_state_and_save(cx, "save_key_separator", move |state, _| {
+                state.set_key_separator(text);
+            });
+        }));
 
-        subscriptions.push(cx.subscribe_in(
+        // Key Scan Count
+        subscriptions.push(Self::bind_blur_save(cx, &key_scan_count_state, window, |text, cx| {
+            if let Ok(value) = text.parse::<usize>()
+                && value >= 1000
+            {
+                update_app_state_and_save(cx, "save_key_scan_count", move |state, _| {
+                    state.set_key_scan_count(value);
+                });
+            }
+        }));
+
+        // Max Truncate Length
+        subscriptions.push(Self::bind_blur_save(
+            cx,
             &max_truncate_length_state,
             window,
-            |_view, state, event, _window, cx| {
-                if let InputEvent::Blur = &event {
-                    let Ok(value) = state.read(cx).value().parse::<usize>() else {
-                        return;
-                    };
-                    if value < 10 {
-                        return;
-                    };
-                    update_app_state_and_save(cx, "save_max_truncate_length", move |state, _cx| {
+            |text, cx| {
+                if let Ok(value) = text.parse::<usize>()
+                    && value >= 10
+                {
+                    update_app_state_and_save(cx, "save_max_truncate_length", move |state, _| {
                         state.set_max_truncate_length(value);
                     });
                 }
@@ -162,6 +214,7 @@ impl ZedisSettingEditor {
 
         Self {
             _subscriptions: subscriptions,
+            key_scan_count_state,
             config_dir_state,
             max_truncate_length_state,
             key_separator_state,
@@ -170,44 +223,55 @@ impl ZedisSettingEditor {
             redis_connection_timeout_state,
         }
     }
+    fn render_field(cx: &Context<Self>, label_key: &str, input_element: impl IntoElement) -> Field {
+        field().label(i18n_settings(cx, label_key)).child(input_element)
+    }
 }
 
 impl Render for ZedisSettingEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let cols = if window.viewport_size().width < px(800.) { 1 } else { 2 };
+
         v_flex()
             .p_5()
             .child(Label::new(i18n_settings(cx, "title")).text_3xl().mb_2())
             .child(
                 v_form()
                     .flex_1()
-                    .columns(2)
+                    .columns(cols)
+                    .child(Self::render_field(
+                        cx,
+                        "max_key_tree_depth",
+                        NumberInput::new(&self.max_key_tree_depth_state),
+                    ))
+                    .child(Self::render_field(
+                        cx,
+                        "key_separator",
+                        Input::new(&self.key_separator_state),
+                    ))
+                    .child(Self::render_field(
+                        cx,
+                        "key_scan_count",
+                        Input::new(&self.key_scan_count_state),
+                    ))
+                    .child(Self::render_field(
+                        cx,
+                        "max_truncate_length",
+                        Input::new(&self.max_truncate_length_state),
+                    ))
+                    .child(Self::render_field(
+                        cx,
+                        "redis_connection_timeout",
+                        Input::new(&self.redis_connection_timeout_state),
+                    ))
+                    .child(Self::render_field(
+                        cx,
+                        "redis_response_timeout",
+                        Input::new(&self.redis_response_timeout_state),
+                    ))
                     .child(
                         field()
-                            .label(i18n_settings(cx, "max_key_tree_depth"))
-                            .child(NumberInput::new(&self.max_key_tree_depth_state)),
-                    )
-                    .child(
-                        field()
-                            .label(i18n_settings(cx, "key_separator"))
-                            .child(Input::new(&self.key_separator_state)),
-                    )
-                    .child(
-                        field()
-                            .label(i18n_settings(cx, "redis_connection_timeout"))
-                            .child(Input::new(&self.redis_connection_timeout_state)),
-                    )
-                    .child(
-                        field()
-                            .label(i18n_settings(cx, "redis_response_timeout"))
-                            .child(Input::new(&self.redis_response_timeout_state)),
-                    )
-                    .child(
-                        field()
-                            .label(i18n_settings(cx, "max_truncate_length"))
-                            .child(Input::new(&self.max_truncate_length_state)),
-                    )
-                    .child(
-                        field()
+                            .col_span(cols as u16)
                             .label(i18n_settings(cx, "config_dir"))
                             .child(Input::new(&self.config_dir_state).disabled(true)),
                     ),

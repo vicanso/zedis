@@ -109,6 +109,7 @@ pub struct ZedisAppState {
     font_size: Option<FontSize>,
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
+    key_scan_count: Option<usize>,
     max_truncate_length: Option<usize>,
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
@@ -275,6 +276,12 @@ impl ZedisAppState {
         self.redis_response_timeout
             .map(|timeout| timeout.as_secs().to_string())
             .unwrap_or_default()
+    }
+    pub fn key_scan_count(&self) -> usize {
+        self.key_scan_count.unwrap_or(10_000)
+    }
+    pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
+        self.key_scan_count = Some(key_scan_count);
     }
 }
 
