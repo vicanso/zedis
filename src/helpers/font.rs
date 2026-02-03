@@ -14,9 +14,9 @@
 
 pub fn get_font_family() -> String {
     if cfg!(target_os = "macos") {
-        "Monaco".to_string()
+        "Menlo".to_string()
     } else if cfg!(target_os = "windows") {
-        "Consolas".to_string()
+        "Cascadia Code".to_string()
     } else {
         "monospace".to_string()
     }

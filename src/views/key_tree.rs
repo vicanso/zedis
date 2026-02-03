@@ -17,7 +17,7 @@ use crate::{
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::QueryMode,
     db::HistoryManager,
-    helpers::{EditorAction, validate_long_string, validate_ttl},
+    helpers::{EditorAction, get_font_family, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
@@ -280,6 +280,7 @@ impl ListDelegate for KeyTreeDelegate {
         let is_folder = entry.is_folder;
         Some(
             ListItem::new(ix)
+                .font_family(get_font_family())
                 .w_full()
                 .bg(bg)
                 .py_1()
@@ -316,7 +317,7 @@ impl ListDelegate for KeyTreeDelegate {
                         .h_flex()
                         .gap_2()
                         .child(icon)
-                        .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
+                        .child(div().flex_1().min_w_0().text_ellipsis().child(entry.label.clone()))
                         .when(show_check_icon, |this| {
                             let icon = if selected {
                                 CustomIconName::SquareCheck
