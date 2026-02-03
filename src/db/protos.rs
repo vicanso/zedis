@@ -25,7 +25,6 @@ use std::path::Path;
 use std::sync::LazyLock;
 use tempfile::TempDir;
 use tracing::info;
-use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -66,6 +65,7 @@ pub struct ProtoConfig {
     pub name: String,
     pub match_pattern: String,
     pub mode: MatchMode,
+    pub includes: Option<String>,
     pub content: Option<String>,
     pub target_message: Option<String>,
 }
@@ -82,20 +82,36 @@ fn proto_to_json(pool: &DescriptorPool, message_name: &str, bytes: &[u8]) -> Res
     Ok(json_output)
 }
 
-fn parse_protobuf(content: &str) -> Result<(DescriptorPool, Vec<String>)> {
+fn parse_protobuf(content: &str, includes: &str) -> Result<(DescriptorPool, Vec<String>)> {
+    if content.is_empty() {
+        return Err(Error::Invalid {
+            message: "content is empty".to_string(),
+        });
+    }
     let temp_dir = TempDir::new()?;
     let temp_path = temp_dir.path();
     let mut files = Vec::new();
-    let mut dirs = vec![];
-    if content.ends_with(".proto") {
+    let mut dirs = includes
+        .split(",")
+        .map(|item| Path::new(&resolve_path(item)).to_path_buf())
+        .collect::<Vec<_>>();
+    let is_proto_file = Path::new(content)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("proto"));
+    if is_proto_file {
         let file = resolve_path(content);
         let file_path = Path::new(&file);
+        if !file_path.exists() {
+            return Err(Error::Invalid {
+                message: "proto file not found".to_string(),
+            });
+        }
         files.push(file_path.to_path_buf());
         if let Some(parent) = file_path.parent() {
             dirs.push(parent.to_path_buf());
         }
     } else {
-        let file_path = temp_path.join(format!("{}.proto", Uuid::now_v7()));
+        let file_path = temp_path.join("main.proto");
         fs::write(&file_path, content)?;
         files.push(file_path);
         dirs.push(temp_path.to_path_buf());
@@ -104,14 +120,7 @@ fn parse_protobuf(content: &str) -> Result<(DescriptorPool, Vec<String>)> {
     let pool = prost_reflect::DescriptorPool::from_file_descriptor_set(file_descriptor_set)?;
     let messages = pool
         .all_messages()
-        .map(|message| {
-            let package = message.parent_file().package_name().to_string();
-            if package.is_empty() {
-                message.name().to_string()
-            } else {
-                format!("{}.{}", package, message.name())
-            }
-        })
+        .map(|message| message.full_name().to_string())
         .collect::<Vec<_>>();
     Ok((pool, messages))
 }
@@ -149,8 +158,8 @@ impl ProtoManager {
             .map(|item| (item.key().clone(), item.value().clone()))
             .collect::<Vec<_>>()
     }
-    pub fn parse_protobuf(content: &str) -> Result<(DescriptorPool, Vec<String>)> {
-        parse_protobuf(content)
+    pub fn parse_protobuf(content: &str, includes: &str) -> Result<(DescriptorPool, Vec<String>)> {
+        parse_protobuf(content, includes)
     }
     pub fn get_proto(id: &str) -> Result<ProtoConfig> {
         let db = get_database()?;
@@ -233,7 +242,8 @@ impl ProtoManager {
                 message: "proto content is empty".to_string(),
             });
         };
-        let (pool, messages) = parse_protobuf(&content)?;
+        let includes = proto.includes.unwrap_or_default();
+        let (pool, messages) = parse_protobuf(&content, &includes)?;
         let mut target_message = proto.target_message.unwrap_or_default();
         if target_message.is_empty() {
             target_message = messages.first().map(|item| item.to_string()).unwrap_or_default();

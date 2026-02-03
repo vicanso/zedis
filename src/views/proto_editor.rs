@@ -20,7 +20,6 @@ use crate::states::ZedisServerState;
 use crate::states::i18n_proto_editor;
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::highlighter::Language;
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
@@ -173,9 +172,13 @@ pub struct ZedisProtoEditor {
     name_state: Entity<InputState>,
     match_pattern_state: Entity<InputState>,
     match_mode_select_state: Entity<usize>,
+    includes_state: Entity<InputState>,
     content_state: Entity<InputState>,
     target_message_state: Entity<SelectState<Vec<String>>>,
     field_errors: Entity<HashMap<String, SharedString>>,
+
+    target_messages: Option<Vec<String>>,
+    target_message_selected_index: Option<IndexPath>,
 
     protos: Arc<Vec<(String, ProtoConfig)>>,
     servers: Vec<KeyValueOption>,
@@ -232,15 +235,26 @@ impl ZedisProtoEditor {
             .iter()
             .map(|server| KeyValueOption::new(server.name.clone().into(), server.id.clone().into()))
             .collect::<Vec<_>>();
-        let name_state = cx.new(|cx| InputState::new(window, cx).clean_on_escape());
-        let match_pattern_state = cx.new(|cx| InputState::new(window, cx).clean_on_escape());
+        let name_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_proto_editor(cx, "name_placeholder"))
+        });
+        let match_pattern_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_proto_editor(cx, "match_pattern_placeholder"))
+        });
+        let includes_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_proto_editor(cx, "includes_placeholder"))
+        });
         let content_state = cx.new(|cx| {
             InputState::new(window, cx)
-                .code_editor(Language::from_str("json").name())
-                .line_number(true)
-                .indent_guides(true)
-                .searchable(true)
-                .soft_wrap(true)
+                .clean_on_escape()
+                .placeholder(i18n_proto_editor(cx, "content_placeholder"))
+                .auto_grow(2, 10)
         });
         let target_message_state = cx.new(|cx| SelectState::new(vec![], None, window, cx));
         let match_mode_select_state = cx.new(|_cx| 0_usize);
@@ -266,9 +280,9 @@ impl ZedisProtoEditor {
         }));
         for item in [name_state.clone(), match_pattern_state.clone()] {
             subscriptions.push(
-                cx.subscribe_in(&item.clone(), window, move |view, _state, event, _window, cx| {
+                cx.subscribe_in(&item.clone(), window, move |view, state, event, _window, cx| {
                     if let InputEvent::Blur = event {
-                        let id = item.entity_id().to_string();
+                        let id = state.entity_id().to_string();
                         if view.field_errors.read(cx).get(&id).is_some() {
                             view.field_errors.update(cx, |state, _cx| {
                                 state.remove(&id);
@@ -280,18 +294,19 @@ impl ZedisProtoEditor {
         }
         subscriptions.push(
             cx.subscribe_in(&content_state, window, move |view, state, event, window, cx| {
-                if let InputEvent::Change = event {
-                    let content = state.read(cx).value();
-                    let messages = match ProtoManager::parse_protobuf(&content) {
-                        Ok((_, messages)) => messages,
-                        Err(e) => {
-                            error!(error = %e, "parse protobuf fail",);
-                            vec![]
+                let id = state.entity_id().to_string();
+                match event {
+                    InputEvent::Blur => {
+                        view.update_target_message_select_state("".to_string(), window, cx);
+                    }
+                    InputEvent::Focus => {
+                        if view.field_errors.read(cx).get(&id).is_some() {
+                            view.field_errors.update(cx, |state, _cx| {
+                                state.remove(&id);
+                            });
                         }
-                    };
-                    view.target_message_state.update(cx, move |state, cx| {
-                        state.set_items(messages, window, cx);
-                    });
+                    }
+                    _ => {}
                 }
             }),
         );
@@ -304,6 +319,7 @@ impl ZedisProtoEditor {
             name_state,
             match_pattern_state,
             match_mode_select_state,
+            includes_state,
             content_state,
             target_message_state,
             view_mode: ViewMode::Table,
@@ -314,6 +330,8 @@ impl ZedisProtoEditor {
             needs_table_recreate: None,
             edit_proto_id: None,
             field_errors,
+            target_message_selected_index: None,
+            target_messages: None,
             _subscriptions: subscriptions,
         }
     }
@@ -324,6 +342,7 @@ impl ZedisProtoEditor {
         let match_pattern = self.match_pattern_state.read(cx).value();
         let match_mode = self.match_mode_select_state.read(cx).to_owned();
         let content = self.content_state.read(cx).value();
+        let includes = self.includes_state.read(cx).value();
         let target_message = self
             .target_message_state
             .read(cx)
@@ -359,6 +378,16 @@ impl ZedisProtoEditor {
         if !field_errors.read(cx).is_empty() {
             return;
         }
+        let content = if content.is_empty() {
+            None
+        } else {
+            Some(content.to_string())
+        };
+        let includes = if includes.is_empty() {
+            None
+        } else {
+            Some(includes.to_string())
+        };
 
         let id = self.edit_proto_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let config = ProtoConfig {
@@ -366,7 +395,8 @@ impl ZedisProtoEditor {
             name: name.to_string(),
             match_pattern: match_pattern.to_string(),
             mode: match_mode.into(),
-            content: Some(content.to_string()),
+            includes,
+            content,
             target_message: Some(target_message.to_string()),
         };
         cx.spawn(async move |handle, cx| {
@@ -421,6 +451,37 @@ impl ZedisProtoEditor {
             state.set_value(String::new(), window, cx);
         });
     }
+    fn update_target_message_select_state(
+        &mut self,
+        target_message: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.content_state.read(cx).value();
+        let includes = self.includes_state.read(cx).value();
+        cx.spawn(async move |handle, cx| {
+            let result = cx
+                .background_spawn(async move { ProtoManager::parse_protobuf(&content, &includes) })
+                .await;
+            match result {
+                Ok((_, messages)) => {
+                    let found = messages
+                        .iter()
+                        .position(|item| *item == target_message)
+                        .map(IndexPath::new);
+                    let _ = handle.update(cx, move |this, cx| {
+                        this.target_messages = Some(messages);
+                        this.target_message_selected_index = found;
+                        cx.notify();
+                    });
+                }
+                Err(e) => {
+                    error!(error = %e, "invalid protobuf",);
+                }
+            };
+        })
+        .detach();
+    }
     fn handle_update(&mut self, row_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, _)) = self.protos.get(row_ix) else {
             return;
@@ -447,24 +508,19 @@ impl ZedisProtoEditor {
         self.match_mode_select_state.update(cx, |state, _cx| {
             *state = proto.mode.clone().into();
         });
+        let includes = proto.includes.clone().unwrap_or_default();
+        self.includes_state.update(cx, |state, cx| {
+            state.set_value(includes, window, cx);
+        });
         let content = proto.content.clone().unwrap_or_default();
 
         let target_message = proto.target_message.clone().unwrap_or_default();
-        self.target_message_state.update(cx, |state, cx| {
-            if let Ok((_, messages)) = ProtoManager::parse_protobuf(&content) {
-                let found = messages
-                    .iter()
-                    .position(|item| *item == target_message)
-                    .map(IndexPath::new);
-                state.set_items(messages, window, cx);
-                state.set_selected_index(found, window, cx);
-            }
-        });
-
         self.content_state.update(cx, |state, cx| {
             state.set_value(content, window, cx);
         });
         self.view_mode = ViewMode::Edit;
+
+        self.update_target_message_select_state(target_message, window, cx);
     }
     fn handle_delete(&mut self, row_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, proto)) = self.protos.get(row_ix) else {
@@ -562,27 +618,24 @@ impl ZedisProtoEditor {
                     )
                     .child(
                         field()
+                            .col_span(2)
+                            .label(i18n_proto_editor(cx, "includes"))
+                            .child(Input::new(&self.includes_state)),
+                    )
+                    .child(
+                        field()
+                            .col_span(2)
+                            .label(i18n_proto_editor(cx, "content"))
+                            .required(true)
+                            .child(Input::new(&self.content_state).w_full().font_family(get_font_family())),
+                    )
+                    .child(
+                        field()
                             .label(i18n_proto_editor(cx, "target_message"))
                             .child(Select::new(&self.target_message_state)),
                     ),
             )
-            .child(
-                v_flex().w_full().flex_1().h_full().child(
-                    v_flex()
-                        .size_full()
-                        .child(Label::new(i18n_proto_editor(cx, "content")).text_sm())
-                        .child(
-                            div().flex_1().size_full().child(
-                                Input::new(&self.content_state)
-                                    .p_0()
-                                    .w_full()
-                                    .h_full()
-                                    .font_family(get_font_family())
-                                    .focus_bordered(false),
-                            ),
-                        ),
-                ),
-            )
+            .child(v_flex().w_full().flex_1().h_full())
             .when(!self.field_errors.read(cx).is_empty(), |this| {
                 let title = i18n_proto_editor(cx, "field_errors_title");
                 let list = self
@@ -666,6 +719,16 @@ impl ZedisProtoEditor {
 
 impl Render for ZedisProtoEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(target_messages) = self.target_messages.take() {
+            self.target_message_state.update(cx, |state, cx| {
+                state.set_items(target_messages, window, cx);
+            });
+        }
+        if let Some(target_message_selected_index) = self.target_message_selected_index.take() {
+            self.target_message_state.update(cx, |state, cx| {
+                state.set_selected_index(Some(target_message_selected_index), window, cx);
+            });
+        }
         match self.view_mode {
             ViewMode::Table => self.render_table_view(window, cx).into_any_element(),
             ViewMode::Edit => self.render_edit_form(window, cx).into_any_element(),
