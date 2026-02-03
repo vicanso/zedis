@@ -18,7 +18,9 @@ use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
 use crate::helpers::{TtlCache, get_home_dir, resolve_path};
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
+use russh::client::AuthResult;
 use russh::client::{Handle, Handler};
+use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
 use std::path::Path;
@@ -26,7 +28,7 @@ use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tracing::info;
+use tracing::{error, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -265,10 +267,58 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
         // Password authentication
         session.authenticate_password(user, password).await?
     } else {
-        // TODO: Add SSH agent support
-        return Err(Error::Invalid {
-            message: "Ssh authentication failed".to_string(),
-        });
+        let mut agent = AgentClient::connect_env().await.map_err(|e| Error::Invalid {
+            message: format!("Failed to connect to ssh agent: {e:?}"),
+        })?;
+        let identities = agent.request_identities().await.map_err(|e| Error::Invalid {
+            message: format!("Failed to request identities from ssh agent: {e:?}"),
+        })?;
+        let mut authenticated = false;
+        let mut auth_result = None;
+        let mut hash_alg = None;
+        let mut is_detect_hash_alg = false;
+        for key in identities {
+            if !is_detect_hash_alg && key.algorithm().is_rsa() {
+                hash_alg = if key.algorithm().is_rsa() {
+                    session.best_supported_rsa_hash().await.unwrap_or(None).flatten()
+                } else {
+                    None
+                };
+                is_detect_hash_alg = true;
+            }
+            match session
+                .authenticate_publickey_with(user, key, hash_alg.clone(), &mut agent)
+                .await
+            {
+                Ok(AuthResult::Success) => {
+                    authenticated = true;
+                    break;
+                }
+                Ok(AuthResult::Failure {
+                    remaining_methods,
+                    partial_success,
+                }) => {
+                    auth_result = Some(AuthResult::Failure {
+                        remaining_methods,
+                        partial_success,
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "Error authenticating with agent key");
+                    continue;
+                }
+            }
+        }
+        if authenticated {
+            AuthResult::Success
+        } else if let Some(auth_result) = auth_result {
+            auth_result
+        } else {
+            return Err(Error::Invalid {
+                message: "Ssh authentication failed".to_string(),
+            });
+        }
     };
 
     // Verify authentication succeeded
