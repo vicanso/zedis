@@ -240,6 +240,13 @@ impl RedisClient {
     pub fn connection(&self) -> RedisAsyncConn {
         self.connection.clone()
     }
+
+    /// Checks if the client is a cluster client.
+    /// # Returns
+    /// * `bool` - True if the client is a cluster client, false otherwise.
+    pub fn is_cluster(&self) -> bool {
+        self.server_type == ServerType::Cluster
+    }
     /// Checks if the client version is at least the given version.
     /// # Arguments
     /// * `version` - The version to check.

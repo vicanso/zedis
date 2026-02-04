@@ -28,6 +28,7 @@ use crate::{
     error::Error,
     helpers::{parse_duration, unix_ts},
 };
+use futures::future::try_join_all;
 use futures::{StreamExt, stream};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
@@ -522,12 +523,29 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::DeleteKeys,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let mut pipe = redis::pipe();
-                for key in keys {
-                    pipe.cmd("UNLINK").arg(key.as_str());
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                if !client.is_cluster() {
+                    let mut conn = client.connection();
+                    let mut pipe = redis::pipe();
+                    for key in keys {
+                        pipe.cmd("UNLINK").arg(key.as_str());
+                    }
+                    let _: () = pipe.query_async(&mut conn).await?;
+                    return Ok(());
                 }
-                let _: () = pipe.query_async(&mut conn).await?;
+
+                // cluster mode
+                let conn = client.connection();
+                for chunk in keys.chunks(1000) {
+                    let futures = chunk.iter().map(|key| {
+                        let mut conn_clone = conn.clone();
+                        async move {
+                            let _: () = cmd("UNLINK").arg(key.as_str()).query_async(&mut conn_clone).await?;
+                            Ok::<(), Error>(())
+                        }
+                    });
+                    let _: Vec<()> = try_join_all(futures).await?;
+                }
                 Ok(())
             },
             move |this, result, cx| {
