@@ -233,6 +233,7 @@ impl ZedisServerState {
             created_at: unix_ts(),
         };
         guard.push(info.clone());
+        self.emit_error_notification(info.message.clone(), cx);
         cx.emit(ServerEvent::ErrorOccurred(info));
     }
     /// Spawn an async background task with error handling

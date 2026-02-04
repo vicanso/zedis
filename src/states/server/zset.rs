@@ -29,7 +29,7 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
-    states::{NotificationAction, ServerEvent, i18n_zset_editor},
+    states::{ServerEvent, i18n_zset_editor},
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -287,14 +287,10 @@ impl ZedisServerState {
                     cx.emit(ServerEvent::ValueAdded(key_clone));
 
                     if exists_value {
-                        cx.emit(ServerEvent::Notification(NotificationAction::new_success(
-                            update_score_msg,
-                        )));
+                        this.emit_success_notification(update_score_msg, title, cx);
                     } else if !inserted {
                         // Show notification only if not inserted (avoids double feedback)
-                        cx.emit(ServerEvent::Notification(
-                            NotificationAction::new_success(msg).with_title(title),
-                        ));
+                        this.emit_success_notification(msg, title, cx);
                     }
                 }
 

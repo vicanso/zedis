@@ -28,7 +28,7 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
-    states::{NotificationAction, ServerEvent, i18n_hash_editor},
+    states::{ServerEvent, i18n_hash_editor},
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -209,15 +209,17 @@ impl ZedisServerState {
 
                         // Show different notifications based on operation type
                         if count == 0 {
+                            this.emit_info_notification(update_exist_field_value_msg, cx);
                             // Existing field was updated
-                            cx.emit(ServerEvent::Notification(NotificationAction::new_info(
-                                update_exist_field_value_msg,
-                            )));
+                            // cx.emit(ServerEvent::Notification(NotificationAction::new_info(
+                            //     update_exist_field_value_msg,
+                            // )));
                         } else {
+                            this.emit_success_notification(msg, title, cx);
                             // New field was created
-                            cx.emit(ServerEvent::Notification(
-                                NotificationAction::new_success(msg).with_title(title),
-                            ));
+                            // cx.emit(ServerEvent::Notification(
+                            //     NotificationAction::new_success(msg).with_title(title),
+                            // ));
                         }
 
                         cx.emit(ServerEvent::ValueAdded(key_clone));

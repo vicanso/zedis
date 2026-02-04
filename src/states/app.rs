@@ -16,7 +16,7 @@ use crate::connection::{set_redis_connection_timeout, set_redis_response_timeout
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
-use gpui::{Action, App, AppContext, Bounds, Context, Entity, Global, Pixels};
+use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
 use gpui_component::{PixelsExt, ThemeMode};
 use locale_config::Locale;
 use schemars::JsonSchema;
@@ -99,6 +99,73 @@ fn get_or_create_server_config() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Notification category for user feedback
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Default)]
+pub enum NotificationCategory {
+    #[default]
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// Notification action that can be triggered in the UI
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action, Default)]
+pub struct NotificationAction {
+    pub title: Option<SharedString>,
+    pub category: NotificationCategory,
+    pub message: SharedString,
+}
+
+impl NotificationAction {
+    /// Creates a new info notification
+    pub fn new_info(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Info,
+            message,
+            ..Default::default()
+        }
+    }
+
+    /// Creates a new success notification
+    pub fn new_success(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Success,
+            message,
+            ..Default::default()
+        }
+    }
+
+    /// Creates a new warning notification
+    pub fn new_warning(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Warning,
+            message,
+            ..Default::default()
+        }
+    }
+
+    /// Creates a new error notification
+    pub fn new_error(message: SharedString) -> Self {
+        Self {
+            category: NotificationCategory::Error,
+            message,
+            ..Default::default()
+        }
+    }
+
+    /// Sets the title for the notification
+    pub fn with_title(mut self, title: SharedString) -> Self {
+        self.title = Some(title);
+        self
+    }
+}
+
+pub enum GlobalEvent {
+    /// A notification has been emitted.
+    Notification(NotificationAction),
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
@@ -114,6 +181,8 @@ pub struct ZedisAppState {
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
 }
+
+impl EventEmitter<GlobalEvent> for ZedisAppState {}
 
 #[derive(Debug, Clone)]
 pub struct ZedisGlobalStore {

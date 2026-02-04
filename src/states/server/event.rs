@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::helpers::EditorAction;
-use crate::states::{ErrorMessage, NotificationAction, ZedisServerState};
+use crate::states::{ErrorMessage, GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
 use gpui::prelude::*;
 use gpui::{EventEmitter, SharedString};
 
@@ -176,8 +176,6 @@ pub enum ServerEvent {
     SoftWrapToggled(bool),
     /// An error occurred.
     ErrorOccurred(ErrorMessage),
-    /// A notification has been emitted.
-    Notification(NotificationAction),
 
     /// Trigger Action
     EditionActionTriggered(EditorAction),
@@ -197,5 +195,27 @@ impl ZedisServerState {
             return;
         }
         cx.emit(ServerEvent::EditionActionTriggered(event));
+    }
+    pub fn emit_info_notification(&self, message: SharedString, cx: &mut Context<Self>) {
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_info(message)));
+        });
+    }
+    pub fn emit_success_notification(&self, message: SharedString, title: SharedString, cx: &mut Context<Self>) {
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
+            cx.emit(GlobalEvent::Notification(
+                NotificationAction::new_success(message).with_title(title),
+            ));
+        });
+    }
+    pub fn emit_warning_notification(&self, message: SharedString, cx: &mut Context<Self>) {
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_warning(message)));
+        });
+    }
+    pub fn emit_error_notification(&self, message: SharedString, cx: &mut Context<Self>) {
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(message)));
+        });
     }
 }

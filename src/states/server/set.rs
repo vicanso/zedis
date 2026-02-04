@@ -14,7 +14,7 @@
 
 use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
-    value::{NotificationAction, RedisSetValue, RedisValue, RedisValueStatus},
+    value::{RedisSetValue, RedisValue, RedisValueStatus},
 };
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
@@ -159,7 +159,9 @@ impl ZedisServerState {
                     if count == 0 {
                         // Value already exists in SET
                         let msg = i18n_set_editor(cx, "add_value_exists_tips");
-                        cx.emit(ServerEvent::Notification(NotificationAction::new_warning(msg)));
+                        this.emit_warning_notification(msg, cx);
+
+                        // cx.emit(ServerEvent::Notification(NotificationAction::new_warning(msg)));
                     } else {
                         // Successfully added new value
                         let title = i18n_set_editor(cx, "add_value_success");
@@ -173,10 +175,11 @@ impl ZedisServerState {
                             if set.done && !set.values.contains(&new_value_clone) {
                                 set.values.push(new_value_clone);
                             }
+                            this.emit_success_notification(msg, title, cx);
 
-                            cx.emit(ServerEvent::Notification(
-                                NotificationAction::new_success(msg).with_title(title),
-                            ));
+                            // cx.emit(ServerEvent::Notification(
+                            //     NotificationAction::new_success(msg).with_title(title),
+                            // ));
                         }
                     }
                 }

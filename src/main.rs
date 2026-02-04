@@ -4,7 +4,7 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{ProtoManager, init_database};
 use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
-    FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
+    FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
 };
 use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
@@ -51,9 +51,10 @@ impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
         let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
-        cx.subscribe(&server_state, |this, _server_state, event, cx| {
+        let global_state = cx.global::<ZedisGlobalStore>().clone().state();
+        cx.subscribe(&global_state, |this, _server_state, event, cx| {
             match event {
-                ServerEvent::Notification(e) => {
+                GlobalEvent::Notification(e) => {
                     let message = e.message.clone();
                     let mut notification = match e.category {
                         NotificationCategory::Info => Notification::info(message),
@@ -65,12 +66,6 @@ impl Zedis {
                         notification = notification.title(title);
                     }
                     this.pending_notification = Some(notification);
-                }
-                ServerEvent::ErrorOccurred(error) => {
-                    this.pending_notification = Some(Notification::error(error.message.clone()));
-                }
-                _ => {
-                    return;
                 }
             }
             cx.notify();

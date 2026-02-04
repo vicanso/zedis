@@ -16,74 +16,11 @@ use super::{ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::get_connection_manager;
 use bytes::Bytes;
 use chrono::Local;
-use gpui::{Action, Hsla, SharedString, prelude::*};
+use gpui::{Hsla, SharedString, prelude::*};
 use redis::cmd;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use std::io::Cursor;
 use std::sync::Arc;
-
-/// Notification category for user feedback
-#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Default)]
-pub enum NotificationCategory {
-    #[default]
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
-/// Notification action that can be triggered in the UI
-#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action, Default)]
-pub struct NotificationAction {
-    pub title: Option<SharedString>,
-    pub category: NotificationCategory,
-    pub message: SharedString,
-}
-
-impl NotificationAction {
-    /// Creates a new info notification
-    pub fn new_info(message: SharedString) -> Self {
-        Self {
-            category: NotificationCategory::Info,
-            message,
-            ..Default::default()
-        }
-    }
-
-    /// Creates a new success notification
-    pub fn new_success(message: SharedString) -> Self {
-        Self {
-            category: NotificationCategory::Success,
-            message,
-            ..Default::default()
-        }
-    }
-
-    /// Creates a new warning notification
-    pub fn new_warning(message: SharedString) -> Self {
-        Self {
-            category: NotificationCategory::Warning,
-            message,
-            ..Default::default()
-        }
-    }
-
-    /// Creates a new error notification
-    pub fn new_error(message: SharedString) -> Self {
-        Self {
-            category: NotificationCategory::Error,
-            message,
-            ..Default::default()
-        }
-    }
-
-    /// Sets the title for the notification
-    pub fn with_title(mut self, title: SharedString) -> Self {
-        self.title = Some(title);
-        self
-    }
-}
 
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum DataFormat {
