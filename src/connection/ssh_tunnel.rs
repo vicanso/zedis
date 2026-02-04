@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -114,7 +114,7 @@ impl Handler for ClientHandler {
     /// Currently accepts all server keys without validation.
     /// TODO: Implement proper validation against ~/.ssh/known_hosts
     async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
-        info!(host = self.host, port = self.port, "check server key");
+        debug!(host = self.host, port = self.port, "check server key");
         let Ok(public_key) = server_public_key.to_openssh() else {
             return Ok(false);
         };
@@ -186,11 +186,11 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
     if let Some(session) = cached_session {
         // Validate the cached session is still alive
         if is_alive(session.clone()).await {
-            info!(id, "get ssh session from cache");
+            debug!(id, "get ssh session from cache");
             return Ok(session);
         }
     }
-    info!(id, "start to create new ssh session");
+    debug!(id, "start to create new ssh session");
     // Create new session if none exists or cached session is dead
     let session = new_ssh_session(addr, user, key, password).await?;
     info!(id, "new ssh session established");
@@ -262,8 +262,10 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
         };
         let key = Arc::new(key_pair);
         let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
+        debug!(user, "public key authentication");
         session.authenticate_publickey(user, key_with_alg).await?
     } else if !password.is_empty() {
+        debug!(user, "password authentication");
         // Password authentication
         session.authenticate_password(user, password).await?
     } else {
@@ -275,6 +277,7 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
         }
         #[cfg(unix)]
         {
+            debug!(user, "ssh agent authentication");
             let mut agent = AgentClient::connect_env().await.map_err(|e| Error::Invalid {
                 message: format!("Failed to connect to ssh agent: {e:?}"),
             })?;
@@ -371,7 +374,7 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
         let channel = session
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
             .await?;
-        info!(ssh_addr, ssh_user, "open direct tcpip success");
+        debug!(ssh_addr, ssh_user, "open direct tcpip success");
         // Wrap the SSH channel in a Redis-compatible stream
         let compat_stream = SshRedisStream::new(channel.into_stream());
         let info = RedisConnectionInfo::default();

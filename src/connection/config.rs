@@ -28,7 +28,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::{fmt, fs::read_to_string, path::PathBuf, str::FromStr, sync::LazyLock};
-use tracing::info;
+use tracing::{debug, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -158,6 +158,7 @@ fn get_or_create_server_config() -> Result<PathBuf> {
     if is_development() {
         info!("config file: {}", path.display());
     }
+    debug!(file = path.display().to_string(), "get or create server config");
     if path.exists() {
         return Ok(path);
     }
@@ -208,6 +209,28 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
             server.ssh_key = Some(encrypt(ssh_key)?);
         }
     }
+
+    // Compare with existing configs and log differences
+    let old_configs = SERVER_CONFIG_MAP.load();
+
+    // Check for new or modified configs
+    for (id, new_server) in configs.iter() {
+        if let Some(old_server) = old_configs.get(id) {
+            if old_server.get_hash() != new_server.get_hash() {
+                debug!(name = new_server.name, "modified config");
+            }
+        } else {
+            debug!(name = new_server.name, "new config");
+        }
+    }
+
+    // Check for deleted configs
+    for (id, old_server) in old_configs.iter() {
+        if !configs.contains_key(id) {
+            debug!(name = old_server.name, "deleted config");
+        }
+    }
+
     SERVER_CONFIG_MAP.store(Arc::new(configs));
     let path = get_or_create_server_config()?;
     let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid { message: e.to_string() })?;

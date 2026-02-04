@@ -535,9 +535,11 @@ impl ConnectionManager {
         let config = get_config(server_id)?;
         let key = format!("{:x}:{}", config.get_hash(), db);
         if let Some(client) = self.clients.get(&key) {
+            debug!(server_id, db, "get client from cache");
             return Ok(client.clone());
         }
         let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
+        debug!(server_id, server_type = ?server_type, nodes = ?nodes, "get redis nodes");
         let Some(first_node) = nodes.first() else {
             return Err(Error::Invalid {
                 message: "no nodes found".to_string(),
@@ -610,6 +612,8 @@ impl ConnectionManager {
                 Version::parse(&version).unwrap_or(Version::new(0, 0, 0))
             }
         };
+
+        debug!(server_id, version = client.version(), db, access_mode = ?client.access_mode(), "create redis client success");
 
         // Cache the client
         self.clients.insert(key, client.clone());

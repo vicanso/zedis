@@ -16,6 +16,7 @@ use crate::error::Error;
 use crate::helpers::{get_or_create_config_dir, is_development};
 use redb::{Database, TableDefinition};
 use std::sync::OnceLock;
+use tracing::debug;
 
 mod history_manager;
 mod protos;
@@ -43,13 +44,15 @@ pub fn init_database() -> Result<()> {
     } else {
         dir.join("zedis.redb")
     };
-    let db = Database::create(db_path)?;
+    debug!(path = db_path.display().to_string(), "create database");
+    let db = Database::create(&db_path)?;
     let write_txn = db.begin_write()?;
     {
         write_txn.open_table(HISTORY_TABLE)?;
         write_txn.open_table(PROTO_TABLE)?;
     }
     write_txn.commit()?;
+    debug!(path = db_path.display().to_string(), "database initialized success");
     DATABASE.set(db).map_err(|_| Error::Invalid {
         message: "database initialized failed".to_string(),
     })?;

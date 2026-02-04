@@ -30,6 +30,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::{sync::LazyLock, time::Duration};
+use tracing::debug;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -128,6 +129,7 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
     if let Some(conn) = CONNECTION_POOL.get(&key)
         && let Some(conn) = conn.get_connection().await
     {
+        debug!(name = config.name, "get connection from pool");
         return Ok(conn);
     }
     // Create a new connection: SSH tunnel or direct connection
@@ -144,6 +146,7 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
     // Select the specified database if not the default (db 0)
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
+        debug!(name = config.name, db, "select database");
     }
     // Cache the connection in the pool for future reuse
     CONNECTION_POOL.insert(
