@@ -133,7 +133,7 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: windows-build
+          key: ${{ runner.os }}-build
       - name: release
         env:
           RUSTFLAGS: "-C target-feature=+crt-static"
@@ -168,7 +168,7 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: linux-build
+          key: ${{ runner.os }}-build
       - name: install appimagetool
         run: |
           wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
