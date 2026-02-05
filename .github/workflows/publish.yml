@@ -151,7 +151,7 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-windows.exe.zip $GITHUB_TOKEN
   linux:
-    runs-on: ubuntu:20.04
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v6
       - name: setup node
