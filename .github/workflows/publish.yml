@@ -151,7 +151,7 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-windows.exe.zip $GITHUB_TOKEN
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu:20.04
     steps:
       - uses: actions/checkout@v6
       - name: setup node
@@ -184,6 +184,7 @@ jobs:
           ls -lh target/release
           mv target/release/zedis ./zedis
           chmod +x zedis
+          objdump -p ./zedis | grep GLIBC
           tar -czvf zedis-linux-x86_64.tar.gz zedis
           cargo appimage --features mimalloc
           mv target/appimage/zedis.AppImage ./zedis-x86_64.AppImage
