@@ -220,7 +220,6 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
-        let key_clone = key.clone();
         let new_value_clone = new_value.clone();
 
         self.spawn(
@@ -284,7 +283,7 @@ impl ZedisServerState {
                         }
                     }
 
-                    cx.emit(ServerEvent::ValueAdded(key_clone));
+                    cx.emit(ServerEvent::ValueAdded);
 
                     if exists_value {
                         this.emit_success_notification(update_score_msg, title, cx);
@@ -366,8 +365,7 @@ impl ZedisServerState {
         let start = current_len;
         let stop = start + 99;
 
-        cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
-        let key_clone = key.clone();
+        cx.emit(ServerEvent::ValuePaginationStarted);
         let keyword_clone = keyword.clone();
 
         self.spawn(
@@ -423,7 +421,7 @@ impl ZedisServerState {
                     value.status = RedisValueStatus::Idle;
                 }
 
-                cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
+                cx.emit(ServerEvent::ValuePaginationFinished);
                 cx.notify();
 
                 // Recursively load more if needed
@@ -454,7 +452,6 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let remove_value_clone = remove_value.clone();
-        let key_clone = key.clone();
 
         self.spawn(
             ServerTask::RemoveZsetValue,
@@ -482,7 +479,7 @@ impl ZedisServerState {
                     zset.size -= 1;
                 }
 
-                cx.emit(ServerEvent::ValueUpdated(key_clone));
+                cx.emit(ServerEvent::ValueUpdated);
 
                 // Reset status to idle
                 if let Some(value) = this.value.as_mut() {

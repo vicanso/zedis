@@ -97,10 +97,10 @@ impl ZedisEditor {
         // Subscribe to server events to track when keys are selected
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
-                ServerEvent::KeySelected(_) => {
+                ServerEvent::KeySelected => {
                     this.selected_key_at = Some(Instant::now());
                 }
-                ServerEvent::ServerInfoUpdated(_) => {
+                ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
                 }
                 ServerEvent::EditionActionTriggered(action) => match action {

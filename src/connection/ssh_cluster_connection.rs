@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::config::get_config;
+use crate::connection::config::get_server;
 use crate::connection::ssh_tunnel::open_single_ssh_tunnel_connection;
 use redis::aio::{ConnectionLike, MultiplexedConnection};
 use redis::cluster_async::Connect;
@@ -50,7 +50,7 @@ impl Connect for SshMultiplexedConnection {
             let connection_info = info.into_connection_info()?;
             let id = connection_info.redis_settings().username().unwrap_or_default();
             let mut config =
-                get_config(id).map_err(|e| (ErrorKind::InvalidClientConfig, "get_config", e.to_string()))?;
+                get_server(id).map_err(|e| (ErrorKind::InvalidClientConfig, "get_server", e.to_string()))?;
             let (target_host, target_port) = match connection_info.addr() {
                 redis::ConnectionAddr::Tcp(host, port) => (host, port),
                 redis::ConnectionAddr::TcpTls { host, port, .. } => (host, port),

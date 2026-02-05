@@ -206,10 +206,10 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
                 // Update fetcher when data changes
-                ServerEvent::ValuePaginationFinished(_)
-                | ServerEvent::ValueLoaded(_)
-                | ServerEvent::ValueAdded(_)
-                | ServerEvent::ValueUpdated(_) => {
+                ServerEvent::ValuePaginationFinished
+                | ServerEvent::ValueLoaded
+                | ServerEvent::ValueAdded
+                | ServerEvent::ValueUpdated => {
                     let fetcher = Self::new_values(server_state.clone(), cx);
                     this.loading = false;
                     this.done = fetcher.is_done();
@@ -220,7 +220,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     });
                 }
                 // Clear search when key selection changes
-                ServerEvent::KeySelected(_) => {
+                ServerEvent::KeySelected => {
                     this.key_changed = true;
                 }
                 _ => {}

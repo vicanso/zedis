@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::connection::get_servers;
 use crate::db::{ProtoConfig, ProtoManager};
 use crate::error::Error;
 use crate::helpers::get_font_family;
@@ -228,9 +229,7 @@ impl ZedisProtoEditor {
         let server_id = server_state.read(cx).server_id().to_string();
         let protos = ProtoManager::list_protos_with_id();
         let mut subscriptions = Vec::new();
-        let servers = server_state
-            .read(cx)
-            .servers()
+        let servers = get_servers()
             .unwrap_or_default()
             .iter()
             .map(|server| KeyValueOption::new(server.name.clone().into(), server.id.clone().into()))

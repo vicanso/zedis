@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{set_redis_connection_timeout, set_redis_response_timeout};
+use crate::connection::{
+    RedisServer, get_servers, save_servers, set_redis_connection_timeout, set_redis_response_timeout,
+};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
+use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
 use gpui_component::{PixelsExt, ThemeMode};
 use locale_config::Locale;
@@ -25,6 +28,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{error, info};
+use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -164,6 +168,10 @@ impl NotificationAction {
 pub enum GlobalEvent {
     /// A notification has been emitted.
     Notification(NotificationAction),
+    /// User selected a different server
+    ServerSelected(SharedString, usize),
+    /// Server list config has been modified (add/remove/edit).
+    ServerListUpdated,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -180,6 +188,7 @@ pub struct ZedisAppState {
     max_truncate_length: Option<usize>,
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
+    selected_server: Option<(String, usize)>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -351,6 +360,67 @@ impl ZedisAppState {
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
         self.key_scan_count = Some(key_scan_count);
+    }
+    pub fn selected_server(&self) -> Option<&(String, usize)> {
+        self.selected_server.as_ref()
+    }
+    pub fn set_selected_server(&mut self, selected_server: (String, usize), cx: &mut Context<Self>) {
+        let (server_id, db) = selected_server.clone();
+        cx.emit(GlobalEvent::ServerSelected(server_id.into(), db));
+        self.selected_server = Some(selected_server);
+    }
+    pub fn remove_server(&mut self, id: &str, cx: &mut Context<Self>) {
+        let id = id.to_string();
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut servers = get_servers()?;
+                servers.retain(|s| s.id != id);
+                save_servers(servers.clone()).await?;
+                Ok(())
+            });
+            let result: Result<()> = task.await;
+            if let Err(e) = &result {
+                error!(error = %e, "Failed to remove server");
+            }
+            handle.update(cx, |_this, cx| {
+                cx.emit(GlobalEvent::ServerListUpdated);
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+    pub fn upsert_server(&mut self, mut server: RedisServer, cx: &mut Context<Self>) {
+        if server.id.is_empty() {
+            server.id = Uuid::now_v7().to_string();
+        }
+        server.updated_at = Some(Local::now().to_string());
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                if server.name.is_empty() {
+                    return Err(Error::Invalid {
+                        message: "Server name is required".to_string(),
+                    });
+                }
+                let mut servers = get_servers()?;
+                if let Some(existing_server) = servers.iter_mut().find(|s| s.id == server.id) {
+                    *existing_server = server;
+                } else {
+                    servers.push(server);
+                }
+                save_servers(servers.clone()).await?;
+
+                Ok(())
+            });
+            let result: Result<()> = task.await;
+            if let Err(e) = &result {
+                error!(error = %e, "Failed to remove server");
+            }
+            handle.update(cx, |_this, cx| {
+                cx.emit(GlobalEvent::ServerListUpdated);
+                cx.notify();
+            })
+        })
+        .detach();
     }
 }
 

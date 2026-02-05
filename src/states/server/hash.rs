@@ -163,7 +163,6 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
-        let key_clone = key.clone();
         let new_field_clone = new_field.clone();
         let new_value_clone = new_value.clone();
 
@@ -222,7 +221,7 @@ impl ZedisServerState {
                             // ));
                         }
 
-                        cx.emit(ServerEvent::ValueAdded(key_clone));
+                        cx.emit(ServerEvent::ValueAdded);
                     }
                 }
                 cx.notify();
@@ -277,7 +276,6 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let remove_field_clone = remove_field.clone();
-        let key_clone = key.clone();
 
         self.spawn(
             ServerTask::RemoveHashValue,
@@ -309,7 +307,7 @@ impl ZedisServerState {
                         hash.size -= count;
                     }
 
-                    cx.emit(ServerEvent::ValueUpdated(key_clone));
+                    cx.emit(ServerEvent::ValueUpdated);
 
                     // Reset status to idle
                     if let Some(value) = this.value.as_mut() {
@@ -345,9 +343,7 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
-        cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
-
-        let key_clone = key.clone();
+        cx.emit(ServerEvent::ValuePaginationStarted);
 
         self.spawn(
             ServerTask::LoadMoreValue,
@@ -383,7 +379,7 @@ impl ZedisServerState {
                     }
                 }
 
-                cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
+                cx.emit(ServerEvent::ValuePaginationFinished);
 
                 // Reset status to idle
                 if let Some(value) = this.value.as_mut() {

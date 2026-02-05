@@ -178,7 +178,6 @@ pub struct RedisSetValue {
 pub enum SortOrder {
     #[default]
     Asc, // Ascending order (default)
-    Desc, // Descending order
 }
 
 /// Redis Sorted Set value structure with pagination and sorting support
@@ -362,16 +361,6 @@ impl RedisValue {
         matches!(self.status, RedisValueStatus::Loading)
     }
 
-    /// Returns the string value if the data is a String type
-    pub fn bytes_string_value(&self) -> Option<SharedString> {
-        if let Some(value) = self.bytes_value()
-            && value.is_utf8_text()
-        {
-            return value.text.clone();
-        }
-        None
-    }
-
     /// Returns the bytes value if the data is a Bytes type
     pub fn bytes_value(&self) -> Option<Arc<RedisBytesValue>> {
         if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
@@ -463,7 +452,6 @@ impl ZedisServerState {
             format,
             ..Default::default()
         })));
-        let current_key = key.clone();
         let ttl = value.ttl().map(|ttl| ttl.num_milliseconds()).unwrap_or_default();
 
         cx.notify();
@@ -508,7 +496,7 @@ impl ZedisServerState {
                         value.size = original_size;
                         value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
                     }
-                    cx.emit(ServerEvent::ValueUpdated(current_key));
+                    cx.emit(ServerEvent::ValueUpdated);
                 }
                 cx.notify();
             },
@@ -521,12 +509,11 @@ impl ZedisServerState {
             return;
         };
         let view_mode = ViewMode::from_str(view_mode.as_str());
-        let key = self.key.clone().unwrap_or_default();
         // Directly modify the data in place
         if let Some(RedisValueData::Bytes(bytes_value)) = &mut value.data {
             let bytes_value = Arc::make_mut(bytes_value);
             bytes_value.view_mode = view_mode;
-            cx.emit(ServerEvent::ValueModeViewUpdated(key));
+            cx.emit(ServerEvent::ValueModeViewUpdated);
             cx.notify();
         }
     }

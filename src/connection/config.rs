@@ -98,9 +98,6 @@ impl RedisServer {
     pub fn is_ssh_tunnel(&self) -> bool {
         self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
     }
-    pub fn readonly(&self) -> bool {
-        self.readonly.unwrap_or(false)
-    }
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
         let tls = self.tls.unwrap_or(false);
@@ -170,6 +167,11 @@ static SERVER_CONFIG_MAP: LazyLock<ArcSwap<HashMap<String, RedisServer>>> =
     LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
 pub fn get_servers() -> Result<Vec<RedisServer>> {
+    if !SERVER_CONFIG_MAP.load().is_empty() {
+        let mut servers: Vec<RedisServer> = SERVER_CONFIG_MAP.load().values().cloned().collect();
+        servers.sort_by(|a, b| a.id.cmp(&b.id));
+        return Ok(servers);
+    }
     let path = get_or_create_server_config()?;
     let value = read_to_string(path)?;
     if value.is_empty() {
@@ -239,7 +241,7 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
 }
 
 /// Retrieves a single server configuration by name.
-pub fn get_config(id: &str) -> Result<RedisServer> {
+pub fn get_server(id: &str) -> Result<RedisServer> {
     if let Some(server) = SERVER_CONFIG_MAP.load().get(id) {
         return Ok(server.clone());
     }

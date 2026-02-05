@@ -19,7 +19,7 @@ use crate::{
     helpers::{
         EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string, starts_with_ignore_ascii_case,
     },
-    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
+    states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
@@ -105,15 +105,17 @@ impl ZedisContent {
     ///
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
-    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
+        let global_state = cx.global::<ZedisGlobalStore>().state();
+        let server_state = cx.new(|_cx| ZedisServerState::new());
         let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
 
         // Subscribe to global state changes for automatic view cleanup
         // This ensures we only keep views in memory that are currently relevant
-        subscriptions.push(cx.observe(&cx.global::<ZedisGlobalStore>().state(), |this, model, cx| {
+        subscriptions.push(cx.observe(&global_state, |this, model, cx| {
             let route = model.read(cx).route();
             if route == this.current_route {
                 return;
@@ -123,6 +125,13 @@ impl ZedisContent {
             this.clear_views();
 
             cx.notify();
+        }));
+        subscriptions.push(cx.subscribe(&global_state, |this, _global_state, event, cx| {
+            if let GlobalEvent::ServerSelected(server_id, db) = event {
+                this.server_state.update(cx, |state, cx| {
+                    state.select(server_id.clone(), *db, cx);
+                });
+            }
         }));
 
         subscriptions.push(
@@ -136,10 +145,10 @@ impl ZedisContent {
                     }
                     cx.notify();
                 }
-                ServerEvent::ServerInfoUpdated(_) => {
+                ServerEvent::ServerInfoUpdated => {
                     this.update_redis_commands(cx);
                 }
-                ServerEvent::ServerSelected(_, _) => {
+                ServerEvent::ServerSelected(_) => {
                     this.reset_cmd_state(cx);
                 }
                 _ => {}
@@ -352,7 +361,7 @@ impl ZedisContent {
             .servers
             .get_or_insert_with(|| {
                 debug!("Creating new servers view");
-                cx.new(|cx| ZedisServers::new(self.server_state.clone(), window, cx))
+                cx.new(|cx| ZedisServers::new(window, cx))
             })
             .clone();
 

@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{
-    AccessMode, QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers,
-};
+use crate::connection::{AccessMode, QueryMode, RedisClientDescription, get_connection_manager, get_server};
 use crate::db::HistoryManager;
 use crate::error::Error;
-use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::stat::RedisInfo;
 use ahash::AHashMap;
 use ahash::AHashSet;
-use chrono::Local;
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
@@ -55,9 +51,6 @@ pub struct ErrorMessage {
 
     /// Human-readable error message
     pub message: SharedString,
-
-    /// Unix timestamp when error occurred
-    pub created_at: i64,
 }
 
 /// Redis server connection status
@@ -122,7 +115,7 @@ pub struct ZedisServerState {
     version: SharedString,
 
     /// List of all configured servers
-    servers: Option<Vec<RedisServer>>,
+    // servers: Option<Vec<RedisServer>>,
 
     /// Currently selected key name
     key: Option<SharedString>,
@@ -230,7 +223,6 @@ impl ZedisServerState {
         let info = ErrorMessage {
             category: category.into(),
             message: message.into(),
-            created_at: unix_ts(),
         };
         guard.push(info.clone());
         self.emit_error_notification(info.message.clone(), cx);
@@ -287,32 +279,6 @@ impl ZedisServerState {
         })
         .detach();
     }
-    /// Update and save server configuration
-    fn update_and_save_server_config<F>(&mut self, task_name: ServerTask, cx: &mut Context<Self>, modifier: F)
-    where
-        F: FnOnce(&mut RedisServer),
-    {
-        let mut servers = self.servers.clone().unwrap_or_default();
-
-        if let Some(s) = servers.iter_mut().find(|s| s.id == self.server_id) {
-            modifier(s);
-        }
-
-        self.spawn(
-            task_name,
-            move || async move {
-                save_servers(servers.clone()).await?;
-                Ok(servers)
-            },
-            move |this, result, cx| {
-                if let Ok(servers) = result {
-                    this.servers = Some(servers);
-                }
-                cx.notify();
-            },
-            cx,
-        );
-    }
 
     fn try_get_mut_key_value(&mut self) -> Option<(SharedString, &mut RedisValue)> {
         let key = self.key.as_ref().filter(|k| !k.is_empty())?.clone();
@@ -337,11 +303,6 @@ impl ZedisServerState {
     /// Check if the server is currently busy with an operation
     pub fn is_busy(&self) -> bool {
         !matches!(self.server_status, RedisServerStatus::Idle)
-    }
-
-    /// Get the type of a specific key (if known)
-    pub fn key_type(&self, key: &str) -> Option<&KeyType> {
-        self.keys.get(key)
     }
 
     /// Get the current key tree ID (changes when keys are reloaded)
@@ -376,25 +337,17 @@ impl ZedisServerState {
         } else {
             self.access_mode = AccessMode::ReadWrite;
         }
-        cx.emit(ServerEvent::ServerInfoUpdated(self.server_id.clone()));
+        cx.emit(ServerEvent::ServerInfoUpdated);
     }
 
     /// Set the query mode (All/Prefix/Exact)
-    pub fn set_query_mode(&mut self, mode: QueryMode, cx: &mut Context<Self>) {
+    pub fn set_query_mode(&mut self, mode: QueryMode, _cx: &mut Context<Self>) {
         self.query_mode = mode;
-
-        self.update_and_save_server_config(ServerTask::UpdateServerQueryMode, cx, move |server| {
-            server.query_mode = Some(mode.to_string());
-        });
     }
     /// Set whether to soft wrap the editor
     pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
         self.soft_wrap = soft_wrap;
         cx.emit(ServerEvent::SoftWrapToggled(self.soft_wrap));
-
-        self.update_and_save_server_config(ServerTask::UpdateServerSoftWrap, cx, move |server| {
-            server.soft_wrap = Some(soft_wrap);
-        });
     }
     /// Get the current query mode (All/Prefix/Exact)
     pub fn query_mode(&self) -> QueryMode {
@@ -459,23 +412,6 @@ impl ZedisServerState {
         self.soft_wrap
     }
 
-    /// Set the list of configured servers
-    pub fn set_servers(&mut self, servers: Vec<RedisServer>) {
-        self.servers = Some(servers);
-    }
-
-    /// Get a server by id
-    pub fn server(&self, server_id: &str) -> Option<&RedisServer> {
-        self.servers
-            .as_deref()
-            .and_then(|servers| servers.iter().find(|s| s.id == server_id))
-    }
-
-    /// Get the list of all configured servers
-    pub fn servers(&self) -> Option<&[RedisServer]> {
-        self.servers.as_deref()
-    }
-
     /// Get the currently selected key name
     pub fn key(&self) -> Option<SharedString> {
         self.key.clone()
@@ -488,76 +424,6 @@ impl ZedisServerState {
     /// Get the value data for the currently selected key
     pub fn value(&self) -> Option<&RedisValue> {
         self.value.as_ref()
-    }
-
-    /// Get the key type of the currently selected value
-    pub fn value_key_type(&self) -> Option<KeyType> {
-        self.value.as_ref().map(|value| value.key_type())
-    }
-    // ===== Server management operations =====
-
-    /// Remove a server from the configuration
-    ///
-    /// Persists the change to disk and emits UpdateServers event
-    pub fn remove_server(&mut self, id: &str, cx: &mut Context<Self>) {
-        let mut servers = self.servers.clone().unwrap_or_default();
-        servers.retain(|s| s.id != id);
-
-        self.spawn(
-            ServerTask::RemoveServer,
-            move || async move {
-                save_servers(servers.clone()).await?;
-                Ok(servers)
-            },
-            move |this, result, cx| {
-                if let Ok(servers) = result {
-                    cx.emit(ServerEvent::ServerListUpdated);
-                    this.servers = Some(servers);
-                }
-                cx.notify();
-            },
-            cx,
-        );
-    }
-
-    /// Add new server or update existing server configuration
-    ///
-    /// # Arguments
-    /// * `server` - Server configuration to add/update
-    /// * `cx` - Context for spawning async task
-    pub fn update_or_insrt_server(&mut self, mut server: RedisServer, cx: &mut Context<Self>) {
-        let mut servers = self.servers.clone().unwrap_or_default();
-        if server.id.is_empty() {
-            server.id = Uuid::now_v7().to_string();
-        }
-        server.updated_at = Some(Local::now().to_rfc3339());
-
-        self.spawn(
-            ServerTask::UpdateOrInsertServer,
-            move || async move {
-                if server.name.is_empty() {
-                    return Err(Error::Invalid {
-                        message: "Server name is required".to_string(),
-                    });
-                }
-                if let Some(existing_server) = servers.iter_mut().find(|s| s.id == server.id) {
-                    *existing_server = server;
-                } else {
-                    servers.push(server);
-                }
-                save_servers(servers.clone()).await?;
-
-                Ok(servers)
-            },
-            move |this, result, cx| {
-                if let Ok(servers) = result {
-                    cx.emit(ServerEvent::ServerListUpdated);
-                    this.servers = Some(servers);
-                }
-                cx.notify();
-            },
-            cx,
-        );
     }
 
     /// Select and connect to a Redis server
@@ -580,8 +446,7 @@ impl ZedisServerState {
             self.reset();
             self.server_id = server_id.clone();
             self.db = db;
-            let (query_mode, soft_wrap) = self
-                .server(server_id.as_str())
+            let (query_mode, soft_wrap) = get_server(server_id.as_str())
                 .map(|server_config| {
                     let mode = server_config
                         .query_mode
@@ -602,7 +467,7 @@ impl ZedisServerState {
             if let Ok(history) = HistoryManager::records(server_id.as_str()) {
                 self.search_history = history;
             }
-            cx.emit(ServerEvent::ServerSelected(server_id, db));
+            cx.emit(ServerEvent::ServerSelected(server_id));
             cx.notify();
 
             if self.server_id.is_empty() {
@@ -658,7 +523,7 @@ impl ZedisServerState {
 
                     let server_id = this.server_id.clone();
                     this.server_status = RedisServerStatus::Idle;
-                    cx.emit(ServerEvent::ServerInfoUpdated(server_id.clone()));
+                    cx.emit(ServerEvent::ServerInfoUpdated);
                     cx.notify();
 
                     // Auto-scan keys if in All mode

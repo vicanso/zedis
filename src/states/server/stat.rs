@@ -204,21 +204,6 @@ impl RedisInfo {
 
         info
     }
-
-    /// Calculate the hit rate
-    pub fn hit_rate(&self) -> f64 {
-        let total = self.keyspace_hits + self.keyspace_misses;
-        if total == 0 {
-            0.0
-        } else {
-            (self.keyspace_hits as f64 / total as f64) * 100.0
-        }
-    }
-
-    /// Get the total number of keys
-    pub fn total_keys(&self) -> u64 {
-        self.keyspace.values().map(|k| k.keys).sum()
-    }
 }
 
 // --- Helpers ---
@@ -274,7 +259,7 @@ impl ZedisServerState {
             move |this, result, cx| match result {
                 Ok(info) => {
                     this.redis_info = Some(info);
-                    cx.emit(ServerEvent::ServerRedisInfoUpdated(server_id_clone.clone()));
+                    cx.emit(ServerEvent::ServerRedisInfoUpdated);
                 }
                 Err(e) => {
                     // Connection is invalid, remove cached client

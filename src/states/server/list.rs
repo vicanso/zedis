@@ -72,7 +72,7 @@ impl ZedisServerState {
             values: list_value.values.clone(),
         };
         value.data = Some(RedisValueData::List(Arc::new(new_list_value)));
-        cx.emit(ServerEvent::ValueUpdated(self.key.clone().unwrap_or_default()));
+        cx.emit(ServerEvent::ValueUpdated);
     }
     pub fn remove_list_value(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some((key, value)) = self.try_get_mut_key_value() else {
@@ -82,7 +82,6 @@ impl ZedisServerState {
         cx.notify();
         let server_id = self.server_id.clone();
         let db = self.db;
-        let key_clone = key.clone();
         self.spawn(
             ServerTask::RemoveListValue,
             move || async move {
@@ -111,7 +110,7 @@ impl ZedisServerState {
                         let list = Arc::make_mut(list_data);
                         list.size -= 1;
                         list.values.remove(index);
-                        cx.emit(ServerEvent::ValueUpdated(key_clone));
+                        cx.emit(ServerEvent::ValueUpdated);
                     }
                     value.status = RedisValueStatus::Idle;
                 }
@@ -143,7 +142,6 @@ impl ZedisServerState {
         cx.notify();
         let server_id = self.server_id.clone();
         let db = self.db;
-        let key_clone = key.clone();
         self.spawn(
             ServerTask::PushListValue,
             move || async move {
@@ -176,7 +174,7 @@ impl ZedisServerState {
                         list.size -= 1;
                     }
                 }
-                cx.emit(ServerEvent::ValueUpdated(key_clone));
+                cx.emit(ServerEvent::ValueUpdated);
                 cx.notify();
             },
             cx,
@@ -202,7 +200,7 @@ impl ZedisServerState {
             let list = Arc::make_mut(list_data);
             if index < list.values.len() {
                 list.values[index] = new_value.clone();
-                cx.emit(ServerEvent::ValueUpdated(key.clone()));
+                cx.emit(ServerEvent::ValueUpdated);
             }
         }
         cx.notify();
@@ -212,7 +210,6 @@ impl ZedisServerState {
         let db = self.db;
 
         // Prepare data for the async block (move ownership)
-        let key_clone = key.clone();
         let original_value_clone = original_value.clone();
         let new_value_clone = new_value.clone();
 
@@ -261,7 +258,7 @@ impl ZedisServerState {
                         }
                     }
                 }
-                cx.emit(ServerEvent::ValueUpdated(key_clone));
+                cx.emit(ServerEvent::ValueUpdated);
 
                 cx.notify();
             },
@@ -287,8 +284,7 @@ impl ZedisServerState {
         // Calculate pagination
         let start = current_len;
         let stop = start + 99; // Load 100 items
-        cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
-        let key_clone = key.clone();
+        cx.emit(ServerEvent::ValuePaginationStarted);
         self.spawn(
             ServerTask::LoadMoreValue,
             move || async move {
@@ -308,7 +304,7 @@ impl ZedisServerState {
                         list.values.extend(new_values.into_iter().map(|v| v.into()));
                     }
                 }
-                cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
+                cx.emit(ServerEvent::ValuePaginationFinished);
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }

@@ -5,7 +5,7 @@ use crate::db::{ProtoManager, init_database};
 use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
 use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, SettingsAction, ThemeAction,
-    ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
+    ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
 };
 use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
 use gpui::{
@@ -48,25 +48,23 @@ pub struct Zedis {
 }
 
 impl Zedis {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
-        let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
-        let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
-        let global_state = cx.global::<ZedisGlobalStore>().clone().state();
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
+        let content = cx.new(|cx| ZedisContent::new(window, cx));
+        let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
-            match event {
-                GlobalEvent::Notification(e) => {
-                    let message = e.message.clone();
-                    let mut notification = match e.category {
-                        NotificationCategory::Info => Notification::info(message),
-                        NotificationCategory::Success => Notification::success(message),
-                        NotificationCategory::Warning => Notification::warning(message),
-                        _ => Notification::error(message),
-                    };
-                    if let Some(title) = e.title.as_ref() {
-                        notification = notification.title(title);
-                    }
-                    this.pending_notification = Some(notification);
+            if let GlobalEvent::Notification(e) = event {
+                let message = e.message.clone();
+                let mut notification = match e.category {
+                    NotificationCategory::Info => Notification::info(message),
+                    NotificationCategory::Success => Notification::success(message),
+                    NotificationCategory::Warning => Notification::warning(message),
+                    _ => Notification::error(message),
+                };
+                if let Some(title) = e.title.as_ref() {
+                    notification = notification.title(title);
                 }
+                this.pending_notification = Some(notification);
             }
             cx.notify();
         })
@@ -276,14 +274,11 @@ fn main() {
     init_logger();
     let app = Application::new().with_assets(assets::Assets);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
-    let mut server_state = ZedisServerState::new();
-    match get_servers() {
-        Ok(servers) => {
-            server_state.set_servers(servers);
-        }
-        Err(e) => {
-            error!(error = %e, "get servers fail",);
-        }
+    if let Err(e) = get_servers() {
+        error!(error = %e, "get servers fail",);
+    }
+    if let Err(e) = get_servers() {
+        error!(error = %e, "get servers fail",);
     }
     if let Err(e) = init_database() {
         error!(error = %e, "init database fail",);
@@ -345,7 +340,6 @@ fn main() {
             ],
         }]);
 
-        let server_state = cx.new(|_| server_state.clone());
         cx.spawn(async move |cx| {
             cx.open_window(
                 WindowOptions {
@@ -366,7 +360,7 @@ fn main() {
                         cx.hide();
                         false
                     });
-                    let zedis_view = cx.new(|cx| Zedis::new(window, cx, server_state));
+                    let zedis_view = cx.new(|cx| Zedis::new(window, cx));
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;

@@ -28,18 +28,6 @@ pub enum ServerTask {
     /// Connect to and load metadata from a server
     SelectServer,
 
-    /// Remove a server from configuration
-    RemoveServer,
-
-    /// Update the server query mode
-    UpdateServerQueryMode,
-
-    /// Update the server soft wrap
-    UpdateServerSoftWrap,
-
-    /// Add new server or update existing server configuration
-    UpdateOrInsertServer,
-
     /// Fill in key types for unknown keys
     FillKeyTypes,
 
@@ -48,9 +36,6 @@ pub enum ServerTask {
 
     /// Delete a key from Redis
     DeleteKey,
-
-    /// Delete a folder from Redis
-    DeleteFolder,
 
     /// Delete multiple keys from Redis
     DeleteKeys,
@@ -101,13 +86,10 @@ impl ServerTask {
         match self {
             ServerTask::RefreshRedisInfo => "refresh_redis_info",
             ServerTask::SelectServer => "select_server",
-            ServerTask::RemoveServer => "remove_server",
-            ServerTask::UpdateOrInsertServer => "update_or_insert_server",
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",
             ServerTask::DeleteKey => "delete_key",
             ServerTask::DeleteKeys => "delete_keys",
-            ServerTask::DeleteFolder => "delete_folder",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",
             ServerTask::AddKey => "add_key",
@@ -116,8 +98,6 @@ impl ServerTask {
             ServerTask::UpdateListValue => "update_list_value",
             ServerTask::LoadMoreValue => "load_more_value",
             ServerTask::SaveValue => "save_value",
-            ServerTask::UpdateServerQueryMode => "update_server_query_mode",
-            ServerTask::UpdateServerSoftWrap => "update_server_soft_wrap",
             ServerTask::PushListValue => "push_list_value",
             ServerTask::AddSetValue => "add_set_value",
             ServerTask::RemoveSetValue => "remove_set_value",
@@ -133,44 +113,40 @@ impl ServerTask {
 pub enum ServerEvent {
     /// A new background task has started.
     TaskStarted(ServerTask),
-    /// A background task has completed.
-    TaskFinished(SharedString),
 
     /// Terminal toggled
     TerminalToggled(bool),
 
     /// A key has been selected for viewing/editing
-    KeySelected(SharedString),
+    KeySelected,
     /// Key scan operation has started
-    KeyScanStarted(SharedString),
+    KeyScanStarted,
     /// Key scan found a new batch of keys.
-    KeyScanPaged(SharedString),
+    KeyScanPaged,
     /// Key scan operation has fully completed.
-    KeyScanFinished(SharedString),
+    KeyScanFinished,
     /// Key collapse all
     KeyCollapseAll,
 
     /// A key's value has been fetched (initial load).
-    ValueLoaded(SharedString),
+    ValueLoaded,
     /// A key's value has been updated
-    ValueUpdated(SharedString),
+    ValueUpdated,
     /// A key's value view mode has been updated
-    ValueModeViewUpdated(SharedString),
+    ValueModeViewUpdated,
     /// Load more value
-    ValuePaginationStarted(SharedString),
+    ValuePaginationStarted,
     /// Load more value
-    ValuePaginationFinished(SharedString),
+    ValuePaginationFinished,
     /// Add a value to a set、list、hash、zset
-    ValueAdded(SharedString),
+    ValueAdded,
 
     /// User selected a different server
-    ServerSelected(SharedString, usize),
-    /// Server list config has been modified (add/remove/edit).
-    ServerListUpdated,
+    ServerSelected(SharedString),
     /// Server metadata (info/dbsize) has been refreshed.
-    ServerInfoUpdated(SharedString),
+    ServerInfoUpdated,
     /// Periodic redis info updated.
-    ServerRedisInfoUpdated(SharedString),
+    ServerRedisInfoUpdated,
 
     /// Soft wrap changed
     SoftWrapToggled(bool),

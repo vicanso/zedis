@@ -14,13 +14,14 @@
 
 use crate::{
     assets::CustomIconName,
+    connection::get_servers,
     helpers::is_development,
     states::{
-        FontSize, FontSizeAction, LocaleAction, Route, ServerEvent, SettingsAction, ThemeAction, ZedisGlobalStore,
-        ZedisServerState, i18n_sidebar,
+        FontSize, FontSizeAction, GlobalEvent, LocaleAction, Route, SettingsAction, ThemeAction, ZedisGlobalStore,
+        i18n_sidebar,
     },
 };
-use gpui::{Context, Corner, Entity, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
+use gpui::{Context, Corner, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
 use gpui_component::{
     ActiveTheme, Icon, IconName, ThemeMode,
     button::{Button, ButtonVariants},
@@ -68,9 +69,6 @@ pub struct ZedisSidebar {
     /// Internal state with cached server list
     state: SidebarState,
 
-    /// Reference to server state for Redis operations
-    server_state: Entity<ZedisServerState>,
-
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -81,37 +79,26 @@ impl ZedisSidebar {
     /// Sets up listeners for:
     /// - Server selection changes (updates current selection)
     /// - Server list updates (refreshes displayed servers)
-    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = vec![];
 
-        // Subscribe to server events for reactive updates
-        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
+        let global_state = cx.global::<ZedisGlobalStore>().state();
+        subscriptions.push(cx.subscribe(&global_state, |this, _global_state, event, cx| {
             match event {
-                ServerEvent::ServerSelected(server_id, _) => {
-                    // Update current selection highlight
-                    this.state.server_id = server_id.clone();
-                }
-                ServerEvent::ServerListUpdated => {
-                    // Refresh server list when servers are added/removed/updated
+                GlobalEvent::ServerListUpdated => {
                     this.update_server_names(cx);
                 }
-                _ => {
-                    return;
+                GlobalEvent::ServerSelected(server_id, _) => {
+                    // Refresh server list when servers are added/removed/updated
+                    this.state.server_id = server_id.clone();
                 }
+                _ => {}
             }
             cx.notify();
         }));
 
-        // Get current server ID for initial selection
-        let state = server_state.read(cx).clone();
-        let server_id = state.server_id().to_string().into();
-
         let mut this = Self {
-            server_state,
-            state: SidebarState {
-                server_id,
-                ..Default::default()
-            },
+            state: SidebarState::default(),
             _subscriptions: subscriptions,
         };
 
@@ -127,19 +114,18 @@ impl ZedisSidebar {
     /// Rebuilds the server_names list with:
     /// - First entry: (empty, empty) for home page
     /// - Remaining entries: (server_id, server_name) for each configured server
-    fn update_server_names(&mut self, cx: &mut Context<Self>) {
+    fn update_server_names(&mut self, _cx: &mut Context<Self>) {
         // Start with home page entry
         let mut server_names = vec![(SharedString::default(), SharedString::default())];
 
-        let server_state = self.server_state.read(cx);
-        if let Some(servers) = server_state.servers() {
+        if let Ok(servers) = get_servers() {
             server_names.extend(
                 servers
                     .iter()
                     .map(|server| (server.id.clone().into(), server.name.clone().into())),
             );
+            self.state.server_names = server_names;
         }
-        self.state.server_names = server_names;
     }
 
     /// Render the scrollable server list
@@ -151,7 +137,6 @@ impl ZedisSidebar {
     /// Current selection is highlighted with background color and border.
     /// Clicking an item navigates to that server or home page.
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = cx.entity();
         let servers = self.state.server_names.clone();
         let current_server_id_clone = self.state.server_id.clone();
         let is_match_route = matches!(
@@ -178,8 +163,6 @@ impl ZedisSidebar {
                         server_name.clone()
                     };
 
-                    let view = view.clone();
-
                     ListItem::new(("sidebar-redis-server", index))
                         .w_full()
                         .when(is_current, |this| this.bg(list_active_color))
@@ -201,16 +184,11 @@ impl ZedisSidebar {
                             // Determine target route based on home/server
                             let route = if is_home { Route::Home } else { Route::Editor };
 
-                            view.update(cx, |this, cx| {
-                                // Update global route
-                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| {
-                                        state.go_to(route, cx);
-                                    });
-                                });
-
-                                this.server_state.update(cx, |state, cx| {
-                                    state.select(server_id.clone(), 0, cx);
+                            // Update global route
+                            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                store.update(cx, |state, cx| {
+                                    state.go_to(route, cx);
+                                    state.set_selected_server((server_id.to_string(), 0), cx);
                                 });
                             });
                         })

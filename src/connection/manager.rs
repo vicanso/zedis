@@ -17,7 +17,7 @@ use super::{
         RedisAsyncConn, get_redis_connection_timeout, get_redis_response_timeout, open_single_connection,
         query_async_masters,
     },
-    config::{RedisServer, get_config},
+    config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
 use crate::error::Error;
@@ -405,7 +405,7 @@ impl ConnectionManager {
     }
     /// Discovers Redis nodes and server type based on initial configuration.
     async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
-        let config = get_config(name)?;
+        let config = get_server(name)?;
         let (mut conn, server_type) = {
             let conn = match open_single_connection(&config, 0).await {
                 Ok(conn) => conn,
@@ -532,7 +532,7 @@ impl ConnectionManager {
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
     pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
-        let config = get_config(server_id)?;
+        let config = get_server(server_id)?;
         let key = format!("{:x}:{}", config.get_hash(), db);
         if let Some(client) = self.clients.get(&key) {
             debug!(server_id, db, "get client from cache");

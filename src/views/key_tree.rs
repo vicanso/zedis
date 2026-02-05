@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
-    connection::QueryMode,
+    connection::{QueryMode, get_server},
     db::HistoryManager,
     helpers::{EditorAction, get_font_family, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
@@ -396,7 +396,7 @@ impl ZedisKeyTree {
                     this.state.expanded_items.clear();
                     this.update_key_tree(true, cx);
                 }
-                ServerEvent::ServerSelected(_, _) => {
+                ServerEvent::ServerSelected(_) => {
                     this.reset(cx);
                 }
                 ServerEvent::EditionActionTriggered(action) => {
@@ -878,6 +878,16 @@ impl Render for ZedisKeyTree {
             .child(self.render_tree(cx))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
                 let new_mode = *e;
+
+                let server_id = this.server_state.read(cx).server_id();
+                if let Ok(mut server) = get_server(server_id) {
+                    server.query_mode = Some(new_mode.to_string());
+                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                        store.update(cx, |state, cx| {
+                            state.upsert_server(server, cx);
+                        });
+                    });
+                }
 
                 // Step 1: Update server state with new query mode
                 this.server_state.update(cx, |state, cx| {

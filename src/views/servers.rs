@@ -14,9 +14,9 @@
 
 use crate::assets::CustomIconName;
 use crate::components::Card;
-use crate::connection::RedisServer;
+use crate::connection::{RedisServer, get_servers};
 use crate::helpers::{is_windows, validate_common_string, validate_host, validate_long_string};
-use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers};
+use crate::states::{Route, ZedisGlobalStore, i18n_common, i18n_servers};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
@@ -89,9 +89,6 @@ fn parse_url(host: SharedString) -> RedisUrl {
 ///
 /// Uses a responsive grid layout that adjusts columns based on viewport width.
 pub struct ZedisServers {
-    /// Reference to server state for Redis operations
-    server_state: Entity<ZedisServerState>,
-
     /// Input field states for server configuration form
     name_state: Entity<InputState>,
     host_state: Entity<InputState>,
@@ -125,7 +122,7 @@ impl ZedisServers {
     /// Create a new server management view
     ///
     /// Initializes all input field states with appropriate placeholders
-    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize input fields for server configuration form
         let name_state = cx.new(|cx| {
             InputState::new(window, cx)
@@ -272,7 +269,6 @@ impl ZedisServers {
         info!("Creating new servers view");
 
         Self {
-            server_state,
             name_state,
             host_state,
             port_state,
@@ -364,12 +360,11 @@ impl ZedisServers {
     /// Show confirmation dialog and remove server from configuration
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>, server_id: &str) {
         let mut server = "--".to_string();
-        if let Some(servers) = self.server_state.read(cx).servers()
+        if let Ok(servers) = get_servers()
             && let Some(found) = servers.iter().find(|item| item.id == server_id)
         {
             server = found.name.clone();
         }
-        let server_state = self.server_state.clone();
         let server_id = server_id.to_string();
 
         // let server = server.to_string();
@@ -377,7 +372,6 @@ impl ZedisServers {
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();
-            let server_state = server_state.clone();
             let server_id = server_id.clone();
 
             dialog
@@ -385,8 +379,10 @@ impl ZedisServers {
                 .title(i18n_servers(cx, "remove_server_title"))
                 .child(message)
                 .on_ok(move |_, window, cx| {
-                    server_state.update(cx, |state, cx| {
-                        state.remove_server(&server_id, cx);
+                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                        store.update(cx, |state, cx| {
+                            state.remove_server(&server_id, cx);
+                        });
                     });
                     window.close_dialog(cx);
                     true
@@ -398,7 +394,6 @@ impl ZedisServers {
     /// Shows a form with fields for name, host, port, password, and description.
     /// If is_new is true, name field is editable. Otherwise, it's disabled.
     fn add_or_update_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let server_state = self.server_state.clone();
         let name_state = self.name_state.clone();
         let host_state = self.host_state.clone();
         let port_state = self.port_state.clone();
@@ -419,7 +414,6 @@ impl ZedisServers {
         let server_enable_tls = self.server_enable_tls.clone();
         let server_insecure_tls = self.server_insecure_tls.clone();
         let server_ssh_tunnel = self.server_ssh_tunnel.clone();
-        let server_state_clone = server_state.clone();
         let server_type_state = self.server_type_state.clone();
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
@@ -557,35 +551,35 @@ impl ZedisServers {
             let server_type = *server_type_state.read(cx);
             let server_type = if server_type > 0 { Some(server_type) } else { None };
 
-            server_state_clone.update(cx, |state, cx| {
-                let current_server = state.server(server_id_clone.as_str()).cloned().unwrap_or_default();
-
-                state.update_or_insrt_server(
-                    RedisServer {
-                        id: server_id_clone.clone(),
-                        name: name.to_string(),
-                        host: host.to_string(),
-                        port,
-                        username: username.map(|u| u.to_string()),
-                        password: password.map(|p| p.to_string()),
-                        server_type,
-                        master_name: master_name.map(|m| m.to_string()),
-                        description: description.map(|d| d.to_string()),
-                        tls: if enable_tls { Some(enable_tls) } else { None },
-                        insecure: insecure_tls,
-                        client_cert: client_cert.map(|c| c.to_string()),
-                        client_key: client_key.map(|k| k.to_string()),
-                        root_cert: root_cert.map(|r| r.to_string()),
-                        ssh_tunnel: if ssh_tunnel { Some(ssh_tunnel) } else { None },
-                        ssh_addr: ssh_addr.map(|a| a.to_string()),
-                        ssh_username: ssh_username.map(|u| u.to_string()),
-                        ssh_password: ssh_password.map(|p| p.to_string()),
-                        ssh_key: ssh_key.map(|k| k.to_string()),
-                        readonly,
-                        ..current_server
-                    },
-                    cx,
-                );
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |state, cx| {
+                    state.upsert_server(
+                        RedisServer {
+                            id: server_id_clone.clone(),
+                            name: name.to_string(),
+                            host: host.to_string(),
+                            port,
+                            username: username.map(|u| u.to_string()),
+                            password: password.map(|p| p.to_string()),
+                            server_type,
+                            master_name: master_name.map(|m| m.to_string()),
+                            description: description.map(|d| d.to_string()),
+                            tls: if enable_tls { Some(enable_tls) } else { None },
+                            insecure: insecure_tls,
+                            client_cert: client_cert.map(|c| c.to_string()),
+                            client_key: client_key.map(|k| k.to_string()),
+                            root_cert: root_cert.map(|r| r.to_string()),
+                            ssh_tunnel: if ssh_tunnel { Some(ssh_tunnel) } else { None },
+                            ssh_addr: ssh_addr.map(|a| a.to_string()),
+                            ssh_username: ssh_username.map(|u| u.to_string()),
+                            ssh_password: ssh_password.map(|p| p.to_string()),
+                            ssh_key: ssh_key.map(|k| k.to_string()),
+                            readonly,
+                            ..Default::default()
+                        },
+                        cx,
+                    );
+                })
             });
 
             window.close_dialog(cx);
@@ -841,10 +835,7 @@ impl Render for ZedisServers {
         let remove_tooltip = i18n_servers(cx, "remove_tooltip");
 
         // Build card for each configured server
-        let children: Vec<_> = self
-            .server_state
-            .read(cx)
-            .servers()
+        let children: Vec<_> = get_servers()
             .unwrap_or_default()
             .iter()
             .enumerate()
@@ -889,18 +880,14 @@ impl Render for ZedisServers {
                 ];
 
                 // Card click handler - connect to server and navigate to editor
-                let handle_select_server = cx.listener(move |this, _, _, cx| {
+                let handle_select_server = cx.listener(move |_this, _, _, cx| {
                     let select_server_id = select_server_id.clone();
-
-                    // Connect to server
-                    this.server_state.update(cx, |state, cx| {
-                        state.select(select_server_id.into(), 0, cx);
-                    });
 
                     // Navigate to editor view
                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                         store.update(cx, |state, cx| {
                             state.go_to(Route::Editor, cx);
+                            state.set_selected_server((select_server_id.clone(), 0), cx);
                         });
                     });
                 });

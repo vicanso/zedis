@@ -167,7 +167,7 @@ impl ZedisServerState {
                         // Check if scan is complete (all cursors returned to 0)
                         if cursors.iter().sum::<u64>() == 0 {
                             this.scan_completed = true;
-                            cx.emit(ServerEvent::KeyScanFinished(processing_keyword.clone()));
+                            cx.emit(ServerEvent::KeyScanFinished);
                             this.cursors = None;
                         } else {
                             this.cursors = Some(cursors);
@@ -179,7 +179,7 @@ impl ZedisServerState {
                     }
                 };
                 if this.cursors.is_some() {
-                    cx.emit(ServerEvent::KeyScanPaged(processing_keyword.clone()));
+                    cx.emit(ServerEvent::KeyScanPaged);
                 }
                 // Automatically load more if we haven't reached the limit and scan isn't done
                 if this.cursors.is_some() && this.keys.len() < max {
@@ -220,7 +220,7 @@ impl ZedisServerState {
         self.reset_scan();
         self.scanning = true;
         self.keyword = keyword.clone();
-        cx.emit(ServerEvent::KeyScanStarted(keyword.clone()));
+        cx.emit(ServerEvent::KeyScanStarted);
         cx.notify();
         self.scan_keys(self.server_id.clone(), keyword, cx);
     }
@@ -262,7 +262,7 @@ impl ZedisServerState {
             self.fill_key_types(Some(prefix), cx);
             return;
         }
-        cx.emit(ServerEvent::KeyScanStarted(prefix.clone()));
+        cx.emit(ServerEvent::KeyScanStarted);
 
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -316,7 +316,7 @@ impl ZedisServerState {
                 } else {
                     this.fill_key_types(Some(prefix.clone()), cx);
                 }
-                cx.emit(ServerEvent::KeyScanPaged(prefix.clone()));
+                cx.emit(ServerEvent::KeyScanPaged);
             },
             cx,
         );
@@ -339,7 +339,7 @@ impl ZedisServerState {
                 ..Default::default()
             });
         }
-        cx.emit(ServerEvent::KeySelected(key.clone()));
+        cx.emit(ServerEvent::KeySelected);
         cx.notify();
 
         let server_id = self.server_id.clone();
@@ -434,7 +434,7 @@ impl ZedisServerState {
                         this.value = None;
                     }
                 };
-                cx.emit(ServerEvent::ValueLoaded(current_key));
+                cx.emit(ServerEvent::ValueLoaded);
                 cx.notify();
             },
             cx,

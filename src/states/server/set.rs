@@ -131,7 +131,6 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
-        let key_clone = key.clone();
         let new_value_clone = new_value.clone();
 
         self.spawn(
@@ -176,15 +175,11 @@ impl ZedisServerState {
                                 set.values.push(new_value_clone);
                             }
                             this.emit_success_notification(msg, title, cx);
-
-                            // cx.emit(ServerEvent::Notification(
-                            //     NotificationAction::new_success(msg).with_title(title),
-                            // ));
                         }
                     }
                 }
 
-                cx.emit(ServerEvent::ValueAdded(key_clone));
+                cx.emit(ServerEvent::ValueAdded);
                 cx.notify();
             },
             cx,
@@ -242,9 +237,8 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
-        cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
+        cx.emit(ServerEvent::ValuePaginationStarted);
 
-        let key_clone = key.clone();
         let keyword_clone = keyword.clone().unwrap_or_default();
 
         self.spawn(
@@ -285,7 +279,7 @@ impl ZedisServerState {
                     }
                 }
 
-                cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
+                cx.emit(ServerEvent::ValuePaginationFinished);
 
                 // Reset status to idle
                 if let Some(value) = this.value.as_mut() {
@@ -321,7 +315,6 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let remove_value_clone = remove_value.clone();
-        let key_clone = key.clone();
 
         self.spawn(
             ServerTask::RemoveSetValue,
@@ -351,7 +344,7 @@ impl ZedisServerState {
                     set.values.retain(|v| v != &remove_value_clone);
                 }
 
-                cx.emit(ServerEvent::ValueUpdated(key_clone));
+                cx.emit(ServerEvent::ValueUpdated);
 
                 // Reset status to idle
                 if let Some(value) = this.value.as_mut() {

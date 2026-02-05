@@ -239,11 +239,11 @@ impl ZedisBytesEditor {
         // Subscribe to server state changes to update editor when value changes
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
-                ServerEvent::ValueLoaded(_) | ServerEvent::ValueModeViewUpdated(_) => {
+                ServerEvent::ValueLoaded | ServerEvent::ValueModeViewUpdated => {
                     this.update_editor_data(cx);
                     this.should_update_editor = true;
                 }
-                ServerEvent::ValueUpdated(_) => {
+                ServerEvent::ValueUpdated => {
                     this.update_editor_data(cx);
                 }
                 ServerEvent::SoftWrapToggled(soft_wrap) => {

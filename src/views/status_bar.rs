@@ -14,10 +14,11 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::RedisClientDescription,
+    connection::{RedisClientDescription, get_server},
     helpers::humanize_keystroke,
     states::{
-        ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar,
+        ErrorMessage, GlobalEvent, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_common,
+        i18n_sidebar, i18n_status_bar,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -30,7 +31,7 @@ use gpui_component::{
     tooltip::Tooltip,
 };
 use std::{sync::Arc, time::Duration};
-use tracing::info;
+use tracing::{debug, info};
 
 /// Formats the database size and scan count string "count/total".
 #[inline]
@@ -133,7 +134,8 @@ pub struct ZedisStatusBar {
 
     viewer_mode_state: Entity<SelectState<SearchableVec<SharedString>>>,
     db_state: Entity<SelectState<Vec<DbInfo>>>,
-    should_reset_viewer_mode: bool,
+    should_reset_viewer_mode: Option<bool>,
+    should_reset_db: Option<bool>,
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
     readonly: bool,
@@ -147,31 +149,36 @@ impl ZedisStatusBar {
         let mut subscriptions = vec![];
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
-                ServerEvent::ServerSelected(server_id, _) => {
+                ServerEvent::ServerSelected(server_id) => {
                     this.reset(server_id.clone());
                 }
-                ServerEvent::ServerRedisInfoUpdated(_) => {
+                ServerEvent::ServerRedisInfoUpdated => {
                     this.fill_state(server_state, cx);
                 }
-                ServerEvent::ServerInfoUpdated(_) => {
+                ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
                     server_state.update(cx, |state, cx| {
                         state.refresh_redis_info(cx);
                     });
                 }
-                ServerEvent::KeyScanStarted(_) => {
+                ServerEvent::KeyScanStarted => {
                     this.state.server_state.scan_finished = false;
                 }
-                ServerEvent::KeyScanFinished(_) => {
+                ServerEvent::KeyScanFinished => {
                     let state = server_state.read(cx);
                     this.state.server_state.size = format_size(state.dbsize(), state.scan_count());
                     this.state.server_state.scan_finished = true;
                 }
-                ServerEvent::KeyScanPaged(_) => {
+                ServerEvent::KeyScanPaged => {
                     let state = server_state.read(cx);
                     this.state.server_state.size = format_size(state.dbsize(), state.scan_count());
                 }
                 ServerEvent::ErrorOccurred(error) => {
+                    debug!(
+                        message = error.message.as_str(),
+                        category = error.category.as_str(),
+                        "error occurred"
+                    );
                     this.state.error = Some(error.clone());
                 }
                 ServerEvent::TaskStarted(task) => {
@@ -180,9 +187,9 @@ impl ZedisStatusBar {
                         this.state.error = None;
                     }
                 }
-                ServerEvent::ValueLoaded(_) => {
+                ServerEvent::ValueLoaded => {
                     let state = server_state.read(cx);
-                    this.should_reset_viewer_mode = true;
+                    this.should_reset_viewer_mode = Some(true);
                     if let Some(value) = state.value().and_then(|item| item.bytes_value()) {
                         let mut format = value.format.as_str().to_string();
                         if let Some(mime) = &value.mime {
@@ -238,24 +245,34 @@ impl ZedisStatusBar {
             window,
             |view, _state, event: &SelectEvent<Vec<DbInfo>>, _window, cx| match event {
                 SelectEvent::Confirm(value) => {
-                    if let Some(db) = value {
-                        view.server_state.update(cx, |state, cx| {
-                            let server_id = state.server_id().to_string();
-                            state.select(server_id.into(), *db, cx);
+                    let Some(db) = *value else {
+                        return;
+                    };
+                    let server_id = view.server_state.read(cx).server_id().to_string();
+                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                        store.update(cx, |state, cx| {
+                            state.set_selected_server((server_id, db), cx);
                         });
-                    }
+                    });
                 }
             },
         ));
+        let global_state = cx.global::<ZedisGlobalStore>().state();
+        subscriptions.push(cx.subscribe(&global_state, |this, _global_state, event, _cx| {
+            if let GlobalEvent::ServerSelected(_, _) = event {
+                this.should_reset_db = Some(true);
+            }
+        }));
         let readonly = server_state.read(cx).readonly();
 
         let mut this = Self {
             heartbeat_task: None,
             viewer_mode_state,
             db_state,
+            should_reset_db: None,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
-            should_reset_viewer_mode: false,
+            should_reset_viewer_mode: None,
             state: StatusBarState { ..Default::default() },
             readonly,
         };
@@ -440,10 +457,20 @@ impl ZedisStatusBar {
             .tooltip(i18n_status_bar(cx, "soft_wrap_tooltip"))
             .label(i18n_status_bar(cx, "soft_wrap"))
             .on_click(cx.listener(|this, _, _window, cx| {
-                this.state.server_state.soft_wrap = !this.state.server_state.soft_wrap;
+                let soft_wrap = !this.state.server_state.soft_wrap;
+                this.state.server_state.soft_wrap = soft_wrap;
+                if let Ok(mut server) = get_server(this.state.server_state.server_id.as_str()) {
+                    server.soft_wrap = Some(soft_wrap);
+                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                        store.update(cx, |state, cx| {
+                            state.upsert_server(server, cx);
+                        });
+                    });
+                }
                 this.server_state.update(cx, |state, cx| {
-                    state.set_soft_wrap(this.state.server_state.soft_wrap, cx);
+                    state.set_soft_wrap(soft_wrap, cx);
                 });
+
                 cx.notify();
             }))
     }
@@ -492,11 +519,21 @@ impl Render for ZedisStatusBar {
         if self.state.server_state.server_id.is_empty() {
             return h_flex();
         }
-        if self.should_reset_viewer_mode {
+        if let Some(true) = self.should_reset_viewer_mode.take() {
             self.viewer_mode_state.update(cx, |state, cx| {
                 state.set_selected_index(Some(IndexPath::new(0)), window, cx);
             });
-            self.should_reset_viewer_mode = false;
+        }
+        if let Some(true) = self.should_reset_db.take() {
+            let db = cx
+                .global::<ZedisGlobalStore>()
+                .read(cx)
+                .selected_server()
+                .map(|(_, db)| *db)
+                .unwrap_or_default();
+            self.db_state.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(db)), window, cx);
+            });
         }
         h_flex()
             .justify_between()
