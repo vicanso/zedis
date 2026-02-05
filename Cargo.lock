@@ -9615,7 +9615,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zedis"
+name = "zedis-gui"
 version = "0.2.1"
 dependencies = [
  "aes-gcm",

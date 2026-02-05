@@ -21,6 +21,12 @@ Unlike Electron-based clients that can feel sluggish with large datasets, Zedis 
 
 ## 📦 Installation
 
+### Cargo
+
+```bash
+cargo install --locked zedis-gui
+```
+
 ### macOS
 The recommended way to install Zedis is via Homebrew:
 

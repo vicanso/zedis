@@ -1,5 +1,5 @@
 [package]
-name = "zedis"
+name = "zedis-gui"
 version = "0.2.1"
 edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
@@ -9,9 +9,24 @@ description = "A blazing-fast, native Redis GUI built with Rust and GPUI."
 license = "Apache-2.0"
 homepage = "https://github.com/vicanso/zedis"
 repository = "https://github.com/vicanso/zedis"
-exclude = ["test/*", "Cargo.lock"]
+exclude = [
+    "CHANGELOG.md",
+    "test/*",
+    "assets/demo.gif",
+    "assets/icon.png",
+    "assets/zedis.png",
+    "build-aux/*",
+    "flatpak/*",
+    "icons/*",
+    "scripts/*",
+    ".github",
+]
 readme = "./README.md"
 build = "build.rs"
+
+[[bin]]
+name = "zedis"
+path = "src/main.rs"
 
 [dependencies]
 aes-gcm = "0.10.3"
