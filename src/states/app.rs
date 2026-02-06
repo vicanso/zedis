@@ -291,9 +291,15 @@ impl ZedisAppState {
         self.max_key_tree_depth = Some(max_key_tree_depth);
     }
     pub fn set_redis_connection_timeout(&mut self, redis_connection_timeout: Option<Duration>) {
+        if let Some(redis_connection_timeout) = redis_connection_timeout {
+            set_redis_connection_timeout(redis_connection_timeout);
+        }
         self.redis_connection_timeout = redis_connection_timeout;
     }
     pub fn set_redis_response_timeout(&mut self, redis_response_timeout: Option<Duration>) {
+        if let Some(redis_response_timeout) = redis_response_timeout {
+            set_redis_response_timeout(redis_response_timeout);
+        }
         self.redis_response_timeout = redis_response_timeout;
     }
     pub fn set_font_size(&mut self, font_size: Option<FontSize>) {

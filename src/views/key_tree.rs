@@ -17,7 +17,7 @@ use crate::{
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::{QueryMode, get_server},
     db::HistoryManager,
-    helpers::{EditorAction, get_font_family, validate_long_string, validate_ttl},
+    helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
@@ -850,7 +850,14 @@ impl ZedisKeyTree {
                 Button::new("key-tree-add-btn")
                     .disabled(readonly)
                     .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
-                    .when(!readonly, |this| this.tooltip(i18n_key_tree(cx, "add_key_tooltip")))
+                    .when(!readonly, |this| {
+                        let tooltip = format!(
+                            "{} ({})",
+                            i18n_key_tree(cx, "add_key_tooltip"),
+                            humanize_keystroke("cmd-n")
+                        );
+                        this.tooltip(tooltip)
+                    })
                     .outline()
                     .icon(CustomIconName::FilePlusCorner)
                     .on_click(cx.listener(|this, _, window, cx| {
