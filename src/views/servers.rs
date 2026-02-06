@@ -14,7 +14,7 @@
 
 use crate::assets::CustomIconName;
 use crate::components::Card;
-use crate::connection::{RedisServer, get_servers};
+use crate::connection::{QueryMode, RedisServer, get_servers};
 use crate::helpers::{is_windows, validate_common_string, validate_host, validate_long_string};
 use crate::states::{Route, ZedisGlobalStore, i18n_common, i18n_servers};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
@@ -96,6 +96,7 @@ pub struct ZedisServers {
     username_state: Entity<InputState>,
     password_state: Entity<InputState>,
     server_type_state: Entity<usize>,
+    query_mode_state: Entity<usize>,
     client_cert_state: Entity<InputState>,
     client_key_state: Entity<InputState>,
     root_cert_state: Entity<InputState>,
@@ -111,9 +112,12 @@ pub struct ZedisServers {
     server_id: String,
 
     server_enable_tls: Rc<Cell<bool>>,
+    server_enable_soft_wrap: Rc<Cell<bool>>,
     server_insecure_tls: Rc<Cell<bool>>,
     server_ssh_tunnel: Rc<Cell<bool>>,
     server_readonly: Rc<Cell<bool>>,
+
+    query_modes: Vec<QueryMode>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -196,6 +200,7 @@ impl ZedisServers {
                 .validate(|s, _cx| validate_common_string(s))
         });
         let server_type_state = cx.new(|_cx| 0_usize);
+        let query_mode_state = cx.new(|_cx| 0_usize);
 
         let port_state_clone = port_state.clone();
         let username_state_clone = username_state.clone();
@@ -269,6 +274,7 @@ impl ZedisServers {
         info!("Creating new servers view");
 
         Self {
+            query_modes: vec![QueryMode::All, QueryMode::Prefix, QueryMode::Exact],
             name_state,
             host_state,
             port_state,
@@ -279,6 +285,7 @@ impl ZedisServers {
             client_key_state,
             root_cert_state,
             master_name_state,
+            query_mode_state,
             ssh_addr_state,
             ssh_username_state,
             ssh_password_state,
@@ -286,6 +293,7 @@ impl ZedisServers {
             description_state,
             field_errors,
             server_id: String::new(),
+            server_enable_soft_wrap: Rc::new(Cell::new(false)),
             server_enable_tls: Rc::new(Cell::new(false)),
             server_insecure_tls: Rc::new(Cell::new(false)),
             server_ssh_tunnel: Rc::new(Cell::new(false)),
@@ -348,12 +356,21 @@ impl ZedisServers {
         self.ssh_key_state.update(cx, |state, cx| {
             state.set_value(server.ssh_key.clone().unwrap_or_default(), window, cx);
         });
-        self.server_enable_tls.set(server.tls.unwrap_or(false));
-        self.server_insecure_tls.set(server.insecure.unwrap_or(false));
-        self.server_ssh_tunnel.set(server.ssh_tunnel.unwrap_or(false));
-        self.server_readonly.set(server.readonly.unwrap_or(false));
+        self.server_enable_tls.set(server.tls.unwrap_or_default());
+        self.server_enable_soft_wrap.set(server.soft_wrap.unwrap_or(true));
+        self.server_insecure_tls.set(server.insecure.unwrap_or_default());
+        self.server_ssh_tunnel.set(server.ssh_tunnel.unwrap_or_default());
+        self.server_readonly.set(server.readonly.unwrap_or_default());
         self.server_type_state.update(cx, |state, _cx| {
             *state = server.server_type.unwrap_or(0);
+        });
+        let query_mode = server.query_mode.as_deref().unwrap_or("*");
+        self.query_mode_state.update(cx, |state, _cx| {
+            *state = self
+                .query_modes
+                .iter()
+                .position(|mode| mode.to_string() == query_mode)
+                .unwrap_or(0);
         });
     }
 
@@ -415,6 +432,7 @@ impl ZedisServers {
         let server_insecure_tls = self.server_insecure_tls.clone();
         let server_ssh_tunnel = self.server_ssh_tunnel.clone();
         let server_type_state = self.server_type_state.clone();
+        let query_mode_state = self.query_mode_state.clone();
         let name_state_clone = name_state.clone();
         let host_state_clone = host_state.clone();
         let port_state_clone = port_state.clone();
@@ -430,6 +448,10 @@ impl ZedisServers {
         let ssh_password_state_clone = ssh_password_state.clone();
         let ssh_key_state_clone = ssh_key_state.clone();
         let server_id_clone = server_id.clone();
+        let server_enable_soft_wrap = self.server_enable_soft_wrap.clone();
+        let server_enable_soft_wrap_for_submit = server_enable_soft_wrap.clone();
+        let query_mode_state_clone = query_mode_state.clone();
+        let query_mode_state_for_submit = query_mode_state_clone.clone();
         let server_enable_tls_for_submit = self.server_enable_tls.clone();
         let server_insecure_tls_for_submit = self.server_insecure_tls.clone();
         let server_ssh_tunnel_for_submit = server_ssh_tunnel.clone();
@@ -438,6 +460,7 @@ impl ZedisServers {
         let server_type_state_clone = server_type_state.clone();
         let field_errors = self.field_errors.clone();
         let field_errors_clone = field_errors.clone();
+        let query_modes = self.query_modes.clone();
         let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
             field_errors.update(cx, |state, _cx| {
                 state.clear();
@@ -548,8 +571,16 @@ impl ZedisServers {
             } else {
                 None
             };
+            let soft_wrap = if server_enable_soft_wrap_for_submit.get() {
+                Some(true)
+            } else {
+                Some(false)
+            };
+
             let server_type = *server_type_state.read(cx);
             let server_type = if server_type > 0 { Some(server_type) } else { None };
+            let query_mode = *query_mode_state_for_submit.read(cx);
+            let query_mode = query_modes.get(query_mode).copied().unwrap_or_default();
 
             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                 store.update(cx, |state, cx| {
@@ -575,6 +606,8 @@ impl ZedisServers {
                             ssh_password: ssh_password.map(|p| p.to_string()),
                             ssh_key: ssh_key.map(|k| k.to_string()),
                             readonly,
+                            soft_wrap,
+                            query_mode: Some(query_mode.to_string()),
                             ..Default::default()
                         },
                         cx,
@@ -623,11 +656,16 @@ impl ZedisServers {
             let ssh_tunnel_check_label = i18n_servers(cx, "ssh_tunnel_check_label");
             let readonly_label = i18n_servers(cx, "readonly");
             let readonly_check_label = i18n_servers(cx, "readonly_check_label");
+            let soft_wrap_label = i18n_servers(cx, "soft_wrap");
+            let soft_wrap_check_label = i18n_servers(cx, "soft_wrap_check_label");
             let tab_general_label = i18n_servers(cx, "tab_general");
             let tab_tls_label = i18n_servers(cx, "tab_tls");
             let tab_ssh_label = i18n_servers(cx, "tab_ssh");
+            let tab_advanced_label = i18n_servers(cx, "tab_advanced");
             let server_type_label = i18n_servers(cx, "server_type");
             let server_type_list = i18n_servers(cx, "server_type_list");
+            let query_mode_label = i18n_servers(cx, "query_mode");
+            let query_mode_list = i18n_servers(cx, "query_mode_list");
             let current_tab_index = *tab_selected_index.read(cx);
             dialog
                 .title(title)
@@ -641,6 +679,7 @@ impl ZedisServers {
                     }
                     let mut form = v_form();
                     let server_type_state_clone = server_type_state_clone.clone();
+                    let query_mode_state_clone = query_mode_state_clone.clone();
                     form = match current_tab_index {
                         1 => form
                             .child(field().label(tls_label).child({
@@ -685,33 +724,7 @@ impl ZedisServers {
                                     .child(Input::new(&ssh_password_state).mask_toggle()),
                             )
                             .child(field().label(ssh_key_label).child(Input::new(&ssh_key_state))),
-                        _ => {
-                            form.child(
-                                field()
-                                    .required(true)
-                                    .label(name_label)
-                                    // Name is read-only when editing existing server
-                                    .child(Input::new(&name_state)),
-                            )
-                            .child(field().required(true).label(host_label).child(Input::new(&host_state)))
-                            .child(field().label(port_label).child(NumberInput::new(&port_state)))
-                            .child(field().label(username_label).child(Input::new(&username_state)))
-                            .child(
-                                field()
-                                    .label(password_label)
-                                    // Password field with show/hide toggle
-                                    .child(Input::new(&password_state).mask_toggle()),
-                            )
-                            .child(field().label(readonly_label).child({
-                                let server_readonly = server_readonly.clone();
-                                Checkbox::new("redis-server-readonly")
-                                    .label(readonly_check_label)
-                                    .checked(server_readonly.get())
-                                    .on_click(move |checked, _, cx| {
-                                        server_readonly.set(*checked);
-                                        cx.stop_propagation();
-                                    })
-                            }))
+                        3 => form
                             .child(
                                 field().label(server_type_label).child(
                                     RadioGroup::horizontal("horizontal-group")
@@ -728,6 +741,60 @@ impl ZedisServers {
                                             });
                                         }),
                                 ),
+                            )
+                            .child(field().label(readonly_label).child({
+                                let server_readonly = server_readonly.clone();
+                                Checkbox::new("redis-server-readonly")
+                                    .label(readonly_check_label)
+                                    .checked(server_readonly.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_readonly.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
+                            .child(field().label(soft_wrap_label).child({
+                                let server_enable_soft_wrap = server_enable_soft_wrap.clone();
+                                Checkbox::new("redis-server-soft-wrap")
+                                    .label(soft_wrap_check_label)
+                                    .checked(server_enable_soft_wrap.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_enable_soft_wrap.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
+                            .child(
+                                field().label(query_mode_label).child(
+                                    RadioGroup::horizontal("horizontal-group")
+                                        .children(
+                                            query_mode_list
+                                                .split(" ")
+                                                .map(|s| s.to_string())
+                                                .collect::<Vec<String>>(),
+                                        )
+                                        .selected_index(Some(*query_mode_state_clone.read(cx)))
+                                        .on_click(move |index, _, cx| {
+                                            query_mode_state_clone.update(cx, |state, _cx| {
+                                                *state = *index;
+                                            });
+                                        }),
+                                ),
+                            ),
+                        _ => {
+                            form.child(
+                                field()
+                                    .required(true)
+                                    .label(name_label)
+                                    // Name is read-only when editing existing server
+                                    .child(Input::new(&name_state)),
+                            )
+                            .child(field().required(true).label(host_label).child(Input::new(&host_state)))
+                            .child(field().label(port_label).child(NumberInput::new(&port_state)))
+                            .child(field().label(username_label).child(Input::new(&username_state)))
+                            .child(
+                                field()
+                                    .label(password_label)
+                                    // Password field with show/hide toggle
+                                    .child(Input::new(&password_state).mask_toggle()),
                             )
                             .child(field().label(master_name_label).child(Input::new(&master_name_state)))
                             .child(field().label(description_label).child(Input::new(&description_state)))
@@ -750,7 +817,8 @@ impl ZedisServers {
                                 })
                                 .child(Tab::new().label(tab_general_label).p_1())
                                 .child(Tab::new().label(tab_tls_label).p_1())
-                                .child(Tab::new().label(tab_ssh_label).p_1()),
+                                .child(Tab::new().label(tab_ssh_label).p_1())
+                                .child(Tab::new().label(tab_advanced_label).p_1()),
                         )
                         .child(form)
                         .when(!field_errors_clone.read(cx).is_empty(), |this| {
