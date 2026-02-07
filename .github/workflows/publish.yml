@@ -163,7 +163,23 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh ./${{ env.ZIP_NAME }} $GITHUB_TOKEN
   linux:
-    runs-on: ubuntu-22.04
+    name: linux-${{ matrix.suffix }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64 版本，使用标准 Ubuntu Runner
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            suffix: x86_64
+            appimagetool: appimagetool-x86_64.AppImage
+            
+          # ARM64 版本，使用 GitHub 最新的原生 ARM Runner
+          - os: ubuntu-22.04-arm64
+            target: aarch64-unknown-linux-gnu
+            suffix: aarch64
+            appimagetool: appimagetool-aarch64.AppImage
     steps:
       - uses: actions/checkout@v6
       - name: setup node
@@ -176,15 +192,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.target }}
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-build
+          key: ${{ runner.os }}-${{ matrix.target }}-build
       - name: install appimagetool
         run: |
-          wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          
+          wget https://github.com/AppImage/appimagetool/releases/download/continuous/${{ matrix.appimagetool }} -O appimagetool
           chmod +x appimagetool
           sudo mv appimagetool /usr/local/bin/
       - name: release
@@ -194,16 +209,15 @@ jobs:
           cargo install cargo-appimage
           cargo build --release --features mimalloc
           ls -lh target/release
-          mv target/release/zedis ./zedis
+          mv target/release/zedis ./zedis-${{ matrix.suffix }}
           chmod +x zedis
           objdump -p ./zedis | grep GLIBC
-          tar -czvf zedis-linux-x86_64.tar.gz zedis
+          tar -czvf zedis-linux-${{ matrix.suffix }}.tar.gz zedis-${{ matrix.suffix }}
           cargo appimage --features mimalloc
-          mv target/appimage/zedis.AppImage ./zedis-x86_64.AppImage
-          chmod +x zedis-x86_64.AppImage
-          tar -czvf zedis-x86_64.AppImage.tar.gz zedis-x86_64.AppImage
+          mv target/appimage/zedis.AppImage ./zedis-${{ matrix.suffix }}.AppImage
+          tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis-${{ matrix.suffix }}.AppImage
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./zedis-x86_64.AppImage.tar.gz $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./zedis-linux-${{ matrix.suffix }}.tar.gz $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./zedis-${{ matrix.suffix }}.AppImage.tar.gz $GITHUB_TOKEN
