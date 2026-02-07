@@ -15,6 +15,7 @@
 use crate::{
     assets::CustomIconName,
     connection::{RedisClientDescription, get_server},
+    constants::AUTO_EXPAND_THRESHOLD,
     helpers::humanize_keystroke,
     states::{
         ErrorMessage, GlobalEvent, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_common,
@@ -95,6 +96,7 @@ struct StatusBarServerState {
     supports_db_selection: bool,
     server_id: SharedString,
     size: SharedString,
+    dbsize: Option<u64>,
     latency: (SharedString, Hsla),
     used_memory: SharedString,
     clients: SharedString,
@@ -310,6 +312,7 @@ impl ZedisStatusBar {
             supports_db_selection: state.supports_db_selection(),
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
+            dbsize: state.dbsize(),
             latency: format_latency(Some(redis_info.latency), cx),
             used_memory: used_memory.into(),
             clients: clients.into(),
@@ -342,6 +345,7 @@ impl ZedisStatusBar {
             humanize_keystroke("cmd-j")
         );
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
+        let show_collapse_keys = server_state.dbsize.unwrap_or_default() as usize > AUTO_EXPAND_THRESHOLD;
         h_flex()
             .items_center()
             .child(
@@ -374,19 +378,21 @@ impl ZedisStatusBar {
                     }))
                     .mr_2(),
             )
-            .child(
-                Button::new("zedis-status-bar-key-collapse")
-                    .outline()
-                    .small()
-                    .tooltip(i18n_status_bar(cx, "collapse_keys"))
-                    .icon(CustomIconName::ListChecvronsDownUp)
-                    .mr_1()
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state.update(cx, |state, cx| {
-                            state.collapse_all_keys(cx);
-                        });
-                    })),
-            )
+            .when(show_collapse_keys, |this| {
+                this.child(
+                    Button::new("zedis-status-bar-key-collapse")
+                        .outline()
+                        .small()
+                        .tooltip(i18n_status_bar(cx, "collapse_keys"))
+                        .icon(CustomIconName::ListChecvronsDownUp)
+                        .mr_1()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.server_state.update(cx, |state, cx| {
+                                state.collapse_all_keys(cx);
+                            });
+                        })),
+                )
+            })
             .child(
                 Button::new("zedis-status-bar-scan-more")
                     .outline()

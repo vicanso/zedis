@@ -16,6 +16,7 @@ use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::{QueryMode, get_server},
+    constants::AUTO_EXPAND_THRESHOLD,
     db::HistoryManager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
@@ -47,7 +48,6 @@ use tracing::info;
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
 const TREE_INDENT_OFFSET: f32 = 8.0; // Additional offset for all items
 const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
-const AUTO_EXPAND_THRESHOLD: usize = 100; // Auto-expand tree if fewer than this many keys
 const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges
 const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
