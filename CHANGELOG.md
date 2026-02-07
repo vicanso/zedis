@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.2](https://github.com/vicanso/zedis/compare/v0.2.1..v0.2.2) - 2026-02-07
+
+### ⛰️  Features
+
+- *(keyscan)* Support configuring scan count - ([9118149](https://github.com/vicanso/zedis/commit/911814990676bdfe4b30154c52494a8f59fa75b4))
+- *(proto)* Support selecting target message - ([52f34c1](https://github.com/vicanso/zedis/commit/52f34c1b7d4ce435c4e408cfdce1899fc593bd7b))
+- *(ssh)* Support ssh-agent authentication ([#29](https://github.com/orhun/git-cliff/issues/29)) - ([88e9adb](https://github.com/vicanso/zedis/commit/88e9adb83920d9a48334b9f43cfdccf24c562cfb))
+- *(ui)* Add advanced section to redis server config - ([527a049](https://github.com/vicanso/zedis/commit/527a04938a0812cd04128ac971ed527d5abb447c))
+
+### 🐛 Bug Fixes
+
+- *(bytes)* Fix integer overflow ([#30](https://github.com/orhun/git-cliff/issues/30)) - ([be9d683](https://github.com/vicanso/zedis/commit/be9d683329fb3ed532993d0d57f486397d8055a3))
+- *(cluster)* Fix multi-key deletion - ([ccb5f50](https://github.com/vicanso/zedis/commit/ccb5f50e406c4e7437e1954b578259a2e3842200))
+- *(ssh)* Restrict ssh-agent support to unix platforms ([#29](https://github.com/orhun/git-cliff/issues/29)) - ([7d5eb00](https://github.com/vicanso/zedis/commit/7d5eb006a2f1429b825b8190cb5c1f2293cccc1a))
+
+### 🚜 Refactor
+
+- *(config)* Make redis server editor height adaptive - ([289fc26](https://github.com/vicanso/zedis/commit/289fc2683fa1ec77b6cf603399937195d2812ab3))
+- *(font)* Prefer Menlo on macOS and Cascadia Code on Windows - ([8a40161](https://github.com/vicanso/zedis/commit/8a401612f60b57ce160785bab776a2d413f28f35))
+- *(form)* Show validation error messages - ([13c94d4](https://github.com/vicanso/zedis/commit/13c94d491903961d636e7de11a966bc066f1f528))
+- *(keytree)* Highlight multi-select button when active - ([ec5af84](https://github.com/vicanso/zedis/commit/ec5af8400ddec9d46a7ffb9dbb3ce10b02841c3e))
+- *(notification)* Handle notifications as global events - ([1ba78c6](https://github.com/vicanso/zedis/commit/1ba78c62c2a5e025379491cb7926c22f63e5bdcc))
+- *(proto)* Enhance editor functionality - ([5eb4cbc](https://github.com/vicanso/zedis/commit/5eb4cbc05ab14b9132df67b1da153b5d1426c6de))
+- *(redis)* Adjust timeout handling - ([a60a9d6](https://github.com/vicanso/zedis/commit/a60a9d61ffe416aa0187acf9f0e7ec41b105b21b))
+- *(server)* Handle server events as global events - ([1550116](https://github.com/vicanso/zedis/commit/1550116ba813e53b385814f68cbe81e33bd77e3f))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(cargo)* Rename package to zedis-gui - ([946fe5a](https://github.com/vicanso/zedis/commit/946fe5a2951c077fb529bc3c2713c6fb32426935))
+- *(ci)* Adjust rust cache key - ([1b0757c](https://github.com/vicanso/zedis/commit/1b0757cd790444f4e267875bc54eae33ff573cca))
+- *(ci)* Downgrade build runner to ubuntu-22.04 ([#33](https://github.com/orhun/git-cliff/issues/33)) - ([d66483d](https://github.com/vicanso/zedis/commit/d66483d17485b1fc0f45a7add034e5e80dc11b30))
+- *(ci)* Downgrade build runner to ubuntu-20.04 ([#33](https://github.com/orhun/git-cliff/issues/33)) - ([c812c92](https://github.com/vicanso/zedis/commit/c812c92dd5f5d80eaf26c34a74d8b3531954b670))
+- *(ci)* Downgrade build runner to ubuntu-20.04 ([#33](https://github.com/orhun/git-cliff/issues/33)) - ([b41e22b](https://github.com/vicanso/zedis/commit/b41e22b03ab1456957617fcfa9d79edf9fa9beaa))
+- Add debug log - ([db31b34](https://github.com/vicanso/zedis/commit/db31b343bdf008f4dbb04ec1a651c5564ff99007))
+
 ## [0.2.1](https://github.com/vicanso/zedis/compare/v0.1.9..v0.2.1) - 2026-01-31
 
 ### ⛰️  Features

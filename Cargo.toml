@@ -1,14 +1,15 @@
 [package]
 name = "zedis-gui"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
 categories = ["database"]
-keywords = ["redis manager", "gpui", "redis client"]
+keywords = ["redis", "redis-manager", "gpui", "redis-client", "gui"]
 description = "A blazing-fast, native Redis GUI built with Rust and GPUI."
 license = "Apache-2.0"
 homepage = "https://github.com/vicanso/zedis"
 repository = "https://github.com/vicanso/zedis"
+documentation = "https://github.com/vicanso/zedis"
 exclude = [
     "CHANGELOG.md",
     "test/*",
@@ -23,6 +24,7 @@ exclude = [
 ]
 readme = "./README.md"
 build = "build.rs"
+rust-version = "1.87.0"
 
 [[bin]]
 name = "zedis"
