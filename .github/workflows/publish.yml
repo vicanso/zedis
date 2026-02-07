@@ -169,14 +169,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 版本，使用标准 Ubuntu Runner
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             suffix: x86_64
             appimagetool: appimagetool-x86_64.AppImage
             
-          # ARM64 版本，使用 GitHub 最新的原生 ARM Runner
-          - os: ubuntu-22.04-arm64
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             suffix: aarch64
             appimagetool: appimagetool-aarch64.AppImage
@@ -209,13 +207,13 @@ jobs:
           cargo install cargo-appimage
           cargo build --release --features mimalloc
           ls -lh target/release
-          mv target/release/zedis ./zedis-${{ matrix.suffix }}
+          mv target/release/zedis ./zedis
           chmod +x zedis
           objdump -p ./zedis | grep GLIBC
-          tar -czvf zedis-linux-${{ matrix.suffix }}.tar.gz zedis-${{ matrix.suffix }}
+          tar -czvf zedis-linux-${{ matrix.suffix }}.tar.gz zedis
           cargo appimage --features mimalloc
-          mv target/appimage/zedis.AppImage ./zedis-${{ matrix.suffix }}.AppImage
-          tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis-${{ matrix.suffix }}.AppImage
+          mv target/appimage/zedis.AppImage ./zedis.AppImage
+          tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis.AppImage
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
