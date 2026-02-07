@@ -22,12 +22,12 @@ use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
 use gpui_component::{PixelsExt, ThemeMode, dialog::DialogButtonProps};
-use locale_config::Locale;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
+use sys_locale::get_locale;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -236,7 +236,7 @@ impl ZedisAppState {
         let value = std::fs::read_to_string(path)?;
         let mut state: Self = toml::from_str(&value)?;
         if state.locale.clone().unwrap_or_default().is_empty()
-            && let Some((lang, _)) = Locale::current().to_string().split_once("-")
+            && let Some((lang, _)) = get_locale().unwrap_or_else(|| String::from("en-US")).split_once("-")
         {
             state.locale = Some(lang.to_string());
         }

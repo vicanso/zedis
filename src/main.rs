@@ -14,6 +14,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
 use std::{env, str::FromStr, time::Duration};
+use sys_locale::get_locale;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -297,6 +298,7 @@ fn main() {
         arch = info.architecture().unwrap_or_default().to_string(),
         config_dir,
         is_app_store_build = is_app_store_build(),
+        sys_locale = ?get_locale(),
         "zedis launch"
     );
 
