@@ -147,15 +147,13 @@ jobs:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
           cargo build --release --target ${{ matrix.target }} --features mimalloc
-          $binName = "zedis-${{ matrix.suffix }}.exe"
-          mv target/${{ matrix.target }}/release/zedis.exe ./$binName
-          echo "BIN_NAME=$binName" >> $env:GITHUB_ENV
+          mv target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
       - name: zip
         shell: powershell
         run: |
           ls .
           $zipName = "zedis-windows-${{ matrix.suffix }}.zip"
-          Compress-Archive -Path ${{ env.BIN_NAME }} -Destination $zipName
+          Compress-Archive -Path zedis.exe -Destination $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
