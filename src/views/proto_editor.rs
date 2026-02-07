@@ -17,8 +17,8 @@ use crate::connection::get_servers;
 use crate::db::{ProtoConfig, ProtoManager};
 use crate::error::Error;
 use crate::helpers::get_font_family;
-use crate::states::ZedisServerState;
 use crate::states::i18n_proto_editor;
+use crate::states::{ZedisServerState, dialog_button_props};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
@@ -529,48 +529,52 @@ impl ZedisProtoEditor {
 
         let id = id.to_string();
         let view_handle = cx.entity();
-        window.open_dialog(cx, move |dialog, _, _cx| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let id = id.clone();
             let view_handle = view_handle.clone();
             let text = t!("remove_proto_prompt", name = name).to_string();
-            dialog.confirm().child(text).on_ok(move |_, _window, cx| {
-                let id = id.clone();
-                let view_handle = view_handle.clone();
-                cx.spawn(async move |cx| {
-                    let result: Result<String, Error> = cx
-                        .background_spawn({
-                            let id = id.clone();
-                            async move {
-                                ProtoManager::delete_proto(&id)?;
-                                Ok(id)
-                            }
-                        })
-                        .await;
-                    match result {
-                        Ok(deleted_id) => {
-                            let _ = view_handle.update(cx, |this, cx| {
-                                // Remove deleted proto from the list
-                                let new_protos: Vec<_> = this
-                                    .protos
-                                    .iter()
-                                    .filter(|(id, _)| id != &deleted_id)
-                                    .cloned()
-                                    .collect();
-                                this.protos = Arc::new(new_protos);
+            dialog
+                .confirm()
+                .button_props(dialog_button_props(cx))
+                .child(text)
+                .on_ok(move |_, _window, cx| {
+                    let id = id.clone();
+                    let view_handle = view_handle.clone();
+                    cx.spawn(async move |cx| {
+                        let result: Result<String, Error> = cx
+                            .background_spawn({
+                                let id = id.clone();
+                                async move {
+                                    ProtoManager::delete_proto(&id)?;
+                                    Ok(id)
+                                }
+                            })
+                            .await;
+                        match result {
+                            Ok(deleted_id) => {
+                                let _ = view_handle.update(cx, |this, cx| {
+                                    // Remove deleted proto from the list
+                                    let new_protos: Vec<_> = this
+                                        .protos
+                                        .iter()
+                                        .filter(|(id, _)| id != &deleted_id)
+                                        .cloned()
+                                        .collect();
+                                    this.protos = Arc::new(new_protos);
 
-                                // Mark for recreation of table on next render
-                                this.needs_table_recreate = Some(true);
-                                cx.notify();
-                            });
+                                    // Mark for recreation of table on next render
+                                    this.needs_table_recreate = Some(true);
+                                    cx.notify();
+                                });
+                            }
+                            Err(e) => {
+                                error!(error = %e, "delete proto fail",);
+                            }
                         }
-                        Err(e) => {
-                            error!(error = %e, "delete proto fail",);
-                        }
-                    }
+                    })
+                    .detach();
+                    true
                 })
-                .detach();
-                true
-            })
         });
     }
     fn render_edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
-    states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
+    states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px};
@@ -190,6 +190,7 @@ impl ZedisEditor {
 
             dialog
                 .confirm()
+                .button_props(dialog_button_props(cx))
                 .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
                 .on_ok(move |_, window, cx| {
                     let key = key.clone();

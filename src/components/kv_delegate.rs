@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::states::{RedisValue, ZedisGlobalStore, ZedisServerState, i18n_common};
+use crate::states::{RedisValue, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common};
 use crate::views::{KvTableColumn, KvTableColumnType};
 use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
@@ -344,12 +344,16 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                         let processing = processing.clone();
                         let fetcher = fetcher.clone();
 
-                        dialog.confirm().child(message.to_string()).on_ok(move |_, window, cx| {
-                            processing.replace(true);
-                            fetcher.remove(row_ix, cx);
-                            window.close_dialog(cx);
-                            true
-                        })
+                        dialog
+                            .confirm()
+                            .button_props(dialog_button_props(cx))
+                            .child(message.to_string())
+                            .on_ok(move |_, window, cx| {
+                                processing.replace(true);
+                                fetcher.remove(row_ix, cx);
+                                window.close_dialog(cx);
+                                true
+                            })
                     });
                 }));
             base = base.child(remove_btn);

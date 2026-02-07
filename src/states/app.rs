@@ -18,9 +18,10 @@ use crate::connection::{
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
+use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
-use gpui_component::{PixelsExt, ThemeMode};
+use gpui_component::{PixelsExt, ThemeMode, dialog::DialogButtonProps};
 use locale_config::Locale;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -474,4 +475,10 @@ where
         cx.update(|cx| cx.refresh_windows()).ok();
     })
     .detach();
+}
+
+pub fn dialog_button_props(cx: &App) -> DialogButtonProps {
+    DialogButtonProps::default()
+        .cancel_text(i18n_common(cx, "cancel"))
+        .ok_text(i18n_common(cx, "delete"))
 }

@@ -18,7 +18,9 @@ use crate::{
     connection::{QueryMode, get_server},
     db::HistoryManager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
-    states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
+    states::{
+        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_key_tree,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -938,6 +940,7 @@ impl Render for ZedisKeyTree {
                         let keys = keys.clone();
                         dialog
                             .confirm()
+                            .button_props(dialog_button_props(cx))
                             .title(i18n_key_tree(cx, "delete_keys_title"))
                             .child(text)
                             .on_ok(move |_, _, cx| {
@@ -957,6 +960,7 @@ impl Render for ZedisKeyTree {
                         let server_state = server_state.clone();
                         dialog
                             .confirm()
+                            .button_props(dialog_button_props(cx))
                             .title(i18n_key_tree(cx, "delete_key_title"))
                             .child(text)
                             .on_ok(move |_, _, cx| {
@@ -976,6 +980,7 @@ impl Render for ZedisKeyTree {
                         let server_state = server_state.clone();
                         dialog
                             .confirm()
+                            .button_props(dialog_button_props(cx))
                             .title(i18n_key_tree(cx, "delete_folder_title"))
                             .child(text)
                             .on_ok(move |_, _, cx| {

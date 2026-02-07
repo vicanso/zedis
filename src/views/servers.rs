@@ -16,7 +16,7 @@ use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::{QueryMode, RedisServer, get_servers};
 use crate::helpers::{is_windows, validate_common_string, validate_host, validate_long_string};
-use crate::states::{Route, ZedisGlobalStore, i18n_common, i18n_servers};
+use crate::states::{Route, ZedisGlobalStore, dialog_button_props, i18n_common, i18n_servers};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
@@ -393,6 +393,7 @@ impl ZedisServers {
 
             dialog
                 .confirm()
+                .button_props(dialog_button_props(cx))
                 .title(i18n_servers(cx, "remove_server_title"))
                 .child(message)
                 .on_ok(move |_, window, cx| {
