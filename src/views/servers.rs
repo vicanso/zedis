@@ -305,6 +305,9 @@ impl ZedisServers {
     ///
     fn fill_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>, server: &RedisServer) {
         self.server_id = server.id.clone();
+        self.field_errors.update(cx, |state, _cx| {
+            state.clear();
+        });
 
         // Populate all input fields with server data
         self.name_state.update(cx, |state, cx| {

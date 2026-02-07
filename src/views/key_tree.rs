@@ -191,6 +191,7 @@ struct KeyTreeDelegate {
     selected_index: Option<IndexPath>,
     enabled_multiple_selection: bool,
     selected_items: AHashSet<SharedString>,
+    readonly: bool,
 }
 
 impl KeyTreeDelegate {
@@ -280,6 +281,7 @@ impl ListDelegate for KeyTreeDelegate {
         let selected_items_count = self.selected_items.len();
         let id = entry.id.clone();
         let is_folder = entry.is_folder;
+        let readonly = self.readonly;
         Some(
             ListItem::new(ix)
                 .font_family(get_font_family())
@@ -291,6 +293,9 @@ impl ListDelegate for KeyTreeDelegate {
                 .child(
                     div()
                         .context_menu(move |mut menu, _window, _cx| {
+                            if readonly {
+                                return menu;
+                            }
                             let id = id.clone();
                             if selected && selected_items_count > 1 {
                                 let text = t!("key_tree.delete_keys_tooltip", count = selected_items_count);
@@ -398,13 +403,19 @@ impl ZedisKeyTree {
             this.update_key_tree(false, cx);
         }));
         subscriptions.push(
-            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+            cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeyCollapseAll => {
                     this.state.expanded_items.clear();
                     this.update_key_tree(true, cx);
                 }
                 ServerEvent::ServerSelected(_) => {
                     this.reset(cx);
+                }
+                ServerEvent::ServerInfoUpdated => {
+                    let readonly = server_state.read(cx).readonly();
+                    this.key_tree_list_state.update(cx, |state, _cx| {
+                        state.delegate_mut().readonly = readonly;
+                    });
                 }
                 ServerEvent::EditionActionTriggered(action) => {
                     if action == &EditorAction::Create {
@@ -430,6 +441,7 @@ impl ZedisKeyTree {
         let server_state_value = server_state.read(cx);
         let server_id = server_state_value.server_id().to_string();
         let query_mode = server_state_value.query_mode();
+        let readonly = server_state_value.readonly();
 
         // Subscribe to search input events (Enter key triggers filter)
         subscriptions.push(cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
@@ -445,6 +457,7 @@ impl ZedisKeyTree {
             enabled_multiple_selection: false,
             selected_index: None,
             selected_items: AHashSet::with_capacity(5),
+            readonly,
         };
         let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
         subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| match event {
@@ -513,6 +526,7 @@ impl ZedisKeyTree {
         let expand_all = server_state.scan_count() < AUTO_EXPAND_THRESHOLD;
         let keys_snapshot: Vec<(SharedString, KeyType)> =
             server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let readonly = server_state.readonly();
         let expanded_items = self.state.expanded_items.clone();
 
         let view_handle = cx.entity().downgrade();
@@ -546,6 +560,7 @@ impl ZedisKeyTree {
                 handle.update(cx, |this, cx| {
                     this.delegate_mut().selected_items.clear();
                     this.delegate_mut().items = result;
+                    this.delegate_mut().readonly = readonly;
                     cx.notify();
                 })
             })
@@ -935,7 +950,9 @@ impl Render for ZedisKeyTree {
                     });
                     let server_state = this.server_state.clone();
                     window.open_dialog(cx, move |dialog, _, cx| {
-                        let text = t!("key_tree.delete_keys_prompt", keys = keys.join(", ")).to_string();
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                        let text =
+                            t!("key_tree.delete_keys_prompt", keys = keys.join(", "), locale = locale).to_string();
                         let server_state = server_state.clone();
                         let keys = keys.clone();
                         dialog
@@ -955,7 +972,8 @@ impl Render for ZedisKeyTree {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
                     window.open_dialog(cx, move |dialog, _, cx| {
-                        let text = t!("key_tree.delete_key_prompt", key = id.clone()).to_string();
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                        let text = t!("key_tree.delete_key_prompt", key = id.clone(), locale = locale).to_string();
                         let id = id.clone();
                         let server_state = server_state.clone();
                         dialog
@@ -975,7 +993,9 @@ impl Render for ZedisKeyTree {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
                     window.open_dialog(cx, move |dialog, _, cx| {
-                        let text = t!("key_tree.delete_folder_prompt", folder = id.clone()).to_string();
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                        let text =
+                            t!("key_tree.delete_folder_prompt", folder = id.clone(), locale = locale).to_string();
                         let id = id.clone();
                         let server_state = server_state.clone();
                         dialog
