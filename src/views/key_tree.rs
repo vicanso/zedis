@@ -923,21 +923,67 @@ impl Render for ZedisKeyTree {
                     this.handle_clear_history(cx);
                 }
                 KeyTreeAction::DeleteMultipleKeys => {
-                    this.key_tree_list_state.update(cx, |state, cx| {
-                        let keys = state.delegate().selected_items.iter().cloned().collect();
-                        this.server_state.update(cx, |state, cx| {
-                            state.unlink_key(keys, cx);
-                        });
+                    let keys = this.key_tree_list_state.update(cx, |state, _cx| {
+                        state
+                            .delegate()
+                            .selected_items
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<SharedString>>()
+                    });
+                    let server_state = this.server_state.clone();
+                    window.open_dialog(cx, move |dialog, _, cx| {
+                        let text = t!("key_tree.delete_keys_prompt", keys = keys.join(", ")).to_string();
+                        let server_state = server_state.clone();
+                        let keys = keys.clone();
+                        dialog
+                            .confirm()
+                            .title(i18n_key_tree(cx, "delete_keys_title"))
+                            .child(text)
+                            .on_ok(move |_, _, cx| {
+                                server_state.update(cx, |state, cx| {
+                                    state.unlink_key(keys.clone(), cx);
+                                });
+                                true
+                            })
                     });
                 }
                 KeyTreeAction::DeleteKey(id) => {
-                    this.server_state.update(cx, |state, cx| {
-                        state.delete_key(id.clone(), cx);
+                    let id = id.clone();
+                    let server_state = this.server_state.clone();
+                    window.open_dialog(cx, move |dialog, _, cx| {
+                        let text = t!("key_tree.delete_key_prompt", key = id.clone()).to_string();
+                        let id = id.clone();
+                        let server_state = server_state.clone();
+                        dialog
+                            .confirm()
+                            .title(i18n_key_tree(cx, "delete_key_title"))
+                            .child(text)
+                            .on_ok(move |_, _, cx| {
+                                server_state.update(cx, |state, cx| {
+                                    state.delete_key(id.clone(), cx);
+                                });
+                                true
+                            })
                     });
                 }
                 KeyTreeAction::DeleteFolder(id) => {
-                    this.server_state.update(cx, |state, cx| {
-                        state.delete_folder(id.clone(), cx);
+                    let id = id.clone();
+                    let server_state = this.server_state.clone();
+                    window.open_dialog(cx, move |dialog, _, cx| {
+                        let text = t!("key_tree.delete_folder_prompt", folder = id.clone()).to_string();
+                        let id = id.clone();
+                        let server_state = server_state.clone();
+                        dialog
+                            .confirm()
+                            .title(i18n_key_tree(cx, "delete_folder_title"))
+                            .child(text)
+                            .on_ok(move |_, _, cx| {
+                                server_state.update(cx, |state, cx| {
+                                    state.delete_folder(id.clone(), cx);
+                                });
+                                true
+                            })
                     });
                 }
             }))
