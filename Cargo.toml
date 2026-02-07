@@ -24,7 +24,7 @@ exclude = [
 ]
 readme = "./README.md"
 build = "build.rs"
-rust-version = "1.87.0"
+rust-version = "1.88.0"
 
 [[bin]]
 name = "zedis"
