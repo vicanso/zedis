@@ -22,8 +22,8 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    Action, App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, Window, div, prelude::*,
-    px,
+    Action, App, AppContext, Corner, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
+    Window, div, prelude::*, px,
 };
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
 use gpui_component::{
@@ -357,6 +357,8 @@ impl ListDelegate for KeyTreeDelegate {
 /// - Expandable/collapsible folders
 /// - Visual feedback for selected keys
 pub struct ZedisKeyTree {
+    focus_handle: FocusHandle,
+
     state: KeyTreeState,
 
     /// Reference to server state for Redis operations
@@ -385,6 +387,9 @@ impl ZedisKeyTree {
     /// initializes UI components (tree, search input).
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
+
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window);
 
         // Subscribe to server state changes to rebuild tree when keys change
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
@@ -451,6 +456,7 @@ impl ZedisKeyTree {
         }));
 
         let mut this = Self {
+            focus_handle,
             state: KeyTreeState {
                 query_mode,
                 server_id: server_id.into(),
@@ -879,6 +885,8 @@ impl Render for ZedisKeyTree {
             self.handle_add_key(window, cx);
         }
         v_flex()
+            .id("key-tree-container")
+            .track_focus(&self.focus_handle)
             .h_full()
             .w_full()
             .child(self.render_keyword_input(window, cx))
@@ -931,6 +939,14 @@ impl Render for ZedisKeyTree {
                     this.server_state.update(cx, |state, cx| {
                         state.delete_folder(id.clone(), cx);
                     });
+                }
+            }))
+            .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {
+                EditorAction::Search => {
+                    this.keyword_state.focus_handle(cx).focus(window);
+                }
+                _ => {
+                    cx.propagate();
                 }
             }))
     }
