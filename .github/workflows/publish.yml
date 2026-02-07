@@ -121,6 +121,14 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            suffix: x86_64
+          - target: aarch64-pc-windows-msvc
+            suffix: aarch64
     steps:
       - uses: actions/checkout@v6
       - name: setup node
@@ -129,27 +137,31 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-build
+          key: ${{ runner.os }}-${{ matrix.target }}-build
       - name: release
         env:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
-          cargo build --release  --features mimalloc
-          mv target/release/zedis.exe ./zedis.exe
+          cargo build --release --target ${{ matrix.target }} --features mimalloc
+          $binName = "zedis-${{ matrix.suffix }}.exe"
+          mv target/${{ matrix.target }}/release/zedis.exe ./$binName
+          echo "BIN_NAME=$binName" >> $env:GITHUB_ENV
       - name: zip
         shell: powershell
         run: |
           ls .
-          Compress-Archive -Path zedis.exe -Destination zedis-windows.exe.zip
+          $zipName = "zedis-windows-${{ matrix.suffix }}.zip"
+          Compress-Archive -Path ${{ env.BIN_NAME }} -Destination $zipName
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          ./.github/workflows/upload_asset.sh ./zedis-windows.exe.zip $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./${{ env.ZIP_NAME }} $GITHUB_TOKEN
   linux:
     runs-on: ubuntu-22.04
     steps:
