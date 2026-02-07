@@ -23,7 +23,6 @@ use russh::client::{Handle, Handler};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
@@ -200,6 +199,11 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
     Ok(session)
 }
 
+fn is_pem_format(data: &str) -> bool {
+    let data = data.trim();
+    data.starts_with("-----BEGIN ") && data.contains("-----END ") && data.ends_with("-----")
+}
+
 /// Creates a new SSH session with the specified authentication method.
 ///
 /// This function establishes a new SSH connection to the remote server using
@@ -251,14 +255,13 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
 
     // Authenticate using provided credentials
     let auth_res = if !key.is_empty() {
-        let key = resolve_path(key);
-        // Public key authentication
-        let key_pair = if Path::new(&key).exists() {
+        let key_pair = if is_pem_format(key) {
+            // Decode key from string content
+            decode_secret_key(key, None)?
+        } else {
+            let key = resolve_path(key);
             // Load key from file path
             load_secret_key(key, None)?
-        } else {
-            // Decode key from string content
-            decode_secret_key(&key, None)?
         };
         let key = Arc::new(key_pair);
         let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
