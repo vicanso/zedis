@@ -431,6 +431,7 @@ impl ZedisServerState {
                         this.value = Some(value);
                     }
                     Err(_) => {
+                        this.key = None;
                         this.value = None;
                     }
                 };

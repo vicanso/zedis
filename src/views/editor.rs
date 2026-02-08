@@ -36,7 +36,7 @@ use tracing::{debug, info};
 
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
-const TTL_INPUT_MAX_WIDTH: f32 = 100.0;
+const TTL_INPUT_MAX_WIDTH: f32 = 120.0;
 
 /// Main editor component for displaying and editing Redis key values
 /// Supports different key types (String, List, etc.) with type-specific editors

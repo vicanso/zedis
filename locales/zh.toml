@@ -54,7 +54,7 @@ description_placeholder = "输入描述信息"
 value_placeholder = "输入新值"
 filter_placeholder = "按关键词过滤"
 keyword_placeholder = "按关键词过滤"
-ttl_placeholder = "例如：1d 或 1h"
+ttl_placeholder = "如：1d, 1h"
 score_placeholder = "输入分数 (默认: 0.0)"
 
 remove_tooltip = "移除项"

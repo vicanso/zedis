@@ -55,7 +55,7 @@ description_placeholder = "Enter description"
 value_placeholder = "Enter new value"
 filter_placeholder = "Filter by keyword"
 keyword_placeholder = "Filter by keyword"
-ttl_placeholder = "e.g., 1d or 1h"
+ttl_placeholder = "e.g. 1d, 1h"
 score_placeholder = "Enter score (default: 0.0)"
 
 remove_tooltip = "Remove item"
