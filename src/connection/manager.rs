@@ -366,6 +366,21 @@ async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerTyp
     }
 }
 
+async fn check_permission_by_probing(mut conn: RedisAsyncConn) -> bool {
+    let probe: redis::RedisResult<String> = cmd("SET")
+        .arg("_zedis_auth_test_")
+        .arg("1")
+        .arg("EX")
+        .arg("1")
+        .query_async(&mut conn)
+        .await;
+
+    match probe {
+        Ok(_) => false,
+        Err(e) => e.code() == Some("NOPERM"),
+    }
+}
+
 async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
     let user: String = cmd("ACL")
         .arg("WHOAMI")
@@ -390,6 +405,9 @@ async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
             if let Some(code) = e.code()
                 && code == "NOPERM"
             {
+                if e.to_string().contains("acl|dryrun") {
+                    return check_permission_by_probing(conn).await;
+                }
                 return true;
             }
             false
