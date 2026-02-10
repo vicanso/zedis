@@ -9,6 +9,7 @@ use std::borrow::Cow;
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
 #[include = "commands.json"]
+#[include = "icon.png"]
 pub struct Assets;
 
 impl AssetSource for Assets {
