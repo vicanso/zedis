@@ -316,7 +316,7 @@ impl ZedisServerState {
                 } else {
                     this.fill_key_types(Some(prefix.clone()), cx);
                 }
-                cx.emit(ServerEvent::KeyScanPaged);
+                cx.emit(ServerEvent::KeyScanFinished);
             },
             cx,
         );

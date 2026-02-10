@@ -16,7 +16,6 @@ use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::{QueryMode, get_server},
-    constants::AUTO_EXPAND_THRESHOLD,
     db::HistoryManager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
@@ -95,7 +94,6 @@ struct KeyTreeItem {
 fn new_key_tree_items(
     mut keys: Vec<(SharedString, KeyType)>,
     keyword: SharedString,
-    expand_all: bool,
     expanded_items: AHashSet<SharedString>,
     separator: &str,
     max_key_tree_depth: usize,
@@ -128,7 +126,7 @@ fn new_key_tree_items(
         for (index, k) in key.splitn(max_key_tree_depth, separator).enumerate() {
             // if key_tree_item is not None, it means we are in a folder
             // because it's not the last part of the key
-            let expanded = expand_all || index == 0 || expanded_items_set.contains(dir.as_str());
+            let expanded = index == 0 || expanded_items_set.contains(dir.as_str());
             if let Some(key_tree_item) = key_tree_item.take() {
                 let entry = items.entry(key_tree_item.id.clone()).or_insert_with(|| key_tree_item);
                 entry.is_folder = true;
@@ -423,6 +421,27 @@ impl ZedisKeyTree {
                         cx.notify();
                     }
                 }
+                ServerEvent::KeyScanFinished => {
+                    let keys = server_state.read(cx).keys();
+                    let global_state = cx.global::<ZedisGlobalStore>().read(cx);
+                    if keys.len() > global_state.auto_expand_threshold() {
+                        return;
+                    }
+                    let key_separator = global_state.key_separator();
+                    let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
+                    keys.iter().for_each(|(key, _)| {
+                        if !key.contains(key_separator) {
+                            return;
+                        }
+                        let parts: Vec<&str> = key.split(key_separator).collect();
+                        for i in 1..parts.len() {
+                            let prefix = parts[..i].join(key_separator);
+                            expanded_items.insert(prefix.into());
+                        }
+                    });
+                    this.state.expanded_items = expanded_items;
+                    cx.notify();
+                }
                 _ => {}
             }),
         );
@@ -523,7 +542,6 @@ impl ZedisKeyTree {
         self.state.key_tree_id = key_tree_id.to_string().into();
 
         // Auto-expand all folders if key count is small
-        let expand_all = server_state.scan_count() < AUTO_EXPAND_THRESHOLD;
         let keys_snapshot: Vec<(SharedString, KeyType)> =
             server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
         let readonly = server_state.readonly();
@@ -539,14 +557,8 @@ impl ZedisKeyTree {
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
-                    let items = new_key_tree_items(
-                        keys_snapshot,
-                        keyword,
-                        expand_all,
-                        expanded_items,
-                        &separator,
-                        max_key_tree_depth,
-                    );
+                    let items =
+                        new_key_tree_items(keys_snapshot, keyword, expanded_items, &separator, max_key_tree_depth);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
                 });
@@ -775,7 +787,6 @@ impl ZedisKeyTree {
         let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
         let readonly = server_state.readonly();
-        let scanning = server_state.scanning();
         let server_id = server_state.server_id();
         if server_id != self.state.server_id.as_str() {
             self.state.server_id = server_id.to_string().into();
@@ -828,15 +839,6 @@ impl ZedisKeyTree {
                             )
                     })
             });
-        // Search button (shows loading spinner during scan)
-        let search_btn = Button::new("key-tree-search-btn")
-            .ghost()
-            .loading(scanning)
-            .disabled(scanning)
-            .icon(IconName::Search)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.handle_filter(cx);
-            }));
         // keyword input
         let keyword_input = Input::new(&self.keyword_state)
             .w_full()
@@ -844,7 +846,6 @@ impl ZedisKeyTree {
             .px_0()
             .mr_2()
             .prefix(query_mode_dropdown)
-            .suffix(search_btn)
             .cleanable(true);
         let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
         h_flex()
@@ -852,6 +853,18 @@ impl ZedisKeyTree {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(keyword_input)
+            .child(
+                Button::new("zedis-status-bar-key-collapse")
+                    .outline()
+                    .tooltip(i18n_key_tree(cx, "collapse_keys"))
+                    .icon(CustomIconName::ListChecvronsDownUp)
+                    .mr_1()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| {
+                            state.collapse_all_keys(cx);
+                        });
+                    })),
+            )
             .child(
                 Button::new("key-tree-toggle-checked-btn")
                     .mr_2()

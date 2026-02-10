@@ -185,6 +185,7 @@ pub struct ZedisAppState {
     font_size: Option<FontSize>,
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
+    auto_expand_threshold: Option<usize>,
     key_scan_count: Option<usize>,
     max_truncate_length: Option<usize>,
     redis_connection_timeout: Option<Duration>,
@@ -367,6 +368,12 @@ impl ZedisAppState {
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
         self.key_scan_count = Some(key_scan_count);
+    }
+    pub fn auto_expand_threshold(&self) -> usize {
+        self.auto_expand_threshold.unwrap_or(100)
+    }
+    pub fn set_auto_expand_threshold(&mut self, auto_expand_threshold: usize) {
+        self.auto_expand_threshold = Some(auto_expand_threshold);
     }
     pub fn selected_server(&self) -> Option<&(String, usize)> {
         self.selected_server.as_ref()

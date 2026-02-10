@@ -15,4 +15,3 @@
 pub const SIDEBAR_WIDTH: f32 = 80.0;
 pub const KEY_TREE_MIN_WIDTH: f32 = 275.0;
 pub const KEY_TREE_MAX_WIDTH: f32 = 800.0;
-pub const AUTO_EXPAND_THRESHOLD: usize = 100;

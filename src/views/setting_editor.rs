@@ -30,6 +30,7 @@ pub struct ZedisSettingEditor {
     max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
     key_scan_count_state: Entity<InputState>,
+    auto_expand_threshold_state: Entity<InputState>,
     redis_connection_timeout_state: Entity<InputState>,
     redis_response_timeout_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
@@ -74,6 +75,7 @@ impl ZedisSettingEditor {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let max_key_tree_depth = store.max_key_tree_depth();
         let key_separator = store.key_separator().to_string();
+        let auto_expand_threshold = store.auto_expand_threshold();
         let max_truncate_length = store.max_truncate_length();
         let redis_connection_timeout = store.redis_connection_timeout();
         let redis_response_timeout = store.redis_response_timeout();
@@ -92,6 +94,13 @@ impl ZedisSettingEditor {
             cx,
             "key_scan_count_placeholder",
             key_scan_count.to_string(),
+            Some(|s| s.parse::<usize>().is_ok()),
+        );
+        let auto_expand_threshold_state = Self::create_input_state(
+            window,
+            cx,
+            "auto_expand_threshold_placeholder",
+            auto_expand_threshold.to_string(),
             Some(|s| s.parse::<usize>().is_ok()),
         );
         let max_truncate_length_state = Self::create_input_state(
@@ -193,6 +202,21 @@ impl ZedisSettingEditor {
                 });
             }
         }));
+        // Auto Expand Threshold
+        subscriptions.push(Self::bind_blur_save(
+            cx,
+            &auto_expand_threshold_state,
+            window,
+            |text, cx| {
+                if let Ok(value) = text.parse::<usize>()
+                    && value >= 100
+                {
+                    update_app_state_and_save(cx, "save_auto_expand_threshold", move |state, _| {
+                        state.set_auto_expand_threshold(value);
+                    });
+                }
+            },
+        ));
 
         // Max Truncate Length
         subscriptions.push(Self::bind_blur_save(
@@ -216,6 +240,7 @@ impl ZedisSettingEditor {
             _subscriptions: subscriptions,
             key_scan_count_state,
             config_dir_state,
+            auto_expand_threshold_state,
             max_truncate_length_state,
             key_separator_state,
             max_key_tree_depth_state,
@@ -253,6 +278,11 @@ impl Render for ZedisSettingEditor {
                         cx,
                         "key_scan_count",
                         Input::new(&self.key_scan_count_state),
+                    ))
+                    .child(Self::render_field(
+                        cx,
+                        "auto_expand_threshold",
+                        Input::new(&self.auto_expand_threshold_state),
                     ))
                     .child(Self::render_field(
                         cx,
