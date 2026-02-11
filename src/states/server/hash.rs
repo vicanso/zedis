@@ -127,107 +127,162 @@ pub(crate) async fn first_load_hash_value(conn: &mut RedisAsyncConn, key: &str) 
     })
 }
 impl ZedisServerState {
-    /// Adds or updates a field-value pair in the Redis HASH.
+    /// A generic helper for Redis Hash operations (Add, Remove, Update).
+    /// Handles status switching, optimistic UI updates, and background task execution.
+    fn exec_hash_op<F, Fut, R>(
+        &mut self,
+        task: ServerTask,
+        cx: &mut Context<Self>,
+        optimistic_update: impl FnOnce(&mut RedisHashValue),
+        redis_op: F,
+        on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
+    ) where
+        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<R>> + Send,
+        R: Send + 'static,
+    {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        let key_str = key.to_string();
+        value.status = RedisValueStatus::Updating;
+
+        // Step 1: Perform local optimistic update
+        if let Some(RedisValueData::Hash(hash_data)) = value.data.as_mut() {
+            optimistic_update(Arc::make_mut(hash_data));
+            cx.emit(ServerEvent::ValueUpdated);
+        }
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+
+        // Step 2: Spawn background task
+        self.spawn(
+            task,
+            move || async move {
+                let conn = get_connection_manager().get_connection(&server_id, db).await?;
+                redis_op(key_str, conn).await
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                }
+
+                match result {
+                    Ok(data) => on_success(this, data, cx),
+                    Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+    /// Adds a field-value pair in the Redis HASH.
     ///
     /// Uses HSET command which creates a new field or updates an existing one.
     /// Updates the UI state and shows appropriate notifications based on whether
     /// it was a new field (count=1) or an update (count=0).
     ///
     /// # Arguments
-    /// * `new_field` - The field name to add/update
-    /// * `new_value` - The value to set for the field
+    /// * `field` - The field name to add
+    /// * `value` - The value to set for the field
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn add_hash_value(&mut self, new_field: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
-        self.add_or_update_hash_value(new_field, new_value, cx);
+    pub fn add_hash_value(&mut self, field: SharedString, value: SharedString, cx: &mut Context<Self>) {
+        let field_clone = field.clone();
+        let value_clone = value.clone();
+
+        self.exec_hash_op(
+            ServerTask::AddHashField,
+            cx,
+            |_| {}, // Wait for server confirmation to avoid duplicate UI entries during scan
+            move |key, mut conn| async move {
+                let count: usize = cmd("HSET")
+                    .arg(&key)
+                    .arg(field.as_str())
+                    .arg(value.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(count)
+            },
+            move |this, count, cx| {
+                if let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
+                    let hash = Arc::make_mut(hash_data);
+                    hash.size += count;
+                    // Optimistically append if we are at the end of the scan
+                    if hash.done && !hash.values.iter().any(|(f, _)| f == &field_clone) {
+                        hash.values.push((field_clone, value_clone));
+                    }
+                }
+                cx.emit(ServerEvent::ValueAdded);
+                this.emit_success_notification(
+                    i18n_hash_editor(cx, "add_value_success_tips"),
+                    i18n_hash_editor(cx, "add_value_success"),
+                    cx,
+                );
+            },
+        );
     }
     /// Updates a field-value pair in the Redis HASH.
     ///
     /// Uses HSET command to update the value of the specified field.
     ///
     /// # Arguments
+    /// * `old_field` - The old field name
     /// * `new_field` - The field name to update
     /// * `new_value` - The value to set for the field
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn update_hash_value(&mut self, new_field: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
-        self.add_or_update_hash_value(new_field, new_value, cx);
-    }
-    fn add_or_update_hash_value(&mut self, new_field: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
-        // Early return if no key/value is selected
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
-
-        // Update UI state to show "updating" status
-        value.status = RedisValueStatus::Updating;
-        cx.notify();
-
-        let server_id = self.server_id.clone();
-        let db = self.db;
+    pub fn update_hash_value(
+        &mut self,
+        old_field: SharedString,
+        new_field: SharedString,
+        new_value: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let old_field_clone = old_field.clone();
         let new_field_clone = new_field.clone();
         let new_value_clone = new_value.clone();
+        let is_rename = old_field != new_field;
 
-        self.spawn(
-            ServerTask::AddSetValue,
-            // Async operation: execute HSET on Redis
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-                // HSET returns 1 if new field created, 0 if existing field updated
-                let count: usize = cmd("HSET")
-                    .arg(key.as_str())
-                    .arg(new_field.as_str())
-                    .arg(new_value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(count)
-            },
-            // UI callback: handle result and update local state
-            move |this, result, cx| {
-                let title = i18n_hash_editor(cx, "add_value_success");
-                let msg = i18n_hash_editor(cx, "add_value_success_tips");
-                let update_exist_field_value_msg = i18n_hash_editor(cx, "update_exist_field_value_success_tips");
-
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-
-                    if let Ok(count) = result
-                        && let Some(RedisValueData::Hash(hash_data)) = value.data.as_mut()
-                    {
-                        let hash = Arc::make_mut(hash_data);
-
-                        // Increment size only if new field was created
-                        hash.size += count;
-
-                        // Update existing field value in local state if field already exists
-                        for item in hash.values.iter_mut() {
-                            if item.0 == new_field_clone {
-                                item.1 = new_value_clone.clone();
-                                break;
-                            }
-                        }
-
-                        // Show different notifications based on operation type
-                        if count == 0 {
-                            this.emit_info_notification(update_exist_field_value_msg, cx);
-                            // Existing field was updated
-                            // cx.emit(ServerEvent::Notification(NotificationAction::new_info(
-                            //     update_exist_field_value_msg,
-                            // )));
-                        } else {
-                            this.emit_success_notification(msg, title, cx);
-                            // New field was created
-                            // cx.emit(ServerEvent::Notification(
-                            //     NotificationAction::new_success(msg).with_title(title),
-                            // ));
-                        }
-
-                        cx.emit(ServerEvent::ValueAdded);
-                    }
-                }
-                cx.notify();
-            },
+        self.exec_hash_op(
+            ServerTask::UpdateHashField,
             cx,
+            move |hash| {
+                // Optimistic UI update: Replace old entry with new entry
+                if let Some(pos) = hash.values.iter().position(|(f, _)| f == &old_field_clone) {
+                    hash.values[pos] = (new_field_clone, new_value_clone);
+                }
+            },
+            move |key, mut conn| async move {
+                if is_rename {
+                    // Pipeline: Insert new field then delete old field
+                    let _: () = redis::pipe()
+                        .atomic()
+                        .cmd("HSET")
+                        .arg(&key)
+                        .arg(new_field.as_str())
+                        .arg(new_value.as_str())
+                        .cmd("HDEL")
+                        .arg(&key)
+                        .arg(old_field.as_str())
+                        .query_async(&mut conn)
+                        .await?;
+                } else {
+                    let _: () = cmd("HSET")
+                        .arg(&key)
+                        .arg(new_field.as_str())
+                        .arg(new_value.as_str())
+                        .query_async(&mut conn)
+                        .await?;
+                }
+                Ok(())
+            },
+            |this, _, cx| {
+                this.emit_info_notification(i18n_hash_editor(cx, "update_exist_field_value_success_tips"), cx);
+                cx.emit(ServerEvent::ValueUpdated);
+            },
         );
+        // self.add_or_update_hash_value(new_field, new_value, cx);
     }
     /// Applies a filter to HASH fields by resetting the scan state with a keyword.
     ///
@@ -265,58 +320,25 @@ impl ZedisServerState {
     /// * `remove_field` - The field name to remove from the HASH
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn remove_hash_value(&mut self, remove_field: SharedString, cx: &mut Context<Self>) {
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
-
-        // Update UI state to show loading
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
-
-        let server_id = self.server_id.clone();
-        let db = self.db;
         let remove_field_clone = remove_field.clone();
-
-        self.spawn(
-            ServerTask::RemoveHashValue,
-            // Async operation: execute HDEL on Redis
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-                // HDEL returns number of fields removed (0 if doesn't exist, 1 if removed)
+        self.exec_hash_op(
+            ServerTask::RemoveHashField,
+            cx,
+            move |hash| {
+                hash.size = hash.size.saturating_sub(1);
+                hash.values.retain(|(f, _)| f != &remove_field_clone);
+            },
+            move |key, mut conn| async move {
                 let count: usize = cmd("HDEL")
-                    .arg(key.as_str())
+                    .arg(&key)
                     .arg(remove_field.as_str())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
             },
-            // UI callback: update local state to reflect removal
-            move |this, result, cx| {
-                if let Ok(count) = result {
-                    // Only update if field was actually removed
-                    if count != 0
-                        && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
-                    {
-                        let hash = Arc::make_mut(hash_data);
-
-                        // Remove from local field-value list
-                        hash.values.retain(|(field, _)| field != &remove_field_clone);
-
-                        // Decrease HASH size by number of removed fields
-                        hash.size -= count;
-                    }
-
-                    cx.emit(ServerEvent::ValueUpdated);
-
-                    // Reset status to idle
-                    if let Some(value) = this.value.as_mut() {
-                        value.status = RedisValueStatus::Idle;
-                    }
-                    cx.notify();
-                }
+            |_, _, cx| {
+                cx.emit(ServerEvent::ValueUpdated);
             },
-            cx,
         );
     }
     /// Loads the next batch of HASH field-value pairs using cursor-based pagination.

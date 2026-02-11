@@ -49,10 +49,6 @@ impl ZedisKvFetcher for ZedisHashValues {
         Self { server_state, value }
     }
 
-    fn is_form_editor(&self) -> bool {
-        true
-    }
-
     /// Retrieves a cell value for the table at the given row and column.
     ///
     /// Column layout:
@@ -73,18 +69,6 @@ impl ZedisKvFetcher for ZedisHashValues {
     /// Returns the total number of fields in the HASH (from Redis HLEN).
     fn count(&self) -> usize {
         self.value.hash_value().map_or(0, |v| v.size)
-    }
-
-    /// Indicates whether the table supports inline editing.
-    fn can_update(&self) -> bool {
-        true
-    }
-
-    /// Specifies which columns are read-only in the table.
-    ///
-    /// Column 1 (field name) is read-only; only the value can be edited inline.
-    fn readonly_columns(&self) -> Vec<usize> {
-        vec![1]
     }
 
     /// Returns the number of currently loaded rows (not total HASH size).
@@ -141,7 +125,7 @@ impl ZedisKvFetcher for ZedisHashValues {
     ///
     /// Called when the user edits the value column directly in the table.
     /// Updates the value for the existing field using Redis HSET.
-    fn handle_update_value(&self, _row_ix: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+    fn handle_update_value(&self, row_ix: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
         // Extract field name and new value from values
         let Some(field) = values.first() else {
             return;
@@ -149,10 +133,17 @@ impl ZedisKvFetcher for ZedisHashValues {
         let Some(value) = values.get(1) else {
             return;
         };
+        let Some(old_field) = self
+            .value
+            .hash_value()
+            .and_then(|v| v.values.get(row_ix).map(|(field, _)| field.clone()))
+        else {
+            return;
+        };
 
         // Execute update operation
         self.server_state.update(cx, |this, cx| {
-            this.update_hash_value(field.clone(), value.clone(), cx);
+            this.update_hash_value(old_field, field.clone(), value.clone(), cx);
         });
     }
 
@@ -236,8 +227,8 @@ impl ZedisHashEditor {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisHashValues>::new(
                 vec![
-                    KvTableColumn::new("Field", Some(field_width)).with_readonly(true), // Field name column (flexible width)
-                    KvTableColumn::new("Value", None), // Field value column (flexible width)
+                    KvTableColumn::new("Field", Some(field_width)), // Field name column (flexible width)
+                    KvTableColumn::new("Value", None),              // Field value column (flexible width)
                 ],
                 server_state,
                 window,

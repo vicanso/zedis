@@ -16,20 +16,21 @@ use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
-    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_kv_table},
+    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table},
 };
 use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::highlighter::Language;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, PixelsExt,
+    ActiveTheme, Disableable, Icon, IconName, PixelsExt, WindowExt,
     button::{Button, ButtonVariants},
     form::field,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
-    table::{Table, TableState},
+    table::{Table, TableEvent, TableState},
     v_flex,
 };
+use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
 
@@ -44,8 +45,6 @@ pub enum KvTableColumnType {
     Value,
     /// Row index/number column
     Index,
-    /// Action buttons column (edit, delete, etc.)
-    Action,
 }
 
 /// Configuration for a table column including name, width, and alignment.
@@ -71,10 +70,6 @@ impl KvTableColumn {
             width,
             ..Default::default()
         }
-    }
-    pub fn with_readonly(mut self, readonly: bool) -> Self {
-        self.readonly = readonly;
-        self
     }
 }
 
@@ -104,10 +99,11 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     readonly: bool,
     /// The row index that is being edited
     edit_row: Option<usize>,
-    /// Columns configuration
-    edit_columns: Vec<KvTableColumn>,
+    /// The values that are being edited
+    edit_fill_values: Option<Vec<SharedString>>,
+    columns: Vec<KvTableColumn>,
     /// Input states for editable cells, keyed by column index.
-    value_states: Vec<Entity<InputState>>,
+    value_states: Vec<(usize, Entity<InputState>)>,
     /// Fetcher instance
     fetcher: Arc<T>,
     /// Event subscriptions for server state and input changes
@@ -142,15 +138,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 ..Default::default()
             },
         );
-
-        // Append action column at the end
-        columns.push(KvTableColumn {
-            column_type: KvTableColumnType::Action,
-            name: i18n_common(cx, "action"),
-            width: Some(100.0),
-            align: Some(TextAlign::Center),
-            ..Default::default()
-        });
 
         // Calculate remaining width and count columns without fixed width
         let content_width = cx
@@ -210,7 +197,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 | ServerEvent::ValueLoaded
                 | ServerEvent::ValueAdded
                 | ServerEvent::ValueUpdated => {
-                    let fetcher = Self::new_values(server_state.clone(), cx);
+                    let fetcher = Arc::new(Self::new_values(server_state.clone(), cx));
+                    this.fetcher = fetcher.clone();
                     this.loading = false;
                     this.done = fetcher.is_done();
                     this.items_count = fetcher.rows_count();
@@ -243,51 +231,48 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
         let readonly = server_state.read(cx).readonly();
         // Initialize table data and state
-        let fetcher = Self::new_values(server_state, cx);
+        let fetcher = Arc::new(Self::new_values(server_state, cx));
         let done = fetcher.is_done();
         let items_count = fetcher.rows_count();
         let total_count = fetcher.count();
-        let edit_columns = columns
-            .iter()
-            .filter(|column| column.column_type == KvTableColumnType::Value)
-            .cloned()
-            .collect::<Vec<_>>();
-        let fetcher = Arc::new(fetcher);
-        let mut delegate = ZedisKvDelegate::new(
+        let delegate = ZedisKvDelegate::new(
             Self::new_columns(columns.clone(), window, cx),
             fetcher.clone(),
             window,
             cx,
         );
-        if readonly {
-            delegate.enable_readonly();
-        }
-
-        if fetcher.is_form_editor() {
-            let view = cx.entity();
-            delegate.set_on_edit(Some(Box::new(move |row_ix, values, window, cx| {
-                view.update(cx, |state, cx| {
-                    state.set_edit_values(row_ix, values, window, cx);
-                });
-            })));
-        }
 
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
-        let value_states = edit_columns
+        if !readonly {
+            subscriptions.push(cx.subscribe(&table_state, |this, _, event, cx| {
+                if let TableEvent::SelectRow(row_ix) = event {
+                    this.handle_select_row(*row_ix, cx);
+                }
+            }));
+        }
+
+        let value_states = columns
             .iter()
-            .map(|column| {
-                cx.new(|cx| {
-                    if column.readonly {
-                        InputState::new(window, cx)
-                    } else {
-                        InputState::new(window, cx)
-                            .code_editor(Language::from_str("json").name())
-                            .line_number(true)
-                            .indent_guides(true)
-                            .searchable(true)
-                            .soft_wrap(true)
-                    }
-                })
+            .enumerate()
+            .flat_map(|(index, column)| {
+                if column.column_type != KvTableColumnType::Value {
+                    return None;
+                }
+                Some((
+                    index,
+                    cx.new(|cx| {
+                        if column.readonly {
+                            InputState::new(window, cx)
+                        } else {
+                            InputState::new(window, cx)
+                                .code_editor(Language::from_str("json").name())
+                                .line_number(true)
+                                .indent_guides(true)
+                                .searchable(true)
+                                .soft_wrap(true)
+                        }
+                    }),
+                ))
             })
             .collect::<Vec<_>>();
         info!("Creating new key value table view");
@@ -301,34 +286,23 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             loading: false,
             key_changed: false,
             edit_row: None,
+            edit_fill_values: None,
             value_states,
             readonly,
             fetcher,
-            edit_columns,
+            columns,
             _subscriptions: subscriptions,
         }
     }
 
-    fn set_edit_values(
-        &mut self,
-        row_ix: usize,
-        values: Vec<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.edit_row == Some(row_ix) {
-            self.edit_row = None;
-            return;
-        }
+    fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
         self.edit_row = Some(row_ix);
-        self.value_states.iter().enumerate().for_each(|(index, state)| {
-            state.update(cx, |input, cx| {
-                let Some(value) = values.get(index) else {
-                    return;
-                };
-                input.set_value(value.clone(), window, cx);
-            });
-        });
+        let values = self
+            .value_states
+            .iter()
+            .map(|(index, _)| self.fetcher.get(row_ix, *index + 1).unwrap_or_default())
+            .collect::<Vec<_>>();
+        self.edit_fill_values = Some(values);
     }
 
     /// Triggers a filter operation using the current keyword from the input field.
@@ -344,20 +318,56 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             return;
         };
         let mut values = Vec::with_capacity(self.value_states.len());
-        for state in self.value_states.iter() {
+        for (_, state) in self.value_states.iter() {
             let value = state.read(cx).value();
             values.push(value);
         }
         self.fetcher.handle_update_value(row_ix, values, window, cx);
         self.edit_row = None;
     }
+    fn handle_remove_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row_ix) = self.edit_row else {
+            return;
+        };
+        let fetcher = self.fetcher.clone();
+        let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
+        let entity = cx.entity().clone();
+
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+            let message = t!(
+                "common.remove_item_prompt",
+                row = row_ix + 1,
+                value = value,
+                locale = locale
+            );
+
+            let fetcher = fetcher.clone();
+            let entity = entity.clone();
+
+            dialog
+                .confirm()
+                .button_props(dialog_button_props(cx))
+                .child(message.to_string())
+                .on_ok(move |_, window, cx| {
+                    fetcher.remove(row_ix, cx);
+                    entity.update(cx, |this, _cx| {
+                        this.edit_row = None;
+                    });
+                    window.close_dialog(cx);
+                    true
+                })
+        });
+    }
     /// Renders the edit form for the current row.
     fn render_edit_form(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut form = v_flex().size_full().gap_3();
-        for (index, column) in self.edit_columns.iter().enumerate() {
-            let Some(value_state) = self.value_states.get(index) else {
+        let count = self.value_states.len();
+        for (index, (column_index, value_state)) in self.value_states.iter().enumerate() {
+            let Some(column) = self.columns.get(*column_index) else {
                 continue;
             };
+            let last = index == count - 1;
             let input = Input::new(value_state)
                 .disabled(column.readonly)
                 .h_full()
@@ -365,7 +375,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 .font_family(get_font_family())
                 .focus_bordered(false);
 
-            let inner_content = if index != 0 {
+            let inner_content = if last {
                 v_flex()
                     .size_full()
                     .gap_1()
@@ -379,21 +389,29 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let wrapped_field = v_flex()
                 .w_full()
                 .child(inner_content)
-                .when(index != 0, |this| this.flex_1().h_full());
+                .when(last, |this| this.flex_1().h_full());
 
             form = form.child(wrapped_field);
         }
         let cancel_label = i18n_common(cx, "cancel");
         let save_label = i18n_common(cx, "save");
+        let remove_label = i18n_common(cx, "remove");
         form.child(
             div().flex_none().child(
                 field().child(
                     h_flex()
                         .id("kv-table-edit-form-btn-group")
                         .w_full()
-                        .items_center()
-                        .justify_end()
                         .gap_2()
+                        .child(
+                            Button::new("remove-edit-btn")
+                                .icon(CustomIconName::FileXCorner)
+                                .label(remove_label)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.handle_remove_row(window, cx);
+                                })),
+                        )
+                        .child(div().flex_1())
                         .child(
                             Button::new("cancel-edit-btn")
                                 .icon(IconName::CircleX)
@@ -428,6 +446,16 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             });
             self.key_changed = false;
         }
+        if let Some(values) = self.edit_fill_values.take() {
+            for (index, value) in values.iter().enumerate() {
+                let Some((_, state)) = self.value_states.get(index) else {
+                    continue;
+                };
+                state.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        }
 
         // Handler for adding new values
         let handle_add_value = cx.listener(|this, _, window, cx| {
@@ -454,65 +482,70 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             Icon::new(CustomIconName::CircleDotDashed) // More data available
         };
 
-        v_flex()
+        h_flex()
             .h_full()
             .w_full()
-            .relative()
-            // Main table area
+            // Left side: table + footer
             .child(
-                div().size_full().flex_1().child(
-                    Table::new(&self.table_state)
-                        .stripe(true) // Alternating row colors for better readability
-                        .bordered(true) // Table borders
-                        .scrollbar_visible(true, true), // Show both scrollbars
-                ),
-            )
-            // Footer toolbar with search and status
-            .child(
-                h_flex()
-                    .w_full()
-                    .p_2()
-                    // Left side: Add button and search input
+                v_flex()
+                    .h_full()
+                    .when(self.edit_row.is_some(), |this| this.w_1_2())
+                    .when(self.edit_row.is_none(), |this| this.w_full())
+                    // Main table area
+                    .child(
+                        div().flex_1().w_full().child(
+                            Table::new(&self.table_state)
+                                .stripe(true) // Alternating row colors for better readability
+                                .bordered(true) // Table borders
+                                .scrollbar_visible(true, true), // Show both scrollbars
+                        ),
+                    )
+                    // Footer toolbar with search and status
                     .child(
                         h_flex()
-                            .gap_2()
+                            .flex_none()
+                            .w_full()
+                            .p_3()
+                            // Left side: Add button and search input
                             .child(
-                                Button::new("add-value-btn")
-                                    .icon(CustomIconName::FilePlusCorner)
-                                    .disabled(self.readonly)
-                                    .tooltip(if self.readonly {
-                                        i18n_common(cx, "disable_in_readonly")
-                                    } else {
-                                        i18n_kv_table(cx, "add_value_tooltip")
-                                    })
-                                    .on_click(handle_add_value),
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("add-value-btn")
+                                            .icon(CustomIconName::FilePlusCorner)
+                                            .disabled(self.readonly)
+                                            .tooltip(if self.readonly {
+                                                i18n_common(cx, "disable_in_readonly")
+                                            } else {
+                                                i18n_kv_table(cx, "add_value_tooltip")
+                                            })
+                                            .on_click(handle_add_value),
+                                    )
+                                    .child(
+                                        Input::new(&self.keyword_state)
+                                            .w(px(KEYWORD_INPUT_WIDTH))
+                                            .suffix(search_btn)
+                                            .cleanable(true),
+                                    )
+                                    .flex_1(),
                             )
+                            // Right side: Status icon and count
+                            .child(status_icon.text_color(text_color).mr_2())
                             .child(
-                                Input::new(&self.keyword_state)
-                                    .w(px(KEYWORD_INPUT_WIDTH))
-                                    .suffix(search_btn)
-                                    .cleanable(true),
-                            )
-                            .flex_1(),
-                    )
-                    // Right side: Status icon and count
-                    .child(status_icon.text_color(text_color).mr_2())
-                    .child(
-                        Label::new(format!("{} / {}", self.items_count, self.total_count))
-                            .text_sm()
-                            .text_color(text_color),
+                                Label::new(format!("{} / {}", self.items_count, self.total_count))
+                                    .text_sm()
+                                    .text_color(text_color),
+                            ),
                     ),
             )
+            // Right side: edit panel (full height)
             .when(self.edit_row.is_some(), |this| {
                 this.child(
                     div()
                         .id("kv-table-on-edit-overlay")
-                        .absolute()
-                        .top_1_2()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .border_t_1()
+                        .w_1_2()
+                        .h_full()
+                        .border_l_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().background)
                         .p_2()

@@ -65,6 +65,8 @@ pub enum ServerTask {
 
     /// Add a value to a set
     AddSetValue,
+    /// Update a value in a set
+    UpdateSetValue,
     /// Remove a value from a set
     RemoveSetValue,
 
@@ -73,8 +75,12 @@ pub enum ServerTask {
     /// Remove a value from a zset
     RemoveZsetValue,
 
+    /// Add a field-value pair to a hash
+    AddHashField,
+    /// Update a field-value pair in a hash
+    UpdateHashField,
     /// Remove a value from a hash
-    RemoveHashValue,
+    RemoveHashField,
 
     /// Save edited value back to Redis
     SaveValue,
@@ -100,10 +106,13 @@ impl ServerTask {
             ServerTask::SaveValue => "save_value",
             ServerTask::PushListValue => "push_list_value",
             ServerTask::AddSetValue => "add_set_value",
+            ServerTask::UpdateSetValue => "update_set_value",
             ServerTask::RemoveSetValue => "remove_set_value",
             ServerTask::AddZsetValue => "add_zset_value",
             ServerTask::RemoveZsetValue => "remove_zset_value",
-            ServerTask::RemoveHashValue => "remove_hash_value",
+            ServerTask::AddHashField => "add_hash_field",
+            ServerTask::UpdateHashField => "update_hash_field",
+            ServerTask::RemoveHashField => "remove_hash_field",
         }
     }
 }

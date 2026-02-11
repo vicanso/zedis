@@ -126,6 +126,19 @@ impl ZedisKvFetcher for ZedisSetValues {
         });
     }
 
+    fn handle_update_value(&self, index: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+        let Some(new_value) = values.first() else {
+            return;
+        };
+        let Some(old_value) = self.value.set_value().and_then(|v| v.values.get(index).cloned()) else {
+            return;
+        };
+
+        self.server_state.update(cx, |this, cx| {
+            this.update_set_value(old_value, new_value.clone(), cx);
+        });
+    }
+
     /// Removes a member from the SET at the given index.
     ///
     /// Executes Redis SREM command to delete the member.

@@ -73,18 +73,6 @@ impl ZedisKvFetcher for ZedisZsetValues {
         self.value.zset_value().map_or(0, |v| v.values.len())
     }
 
-    /// Specifies which columns are read-only in the table.
-    ///
-    /// Column 1 (member name) is read-only; only the score can be edited inline.
-    fn readonly_columns(&self) -> Vec<usize> {
-        vec![1]
-    }
-
-    /// Indicates whether the table supports inline editing.
-    fn can_update(&self) -> bool {
-        true
-    }
-
     /// Checks if all ZSET members have been loaded.
     ///
     /// Returns `true` when either:
@@ -185,7 +173,7 @@ impl ZedisKvFetcher for ZedisZsetValues {
     ///
     /// Called when the user edits the score column directly in the table.
     /// Updates the score for the existing member using Redis ZADD.
-    fn handle_update_value(&self, _row_ix: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+    fn handle_update_value(&self, row_ix: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
         // Extract member name and new score from values
         let Some(member) = values.first() else {
             return;
@@ -193,11 +181,18 @@ impl ZedisKvFetcher for ZedisZsetValues {
         let Some(score_str) = values.get(1) else {
             return;
         };
+        let Some(original_member) = self
+            .value
+            .zset_value()
+            .and_then(|v| v.values.get(row_ix).map(|(m, _)| m.clone()))
+        else {
+            return;
+        };
 
         // Parse score and execute update operation
         let score = score_str.parse::<f64>().unwrap_or(0.0);
         self.server_state.update(cx, |state, cx| {
-            state.update_zset_value(member.clone(), score, cx);
+            state.update_zset_value(original_member, member.clone(), score, cx);
         });
     }
 

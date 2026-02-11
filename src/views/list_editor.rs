@@ -94,11 +94,6 @@ impl ZedisKvFetcher for ZedisListValues {
         }
     }
 
-    /// Indicates that list values support in-place updates (LSET command).
-    fn can_update(&self) -> bool {
-        true
-    }
-
     /// Returns the total count of items in the Redis list (from LLEN).
     fn count(&self) -> usize {
         self.value.list_value().map_or(0, |v| v.size)

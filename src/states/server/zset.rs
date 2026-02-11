@@ -183,6 +183,56 @@ pub(crate) async fn first_load_zset_value(
 }
 
 impl ZedisServerState {
+    /// A generic helper for ZSET operations (Add, Update, Remove).
+    /// Handles status updates, UI synchronization, and background task execution.
+    fn exec_zset_op<F, Fut, R>(
+        &mut self,
+        task: ServerTask,
+        cx: &mut Context<Self>,
+        optimistic_update: impl FnOnce(&mut RedisZsetValue),
+        redis_op: F,
+        on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
+    ) where
+        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<R>> + Send,
+        R: Send + 'static,
+    {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        let key_str = key.to_string();
+        value.status = RedisValueStatus::Updating;
+
+        // Perform optimistic update on local state
+        if let Some(RedisValueData::Zset(zset_data)) = value.data.as_mut() {
+            optimistic_update(Arc::make_mut(zset_data));
+            cx.emit(ServerEvent::ValueUpdated);
+        }
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+
+        self.spawn(
+            task,
+            move || async move {
+                let conn = get_connection_manager().get_connection(&server_id, db).await?;
+                redis_op(key_str, conn).await
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                }
+                match result {
+                    Ok(data) => on_success(this, data, cx),
+                    Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     /// Adds or updates a member in the Redis ZSET with the specified score.
     ///
     /// Uses ZADD command which updates the score if the member already exists,
@@ -195,7 +245,7 @@ impl ZedisServerState {
     /// * `score` - The score to assign to the member
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn add_zset_value(&mut self, new_value: SharedString, score: f64, cx: &mut Context<Self>) {
-        self.add_or_update_zset_value(new_value, score, cx);
+        self.add_or_update_zset_value(new_value, score, None, cx);
     }
     /// Updates a member in the Redis ZSET with the specified score.
     ///
@@ -205,97 +255,83 @@ impl ZedisServerState {
     /// * `new_value` - The member name to update
     /// * `score` - The score to assign to the member
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn update_zset_value(&mut self, new_value: SharedString, score: f64, cx: &mut Context<Self>) {
-        self.add_or_update_zset_value(new_value, score, cx);
+    pub fn update_zset_value(
+        &mut self,
+        old_value: SharedString,
+        new_value: SharedString,
+        score: f64,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_or_update_zset_value(new_value, score, Some(old_value), cx);
     }
-    fn add_or_update_zset_value(&mut self, new_value: SharedString, score: f64, cx: &mut Context<Self>) {
-        // Early return if no key/value is selected
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
-
-        // Update UI state to show "updating" status
-        value.status = RedisValueStatus::Updating;
-        cx.notify();
-
-        let server_id = self.server_id.clone();
-        let db = self.db;
+    fn add_or_update_zset_value(
+        &mut self,
+        new_value: SharedString,
+        score: f64,
+        old_value: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         let new_value_clone = new_value.clone();
+        let old_value_clone = old_value.clone();
+        let is_removed = old_value.is_some();
 
-        self.spawn(
+        self.exec_zset_op(
             ServerTask::AddZsetValue,
-            // Async operation: execute ZADD on Redis
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+            cx,
+            move |zset| {
+                let mut exists = false;
+                // Update if exists or handle "rename" logic
+                if let Some(ref old) = old_value_clone
+                    && let Some(item) = zset.values.iter_mut().find(|v| &v.0 == old)
+                {
+                    *item = (new_value_clone.clone(), score);
+                    exists = true;
+                }
 
-                // ZADD returns number of new elements added (0 if updating existing)
+                if !exists {
+                    // Remove old if this is a rename that wasn't found in current visible page
+                    if let Some(ref old) = old_value_clone {
+                        zset.values.retain(|v| &v.0 != old);
+                    }
+
+                    // Insert into correct position using binary search if no filter is active
+                    if zset.keyword.is_none() {
+                        let idx = zset.values.partition_point(|(_, s)| {
+                            if zset.sort_order == SortOrder::Asc {
+                                *s < score
+                            } else {
+                                *s > score
+                            }
+                        });
+                        zset.values.insert(idx, (new_value_clone, score));
+                    }
+                }
+            },
+            move |key, mut conn| async move {
                 let count: usize = cmd("ZADD")
-                    .arg(key.as_str())
+                    .arg(&key)
                     .arg(score)
                     .arg(new_value.as_str())
                     .query_async(&mut conn)
                     .await?;
+                if let Some(old) = old_value {
+                    let _: () = cmd("ZREM").arg(&key).arg(old.as_str()).query_async(&mut conn).await?;
+                }
                 Ok(count)
             },
-            // UI callback: handle result and update local state
-            move |this, result, cx| {
-                // Reset status to idle
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                }
-                let title = i18n_zset_editor(cx, "add_value_success");
-                let msg = i18n_zset_editor(cx, "add_value_success_tips");
-                let update_score_msg = i18n_zset_editor(cx, "update_value_score_success_tips");
-
-                if let Ok(count) = result
+            move |this, count, cx| {
+                if !is_removed
                     && let Some(RedisValueData::Zset(zset_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
-                    let zset = Arc::make_mut(zset_data);
-                    zset.size += count;
-
-                    let mut inserted = false;
-                    let mut exists_value = false;
-
-                    // Check if member already exists and update its score
-                    for item in zset.values.iter_mut() {
-                        if item.0 == new_value_clone {
-                            *item = (new_value_clone.clone(), score);
-                            exists_value = true;
-                            break;
-                        }
-                    }
-
-                    // If member doesn't exist and we're not filtering, insert at correct position
-                    if !exists_value && zset.keyword.is_none() {
-                        // Binary search to find insertion point based on sort order
-                        let index = zset.values.partition_point(|(_, value)| {
-                            if zset.sort_order == SortOrder::Asc {
-                                *value < score
-                            } else {
-                                *value > score
-                            }
-                        });
-
-                        // Insert at the found position if not at the end
-                        if index != zset.values.len() {
-                            zset.values.insert(index, (new_value_clone, score));
-                            inserted = true;
-                        }
-                    }
-
-                    cx.emit(ServerEvent::ValueAdded);
-
-                    if exists_value {
-                        this.emit_success_notification(update_score_msg, title, cx);
-                    } else if !inserted {
-                        // Show notification only if not inserted (avoids double feedback)
-                        this.emit_success_notification(msg, title, cx);
-                    }
+                    Arc::make_mut(zset_data).size += count;
                 }
-
-                cx.notify();
+                cx.emit(ServerEvent::ValueAdded);
+                this.emit_success_notification(
+                    i18n_zset_editor(cx, "add_value_success_tips"),
+                    i18n_zset_editor(cx, "add_value_success"),
+                    cx,
+                );
             },
-            cx,
         );
     }
     /// Applies a filter to ZSET members by resetting the scan state with a keyword.
@@ -441,53 +477,25 @@ impl ZedisServerState {
     /// * `remove_value` - The member name to remove from the ZSET
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn remove_zset_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
-
-        // Update UI state to show loading
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
-
-        let server_id = self.server_id.clone();
-        let db = self.db;
         let remove_value_clone = remove_value.clone();
-
-        self.spawn(
+        self.exec_zset_op(
             ServerTask::RemoveZsetValue,
-            // Async operation: execute ZREM on Redis
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-                // ZREM removes the member and returns success
+            cx,
+            move |zset| {
+                zset.size = zset.size.saturating_sub(1);
+                zset.values.retain(|(name, _)| name != &remove_value_clone);
+            },
+            move |key, mut conn| async move {
                 let _: () = cmd("ZREM")
-                    .arg(key.as_str())
+                    .arg(&key)
                     .arg(remove_value.as_str())
                     .query_async(&mut conn)
                     .await?;
                 Ok(())
             },
-            // UI callback: update local state to reflect removal
-            move |this, result, cx| {
-                if let Ok(()) = result
-                    && let Some(RedisValueData::Zset(zset_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
-                {
-                    let zset = Arc::make_mut(zset_data);
-
-                    // Remove from local values list
-                    zset.values.retain(|(name, _)| name != &remove_value_clone);
-                    zset.size -= 1;
-                }
-
+            |_, _, cx| {
                 cx.emit(ServerEvent::ValueUpdated);
-
-                // Reset status to idle
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                }
-                cx.notify();
             },
-            cx,
         );
     }
 }

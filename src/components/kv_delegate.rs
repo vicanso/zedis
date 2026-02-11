@@ -12,29 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
-use crate::states::{RedisValue, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common};
+use crate::states::{RedisValue, ZedisServerState};
 use crate::views::{KvTableColumn, KvTableColumnType};
 use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
-    button::{Button, ButtonVariants},
-    h_flex,
-    input::{Input, InputState},
+    ActiveTheme, StyledExt, h_flex,
     label::Label,
     table::{Column, TableDelegate, TableState},
 };
-use rust_i18n::t;
-use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 pub const INDEX_COLUMN_NAME: &str = "#";
 
 /// Trait defining the data fetching and manipulation interface for Key-Value data.
 /// Implementers allow the `ZedisKvDelegate` to display and edit various Redis data types (Hash, Set, List, ZSet).
 pub trait ZedisKvFetcher: 'static {
-    fn is_form_editor(&self) -> bool {
-        false
-    }
     /// Retrieves a value for a specific cell in the table.
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
 
@@ -49,19 +41,9 @@ pub trait ZedisKvFetcher: 'static {
         !self.is_done()
     }
 
-    /// Returns whether the data supports in-place updates.
-    fn can_update(&self) -> bool {
-        false
-    }
-
     /// Returns the column index used as the primary identifier (e.g., for deletion).
     fn primary_index(&self) -> usize {
         0
-    }
-
-    /// Returns the column indices that are readonly.
-    fn readonly_columns(&self) -> Vec<usize> {
-        vec![]
     }
 
     /// Returns true if the fetcher is finished loading data.
@@ -86,8 +68,6 @@ pub trait ZedisKvFetcher: 'static {
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
 
-pub type OnEditHandler = Box<dyn Fn(usize, Vec<SharedString>, &mut Window, &mut App) + 'static>;
-
 /// A Table Delegate that manages the display and editing of Key-Value pairs.
 /// It bridges the UI (Table) and the Data Source (ZedisKvFetcher).
 pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
@@ -95,20 +75,10 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     table_columns: Vec<KvTableColumn>,
     /// State tracking if an async operation (like delete/load) is in progress.
     processing: Rc<Cell<bool>>,
-    /// Whether the delegate is readonly
-    readonly: bool,
     /// The data source provider.
     fetcher: Arc<T>,
     /// Column definitions for the UI component.
     columns: Vec<Column>,
-    /// Tracks which row is currently being edited (if any).
-    editing_row: Cell<Option<usize>>,
-    /// Input states for editable cells, keyed by column index.
-    value_states: HashMap<usize, Entity<InputState>>,
-    /// Flag to ensure focus is applied only once when entering edit mode.
-    edit_focus_done: bool,
-    /// Callback function to be called when editing a row.
-    on_edit: Option<OnEditHandler>,
 }
 
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
@@ -119,20 +89,11 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     /// * `fetcher` - Data source implementing ZedisKvFetcher trait
     /// * `window` - GPUI window context
     /// * `cx` - GPUI application context
-    pub fn new(columns: Vec<KvTableColumn>, fetcher: Arc<T>, window: &mut Window, cx: &mut App) -> Self {
-        let mut value_states = HashMap::new();
-
+    pub fn new(columns: Vec<KvTableColumn>, fetcher: Arc<T>, _window: &mut Window, _cx: &mut App) -> Self {
         // Convert KvTableColumns to UI Columns and initialize input states
         let ui_columns = columns
             .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                // Create input state for editable value columns
-                if item.column_type == KvTableColumnType::Value {
-                    value_states.insert(index, cx.new(|cx| InputState::new(window, cx).clean_on_escape()));
-                }
-
-                // Build column with standard padding
+            .map(|item| {
                 Column::new(item.name.clone(), item.name.clone())
                     .when_some(item.width, |col, width| col.width(width))
                     .map(|mut col| {
@@ -153,22 +114,9 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         Self {
             table_columns: columns,
             columns: ui_columns,
-            value_states,
             fetcher,
             processing: Rc::new(Cell::new(false)),
-            editing_row: Cell::new(None),
-            edit_focus_done: false,
-            readonly: false,
-            on_edit: None,
         }
-    }
-
-    pub fn enable_readonly(&mut self) {
-        self.readonly = true;
-    }
-
-    pub fn set_on_edit(&mut self, on_edit: Option<OnEditHandler>) {
-        self.on_edit = on_edit;
     }
 
     /// Returns a cloned Arc reference to the current fetcher.
@@ -178,188 +126,9 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
 
     /// Replaces the current fetcher with a new one (e.g., when switching keys).
     /// Resets processing state to ensure clean transition.
-    pub fn set_fetcher(&mut self, fetcher: T) {
-        self.fetcher = Arc::new(fetcher);
+    pub fn set_fetcher(&mut self, fetcher: Arc<T>) {
+        self.fetcher = fetcher;
         self.processing = Rc::new(Cell::new(false));
-    }
-
-    /// Exits edit mode and resets related state flags.
-    fn reset_edit(&mut self) {
-        self.edit_focus_done = false;
-        self.editing_row.set(None);
-    }
-
-    fn get_edit_values(&self, row_ix: usize) -> Vec<(usize, SharedString)> {
-        let mut values = Vec::new();
-        let fetcher = self.fetcher();
-        let mut columns = self.value_states.keys().cloned().collect::<Vec<_>>();
-        // keep the order of the columns
-        columns.sort_unstable();
-        for col_ix in columns {
-            if let Some(value) = fetcher.get(row_ix, col_ix) {
-                values.push((col_ix, value));
-            }
-        }
-        values
-    }
-
-    /// Enters edit mode for the specified row, populating input fields with current values.
-    ///
-    /// # Arguments
-    /// * `row_ix` - The row index to edit
-    pub fn handle_edit_row(&mut self, row_ix: usize, window: &mut Window, cx: &mut App) {
-        self.edit_focus_done = false;
-        self.editing_row.set(Some(row_ix));
-
-        // Populate input fields with current values from fetcher
-        let values = self.get_edit_values(row_ix);
-        for (col_ix, value) in values.iter() {
-            if let Some(state) = self.value_states.get(col_ix) {
-                state.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
-            }
-        }
-    }
-
-    /// Commits the edited values and exits edit mode.
-    ///
-    /// # Arguments
-    /// * `row_ix` - The row index being updated
-    pub fn handle_update_row(&mut self, row_ix: usize, window: &mut Window, cx: &mut App) {
-        self.reset_edit();
-
-        // Collect values from input fields in sorted column order
-        let values: Vec<SharedString> = {
-            let mut col_indices: Vec<_> = self.value_states.keys().copied().collect();
-            col_indices.sort_unstable();
-
-            col_indices
-                .iter()
-                .filter_map(|&col_ix| self.value_states.get(&col_ix).map(|state| state.read(cx).value()))
-                .collect()
-        };
-
-        self.fetcher().handle_update_value(row_ix, values, window, cx);
-    }
-
-    /// Renders action buttons (edit/save/cancel/delete) for a table row.
-    ///
-    /// # Button behavior:
-    /// - Edit mode: Shows save (check) and cancel (X) buttons
-    /// - View mode: Shows edit (pen) and delete (X) buttons
-    ///
-    /// # Arguments
-    /// * `base` - Base container to add buttons to
-    /// * `row_ix` - Row index for button handlers
-    /// * `is_editing` - Whether the row is currently in edit mode
-    fn render_action_buttons(
-        &mut self,
-        base: gpui::Div,
-        row_ix: usize,
-        is_editing: bool,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> gpui::Div {
-        let processing = self.processing.clone();
-        let mut base = base;
-
-        // Edit/Save button (only shown if fetcher supports updates)
-        if self.fetcher.can_update() {
-            let icon = if is_editing {
-                Icon::new(IconName::Check)
-            } else {
-                Icon::new(CustomIconName::FilePenLine)
-            };
-
-            let update_btn = Button::new(("zedis-editor-table-action-update-btn", row_ix))
-                .small()
-                .ghost()
-                .mr_2()
-                .icon(icon)
-                .tooltip(if self.readonly {
-                    i18n_common(cx, "disable_in_readonly")
-                } else {
-                    i18n_common(cx, "update_tooltip")
-                })
-                .disabled(self.readonly || processing.get())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let values = this.delegate_mut().get_edit_values(row_ix);
-                    if let Some(on_edit_handler) = this.delegate_mut().on_edit.as_ref() {
-                        on_edit_handler(row_ix, values.into_iter().map(|(_, value)| value).collect(), window, cx);
-                    } else if is_editing {
-                        this.delegate_mut().handle_update_row(row_ix, window, cx);
-                    } else {
-                        this.delegate_mut().handle_edit_row(row_ix, window, cx);
-                        cx.notify();
-                    }
-                    cx.stop_propagation();
-                }));
-
-            base = base.child(update_btn);
-        }
-
-        // Cancel/Delete button
-        if is_editing {
-            // Cancel button (exits edit mode without saving)
-            let cancel_btn = Button::new(("zedis-editor-table-action-cancel-btn", row_ix))
-                .small()
-                .ghost()
-                .mr_2()
-                .icon(Icon::new(CustomIconName::X))
-                .tooltip(i18n_common(cx, "cancel_tooltip"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.delegate_mut().editing_row.set(None);
-                    cx.stop_propagation();
-                    cx.notify();
-                }));
-            base = base.child(cancel_btn);
-        } else {
-            // Delete button (shows confirmation dialog)
-            let fetcher = self.fetcher.clone();
-            let remove_btn = Button::new(("zedis-editor-table-action-remove-btn", row_ix))
-                .small()
-                .ghost()
-                .icon(Icon::new(CustomIconName::FileXCorner))
-                .tooltip(if self.readonly {
-                    i18n_common(cx, "disable_in_readonly")
-                } else {
-                    i18n_common(cx, "remove_tooltip")
-                })
-                .disabled(self.readonly || processing.get())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let processing = this.delegate_mut().processing.clone();
-                    let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
-                    let fetcher = fetcher.clone();
-
-                    cx.stop_propagation();
-
-                    window.open_dialog(cx, move |dialog, _, cx| {
-                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                        let message = t!(
-                            "common.remove_item_prompt",
-                            row = row_ix + 1,
-                            value = value,
-                            locale = locale
-                        );
-
-                        let processing = processing.clone();
-                        let fetcher = fetcher.clone();
-
-                        dialog
-                            .confirm()
-                            .button_props(dialog_button_props(cx))
-                            .child(message.to_string())
-                            .on_ok(move |_, window, cx| {
-                                processing.replace(true);
-                                fetcher.remove(row_ix, cx);
-                                window.close_dialog(cx);
-                                true
-                            })
-                    });
-                }));
-            base = base.child(remove_btn);
-        }
-
-        base
     }
 }
 
@@ -403,7 +172,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         &mut self,
         row_ix: usize,
         col_ix: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
@@ -411,31 +180,15 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings));
 
-        let is_editing = self.editing_row.get() == Some(row_ix) && !self.fetcher.readonly_columns().contains(&col_ix);
-
         // Handle special column types
-        if let Some(table_column) = self.table_columns.get(col_ix) {
-            match table_column.column_type {
-                // Index column: Display row number (1-based)
-                KvTableColumnType::Index => {
-                    return base.child(Label::new((row_ix + 1).to_string()).text_align(column.align).w_full());
-                }
-                // Action column: Display edit/delete/cancel buttons
-                KvTableColumnType::Action => {
-                    return self.render_action_buttons(base, row_ix, is_editing, window, cx);
-                }
-                _ => {}
-            }
-        }
-
-        // Render editable input or static label for value columns
-        if is_editing && let Some(value_state) = self.value_states.get(&col_ix) {
-            // Auto-focus the first input when entering edit mode
-            if !self.edit_focus_done {
-                value_state.update(cx, |input, cx| input.focus(window, cx));
-                self.edit_focus_done = true;
-            }
-            return base.child(Input::new(value_state).small().cleanable(true));
+        if self
+            .table_columns
+            .get(col_ix)
+            .map(|item| item.column_type == KvTableColumnType::Index)
+            .unwrap_or_default()
+        {
+            // Index column: Display row number (1-based)
+            return base.child(Label::new((row_ix + 1).to_string()).text_align(column.align).w_full());
         }
 
         // Default: Render value as label

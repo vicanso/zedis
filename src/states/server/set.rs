@@ -111,6 +111,90 @@ pub(crate) async fn first_load_set_value(conn: &mut RedisAsyncConn, key: &str) -
 }
 
 impl ZedisServerState {
+    /// A generic helper for Redis Set operations (Add, Remove, Update).
+    /// Handles status switching, optimistic UI updates, and background task execution.
+    fn exec_set_op<F, Fut, R>(
+        &mut self,
+        task: ServerTask,
+        cx: &mut Context<Self>,
+        optimistic_update: impl FnOnce(&mut RedisSetValue),
+        redis_op: F,
+        on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
+    ) where
+        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<R>> + Send,
+        R: Send + 'static,
+    {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        let key_str = key.to_string();
+        value.status = RedisValueStatus::Updating;
+
+        // Step 1: Perform local optimistic update
+        if let Some(RedisValueData::Set(set_data)) = value.data.as_mut() {
+            optimistic_update(Arc::make_mut(set_data));
+            cx.emit(ServerEvent::ValueUpdated);
+        }
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+
+        // Step 2: Spawn background task
+        self.spawn(
+            task,
+            move || async move {
+                let conn = get_connection_manager().get_connection(&server_id, db).await?;
+                redis_op(key_str, conn).await
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                }
+
+                match result {
+                    Ok(data) => on_success(this, data, cx),
+                    Err(e) => {
+                        // Handle error (e.g., show notification and potentially rollback if needed)
+                        this.emit_error_notification(e.to_string().into(), cx);
+                    }
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+    pub fn update_set_value(&mut self, old_value: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
+        let old_value_clone = old_value.clone();
+        let new_value_clone = new_value.clone();
+
+        self.exec_set_op(
+            ServerTask::UpdateSetValue,
+            cx,
+            move |set| {
+                if let Some(pos) = set.values.iter().position(|v| v == &old_value_clone) {
+                    set.values[pos] = new_value_clone;
+                }
+            },
+            move |key, mut conn| async move {
+                // Use pipeline for atomic-like sequence of SREM and SADD
+                let (_, count): (usize, usize) = redis::pipe()
+                    .cmd("SREM")
+                    .arg(&key)
+                    .arg(old_value.as_str())
+                    .cmd("SADD")
+                    .arg(&key)
+                    .arg(new_value.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(count)
+            },
+            |_, _, cx| {
+                cx.emit(ServerEvent::ValueUpdated);
+            },
+        );
+    }
     /// Adds a new member to the Redis SET.
     ///
     /// Uses SADD command which only adds the member if it doesn't already exist.
@@ -120,69 +204,38 @@ impl ZedisServerState {
     /// * `new_value` - The member value to add to the SET
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn add_set_value(&mut self, new_value: SharedString, cx: &mut Context<Self>) {
-        // Early return if no key/value is selected
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
+        let val_clone = new_value.clone();
 
-        // Update UI state to show "updating" status
-        value.status = RedisValueStatus::Updating;
-        cx.notify();
-
-        let server_id = self.server_id.clone();
-        let db = self.db;
-        let new_value_clone = new_value.clone();
-
-        self.spawn(
+        self.exec_set_op(
             ServerTask::AddSetValue,
-            // Async operation: execute SADD on Redis
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-                // SADD returns number of elements added (0 if already exists, 1 if new)
+            cx,
+            |_| {}, // No optimistic update for add to prevent duplicate UI entries before confirmation
+            move |key, mut conn| async move {
                 let count: usize = cmd("SADD")
-                    .arg(key.as_str())
+                    .arg(&key)
                     .arg(new_value.as_str())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
             },
-            // UI callback: handle result and update state
-            move |this, result, cx| {
-                let Some(value) = this.value.as_mut() else {
-                    return;
-                };
-                value.status = RedisValueStatus::Idle;
-
-                if let Ok(count) = result {
-                    if count == 0 {
-                        // Value already exists in SET
-                        let msg = i18n_set_editor(cx, "add_value_exists_tips");
-                        this.emit_warning_notification(msg, cx);
-
-                        // cx.emit(ServerEvent::Notification(NotificationAction::new_warning(msg)));
-                    } else {
-                        // Successfully added new value
-                        let title = i18n_set_editor(cx, "add_value_success");
-                        let msg = i18n_set_editor(cx, "add_value_success_tips");
-
-                        if let Some(RedisValueData::Set(set_data)) = value.data.as_mut() {
-                            let set = Arc::make_mut(set_data);
-                            set.size += count;
-
-                            // Only add to UI list if scan is complete and value isn't already shown
-                            if set.done && !set.values.contains(&new_value_clone) {
-                                set.values.push(new_value_clone);
-                            }
-                            this.emit_success_notification(msg, title, cx);
-                        }
+            move |this, count, cx| {
+                if count == 0 {
+                    this.emit_warning_notification(i18n_set_editor(cx, "add_value_exists_tips"), cx);
+                } else if let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
+                    let set = Arc::make_mut(set_data);
+                    set.size += count;
+                    // Only append to UI if scan is complete to maintain consistency
+                    if set.done && !set.values.contains(&val_clone) {
+                        set.values.push(val_clone);
                     }
+                    this.emit_success_notification(
+                        i18n_set_editor(cx, "add_value_success_tips"),
+                        i18n_set_editor(cx, "add_value_success"),
+                        cx,
+                    );
                 }
-
                 cx.emit(ServerEvent::ValueAdded);
-                cx.notify();
             },
-            cx,
         );
     }
     /// Applies a filter to SET members by resetting the scan state with a keyword.
@@ -304,55 +357,26 @@ impl ZedisServerState {
     /// * `remove_value` - The member value to remove from the SET
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn remove_set_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return;
-        };
+        let val_clone = remove_value.clone();
 
-        // Update UI state to show loading
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
-
-        let server_id = self.server_id.clone();
-        let db = self.db;
-        let remove_value_clone = remove_value.clone();
-
-        self.spawn(
+        self.exec_set_op(
             ServerTask::RemoveSetValue,
-            // Async operation: execute SREM on Redis
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-                // SREM returns number of members removed (0 if doesn't exist, 1 if removed)
+            cx,
+            move |set| {
+                set.size -= 1;
+                set.values.retain(|v| v != &val_clone);
+            },
+            move |key, mut conn| async move {
                 let count: usize = cmd("SREM")
-                    .arg(key.as_str())
+                    .arg(&key)
                     .arg(remove_value.as_str())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
             },
-            // UI callback: update local state to reflect removal
-            move |this, result, cx| {
-                if let Ok(count) = result
-                    && let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
-                {
-                    let set = Arc::make_mut(set_data);
-
-                    // Decrease SET size by number of removed members
-                    set.size -= count;
-
-                    // Remove from local values list
-                    set.values.retain(|v| v != &remove_value_clone);
-                }
-
+            |_, _, cx| {
                 cx.emit(ServerEvent::ValueUpdated);
-
-                // Reset status to idle
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                }
-                cx.notify();
             },
-            cx,
         );
     }
 }
