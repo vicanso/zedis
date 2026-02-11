@@ -160,6 +160,17 @@ jobs:
         shell: bash
         run: |
           ./.github/workflows/upload_asset.sh ./${{ env.ZIP_NAME }} $GITHUB_TOKEN
+      - name: Release Nightly Assets
+        uses: softprops/action-gh-release@v2
+        with:
+            tag_name: nightly
+            name: "Development Build (Nightly)"
+            body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
+            prerelease: true  
+            files: |
+                ${{ env.ZIP_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   linux:
     name: linux-${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
