@@ -786,6 +786,7 @@ impl ZedisKeyTree {
     fn render_keyword_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
+        let scanning = server_state.scanning();
         let readonly = server_state.readonly();
         let server_id = server_state.server_id();
         if server_id != self.state.server_id.as_str() {
@@ -839,6 +840,14 @@ impl ZedisKeyTree {
                             )
                     })
             });
+        let search_btn = Button::new("key-tree-search-btn")
+            .ghost()
+            .loading(scanning)
+            .disabled(scanning)
+            .icon(IconName::Search)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.handle_filter(cx);
+            }));
         // keyword input
         let keyword_input = Input::new(&self.keyword_state)
             .w_full()
@@ -846,6 +855,7 @@ impl ZedisKeyTree {
             .px_0()
             .mr_2()
             .prefix(query_mode_dropdown)
+            .suffix(search_btn)
             .cleanable(true);
         let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
         h_flex()
