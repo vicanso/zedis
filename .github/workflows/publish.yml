@@ -168,9 +168,9 @@ jobs:
             body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
             prerelease: true  
             files: |
-                ${{ env.ZIP_NAME }}
+              ${{ env.ZIP_NAME }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: $GITHUB_TOKEN
   linux:
     name: linux-${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
