@@ -235,11 +235,29 @@ impl ZedisAppState {
     pub fn try_new() -> Result<Self> {
         let path = get_or_create_server_config()?;
         let value = std::fs::read_to_string(path)?;
-        let mut state: Self = toml::from_str(&value)?;
-        if state.locale.clone().unwrap_or_default().is_empty()
-            && let Some((lang, _)) = get_locale().unwrap_or_else(|| String::from("en-US")).split_once("-")
-        {
-            state.locale = Some(lang.to_string());
+        let mut state = if value.is_empty() {
+            Self::default()
+        } else {
+            toml::from_str(&value)?
+        };
+        if state.locale.clone().unwrap_or_default().is_empty() {
+            if let Some(locale) = get_locale() {
+                // Try to extract the language code from the locale string
+                // Handle formats like: "en-US", "zh-CN", "en", "zh", etc.
+                let lang = if let Some((lang, _)) = locale.split_once('-') {
+                    lang
+                } else if let Some((lang, _)) = locale.split_once('_') {
+                    // Some systems use underscore: "en_US"
+                    lang
+                } else {
+                    // Already a simple language code like "en" or "zh"
+                    locale.as_str()
+                };
+                state.locale = Some(lang.to_lowercase());
+            } else {
+                // Fallback to English if locale detection fails
+                state.locale = Some("en".to_string());
+            }
         }
         state.route = Route::Home;
 
