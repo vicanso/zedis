@@ -285,6 +285,7 @@ impl ZedisStatusBar {
     fn reset(&mut self, server_id: SharedString) {
         if self.state.server_state.server_id != server_id {
             self.state.server_state = StatusBarServerState::default();
+            self.state.server_state.server_id = server_id;
         } else {
             self.state.server_state.size = SharedString::default();
         }

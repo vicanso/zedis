@@ -170,7 +170,7 @@ jobs:
             files: |
               ${{ env.ZIP_NAME }}
         env:
-          GITHUB_TOKEN: $GITHUB_TOKEN
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   linux:
     name: linux-${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
