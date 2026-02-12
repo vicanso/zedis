@@ -16,16 +16,18 @@ use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
+    helpers::{EditorAction, humanize_keystroke},
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table},
 };
 use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::highlighter::Language;
+use gpui_component::input::Position;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, PixelsExt, WindowExt,
     button::{Button, ButtonVariants},
     form::field,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Escape, Input, InputEvent, InputState},
     label::Label,
     table::{Table, TableEvent, TableState},
     v_flex,
@@ -99,8 +101,12 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     readonly: bool,
     /// The row index that is being edited
     edit_row: Option<usize>,
-    /// The values that are being edited
-    edit_fill_values: Option<Vec<SharedString>>,
+    /// The original values of the row that is being edited
+    original_values: Vec<SharedString>,
+    /// Whether the values have been modified
+    values_modified: bool,
+    /// Whether the values should be filled
+    values_should_fill: Option<bool>,
     columns: Vec<KvTableColumn>,
     /// Input states for editable cells, keyed by column index.
     value_states: Vec<(usize, Entity<InputState>)>,
@@ -258,21 +264,24 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 if column.column_type != KvTableColumnType::Value {
                     return None;
                 }
-                Some((
-                    index,
-                    cx.new(|cx| {
-                        if column.readonly {
-                            InputState::new(window, cx)
-                        } else {
-                            InputState::new(window, cx)
-                                .code_editor(Language::from_str("json").name())
-                                .line_number(true)
-                                .indent_guides(true)
-                                .searchable(true)
-                                .soft_wrap(true)
-                        }
-                    }),
-                ))
+                let state = cx.new(|cx| {
+                    if column.readonly {
+                        InputState::new(window, cx)
+                    } else {
+                        InputState::new(window, cx)
+                            .code_editor(Language::from_str("json").name())
+                            .line_number(true)
+                            .indent_guides(true)
+                            .searchable(true)
+                            .soft_wrap(true)
+                    }
+                });
+                subscriptions.push(cx.subscribe(&state, move |this, _, event, cx| {
+                    if let InputEvent::Change = event {
+                        this.check_values_modified(cx);
+                    }
+                }));
+                Some((index, state))
             })
             .collect::<Vec<_>>();
         info!("Creating new key value table view");
@@ -286,7 +295,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             loading: false,
             key_changed: false,
             edit_row: None,
-            edit_fill_values: None,
+            values_should_fill: None,
+            original_values: vec![],
+            values_modified: false,
             value_states,
             readonly,
             fetcher,
@@ -302,7 +313,24 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             .iter()
             .map(|(index, _)| self.fetcher.get(row_ix, *index + 1).unwrap_or_default())
             .collect::<Vec<_>>();
-        self.edit_fill_values = Some(values);
+        self.values_modified = false;
+        self.original_values = values;
+        self.values_should_fill = Some(true);
+    }
+    fn check_values_modified(&mut self, cx: &mut Context<Self>) {
+        let mut values_modified = false;
+        for (index, (_, state)) in self.value_states.iter().enumerate() {
+            let value = state.read(cx).value();
+            if self
+                .original_values
+                .get(index)
+                .map(|original_value| original_value.clone() != value)
+                .unwrap_or(true)
+            {
+                values_modified = true;
+            }
+        }
+        self.values_modified = values_modified;
     }
 
     /// Triggers a filter operation using the current keyword from the input field.
@@ -314,6 +342,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         });
     }
     fn handle_update_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.values_modified {
+            return;
+        }
         let Some(row_ix) = self.edit_row else {
             return;
         };
@@ -422,6 +453,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         )
                         .child(
                             Button::new("save-edit-btn")
+                                .disabled(!self.values_modified)
+                                .tooltip(humanize_keystroke("cmd-s"))
                                 .primary()
                                 .icon(CustomIconName::Save)
                                 .label(save_label)
@@ -446,13 +479,20 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             });
             self.key_changed = false;
         }
-        if let Some(values) = self.edit_fill_values.take() {
-            for (index, value) in values.iter().enumerate() {
+        if let Some(true) = self.values_should_fill.take() {
+            let mut first = true;
+            for (index, value) in self.original_values.iter().enumerate() {
                 let Some((_, state)) = self.value_states.get(index) else {
                     continue;
                 };
                 state.update(cx, |input, cx| {
                     input.set_value(value.clone(), window, cx);
+                    if first {
+                        input.focus(window, cx);
+                        let position = Position::new(0, value.len() as u32);
+                        input.set_cursor_position(position, window, cx);
+                        first = false;
+                    }
                 });
             }
         }
@@ -557,6 +597,21 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                         })),
                 )
             })
+            .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
+                EditorAction::Save => {
+                    this.handle_update_row(window, cx);
+                }
+                _ => {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(move |this, event: &Escape, _window, cx| match event {
+                Escape => {
+                    this.edit_row = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .into_any_element()
     }
 }

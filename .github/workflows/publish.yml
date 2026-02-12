@@ -247,6 +247,6 @@ jobs:
             body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
             prerelease: true  
             files: |
-              ./.tar.gz
+              ./*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
