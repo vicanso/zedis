@@ -118,6 +118,17 @@ jobs:
         run: |
           DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
           ./.github/workflows/upload_asset.sh "$DMG_NAME" $GITHUB_TOKEN
+      - name: Release Nightly Assets
+        uses: softprops/action-gh-release@v2
+        with:
+            tag_name: nightly
+            name: "Development Build (Nightly)"
+            body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
+            prerelease: true  
+            files: |
+              ./release/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
   windows:
     runs-on: windows-latest
@@ -228,3 +239,14 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-linux-${{ matrix.suffix }}.tar.gz $GITHUB_TOKEN
           ./.github/workflows/upload_asset.sh ./zedis-${{ matrix.suffix }}.AppImage.tar.gz $GITHUB_TOKEN
+      - name: Release Nightly Assets
+        uses: softprops/action-gh-release@v2
+        with:
+            tag_name: nightly
+            name: "Development Build (Nightly)"
+            body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
+            prerelease: true  
+            files: |
+              ./.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
