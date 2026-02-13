@@ -332,8 +332,12 @@ impl ZedisStatusBar {
             }
         }));
     }
+    /// Render a vertical divider line
+    fn render_divider(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().h_4().w_px().bg(cx.theme().muted_foreground).mx_4()
+    }
     /// Render the server status
-    fn render_server_status(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_server_status(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
         let nodes_description = server_state.nodes_description.clone();
@@ -345,6 +349,7 @@ impl ZedisStatusBar {
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
         h_flex()
             .items_center()
+            .gap_2()
             .child(
                 Button::new("zedis-status-bar-server-terminal")
                     .outline()
@@ -355,11 +360,10 @@ impl ZedisStatusBar {
                         this.server_state.update(cx, |state, cx| {
                             state.toggle_terminal(cx);
                         });
-                    }))
-                    .mr_2(),
+                    })),
             )
             .when(server_state.supports_db_selection, |this| {
-                this.child(Select::new(&self.db_state).mr_2().mt_1().small())
+                this.child(Select::new(&self.db_state).mt_1().small())
             })
             .child(
                 Button::new("zedis-status-bar-server-toggle-readonly")
@@ -372,9 +376,9 @@ impl ZedisStatusBar {
                         this.server_state.update(cx, |state, cx| {
                             state.toggle_readonly(cx);
                         });
-                    }))
-                    .mr_2(),
+                    })),
             )
+            .child(self.render_divider(window, cx))
             .child(
                 Button::new("zedis-status-bar-scan-more")
                     .outline()
@@ -393,33 +397,32 @@ impl ZedisStatusBar {
                         });
                     })),
             )
-            .child(Label::new(server_state.size.clone()).mr_4())
+            .child(Label::new(server_state.size.clone()).mr_2())
             .child(
                 div()
                     .child(
                         h_flex()
                             .child(Icon::new(CustomIconName::Network).text_color(cx.theme().primary).mr_1())
-                            .child(Label::new(server_state.nodes.clone()).mr_4()),
+                            .child(Label::new(server_state.nodes.clone())),
                     )
                     .id("zedis-servers")
                     .tooltip(move |window, cx| Tooltip::new(nodes_description.clone()).build(window, cx)),
             )
+            .child(self.render_divider(window, cx))
             .child(
                 Button::new("zedis-status-bar-letency")
                     .ghost()
+                    .px_1()
                     .disabled(true)
                     .tooltip(i18n_common(cx, "latency"))
-                    .icon(
-                        Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
-                            .text_color(cx.theme().primary)
-                            .mr_1(),
-                    )
+                    .icon(Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary))
                     .text_color(server_state.latency.1)
                     .label(server_state.latency.0.clone()),
             )
             .child(
                 Button::new("zedis-status-bar-used-memory")
                     .ghost()
+                    .px_1()
                     .disabled(true)
                     .tooltip(i18n_common(cx, "used_memory"))
                     .icon(Icon::new(CustomIconName::MemoryStick))
@@ -429,6 +432,7 @@ impl ZedisStatusBar {
             .child(
                 Button::new("zedis-status-bar-clients")
                     .ghost()
+                    .px_1()
                     .disabled(true)
                     .text_color(cx.theme().primary)
                     .tooltip(i18n_common(cx, "clients"))
@@ -484,6 +488,7 @@ impl ZedisStatusBar {
             .child(Label::new(label).mr_1())
             .child(Select::new(&self.viewer_mode_state).appearance(false))
     }
+
     /// Render the error message
     fn render_errors(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(data) = &self.state.error else {
@@ -533,7 +538,11 @@ impl Render for ZedisStatusBar {
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
             .child(self.render_server_status(window, cx))
+            .child(self.render_divider(window, cx))
             .child(self.render_editor_settings(window, cx))
+            .when(self.state.data_format.is_some(), |this| {
+                this.child(self.render_divider(window, cx))
+            })
             .child(self.render_data_format(window, cx))
             .child(self.render_viewer_mode(window, cx))
             .child(self.render_errors(window, cx))
