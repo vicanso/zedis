@@ -11,7 +11,16 @@ env:
   APP_NAME: Zedis
 
 jobs:
+  prepare_vars:
+    runs-on: ubuntu-latest
+    outputs:
+      build_date: ${{ steps.date.outputs.date }}
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_OUTPUT
   macos:
+    needs: prepare_vars
     name: macos-${{ matrix.dmg_suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -123,7 +132,7 @@ jobs:
         with:
             tag_name: nightly
             name: "Development Build (Nightly)"
-            body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
+            body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
             prerelease: true  
             files: |
               ./release/*.dmg
@@ -131,6 +140,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
   windows:
+    needs: prepare_vars
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -176,13 +186,14 @@ jobs:
         with:
             tag_name: nightly
             name: "Development Build (Nightly)"
-            body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
+            body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
             prerelease: true  
             files: |
               ${{ env.ZIP_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   linux:
+    needs: prepare_vars
     name: linux-${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -244,7 +255,7 @@ jobs:
         with:
             tag_name: nightly
             name: "Development Build (Nightly)"
-            body: "This is a rolling build from the latest main branch. Build date: $(date +'%Y-%m-%d %H:%M')"
+            body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
             prerelease: true  
             files: |
               ./*.tar.gz

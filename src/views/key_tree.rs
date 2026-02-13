@@ -206,7 +206,9 @@ impl KeyTreeDelegate {
         border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
 
         Label::new(key_type.as_str())
-            .text_xs()
+            .text_size(px(10.))
+            .w(px(36.))
+            .text_center()
             .bg(bg)
             .text_color(color)
             .border_1()
@@ -251,25 +253,24 @@ impl ListDelegate for KeyTreeDelegate {
         };
 
         let even_bg = cx.theme().background;
+        let is_dark = cx.theme().is_dark();
 
         // Zebra striping for better readability
-        let odd_bg = if cx.theme().is_dark() {
+        let odd_bg = if is_dark {
             Hsla::white().alpha(STRIPE_BACKGROUND_ALPHA_DARK)
         } else {
             Hsla::black().alpha(STRIPE_BACKGROUND_ALPHA_LIGHT)
         };
+        let is_folder = entry.is_folder;
 
-        // Show child count for folders
-        let count_label = if entry.is_folder {
-            Label::new(entry.children_count.to_string())
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
+        let label_color = if is_folder {
+            cx.theme().foreground.alpha(0.85)
         } else {
-            Label::new("")
+            cx.theme().foreground
         };
 
         let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
-        let show_check_icon = self.enabled_multiple_selection && !entry.is_folder;
+        let show_check_icon = self.enabled_multiple_selection && !is_folder;
         let selected = if show_check_icon && let Some(item) = self.items.get(ix.row) {
             let id = &item.id;
             self.selected_items.contains(id)
@@ -278,14 +279,13 @@ impl ListDelegate for KeyTreeDelegate {
         };
         let selected_items_count = self.selected_items.len();
         let id = entry.id.clone();
-        let is_folder = entry.is_folder;
         let readonly = self.readonly;
         Some(
             ListItem::new(ix)
                 .font_family(get_font_family())
                 .w_full()
                 .bg(bg)
-                .py_1()
+                .py_2()
                 .px_2()
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
@@ -319,19 +319,35 @@ impl ListDelegate for KeyTreeDelegate {
                             }
                             menu
                         })
-                        .h_flex()
-                        .gap_2()
-                        .child(icon)
-                        .child(div().flex_1().min_w_0().text_ellipsis().child(entry.label.clone()))
-                        .when(show_check_icon, |this| {
-                            let icon = if selected {
-                                CustomIconName::SquareCheck
-                            } else {
-                                CustomIconName::Square
-                            };
-                            this.child(Icon::new(icon))
-                        })
-                        .child(count_label),
+                        .child(
+                            div()
+                                .h_flex()
+                                .gap_2()
+                                .flex_1()
+                                .min_w_0()
+                                .child(icon)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(Label::new(entry.label.clone()).text_color(label_color).text_ellipsis()),
+                                )
+                                .when(show_check_icon, |this| {
+                                    let check_icon = if selected {
+                                        CustomIconName::SquareCheck
+                                    } else {
+                                        CustomIconName::Square
+                                    };
+                                    this.child(Icon::new(check_icon))
+                                })
+                                .when(entry.is_folder, |this| {
+                                    this.child(
+                                        Label::new(entry.children_count.to_string())
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                }),
+                        ),
                 ),
         )
     }
