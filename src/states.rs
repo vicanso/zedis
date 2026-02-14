@@ -15,6 +15,7 @@
 mod app;
 mod i18n;
 mod server;
+mod session;
 
 pub use app::*;
 pub use i18n::i18n_common;
@@ -35,3 +36,4 @@ pub use server::ZedisServerState;
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;
 pub use server::value::*;
+pub use session::*;

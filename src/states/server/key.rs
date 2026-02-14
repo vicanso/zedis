@@ -22,9 +22,9 @@ use super::{
     zset::first_load_zset_value,
 };
 use crate::db::add_normalize_history;
-use crate::states::ZedisGlobalStore;
+use crate::states::{QueryMode, ZedisGlobalStore};
 use crate::{
-    connection::{QueryMode, get_connection_manager},
+    connection::get_connection_manager,
     error::Error,
     helpers::{parse_duration, unix_ts},
 };

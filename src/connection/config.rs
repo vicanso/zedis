@@ -17,51 +17,18 @@ use crate::{
     helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
 };
 use arc_swap::ArcSwap;
-use gpui::Action;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smol::fs;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::{fmt, fs::read_to_string, path::PathBuf, str::FromStr, sync::LazyLock};
+use std::{fs::read_to_string, path::PathBuf, sync::LazyLock};
 use tracing::{debug, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
-pub enum QueryMode {
-    #[default]
-    All,
-    Prefix,
-    Exact,
-}
-
-impl fmt::Display for QueryMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            QueryMode::Prefix => "^",
-            QueryMode::Exact => "=",
-            _ => "*",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-impl FromStr for QueryMode {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "^" => Ok(QueryMode::Prefix),
-            "=" => Ok(QueryMode::Exact),
-            _ => Ok(QueryMode::All),
-        }
-    }
-}
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize, Hash, Eq, PartialEq)]
 pub struct RedisServer {
@@ -75,8 +42,6 @@ pub struct RedisServer {
     pub master_name: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
-    pub query_mode: Option<String>,
-    pub soft_wrap: Option<bool>,
     pub tls: Option<bool>,
     pub insecure: Option<bool>,
     pub client_cert: Option<String>,

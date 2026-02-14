@@ -14,11 +14,11 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{RedisClientDescription, get_server},
+    connection::RedisClientDescription,
     helpers::humanize_keystroke,
     states::{
-        ErrorMessage, GlobalEvent, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_common,
-        i18n_sidebar, i18n_status_bar,
+        ErrorMessage, GlobalEvent, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState,
+        get_session_option, i18n_common, i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -451,19 +451,16 @@ impl ZedisStatusBar {
             .on_click(cx.listener(|this, _, _window, cx| {
                 let soft_wrap = !this.state.server_state.soft_wrap;
                 this.state.server_state.soft_wrap = soft_wrap;
-                if let Ok(mut server) = get_server(this.state.server_state.server_id.as_str()) {
-                    server.soft_wrap = Some(soft_wrap);
-                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                        store.update(cx, |state, cx| {
-                            state.upsert_server(server, cx);
-                        });
-                    });
-                }
                 this.server_state.update(cx, |state, cx| {
                     state.set_soft_wrap(soft_wrap, cx);
                 });
-
                 cx.notify();
+
+                let server_id = this.state.server_state.server_id.clone();
+                if let Ok(mut option) = get_session_option(server_id.as_str()) {
+                    option.soft_wrap = Some(soft_wrap);
+                    save_session_option(server_id.as_str(), option, cx);
+                }
             }))
     }
     fn render_data_format(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

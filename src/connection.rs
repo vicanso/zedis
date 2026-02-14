@@ -23,7 +23,7 @@ mod ssh_stream;
 mod ssh_tunnel;
 
 pub use async_connection::{RedisAsyncConn, set_redis_connection_timeout, set_redis_response_timeout};
-pub use config::{QueryMode, RedisServer, get_server, get_servers, save_servers};
+pub use config::{RedisServer, get_servers, save_servers};
 pub use manager::{AccessMode, RedisClientDescription, get_connection_manager};
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();

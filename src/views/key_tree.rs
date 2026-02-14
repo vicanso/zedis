@@ -15,11 +15,11 @@
 use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
-    connection::{QueryMode, get_server},
     db::HistoryManager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
-        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_key_tree,
+        KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
+        i18n_common, i18n_key_tree, save_session_option,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -944,13 +944,9 @@ impl Render for ZedisKeyTree {
                 let new_mode = *e;
 
                 let server_id = this.server_state.read(cx).server_id();
-                if let Ok(mut server) = get_server(server_id) {
-                    server.query_mode = Some(new_mode.to_string());
-                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                        store.update(cx, |state, cx| {
-                            state.upsert_server(server, cx);
-                        });
-                    });
+                if let Ok(mut option) = get_session_option(server_id) {
+                    option.query_mode = Some(new_mode.to_string());
+                    save_session_option(server_id, option, cx);
                 }
 
                 // Step 1: Update server state with new query mode

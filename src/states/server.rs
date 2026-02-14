@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{AccessMode, QueryMode, RedisClientDescription, get_connection_manager, get_server};
+use crate::connection::{AccessMode, RedisClientDescription, get_connection_manager};
 use crate::db::HistoryManager;
 use crate::error::Error;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::stat::RedisInfo;
+use crate::states::{QueryMode, get_session_option};
 use ahash::AHashMap;
 use ahash::AHashSet;
 use gpui::SharedString;
@@ -446,15 +447,16 @@ impl ZedisServerState {
             self.reset();
             self.server_id = server_id.clone();
             self.db = db;
-            let (query_mode, soft_wrap) = get_server(server_id.as_str())
-                .map(|server_config| {
-                    let mode = server_config
+
+            let (query_mode, soft_wrap) = get_session_option(&server_id)
+                .map(|option| {
+                    let mode = option
                         .query_mode
                         .as_deref()
                         .and_then(|s| QueryMode::from_str(s).ok())
                         .unwrap_or_default();
 
-                    let wrap = server_config.soft_wrap.unwrap_or(true);
+                    let wrap = option.soft_wrap.unwrap_or(true);
 
                     // 返回一个元组，包含所有需要更新的值
                     (mode, wrap)
