@@ -334,7 +334,7 @@ impl ZedisStatusBar {
     }
     /// Render a vertical divider line
     fn render_divider(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().h_4().w_px().bg(cx.theme().muted_foreground).mx_4()
+        div().h_4().w_px().flex_none().bg(cx.theme().muted_foreground).mx_4()
     }
     /// Render the server status
     fn render_server_status(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

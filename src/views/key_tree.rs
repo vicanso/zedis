@@ -27,7 +27,6 @@ use gpui::{
     Action, App, AppContext, Corner, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
@@ -36,6 +35,10 @@ use gpui_component::{
     label::Label,
     menu::ContextMenuExt,
     v_flex,
+};
+use gpui_component::{
+    list::{List, ListDelegate, ListEvent, ListItem, ListState},
+    menu::DropdownMenu,
 };
 use rust_i18n::t;
 use schemars::JsonSchema;
@@ -59,6 +62,8 @@ enum KeyTreeAction {
     DeleteMultipleKeys,
     DeleteKey(SharedString),
     DeleteFolder(SharedString),
+    CollapseAllKeys,
+    ToggleMultiSelectMode,
 }
 
 #[derive(Default)]
@@ -821,7 +826,7 @@ impl ZedisKeyTree {
         };
         let query_mode_dropdown = DropdownButton::new("dropdown")
             .button(Button::new("key-tree-query-mode-btn").ghost().px_2().icon(icon))
-            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, window, cx| {
+            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _window, cx| {
                 let mut menu = menu.label(i18n_key_tree(cx, "search_history"));
                 let keywords = server_state_clone.read(cx).search_history();
                 let no_keywords = keywords.is_empty();
@@ -838,22 +843,15 @@ impl ZedisKeyTree {
                     );
                 }
                 menu.separator()
-                    .submenu(i18n_key_tree(cx, "query_mode"), window, cx, move |submenu, _, _| {
-                        // Build menu with checkmarks for current mode
-                        submenu
-                            .menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
-                                Label::new(i18n_key_tree(cx, "query_mode_all")).ml_2().text_xs()
-                            })
-                            .menu_element_with_check(
-                                query_mode == QueryMode::Prefix,
-                                Box::new(QueryMode::Prefix),
-                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_prefix")).ml_2().text_xs(),
-                            )
-                            .menu_element_with_check(
-                                query_mode == QueryMode::Exact,
-                                Box::new(QueryMode::Exact),
-                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")).ml_2().text_xs(),
-                            )
+                    .label(i18n_key_tree(cx, "query_mode"))
+                    .menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
+                        Label::new(i18n_key_tree(cx, "query_mode_all")).ml_2().text_xs()
+                    })
+                    .menu_element_with_check(query_mode == QueryMode::Prefix, Box::new(QueryMode::Prefix), |_, cx| {
+                        Label::new(i18n_key_tree(cx, "query_mode_prefix")).ml_2().text_xs()
+                    })
+                    .menu_element_with_check(query_mode == QueryMode::Exact, Box::new(QueryMode::Exact), |_, cx| {
+                        Label::new(i18n_key_tree(cx, "query_mode_exact")).ml_2().text_xs()
                     })
             });
         let search_btn = Button::new("key-tree-search-btn")
@@ -874,40 +872,34 @@ impl ZedisKeyTree {
             .suffix(search_btn)
             .cleanable(true);
         let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
+
+        let more_dropdown = Button::new("key-tree-more-dropdown")
+            .outline()
+            .icon(Icon::new(IconName::Ellipsis))
+            .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _window, _cx| {
+                menu.menu_element_with_icon(
+                    Icon::new(CustomIconName::ListChecvronsDownUp),
+                    Box::new(KeyTreeAction::CollapseAllKeys),
+                    move |_, cx| Label::new(i18n_key_tree(cx, "collapse_keys")),
+                )
+                .when(!readonly, |this| {
+                    let icon = if enabled_multiple_selection {
+                        Icon::new(IconName::Check)
+                    } else {
+                        Icon::new(CustomIconName::ListCheck)
+                    };
+                    this.menu_element_with_icon(icon, Box::new(KeyTreeAction::ToggleMultiSelectMode), move |_, cx| {
+                        Label::new(i18n_key_tree(cx, "toggle_multi_select_mode"))
+                    })
+                })
+            });
+
         h_flex()
             .p_2()
+            .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(keyword_input)
-            .child(
-                Button::new("zedis-status-bar-key-collapse")
-                    .outline()
-                    .tooltip(i18n_key_tree(cx, "collapse_keys"))
-                    .icon(CustomIconName::ListChecvronsDownUp)
-                    .mr_1()
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state.update(cx, |state, cx| {
-                            state.collapse_all_keys(cx);
-                        });
-                    })),
-            )
-            .child(
-                Button::new("key-tree-toggle-checked-btn")
-                    .mr_2()
-                    .disabled(readonly)
-                    .outline()
-                    .icon(CustomIconName::ListCheck)
-                    .when(enabled_multiple_selection, |this| this.primary())
-                    .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
-                    .when(!readonly, |this| {
-                        this.tooltip(i18n_key_tree(cx, "toggle_multi_select_mode_tooltip"))
-                    })
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.key_tree_list_state.update(cx, |state, cx| {
-                            state.delegate_mut().toggle_multiple_selection(cx);
-                        });
-                    })),
-            )
             .child(
                 Button::new("key-tree-add-btn")
                     .disabled(readonly)
@@ -926,6 +918,7 @@ impl ZedisKeyTree {
                         this.handle_add_key(window, cx);
                     })),
             )
+            .child(more_dropdown)
     }
 }
 
@@ -969,6 +962,16 @@ impl Render for ZedisKeyTree {
                 this.state.query_mode = new_mode;
             }))
             .on_action(cx.listener(|this, e: &KeyTreeAction, window, cx| match e {
+                KeyTreeAction::CollapseAllKeys => {
+                    this.server_state.update(cx, |state, cx| {
+                        state.collapse_all_keys(cx);
+                    });
+                }
+                KeyTreeAction::ToggleMultiSelectMode => {
+                    this.key_tree_list_state.update(cx, |state, cx| {
+                        state.delegate_mut().toggle_multiple_selection(cx);
+                    });
+                }
                 KeyTreeAction::Search(keyword) => {
                     this.keyword_state.update(cx, |state, cx| {
                         state.set_value(keyword, window, cx);
