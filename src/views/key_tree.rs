@@ -25,7 +25,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use gpui::{
     Action, App, AppContext, Corner, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
-    Window, div, prelude::*, px,
+    Task, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, StyledExt, WindowExt,
@@ -43,7 +43,7 @@ use gpui_component::{
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::rc::Rc;
+use std::{rc::Rc, str::FromStr, time::Duration};
 use tracing::info;
 
 // Constants for tree layout and behavior
@@ -64,6 +64,7 @@ enum KeyTreeAction {
     DeleteFolder(SharedString),
     CollapseAllKeys,
     ToggleMultiSelectMode,
+    AutoRefresh(u32),
 }
 
 #[derive(Default)]
@@ -83,6 +84,8 @@ struct KeyTreeState {
     expanded_items: AHashSet<SharedString>,
     /// Index path to scroll to when the tree is updated
     scroll_to_index: Option<IndexPath>,
+    /// Refresh interval in seconds
+    refresh_interval_sec: u32,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -385,7 +388,11 @@ impl ListDelegate for KeyTreeDelegate {
 pub struct ZedisKeyTree {
     focus_handle: FocusHandle,
 
+    auto_refresh_task: Option<Task<()>>,
+
     state: KeyTreeState,
+
+    current_keyword: Entity<SharedString>,
 
     /// Reference to server state for Redis operations
     server_state: Entity<ZedisServerState>,
@@ -480,7 +487,16 @@ impl ZedisKeyTree {
 
         let server_state_value = server_state.read(cx);
         let server_id = server_state_value.server_id().to_string();
-        let query_mode = server_state_value.query_mode();
+        let mut query_mode = QueryMode::All;
+        let mut refresh_interval_sec = 0;
+        if let Ok(option) = get_session_option(&server_id) {
+            query_mode = option
+                .query_mode
+                .as_deref()
+                .and_then(|s| QueryMode::from_str(s).ok())
+                .unwrap_or(QueryMode::All);
+            refresh_interval_sec = option.refresh_interval_sec.unwrap_or_default();
+        }
         let readonly = server_state_value.readonly();
 
         // Subscribe to search input events (Enter key triggers filter)
@@ -515,20 +531,48 @@ impl ZedisKeyTree {
             state: KeyTreeState {
                 query_mode,
                 server_id: server_id.into(),
+                refresh_interval_sec,
                 expanded_items: AHashSet::with_capacity(EXPANDED_ITEMS_INITIAL_CAPACITY),
                 ..Default::default()
             },
+            current_keyword: cx.new(|_cx| SharedString::default()),
             key_tree_list_state,
             keyword_state,
             server_state,
             should_enter_add_key_mode: None,
+            auto_refresh_task: None,
             _subscriptions: subscriptions,
         };
 
         // Initial tree build
         this.update_key_tree(true, cx);
+        this.start_auto_refresh(cx);
 
         this
+    }
+
+    fn start_auto_refresh(&mut self, cx: &mut Context<Self>) {
+        let auto_refresh_interval_sec = self.state.refresh_interval_sec;
+        if auto_refresh_interval_sec == 0 {
+            self.auto_refresh_task = None;
+            return;
+        }
+        let server_state = self.server_state.clone();
+        let current_keyword = self.current_keyword.clone();
+        self.auto_refresh_task = Some(cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(auto_refresh_interval_sec as u64))
+                    .await;
+                let keyword = current_keyword
+                    .update(cx, |state, _cx| state.clone())
+                    .unwrap_or_default();
+                info!(keyword = keyword.as_str(), "auto refresh");
+                let _ = server_state.update(cx, move |handle, cx| {
+                    handle.handle_auto_refresh(keyword, cx);
+                });
+            }
+        }));
     }
 
     fn reset(&mut self, _cx: &mut Context<Self>) {
@@ -617,6 +661,8 @@ impl ZedisKeyTree {
 
         let server_id_clone = server_state.server_id().to_string();
         let keyword_clone = keyword.clone();
+        self.current_keyword
+            .update(cx, |state, _cx| *state = keyword_clone.clone());
         cx.spawn(async move |_, cx| {
             let _ = cx
                 .background_spawn(async move {
@@ -872,11 +918,12 @@ impl ZedisKeyTree {
             .suffix(search_btn)
             .cleanable(true);
         let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
+        let refresh_interval_sec = self.state.refresh_interval_sec;
 
         let more_dropdown = Button::new("key-tree-more-dropdown")
             .outline()
             .icon(Icon::new(IconName::Ellipsis))
-            .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _window, _cx| {
+            .dropdown_menu_with_anchor(Corner::TopRight, move |menu, window, cx| {
                 menu.menu_element_with_icon(
                     Icon::new(CustomIconName::ListChecvronsDownUp),
                     Box::new(KeyTreeAction::CollapseAllKeys),
@@ -892,6 +939,29 @@ impl ZedisKeyTree {
                         Label::new(i18n_key_tree(cx, "toggle_multi_select_mode"))
                     })
                 })
+                .submenu_with_icon(
+                    Some(Icon::new(CustomIconName::RotateCw)),
+                    i18n_key_tree(cx, "auto_refresh"),
+                    window,
+                    cx,
+                    move |submenu, _window, cx| {
+                        let mut submenu = submenu;
+                        for interval in [0, 1, 5, 10, 30, 60, 120] {
+                            let label = if interval == 0 {
+                                i18n_key_tree(cx, "disable_auto_refresh")
+                            } else {
+                                format!("{}s", interval).into()
+                            };
+                            submenu = submenu.menu_element_with_check(
+                                refresh_interval_sec == interval,
+                                Box::new(KeyTreeAction::AutoRefresh(interval)),
+                                move |_, _cx| Label::new(label.clone()),
+                            )
+                        }
+
+                        submenu
+                    },
+                )
             });
 
         h_flex()
@@ -958,6 +1028,15 @@ impl Render for ZedisKeyTree {
                 this.state.query_mode = new_mode;
             }))
             .on_action(cx.listener(|this, e: &KeyTreeAction, window, cx| match e {
+                KeyTreeAction::AutoRefresh(interval) => {
+                    this.state.refresh_interval_sec = *interval;
+                    this.start_auto_refresh(cx);
+                    let server_id = this.server_state.read(cx).server_id();
+                    if let Ok(mut option) = get_session_option(server_id) {
+                        option.refresh_interval_sec = Some(*interval);
+                        save_session_option(server_id, option, cx);
+                    }
+                }
                 KeyTreeAction::CollapseAllKeys => {
                     this.server_state.update(cx, |state, cx| {
                         state.collapse_all_keys(cx);

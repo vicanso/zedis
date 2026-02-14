@@ -28,6 +28,7 @@ use crate::{
     error::Error,
     helpers::{parse_duration, unix_ts},
 };
+use ahash::AHashSet;
 use futures::future::try_join_all;
 use futures::{StreamExt, stream};
 use gpui::{SharedString, prelude::*};
@@ -195,6 +196,74 @@ impl ZedisServerState {
                     this.select_key(key.clone(), cx);
                 } else {
                     this.fill_key_types(None, cx);
+                }
+            },
+            cx,
+        );
+    }
+    pub fn handle_auto_refresh(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
+        if self.query_mode == QueryMode::Exact {
+            self.select_key(keyword, cx);
+            return;
+        }
+        let pattern = match self.query_mode {
+            QueryMode::Exact => {
+                self.select_key(keyword, cx);
+                return;
+            }
+            QueryMode::Prefix => format!("{keyword}*"),
+            _ => format!("*{keyword}*"),
+        };
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let count = self.keys.len().max(10_000);
+        self.spawn(
+            ServerTask::AutoRefresh,
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+
+                client.first_scan(&pattern, count as u64).await
+            },
+            move |this, result, cx| {
+                if let Ok((_, keys)) = result {
+                    let new_keys_set: AHashSet<SharedString> = keys.iter().cloned().collect();
+
+                    let keys_to_remove: Vec<SharedString> = this
+                        .keys
+                        .keys()
+                        .filter(|k| !new_keys_set.contains(*k))
+                        .cloned()
+                        .collect();
+
+                    let keys_to_add: Vec<SharedString> = new_keys_set
+                        .iter()
+                        .filter(|k| !this.keys.contains_key(*k))
+                        .cloned()
+                        .collect();
+
+                    let has_changes = !keys_to_remove.is_empty() || !keys_to_add.is_empty();
+                    debug!(
+                        keys_to_remove = keys_to_remove.len(),
+                        keys_to_add = keys_to_add.len(),
+                        has_changes,
+                        "auto refresh",
+                    );
+
+                    if has_changes {
+                        // Remove old keys
+                        for key in keys_to_remove {
+                            this.keys.remove(&key);
+                        }
+
+                        // Add new keys
+                        if keys_to_add.is_empty() {
+                            this.key_tree_id = Uuid::now_v7().to_string().into();
+                        } else {
+                            this.extend_keys(keys_to_add);
+                        }
+                        this.fill_key_types(None, cx);
+                        cx.notify();
+                    }
                 }
             },
             cx,

@@ -73,8 +73,7 @@ pub struct SessionOption {
     pub id: String,
     pub soft_wrap: Option<bool>,
     pub query_mode: Option<String>,
-    pub auto_refresh: Option<bool>,
-    pub refresh_interval_sec: Option<u64>,
+    pub refresh_interval_sec: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
@@ -130,7 +129,6 @@ pub fn save_session_option(id: &str, mut option: SessionOption, cx: &App) {
                 options.push(value.clone());
                 new_options.insert(key.to_string(), value.clone());
             }
-            println!("{:?}", options);
 
             SESSION_OPTION_MAP.store(Arc::new(new_options));
             let path = get_or_create_session_config()?;

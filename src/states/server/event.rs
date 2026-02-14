@@ -25,6 +25,9 @@ pub enum ServerTask {
     /// Refresh the Redis server info
     RefreshRedisInfo,
 
+    /// Auto refresh keys
+    AutoRefresh,
+
     /// Connect to and load metadata from a server
     SelectServer,
 
@@ -91,6 +94,7 @@ impl ServerTask {
     pub fn as_str(&self) -> &'static str {
         match self {
             ServerTask::RefreshRedisInfo => "refresh_redis_info",
+            ServerTask::AutoRefresh => "auto_refresh",
             ServerTask::SelectServer => "select_server",
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",
