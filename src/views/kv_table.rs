@@ -109,7 +109,7 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     /// Whether a filter operation is in progress
     loading: bool,
     /// Flag indicating the selected key has changed (triggers input reset)
-    key_changed: bool,
+    key_changed: Option<bool>,
     /// Whether the table is readonly
     readonly: bool,
     /// The row index that is being edited
@@ -230,7 +230,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 }
                 // Clear search when key selection changes
                 ServerEvent::KeySelected => {
-                    this.key_changed = true;
+                    this.edit_row = None;
+                    this.key_changed = Some(true);
                 }
                 _ => {}
             }
@@ -308,7 +309,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             total_count,
             done,
             loading: false,
-            key_changed: false,
+            key_changed: None,
             edit_row: None,
             values_should_fill: None,
             original_values: vec![],
@@ -545,11 +546,10 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         let text_color = cx.theme().muted_foreground;
 
         // Clear search input when key changes
-        if self.key_changed {
+        if let Some(true) = self.key_changed.take() {
             self.keyword_state.update(cx, |input, cx| {
                 input.set_value(SharedString::default(), window, cx);
             });
-            self.key_changed = false;
         }
         if let Some(true) = self.values_should_fill.take() {
             let mut first = true;
