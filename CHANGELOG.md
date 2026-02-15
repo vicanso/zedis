@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.2.4](https://github.com/vicanso/zedis/compare/v0.2.3..v0.2.4) - 2026-02-15
+
+### ⛰️  Features
+
+- *(keytree)* Support periodic auto-refresh ([#39](https://github.com/orhun/git-cliff/issues/39)) - ([d49b58a](https://github.com/vicanso/zedis/commit/d49b58a2345836a4e9c52e05c22aabc3574186e2))
+- *(value)* Support configurable auto-refresh for key values ([#39](https://github.com/orhun/git-cliff/issues/39)) - ([54064a5](https://github.com/vicanso/zedis/commit/54064a5c4bab4a9d99a8c57c3f9208633d0f6377))
+
+### 🐛 Bug Fixes
+
+- *(kvtable)* Reset state when switching tables - ([bbd7e72](https://github.com/vicanso/zedis/commit/bbd7e725410f81f2b4f95c58cee7dbd6b18d358f))
+- *(ui)* Fix blurry windows application icon - ([a20f70e](https://github.com/vicanso/zedis/commit/a20f70ef3ba36b4cb0a854c3c40221aa8b08a65e))
+- Fix system language detection - ([d87dcda](https://github.com/vicanso/zedis/commit/d87dcda763eba3a78816b0a2b21f1ece330a57ba))
+- Fix read-only permission detection - ([f8622e2](https://github.com/vicanso/zedis/commit/f8622e22020136e159c5ccbba2d0134cd1d1225d))
+
+### 🚜 Refactor
+
+- *(about)* Refine about page - ([39ed6f4](https://github.com/vicanso/zedis/commit/39ed6f4326a57247c0e28f7905894c56bf5c6e7d))
+- *(config)* Make session view settings independent of server config - ([dcdc59f](https://github.com/vicanso/zedis/commit/dcdc59f884d430dcc1b79f3e1937258e7419cf32))
+- *(keytree)* Refine collapse and multi-selection logic - ([3787d29](https://github.com/vicanso/zedis/commit/3787d29ce4a4635beb1eb73a4dcd16894fa77715))
+- *(keytree)* Refine styling - ([7adb6e4](https://github.com/vicanso/zedis/commit/7adb6e411b891fdb329a055e29e297e27a8c9805))
+- *(keytree)* Restore search button icon - ([700f020](https://github.com/vicanso/zedis/commit/700f0204fbce7cf6d24fe396d83da59e1c5b9e92))
+- *(keytree)* Optimize collapse all logic ([#36](https://github.com/orhun/git-cliff/issues/36)) - ([2fccb87](https://github.com/vicanso/zedis/commit/2fccb871a2fd0ef0bc484644e99e89e91f35e22a))
+- *(kvtable)* Reuse edit logic for adding kv elements - ([85b2cdd](https://github.com/vicanso/zedis/commit/85b2cdddedb90e93edc202c6da883d1fac62164f))
+- *(kvtable)* Refine editor for kv table - ([1438335](https://github.com/vicanso/zedis/commit/1438335954acd1110ee42647f731620d79476e4e))
+- *(statusbar)* Optimize status bar layout - ([248843c](https://github.com/vicanso/zedis/commit/248843c86d57e0a97ceacdb02081a91757d75234))
+- *(statusbar)* Adjust rendering timing for status bar - ([85fa4f6](https://github.com/vicanso/zedis/commit/85fa4f6f9749b6e35e1cd5c006e3fa0cc0bf6b9a))
+- *(ui)* Adjust width and placeholder for ttl input - ([c950d22](https://github.com/vicanso/zedis/commit/c950d22dccf9b575d0ccb80cfe466a27cb40a584))
+- Optimize interaction logic for kv table updates - ([eeff799](https://github.com/vicanso/zedis/commit/eeff799e0da627a4557deda5aea62619bce4836d))
+- Optimize system language detection logic - ([43d05a5](https://github.com/vicanso/zedis/commit/43d05a5166be6955a7dd20cdcb8ec93f96cddab7))
+
+### 🎨 Styling
+
+- *(ui)* Improve windows icon clarity - ([90be864](https://github.com/vicanso/zedis/commit/90be86461e1521c57b4bdaec0fcbd6bec58a1c22))
+
+### ⚙️ Miscellaneous Tasks
+
+- Adjust winres build - ([c1a8785](https://github.com/vicanso/zedis/commit/c1a87852544fb5b9a47d0b0bfbdcb7b91f9726b9))
+- Add nightly release - ([c3beb8b](https://github.com/vicanso/zedis/commit/c3beb8b435d172e4e16f0881bb165db286f82c2e))
+- Add nightly release - ([6e7e4aa](https://github.com/vicanso/zedis/commit/6e7e4aaf674b7589c6b842868c8fc9b1cb786597))
+- Add nightly release - ([58989ee](https://github.com/vicanso/zedis/commit/58989eea3d026f8adf31ecca52a1fb746d4e0482))
+
 ## [0.2.3](https://github.com/vicanso/zedis/compare/v0.2.1..v0.2.3) - 2026-02-07
 
 ### ⛰️  Features
