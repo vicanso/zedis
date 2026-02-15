@@ -391,33 +391,17 @@ impl ZedisServerState {
         );
     }
 
-    /// Selects a key and fetches its details (Type, TTL, Value).
-    pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
-        self.key = Some(key.clone());
+    fn get_value(&mut self, key: SharedString, task: ServerTask, cx: &mut Context<Self>) {
         if key.is_empty() {
             return;
         }
-        self.terminal = false;
-        // only set loading status if the value exists for better performance
-        // prevent editor flickering
-        if let Some(value) = self.value.as_mut() {
-            value.status = RedisValueStatus::Loading;
-        } else {
-            self.value = Some(RedisValue {
-                status: RedisValueStatus::Loading,
-                ..Default::default()
-            });
-        }
-        cx.emit(ServerEvent::KeySelected);
-        cx.notify();
-
         let server_id = self.server_id.clone();
         let db = self.db;
         let current_key = key.clone();
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
 
         self.spawn(
-            ServerTask::Selectkey,
+            task,
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let (t, ttl): (String, i64) = pipe()
@@ -509,6 +493,34 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+
+    /// Reloads the value for a selected key.
+    pub fn reload_value(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.get_value(key, ServerTask::ReloadValue, cx);
+    }
+
+    /// Selects a key and fetches its details (Type, TTL, Value).
+    pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.key = Some(key.clone());
+        if key.is_empty() {
+            return;
+        }
+        self.terminal = false;
+        // only set loading status if the value exists for better performance
+        // prevent editor flickering
+        if let Some(value) = self.value.as_mut() {
+            value.status = RedisValueStatus::Loading;
+        } else {
+            self.value = Some(RedisValue {
+                status: RedisValueStatus::Loading,
+                ..Default::default()
+            });
+        }
+        cx.emit(ServerEvent::KeySelected);
+        cx.notify();
+
+        self.get_value(key, ServerTask::Selectkey, cx);
     }
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();

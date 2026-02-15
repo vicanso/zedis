@@ -40,6 +40,9 @@ pub enum ServerTask {
     /// Delete a key from Redis
     DeleteKey,
 
+    /// Reload value data for a selected key
+    ReloadValue,
+
     /// Delete multiple keys from Redis
     DeleteKeys,
 
@@ -99,6 +102,7 @@ impl ServerTask {
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",
             ServerTask::DeleteKey => "delete_key",
+            ServerTask::ReloadValue => "reload_value",
             ServerTask::DeleteKeys => "delete_keys",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",

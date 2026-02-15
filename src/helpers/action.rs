@@ -31,6 +31,7 @@ pub enum EditorAction {
     UpdateTtl,
     Cmd,
     Search,
+    AutoRefresh(u32),
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {

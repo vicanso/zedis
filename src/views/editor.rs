@@ -18,10 +18,10 @@ use crate::{
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
 };
-use gpui::{ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
-    button::Button,
+    button::{Button, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -61,6 +61,9 @@ pub struct ZedisEditor {
 
     readonly: bool,
 
+    auto_refresh_task: Option<Task<()>>,
+    auto_refresh_interval_sec: u64,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -99,6 +102,7 @@ impl ZedisEditor {
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeySelected => {
                     this.selected_key_at = Some(Instant::now());
+                    this.start_auto_refresh(None, cx);
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
@@ -137,6 +141,8 @@ impl ZedisEditor {
         info!("Creating new editor view");
 
         Self {
+            auto_refresh_task: None,
+            auto_refresh_interval_sec: 0,
             server_state,
             list_editor: None,
             bytes_editor: None,
@@ -150,6 +156,30 @@ impl ZedisEditor {
             _subscriptions: subscriptions,
             selected_key_at: None,
         }
+    }
+    fn start_auto_refresh(&mut self, auto_refresh_interval_sec: Option<u64>, cx: &mut Context<Self>) {
+        let auto_refresh_interval_sec = auto_refresh_interval_sec.unwrap_or(0);
+        self.auto_refresh_interval_sec = auto_refresh_interval_sec;
+        if auto_refresh_interval_sec == 0 {
+            self.auto_refresh_task = None;
+            return;
+        }
+        let server_state = self.server_state.clone();
+        self.auto_refresh_task = Some(cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(auto_refresh_interval_sec))
+                    .await;
+                let _ = server_state.update(cx, move |state, cx| {
+                    let key = state.key().unwrap_or_default();
+                    if key.is_empty() {
+                        return;
+                    }
+                    info!(key = key.as_str(), "auto refresh value");
+                    state.reload_value(key, cx);
+                });
+            }
+        }));
     }
 
     /// Check if a key was selected recently (within threshold)
@@ -207,7 +237,7 @@ impl ZedisEditor {
             return;
         };
         self.server_state.update(cx, move |state, cx| {
-            state.select_key(key, cx);
+            state.reload_value(key, cx);
         });
     }
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -381,16 +411,39 @@ impl ZedisEditor {
         )
         .into();
         // reload
+        let auto_refresh_interval_sec = self.auto_refresh_interval_sec;
         btns.push(
-            Button::new("zedis-editor-reload-key")
-                .ml_2()
-                .outline()
-                .disabled(should_show_loading)
-                .tooltip(reload_tooltip)
-                .icon(CustomIconName::RotateCw)
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.reload(cx);
-                }))
+            DropdownButton::new("zedis-editor-reload-key")
+                .button(
+                    Button::new("zedis-editor-reload-now")
+                        .ml_2()
+                        .outline()
+                        .disabled(should_show_loading)
+                        .when(auto_refresh_interval_sec > 0, |this| {
+                            this.label(format!("{}s", auto_refresh_interval_sec))
+                        })
+                        .tooltip(reload_tooltip)
+                        .icon(CustomIconName::RotateCw)
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.reload(cx);
+                        })),
+                )
+                .dropdown_menu(move |menu, _, cx| {
+                    let mut menu = menu;
+                    for interval in [0, 1, 5, 10, 30, 60] {
+                        let label = if interval == 0 {
+                            i18n_editor(cx, "disable_auto_refresh")
+                        } else {
+                            format!("{}s", interval).into()
+                        };
+                        menu = menu.menu_element_with_check(
+                            auto_refresh_interval_sec == interval,
+                            Box::new(EditorAction::AutoRefresh(interval as u32)),
+                            move |_, _cx| Label::new(label.clone()),
+                        );
+                    }
+                    menu
+                })
                 .into_any_element(),
         );
 
@@ -544,6 +597,9 @@ impl Render for ZedisEditor {
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {
                     this.save(window, cx);
+                }
+                EditorAction::AutoRefresh(interval) => {
+                    this.start_auto_refresh(Some(*interval as u64), cx);
                 }
                 _ => {
                     cx.propagate();
