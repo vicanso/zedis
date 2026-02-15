@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::states::{RedisValue, ZedisServerState};
+use crate::states::{KeyType, RedisValue, ZedisServerState};
 use crate::views::{KvTableColumn, KvTableColumnType};
 use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
@@ -27,6 +27,9 @@ pub const INDEX_COLUMN_NAME: &str = "#";
 /// Trait defining the data fetching and manipulation interface for Key-Value data.
 /// Implementers allow the `ZedisKvDelegate` to display and edit various Redis data types (Hash, Set, List, ZSet).
 pub trait ZedisKvFetcher: 'static {
+    fn key_type(&self) -> KeyType {
+        KeyType::Unknown
+    }
     /// Retrieves a value for a specific cell in the table.
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
 
@@ -58,8 +61,8 @@ pub trait ZedisKvFetcher: 'static {
     /// Filters data based on a keyword.
     fn filter(&self, keyword: SharedString, _cx: &mut App);
 
-    /// Opens a dialog to add a new value.
-    fn handle_add_value(&self, _window: &mut Window, _cx: &mut App);
+    /// Adds values for a new row.
+    fn handle_add_value(&self, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App);
 
     /// Updates values for a specific row.
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}

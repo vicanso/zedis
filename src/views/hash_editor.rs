@@ -24,13 +24,11 @@
 //! - Incremental loading of large HASHes with pagination
 
 use crate::{
-    components::{FormDialog, FormField, ZedisKvFetcher, open_add_form_dialog},
-    states::{RedisValue, ZedisServerState, i18n_common, i18n_hash_editor},
+    components::ZedisKvFetcher,
+    states::{RedisValue, ZedisServerState},
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
-use gpui_component::WindowExt;
-use std::rc::Rc;
 
 /// Data adapter for Redis HASH values to work with the KV table component.
 ///
@@ -147,50 +145,18 @@ impl ZedisKvFetcher for ZedisHashValues {
         });
     }
 
-    /// Opens a dialog to add a new field-value pair to the HASH.
-    ///
-    /// Creates a form with field and value input fields and handles submission
-    /// by calling the server state's `add_hash_value` method.
-    fn handle_add_value(&self, window: &mut Window, cx: &mut App) {
+    /// Adds a new field-value pair to the HASH.
+    fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+        // Validate that both field and value were provided
+        if values.len() != 2 {
+            return;
+        }
+
         let server_state = self.server_state.clone();
-
-        // Create submission handler that validates and calls Redis HSET
-        let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
-            // Validate that both field and value were provided
-            if values.len() != 2 {
-                return false;
-            }
-
-            // Execute the add operation on server state
-            server_state.update(cx, |this, cx| {
-                this.add_hash_value(values[0].clone(), values[1].clone(), cx);
-            });
-
-            // Close the dialog on successful submission
-            window.close_dialog(cx);
-            true
+        // Execute the add operation on server state
+        server_state.update(cx, |this, cx| {
+            this.add_hash_value(values[0].clone(), values[1].clone(), cx);
         });
-
-        // Build form with field and value input fields
-        let fields = vec![
-            FormField::new(i18n_common(cx, "field"))
-                .with_placeholder(i18n_common(cx, "field_placeholder"))
-                .with_focus(),
-            FormField::new(i18n_common(cx, "value"))
-                .with_placeholder(i18n_common(cx, "value_placeholder"))
-                .with_focus(),
-        ];
-
-        // Open the form dialog
-        open_add_form_dialog(
-            FormDialog {
-                title: i18n_hash_editor(cx, "add_value_title"),
-                fields,
-                handle_submit,
-            },
-            window,
-            cx,
-        );
     }
 }
 /// Main HASH editor view component.

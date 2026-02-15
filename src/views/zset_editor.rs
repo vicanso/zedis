@@ -24,13 +24,11 @@
 //! - Incremental loading of large ZSETs with pagination
 
 use crate::{
-    components::{FormDialog, FormField, ZedisKvFetcher, open_add_form_dialog},
-    states::{RedisValue, ZedisServerState, i18n_common, i18n_zset_editor},
+    components::ZedisKvFetcher,
+    states::{RedisValue, ZedisServerState},
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
-use gpui_component::WindowExt;
-use std::rc::Rc;
 
 /// Data adapter for Redis ZSET values to work with the KV table component.
 ///
@@ -120,53 +118,23 @@ impl ZedisKvFetcher for ZedisZsetValues {
         });
     }
 
-    /// Opens a dialog to add a new member to the ZSET.
+    /// Adds a new member to the ZSET.
     ///
     /// Creates a form with member and score input fields and handles submission
     /// by calling the server state's `add_zset_value` method.
-    fn handle_add_value(&self, window: &mut Window, cx: &mut App) {
+    fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+        if values.len() != 2 {
+            return;
+        }
+
         let server_state = self.server_state.clone();
+        // Parse score from string (default to 0.0 if invalid)
+        let score = values[1].parse::<f64>().unwrap_or(0.0);
 
-        // Create submission handler that validates and calls Redis ZADD
-        let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
-            // Validate that both member and score were provided
-            if values.len() != 2 {
-                return false;
-            }
-
-            // Parse score from string (default to 0.0 if invalid)
-            let score = values[1].parse::<f64>().unwrap_or(0.0);
-
-            // Execute the add operation on server state
-            server_state.update(cx, |this, cx| {
-                this.add_zset_value(values[0].clone(), score, cx);
-            });
-
-            // Close the dialog on successful submission
-            window.close_dialog(cx);
-            true
+        // Execute the add operation on server state
+        server_state.update(cx, |this, cx| {
+            this.add_zset_value(values[0].clone(), score, cx);
         });
-
-        // Build form with member and score input fields
-        let fields = vec![
-            FormField::new(i18n_common(cx, "value"))
-                .with_placeholder(i18n_common(cx, "value_placeholder"))
-                .with_focus(),
-            FormField::new(i18n_common(cx, "score"))
-                .with_placeholder(i18n_common(cx, "score_placeholder"))
-                .with_focus(),
-        ];
-
-        // Open the form dialog
-        open_add_form_dialog(
-            FormDialog {
-                title: i18n_zset_editor(cx, "add_value_title"),
-                fields,
-                handle_submit,
-            },
-            window,
-            cx,
-        );
     }
 
     /// Handles inline editing of a ZSET member's score.
@@ -227,7 +195,7 @@ impl ZedisZsetEditor {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisZsetValues>::new(
                 vec![
-                    KvTableColumn::new("Value", None),       // Member name column (flexible width)
+                    KvTableColumn::new_flex("Value"),        // Member name column (flexible width)
                     KvTableColumn::new("Score", Some(150.)), // Score column (fixed 150px width)
                 ],
                 server_state,

@@ -13,13 +13,11 @@
 // limitations under the License.
 
 use crate::{
-    components::{FormDialog, FormField, ZedisKvFetcher, open_add_form_dialog},
-    states::{RedisValue, ZedisServerState, i18n_common, i18n_set_editor},
+    components::ZedisKvFetcher,
+    states::{RedisValue, ZedisServerState},
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
-use gpui_component::WindowExt;
-use std::rc::Rc;
 use tracing::info;
 
 /// Data adapter for Redis SET values to work with the KV table component.
@@ -34,47 +32,22 @@ struct ZedisSetValues {
 }
 
 impl ZedisKvFetcher for ZedisSetValues {
-    /// Opens a dialog to add a new member to the SET.
+    /// Adds a new member to the SET.
     ///
-    /// Creates a form with a single value input field and handles submission
-    /// by calling the server state's `add_set_value` method.
-    fn handle_add_value(&self, window: &mut Window, cx: &mut App) {
+    /// # Arguments
+    /// * `values` - A vector of one SharedString value: [value]
+    /// * `cx` - GPUI context for spawning async tasks and UI updates
+    fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
         let server_state = self.server_state.clone();
+        // Validate that a value was provided
+        if values.is_empty() {
+            return;
+        }
 
-        // Create submission handler that extracts the value and calls Redis SADD
-        let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
-            // Validate that a value was provided
-            if values.is_empty() {
-                return false;
-            }
-
-            // Execute the add operation on server state
-            server_state.update(cx, |this, cx| {
-                this.add_set_value(values[0].clone(), cx);
-            });
-
-            // Close the dialog on successful submission
-            window.close_dialog(cx);
-            true
+        // Execute the add operation on server state
+        server_state.update(cx, |this, cx| {
+            this.add_set_value(values[0].clone(), cx);
         });
-
-        // Build form with a single value input field
-        let fields = vec![
-            FormField::new(i18n_common(cx, "value"))
-                .with_placeholder(i18n_common(cx, "value_placeholder"))
-                .with_focus(),
-        ];
-
-        // Open the form dialog
-        open_add_form_dialog(
-            FormDialog {
-                title: i18n_set_editor(cx, "add_value_title"),
-                fields,
-                handle_submit,
-            },
-            window,
-            cx,
-        );
     }
 
     /// Returns the total cardinality of the SET (from Redis SCARD).

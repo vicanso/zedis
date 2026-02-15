@@ -70,6 +70,7 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 - **TLS/SSL**: Full support for encrypted connections, including custom CA, Client Certificates, and Private Keys.
 
 ### ⚡ Productivity
+- **Auto Refresh**: Monitor live data with configurable refresh intervals for both **Key Lists** and **Key Values**. Perfect for watching active queues or volatile cache data without manual reloading.
 - **Command Autocomplete**: Intelligent **IntelliSense-style** code completion for Redis commands. It provides real-time syntax suggestions and parameter hints based on your Redis server version.
 - **Search History**: Automatically records your search queries locally. History is **connection-scoped**, ensuring production queries never pollute your local development workflow.
 - **Batch Operations**: Support selecting multiple keys for batch deletion or deleting keys with a specific prefix to simplify bulk data management.

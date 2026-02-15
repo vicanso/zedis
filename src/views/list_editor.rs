@@ -13,14 +13,12 @@
 // limitations under the License.
 
 use crate::{
-    components::{FormDialog, FormField, ZedisKvFetcher, open_add_form_dialog},
+    components::ZedisKvFetcher,
     helpers::fast_contains_ignore_case,
-    states::{RedisValue, ZedisServerState, i18n_common, i18n_list_editor},
+    states::{KeyType, RedisValue, ZedisServerState},
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
-use gpui_component::WindowExt;
-use std::rc::Rc;
 use tracing::info;
 
 /// Manages Redis List values and their display state.
@@ -81,6 +79,9 @@ impl ZedisListValues {
 }
 
 impl ZedisKvFetcher for ZedisListValues {
+    fn key_type(&self) -> KeyType {
+        KeyType::List
+    }
     /// Retrieves the value at the specified row index.
     ///
     /// Returns from the filtered visible items when a keyword filter is active,
@@ -145,47 +146,25 @@ impl ZedisKvFetcher for ZedisListValues {
             state.filter_list_value(keyword, cx);
         });
     }
-    /// Opens a dialog to add a new value to the Redis list.
+    /// Adds a new value to the Redis list.
     ///
-    /// The dialog allows users to choose between:
     /// - RPUSH: Append to the end of the list
     /// - LPUSH: Prepend to the beginning of the list
-    fn handle_add_value(&self, window: &mut Window, cx: &mut App) {
+    ///
+    /// # Arguments
+    /// * `values` - A vector of two SharedString values: [position_choice, value]
+    /// * `cx` - GPUI context for spawning async tasks and UI updates
+    fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
+        // Expect exactly 2 values: [position_choice, value]
+        if values.len() != 2 {
+            return;
+        }
         let server_state = self.server_state.clone();
 
-        let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
-            // Expect exactly 2 values: [position_choice, value]
-            if values.len() != 2 {
-                return false;
-            }
-
-            // values[0] = RPUSH/LPUSH choice, values[1] = actual value
-            server_state.update(cx, |state, cx| {
-                state.push_list_value(values[1].clone(), values[0].clone(), cx);
-            });
-
-            window.close_dialog(cx);
-            true
+        // values[0] = RPUSH/LPUSH choice, values[1] = actual value
+        server_state.update(cx, |state, cx| {
+            state.push_list_value(values[1].clone(), values[0].clone(), cx);
         });
-
-        let fields = vec![
-            // Position choice: RPUSH (right/end) or LPUSH (left/start)
-            FormField::new(i18n_list_editor(cx, "position")).with_options(vec!["RPUSH".into(), "LPUSH".into()]),
-            // Value input field
-            FormField::new(i18n_common(cx, "value"))
-                .with_placeholder(i18n_common(cx, "value_placeholder"))
-                .with_focus(),
-        ];
-
-        open_add_form_dialog(
-            FormDialog {
-                title: i18n_list_editor(cx, "add_value_title"),
-                fields,
-                handle_submit,
-            },
-            window,
-            cx,
-        );
     }
 
     /// Updates the value at the specified visible index using LSET command.
@@ -253,7 +232,7 @@ impl ZedisListEditor {
     /// Initializes a single-column table to display list values.
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisListValues>::new(vec![KvTableColumn::new("Value", None)], server_state, window, cx)
+            ZedisKvTable::<ZedisListValues>::new(vec![KvTableColumn::new_flex("Value")], server_state, window, cx)
         });
 
         info!("Creating new list editor view");
