@@ -31,10 +31,9 @@ use std::{
     time::Duration,
 };
 use tracing::{debug, error, info};
+type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 
 // Global singleton for ConnectionManager
 static CONNECTION_MANAGER: LazyLock<ConnectionManager> = LazyLock::new(ConnectionManager::new);
@@ -260,84 +259,98 @@ impl RedisClient {
 
     pub async fn memory_usage(&self, key: &str, key_type: &str) -> Result<u64> {
         let mut conn = self.connection.clone();
+        let key_type = key_type.to_lowercase();
+
         if self.is_at_least_version("4.0.0") {
             let memory_usage: u64 = cmd("MEMORY").arg("USAGE").arg(key).query_async(&mut conn).await?;
             return Ok(memory_usage);
         }
 
-        if key_type == "STR" {
-            let memory_size: u64 = cmd("STRLEN").arg(key).query_async(&mut conn).await?;
-            return Ok(memory_size);
+        if key_type == "str" {
+            let len: u64 = cmd("STRLEN").arg(key).query_async(&mut conn).await?;
+            return Ok(len + 56);
         }
 
-        let total_count: u64 = match key_type {
-            "LIST" => cmd("LLEN").arg(key).query_async(&mut conn).await?,
-            "HASH" => cmd("HLEN").arg(key).query_async(&mut conn).await?,
-            "SET" => cmd("SCARD").arg(key).query_async(&mut conn).await?,
-            "ZSET" => cmd("ZCARD").arg(key).query_async(&mut conn).await?,
+        let total_count: u64 = match key_type.as_str() {
+            "list" => cmd("LLEN").arg(key).query_async(&mut conn).await?,
+            "hash" => cmd("HLEN").arg(key).query_async(&mut conn).await?,
+            "set" => cmd("SCARD").arg(key).query_async(&mut conn).await?,
+            "zset" => cmd("ZCARD").arg(key).query_async(&mut conn).await?,
             _ => 0,
         };
+
         if total_count == 0 {
             return Ok(0);
         }
+
         if total_count < 1000 {
             let data: Vec<u8> = cmd("DUMP").arg(key).query_async(&mut conn).await?;
             return Ok(data.len() as u64);
         }
-        let sample_count = 20;
-        let items = match key_type {
-            "LIST" => {
+
+        let sample_count = 100;
+
+        let (sample_bytes, actual_count) = match key_type.as_str() {
+            "list" => {
                 let items: Vec<Vec<u8>> = cmd("LRANGE")
                     .arg(key)
                     .arg(0)
                     .arg(sample_count - 1)
                     .query_async(&mut conn)
                     .await?;
-                items
+                let len: usize = items.iter().map(|x| x.len()).sum();
+                (len, items.len())
             }
-            "SET" => {
+            "set" => {
                 let items: Vec<Vec<u8>> = cmd("SRANDMEMBER")
                     .arg(key)
                     .arg(sample_count)
                     .query_async(&mut conn)
                     .await?;
-                items
+                let len: usize = items.iter().map(|x| x.len()).sum();
+                (len, items.len())
             }
-            "ZSET" => {
+            "zset" => {
                 let items: Vec<Vec<u8>> = cmd("ZRANGE")
                     .arg(key)
                     .arg(0)
                     .arg(sample_count - 1)
                     .query_async(&mut conn)
                     .await?;
-                items
+
+                let members_len: usize = items.iter().map(|x| x.len()).sum();
+                // ZSET score (double, 8 bytes)
+                let scores_len = items.len() * 8;
+                (members_len + scores_len, items.len())
             }
-            "HASH" => {
+            "hash" => {
                 let (_, items): HashScanValue = cmd("HSCAN")
                     .arg(key)
                     .arg(0)
+                    .arg("COUNT")
                     .arg(sample_count)
                     .query_async(&mut conn)
                     .await?;
-                items
-                    .into_iter()
-                    .map(|(mut value1, value2)| {
-                        value1.extend_from_slice(&value2);
-                        value1
-                    })
-                    .collect::<Vec<Vec<u8>>>()
+
+                let len: usize = items.iter().map(|(k, v)| k.len() + v.len()).sum();
+                (len, items.len())
             }
-            _ => vec![],
+            _ => (0, 0),
         };
 
-        if items.is_empty() {
+        if actual_count == 0 {
             return Ok(0);
         }
-        let total_sample_len: usize = items.iter().map(|s| s.len()).sum();
-        let avg_len = total_sample_len / items.len();
 
-        let overhead_per_item = 16;
-        Ok(total_count * (avg_len + overhead_per_item) as u64)
+        let avg_len = sample_bytes as u64 / actual_count as u64;
+
+        let overhead = match key_type.as_str() {
+            "zset" => 64,
+            "hash" | "set" => 32,
+            _ => 16,
+        };
+
+        Ok(total_count * (avg_len + overhead))
     }
 
     /// Executes commands on all master nodes concurrently.
