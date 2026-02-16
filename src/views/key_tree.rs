@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
-    db::HistoryManager,
+    db::get_search_history_manager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
         KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
@@ -651,6 +651,7 @@ impl ZedisKeyTree {
     /// current query mode. Ignores if a scan is already in progress.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         // Don't trigger filter while already scanning
+        let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
         if server_state.scanning() {
             return;
@@ -664,11 +665,17 @@ impl ZedisKeyTree {
         self.current_keyword
             .update(cx, |state, _cx| *state = keyword_clone.clone());
         cx.spawn(async move |_, cx| {
-            let _ = cx
+            let result = cx
                 .background_spawn(async move {
-                    let _ = HistoryManager::add_record(server_id_clone.as_str(), keyword_clone.as_str());
+                    let search_history_manager = get_search_history_manager();
+                    search_history_manager.add_record(server_id_clone.as_str(), keyword_clone.as_str())
                 })
                 .await;
+            if let Ok(history) = result {
+                let _ = server_state_clone.update(cx, |state, _cx| {
+                    state.set_search_history(history);
+                });
+            }
         })
         .detach();
         self.server_state.update(cx, move |handle, cx| {
@@ -684,7 +691,8 @@ impl ZedisKeyTree {
         cx.spawn(async move |_, cx| {
             let _ = cx
                 .background_spawn(async move {
-                    let _ = HistoryManager::clear_history(server_id.as_str());
+                    let search_history_manager = get_search_history_manager();
+                    let _ = search_history_manager.clear_history(server_id.as_str());
                 })
                 .await;
         })

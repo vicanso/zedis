@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::{AccessMode, RedisClientDescription, get_connection_manager};
-use crate::db::HistoryManager;
+use crate::db::get_search_history_manager;
 use crate::error::Error;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::stat::RedisInfo;
@@ -427,6 +427,10 @@ impl ZedisServerState {
         self.value.as_ref()
     }
 
+    pub fn set_search_history(&mut self, history: Vec<SharedString>) {
+        self.search_history = history;
+    }
+
     /// Select and connect to a Redis server
     ///
     /// This initiates a connection and loads server metadata:
@@ -466,7 +470,8 @@ impl ZedisServerState {
             self.soft_wrap = soft_wrap;
 
             debug!(server_id = self.server_id.as_str(), "Selecting server");
-            if let Ok(history) = HistoryManager::records(server_id.as_str()) {
+            let search_history_manager = get_search_history_manager();
+            if let Ok(history) = search_history_manager.records(server_id.as_str()) {
                 self.search_history = history;
             }
             cx.emit(ServerEvent::ServerSelected(server_id));

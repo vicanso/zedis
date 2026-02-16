@@ -14,18 +14,23 @@
 
 use crate::error::Error;
 use crate::helpers::{get_or_create_config_dir, is_development};
+use gpui::SharedString;
 use redb::{Database, TableDefinition};
 use std::sync::OnceLock;
 use tracing::debug;
 
+mod cmd_history_manager;
 mod history_manager;
 mod protos;
+mod search_history_manager;
 
-pub use history_manager::*;
+pub use cmd_history_manager::*;
 pub use protos::*;
+pub use search_history_manager::*;
 
-const HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
+const SEARCH_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
 const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
+const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd_history");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -48,7 +53,7 @@ pub fn init_database() -> Result<()> {
     let db = Database::create(&db_path)?;
     let write_txn = db.begin_write()?;
     {
-        write_txn.open_table(HISTORY_TABLE)?;
+        write_txn.open_table(SEARCH_HISTORY_TABLE)?;
         write_txn.open_table(PROTO_TABLE)?;
     }
     write_txn.commit()?;
@@ -57,4 +62,14 @@ pub fn init_database() -> Result<()> {
         message: "database initialized failed".to_string(),
     })?;
     Ok(())
+}
+
+fn add_normalize_history(history: &mut Vec<SharedString>, keyword: SharedString, max: usize) {
+    history.retain(|x| *x != keyword);
+
+    history.insert(0, keyword);
+
+    if history.len() > max {
+        history.truncate(max);
+    }
 }

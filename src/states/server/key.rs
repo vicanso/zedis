@@ -21,7 +21,6 @@ use super::{
     value::{KeyType, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
-use crate::db::add_normalize_history;
 use crate::states::{QueryMode, ZedisGlobalStore};
 use crate::{
     connection::get_connection_manager,
@@ -271,9 +270,6 @@ impl ZedisServerState {
     }
     pub fn handle_filter(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan();
-        if !keyword.is_empty() {
-            add_normalize_history(&mut self.search_history, keyword.clone());
-        }
         match self.query_mode {
             QueryMode::Prefix => self.scan_prefix(keyword, cx),
             QueryMode::Exact => self.select_key(keyword, cx),

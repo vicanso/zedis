@@ -12,81 +12,83 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{HISTORY_TABLE, get_database};
+use super::{add_normalize_history, get_database};
 use crate::error::Error;
 use dashmap::DashMap;
 use gpui::SharedString;
+use redb::TableDefinition;
 use redb::{ReadableDatabase, ReadableTable};
-use std::sync::LazyLock;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-const MAX_HISTORY_SIZE: usize = 20;
-static HISTORY_CACHE: LazyLock<DashMap<String, Vec<SharedString>>> = LazyLock::new(DashMap::new);
-
-pub struct HistoryManager;
-
-pub fn add_normalize_history(history: &mut Vec<SharedString>, keyword: SharedString) {
-    history.retain(|x| *x != keyword);
-
-    history.insert(0, keyword);
-
-    if history.len() > MAX_HISTORY_SIZE {
-        history.truncate(MAX_HISTORY_SIZE);
-    }
+pub struct HistoryManager {
+    max_history_size: usize,
+    history_cache: DashMap<String, Vec<SharedString>>,
+    definition: TableDefinition<'static, &'static str, &'static str>,
 }
 
 impl HistoryManager {
-    pub fn add_record(server_id: &str, keyword: &str) -> Result<()> {
-        let keyword = keyword.trim();
-        if keyword.is_empty() {
-            return Ok(());
+    pub fn new(definition: TableDefinition<'static, &'static str, &'static str>) -> Self {
+        Self {
+            max_history_size: 20,
+            history_cache: DashMap::new(),
+            definition,
         }
+    }
+    pub fn set_max_history_size(mut self, max_history_size: usize) -> Self {
+        self.max_history_size = max_history_size;
+        self
+    }
+    pub fn add_record(&self, server_id: &str, keyword: &str) -> Result<Vec<SharedString>> {
+        let keyword = keyword.trim();
         let db = get_database()?;
         let write_txn = db.begin_write()?;
 
-        {
-            let mut table = write_txn.open_table(HISTORY_TABLE)?;
-            let mut history = if let Some(history) = HISTORY_CACHE.get(server_id) {
+        let history = {
+            let mut table = write_txn.open_table(self.definition)?;
+            let mut history = if let Some(history) = self.history_cache.get(server_id) {
                 history.clone()
             } else if let Some(v) = table.get(server_id)? {
                 serde_json::from_str(v.value())?
             } else {
                 Vec::new()
             };
-            add_normalize_history(&mut history, keyword.to_string().into());
+            if !keyword.is_empty() {
+                add_normalize_history(&mut history, keyword.to_string().into(), self.max_history_size);
 
-            HISTORY_CACHE.insert(server_id.to_string(), history.clone());
+                self.history_cache.insert(server_id.to_string(), history.clone());
 
-            let json_val = serde_json::to_string(&history)?;
-            table.insert(server_id, json_val.as_str())?;
-        }
+                let json_val = serde_json::to_string(&history)?;
+                table.insert(server_id, json_val.as_str())?;
+            }
+            history
+        };
 
         write_txn.commit()?;
-        Ok(())
+        Ok(history)
     }
 
-    pub fn records(server_id: &str) -> Result<Vec<SharedString>> {
-        if let Some(history) = HISTORY_CACHE.get(server_id) {
+    pub fn records(&self, server_id: &str) -> Result<Vec<SharedString>> {
+        if let Some(history) = self.history_cache.get(server_id) {
             return Ok(history.clone());
         }
         let db = get_database()?;
         let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(HISTORY_TABLE)?;
+        let table = read_txn.open_table(self.definition)?;
         let Some(v) = table.get(server_id)? else {
             return Ok(Vec::new());
         };
         let history: Vec<SharedString> = serde_json::from_str(v.value())?;
-        HISTORY_CACHE.insert(server_id.to_string(), history.clone());
+        self.history_cache.insert(server_id.to_string(), history.clone());
         Ok(history)
     }
 
-    pub fn clear_history(server_id: &str) -> Result<()> {
-        HISTORY_CACHE.remove(server_id);
+    pub fn clear_history(&self, server_id: &str) -> Result<()> {
+        self.history_cache.remove(server_id);
         let db = get_database()?;
         let write_txn = db.begin_write()?;
         {
-            let mut table = write_txn.open_table(HISTORY_TABLE)?;
+            let mut table = write_txn.open_table(self.definition)?;
             table.remove(server_id)?;
         }
         write_txn.commit()?;

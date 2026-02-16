@@ -15,6 +15,7 @@
 use crate::{
     components::SkeletonLoading,
     connection::{get_command_description, get_connection_manager, list_commands},
+    db::get_cmd_history_manager,
     error::Error,
     helpers::{
         EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string, starts_with_ignore_ascii_case,
@@ -73,7 +74,7 @@ pub struct ZedisContent {
     redis_commands: Vec<SharedString>,
     cmd_suggestions: Vec<String>,
     cmd_suggestion_index: Option<usize>,
-
+    cmd_history_index: Option<usize>,
     /// Persisted width of the key tree panel (resizable by user)
     key_tree_width: Pixels,
 
@@ -185,6 +186,9 @@ impl ZedisContent {
                     this.execute_command(cmd, cx);
                 }
                 InputEvent::Change => {
+                    if this.cmd_history_index.is_some() {
+                        return;
+                    }
                     let value = state.read(cx).value().to_string();
                     if !value.is_empty()
                         && !value.contains(' ')
@@ -222,6 +226,7 @@ impl ZedisContent {
             should_focus: None,
             should_focus_cmd_input: None,
             cmd_output_scroll_handle: ScrollHandle::new(),
+            cmd_history_index: None,
             focus_handle,
             proto_editor: None,
             _subscriptions: subscriptions,
@@ -328,6 +333,7 @@ impl ZedisContent {
                 let args = parts[1..].to_vec();
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let data: redis::Value = cmd(&cmd_name).arg(&args).query_async(&mut conn).await?;
+                let _ = get_cmd_history_manager().add_record(server_id.as_str(), command.as_str());
                 Ok(redis_value_to_string(&data).into())
             });
             let result: Result<SharedString> = task.await;
@@ -399,6 +405,48 @@ impl ZedisContent {
             .justify_center()
             .child(div().w(px(LOADING_SKELETON_WIDTH)).child(SkeletonLoading::new()))
     }
+    /// Handle command history navigation
+    ///
+    /// This function is called when the user presses the up or down arrow keys
+    /// to navigate through the command history.
+    fn handle_cmd_history(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id();
+        if server_id.is_empty() {
+            return;
+        }
+
+        let offset: i32 = match event.keystroke.key.as_str() {
+            "down" => -1,
+            "up" => 1,
+            _ => {
+                return;
+            }
+        };
+        let records = get_cmd_history_manager().records(server_id).unwrap_or_default();
+        if records.is_empty() {
+            return;
+        }
+        let mut index = if let Some(cmd_history_index) = self.cmd_history_index {
+            if offset > 0 {
+                cmd_history_index + 1
+            } else if cmd_history_index == 0 {
+                0
+            } else {
+                cmd_history_index - 1
+            }
+        } else if offset > 0 {
+            0
+        } else {
+            records.len() - 1
+        };
+        index = index.min(records.len() - 1);
+        if let Some(value) = records.get(index) {
+            self.cmd_input_state.update(cx, |this, cx| {
+                this.set_value(value.clone(), window, cx);
+            });
+            self.cmd_history_index = Some(index);
+        }
+    }
     /// Render the main editor interface with resizable panels
     ///
     /// Layout:
@@ -428,13 +476,23 @@ impl ZedisContent {
                 self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
             }
             let font_family: SharedString = get_font_family().into();
-            let handle_suggestion_key_down = cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+            let handle_suggestion_key_down = cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let input_key = event.keystroke.key.as_str();
+                if !["down", "up"].contains(&input_key) {
+                    this.cmd_history_index = None;
+                    return;
+                }
+
+                let input = this.cmd_input_state.read(cx).value();
+                if input.is_empty() || this.cmd_history_index.is_some() {
+                    this.handle_cmd_history(event, window, cx);
+                    return;
+                }
                 if this.cmd_suggestions.is_empty() {
                     return;
                 }
-                let keystroke = &event.keystroke;
                 let max = this.cmd_suggestions.len() - 1;
-                let new_index = match keystroke.key.as_str() {
+                let new_index = match input_key {
                     "down" => {
                         if let Some(current) = this.cmd_suggestion_index {
                             Some((current + 1).min(max))
