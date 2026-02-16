@@ -440,11 +440,8 @@ impl ZedisServerState {
                         message: "unsupported key type".to_string(),
                     }),
                 }?;
-                if let Ok(memory_usage) = cmd("MEMORY")
-                    .arg("USAGE")
-                    .arg(key.as_str())
-                    .query_async::<u64>(&mut conn)
-                    .await
+                if let Ok(client) = get_connection_manager().get_client(&server_id, db).await
+                    && let Ok(memory_usage) = client.memory_usage(key.as_str(), key_type.as_str()).await
                 {
                     redis_value.size = memory_usage;
                 }
