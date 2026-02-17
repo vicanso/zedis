@@ -40,6 +40,28 @@ use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
 
+bitflags::bitflags! {
+    /// Defines the operations supported by the table.
+    ///
+    /// Use bitwise operations to combine multiple modes:
+    /// - `KvTableMode::ADD | KvTableMode::UPDATE` - Allow add and update
+    /// - `KvTableMode::ALL` - Allow all operations
+    /// - `KvTableMode::empty()` - Read-only mode (no operations)
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct KvTableMode: u8 {
+        /// Support adding new values
+        const ADD    = 0b0001;
+        /// Support updating existing values
+        const UPDATE = 0b0010;
+        /// Support removing values
+        const REMOVE = 0b0100;
+        /// Support filtering/searching values
+        const FILTER = 0b1000;
+        /// All operations enabled
+        const ALL    = Self::ADD.bits() | Self::UPDATE.bits() | Self::REMOVE.bits() | Self::FILTER.bits();
+    }
+}
+
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
 
@@ -112,6 +134,8 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     key_changed: Option<bool>,
     /// Whether the table is readonly
     readonly: bool,
+    /// Supported operations mode (add, update, remove, filter)
+    mode: KvTableMode,
     /// The row index that is being edited
     edit_row: Option<usize>,
     /// The original values of the row that is being edited
@@ -202,6 +226,23 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// - Event subscriptions for server state changes
     /// - Keyword search input field
     /// - Table state with data delegate
+    /// - Default mode is `KvTableMode::ALL` (all operations enabled)
+    ///
+    /// # Arguments
+    /// * `columns` - Column definitions for the table
+    /// * `server_state` - Reference to the server state
+    /// * `window` - Current window
+    /// * `cx` - GPUI context
+    ///
+    /// # Example
+    /// ```
+    /// // Create with default mode (ALL)
+    /// let table = ZedisKvTable::new(columns, server_state, window, cx);
+    ///
+    /// // Create with custom mode
+    /// let table = ZedisKvTable::new(columns, server_state, window, cx)
+    ///     .mode(KvTableMode::ADD | KvTableMode::REMOVE);
+    /// ```
     pub fn new(
         columns: Vec<KvTableColumn>,
         server_state: Entity<ZedisServerState>,
@@ -252,6 +293,14 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }));
 
         let readonly = server_state.read(cx).readonly();
+        
+        // If readonly, disable all operations; otherwise default to ALL
+        let mode = if readonly {
+            KvTableMode::empty()
+        } else {
+            KvTableMode::ALL
+        };
+
         // Initialize table data and state
         let fetcher = Arc::new(Self::new_values(server_state, cx));
         let done = fetcher.is_done();
@@ -265,13 +314,13 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         );
 
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
-        if !readonly {
-            subscriptions.push(cx.subscribe(&table_state, |this, _, event, cx| {
-                if let TableEvent::SelectRow(row_ix) = event {
-                    this.handle_select_row(*row_ix, cx);
-                }
-            }));
-        }
+        
+        // Subscribe to row selection events (mode check will be done in handler)
+        subscriptions.push(cx.subscribe(&table_state, |this, _, event, cx| {
+            if let TableEvent::SelectRow(row_ix) = event {
+                this.handle_select_row(*row_ix, cx);
+            }
+        }));
 
         let value_states = columns
             .iter()
@@ -300,7 +349,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 Some((index, state))
             })
             .collect::<Vec<_>>();
-        info!("Creating new key value table view");
+        info!("Creating new key value table view with mode: {:?}", mode);
 
         Self {
             table_state,
@@ -316,17 +365,51 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             values_modified: false,
             value_states,
             readonly,
+            mode,
             fetcher,
             columns,
             list_push_mode_state: cx.new(|_cx| 0),
             _subscriptions: subscriptions,
         }
     }
+
+    /// Sets the operation mode for the table.
+    ///
+    /// This method allows you to customize which operations are available:
+    /// - `KvTableMode::ALL` - All operations (add, update, remove, filter)
+    /// - `KvTableMode::ADD | KvTableMode::REMOVE` - Only add and remove
+    /// - `KvTableMode::FILTER` - Only filtering, no modifications
+    /// - `KvTableMode::empty()` - Read-only mode
+    ///
+    /// # Note
+    /// If the server state is readonly, the mode will be forced to `empty()` regardless
+    /// of the provided mode.
+    ///
+    /// # Example
+    /// ```
+    /// let table = ZedisKvTable::new(columns, server_state, window, cx)
+    ///     .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER);
+    /// ```
+    pub fn mode(mut self, mode: KvTableMode) -> Self {
+        // If readonly, mode is always empty
+        if self.readonly {
+            self.mode = KvTableMode::empty();
+        } else {
+            self.mode = mode;
+        }
+        self
+    }
+
     fn is_adding_row(&self) -> bool {
         self.edit_row == Some(usize::MAX)
     }
 
     fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
+        // Only allow row selection if UPDATE, REMOVE, or ADD mode is enabled
+        if !self.mode.intersects(KvTableMode::UPDATE | KvTableMode::REMOVE | KvTableMode::ADD) {
+            return;
+        }
+        
         self.edit_row = Some(row_ix);
         let values = self
             .value_states
@@ -338,6 +421,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.values_should_fill = Some(true);
     }
     fn handle_add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only allow adding if ADD mode is enabled
+        if !self.mode.contains(KvTableMode::ADD) {
+            return;
+        }
+        
         self.edit_row = Some(usize::MAX);
         self.list_push_mode_state.update(cx, |state, _| {
             *state = 0;
@@ -373,6 +461,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
     /// Triggers a filter operation using the current keyword from the input field.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
+        // Only allow filtering if FILTER mode is enabled
+        if !self.mode.contains(KvTableMode::FILTER) {
+            return;
+        }
+        
         let keyword = self.keyword_state.read(cx).value();
         self.loading = true;
         self.table_state.update(cx, |state, cx| {
@@ -386,6 +479,20 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let Some(row_ix) = self.edit_row else {
             return;
         };
+        
+        // Check if the operation is allowed based on mode
+        if row_ix == usize::MAX {
+            // Adding new row
+            if !self.mode.contains(KvTableMode::ADD) {
+                return;
+            }
+        } else {
+            // Updating existing row
+            if !self.mode.contains(KvTableMode::UPDATE) {
+                return;
+            }
+        }
+        
         let mut values = Vec::with_capacity(self.value_states.len());
         for (_, state) in self.value_states.iter() {
             let value = state.read(cx).value();
@@ -403,6 +510,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.edit_row = None;
     }
     fn handle_remove_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only allow removing if REMOVE mode is enabled
+        if !self.mode.contains(KvTableMode::REMOVE) {
+            return;
+        }
+        
         let Some(row_ix) = self.edit_row else {
             return;
         };
@@ -498,6 +610,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let cancel_label = i18n_common(cx, "cancel");
         let save_label = i18n_common(cx, "save");
         let remove_label = i18n_common(cx, "remove");
+        
+        let can_add = self.mode.contains(KvTableMode::ADD);
+        let can_remove = self.mode.contains(KvTableMode::REMOVE);
+        let can_update = self.mode.contains(KvTableMode::UPDATE);
+        let is_adding = self.is_adding_row();
+        
         form.child(
             div().flex_none().child(
                 field().child(
@@ -505,7 +623,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         .id("kv-table-edit-form-btn-group")
                         .w_full()
                         .gap_2()
-                        .when(!self.is_adding_row(), |this| {
+                        .when(!is_adding && can_remove, |this| {
                             this.child(
                                 Button::new("remove-edit-btn")
                                     .icon(CustomIconName::FileXCorner)
@@ -524,17 +642,19 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                                     this.edit_row = None;
                                 })),
                         )
-                        .child(
-                            Button::new("save-edit-btn")
-                                .disabled(!self.values_modified)
-                                .tooltip(humanize_keystroke("cmd-s"))
-                                .primary()
-                                .icon(CustomIconName::Save)
-                                .label(save_label)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.handle_add_or_update_value(window, cx);
-                                })),
-                        ),
+                        .when((is_adding && can_add) || (!is_adding && can_update), |this| {
+                            this.child(
+                                Button::new("save-edit-btn")
+                                    .disabled(!self.values_modified)
+                                    .tooltip(humanize_keystroke("cmd-s"))
+                                    .primary()
+                                    .icon(CustomIconName::Save)
+                                    .label(save_label)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.handle_add_or_update_value(window, cx);
+                                    })),
+                            )
+                        }),
                 ),
             ),
         )
@@ -569,13 +689,17 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             }
         }
 
+        // Determine if operations are allowed based on mode
+        let can_add = self.mode.contains(KvTableMode::ADD);
+        let can_filter = self.mode.contains(KvTableMode::FILTER);
+
         // Search button with loading state
         let search_btn = Button::new("kv-table-search-btn")
             .ghost()
             .icon(IconName::Search)
             .tooltip(i18n_kv_table(cx, "search_tooltip"))
             .loading(self.loading)
-            .disabled(self.loading)
+            .disabled(self.loading || !can_filter)
             .on_click(cx.listener(|this, _, _, cx| {
                 this.handle_filter(cx);
             }));
@@ -615,25 +739,24 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(
-                                        Button::new("add-value-btn")
-                                            .icon(CustomIconName::FilePlusCorner)
-                                            .disabled(self.readonly)
-                                            .tooltip(if self.readonly {
-                                                i18n_common(cx, "disable_in_readonly")
-                                            } else {
-                                                i18n_kv_table(cx, "add_value_tooltip")
-                                            })
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.handle_add_row(window, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Input::new(&self.keyword_state)
-                                            .w(px(KEYWORD_INPUT_WIDTH))
-                                            .suffix(search_btn)
-                                            .cleanable(true),
-                                    )
+                                    .when(can_add, |this| {
+                                        this.child(
+                                            Button::new("add-value-btn")
+                                                .icon(CustomIconName::FilePlusCorner)
+                                                .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.handle_add_row(window, cx);
+                                                })),
+                                        )
+                                    })
+                                    .when(can_filter, |this| {
+                                        this.child(
+                                            Input::new(&self.keyword_state)
+                                                .w(px(KEYWORD_INPUT_WIDTH))
+                                                .suffix(search_btn)
+                                                .cleanable(true),
+                                        )
+                                    })
                                     .flex_1(),
                             )
                             // Right side: Status icon and count

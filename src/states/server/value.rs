@@ -19,6 +19,7 @@ use chrono::Local;
 use gpui::{Hsla, SharedString, prelude::*};
 use redis::cmd;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -161,6 +162,7 @@ pub enum RedisValueData {
     Set(Arc<RedisSetValue>),
     Zset(Arc<RedisZsetValue>),
     Hash(Arc<RedisHashValue>),
+    Stream(Arc<RedisStreamValue>),
 }
 
 /// Redis Set value structure with pagination support
@@ -208,6 +210,57 @@ pub struct RedisListValue {
     pub size: usize,
     pub values: Vec<SharedString>,
 }
+
+/// Structure: (Message ID, Vec<(Field, Value)>)
+pub type RedisStreamEntry = (SharedString, Vec<(SharedString, SharedString)>);
+/// Redis Stream value structure with pagination support
+#[derive(Debug, Clone, Default)]
+pub struct RedisStreamValue {
+    /// Optional keyword filter for searching stream entries.
+    pub keyword: Option<SharedString>,
+
+    /// The ID of the last entry loaded, used for pagination (e.g., "1700000000000-0").
+    /// Stream uses IDs as cursors for XREVRANGE/XRANGE.
+    pub cursor: String,
+
+    /// Total count of items in the stream (XLEN).
+    pub size: usize,
+
+    /// Whether we have reached the end of the stream (or loaded all requested).
+    pub done: bool,
+
+    /// The stream entries.
+    pub values: Vec<RedisStreamEntry>,
+}
+
+impl RedisStreamValue {
+    pub fn fields(&self) -> Vec<SharedString> {
+        let mut seen = HashSet::new();
+        self.values
+            .iter()
+            .flat_map(|(_, fields)| fields.iter().map(|(field, _)| field.clone()))
+            .filter(|field| seen.insert(field.clone()))
+            .collect()
+    }
+    pub fn get_entry_id(&self, index: usize) -> Option<SharedString> {
+        self.values.get(index).map(|(id, _)| id.clone())
+    }
+    pub fn get_field_value(&self, index: usize, field: &SharedString) -> Option<SharedString> {
+        let (_, fields) = self.values.get(index)?;
+        let values: Vec<SharedString> = fields
+            .iter()
+            .filter(|(f, _)| f == field)
+            .map(|(_, value)| value.clone())
+            .collect();
+
+        if values.is_empty() {
+            return None;
+        }
+
+        Some(values.join("; ").into())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ViewMode {
     #[default]
@@ -282,6 +335,14 @@ impl RedisValue {
     /// Returns the hash value if the data is a Hash type
     pub fn hash_value(&self) -> Option<&Arc<RedisHashValue>> {
         if let Some(RedisValueData::Hash(data)) = self.data.as_ref() {
+            return Some(data);
+        }
+        None
+    }
+
+    /// Returns the stream value if the data is a Stream type
+    pub fn stream_value(&self) -> Option<&Arc<RedisStreamValue>> {
+        if let Some(RedisValueData::Stream(data)) = self.data.as_ref() {
             return Some(data);
         }
         None

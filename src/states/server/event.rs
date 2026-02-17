@@ -88,6 +88,11 @@ pub enum ServerTask {
     /// Remove a value from a hash
     RemoveHashField,
 
+    /// Add a stream entry
+    AddStreamEntry,
+    /// Remove a stream entry
+    RemoveStreamEntry,
+
     /// Save edited value back to Redis
     SaveValue,
 }
@@ -121,6 +126,8 @@ impl ServerTask {
             ServerTask::AddHashField => "add_hash_field",
             ServerTask::UpdateHashField => "update_hash_field",
             ServerTask::RemoveHashField => "remove_hash_field",
+            ServerTask::AddStreamEntry => "add_stream_entry",
+            ServerTask::RemoveStreamEntry => "remove_stream_entry",
         }
     }
 }

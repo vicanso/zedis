@@ -36,6 +36,7 @@ pub mod key;
 pub mod list;
 pub mod set;
 pub mod stat;
+pub mod stream;
 pub mod string;
 pub mod value;
 pub mod zset;

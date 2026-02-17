@@ -153,7 +153,12 @@ impl ZedisSetEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Initialize the KV table with a single "Value" column
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisSetValues>::new(vec![KvTableColumn::new("Value", None)], server_state, window, cx)
+            ZedisKvTable::<ZedisSetValues>::new(
+                vec![KvTableColumn::new("Value", None)],
+                server_state,
+                window,
+                cx,
+            )
         });
 
         info!("Creating new SET editor view");
