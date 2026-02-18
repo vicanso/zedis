@@ -37,6 +37,7 @@ loading = "Loading..."
 latency = "Latency"
 used_memory = "Used memory"
 clients = "Blocked & Connected clients"
+slow_logs = "Slow logs"
 disable_in_readonly = "Disabled in read-only mode"
 
 

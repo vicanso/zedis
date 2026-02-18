@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::get_connection_manager;
+use crate::connection::{SlowLogEntry, get_connection_manager};
+use crate::helpers::unix_ts;
 use crate::states::{ServerEvent, ServerTask, ZedisServerState};
 use gpui::prelude::*;
 use redis::cmd;
 use std::collections::HashMap;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::error;
 
 #[derive(Debug, Default, Clone)]
@@ -30,6 +30,7 @@ pub struct RedisKeySpaceStats {
 
 #[derive(Debug, Default, Clone)]
 pub struct RedisInfo {
+    pub last_checked_at: i64,
     pub latency: Duration,
     // --- Server ---
     pub redis_version: String,
@@ -64,6 +65,9 @@ pub struct RedisInfo {
 
     // --- Keyspace (db0, db1...) ---
     pub keyspace: HashMap<String, RedisKeySpaceStats>,
+
+    /// The slow logs of the Redis server
+    pub slow_logs: Vec<SlowLogEntry>,
 }
 
 /// Aggregates metrics from multiple Redis Cluster nodes into a single global view.
@@ -238,6 +242,11 @@ impl ZedisServerState {
             return;
         }
 
+        let last_checked_at = self
+            .redis_info
+            .as_ref()
+            .map(|item| item.last_checked_at)
+            .unwrap_or_else(|| unix_ts() - 300);
         let server_id = self.server_id.clone();
         let db = self.db;
         let server_id_clone = server_id.clone();
@@ -248,12 +257,15 @@ impl ZedisServerState {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let start = Instant::now();
                 client.ping().await?;
+                let slow_logs = client.get_slow_logs(Some(last_checked_at)).await?;
                 let latency = start.elapsed();
 
                 let list: Vec<String> = client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 let mut info = aggregate_redis_info(infos);
+                info.last_checked_at = unix_ts();
                 info.latency = latency;
+                info.slow_logs = slow_logs;
                 Ok(info)
             },
             move |this, result, cx| match result {

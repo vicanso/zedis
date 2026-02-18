@@ -102,6 +102,7 @@ struct StatusBarServerState {
     scan_finished: bool,
     soft_wrap: bool,
     nodes_description: SharedString,
+    slow_logs: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +317,7 @@ impl ZedisStatusBar {
             clients: clients.into(),
             nodes: format_nodes(state.nodes(), state.version()),
             scan_finished: state.scan_completed(),
+            slow_logs: redis_info.slow_logs.len(),
             soft_wrap: state.soft_wrap(),
             nodes_description: format_nodes_description(state.nodes_description().clone(), cx),
         };
@@ -410,7 +412,7 @@ impl ZedisStatusBar {
             )
             .child(self.render_divider(window, cx))
             .child(
-                Button::new("zedis-status-bar-letency")
+                Button::new("zedis-status-bar-latency")
                     .ghost()
                     .px_1()
                     .disabled(true)
@@ -438,6 +440,16 @@ impl ZedisStatusBar {
                     .tooltip(i18n_common(cx, "clients"))
                     .icon(Icon::new(CustomIconName::AudioWaveform))
                     .label(server_state.clients.clone()),
+            )
+            .child(
+                Button::new("zedis-status-slow-logs")
+                    .ghost()
+                    .px_1()
+                    .disabled(true)
+                    .text_color(cx.theme().primary)
+                    .tooltip(i18n_common(cx, "slow_logs"))
+                    .icon(Icon::new(CustomIconName::Snail))
+                    .label(server_state.slow_logs.to_string()),
             )
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

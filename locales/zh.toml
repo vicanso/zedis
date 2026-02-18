@@ -37,6 +37,7 @@ loading = "加载中..."
 latency = "延迟"
 used_memory = "已使用内存"
 clients = "阻塞 & 连接客户端"
+slow_logs = "慢日志"
 disable_in_readonly = "只读模式下不可用"
 
 # --- 通用占位符 ---
