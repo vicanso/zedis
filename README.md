@@ -55,12 +55,15 @@ yay -S zedis-bin
 - **Virtual List**: Efficiently handle lists with 100k+ keys using virtual scrolling and `SCAN` iteration.
 
 ### 🧠 Smart Data Viewer
+**Comprehensive Type Support**: Native editors for **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, and **Stream**.
+
 Zedis automatically detects content types (`ViewerMode::Auto`) and renders them in the most useful format:
 - **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP**, and **ZSTD** data (e.g., compressed JSON is automatically unpacked and pretty-printed).
-- **JSON**: Automatic **pretty-printing** with full **syntax highlighting**.
-- **Protobuf**: Deserializes Protobuf data and automatically **pretty-printing** with full **syntax highlighting**.
-- **MessagePack**: Deserializes binary MsgPack data into a readable JSON-like format.
-- **Images**: Native preview for stored images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`).
+- **Rich Content Support**:
+  - **JSON**: Automatic **pretty-printing** with full **syntax highlighting**.
+  - **Protobuf**: Zero-config deserialization with **syntax highlighting**.
+  - **MessagePack**: Deserializes binary MsgPack data into a readable JSON-like format.
+  - **Images**: Native preview for stored images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`).
 - **Hex View**: Adaptive 8/16-byte hex dump for analyzing raw binary data.
 - **Text**: UTF-8 validation with large text support.
 
@@ -74,7 +77,6 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 - **Command Autocomplete**: Intelligent **IntelliSense-style** code completion for Redis commands. It provides real-time syntax suggestions and parameter hints based on your Redis server version.
 - **Search History**: Automatically records your search queries locally. History is **connection-scoped**, ensuring production queries never pollute your local development workflow.
 - **Batch Operations**: Support selecting multiple keys for batch deletion or deleting keys with a specific prefix to simplify bulk data management.
-
 
 ### 🎨 Modern Experience
 - **Cross-Platform**: Powered by GPUI, Zedis delivers a consistent, native experience across **macOS**, **Windows**, and **Linux**.

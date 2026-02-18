@@ -204,23 +204,19 @@ pub struct SlowLogEntry {
 
 impl FromRedisValue for SlowLogEntry {
     fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
-        // 1. 确保最外层是 Value::Array
         let items = match v {
             Value::Array(items) => items,
             _ => return Err(ParsingError::from("Expected Array for SlowLogEntry")),
         };
 
-        // Redis Slow Log 至少要有 4 个字段
         if items.len() < 4 {
             return Err(ParsingError::from("SlowLogEntry expects at least 4 fields"));
         }
 
-        // 🛠️ 辅助函数：提取 i64 (Int)
-        // 你的定义里有 Value::Int(i64)，直接匹配它
+        // get int from value
         let get_int = |val: &Value| -> Result<i64, ParsingError> {
             match val {
                 Value::Int(i) => Ok(*i),
-                // 容错：有些 Redis 版本或代理可能返回字符串格式的数字
                 Value::BulkString(bytes) => String::from_utf8_lossy(bytes)
                     .parse::<i64>()
                     .map_err(|_| ParsingError::from("Invalid integer string")),
@@ -231,33 +227,27 @@ impl FromRedisValue for SlowLogEntry {
             }
         };
 
-        // 🛠️ 辅助函数：提取 String
-        // 处理 BulkString(Vec<u8>) 和 SimpleString(String)
+        // get string from value
         let get_string = |val: &Value| -> String {
             match val {
                 Value::BulkString(bytes) => String::from_utf8_lossy(bytes).into_owned(),
                 Value::SimpleString(s) => s.clone(),
-                Value::Int(i) => i.to_string(), // 容错：数字转字符串
+                Value::Int(i) => i.to_string(),
                 Value::Okay => "OK".to_string(),
                 Value::Nil => "".to_string(),
                 _ => "".to_string(),
             }
         };
 
-        // 2. 解析基础字段 (索引 0, 1, 2)
         let id = get_int(&items[0])?;
         let timestamp = get_int(&items[1])?;
         let duration = get_int(&items[2])?;
 
-        // 3. 解析命令参数 (索引 3) -> Value::Array
         let args = match &items[3] {
             Value::Array(arg_items) => arg_items.iter().map(get_string).collect(),
-            // 容错：如果参数为空或格式不对
             _ => vec![],
         };
 
-        // 4. 解析可选字段 (Redis 4.0+)
-        // items[4] 是 Client IP
         let client_addr = if items.len() > 4 {
             let s = get_string(&items[4]);
             if s.is_empty() { None } else { Some(s) }
@@ -265,7 +255,6 @@ impl FromRedisValue for SlowLogEntry {
             None
         };
 
-        // items[5] 是 Client Name
         let client_name = if items.len() > 5 {
             let s = get_string(&items[5]);
             if s.is_empty() { None } else { Some(s) }
@@ -283,6 +272,7 @@ impl FromRedisValue for SlowLogEntry {
         })
     }
 }
+
 // TODO 是否在client中保存connection
 #[derive(Clone)]
 pub struct RedisClient {
