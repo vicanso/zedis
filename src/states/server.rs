@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{AccessMode, RedisClientDescription, get_connection_manager};
+use crate::connection::{AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager};
 use crate::db::get_search_history_manager;
 use crate::error::Error;
 use crate::states::server::event::{ServerEvent, ServerTask};
-use crate::states::server::stat::RedisInfo;
+use crate::states::server::stat::{RedisInfo, get_metrics_cache};
 use crate::states::{QueryMode, get_session_option};
 use ahash::AHashMap;
 use ahash::AHashSet;
@@ -77,6 +77,8 @@ pub enum RedisServerStatus {
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
     redis_info: Option<RedisInfo>,
+    last_slow_logs_checked_at: i64,
+    slow_logs: Vec<SlowLogEntry>,
 
     /// Whether the terminal is open
     terminal: bool,
@@ -381,6 +383,11 @@ impl ZedisServerState {
         self.redis_info.as_ref()
     }
 
+    /// Get the slow logs
+    pub fn slow_logs(&self) -> &Vec<SlowLogEntry> {
+        &self.slow_logs
+    }
+
     /// Get cluster node counts (master, replica)
     pub fn nodes(&self) -> (usize, usize) {
         self.nodes
@@ -449,6 +456,7 @@ impl ZedisServerState {
     pub fn select(&mut self, server_id: SharedString, db: usize, cx: &mut Context<Self>) {
         // Only proceed if selecting a different server
         if self.server_id != server_id || self.db != db {
+            get_metrics_cache().remove_server(self.server_id.as_str());
             self.reset();
             self.server_id = server_id.clone();
             self.db = db;

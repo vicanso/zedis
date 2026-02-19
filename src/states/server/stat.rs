@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{SlowLogEntry, get_connection_manager};
+use crate::connection::get_connection_manager;
 use crate::helpers::unix_ts;
 use crate::states::{ServerEvent, ServerTask, ZedisServerState};
 use gpui::prelude::*;
+use parking_lot::RwLock;
 use redis::cmd;
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::collections::{HashMap, VecDeque};
+use std::sync::LazyLock;
+use std::time::Instant;
 use tracing::error;
 
 #[derive(Debug, Default, Clone)]
@@ -29,24 +31,25 @@ pub struct RedisKeySpaceStats {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct RedisInfo {
-    pub last_checked_at: i64,
-    pub latency: Duration,
-    // --- Server ---
+pub struct RedisServerMeta {
     pub redis_version: String,
     pub os: String,
-    pub uptime_in_seconds: u64,
-    pub role: String, // master / slave
+    pub role: String,
+    pub maxmemory: u64,
+}
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RedisMetrics {
+    pub timestamp: i64,
+    pub latency_ms: u64,
     // --- Clients ---
     pub connected_clients: u64,
+    pub rejected_connections: u64,
     pub blocked_clients: u64,
 
     // --- Memory ---
     pub used_memory: u64,
-    pub used_memory_human: String,
     pub used_memory_rss: u64,
-    pub maxmemory: u64,
     pub mem_fragmentation_ratio: f64,
 
     // --- Stats ---
@@ -57,17 +60,61 @@ pub struct RedisInfo {
     pub instantaneous_output_kbps: f64,
     pub keyspace_hits: u64,
     pub keyspace_misses: u64,
+    pub expired_keys: u64,
     pub evicted_keys: u64,
 
     // --- CPU ---
     pub used_cpu_sys: f64,
     pub used_cpu_user: f64,
 
+    pub rdb_last_bgsave_success: bool,
+    pub aof_last_write_success: bool,
+}
+
+pub struct MetricsCache {
+    max_history_size: usize,
+    data: RwLock<HashMap<String, VecDeque<RedisMetrics>>>,
+}
+
+impl MetricsCache {
+    pub fn new(max_history_size: usize) -> Self {
+        Self {
+            max_history_size,
+            data: RwLock::new(HashMap::new()),
+        }
+    }
+    pub fn add_metrics(&self, server_id: &str, metrics: RedisMetrics) {
+        let mut data = self.data.write();
+        if let Some(queue) = data.get_mut(server_id) {
+            if queue.len() >= self.max_history_size {
+                queue.pop_front();
+            }
+            queue.push_back(metrics);
+        } else {
+            let mut new_queue = VecDeque::with_capacity(self.max_history_size);
+            new_queue.push_back(metrics);
+            data.insert(server_id.to_string(), new_queue);
+        }
+    }
+    pub fn remove_server(&self, server_id: &str) {
+        let mut data = self.data.write();
+        data.remove(server_id);
+    }
+}
+
+static METRICS_CACHE: LazyLock<MetricsCache> = LazyLock::new(|| MetricsCache::new(1800));
+
+pub fn get_metrics_cache() -> &'static MetricsCache {
+    &METRICS_CACHE
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct RedisInfo {
+    pub meta: RedisServerMeta,
+    // pub latency: Duration,
+    pub metrics: RedisMetrics,
     // --- Keyspace (db0, db1...) ---
     pub keyspace: HashMap<String, RedisKeySpaceStats>,
-
-    /// The slow logs of the Redis server
-    pub slow_logs: Vec<SlowLogEntry>,
 }
 
 /// Aggregates metrics from multiple Redis Cluster nodes into a single global view.
@@ -92,35 +139,35 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
 
     for info in &infos {
         // --- Clients (Sum) ---
-        total.connected_clients += info.connected_clients;
-        total.blocked_clients += info.blocked_clients;
+        total.metrics.connected_clients += info.metrics.connected_clients;
+        total.metrics.blocked_clients += info.metrics.blocked_clients;
 
         // --- Memory (Sum) ---
-        total.used_memory += info.used_memory;
-        total.used_memory_rss += info.used_memory_rss;
-        total.maxmemory += info.maxmemory;
+        total.metrics.used_memory += info.metrics.used_memory;
+        total.metrics.used_memory_rss += info.metrics.used_memory_rss;
+        total.meta.maxmemory += info.meta.maxmemory;
 
         // --- Memory Health (Max) ---
         // We take the maximum fragmentation ratio because the "worst" node
         // determines the fragmentation risk of the cluster.
-        if info.mem_fragmentation_ratio > total.mem_fragmentation_ratio {
-            total.mem_fragmentation_ratio = info.mem_fragmentation_ratio;
+        if info.metrics.mem_fragmentation_ratio > total.metrics.mem_fragmentation_ratio {
+            total.metrics.mem_fragmentation_ratio = info.metrics.mem_fragmentation_ratio;
         }
 
         // --- Stats (Sum) ---
-        total.total_connections_received += info.total_connections_received;
-        total.total_commands_processed += info.total_commands_processed;
-        total.instantaneous_ops_per_sec += info.instantaneous_ops_per_sec;
-        total.instantaneous_input_kbps += info.instantaneous_input_kbps;
-        total.instantaneous_output_kbps += info.instantaneous_output_kbps;
-        total.keyspace_hits += info.keyspace_hits;
-        total.keyspace_misses += info.keyspace_misses;
-        total.evicted_keys += info.evicted_keys;
+        total.metrics.total_connections_received += info.metrics.total_connections_received;
+        total.metrics.total_commands_processed += info.metrics.total_commands_processed;
+        total.metrics.instantaneous_ops_per_sec += info.metrics.instantaneous_ops_per_sec;
+        total.metrics.instantaneous_input_kbps += info.metrics.instantaneous_input_kbps;
+        total.metrics.instantaneous_output_kbps += info.metrics.instantaneous_output_kbps;
+        total.metrics.keyspace_hits += info.metrics.keyspace_hits;
+        total.metrics.keyspace_misses += info.metrics.keyspace_misses;
+        total.metrics.evicted_keys += info.metrics.evicted_keys;
 
         // --- CPU (Sum) ---
         // Accumulate total CPU time consumed by the entire cluster
-        total.used_cpu_sys += info.used_cpu_sys;
-        total.used_cpu_user += info.used_cpu_user;
+        total.metrics.used_cpu_sys += info.metrics.used_cpu_sys;
+        total.metrics.used_cpu_user += info.metrics.used_cpu_user;
 
         // --- Keyspace (Sum & Weighted Avg) ---
         for (db, stats) in &info.keyspace {
@@ -142,7 +189,6 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
     // 2. Post-processing
 
     // Re-calculate human-readable memory string based on the summed byte count
-    total.used_memory_human = humansize::format_size(total.used_memory, humansize::DECIMAL);
 
     // Finalize avg_ttl calculation for each DB
     for (db, stats) in total.keyspace.iter_mut() {
@@ -175,31 +221,34 @@ impl RedisInfo {
                 }
 
                 match key {
-                    "redis_version" => info.redis_version = value.to_string(),
-                    "os" => info.os = value.to_string(),
-                    "uptime_in_seconds" => info.uptime_in_seconds = parse_u64(value),
-                    "role" => info.role = value.to_string(),
+                    "redis_version" => info.meta.redis_version = value.to_string(),
+                    "os" => info.meta.os = value.to_string(),
+                    "role" => info.meta.role = value.to_string(),
 
-                    "connected_clients" => info.connected_clients = parse_u64(value),
-                    "blocked_clients" => info.blocked_clients = parse_u64(value),
+                    "connected_clients" => info.metrics.connected_clients = parse_u64(value),
+                    "rejected_connections" => info.metrics.rejected_connections = parse_u64(value),
+                    "blocked_clients" => info.metrics.blocked_clients = parse_u64(value),
 
-                    "used_memory" => info.used_memory = parse_u64(value),
-                    "used_memory_human" => info.used_memory_human = value.to_string(),
-                    "used_memory_rss" => info.used_memory_rss = parse_u64(value),
-                    "maxmemory" => info.maxmemory = parse_u64(value),
-                    "mem_fragmentation_ratio" => info.mem_fragmentation_ratio = parse_f64(value),
+                    "used_memory" => info.metrics.used_memory = parse_u64(value),
+                    "used_memory_rss" => info.metrics.used_memory_rss = parse_u64(value),
+                    "maxmemory" => info.meta.maxmemory = parse_u64(value),
+                    "mem_fragmentation_ratio" => info.metrics.mem_fragmentation_ratio = parse_f64(value),
 
-                    "total_connections_received" => info.total_connections_received = parse_u64(value),
-                    "total_commands_processed" => info.total_commands_processed = parse_u64(value),
-                    "instantaneous_ops_per_sec" => info.instantaneous_ops_per_sec = parse_u64(value),
-                    "instantaneous_input_kbps" => info.instantaneous_input_kbps = parse_f64(value),
-                    "instantaneous_output_kbps" => info.instantaneous_output_kbps = parse_f64(value),
-                    "keyspace_hits" => info.keyspace_hits = parse_u64(value),
-                    "keyspace_misses" => info.keyspace_misses = parse_u64(value),
-                    "evicted_keys" => info.evicted_keys = parse_u64(value),
+                    "total_connections_received" => info.metrics.total_connections_received = parse_u64(value),
+                    "total_commands_processed" => info.metrics.total_commands_processed = parse_u64(value),
+                    "instantaneous_ops_per_sec" => info.metrics.instantaneous_ops_per_sec = parse_u64(value),
+                    "instantaneous_input_kbps" => info.metrics.instantaneous_input_kbps = parse_f64(value),
+                    "instantaneous_output_kbps" => info.metrics.instantaneous_output_kbps = parse_f64(value),
+                    "keyspace_hits" => info.metrics.keyspace_hits = parse_u64(value),
+                    "keyspace_misses" => info.metrics.keyspace_misses = parse_u64(value),
+                    "evicted_keys" => info.metrics.evicted_keys = parse_u64(value),
+                    "expired_keys" => info.metrics.expired_keys = parse_u64(value),
 
-                    "used_cpu_sys" => info.used_cpu_sys = parse_f64(value),
-                    "used_cpu_user" => info.used_cpu_user = parse_f64(value),
+                    "rdb_last_bgsave_status" => info.metrics.rdb_last_bgsave_success = value == "ok",
+                    "aof_last_write_status" => info.metrics.aof_last_write_success = value == "ok",
+
+                    "used_cpu_sys" => info.metrics.used_cpu_sys = parse_f64(value),
+                    "used_cpu_user" => info.metrics.used_cpu_user = parse_f64(value),
 
                     _ => {}
                 }
@@ -242,11 +291,7 @@ impl ZedisServerState {
             return;
         }
 
-        let last_checked_at = self
-            .redis_info
-            .as_ref()
-            .map(|item| item.last_checked_at)
-            .unwrap_or_else(|| unix_ts() - 300);
+        let last_checked_at = self.last_slow_logs_checked_at;
         let server_id = self.server_id.clone();
         let db = self.db;
         let server_id_clone = server_id.clone();
@@ -257,20 +302,31 @@ impl ZedisServerState {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let start = Instant::now();
                 client.ping().await?;
-                let slow_logs = client.get_slow_logs(Some(last_checked_at)).await?;
                 let latency = start.elapsed();
+                let now = unix_ts();
+                let slow_logs = if now - last_checked_at > 60 {
+                    // ignore get slow error
+                    let slow_logs = client.get_slow_logs(Some(last_checked_at)).await.unwrap_or_default();
+                    Some(slow_logs)
+                } else {
+                    None
+                };
 
                 let list: Vec<String> = client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 let mut info = aggregate_redis_info(infos);
-                info.last_checked_at = unix_ts();
-                info.latency = latency;
-                info.slow_logs = slow_logs;
-                Ok(info)
+                info.metrics.timestamp = now;
+                info.metrics.latency_ms = latency.as_millis() as u64;
+                Ok((info, slow_logs))
             },
             move |this, result, cx| match result {
-                Ok(info) => {
+                Ok((info, slow_logs)) => {
+                    METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
                     this.redis_info = Some(info);
+                    if let Some(slow_logs) = slow_logs {
+                        this.slow_logs = slow_logs;
+                        this.last_slow_logs_checked_at = unix_ts();
+                    }
                     cx.emit(ServerEvent::ServerRedisInfoUpdated);
                 }
                 Err(e) => {

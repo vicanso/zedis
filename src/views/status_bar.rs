@@ -299,18 +299,21 @@ impl ZedisStatusBar {
         let Some(redis_info) = state.redis_info() else {
             return;
         };
-        let clients = if redis_info.connected_clients == 0 {
+        let clients = if redis_info.metrics.connected_clients == 0 {
             "--".to_string()
         } else {
-            format!("{} / {}", redis_info.blocked_clients, redis_info.connected_clients)
+            format!(
+                "{} / {}",
+                redis_info.metrics.blocked_clients, redis_info.metrics.connected_clients
+            )
         };
-        let used_memory = if redis_info.used_memory == 0 {
+        let used_memory = if redis_info.metrics.used_memory == 0 {
             "--".to_string()
         } else {
-            redis_info.used_memory_human.clone()
+            humansize::format_size(redis_info.metrics.used_memory, humansize::DECIMAL)
         };
-        let slow_logs = redis_info
-            .slow_logs
+        let slow_logs = state
+            .slow_logs()
             .iter()
             .map(|log| {
                 let time = if let LocalResult::Single(time) = Local.timestamp_opt(log.timestamp, 0) {
@@ -331,7 +334,7 @@ impl ZedisStatusBar {
             supports_db_selection: state.supports_db_selection(),
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
-            latency: format_latency(Some(redis_info.latency), cx),
+            latency: format_latency(Some(Duration::from_millis(redis_info.metrics.latency_ms)), cx),
             used_memory: used_memory.into(),
             clients: clients.into(),
             nodes: format_nodes(state.nodes(), state.version()),
@@ -346,7 +349,7 @@ impl ZedisStatusBar {
         // start task
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(30)).await;
+                cx.background_executor().timer(Duration::from_secs(2)).await;
                 let _ = server_state.update(cx, |state, cx| {
                     state.refresh_redis_info(cx);
                 });
