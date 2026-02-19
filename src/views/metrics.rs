@@ -19,8 +19,13 @@ use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, linear_color_stop, linear_gradient, prelude::*, px};
 use gpui_component::chart::{AreaChart, BarChart};
-use gpui_component::{ActiveTheme, StyledExt, label::Label, v_flex};
+use gpui_component::{ActiveTheme, StyledExt, label::Label, scroll::ScrollableElement, v_flex};
 use std::time::Duration;
+
+const TIME_FORMAT: &str = "%H:%M:%S";
+const CHART_CARD_HEIGHT: f32 = 300.;
+const HEARTBEAT_INTERVAL_SECS: u64 = 2;
+const BYTES_TO_MB: f64 = 1_000_000.;
 
 #[derive(Debug, Clone)]
 struct MetricsCpu {
@@ -35,6 +40,30 @@ struct MetricsMemory {
 }
 
 #[derive(Debug, Clone)]
+struct MetricsLatency {
+    date: SharedString,
+    latency_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+struct MetricsConnectedClients {
+    date: SharedString,
+    connected_clients: f64,
+}
+
+#[derive(Debug, Clone)]
+struct MetricsTotalCommandsProcessed {
+    date: SharedString,
+    total_commands_processed: f64,
+}
+
+#[derive(Debug, Clone)]
+struct MetricsOutputKbps {
+    date: SharedString,
+    output_kbps: f64,
+}
+
+#[derive(Debug, Clone)]
 struct MetricsChartData {
     max_cpu_percent: f64,
     min_cpu_percent: f64,
@@ -42,6 +71,18 @@ struct MetricsChartData {
     max_memory: f64,
     min_memory: f64,
     memory: Vec<MetricsMemory>,
+    min_latency_ms: f64,
+    max_latency_ms: f64,
+    latency: Vec<MetricsLatency>,
+    max_connected_clients: f64,
+    min_connected_clients: f64,
+    connected_clients: Vec<MetricsConnectedClients>,
+    max_total_commands_processed: f64,
+    min_total_commands_processed: f64,
+    total_commands_processed: Vec<MetricsTotalCommandsProcessed>,
+    max_output_kbps: f64,
+    min_output_kbps: f64,
+    output_kbps: Vec<MetricsOutputKbps>,
 }
 
 pub struct ZedisMetrics {
@@ -51,58 +92,106 @@ pub struct ZedisMetrics {
     _subscriptions: Vec<Subscription>,
 }
 
+fn format_timestamp_ms(ts_ms: i64) -> SharedString {
+    match Local.timestamp_millis_opt(ts_ms) {
+        LocalResult::Single(dt) => dt.format(TIME_FORMAT).to_string().into(),
+        _ => "--".into(),
+    }
+}
+
 fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> MetricsChartData {
     let mut prev_metrics = RedisMetrics::default();
+    let n = history_metrics.len();
 
-    let mut cpu = Vec::with_capacity(history_metrics.len());
+    let mut cpu = Vec::with_capacity(n);
     let mut max_cpu_percent = f64::MIN;
     let mut min_cpu_percent = f64::MAX;
 
-    let mut memory = Vec::with_capacity(history_metrics.len());
+    let mut memory = Vec::with_capacity(n);
     let mut max_memory = f64::MIN;
     let mut min_memory = f64::MAX;
+
+    let mut latency = Vec::with_capacity(n);
+    let mut min_latency_ms = f64::MAX;
+    let mut max_latency_ms = f64::MIN;
+
+    let mut connected_clients = Vec::with_capacity(n);
+    let mut max_connected_clients = f64::MIN;
+    let mut min_connected_clients = f64::MAX;
+
+    let mut total_commands_processed = Vec::with_capacity(n);
+    let mut max_total_commands_processed = f64::MIN;
+    let mut min_total_commands_processed = f64::MAX;
+
+    let mut output_kbps = Vec::with_capacity(n);
+    let mut max_output_kbps = f64::MIN;
+    let mut min_output_kbps = f64::MAX;
+
     for metrics in history_metrics.iter() {
-        let date: SharedString = if let LocalResult::Single(date) = Local.timestamp_millis_opt(metrics.timestamp_ms) {
-            date.format("%H:%M:%S").to_string().into()
+        let duration_ms = if prev_metrics.timestamp_ms != 0 {
+            metrics.timestamp_ms - prev_metrics.timestamp_ms
         } else {
-            "--".to_string().into()
+            0
         };
-        let mut duration_ms = 0;
-        if prev_metrics.timestamp_ms != 0 {
-            duration_ms = metrics.timestamp_ms - prev_metrics.timestamp_ms;
-        }
         if duration_ms <= 0 {
             prev_metrics = *metrics;
             continue;
         }
-        let (used_cpu_sys_percent, used_cpu_user_percent) = {
-            let delta_time = (duration_ms as f64) / 1000.;
-            let used_cpu_sys = metrics.used_cpu_sys - prev_metrics.used_cpu_sys;
-            let used_cpu_user = metrics.used_cpu_user - prev_metrics.used_cpu_user;
-            (used_cpu_sys / delta_time * 100., used_cpu_user / delta_time * 100.)
-        };
-        if used_cpu_sys_percent > max_cpu_percent {
-            max_cpu_percent = used_cpu_sys_percent;
-        }
-        if used_cpu_sys_percent < min_cpu_percent {
-            min_cpu_percent = used_cpu_sys_percent;
-        }
+
+        let date = format_timestamp_ms(metrics.timestamp_ms);
+        let delta_time = (duration_ms as f64) / 1000.;
+        let used_cpu_sys_percent = (metrics.used_cpu_sys - prev_metrics.used_cpu_sys) / delta_time * 100.;
+        let used_cpu_user_percent = (metrics.used_cpu_user - prev_metrics.used_cpu_user) / delta_time * 100.;
+
+        let cpu_high = used_cpu_sys_percent.max(used_cpu_user_percent);
+        let cpu_low = used_cpu_sys_percent.min(used_cpu_user_percent);
+        max_cpu_percent = max_cpu_percent.max(cpu_high);
+        min_cpu_percent = min_cpu_percent.min(cpu_low);
+
         cpu.push(MetricsCpu {
             date: date.clone(),
             used_cpu_sys_percent,
             used_cpu_user_percent,
         });
-        let used_memory = (metrics.used_memory / 1_000_000) as f64;
 
-        if used_memory > max_memory {
-            max_memory = used_memory;
-        }
-        if used_memory < min_memory {
-            min_memory = used_memory;
-        }
+        let used_memory = metrics.used_memory as f64 / BYTES_TO_MB;
+        max_memory = max_memory.max(used_memory);
+        min_memory = min_memory.min(used_memory);
         memory.push(MetricsMemory {
             date: date.clone(),
             used_memory,
+        });
+
+        let latency_ms = metrics.latency_ms as f64;
+        max_latency_ms = max_latency_ms.max(latency_ms);
+        min_latency_ms = min_latency_ms.min(latency_ms);
+        latency.push(MetricsLatency {
+            date: date.clone(),
+            latency_ms,
+        });
+
+        let clients = metrics.connected_clients as f64;
+        max_connected_clients = max_connected_clients.max(clients);
+        min_connected_clients = min_connected_clients.min(clients);
+        connected_clients.push(MetricsConnectedClients {
+            date: date.clone(),
+            connected_clients: clients,
+        });
+
+        let processed = (metrics.total_commands_processed - prev_metrics.total_commands_processed) as f64;
+        max_total_commands_processed = max_total_commands_processed.max(processed);
+        min_total_commands_processed = min_total_commands_processed.min(processed);
+        total_commands_processed.push(MetricsTotalCommandsProcessed {
+            date: date.clone(),
+            total_commands_processed: processed,
+        });
+
+        let output = metrics.instantaneous_output_kbps;
+        max_output_kbps = max_output_kbps.max(output);
+        min_output_kbps = min_output_kbps.min(output);
+        output_kbps.push(MetricsOutputKbps {
+            date: date.clone(),
+            output_kbps: output,
         });
 
         prev_metrics = *metrics;
@@ -115,6 +204,18 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> MetricsC
         memory,
         max_memory,
         min_memory,
+        latency,
+        min_latency_ms,
+        max_latency_ms,
+        connected_clients,
+        max_connected_clients,
+        min_connected_clients,
+        total_commands_processed,
+        max_total_commands_processed,
+        min_total_commands_processed,
+        output_kbps,
+        max_output_kbps,
+        min_output_kbps,
     }
 }
 
@@ -149,7 +250,9 @@ impl ZedisMetrics {
         // start task
         self.heartbeat_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs(HEARTBEAT_INTERVAL_SECS))
+                    .await;
                 let metrics_history = get_metrics_cache().list_metrics(&server_id);
                 let _ = this.update(cx, |state, cx| {
                     state.metrics_chart_data = convert_metrics_to_chart_data(metrics_history);
@@ -166,7 +269,7 @@ impl ZedisMetrics {
     ) -> impl IntoElement {
         v_flex()
             .flex_1()
-            .h(px(400.))
+            .h(px(CHART_CARD_HEIGHT))
             .border_1()
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius_lg)
@@ -185,14 +288,14 @@ impl ZedisMetrics {
             label,
             AreaChart::new(self.metrics_chart_data.cpu.clone())
                 .x(|d| d.date.clone())
-                .y(|d| d.used_cpu_user_percent)
+                .y(|d| d.used_cpu_sys_percent)
                 .stroke(cx.theme().chart_1)
                 .fill(linear_gradient(
                     0.,
                     linear_color_stop(cx.theme().chart_1.opacity(0.4), 1.),
                     linear_color_stop(cx.theme().background.opacity(0.3), 0.),
                 ))
-                .y(|d| d.used_cpu_sys_percent)
+                .y(|d| d.used_cpu_user_percent)
                 .stroke(cx.theme().chart_2)
                 .fill(linear_gradient(
                     0.,
@@ -217,18 +320,90 @@ impl ZedisMetrics {
                 .tick_margin(8),
         )
     }
+
+    fn render_latency_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "Latency: {:.0}ms - {:.0}ms",
+            self.metrics_chart_data.min_latency_ms, self.metrics_chart_data.max_latency_ms
+        );
+        self.render_chart_card(
+            cx,
+            label,
+            AreaChart::new(self.metrics_chart_data.latency.clone())
+                .x(|d| d.date.clone())
+                .y(|d| d.latency_ms)
+                .tick_margin(8),
+        )
+    }
+
+    fn render_connected_clients_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "Connected Clients: {:.0} - {:.0}",
+            self.metrics_chart_data.min_connected_clients, self.metrics_chart_data.max_connected_clients
+        );
+        self.render_chart_card(
+            cx,
+            label,
+            AreaChart::new(self.metrics_chart_data.connected_clients.clone())
+                .x(|d| d.date.clone())
+                .y(|d| d.connected_clients)
+                .tick_margin(8),
+        )
+    }
+    fn render_total_commands_processed_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "Total Commands Processed: {:.0} - {:.0}",
+            self.metrics_chart_data.min_total_commands_processed, self.metrics_chart_data.max_total_commands_processed
+        );
+        self.render_chart_card(
+            cx,
+            label,
+            AreaChart::new(self.metrics_chart_data.total_commands_processed.clone())
+                .x(|d| d.date.clone())
+                .y(|d| d.total_commands_processed)
+                .tick_margin(8),
+        )
+    }
+    fn render_output_kbps_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "Output KBPS: {:.0} - {:.0}",
+            self.metrics_chart_data.min_output_kbps, self.metrics_chart_data.max_output_kbps
+        );
+        self.render_chart_card(
+            cx,
+            label,
+            AreaChart::new(self.metrics_chart_data.output_kbps.clone())
+                .x(|d| d.date.clone())
+                .y(|d| d.output_kbps)
+                .tick_margin(8),
+        )
+    }
 }
 
 impl Render for ZedisMetrics {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let window_width = window.viewport_size().width;
+        let columns = if window_width > px(1200.) { 2 } else { 1 };
         div()
-            .m_2()
-            .grid()
-            .gap_2()
-            .grid_cols(2)
-            .justify_start()
-            .child(Label::new(self.title.clone()).col_span_full())
-            .child(self.render_cpu_usage_chart(cx))
-            .child(self.render_memory_usage_chart(cx))
+            .size_full()
+            .p_2()
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .grid()
+                    .gap_2()
+                    .grid_cols(columns)
+                    .items_start()
+                    .justify_start()
+                    .child(Label::new(self.title.clone()).col_span_full())
+                    .child(self.render_cpu_usage_chart(cx))
+                    .child(self.render_memory_usage_chart(cx))
+                    .child(self.render_latency_chart(cx))
+                    .child(self.render_connected_clients_chart(cx))
+                    .child(self.render_total_commands_processed_chart(cx))
+                    .child(self.render_output_kbps_chart(cx)),
+            )
+            .overflow_y_scrollbar()
     }
 }
