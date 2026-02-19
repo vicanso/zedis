@@ -28,7 +28,7 @@ pub use common::*;
 pub use font::get_font_family;
 pub use fs::*;
 pub use string::*;
-pub use time::{parse_duration, unix_ts};
+pub use time::{parse_duration, unix_ts, unix_ts_millis};
 pub use ttl_cache::*;
 pub use validate::*;
 pub fn is_development() -> bool {

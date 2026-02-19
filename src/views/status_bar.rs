@@ -15,9 +15,9 @@
 use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
-    helpers::humanize_keystroke,
+    helpers::{get_font_family, humanize_keystroke},
     states::{
-        ErrorMessage, GlobalEvent, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState,
+        ErrorMessage, GlobalEvent, Route, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState,
         get_session_option, i18n_common, i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
@@ -310,7 +310,10 @@ impl ZedisStatusBar {
         let used_memory = if redis_info.metrics.used_memory == 0 {
             "--".to_string()
         } else {
-            humansize::format_size(redis_info.metrics.used_memory, humansize::DECIMAL)
+            humansize::format_size(
+                redis_info.metrics.used_memory,
+                humansize::FormatSizeOptions::default().decimal_places(0),
+            )
         };
         let slow_logs = state
             .slow_logs()
@@ -441,6 +444,22 @@ impl ZedisStatusBar {
             )
             .child(self.render_divider(window, cx))
             .child(
+                Button::new("zedis-status-bar-server-metrics")
+                    .outline()
+                    .small()
+                    .icon(CustomIconName::Activity)
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                            let route = if state.route() == Route::Metrics {
+                                Route::Editor
+                            } else {
+                                Route::Metrics
+                            };
+                            state.go_to(route, cx);
+                        });
+                    })),
+            )
+            .child(
                 Button::new("zedis-status-bar-latency")
                     .ghost()
                     .px_1()
@@ -448,7 +467,8 @@ impl ZedisStatusBar {
                     .tooltip(i18n_common(cx, "latency"))
                     .icon(Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary))
                     .text_color(server_state.latency.1)
-                    .label(server_state.latency.0.clone()),
+                    .label(server_state.latency.0.clone())
+                    .font_family(get_font_family()),
             )
             .child(
                 Button::new("zedis-status-bar-used-memory")

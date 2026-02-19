@@ -22,6 +22,10 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 pub fn unix_ts() -> i64 {
     Local::now().timestamp()
 }
+/// Helper function to get current Unix timestamp in milliseconds.
+pub fn unix_ts_millis() -> i64 {
+    Local::now().timestamp_millis()
+}
 
 /// Parse a duration string into a Duration.
 pub fn parse_duration(s: &str) -> Result<Duration> {

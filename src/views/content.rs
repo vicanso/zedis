@@ -21,7 +21,9 @@ use crate::{
         EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string, starts_with_ignore_ascii_case,
     },
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
-    views::{ZedisEditor, ZedisKeyTree, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
+    views::{
+        ZedisEditor, ZedisKeyTree, ZedisMetrics, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar,
+    },
 };
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -66,6 +68,7 @@ pub struct ZedisContent {
     setting_editor: Option<Entity<ZedisSettingEditor>>,
     proto_editor: Option<Entity<ZedisProtoEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
+    metrics: Option<Entity<ZedisMetrics>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
     cmd_output_scroll_handle: ScrollHandle,
@@ -91,9 +94,12 @@ pub struct ZedisContent {
 impl ZedisContent {
     fn clear_views(&mut self) {
         let route = self.current_route;
-        if route != Route::Editor {
+        if route != Route::Editor && route != Route::Metrics {
             self.key_tree.take();
             self.value_editor.take();
+        }
+        if route != Route::Metrics {
+            self.metrics.take();
         }
         if route != Route::Settings {
             self.setting_editor.take();
@@ -114,26 +120,21 @@ impl ZedisContent {
         let server_state = cx.new(|_cx| ZedisServerState::new());
         let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
 
-        // Subscribe to global state changes for automatic view cleanup
-        // This ensures we only keep views in memory that are currently relevant
-        subscriptions.push(cx.observe(&global_state, |this, model, cx| {
-            let route = model.read(cx).route();
-            if route == this.current_route {
-                return;
-            }
-            this.current_route = route;
-
-            this.clear_views();
-
-            cx.notify();
-        }));
-        subscriptions.push(cx.subscribe(&global_state, |this, _global_state, event, cx| {
-            if let GlobalEvent::ServerSelected(server_id, db) = event {
-                this.server_state.update(cx, |state, cx| {
-                    state.select(server_id.clone(), *db, cx);
-                });
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(&global_state, |this, _global_state, event, cx| match event {
+                GlobalEvent::RouteChanged(route) => {
+                    this.current_route = *route;
+                    this.clear_views();
+                    cx.notify();
+                }
+                GlobalEvent::ServerSelected(server_id, db) => {
+                    this.server_state.update(cx, |state, cx| {
+                        state.select(server_id.clone(), *db, cx);
+                    });
+                }
+                _ => {}
+            }),
+        );
 
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
@@ -216,6 +217,7 @@ impl ZedisContent {
             servers: None,
             value_editor: None,
             setting_editor: None,
+            metrics: None,
             key_tree: None,
             cmd_outputs: Vec::with_capacity(5),
             redis_commands: Vec::new(),
@@ -392,6 +394,16 @@ impl ZedisContent {
             })
             .clone();
         div().size_full().child(proto_editor)
+    }
+    fn render_metrics(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let metrics = self
+            .metrics
+            .get_or_insert_with(|| {
+                debug!("Creating new metrics view");
+                cx.new(|cx| ZedisMetrics::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(metrics)
     }
     /// Render a loading skeleton screen with animated placeholders
     ///
@@ -660,6 +672,7 @@ impl Render for ZedisContent {
             _ => {
                 // Route 2: Loading state (show skeleton while connecting/loading)
                 let is_busy = self.server_state.read(cx).is_busy();
+                let is_metrics = route == Route::Metrics;
 
                 // Route 3: Main editor interface
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
@@ -670,7 +683,8 @@ impl Render for ZedisContent {
                                     .absolute()
                                     .inset_0()
                                     .size_full()
-                                    .child(self.render_editor(window, cx)),
+                                    .when(is_metrics, |this| this.child(self.render_metrics(window, cx)))
+                                    .when(!is_metrics, |this| this.child(self.render_editor(window, cx))),
                             ),
                         )
                     })

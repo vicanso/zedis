@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::get_connection_manager;
-use crate::helpers::unix_ts;
+use crate::helpers::{unix_ts, unix_ts_millis};
 use crate::states::{ServerEvent, ServerTask, ZedisServerState};
 use gpui::prelude::*;
 use parking_lot::RwLock;
@@ -40,7 +40,7 @@ pub struct RedisServerMeta {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RedisMetrics {
-    pub timestamp: i64,
+    pub timestamp_ms: i64,
     pub latency_ms: u64,
     // --- Clients ---
     pub connected_clients: u64,
@@ -99,6 +99,12 @@ impl MetricsCache {
     pub fn remove_server(&self, server_id: &str) {
         let mut data = self.data.write();
         data.remove(server_id);
+    }
+    pub fn list_metrics(&self, server_id: &str) -> Vec<RedisMetrics> {
+        let data = self.data.read();
+        data.get(server_id)
+            .map(|queue| queue.clone().into_iter().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -315,7 +321,7 @@ impl ZedisServerState {
                 let list: Vec<String> = client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 let mut info = aggregate_redis_info(infos);
-                info.metrics.timestamp = now;
+                info.metrics.timestamp_ms = unix_ts_millis();
                 info.metrics.latency_ms = latency.as_millis() as u64;
                 Ok((info, slow_logs))
             },

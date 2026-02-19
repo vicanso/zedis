@@ -40,6 +40,7 @@ pub enum Route {
     Editor,
     Settings,
     Protos,
+    Metrics,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -173,6 +174,8 @@ pub enum GlobalEvent {
     ServerSelected(SharedString, usize),
     /// Server list config has been modified (add/remove/edit).
     ServerListUpdated,
+    /// Route has been changed.
+    RouteChanged(Route),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -294,6 +297,7 @@ impl ZedisAppState {
     pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         if self.route != route {
             self.route = route;
+            cx.emit(GlobalEvent::RouteChanged(route));
             cx.notify();
         }
     }
