@@ -19,7 +19,7 @@ use crate::states::{RedisMetrics, get_metrics_cache};
 use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, linear_color_stop, linear_gradient, prelude::*, px};
-use gpui_component::chart::{AreaChart, BarChart};
+use gpui_component::chart::{AreaChart, BarChart, LineChart};
 use gpui_component::h_flex;
 use gpui_component::{ActiveTheme, StyledExt, label::Label, scroll::ScrollableElement, v_flex};
 use std::time::Duration;
@@ -66,6 +66,18 @@ struct MetricsOutputKbps {
 }
 
 #[derive(Debug, Clone)]
+struct MetricsKeyHitRate {
+    date: SharedString,
+    key_hit_rate: f64,
+}
+
+#[derive(Debug, Clone)]
+struct MetricsEvictedKeys {
+    date: SharedString,
+    evicted_keys: f64,
+}
+
+#[derive(Debug, Clone)]
 struct MetricsChartData {
     max_cpu_percent: f64,
     min_cpu_percent: f64,
@@ -85,6 +97,12 @@ struct MetricsChartData {
     max_output_kbps: f64,
     min_output_kbps: f64,
     output_kbps: Vec<MetricsOutputKbps>,
+    max_key_hit_rate: f64,
+    min_key_hit_rate: f64,
+    key_hit_rate: Vec<MetricsKeyHitRate>,
+    max_evicted_keys: f64,
+    min_evicted_keys: f64,
+    evicted_keys: Vec<MetricsEvictedKeys>,
 }
 
 pub struct ZedisMetrics {
@@ -106,29 +124,37 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
     let mut prev_metrics = RedisMetrics::default();
     let n = history_metrics.len();
 
-    let mut cpu = Vec::with_capacity(n);
+    let mut cpu_list = Vec::with_capacity(n);
     let mut max_cpu_percent = f64::MIN;
     let mut min_cpu_percent = f64::MAX;
 
-    let mut memory = Vec::with_capacity(n);
+    let mut memory_list = Vec::with_capacity(n);
     let mut max_memory = f64::MIN;
     let mut min_memory = f64::MAX;
 
-    let mut latency = Vec::with_capacity(n);
+    let mut latency_list = Vec::with_capacity(n);
     let mut min_latency_ms = f64::MAX;
     let mut max_latency_ms = f64::MIN;
 
-    let mut connected_clients = Vec::with_capacity(n);
+    let mut connected_clients_list = Vec::with_capacity(n);
     let mut max_connected_clients = f64::MIN;
     let mut min_connected_clients = f64::MAX;
 
-    let mut total_commands_processed = Vec::with_capacity(n);
+    let mut total_commands_processed_list = Vec::with_capacity(n);
     let mut max_total_commands_processed = f64::MIN;
     let mut min_total_commands_processed = f64::MAX;
 
-    let mut output_kbps = Vec::with_capacity(n);
+    let mut output_kbps_list = Vec::with_capacity(n);
     let mut max_output_kbps = f64::MIN;
     let mut min_output_kbps = f64::MAX;
+
+    let mut key_hit_rate_list = Vec::with_capacity(n);
+    let mut max_key_hit_rate = f64::MIN;
+    let mut min_key_hit_rate = f64::MAX;
+
+    let mut evicted_keys_list = Vec::with_capacity(n);
+    let mut max_evicted_keys = f64::MIN;
+    let mut min_evicted_keys = f64::MAX;
 
     for metrics in history_metrics.iter() {
         let duration_ms = if prev_metrics.timestamp_ms != 0 {
@@ -151,7 +177,7 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         max_cpu_percent = max_cpu_percent.max(cpu_high);
         min_cpu_percent = min_cpu_percent.min(cpu_low);
 
-        cpu.push(MetricsCpu {
+        cpu_list.push(MetricsCpu {
             date: date.clone(),
             used_cpu_sys_percent,
             used_cpu_user_percent,
@@ -160,7 +186,7 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         let used_memory = metrics.used_memory as f64 / BYTES_TO_MB;
         max_memory = max_memory.max(used_memory);
         min_memory = min_memory.min(used_memory);
-        memory.push(MetricsMemory {
+        memory_list.push(MetricsMemory {
             date: date.clone(),
             used_memory,
         });
@@ -168,7 +194,7 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         let latency_ms = metrics.latency_ms as f64;
         max_latency_ms = max_latency_ms.max(latency_ms);
         min_latency_ms = min_latency_ms.min(latency_ms);
-        latency.push(MetricsLatency {
+        latency_list.push(MetricsLatency {
             date: date.clone(),
             latency_ms,
         });
@@ -176,7 +202,7 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         let clients = metrics.connected_clients as f64;
         max_connected_clients = max_connected_clients.max(clients);
         min_connected_clients = min_connected_clients.min(clients);
-        connected_clients.push(MetricsConnectedClients {
+        connected_clients_list.push(MetricsConnectedClients {
             date: date.clone(),
             connected_clients: clients,
         });
@@ -184,7 +210,7 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         let processed = (metrics.total_commands_processed - prev_metrics.total_commands_processed) as f64;
         max_total_commands_processed = max_total_commands_processed.max(processed);
         min_total_commands_processed = min_total_commands_processed.min(processed);
-        total_commands_processed.push(MetricsTotalCommandsProcessed {
+        total_commands_processed_list.push(MetricsTotalCommandsProcessed {
             date: date.clone(),
             total_commands_processed: processed,
         });
@@ -192,9 +218,32 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         let output = metrics.instantaneous_output_kbps;
         max_output_kbps = max_output_kbps.max(output);
         min_output_kbps = min_output_kbps.min(output);
-        output_kbps.push(MetricsOutputKbps {
+        output_kbps_list.push(MetricsOutputKbps {
             date: date.clone(),
             output_kbps: output,
+        });
+
+        let keyspace_hits = metrics.keyspace_hits - prev_metrics.keyspace_hits;
+        let keyspace_misses = metrics.keyspace_misses - prev_metrics.keyspace_misses;
+        let keyspace_total = keyspace_hits + keyspace_misses;
+        let rate = if keyspace_total > 0 {
+            keyspace_hits as f64 / keyspace_total as f64 * 100.
+        } else {
+            100.
+        };
+        max_key_hit_rate = max_key_hit_rate.max(rate);
+        min_key_hit_rate = min_key_hit_rate.min(rate);
+        key_hit_rate_list.push(MetricsKeyHitRate {
+            date: date.clone(),
+            key_hit_rate: rate,
+        });
+
+        let evicted_keys = (metrics.evicted_keys - prev_metrics.evicted_keys) as f64;
+        max_evicted_keys = max_evicted_keys.max(evicted_keys);
+        min_evicted_keys = min_evicted_keys.min(evicted_keys);
+        evicted_keys_list.push(MetricsEvictedKeys {
+            date: date.clone(),
+            evicted_keys,
         });
 
         prev_metrics = *metrics;
@@ -207,24 +256,30 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
 
     (
         MetricsChartData {
-            cpu,
+            cpu: cpu_list,
             max_cpu_percent,
             min_cpu_percent,
-            memory,
+            memory: memory_list,
             max_memory,
             min_memory,
-            latency,
+            latency: latency_list,
             min_latency_ms,
             max_latency_ms,
-            connected_clients,
+            connected_clients: connected_clients_list,
             max_connected_clients,
             min_connected_clients,
-            total_commands_processed,
+            total_commands_processed: total_commands_processed_list,
             max_total_commands_processed,
             min_total_commands_processed,
-            output_kbps,
+            output_kbps: output_kbps_list,
             max_output_kbps,
             min_output_kbps,
+            key_hit_rate: key_hit_rate_list,
+            min_key_hit_rate,
+            max_key_hit_rate,
+            evicted_keys: evicted_keys_list,
+            max_evicted_keys,
+            min_evicted_keys,
         },
         tick_margin.max(1),
     )
@@ -344,7 +399,7 @@ impl ZedisMetrics {
         self.render_chart_card(
             cx,
             label,
-            AreaChart::new(self.metrics_chart_data.latency.clone())
+            LineChart::new(self.metrics_chart_data.latency.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.latency_ms)
                 .tick_margin(self.tick_margin),
@@ -359,10 +414,11 @@ impl ZedisMetrics {
         self.render_chart_card(
             cx,
             label,
-            AreaChart::new(self.metrics_chart_data.connected_clients.clone())
+            LineChart::new(self.metrics_chart_data.connected_clients.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.connected_clients)
-                .tick_margin(self.tick_margin),
+                .tick_margin(self.tick_margin)
+                .step_after(),
         )
     }
     fn render_total_commands_processed_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -373,7 +429,7 @@ impl ZedisMetrics {
         self.render_chart_card(
             cx,
             label,
-            AreaChart::new(self.metrics_chart_data.total_commands_processed.clone())
+            LineChart::new(self.metrics_chart_data.total_commands_processed.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.total_commands_processed)
                 .tick_margin(self.tick_margin),
@@ -390,6 +446,34 @@ impl ZedisMetrics {
             AreaChart::new(self.metrics_chart_data.output_kbps.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.output_kbps)
+                .tick_margin(self.tick_margin),
+        )
+    }
+    fn render_key_hit_rate_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "Key Hit Rate: {:.0}% - {:.0}%",
+            self.metrics_chart_data.min_key_hit_rate, self.metrics_chart_data.max_key_hit_rate
+        );
+        self.render_chart_card(
+            cx,
+            label,
+            BarChart::new(self.metrics_chart_data.key_hit_rate.clone())
+                .x(|d| d.date.clone())
+                .y(|d| d.key_hit_rate)
+                .tick_margin(self.tick_margin),
+        )
+    }
+    fn render_evicted_keys_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "Evicted Keys: {:.0} - {:.0}",
+            self.metrics_chart_data.min_evicted_keys, self.metrics_chart_data.max_evicted_keys
+        );
+        self.render_chart_card(
+            cx,
+            label,
+            AreaChart::new(self.metrics_chart_data.evicted_keys.clone())
+                .x(|d| d.date.clone())
+                .y(|d| d.evicted_keys)
                 .tick_margin(self.tick_margin),
         )
     }
@@ -433,8 +517,10 @@ impl Render for ZedisMetrics {
                     .child(self.render_memory_usage_chart(cx))
                     .child(self.render_latency_chart(cx))
                     .child(self.render_connected_clients_chart(cx))
+                    .child(self.render_output_kbps_chart(cx))
                     .child(self.render_total_commands_processed_chart(cx))
-                    .child(self.render_output_kbps_chart(cx)),
+                    .child(self.render_key_hit_rate_chart(cx))
+                    .child(self.render_evicted_keys_chart(cx)),
             )
             .overflow_y_scrollbar()
             .into_any_element()

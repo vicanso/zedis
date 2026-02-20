@@ -87,6 +87,12 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 - **I18n**: Full support for **English** and **Chinese (Simplified)**.
 - **Responsive**: Split-pane layout that adapts to any window size.
 
+### 📊 Real-Time Observability Dashboard
+Transform how you monitor Redis with a built-in, GPU-accelerated performance dashboard.
+- **Live Server Metrics**: Keep a pulse on your instance with beautifully rendered, real-time charts for **CPU**, **Memory**, and **Network I/O** (kbps).
+- **Deep Diagnostics**: Instantly spot bottlenecks by tracking **Command Throughput (OPS)**, **Latency**, and **Client Connections**.
+- **Cache Health**: Monitor critical business metrics like **Key Hit Rate** and **Evicted Keys** to prevent cache avalanches and OOM scenarios before they happen.
+
 🚧 Development Status
 
 Zedis is currently in early active development. To maintain development velocity and architectural flexibility, we are not accepting Pull Requests at this time.
