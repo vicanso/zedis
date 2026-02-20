@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::components::SkeletonLoading;
 use crate::connection::get_server;
 use crate::states::ZedisServerState;
 use crate::states::{RedisMetrics, get_metrics_cache};
@@ -19,6 +20,7 @@ use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, linear_color_stop, linear_gradient, prelude::*, px};
 use gpui_component::chart::{AreaChart, BarChart};
+use gpui_component::h_flex;
 use gpui_component::{ActiveTheme, StyledExt, label::Label, scroll::ScrollableElement, v_flex};
 use std::time::Duration;
 
@@ -88,6 +90,7 @@ struct MetricsChartData {
 pub struct ZedisMetrics {
     title: SharedString,
     metrics_chart_data: MetricsChartData,
+    tick_margin: usize,
     heartbeat_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -99,7 +102,7 @@ fn format_timestamp_ms(ts_ms: i64) -> SharedString {
     }
 }
 
-fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> MetricsChartData {
+fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (MetricsChartData, usize) {
     let mut prev_metrics = RedisMetrics::default();
     let n = history_metrics.len();
 
@@ -197,26 +200,34 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> MetricsC
         prev_metrics = *metrics;
     }
 
-    MetricsChartData {
-        cpu,
-        max_cpu_percent,
-        min_cpu_percent,
-        memory,
-        max_memory,
-        min_memory,
-        latency,
-        min_latency_ms,
-        max_latency_ms,
-        connected_clients,
-        max_connected_clients,
-        min_connected_clients,
-        total_commands_processed,
-        max_total_commands_processed,
-        min_total_commands_processed,
-        output_kbps,
-        max_output_kbps,
-        min_output_kbps,
+    let mut tick_margin = n / 10;
+    if !tick_margin.is_multiple_of(10) {
+        tick_margin += 1;
     }
+
+    (
+        MetricsChartData {
+            cpu,
+            max_cpu_percent,
+            min_cpu_percent,
+            memory,
+            max_memory,
+            min_memory,
+            latency,
+            min_latency_ms,
+            max_latency_ms,
+            connected_clients,
+            max_connected_clients,
+            min_connected_clients,
+            total_commands_processed,
+            max_total_commands_processed,
+            min_total_commands_processed,
+            output_kbps,
+            max_output_kbps,
+            min_output_kbps,
+        },
+        tick_margin.max(1),
+    )
 }
 
 impl ZedisMetrics {
@@ -234,11 +245,13 @@ impl ZedisMetrics {
             nodes_description.server_type, nodes_description.master_nodes
         )
         .into();
-        let metrics_chart_data = convert_metrics_to_chart_data(get_metrics_cache().list_metrics(server_id));
+        let (metrics_chart_data, tick_margin) =
+            convert_metrics_to_chart_data(get_metrics_cache().list_metrics(server_id));
 
         let mut this = Self {
             title,
             metrics_chart_data,
+            tick_margin,
             heartbeat_task: None,
             _subscriptions: vec![],
         };
@@ -255,7 +268,9 @@ impl ZedisMetrics {
                     .await;
                 let metrics_history = get_metrics_cache().list_metrics(&server_id);
                 let _ = this.update(cx, |state, cx| {
-                    state.metrics_chart_data = convert_metrics_to_chart_data(metrics_history);
+                    let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history);
+                    state.metrics_chart_data = metrics_chart_data;
+                    state.tick_margin = tick_margin;
                     cx.notify();
                 });
             }
@@ -302,7 +317,7 @@ impl ZedisMetrics {
                     linear_color_stop(cx.theme().chart_2.opacity(0.4), 1.),
                     linear_color_stop(cx.theme().background.opacity(0.3), 0.),
                 ))
-                .tick_margin(8),
+                .tick_margin(self.tick_margin),
         )
     }
 
@@ -317,7 +332,7 @@ impl ZedisMetrics {
             BarChart::new(self.metrics_chart_data.memory.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.used_memory)
-                .tick_margin(8),
+                .tick_margin(self.tick_margin),
         )
     }
 
@@ -332,7 +347,7 @@ impl ZedisMetrics {
             AreaChart::new(self.metrics_chart_data.latency.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.latency_ms)
-                .tick_margin(8),
+                .tick_margin(self.tick_margin),
         )
     }
 
@@ -347,7 +362,7 @@ impl ZedisMetrics {
             AreaChart::new(self.metrics_chart_data.connected_clients.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.connected_clients)
-                .tick_margin(8),
+                .tick_margin(self.tick_margin),
         )
     }
     fn render_total_commands_processed_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -361,7 +376,7 @@ impl ZedisMetrics {
             AreaChart::new(self.metrics_chart_data.total_commands_processed.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.total_commands_processed)
-                .tick_margin(8),
+                .tick_margin(self.tick_margin),
         )
     }
     fn render_output_kbps_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -375,7 +390,7 @@ impl ZedisMetrics {
             AreaChart::new(self.metrics_chart_data.output_kbps.clone())
                 .x(|d| d.date.clone())
                 .y(|d| d.output_kbps)
-                .tick_margin(8),
+                .tick_margin(self.tick_margin),
         )
     }
 }
@@ -384,6 +399,16 @@ impl Render for ZedisMetrics {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let window_width = window.viewport_size().width;
         let columns = if window_width > px(1200.) { 2 } else { 1 };
+        if self.metrics_chart_data.cpu.is_empty() {
+            return SkeletonLoading::new().into_any_element();
+        }
+        let time_range = if let Some(first) = self.metrics_chart_data.cpu.first()
+            && let Some(last) = self.metrics_chart_data.cpu.last()
+        {
+            format!("{} - {}", first.date, last.date)
+        } else {
+            "".to_string()
+        };
         div()
             .size_full()
             .p_2()
@@ -396,7 +421,14 @@ impl Render for ZedisMetrics {
                     .grid_cols(columns)
                     .items_start()
                     .justify_start()
-                    .child(Label::new(self.title.clone()).col_span_full())
+                    .child(
+                        h_flex()
+                            .col_span_full()
+                            .justify_between()
+                            .px_2()
+                            .child(Label::new(self.title.clone()))
+                            .child(Label::new(time_range)),
+                    )
                     .child(self.render_cpu_usage_chart(cx))
                     .child(self.render_memory_usage_chart(cx))
                     .child(self.render_latency_chart(cx))
@@ -405,5 +437,6 @@ impl Render for ZedisMetrics {
                     .child(self.render_output_kbps_chart(cx)),
             )
             .overflow_y_scrollbar()
+            .into_any_element()
     }
 }
