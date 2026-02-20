@@ -240,7 +240,14 @@ impl ZedisStreamEditor {
             ZedisKvTable::<ZedisStreamValues>::new(
                 fields
                     .iter()
-                    .map(|field| KvTableColumn::new(field.as_str(), None))
+                    .enumerate()
+                    .map(|(index, field)| {
+                        if index == 0 {
+                            KvTableColumn::new_auto_created("Entry Id")
+                        } else {
+                            KvTableColumn::new(field.as_str(), None)
+                        }
+                    })
                     .collect(),
                 server_state,
                 window,

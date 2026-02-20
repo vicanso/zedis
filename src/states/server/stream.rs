@@ -227,6 +227,7 @@ impl ZedisServerState {
     ) {
         let values_clone = values.clone();
         let id = entry_id.unwrap_or("*".into());
+
         self.exec_stream_op(
             ServerTask::AddStreamEntry,
             cx,
@@ -234,16 +235,19 @@ impl ZedisServerState {
             move |key, mut conn| async move {
                 let mut currend_cmd = cmd("XADD");
                 let mut current_cmd = currend_cmd.arg(&key).arg(id.as_str());
-                for (field, value) in values_clone {
+                for (field, value) in values {
                     current_cmd = current_cmd.arg(field.as_str()).arg(value.as_str());
                 }
-                let _: () = current_cmd.query_async(&mut conn).await?;
-                Ok(())
+                let id: String = current_cmd.query_async(&mut conn).await?;
+                Ok(id)
             },
-            |this, _, cx| {
+            |this, id, cx| {
                 if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let stream = Arc::make_mut(stream_data);
                     stream.size += 1;
+                    if stream.done {
+                        stream.values.push((id.into(), values_clone));
+                    }
                 }
                 cx.emit(ServerEvent::ValueUpdated);
             },

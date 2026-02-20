@@ -90,6 +90,8 @@ pub struct KvTableColumn {
     pub width: Option<f32>,
     /// Text alignment (left, center, right)
     pub align: Option<TextAlign>,
+    /// Whether the column is auto-created
+    pub auto_created: bool,
 }
 
 impl KvTableColumn {
@@ -105,6 +107,13 @@ impl KvTableColumn {
         Self {
             name: name.to_string().into(),
             flex: true,
+            ..Default::default()
+        }
+    }
+    pub fn new_auto_created(name: &str) -> Self {
+        Self {
+            name: name.to_string().into(),
+            auto_created: true,
             ..Default::default()
         }
     }
@@ -293,7 +302,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }));
 
         let readonly = server_state.read(cx).readonly();
-        
+
         // If readonly, disable all operations; otherwise default to ALL
         let mode = if readonly {
             KvTableMode::empty()
@@ -314,7 +323,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         );
 
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
-        
+
         // Subscribe to row selection events (mode check will be done in handler)
         subscriptions.push(cx.subscribe(&table_state, |this, _, event, cx| {
             if let TableEvent::SelectRow(row_ix) = event {
@@ -406,10 +415,13 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
     fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
         // Only allow row selection if UPDATE, REMOVE, or ADD mode is enabled
-        if !self.mode.intersects(KvTableMode::UPDATE | KvTableMode::REMOVE | KvTableMode::ADD) {
+        if !self
+            .mode
+            .intersects(KvTableMode::UPDATE | KvTableMode::REMOVE | KvTableMode::ADD)
+        {
             return;
         }
-        
+
         self.edit_row = Some(row_ix);
         let values = self
             .value_states
@@ -425,15 +437,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         if !self.mode.contains(KvTableMode::ADD) {
             return;
         }
-        
+
         self.edit_row = Some(usize::MAX);
         self.list_push_mode_state.update(cx, |state, _| {
             *state = 0;
         });
         let mut foucused = false;
-        self.value_states.iter().for_each(|(_, state)| {
+        self.value_states.iter().for_each(|(index, state)| {
+            let auto_created = self
+                .columns
+                .get(*index)
+                .map(|column| column.auto_created)
+                .unwrap_or(false);
+
             state.update(cx, |input, cx| {
-                if !foucused {
+                if !auto_created && !foucused {
                     input.focus(window, cx);
                     foucused = true;
                 }
@@ -465,7 +483,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         if !self.mode.contains(KvTableMode::FILTER) {
             return;
         }
-        
+
         let keyword = self.keyword_state.read(cx).value();
         self.loading = true;
         self.table_state.update(cx, |state, cx| {
@@ -479,7 +497,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let Some(row_ix) = self.edit_row else {
             return;
         };
-        
+
         // Check if the operation is allowed based on mode
         if row_ix == usize::MAX {
             // Adding new row
@@ -492,7 +510,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 return;
             }
         }
-        
+
         let mut values = Vec::with_capacity(self.value_states.len());
         for (_, state) in self.value_states.iter() {
             let value = state.read(cx).value();
@@ -514,7 +532,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         if !self.mode.contains(KvTableMode::REMOVE) {
             return;
         }
-        
+
         let Some(row_ix) = self.edit_row else {
             return;
         };
@@ -552,7 +570,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     fn render_edit_form(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut form = v_flex().size_full().gap_3();
         let count = self.value_states.len();
-        if self.is_adding_row() && self.fetcher.key_type() == KeyType::List {
+        let is_adding = self.is_adding_row();
+        if is_adding && self.fetcher.key_type() == KeyType::List {
             let positions = vec!["RPUSH".to_string(), "LPUSH".to_string()];
             let index = *self.list_push_mode_state.read(cx);
             form = form.child(
@@ -576,6 +595,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let Some(column) = self.columns.get(*column_index) else {
                 continue;
             };
+            if is_adding && column.auto_created {
+                continue;
+            }
             let last = index == count - 1;
             let mut flex = column.flex;
             if last && flexible_columns == 0 {
@@ -610,12 +632,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let cancel_label = i18n_common(cx, "cancel");
         let save_label = i18n_common(cx, "save");
         let remove_label = i18n_common(cx, "remove");
-        
+
         let can_add = self.mode.contains(KvTableMode::ADD);
         let can_remove = self.mode.contains(KvTableMode::REMOVE);
         let can_update = self.mode.contains(KvTableMode::UPDATE);
         let is_adding = self.is_adding_row();
-        
+
         form.child(
             div().flex_none().child(
                 field().child(
