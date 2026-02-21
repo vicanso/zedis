@@ -22,6 +22,7 @@ use super::{
 };
 use crate::error::Error;
 use crate::helpers::TtlCache;
+use futures::future::try_join_all;
 use gpui::SharedString;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
 use semver::Version;
@@ -338,6 +339,35 @@ impl RedisClient {
     /// * `bool` - True if the client version is at least the given version, false otherwise.
     pub fn is_at_least_version(&self, version: &str) -> bool {
         self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
+    }
+
+    pub async fn unlike_keys(&self, keys: Vec<SharedString>) -> Result<(), Error> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if !self.is_cluster() {
+            let mut conn = self.connection();
+            let mut pipe = redis::pipe();
+            for key in keys {
+                pipe.cmd("UNLINK").arg(key.as_str());
+            }
+            let _: () = pipe.query_async(&mut conn).await?;
+            return Ok(());
+        }
+
+        // cluster mode
+        let conn = self.connection();
+        for chunk in keys.chunks(1000) {
+            let futures = chunk.iter().map(|key| {
+                let mut conn_clone = conn.clone();
+                async move {
+                    let _: () = cmd("UNLINK").arg(key.as_str()).query_async(&mut conn_clone).await?;
+                    Ok::<(), Error>(())
+                }
+            });
+            let _: Vec<()> = try_join_all(futures).await?;
+        }
+        Ok(())
     }
 
     pub async fn memory_usage(&self, key: &str, key_type: &str) -> Result<u64> {

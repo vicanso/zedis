@@ -29,7 +29,6 @@ use crate::{
     helpers::{parse_duration, unix_ts},
 };
 use ahash::AHashSet;
-use futures::future::try_join_all;
 use futures::{StreamExt, stream};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
@@ -544,6 +543,7 @@ impl ZedisServerState {
             cx,
         );
     }
+
     pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -564,14 +564,7 @@ impl ZedisServerState {
                     } else {
                         client.first_scan(&pattern, count).await?
                     };
-                    if !keys.is_empty() {
-                        let mut pipe = redis::pipe();
-                        for key in keys {
-                            pipe.cmd("UNLINK").arg(key.as_str());
-                        }
-                        let mut conn = client.connection();
-                        let _: () = pipe.query_async(&mut conn).await?;
-                    }
+                    client.unlike_keys(keys).await?;
 
                     // Break if scan cycle finishes
                     if new_cursor.iter().sum::<u64>() == 0 {
@@ -593,6 +586,7 @@ impl ZedisServerState {
             cx,
         );
     }
+
     pub fn unlink_key(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -601,29 +595,7 @@ impl ZedisServerState {
             ServerTask::DeleteKeys,
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                if !client.is_cluster() {
-                    let mut conn = client.connection();
-                    let mut pipe = redis::pipe();
-                    for key in keys {
-                        pipe.cmd("UNLINK").arg(key.as_str());
-                    }
-                    let _: () = pipe.query_async(&mut conn).await?;
-                    return Ok(());
-                }
-
-                // cluster mode
-                let conn = client.connection();
-                for chunk in keys.chunks(1000) {
-                    let futures = chunk.iter().map(|key| {
-                        let mut conn_clone = conn.clone();
-                        async move {
-                            let _: () = cmd("UNLINK").arg(key.as_str()).query_async(&mut conn_clone).await?;
-                            Ok::<(), Error>(())
-                        }
-                    });
-                    let _: Vec<()> = try_join_all(futures).await?;
-                }
-                Ok(())
+                client.unlike_keys(keys).await
             },
             move |this, result, cx| {
                 if let Ok(()) = result {
