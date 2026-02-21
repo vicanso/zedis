@@ -673,6 +673,10 @@ impl ZedisServerState {
     }
 
     pub fn add_key(&mut self, category: SharedString, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
+        let key: SharedString = key.trim().to_string().into();
+        if key.is_empty() {
+            return;
+        }
         let server_id = self.server_id.clone();
         let db = self.db;
         let key_type = KeyType::from(category.to_lowercase().as_str());
