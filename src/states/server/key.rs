@@ -734,6 +734,15 @@ impl ZedisServerState {
                             .query_async(&mut conn)
                             .await?;
                     }
+                    KeyType::Stream => {
+                        let _: () = cmd("XADD")
+                            .arg(key.as_str())
+                            .arg("*")
+                            .arg("field")
+                            .arg("value")
+                            .query_async(&mut conn)
+                            .await?;
+                    }
                     _ => {
                         return Err(Error::Invalid {
                             message: "Invalid key type".to_string(),

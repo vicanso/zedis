@@ -700,7 +700,7 @@ impl ZedisKeyTree {
     }
 
     fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let category_list = ["String", "List", "Set", "Zset", "Hash"];
+        let category_list = ["String", "List", "Set", "Zset", "Hash", "Stream"];
         let fields = vec![
             FormField::new(i18n_key_tree(cx, "category"))
                 .with_options(category_list.iter().map(|s| s.to_string().into()).collect()),

@@ -351,7 +351,6 @@ impl Render for ZedisSidebar {
     /// 2. Server list (scrollable, takes remaining space)
     /// 3. Settings button (theme & language)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        tracing::debug!("Rendering sidebar view");
         let show_settings_button = is_development();
 
         v_flex()

@@ -377,7 +377,7 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
         let channel = session
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
             .await?;
-        debug!(ssh_addr, ssh_user, "open direct tcpip success");
+        debug!(ssh_addr, ssh_user, host, port, "open direct tcpip success");
         // Wrap the SSH channel in a Redis-compatible stream
         let compat_stream = SshRedisStream::new(channel.into_stream());
         let info = RedisConnectionInfo::default();

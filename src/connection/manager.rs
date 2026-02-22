@@ -25,6 +25,7 @@ use crate::helpers::TtlCache;
 use futures::future::try_join_all;
 use gpui::SharedString;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
+use regex::Regex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -37,6 +38,14 @@ use tracing::{debug, error, info};
 type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Matches Redis errors that should fallback to standalone: NOPERM, unknown command, or command not available.
+static IGNORABLE_SERVER_ERROR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"NOPERM|unknown|not available").expect("failed to compile regex"));
+
+fn is_ignorable_server_error(msg: &str) -> bool {
+    IGNORABLE_SERVER_ERROR.is_match(msg)
+}
 
 // Global singleton for ConnectionManager
 static CONNECTION_MANAGER: LazyLock<ConnectionManager> = LazyLock::new(ConnectionManager::new);
@@ -685,7 +694,7 @@ impl ConnectionManager {
                 match detect_server_type(conn.clone()).await {
                     Ok(server_type) => (conn, server_type),
                     Err(e) => {
-                        if !e.to_string().contains("Command is not available") {
+                        if !is_ignorable_server_error(&e.to_string()) {
                             return Err(e);
                         }
                         error!("detect server type failed: {e:?}, use standalone mode");

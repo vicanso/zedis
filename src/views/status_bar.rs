@@ -566,7 +566,6 @@ impl ZedisStatusBar {
 
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        tracing::debug!("render status bar view");
         if self.state.server_state.server_id.is_empty() {
             return h_flex();
         }
