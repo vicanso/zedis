@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.5](https://github.com/vicanso/zedis/compare/v0.2.4..v0.2.5) - 2026-02-23
+
+### ⛰️  Features
+
+- *(cli)* Support command history navigation ([#37](https://github.com/orhun/git-cliff/issues/37)) - ([4d858d6](https://github.com/vicanso/zedis/commit/4d858d6fa647fa398ba40e6842bae0ce90c59d47))
+- *(metrics)* Implement server metrics dashboard - ([07657f5](https://github.com/vicanso/zedis/commit/07657f5bc5bb7e33b9b33e344495de3d2a4578bb))
+- *(slowlog)* Display slow log count for current period - ([5e99e81](https://github.com/vicanso/zedis/commit/5e99e81013de5ad93369cd9be287ff739b973837))
+- Support redis stream data type ([#35](https://github.com/orhun/git-cliff/issues/35)) - ([a4c3f61](https://github.com/vicanso/zedis/commit/a4c3f61642bd21c58d44711f52e981088ac47ab0))
+
+### 🐛 Bug Fixes
+
+- Pipeline exception when deleting multiple keys in cluster mode - ([233621a](https://github.com/vicanso/zedis/commit/233621a648be86a566101a4a342c27582022cc35))
+
+### 🚜 Refactor
+
+- *(key)* Trim redis keys before addition - ([6980de3](https://github.com/vicanso/zedis/commit/6980de3beaac45bcbbd5418dc24b925831dae2a3))
+- *(kvtable)* Add auto_created field to kv table - ([6d6cb88](https://github.com/vicanso/zedis/commit/6d6cb8847699972e17546e2687043bce26f99c63))
+- *(metrics)* Add more metrics - ([8cc684e](https://github.com/vicanso/zedis/commit/8cc684ef932aa9cfe97c8383e370f15b33a9f468))
+- *(metrics)* Optimize chart tick display logic - ([031a3e2](https://github.com/vicanso/zedis/commit/031a3e2e9ddc16a94065cfbdd0efc491441324e4))
+- *(metrics)* Add more server metric charts - ([ceb18bb](https://github.com/vicanso/zedis/commit/ceb18bbe3169bb2db0706732c4315ef0f1bd6135))
+- *(metrics)* Optimize Redis metrics collection and caching - ([7e0996f](https://github.com/vicanso/zedis/commit/7e0996fc9b250f6fa2de4fca54671630fefe38e4))
+- *(redis)* Ignore `role` command error then use standalone mode ([#41](https://github.com/orhun/git-cliff/issues/41)) - ([9558c8b](https://github.com/vicanso/zedis/commit/9558c8bcb514e18b673f9608520305c3afe710b3))
+- *(redis)* Estimate memory usage for Redis < 4.0 ([#40](https://github.com/orhun/git-cliff/issues/40)) - ([85442c4](https://github.com/vicanso/zedis/commit/85442c47dd23a6222d0d147005d493455ba5daa6))
+- Optimize slow log display - ([b71d7e0](https://github.com/vicanso/zedis/commit/b71d7e0536db0969b5a276b2b08eb83823f33f96))
+- Adjust memory usage for redis < 4.0 - ([8139731](https://github.com/vicanso/zedis/commit/8139731c56656995f8b780961b880b3a9248eec3))
+
 ## [0.2.4](https://github.com/vicanso/zedis/compare/v0.2.3..v0.2.4) - 2026-02-15
 
 ### ⛰️  Features
