@@ -12,13 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub fn validate_ttl(s: &str) -> bool {
-    if s.is_empty() || s.parse::<usize>().is_ok() {
-        return true;
-    }
-    humantime::parse_duration(s).is_ok()
-}
+mod form;
 
-pub fn validate_long_string(s: &str) -> bool {
-    s.len() <= 4096
-}
+pub use form::*;

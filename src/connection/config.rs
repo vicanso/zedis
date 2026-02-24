@@ -17,6 +17,7 @@ use crate::{
     helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
 };
 use arc_swap::ArcSwap;
+use gpui::SharedString;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,42 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::{fs::read_to_string, path::PathBuf, sync::LazyLock};
 use tracing::{debug, info};
+use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[derive(Debug, Clone, Default)]
+struct RedisUrl {
+    host: String,
+    port: Option<u16>,
+    username: String,
+    password: Option<String>,
+    tls: bool,
+}
+
+fn parse_url(host: SharedString) -> RedisUrl {
+    let input_to_parse = if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("redis://{host}")
+    };
+    if let Ok(u) = Url::parse(input_to_parse.as_str()) {
+        let host = u.host_str().unwrap_or("");
+        let port = u.port();
+        RedisUrl {
+            host: host.to_string(),
+            port,
+            username: u.username().to_string(),
+            password: u.password().map(|p| p.to_string()),
+            tls: u.scheme() == "rediss",
+        }
+    } else {
+        RedisUrl {
+            host: host.to_string(),
+            ..Default::default()
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize, Hash, Eq, PartialEq)]
 pub struct RedisServer {
@@ -55,6 +90,56 @@ pub struct RedisServer {
     pub ssh_key: Option<String>,
 }
 impl RedisServer {
+    pub fn from_form_data(id: &str, data: &HashMap<SharedString, String>) -> Self {
+        let get_str = |k: &str| data.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+        let get_parsed = |k: &str| get_str(k).and_then(|s| s.parse().ok());
+
+        let get_bool = |k: &str| get_str(k).map(|s| s == "true" || s == "1");
+        let redis_url = parse_url(get_str("host").unwrap_or_default().into());
+        let mut username = get_str("username");
+        if username.is_none() && !redis_url.username.is_empty() {
+            username = Some(redis_url.username.clone());
+        }
+        let mut password = get_str("password");
+        if password.is_none() && redis_url.password.is_some() {
+            password = redis_url.password.clone();
+        }
+        let mut tls = get_bool("tls");
+        if redis_url.tls {
+            tls = Some(true);
+        }
+
+        Self {
+            id: id.to_string(),
+
+            name: get_str("name").unwrap_or_default(),
+            host: redis_url.host,
+            port: get_parsed("port").unwrap_or_else(|| redis_url.port.unwrap_or(6379)),
+
+            username,
+            password,
+            master_name: get_str("master_name"),
+            description: get_str("description"),
+            updated_at: None,
+
+            client_cert: get_str("client_cert"),
+            client_key: get_str("client_key"),
+            root_cert: get_str("root_cert"),
+
+            ssh_addr: get_str("ssh_addr"),
+            ssh_username: get_str("ssh_username"),
+            ssh_password: get_str("ssh_password"),
+            ssh_key: get_str("ssh_key"),
+
+            server_type: get_parsed("server_type").map(|s| s as usize),
+
+            tls,
+            insecure: get_bool("insecure"),
+            ssh_tunnel: get_bool("ssh_tunnel"),
+            readonly: get_bool("readonly"),
+        }
+    }
     pub fn get_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);

@@ -30,6 +30,9 @@ rust-version = "1.88.0"
 name = "zedis"
 path = "src/main.rs"
 
+[workspace]
+members = ["crates/*"]
+
 [dependencies]
 aes-gcm = "0.10.3"
 ahash = "0.8.12"
@@ -94,6 +97,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 url = "2.5.8"
 uuid = "1.19.0"
+zedis-ui = { path = "crates/zedis-ui" }
 
 
 [build-dependencies]
