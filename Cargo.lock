@@ -9656,6 +9656,15 @@ dependencies = [
  "vergen",
  "vergen-git2",
  "winres",
+ "zedis-ui",
+]
+
+[[package]]
+name = "zedis-ui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
 ]
 
 [[package]]

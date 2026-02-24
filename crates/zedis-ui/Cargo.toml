@@ -1,0 +1,19 @@
+[package]
+name = "zedis-ui"
+version = "0.1.0"
+edition = "2024"
+authors = ["Tree Xie <tree.xie@outlook.com>"]
+categories = ["database"]
+keywords = ["gui", "gpui"]
+description = "A native GUI built with Rust and GPUI."
+license = "Apache-2.0"
+homepage = "https://github.com/vicanso/zedis"
+repository = "https://github.com/vicanso/zedis"
+documentation = "https://github.com/vicanso/zedis"
+exclude = []
+readme = "./README.md"
+rust-version = "1.88.0"
+
+[dependencies]
+gpui = "0.2.2"
+gpui-component = "0.5.1"
