@@ -12,30 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::prelude::*;
-use gpui::{ElementId, Entity, Render, SharedString, Subscription, Window};
+use gpui::{AnyElement, ElementId, Entity, FontWeight, Render, SharedString, Subscription, Window, div, prelude::*};
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
-use gpui_component::form::field;
+use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
+use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::text::TextView;
-use gpui_component::{Disableable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, h_flex};
 use std::collections::HashMap;
+use std::mem::take;
 use std::rc::Rc;
 
 /// Callback invoked on form submission with all field values collected as a map.
 /// Returns `true` if the submission was handled successfully.
-type ZedisFormSubmitHandler = dyn Fn(HashMap<SharedString, String>, &mut Window, &mut Context<ZedisForm>) -> bool;
+type ZedisFormSubmitHandler =
+    Rc<dyn Fn(HashMap<SharedString, String>, &mut Window, &mut Context<ZedisForm>) -> bool + 'static>;
 
 /// Per-field validation callback. Returns `Some(error_message)` on failure, `None` on success.
-type ZedisFormValidateHandler = dyn Fn(&str) -> Option<SharedString>;
+type ZedisFormValidateHandler = Rc<dyn Fn(&str) -> Option<SharedString> + 'static>;
 
 /// Callback invoked when the cancel button is clicked.
 /// Returns `true` if the cancellation was handled.
-type ZedisFormCancelHandler = dyn Fn(&mut Window, &mut Context<ZedisForm>) -> bool;
+type ZedisFormCancelHandler = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> bool + 'static>;
+
+/// Callback invoked to build the action buttons for the footer.
+pub type ZedisFormActionsBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> Vec<AnyElement>>;
 
 /// Supported field widget types for the form builder.
 #[derive(Clone, Default, PartialEq)]
@@ -62,7 +68,7 @@ pub struct ZedisFormField {
     field_type: ZedisFormFieldType,
     /// Options list for `RadioGroup` fields.
     options: Option<Vec<SharedString>>,
-    validate: Option<Rc<ZedisFormValidateHandler>>,
+    validate: Option<ZedisFormValidateHandler>,
     mask: bool,
     required: bool,
     /// Whether this field should receive focus on the first render.
@@ -121,7 +127,7 @@ impl ZedisFormField {
     }
 
     /// Attach a custom validation function to this field.
-    pub fn validate(mut self, validate: Rc<ZedisFormValidateHandler>) -> Self {
+    pub fn validate(mut self, validate: ZedisFormValidateHandler) -> Self {
         self.validate = Some(validate);
         self
     }
@@ -160,25 +166,31 @@ impl ZedisFormField {
 /// Configuration for constructing a [`ZedisForm`]. Collects field descriptors,
 /// tab labels, button labels, and event handlers before entity creation.
 pub struct ZedisFormOptions {
+    title: Option<SharedString>,
+    description: Option<SharedString>,
     tabs: Option<Vec<SharedString>>,
     fields: Vec<ZedisFormField>,
     required_error_msg: SharedString,
     confirm_label: SharedString,
     cancel_label: SharedString,
-    on_submit: Option<Rc<ZedisFormSubmitHandler>>,
-    on_cancel: Option<Rc<ZedisFormCancelHandler>>,
+    on_submit: Option<ZedisFormSubmitHandler>,
+    on_cancel: Option<ZedisFormCancelHandler>,
+    foot_actions: Option<ZedisFormActionsBuilder>,
 }
 
 impl Default for ZedisFormOptions {
     fn default() -> Self {
         Self {
             tabs: None,
+            title: None,
+            description: None,
             fields: Vec::new(),
             required_error_msg: "Required".into(),
             confirm_label: "Confirm".into(),
             cancel_label: "Cancel".into(),
             on_submit: None,
             on_cancel: None,
+            foot_actions: None,
         }
     }
 }
@@ -216,15 +228,40 @@ impl ZedisFormOptions {
         self
     }
 
+    /// Set the title of the form.
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Set the description of the form.
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
     /// Attach a submit handler that receives all field values on form submission.
-    pub fn on_submit(mut self, on_submit: Rc<ZedisFormSubmitHandler>) -> Self {
+    pub fn on_submit(mut self, on_submit: ZedisFormSubmitHandler) -> Self {
         self.on_submit = Some(on_submit);
         self
     }
 
     /// Attach a cancel handler invoked when the cancel button is clicked.
-    pub fn on_cancel(mut self, on_cancel: Rc<ZedisFormCancelHandler>) -> Self {
+    pub fn on_cancel(mut self, on_cancel: ZedisFormCancelHandler) -> Self {
         self.on_cancel = Some(on_cancel);
+        self
+    }
+
+    /// Set the action buttons for the footer.
+    pub fn foot_actions<F, I>(mut self, builder: F) -> Self
+    where
+        F: Fn(&mut Window, &mut Context<ZedisForm>) -> I + 'static,
+        I: IntoIterator,
+        I::Item: IntoElement,
+    {
+        self.foot_actions = Some(Rc::new(move |window, cx| {
+            builder(window, cx).into_iter().map(|e| e.into_any_element()).collect()
+        }));
         self
     }
 }
@@ -236,16 +273,19 @@ impl ZedisFormOptions {
 /// Construct via [`ZedisFormOptions`] and `cx.new(|cx| ZedisForm::new(...))`.
 pub struct ZedisForm {
     id: ElementId,
+    title: Option<SharedString>,
+    description: Option<SharedString>,
+    confirm_label: SharedString,
+    cancel_label: SharedString,
     /// One-shot flag: focus the designated field on the first render only.
     should_focus: bool,
     field_states: Vec<(ZedisFormField, ZedisFormFieldState)>,
     tab_selected_index: Entity<usize>,
     errors: HashMap<SharedString, SharedString>,
     required_msg: SharedString,
-    confirm_label: SharedString,
-    cancel_label: SharedString,
-    on_submit: Option<Rc<ZedisFormSubmitHandler>>,
-    on_cancel: Option<Rc<ZedisFormCancelHandler>>,
+    on_submit: Option<ZedisFormSubmitHandler>,
+    on_cancel: Option<ZedisFormCancelHandler>,
+    foot_actions: Option<ZedisFormActionsBuilder>,
     tabs: Option<Vec<SharedString>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -339,6 +379,8 @@ impl ZedisForm {
             field_states,
             errors: HashMap::new(),
             required_msg: options.required_error_msg,
+            title: options.title,
+            description: options.description,
             confirm_label: options.confirm_label,
             cancel_label: options.cancel_label,
             tabs: options.tabs,
@@ -346,6 +388,7 @@ impl ZedisForm {
             on_cancel: options.on_cancel,
             tab_selected_index: cx.new(|_cx| 0),
             should_focus: true,
+            foot_actions: options.foot_actions,
             _subscriptions: subscriptions,
         }
     }
@@ -405,7 +448,7 @@ impl ZedisForm {
 impl Render for ZedisForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Auto-focus the designated field on the first render, then clear the flag.
-        if std::mem::take(&mut self.should_focus) {
+        if take(&mut self.should_focus) {
             for (field, state) in &self.field_states {
                 if field.focus
                     && let ZedisFormFieldState::Input(state) = state
@@ -418,7 +461,21 @@ impl Render for ZedisForm {
             }
         }
 
-        let mut form_container = v_flex().w_full().gap_2();
+        let mut form_container = v_form()
+            .w_full()
+            .gap_2()
+            .when_some(self.title.clone(), |this, title| {
+                this.child(field().child(Label::new(title).text_lg().font_weight(FontWeight::BOLD)))
+            })
+            .when_some(self.description.clone(), |this, description| {
+                this.child(
+                    field().child(
+                        Label::new(description)
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+                )
+            });
         let parent_id = Box::new(self.id.clone());
 
         // Render optional tab bar for multi-tab forms.
@@ -438,7 +495,7 @@ impl Render for ZedisForm {
             for tab in tabs {
                 tab_bar = tab_bar.child(Tab::new().label(tab.clone()));
             }
-            form_container = form_container.child(tab_bar);
+            form_container = form_container.child(field().child(tab_bar));
         }
 
         let new_field = |item: &ZedisFormField| field().required(item.required).label(item.label.clone());
@@ -517,10 +574,10 @@ impl Render for ZedisForm {
                 .map(|(name, value)| format!("- {name}: {value}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            form_container = form_container.child(Alert::error(
+            form_container = form_container.child(field().child(Alert::error(
                 alert_id,
                 TextView::markdown(textview_id, error_text, window, cx),
-            ));
+            )));
         }
 
         // Build action buttons (cancel on the left, confirm/primary on the right).
@@ -551,10 +608,24 @@ impl Render for ZedisForm {
         if cfg!(target_os = "windows") {
             buttons.reverse();
         }
+        let mut right_buttons = h_flex().justify_end().gap_4();
+        let mut left_buttons = h_flex().justify_start().gap_4();
+
+        let mut exists_buttons = false;
         if !buttons.is_empty() {
-            form_container = form_container.child(h_flex().justify_end().children(buttons).gap_4());
+            right_buttons = right_buttons.children(buttons);
+            exists_buttons = true;
+        }
+        if let Some(builder) = &self.foot_actions {
+            let custom_elements = builder(window, cx);
+            left_buttons = left_buttons.children(custom_elements);
+            exists_buttons = true;
+        }
+        if exists_buttons {
+            form_container = form_container
+                .child(field().child(h_flex().justify_end().child(left_buttons).child(right_buttons).gap_4()));
         }
 
-        form_container
+        div().child(form_container).overflow_y_scrollbar()
     }
 }

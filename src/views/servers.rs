@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::components::Card;
 use crate::connection::{RedisServer, get_servers};
 use crate::states::{Route, ZedisGlobalStore, dialog_button_props, i18n_common, i18n_servers};
 use gpui::{SharedString, Window, div, prelude::*, px};
@@ -21,13 +20,13 @@ use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
-    scroll::ScrollableElement,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::rc::Rc;
 use substring::Substring;
 use tracing::info;
+use zedis_ui::ZedisCard;
 use zedis_ui::{ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 // Constants for UI layout
@@ -119,8 +118,7 @@ impl ZedisServers {
             ZedisFormField::new("port", i18n_common(cx, "port"))
                 .default_value(redis_server.port.to_string())
                 .placeholder(i18n_common(cx, "port_placeholder"))
-                .tab_index(0)
-                .field_type(ZedisFormFieldType::InputNumber),
+                .tab_index(0),
             ZedisFormField::new("username", i18n_common(cx, "username"))
                 .default_value(redis_server.username.clone().unwrap_or_default())
                 .tab_index(0)
@@ -245,8 +243,7 @@ impl ZedisServers {
                 div()
                     .id("servers-scrollable-container")
                     .max_h(max_h)
-                    .child(form.clone())
-                    .overflow_y_scrollbar(),
+                    .child(form.clone()), // .overflow_y_scrollbar(),
             )
         })
     }
@@ -337,7 +334,7 @@ impl Render for ZedisServers {
                 });
 
                 // Build server card with conditional footer
-                Card::new(("servers-card", index))
+                ZedisCard::new(("servers-card", index))
                     .icon(Icon::new(CustomIconName::DatabaseZap))
                     .title(title)
                     .bg(bg)
@@ -354,7 +351,7 @@ impl Render for ZedisServers {
                         )
                     })
                     .actions(actions)
-                    .on_click(handle_select_server)
+                    .on_click(Box::new(handle_select_server))
             })
             .collect();
 
@@ -367,13 +364,13 @@ impl Render for ZedisServers {
             .children(children)
             .child(
                 // "Add New Server" card at the end
-                Card::new("servers-card-add")
+                ZedisCard::new("servers-card-add")
                     .icon(IconName::Plus)
                     .title(i18n_servers(cx, "add_server_title"))
                     .bg(bg)
                     .description(i18n_servers(cx, "add_server_description"))
                     .actions(vec![Button::new("add").ghost().icon(CustomIconName::FilePlusCorner)])
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .on_click(Box::new(cx.listener(move |this, _, window, cx| {
                         // Fill with empty server data for new entry
                         this.add_or_update_server_dialog(
                             &RedisServer {
@@ -383,7 +380,7 @@ impl Render for ZedisServers {
                             window,
                             cx,
                         );
-                    })),
+                    }))),
             )
             .into_any_element()
     }
