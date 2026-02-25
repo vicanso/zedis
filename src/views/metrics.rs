@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::components::SkeletonLoading;
 use crate::connection::get_server;
-use crate::states::ZedisServerState;
 use crate::states::{RedisMetrics, get_metrics_cache};
+use crate::states::{ZedisServerState, i18n_common};
 use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, linear_color_stop, linear_gradient, prelude::*, px};
@@ -23,6 +22,7 @@ use gpui_component::chart::{AreaChart, BarChart, LineChart};
 use gpui_component::h_flex;
 use gpui_component::{ActiveTheme, StyledExt, label::Label, scroll::ScrollableElement, v_flex};
 use std::time::Duration;
+use zedis_ui::ZedisSkeletonLoading;
 
 const TIME_FORMAT: &str = "%H:%M:%S";
 const CHART_CARD_HEIGHT: f32 = 300.;
@@ -484,7 +484,9 @@ impl Render for ZedisMetrics {
         let window_width = window.viewport_size().width;
         let columns = if window_width > px(1200.) { 2 } else { 1 };
         if self.metrics_chart_data.cpu.is_empty() {
-            return SkeletonLoading::new().into_any_element();
+            return ZedisSkeletonLoading::new()
+                .text(i18n_common(cx, "loading"))
+                .into_any_element();
         }
         let time_range = if let Some(first) = self.metrics_chart_data.cpu.first()
             && let Some(last) = self.metrics_chart_data.cpu.last()

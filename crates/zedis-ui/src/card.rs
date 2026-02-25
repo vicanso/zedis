@@ -16,7 +16,7 @@ use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, SharedString, Window, d
 use gpui_component::{ActiveTheme, Icon, button::Button, h_flex, label::Label, list::ListItem};
 
 /// Type alias for the click handler closure.
-type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type ZedisCardOnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// A customizable Card component used to display grouped content.
 ///
@@ -24,7 +24,7 @@ type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 /// and custom background styling. It wraps a `ListItem` to provide standard
 /// interactive behaviors.
 #[derive(IntoElement)]
-pub struct Card {
+pub struct ZedisCard {
     /// Unique identifier for the element.
     id: ElementId,
     /// Optional leading icon.
@@ -36,13 +36,13 @@ pub struct Card {
     /// List of action buttons to display in the header.
     actions: Option<Vec<Button>>,
     /// Handler for click events.
-    on_click: Option<OnClick>,
+    on_click: Option<ZedisCardOnClick>,
     /// Optional footer element.
     footer: Option<AnyElement>,
     /// Custom background fill.
     bg: Option<Fill>,
 }
-impl Card {
+impl ZedisCard {
     /// Creates a new `Card` with the given element ID.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
@@ -83,8 +83,8 @@ impl Card {
     }
 
     /// Sets the click event handler for the card.
-    pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
-        self.on_click = Some(Box::new(handler));
+    pub fn on_click(mut self, handler: ZedisCardOnClick) -> Self {
+        self.on_click = Some(handler);
         self
     }
 
@@ -101,7 +101,7 @@ impl Card {
     }
 }
 
-impl RenderOnce for Card {
+impl RenderOnce for ZedisCard {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         // Construct the header row: Icon + Title + Spacer + Actions
         let header = h_flex()
@@ -129,7 +129,9 @@ impl RenderOnce for Card {
             // Apply custom background if provided
             .when_some(self.bg, |this, bg| this.bg(bg))
             // Attach click handler if provided
-            .when_some(self.on_click, |this, handler| this.on_click(handler))
+            .when_some(self.on_click, |this, handler| {
+                this.on_click(move |event, window, cx| handler(event, window, cx))
+            })
             // Add Header
             .child(header)
             // Add Description

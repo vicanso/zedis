@@ -13,14 +13,13 @@
 // limitations under the License.
 
 use crate::{
-    components::SkeletonLoading,
     connection::{get_command_description, get_connection_manager, list_commands},
     db::get_cmd_history_manager,
     error::Error,
     helpers::{
         EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string, starts_with_ignore_ascii_case,
     },
-    states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
+    states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
         ZedisEditor, ZedisKeyTree, ZedisMetrics, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar,
     },
@@ -35,6 +34,7 @@ use gpui_component::{
 };
 use redis::cmd;
 use tracing::{debug, error, info};
+use zedis_ui::ZedisSkeletonLoading;
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 // Constants for UI dimensions
@@ -409,13 +409,12 @@ impl ZedisContent {
     ///
     /// Displayed when the application is busy (e.g., connecting to Redis server,
     /// loading keys). Provides visual feedback that something is happening.
-    fn render_loading(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .w_full()
-            .h_full()
-            .items_center()
-            .justify_center()
-            .child(div().w(px(LOADING_SKELETON_WIDTH)).child(SkeletonLoading::new()))
+    fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex().w_full().h_full().items_center().justify_center().child(
+            div()
+                .w(px(LOADING_SKELETON_WIDTH))
+                .child(ZedisSkeletonLoading::new().text(i18n_common(cx, "loading"))),
+        )
     }
     /// Handle command history navigation
     ///

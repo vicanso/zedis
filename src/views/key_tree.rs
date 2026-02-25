@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
+    components::{FormDialog, FormField, open_add_form_dialog},
     db::get_search_history_manager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
@@ -45,6 +45,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{rc::Rc, str::FromStr, time::Duration};
 use tracing::info;
+use zedis_ui::ZedisSkeletonLoading;
 
 // Constants for tree layout and behavior
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
@@ -747,7 +748,12 @@ impl ZedisKeyTree {
         // if scanning, return None
         if server_state.scanning() {
             if self.key_tree_list_state.read(cx).delegate().items.is_empty() {
-                return Some(div().m_5().child(SkeletonLoading::new()).into_any_element());
+                return Some(
+                    div()
+                        .m_5()
+                        .child(ZedisSkeletonLoading::new().text(i18n_common(cx, "loading")))
+                        .into_any_element(),
+                );
             }
             return None;
         }
