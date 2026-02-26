@@ -172,7 +172,7 @@ impl ZedisEditor {
                 cx.background_executor()
                     .timer(Duration::from_secs(auto_refresh_interval_sec))
                     .await;
-                let _ = server_state.update(cx, move |state, cx| {
+                server_state.update(cx, move |state, cx| {
                     let key = state.key().unwrap_or_default();
                     if key.is_empty() {
                         return;
@@ -221,7 +221,8 @@ impl ZedisEditor {
             let key = key.clone();
 
             dialog
-                .confirm()
+                .overlay(true)
+                .overlay_closable(true)
                 .button_props(dialog_button_props(cx))
                 .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
                 .on_ok(move |_, window, cx| {

@@ -75,7 +75,8 @@ impl ZedisServers {
             let server_id = server_id.clone();
 
             dialog
-                .confirm()
+                .overlay(true)
+                .overlay_closable(true)
                 .button_props(dialog_button_props(cx))
                 .title(i18n_servers(cx, "remove_server_title"))
                 .child(message)

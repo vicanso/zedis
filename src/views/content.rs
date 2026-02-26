@@ -115,7 +115,7 @@ impl ZedisContent {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window);
+        focus_handle.focus(window, cx);
         let global_state = cx.global::<ZedisGlobalStore>().state();
         let server_state = cx.new(|_cx| ZedisServerState::new());
         let status_bar = cx.new(|cx| ZedisStatusBar::new(server_state.clone(), window, cx));
@@ -655,7 +655,7 @@ impl Render for ZedisContent {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
         if let Some(true) = self.should_focus.take() {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
         let base = v_flex()
             .id("main-container")

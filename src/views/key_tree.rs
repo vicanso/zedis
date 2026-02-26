@@ -423,7 +423,7 @@ impl ZedisKeyTree {
         let mut subscriptions = Vec::new();
 
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window);
+        focus_handle.focus(window, cx);
 
         // Subscribe to server state changes to rebuild tree when keys change
         subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
@@ -565,11 +565,9 @@ impl ZedisKeyTree {
                 cx.background_executor()
                     .timer(Duration::from_secs(auto_refresh_interval_sec as u64))
                     .await;
-                let keyword = current_keyword
-                    .update(cx, |state, _cx| state.clone())
-                    .unwrap_or_default();
+                let keyword = current_keyword.update(cx, |state, _cx| state.clone());
                 info!(keyword = keyword.as_str(), "auto refresh");
-                let _ = server_state.update(cx, move |handle, cx| {
+                server_state.update(cx, move |handle, cx| {
                     handle.handle_auto_refresh(keyword, cx);
                 });
             }
@@ -673,7 +671,7 @@ impl ZedisKeyTree {
                 })
                 .await;
             if let Ok(history) = result {
-                let _ = server_state_clone.update(cx, |state, _cx| {
+                server_state_clone.update(cx, |state, _cx| {
                     state.set_search_history(history);
                 });
             }
@@ -1087,7 +1085,8 @@ impl Render for ZedisKeyTree {
                         let server_state = server_state.clone();
                         let keys = keys.clone();
                         dialog
-                            .confirm()
+                            .overlay(true)
+                            .overlay_closable(true)
                             .button_props(dialog_button_props(cx))
                             .title(i18n_key_tree(cx, "delete_keys_title"))
                             .child(text)
@@ -1108,7 +1107,8 @@ impl Render for ZedisKeyTree {
                         let id = id.clone();
                         let server_state = server_state.clone();
                         dialog
-                            .confirm()
+                            .overlay(true)
+                            .overlay_closable(true)
                             .button_props(dialog_button_props(cx))
                             .title(i18n_key_tree(cx, "delete_key_title"))
                             .child(text)
@@ -1130,7 +1130,8 @@ impl Render for ZedisKeyTree {
                         let id = id.clone();
                         let server_state = server_state.clone();
                         dialog
-                            .confirm()
+                            .overlay(true)
+                            .overlay_closable(true)
                             .button_props(dialog_button_props(cx))
                             .title(i18n_key_tree(cx, "delete_folder_title"))
                             .child(text)
@@ -1145,7 +1146,7 @@ impl Render for ZedisKeyTree {
             }))
             .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {
                 EditorAction::Search => {
-                    this.keyword_state.focus_handle(cx).focus(window);
+                    this.keyword_state.focus_handle(cx).focus(window, cx);
                 }
                 _ => {
                     cx.propagate();

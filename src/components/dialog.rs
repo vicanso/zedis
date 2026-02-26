@@ -19,6 +19,7 @@ use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
+    h_flex,
     input::{Input, InputState},
     radio::RadioGroup,
 };
@@ -171,6 +172,29 @@ pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut Ap
     });
 
     window.open_dialog(cx, move |dialog, window, cx| {
+        let do_submit = do_submit.clone();
+        let footer = {
+            let confirm_label = i18n_common(cx, "confirm");
+            let cancel_label = i18n_common(cx, "cancel");
+            let mut buttons = vec![
+                // Cancel button - closes dialog without saving
+                Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
+                    window.close_dialog(cx);
+                }),
+                // Submit button - validates and saves server configuration
+                Button::new("ok").primary().label(confirm_label).on_click({
+                    let do_submit = do_submit.clone();
+                    move |_, window, cx| {
+                        do_submit.clone()(window, cx);
+                    }
+                }),
+            ];
+            if is_windows() {
+                buttons.reverse();
+            }
+            h_flex().gap_2().justify_end().children(buttons)
+        };
+
         dialog
             .title(title.clone())
             .overlay(true)
@@ -223,29 +247,6 @@ pub fn open_add_form_dialog(params: FormDialog, window: &mut Window, cx: &mut Ap
                 window.close_dialog(cx);
                 true
             })
-            .footer({
-                let do_submit = do_submit.clone();
-                move |_, _, _, cx| {
-                    let confirm_label = i18n_common(cx, "confirm");
-                    let cancel_label = i18n_common(cx, "cancel");
-                    let mut buttons = vec![
-                        // Cancel button - closes dialog without saving
-                        Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
-                        // Submit button - validates and saves server configuration
-                        Button::new("ok").primary().label(confirm_label).on_click({
-                            let do_submit = do_submit.clone();
-                            move |_, window, cx| {
-                                do_submit.clone()(window, cx);
-                            }
-                        }),
-                    ];
-                    if is_windows() {
-                        buttons.reverse();
-                    }
-                    buttons
-                }
-            })
+            .footer(footer)
     });
 }

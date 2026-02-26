@@ -353,7 +353,7 @@ impl ZedisStatusBar {
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
-                let _ = server_state.update(cx, |state, cx| {
+                server_state.update(cx, |state, cx| {
                     state.refresh_redis_info(cx);
                 });
             }
