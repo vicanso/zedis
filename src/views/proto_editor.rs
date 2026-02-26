@@ -23,7 +23,7 @@ use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px}
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
-use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_component::{IconName, h_flex};
 use gpui_component::{
     IndexPath, WindowExt,
@@ -102,8 +102,8 @@ impl TableDelegate for ProtoTableDelegate {
         self.data.len()
     }
 
-    fn column(&self, index: usize, _: &App) -> &Column {
-        &self.columns[index]
+    fn column(&self, index: usize, _: &App) -> Column {
+        self.columns[index].clone()
     }
 
     fn render_td(
@@ -534,7 +534,8 @@ impl ZedisProtoEditor {
             let view_handle = view_handle.clone();
             let text = t!("remove_proto_prompt", name = name).to_string();
             dialog
-                .confirm()
+                .overlay(true)
+                .overlay_closable(true)
                 .button_props(dialog_button_props(cx))
                 .child(text)
                 .on_ok(move |_, _window, cx| {
@@ -552,7 +553,7 @@ impl ZedisProtoEditor {
                             .await;
                         match result {
                             Ok(deleted_id) => {
-                                let _ = view_handle.update(cx, |this, cx| {
+                                view_handle.update(cx, |this, cx| {
                                     // Remove deleted proto from the list
                                     let new_protos: Vec<_> = this
                                         .protos
@@ -577,7 +578,7 @@ impl ZedisProtoEditor {
                 })
         });
     }
-    fn render_edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_edit_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let match_mode_select_state_clone = self.match_mode_select_state.clone();
         let match_mode_select_state = self.match_mode_select_state.read(cx);
         v_flex()
@@ -652,7 +653,7 @@ impl ZedisProtoEditor {
                 this.child(
                     Alert::error(
                         "proto-editor-form-errors",
-                        TextView::markdown("proto-editor-form-errors-message", markdown, window, cx),
+                        TextView::markdown("proto-editor-form-errors-message", markdown),
                     )
                     .title(title)
                     .mt_4(),
@@ -698,7 +699,7 @@ impl ZedisProtoEditor {
             )
             .child(
                 div().flex_1().w_full().child(
-                    Table::new(&self.table_state)
+                    DataTable::new(&self.table_state)
                         .stripe(true)
                         .bordered(true)
                         .scrollbar_visible(true, true),

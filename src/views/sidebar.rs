@@ -333,7 +333,7 @@ impl ZedisSidebar {
                     v_flex()
                         .items_center()
                         .justify_center()
-                        .child(Icon::new(IconName::GitHub))
+                        .child(Icon::new(IconName::Github))
                         .child(Label::new("ZEDIS").text_xs()),
                 )
                 .on_click(cx.listener(move |_, _, _, cx| {

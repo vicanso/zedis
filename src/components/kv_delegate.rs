@@ -144,8 +144,8 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         self.fetcher.rows_count()
     }
 
-    fn column(&self, index: usize, _: &App) -> &Column {
-        &self.columns[index]
+    fn column(&self, index: usize, _: &App) -> Column {
+        self.columns[index].clone()
     }
 
     /// Renders a table header cell with styled column name.
@@ -199,8 +199,8 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         base.child(Label::new(value).text_align(column.align))
     }
     /// Returns whether all data has been loaded (end of file).
-    fn is_eof(&self, _: &App) -> bool {
-        self.fetcher.is_eof()
+    fn has_more(&self, _: &App) -> bool {
+        !self.fetcher.is_eof()
     }
 
     /// Defines how many rows from the bottom should trigger load_more.

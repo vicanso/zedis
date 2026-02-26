@@ -27,13 +27,13 @@ use gpui_component::highlighter::Language;
 use gpui_component::input::Position;
 use gpui_component::radio::RadioGroup;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, PixelsExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
     form::field,
     h_flex,
     input::{Escape, Input, InputEvent, InputState},
     label::Label,
-    table::{Table, TableEvent, TableState},
+    table::{DataTable, TableEvent, TableState},
     v_flex,
 };
 use rust_i18n::t;
@@ -553,7 +553,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let entity = entity.clone();
 
             dialog
-                .confirm()
+                .overlay(true)
+                .overlay_closable(true)
                 .button_props(dialog_button_props(cx))
                 .child(message.to_string())
                 .on_ok(move |_, window, cx| {
@@ -745,7 +746,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                     // Main table area
                     .child(
                         div().flex_1().w_full().child(
-                            Table::new(&self.table_state)
+                            DataTable::new(&self.table_state)
                                 .stripe(true) // Alternating row colors for better readability
                                 .bordered(true) // Table borders
                                 .scrollbar_visible(true, true), // Show both scrollbars

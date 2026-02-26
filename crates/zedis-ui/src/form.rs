@@ -28,6 +28,7 @@ use gpui_component::{ActiveTheme, Disableable, IconName, h_flex};
 use std::collections::HashMap;
 use std::mem::take;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Callback invoked on form submission with all field values collected as a map.
 /// Returns `true` if the submission was handled successfully.
@@ -545,7 +546,7 @@ impl Render for ZedisForm {
                     ),
                 )
             });
-        let parent_id = Box::new(self.id.clone());
+        let parent_id = Arc::new(self.id.clone());
 
         // Render optional tab bar for multi-tab forms.
         if let Some(tabs) = &self.tabs {
@@ -671,10 +672,8 @@ impl Render for ZedisForm {
                 .map(|(name, value)| format!("- {name}: {value}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            form_container = form_container.child(field().child(Alert::error(
-                alert_id,
-                TextView::markdown(textview_id, error_text, window, cx),
-            )));
+            form_container = form_container
+                .child(field().child(Alert::error(alert_id, TextView::markdown(textview_id, error_text))));
         }
 
         // Build action buttons (cancel on the left, confirm/primary on the right).

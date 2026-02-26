@@ -9,8 +9,8 @@ use crate::states::{
 };
 use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
 use gpui::{
-    App, Application, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance,
-    WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
 use std::{env, str::FromStr, time::Duration};
@@ -73,7 +73,7 @@ impl Zedis {
         cx.observe_window_appearance(window, |this, _window, cx| {
             if cx.global::<ZedisGlobalStore>().read(cx).theme().is_none() {
                 this.theme_update_task = Some(cx.spawn(async move |_this, cx| {
-                    let _ = cx.update(|cx| {
+                    cx.update(|cx| {
                         Theme::change(cx.window_appearance(), None, cx);
                         cx.refresh_windows();
                     });
@@ -111,14 +111,10 @@ impl Zedis {
                 .timer(std::time::Duration::from_millis(500))
                 .await;
 
-            let result = store.update(cx, move |state, cx| {
+            store.update(cx, move |state, cx| {
                 state.set_bounds(new_bounds);
                 cx.notify();
             });
-            if let Err(e) = result {
-                error!(error = %e, "update window bounds fail",);
-                return;
-            };
 
             cx.background_spawn(async move {
                 if let Err(e) = save_app_state(&value) {
@@ -273,7 +269,7 @@ const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
 fn main() {
     init_logger();
-    let app = Application::new().with_assets(assets::Assets);
+    let app = gpui_platform::application().with_assets(assets::Assets);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
     if let Err(e) = get_servers() {
         error!(error = %e, "get servers fail",);

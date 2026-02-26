@@ -21,7 +21,7 @@ use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
-use gpui_component::{PixelsExt, ThemeMode, dialog::DialogButtonProps};
+use gpui_component::{ThemeMode, dialog::DialogButtonProps};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -217,7 +217,7 @@ impl ZedisGlobalStore {
         &self,
         cx: &mut C,
         update: impl FnOnce(&mut ZedisAppState, &mut Context<ZedisAppState>) -> R,
-    ) -> C::Result<R> {
+    ) -> R {
         self.app_state.update(cx, update)
     }
     pub fn read<'a>(&self, cx: &'a App) -> &'a ZedisAppState {
@@ -482,26 +482,24 @@ where
 
     cx.spawn(async move |cx| {
         // Step 1: Update global state with the mutation
-        let current_state = store.update(cx, |state, cx| {
+        let state = store.update(cx, |state, cx| {
             mutation(state, cx);
             state.clone() // Return clone for async persistence
         });
 
         // Step 2: Persist to disk in background executor
-        if let Ok(state) = current_state {
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(e) = save_app_state(&state) {
-                        error!(error = %e, action = action_name, "Failed to save state");
-                    } else {
-                        info!(action = action_name, "State saved successfully");
-                    }
-                })
-                .await;
-        }
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = save_app_state(&state) {
+                    error!(error = %e, action = action_name, "Failed to save state");
+                } else {
+                    info!(action = action_name, "State saved successfully");
+                }
+            })
+            .await;
 
         // Step 3: Refresh windows to apply visual changes (theme/locale)
-        cx.update(|cx| cx.refresh_windows()).ok();
+        cx.update(|cx| cx.refresh_windows());
     })
     .detach();
 }

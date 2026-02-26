@@ -114,7 +114,7 @@ impl Render for ZedisTitleBar {
                     .child(
                         Button::new("github")
                             .tooltip(i18n_sidebar(cx, "github_tooltip"))
-                            .icon(IconName::GitHub)
+                            .icon(IconName::Github)
                             .small()
                             .ghost()
                             .on_click(|_, _, cx| cx.open_url("https://github.com/vicanso/zedis")),
