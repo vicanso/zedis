@@ -15,5 +15,5 @@ readme = "./README.md"
 rust-version = "1.88.0"
 
 [dependencies]
-gpui = "0.2.2"
-gpui-component = "0.5.1"
+gpui = { workspace = true }
+gpui-component = { workspace = true }

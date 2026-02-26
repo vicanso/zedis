@@ -17,13 +17,14 @@ use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::form::{field, v_form};
+use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::text::TextView;
-use gpui_component::{ActiveTheme, Disableable, h_flex};
+use gpui_component::{ActiveTheme, Disableable, IconName, h_flex};
 use std::collections::HashMap;
 use std::mem::take;
 use std::rc::Rc;
@@ -53,6 +54,7 @@ pub enum ZedisFormFieldType {
     Checkbox,
     /// Auto-growing text area with `(min_rows, max_rows)`.
     AutoGrow(usize, usize),
+    Editor,
 }
 
 /// Declarative field descriptor used to configure a form field before the
@@ -173,9 +175,12 @@ pub struct ZedisFormOptions {
     required_error_msg: SharedString,
     confirm_label: SharedString,
     cancel_label: SharedString,
+    add_field_placeholder: SharedString,
+    add_value_placeholder: SharedString,
     on_submit: Option<ZedisFormSubmitHandler>,
     on_cancel: Option<ZedisFormCancelHandler>,
     foot_actions: Option<ZedisFormActionsBuilder>,
+    support_add_fields: bool,
 }
 
 impl Default for ZedisFormOptions {
@@ -188,9 +193,12 @@ impl Default for ZedisFormOptions {
             required_error_msg: "Required".into(),
             confirm_label: "Confirm".into(),
             cancel_label: "Cancel".into(),
+            add_field_placeholder: "Enter field".into(),
+            add_value_placeholder: "Enter value".into(),
             on_submit: None,
             on_cancel: None,
             foot_actions: None,
+            support_add_fields: false,
         }
     }
 }
@@ -252,6 +260,24 @@ impl ZedisFormOptions {
         self
     }
 
+    /// Support adding fields to the form.
+    pub fn support_add_fields(mut self) -> Self {
+        self.support_add_fields = true;
+        self
+    }
+
+    /// Set the placeholder for the add field input.
+    pub fn add_field_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.add_field_placeholder = placeholder.into();
+        self
+    }
+
+    /// Set the placeholder for the add value input.
+    pub fn add_value_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.add_value_placeholder = placeholder.into();
+        self
+    }
+
     /// Set the action buttons for the footer.
     pub fn foot_actions<F, I>(mut self, builder: F) -> Self
     where
@@ -280,7 +306,11 @@ pub struct ZedisForm {
     /// One-shot flag: focus the designated field on the first render only.
     should_focus: bool,
     field_states: Vec<(ZedisFormField, ZedisFormFieldState)>,
+    add_field_states: Vec<(Entity<InputState>, Entity<InputState>)>,
+    add_field_placeholder: SharedString,
+    add_value_placeholder: SharedString,
     tab_selected_index: Entity<usize>,
+    support_add_fields: bool,
     errors: HashMap<SharedString, SharedString>,
     required_msg: SharedString,
     on_submit: Option<ZedisFormSubmitHandler>,
@@ -309,13 +339,27 @@ impl ZedisForm {
         for field in &fields {
             let name = field.name.clone();
             match field.field_type {
-                ZedisFormFieldType::Input | ZedisFormFieldType::InputNumber | ZedisFormFieldType::AutoGrow(_, _) => {
+                ZedisFormFieldType::Input
+                | ZedisFormFieldType::InputNumber
+                | ZedisFormFieldType::AutoGrow(_, _)
+                | ZedisFormFieldType::Editor => {
                     let state = cx.new(|cx| {
                         let mut state = InputState::new(window, cx)
                             .placeholder(field.placeholder.clone())
                             .masked(field.mask);
-                        if let ZedisFormFieldType::AutoGrow(min_rows, max_rows) = field.field_type {
-                            state = state.auto_grow(min_rows, max_rows);
+                        match field.field_type {
+                            ZedisFormFieldType::Editor => {
+                                state = state
+                                    .code_editor(Language::from_str("json").name())
+                                    .line_number(true)
+                                    .indent_guides(true)
+                                    .searchable(true)
+                                    .soft_wrap(true)
+                            }
+                            ZedisFormFieldType::AutoGrow(min_rows, max_rows) => {
+                                state = state.auto_grow(min_rows, max_rows);
+                            }
+                            _ => {}
                         }
                         state
                     });
@@ -374,7 +418,7 @@ impl ZedisForm {
             }
         }
 
-        Self {
+        let mut this = Self {
             id,
             field_states,
             errors: HashMap::new(),
@@ -389,8 +433,16 @@ impl ZedisForm {
             tab_selected_index: cx.new(|_cx| 0),
             should_focus: true,
             foot_actions: options.foot_actions,
+            add_field_states: Vec::with_capacity(1),
+            add_field_placeholder: options.add_field_placeholder,
+            add_value_placeholder: options.add_value_placeholder,
+            support_add_fields: options.support_add_fields,
             _subscriptions: subscriptions,
+        };
+        if this.support_add_fields {
+            this.add_field(window, cx);
         }
+        this
     }
 
     /// Clear the validation error for a specific field when its value changes.
@@ -439,9 +491,26 @@ impl ZedisForm {
             cx.notify();
             return;
         }
+        for (field_state, value_state) in &self.add_field_states {
+            let field = field_state.read(cx).value().to_string();
+            let value = value_state.read(cx).value().to_string();
+            values.insert(field.into(), value);
+        }
+
         if let Some(on_submit) = &self.on_submit {
             on_submit(values, window, cx);
         }
+    }
+    fn remove_add_field(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.add_field_states.remove(index);
+        cx.notify();
+    }
+    fn add_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_field_states.push((
+            cx.new(|cx| InputState::new(window, cx).placeholder(self.add_field_placeholder.clone())),
+            cx.new(|cx| InputState::new(window, cx).placeholder(self.add_value_placeholder.clone())),
+        ));
+        cx.notify();
     }
 }
 
@@ -562,6 +631,34 @@ impl Render for ZedisForm {
                     );
                 }
             }
+        }
+
+        for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
+            form_container = form_container.child(
+                field().child(
+                    h_flex()
+                        .gap_2()
+                        .child(Input::new(field_state))
+                        .child(Input::new(value_state))
+                        .child(
+                            Button::new(("remove-add-field", index))
+                                .icon(IconName::CircleX)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_add_field(index, cx);
+                                })),
+                        ),
+                ),
+            )
+        }
+        if self.support_add_fields {
+            form_container =
+                form_container.child(field().child(h_flex().justify_end().child(
+                    Button::new("add-add-field").icon(IconName::Plus).on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.add_field(window, cx);
+                        },
+                    )),
+                )));
         }
 
         // Render validation errors as a markdown alert.
