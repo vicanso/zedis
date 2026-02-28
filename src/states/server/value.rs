@@ -347,6 +347,15 @@ impl RedisValue {
         }
         None
     }
+    pub fn stream_fields(&self) -> Vec<SharedString> {
+        let mut fields = if let Some(stream_value) = self.stream_value() {
+            stream_value.fields()
+        } else {
+            vec![]
+        };
+        fields.insert(0, "Entry Id".to_string().into());
+        fields
+    }
 }
 
 /// Redis key types: string, list, set, zset, hash, stream, and vectorset

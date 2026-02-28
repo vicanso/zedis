@@ -16,7 +16,7 @@ use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
-    helpers::{EditorAction, humanize_keystroke},
+    helpers::EditorAction,
     states::{
         KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
         i18n_list_editor,
@@ -24,21 +24,20 @@ use crate::{
 };
 use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::highlighter::Language;
-use gpui_component::input::Position;
-use gpui_component::radio::RadioGroup;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
-    form::field,
     h_flex,
     input::{Escape, Input, InputEvent, InputState},
     label::Label,
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
+use indexmap::IndexMap;
 use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
+use zedis_ui::{ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 bitflags::bitflags! {
     /// Defines the operations supported by the table.
@@ -80,6 +79,8 @@ pub enum KvTableColumnType {
 pub struct KvTableColumn {
     /// Whether the column is readonly
     pub readonly: bool,
+    /// Type of the field
+    pub field_type: Option<ZedisFormFieldType>,
     /// Whether the column is flexible
     pub flex: bool,
     /// Type of the column
@@ -117,6 +118,10 @@ impl KvTableColumn {
             ..Default::default()
         }
     }
+    pub fn field_type(mut self, field_type: ZedisFormFieldType) -> Self {
+        self.field_type = Some(field_type);
+        self
+    }
 }
 
 /// A generic table view for displaying Redis key-value data.
@@ -148,16 +153,18 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     /// The row index that is being edited
     edit_row: Option<usize>,
     /// The original values of the row that is being edited
-    original_values: Vec<SharedString>,
+    original_values: IndexMap<SharedString, SharedString>,
     /// Whether the values have been modified
     values_modified: bool,
     /// Whether the values should be filled
-    values_should_fill: Option<bool>,
+    values_should_fill: bool,
     columns: Vec<KvTableColumn>,
     /// Input states for editable cells, keyed by column index.
     value_states: Vec<(usize, Entity<InputState>)>,
     /// The push mode for the list
     list_push_mode_state: Entity<usize>,
+    /// The form for the editor
+    editor_form: Option<Entity<ZedisForm>>,
     /// Fetcher instance
     fetcher: Arc<T>,
     /// Event subscriptions for server state and input changes
@@ -350,11 +357,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                             .soft_wrap(true)
                     }
                 });
-                subscriptions.push(cx.subscribe(&state, move |this, _, event, cx| {
-                    if let InputEvent::Change = event {
-                        this.check_values_modified(cx);
-                    }
-                }));
                 Some((index, state))
             })
             .collect::<Vec<_>>();
@@ -369,14 +371,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             loading: false,
             key_changed: None,
             edit_row: None,
-            values_should_fill: None,
-            original_values: vec![],
+            values_should_fill: false,
+            original_values: IndexMap::new(),
             values_modified: false,
             value_states,
             readonly,
             mode,
             fetcher,
             columns,
+            editor_form: None,
             list_push_mode_state: cx.new(|_cx| 0),
             _subscriptions: subscriptions,
         }
@@ -422,15 +425,29 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             return;
         }
 
+        // if is add mode, clear the form
+        if self.is_adding_row() {
+            self.editor_form = None;
+        } else {
+            self.values_should_fill = true;
+        }
         self.edit_row = Some(row_ix);
-        let values = self
-            .value_states
-            .iter()
-            .map(|(index, _)| self.fetcher.get(row_ix, *index + 1).unwrap_or_default())
-            .collect::<Vec<_>>();
+        self.original_values.clear();
+        for (index, column) in self.columns.iter().enumerate() {
+            if column.column_type != KvTableColumnType::Value {
+                continue;
+            }
+            let value = self.fetcher.get(row_ix, index + 1).unwrap_or_default();
+            self.original_values.insert(column.name.clone(), value);
+        }
+        // let values = self
+        //     .value_states
+        //     .iter()
+        //     .map(|(index, _)| self.fetcher.get(row_ix, *index + 1).unwrap_or_default())
+        //     .collect::<Vec<_>>();
+        self.editor_form = None;
         self.values_modified = false;
-        self.original_values = values;
-        self.values_should_fill = Some(true);
+        // self.original_values = values;
     }
     fn handle_add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Only allow adding if ADD mode is enabled
@@ -458,24 +475,25 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 input.set_value(SharedString::default(), window, cx);
             });
         });
+        self.editor_form = None;
         self.original_values.clear();
         self.values_modified = false;
     }
-    fn check_values_modified(&mut self, cx: &mut Context<Self>) {
-        let mut values_modified = false;
-        for (index, (_, state)) in self.value_states.iter().enumerate() {
-            let value = state.read(cx).value();
-            if self
-                .original_values
-                .get(index)
-                .map(|original_value| original_value.clone() != value)
-                .unwrap_or(true)
-            {
-                values_modified = true;
-            }
-        }
-        self.values_modified = values_modified;
-    }
+    // fn check_values_modified(&mut self, cx: &mut Context<Self>) {
+    //     let mut values_modified = false;
+    //     for (index, (_, state)) in self.value_states.iter().enumerate() {
+    //         let value = state.read(cx).value();
+    //         if self
+    //             .original_values
+    //             .get(index)
+    //             .map(|original_value| original_value.clone() != value)
+    //             .unwrap_or(true)
+    //         {
+    //             values_modified = true;
+    //         }
+    //     }
+    //     self.values_modified = values_modified;
+    // }
 
     /// Triggers a filter operation using the current keyword from the input field.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
@@ -490,10 +508,54 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             state.delegate().fetcher().filter(keyword, cx);
         });
     }
-    fn handle_add_or_update_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.values_modified {
+
+    fn handle_remove_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only allow removing if REMOVE mode is enabled
+        if !self.mode.contains(KvTableMode::REMOVE) {
             return;
         }
+
+        let Some(row_ix) = self.edit_row else {
+            return;
+        };
+        let fetcher = self.fetcher.clone();
+        let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
+        let entity = cx.entity().clone();
+
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+            let message = t!(
+                "common.remove_item_prompt",
+                row = row_ix + 1,
+                value = value,
+                locale = locale
+            );
+            let title = i18n_common(cx, "remove_title");
+
+            let fetcher = fetcher.clone();
+            let entity = entity.clone();
+
+            dialog
+                .title(title)
+                .overlay_closable(false)
+                .button_props(dialog_button_props(cx))
+                .child(message.to_string())
+                .on_ok(move |_, window, cx| {
+                    fetcher.remove(row_ix, cx);
+                    entity.update(cx, |this, _cx| {
+                        this.edit_row = None;
+                    });
+                    window.close_dialog(cx);
+                    true
+                })
+        });
+    }
+    fn enhance_handle_add_or_update_value(
+        &mut self,
+        data: IndexMap<SharedString, SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(row_ix) = self.edit_row else {
             return;
         };
@@ -511,205 +573,135 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
         }
 
-        let mut values = Vec::with_capacity(self.value_states.len());
-        for (_, state) in self.value_states.iter() {
-            let value = state.read(cx).value();
+        let mut values = Vec::with_capacity(data.len());
+        let key_type = self.fetcher.key_type();
+        for (name, value) in data {
+            if key_type == KeyType::Stream {
+                values.push(name);
+            }
             values.push(value);
         }
         if row_ix == usize::MAX {
-            if self.fetcher.key_type() == KeyType::List {
-                let index = *self.list_push_mode_state.read(cx);
-                values.insert(0, index.to_string().into());
-            }
             self.fetcher.handle_add_value(values, window, cx);
         } else {
             self.fetcher.handle_update_value(row_ix, values, window, cx);
         }
+        self.editor_form = None;
         self.edit_row = None;
     }
-    fn handle_remove_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Only allow removing if REMOVE mode is enabled
-        if !self.mode.contains(KvTableMode::REMOVE) {
-            return;
+    fn enhance_render_edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(form) = &self.editor_form {
+            if std::mem::take(&mut self.values_should_fill) {
+                let original_values = &self.original_values;
+                form.update(cx, move |form, cx| {
+                    form.reset_form(original_values, window, cx);
+                });
+            }
+            return form.clone();
         }
-
-        let Some(row_ix) = self.edit_row else {
-            return;
-        };
-        let fetcher = self.fetcher.clone();
-        let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
-        let entity = cx.entity().clone();
-
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-            let message = t!(
-                "common.remove_item_prompt",
-                row = row_ix + 1,
-                value = value,
-                locale = locale
-            );
-
-            let fetcher = fetcher.clone();
-            let entity = entity.clone();
-
-            dialog
-                .overlay(true)
-                .overlay_closable(true)
-                .button_props(dialog_button_props(cx))
-                .child(message.to_string())
-                .on_ok(move |_, window, cx| {
-                    fetcher.remove(row_ix, cx);
-                    entity.update(cx, |this, _cx| {
-                        this.edit_row = None;
-                    });
-                    window.close_dialog(cx);
-                    true
-                })
-        });
-    }
-    /// Renders the edit form for the current row.
-    fn render_edit_form(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut form = v_flex().size_full().gap_3();
-        let count = self.value_states.len();
+        let mut fields = Vec::with_capacity(4);
         let is_adding = self.is_adding_row();
-        if is_adding && self.fetcher.key_type() == KeyType::List {
-            let positions = vec!["RPUSH".to_string(), "LPUSH".to_string()];
-            let index = *self.list_push_mode_state.read(cx);
-            form = form.child(
-                v_flex().w_full().child(
-                    field().label(i18n_list_editor(cx, "position")).child(
-                        RadioGroup::horizontal("kv-table-list-position-radio-group")
-                            .flex_none()
-                            .children(positions)
-                            .selected_index(Some(index))
-                            .on_click(cx.listener(move |this, index, _, cx| {
-                                this.list_push_mode_state.update(cx, |state, _| {
-                                    *state = *index;
-                                });
-                            })),
-                    ),
-                ),
+        let key_type = self.fetcher.key_type();
+        if is_adding && key_type == KeyType::List {
+            fields.push(
+                ZedisFormField::new("position", i18n_list_editor(cx, "position"))
+                    .field_type(ZedisFormFieldType::RadioGroup)
+                    .options(vec!["RPUSH".into(), "LPUSH".into()]),
             );
         }
-        let mut flexible_columns = 0;
-        for (index, (column_index, value_state)) in self.value_states.iter().enumerate() {
-            let Some(column) = self.columns.get(*column_index) else {
-                continue;
-            };
-            if is_adding && column.auto_created {
+        let mut first = true;
+        for column in self.columns.iter() {
+            if column.column_type != KvTableColumnType::Value {
                 continue;
             }
-            let last = index == count - 1;
-            let mut flex = column.flex;
-            if last && flexible_columns == 0 {
-                flex = true;
+            let mut field = ZedisFormField::new(column.name.clone(), column.name.clone())
+                .focus()
+                .font_family(get_font_family());
+            if key_type != KeyType::Stream {
+                field = field.required();
             }
-            let input = Input::new(value_state)
-                .disabled(column.readonly)
-                .h_full()
-                .p_0()
-                .font_family(get_font_family())
-                .focus_bordered(false);
+            if first {
+                field = field.focus();
+                first = true;
+            }
+            // TODO adjust to flex_1
+            if column.flex {
+                field = field.h(px(300.));
+            }
+            if let Some(field_type) = column.field_type.clone() {
+                if field_type == ZedisFormFieldType::Editor && !column.flex {
+                    field = field.h(px(150.));
+                }
+                field = field.field_type(field_type);
+            }
+            // if key_type == KeyType::Zset && column.name.to_lowercase() == "score" {
+            //     field = field.field_type(ZedisFormFieldType::InputNumber);
+            // } else {
+            //     field = field.field_type(ZedisFormFieldType::Editor).h(px(300.));
+            // }
 
-            let inner_content = if flex {
-                flexible_columns += 1;
-                v_flex()
-                    .size_full()
-                    .gap_1()
-                    .child(Label::new(column.name.clone()))
-                    .child(div().flex_1().size_full().child(input))
-                    .into_any_element()
-            } else {
-                field().label(column.name.clone()).child(input).into_any_element()
-            };
-
-            let wrapped_field = v_flex()
-                .w_full()
-                .child(inner_content)
-                .when(flex, |this| this.flex_1().h_full());
-
-            form = form.child(wrapped_field);
+            if !is_adding && let Some(value) = self.original_values.get(&column.name) {
+                field = field.default_value(value.clone());
+            }
+            fields.push(field);
         }
-        let cancel_label = i18n_common(cx, "cancel");
-        let save_label = i18n_common(cx, "save");
-        let remove_label = i18n_common(cx, "remove");
-
-        let can_add = self.mode.contains(KvTableMode::ADD);
+        let submit_entity = cx.entity().clone();
+        let cancel_entity = submit_entity.clone();
+        let remove_entity = submit_entity.clone();
+        let on_cancel = move |_window: &mut Window, cx: &mut Context<ZedisForm>| {
+            cancel_entity.update(cx, |this, _| {
+                this.edit_row = None;
+            });
+            true
+        };
+        let on_submit =
+            move |values: IndexMap<SharedString, SharedString>, window: &mut Window, cx: &mut Context<ZedisForm>| {
+                submit_entity.update(cx, |this, cx| {
+                    this.enhance_handle_add_or_update_value(values, window, cx);
+                });
+                // self.handle_add_or_update_value(window, cx);
+                true
+            };
         let can_remove = self.mode.contains(KvTableMode::REMOVE);
         let can_update = self.mode.contains(KvTableMode::UPDATE);
-        let is_adding = self.is_adding_row();
-
-        form.child(
-            div().flex_none().child(
-                field().child(
-                    h_flex()
-                        .id("kv-table-edit-form-btn-group")
-                        .w_full()
-                        .gap_2()
-                        .when(!is_adding && can_remove, |this| {
-                            this.child(
-                                Button::new("remove-edit-btn")
-                                    .icon(CustomIconName::FileXCorner)
-                                    .label(remove_label)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.handle_remove_row(window, cx);
-                                    })),
-                            )
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            Button::new("cancel-edit-btn")
-                                .icon(IconName::CircleX)
-                                .label(cancel_label)
-                                .on_click(cx.listener(|this, _, _, _cx| {
-                                    this.edit_row = None;
-                                })),
-                        )
-                        .when((is_adding && can_add) || (!is_adding && can_update), |this| {
-                            this.child(
-                                Button::new("save-edit-btn")
-                                    .disabled(!self.values_modified)
-                                    .tooltip(humanize_keystroke("cmd-s"))
-                                    .primary()
-                                    .icon(CustomIconName::Save)
-                                    .label(save_label)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.handle_add_or_update_value(window, cx);
-                                    })),
-                            )
+        let mut form_opts = ZedisFormOptions::new(fields).on_cancel(on_cancel);
+        if is_adding || can_update {
+            form_opts = form_opts.on_submit(on_submit);
+        }
+        if !is_adding && can_remove {
+            let remove_label = i18n_common(cx, "remove");
+            form_opts = form_opts.foot_actions(move |_window, _cx| {
+                vec![
+                    Button::new("remove-edit-btn")
+                        .icon(CustomIconName::FileXCorner)
+                        .label(remove_label.clone())
+                        .on_click({
+                            let remove_entity = remove_entity.clone();
+                            move |_, window, cx| {
+                                remove_entity.update(cx, |this, cx| {
+                                    this.handle_remove_row(window, cx);
+                                });
+                            }
                         }),
-                ),
-            ),
-        )
-        .into_any_element()
+                ]
+            });
+        }
+        if key_type == KeyType::Stream {
+            form_opts = form_opts.support_add_fields();
+        }
+        let form = cx.new(|cx| ZedisForm::new("kv-table-edit-form", form_opts, window, cx));
+        self.editor_form = Some(form.clone());
+        form.clone()
     }
 }
 impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_color = cx.theme().muted_foreground;
-
         // Clear search input when key changes
         if let Some(true) = self.key_changed.take() {
             self.keyword_state.update(cx, |input, cx| {
                 input.set_value(SharedString::default(), window, cx);
             });
-        }
-        if let Some(true) = self.values_should_fill.take() {
-            let mut first = true;
-            for (index, value) in self.original_values.iter().enumerate() {
-                let Some((_, state)) = self.value_states.get(index) else {
-                    continue;
-                };
-                state.update(cx, |input, cx| {
-                    input.set_value(value.clone(), window, cx);
-                    if first {
-                        input.focus(window, cx);
-                        let position = Position::new(0, value.len() as u32);
-                        input.set_cursor_position(position, window, cx);
-                        first = false;
-                    }
-                });
-            }
         }
 
         // Determine if operations are allowed based on mode
@@ -804,7 +796,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                         .p_2()
                         .flex()
                         .flex_col()
-                        .child(self.render_edit_form(cx))
+                        .child(self.enhance_render_edit_form(window, cx))
                         .on_click(cx.listener(|_this, _, _, cx| {
                             cx.stop_propagation();
                         })),
@@ -812,7 +804,14 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             })
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {
-                    this.handle_add_or_update_value(window, cx);
+                    let Some(values) = this
+                        .editor_form
+                        .as_ref()
+                        .and_then(|item| item.update(cx, |form, cx| form.try_get_values(cx)))
+                    else {
+                        return;
+                    };
+                    this.enhance_handle_add_or_update_value(values, window, cx);
                 }
                 _ => {
                     cx.propagate();

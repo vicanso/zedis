@@ -25,7 +25,7 @@
 
 use crate::{
     components::ZedisKvFetcher,
-    states::{RedisValue, ZedisServerState},
+    states::{KeyType, RedisValue, ZedisServerState},
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
@@ -42,6 +42,10 @@ struct ZedisZsetValues {
 }
 
 impl ZedisKvFetcher for ZedisZsetValues {
+    fn key_type(&self) -> KeyType {
+        KeyType::Zset
+    }
+
     /// Retrieves a cell value for the table at the given row and column.
     ///
     /// Column layout:
@@ -211,6 +215,10 @@ impl ZedisZsetEditor {
 impl Render for ZedisZsetEditor {
     /// Renders the ZSET editor as a full-size container with the table.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.table_state.clone()).into_any_element()
+        div()
+            .size_full()
+            .min_h_0()
+            .child(self.table_state.clone())
+            .into_any_element()
     }
 }

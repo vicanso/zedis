@@ -19,6 +19,7 @@ use crate::{
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
 use tracing::info;
+use zedis_ui::ZedisFormFieldType;
 
 /// Data adapter for Redis SET values to work with the KV table component.
 ///
@@ -154,7 +155,7 @@ impl ZedisSetEditor {
         // Initialize the KV table with a single "Value" column
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisSetValues>::new(
-                vec![KvTableColumn::new("Value", None)],
+                vec![KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor)],
                 server_state,
                 window,
                 cx,
@@ -169,6 +170,10 @@ impl ZedisSetEditor {
 impl Render for ZedisSetEditor {
     /// Renders the SET editor as a full-size container with the table.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.table_state.clone()).into_any_element()
+        div()
+            .size_full()
+            .min_h_0()
+            .child(self.table_state.clone())
+            .into_any_element()
     }
 }
