@@ -26,13 +26,13 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     notification::Notification,
-    scroll::ScrollableElement,
     v_flex,
 };
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
+use zedis_ui::ZedisDialog;
 
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
@@ -218,26 +218,20 @@ impl ZedisEditor {
         };
 
         let server_state = self.server_state.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-            let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
-            let server_state = server_state.clone();
-            let key = key.clone();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
 
-            dialog
-                .overlay(true)
-                .overlay_closable(true)
-                .button_props(dialog_button_props(cx))
-                .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
-                .on_ok(move |_, window, cx| {
-                    let key = key.clone();
-                    server_state.update(cx, move |state, cx| {
-                        state.delete_select_key(key, cx);
-                    });
-                    window.close_dialog(cx);
-                    true
-                })
-        });
+        ZedisDialog::new_alert(i18n_editor(cx, "delete_key_title"), message)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                let key = key.clone();
+                server_state.update(cx, move |state, cx| {
+                    state.delete_select_key(key, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.server_state.read(cx).key() else {

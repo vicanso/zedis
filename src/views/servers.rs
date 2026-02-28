@@ -26,6 +26,7 @@ use rust_i18n::t;
 use substring::Substring;
 use tracing::info;
 use zedis_ui::ZedisCard;
+use zedis_ui::ZedisDialog;
 use zedis_ui::{ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 // Constants for UI layout
@@ -69,26 +70,20 @@ impl ZedisServers {
         // let server = server.to_string();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
 
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();
-            let server_id = server_id.clone();
+        let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();
 
-            dialog
-                .overlay(true)
-                .overlay_closable(true)
-                .button_props(dialog_button_props(cx))
-                .title(i18n_servers(cx, "remove_server_title"))
-                .child(message)
-                .on_ok(move |_, window, cx| {
-                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                        store.update(cx, |state, cx| {
-                            state.remove_server(&server_id, cx);
-                        });
+        ZedisDialog::new_alert(i18n_servers(cx, "remove_server_title"), message)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                    store.update(cx, |state, cx| {
+                        state.remove_server(&server_id, cx);
                     });
-                    window.close_dialog(cx);
-                    true
-                })
-        });
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
     }
 
     fn add_or_update_server_dialog(&mut self, redis_server: &RedisServer, window: &mut Window, cx: &mut Context<Self>) {
@@ -229,22 +224,20 @@ impl ZedisServers {
                 i18n_servers(cx, "tab_advanced"),
             ]);
         let form = cx.new(|cx| ZedisForm::new("servers-form", options, window, cx));
-        window.open_dialog(cx, move |dialog, window, cx| {
-            // Set dialog title based on add/update mode
-            let title = if is_new {
-                i18n_servers(cx, "add_server_title")
-            } else {
-                i18n_servers(cx, "update_server_title")
-            };
-            let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
-
-            dialog.title(title).overlay(true).child(
-                div()
-                    .id("servers-scrollable-container")
-                    .max_h(max_h)
-                    .child(form.clone()), // .overflow_y_scrollbar(),
-            )
-        })
+        // Set dialog title based on add/update mode
+        let title = if is_new {
+            i18n_servers(cx, "add_server_title")
+        } else {
+            i18n_servers(cx, "update_server_title")
+        };
+        let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
+        ZedisDialog::new(title)
+            .overlay_closable(true)
+            .child(move || {
+                let form = form.clone();
+                div().id("servers-scrollable-container").max_h(max_h).child(form)
+            })
+            .open(window, cx);
     }
 }
 

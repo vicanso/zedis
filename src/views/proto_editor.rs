@@ -17,6 +17,7 @@ use crate::connection::get_servers;
 use crate::db::{ProtoConfig, ProtoManager};
 use crate::error::Error;
 use crate::helpers::get_font_family;
+use crate::states::ZedisGlobalStore;
 use crate::states::i18n_proto_editor;
 use crate::states::{ZedisServerState, dialog_button_props};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
@@ -26,7 +27,7 @@ use gpui_component::radio::RadioGroup;
 use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_component::{IconName, h_flex};
 use gpui_component::{
-    IndexPath, WindowExt,
+    IndexPath,
     alert::Alert,
     form::{field, v_form},
     input::{Input, InputEvent, InputState},
@@ -39,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
+use zedis_ui::ZedisDialog;
 
 #[derive(Debug, Clone)]
 struct KeyValueOption {
@@ -529,54 +531,54 @@ impl ZedisProtoEditor {
 
         let id = id.to_string();
         let view_handle = cx.entity();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let id = id.clone();
-            let view_handle = view_handle.clone();
-            let text = t!("remove_proto_prompt", name = name).to_string();
-            dialog
-                .overlay(true)
-                .overlay_closable(true)
-                .button_props(dialog_button_props(cx))
-                .child(text)
-                .on_ok(move |_, _window, cx| {
-                    let id = id.clone();
-                    let view_handle = view_handle.clone();
-                    cx.spawn(async move |cx| {
-                        let result: Result<String, Error> = cx
-                            .background_spawn({
-                                let id = id.clone();
-                                async move {
-                                    ProtoManager::delete_proto(&id)?;
-                                    Ok(id)
-                                }
-                            })
-                            .await;
-                        match result {
-                            Ok(deleted_id) => {
-                                view_handle.update(cx, |this, cx| {
-                                    // Remove deleted proto from the list
-                                    let new_protos: Vec<_> = this
-                                        .protos
-                                        .iter()
-                                        .filter(|(id, _)| id != &deleted_id)
-                                        .cloned()
-                                        .collect();
-                                    this.protos = Arc::new(new_protos);
+        let text = t!(
+            "proto_editor.remove_proto_prompt",
+            name = name,
+            locale = cx.global::<ZedisGlobalStore>().read(cx).locale()
+        )
+        .to_string();
 
-                                    // Mark for recreation of table on next render
-                                    this.needs_table_recreate = Some(true);
-                                    cx.notify();
-                                });
+        ZedisDialog::new_alert(i18n_proto_editor(cx, "remove_proto_title"), text)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, _window, cx| {
+                let id = id.clone();
+                let view_handle = view_handle.clone();
+                cx.spawn(async move |cx| {
+                    let result: Result<String, Error> = cx
+                        .background_spawn({
+                            let id = id.clone();
+                            async move {
+                                ProtoManager::delete_proto(&id)?;
+                                Ok(id)
                             }
-                            Err(e) => {
-                                error!(error = %e, "delete proto fail",);
-                            }
+                        })
+                        .await;
+                    match result {
+                        Ok(deleted_id) => {
+                            view_handle.update(cx, |this, cx| {
+                                // Remove deleted proto from the list
+                                let new_protos: Vec<_> = this
+                                    .protos
+                                    .iter()
+                                    .filter(|(id, _)| id != &deleted_id)
+                                    .cloned()
+                                    .collect();
+                                this.protos = Arc::new(new_protos);
+
+                                // Mark for recreation of table on next render
+                                this.needs_table_recreate = Some(true);
+                                cx.notify();
+                            });
                         }
-                    })
-                    .detach();
-                    true
+                        Err(e) => {
+                            error!(error = %e, "delete proto fail",);
+                        }
+                    }
                 })
-        });
+                .detach();
+                true
+            })
+            .open(window, cx);
     }
     fn render_edit_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let match_mode_select_state_clone = self.match_mode_select_state.clone();

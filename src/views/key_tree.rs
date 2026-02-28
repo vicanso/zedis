@@ -45,7 +45,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{rc::Rc, str::FromStr, time::Duration};
 use tracing::info;
-use zedis_ui::ZedisSkeletonLoading;
+use zedis_ui::{ZedisDialog, ZedisSkeletonLoading};
 
 // Constants for tree layout and behavior
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
@@ -300,13 +300,18 @@ impl ListDelegate for KeyTreeDelegate {
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
                     div()
-                        .context_menu(move |mut menu, _window, _cx| {
+                        .context_menu(move |mut menu, _window, cx| {
                             if readonly {
                                 return menu;
                             }
                             let id = id.clone();
                             if selected && selected_items_count > 1 {
-                                let text = t!("key_tree.delete_keys_tooltip", count = selected_items_count);
+                                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                                let text = t!(
+                                    "key_tree.delete_keys_tooltip",
+                                    count = selected_items_count,
+                                    locale = locale
+                                );
                                 menu = menu.menu_element_with_icon(
                                     CustomIconName::ListX,
                                     Box::new(KeyTreeAction::DeleteMultipleKeys),
@@ -1079,70 +1084,50 @@ impl Render for ZedisKeyTree {
                             .collect::<Vec<SharedString>>()
                     });
                     let server_state = this.server_state.clone();
-                    window.open_dialog(cx, move |dialog, _, cx| {
-                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                        let text =
-                            t!("key_tree.delete_keys_prompt", keys = keys.join(", "), locale = locale).to_string();
-                        let server_state = server_state.clone();
-                        let keys = keys.clone();
-                        dialog
-                            .overlay(true)
-                            .overlay_closable(true)
-                            .button_props(dialog_button_props(cx))
-                            .title(i18n_key_tree(cx, "delete_keys_title"))
-                            .child(text)
-                            .on_ok(move |_, _, cx| {
-                                server_state.update(cx, |state, cx| {
-                                    state.unlink_key(keys.clone(), cx);
-                                });
-                                true
-                            })
-                    });
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                    let text = t!("key_tree.delete_keys_prompt", keys = keys.join(", "), locale = locale).to_string();
+
+                    ZedisDialog::new_alert(i18n_key_tree(cx, "delete_keys_title"), text)
+                        .button_props(dialog_button_props(cx))
+                        .on_ok(move |_, _, cx| {
+                            server_state.update(cx, |state, cx| {
+                                state.unlink_key(keys.clone(), cx);
+                            });
+                            true
+                        })
+                        .open(window, cx);
                 }
                 KeyTreeAction::DeleteKey(id) => {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
-                    window.open_dialog(cx, move |dialog, _, cx| {
-                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                        let text = t!("key_tree.delete_key_prompt", key = id.clone(), locale = locale).to_string();
-                        let id = id.clone();
-                        let server_state = server_state.clone();
-                        dialog
-                            .overlay(true)
-                            .overlay_closable(true)
-                            .button_props(dialog_button_props(cx))
-                            .title(i18n_key_tree(cx, "delete_key_title"))
-                            .child(text)
-                            .on_ok(move |_, _, cx| {
-                                server_state.update(cx, |state, cx| {
-                                    state.delete_key(id.clone(), cx);
-                                });
-                                true
-                            })
-                    });
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                    let text = t!("key_tree.delete_key_prompt", key = id.clone(), locale = locale).to_string();
+
+                    ZedisDialog::new_alert(i18n_key_tree(cx, "delete_key_title"), text)
+                        .button_props(dialog_button_props(cx))
+                        .on_ok(move |_, _, cx| {
+                            server_state.update(cx, |state, cx| {
+                                state.delete_key(id.clone(), cx);
+                            });
+                            true
+                        })
+                        .open(window, cx);
                 }
                 KeyTreeAction::DeleteFolder(id) => {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
-                    window.open_dialog(cx, move |dialog, _, cx| {
-                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                        let text =
-                            t!("key_tree.delete_folder_prompt", folder = id.clone(), locale = locale).to_string();
-                        let id = id.clone();
-                        let server_state = server_state.clone();
-                        dialog
-                            .overlay(true)
-                            .overlay_closable(true)
-                            .button_props(dialog_button_props(cx))
-                            .title(i18n_key_tree(cx, "delete_folder_title"))
-                            .child(text)
-                            .on_ok(move |_, _, cx| {
-                                server_state.update(cx, |state, cx| {
-                                    state.delete_folder(id.clone(), cx);
-                                });
-                                true
-                            })
-                    });
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                    let text = t!("key_tree.delete_folder_prompt", folder = id.clone(), locale = locale).to_string();
+
+                    ZedisDialog::new_alert(i18n_key_tree(cx, "delete_folder_title"), text)
+                        .button_props(dialog_button_props(cx))
+                        .on_ok(move |_, _, cx| {
+                            server_state.update(cx, |state, cx| {
+                                state.delete_folder(id.clone(), cx);
+                            });
+                            true
+                        })
+                        .open(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {

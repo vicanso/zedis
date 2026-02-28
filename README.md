@@ -7,6 +7,8 @@ A High-Performance, GPU-Accelerated Redis Client Built with **Rust** 🦀 and **
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Twitter Follow](https://img.shields.io/twitter/follow/tree0507?style=social)](https://x.com/tree0507)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/vicanso/zedis/total)
+[![blazingly fast](https://www.blazingly.fast/api/badge.svg?repo=vicanso%2Fzedis)](https://www.blazingly.fast)
+
 
 
 ![Zedis](https://raw.githubusercontent.com/vicanso/zedis/main/assets/demo.gif)
