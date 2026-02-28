@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{AnyElement, ElementId, Entity, FontWeight, Render, SharedString, Subscription, Window, div, prelude::*};
+use gpui::{
+    AnyElement, ElementId, Entity, FontWeight, Render, SharedString, StyleRefinement, Subscription, Window, div,
+    prelude::*,
+};
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
@@ -24,7 +27,8 @@ use gpui_component::radio::RadioGroup;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::text::TextView;
-use gpui_component::{ActiveTheme, Disableable, IconName, h_flex};
+use gpui_component::{ActiveTheme, Disableable, IconName, StyledExt, h_flex};
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::mem::take;
 use std::rc::Rc;
@@ -33,7 +37,7 @@ use std::sync::Arc;
 /// Callback invoked on form submission with all field values collected as a map.
 /// Returns `true` if the submission was handled successfully.
 type ZedisFormSubmitHandler =
-    Rc<dyn Fn(HashMap<SharedString, String>, &mut Window, &mut Context<ZedisForm>) -> bool + 'static>;
+    Rc<dyn Fn(IndexMap<SharedString, SharedString>, &mut Window, &mut Context<ZedisForm>) -> bool + 'static>;
 
 /// Per-field validation callback. Returns `Some(error_message)` on failure, `None` on success.
 type ZedisFormValidateHandler = Rc<dyn Fn(&str) -> Option<SharedString> + 'static>;
@@ -46,7 +50,7 @@ type ZedisFormCancelHandler = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) ->
 pub type ZedisFormActionsBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> Vec<AnyElement>>;
 
 /// Supported field widget types for the form builder.
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq, Debug)]
 pub enum ZedisFormFieldType {
     #[default]
     Input,
@@ -62,6 +66,7 @@ pub enum ZedisFormFieldType {
 /// form entity is created. Uses the builder pattern for ergonomic construction.
 #[derive(Clone)]
 pub struct ZedisFormField {
+    style: StyleRefinement,
     name: SharedString,
     label: SharedString,
     placeholder: SharedString,
@@ -102,6 +107,7 @@ impl ZedisFormField {
             focus: false,
             mask: false,
             readonly: false,
+            style: StyleRefinement::default(),
         }
     }
 
@@ -130,8 +136,8 @@ impl ZedisFormField {
     }
 
     /// Attach a custom validation function to this field.
-    pub fn validate(mut self, validate: ZedisFormValidateHandler) -> Self {
-        self.validate = Some(validate);
+    pub fn validate(mut self, validate: impl Fn(&str) -> Option<SharedString> + 'static) -> Self {
+        self.validate = Some(Rc::new(validate));
         self
     }
 
@@ -163,6 +169,12 @@ impl ZedisFormField {
     pub fn readonly(mut self) -> Self {
         self.readonly = true;
         self
+    }
+}
+
+impl Styled for ZedisFormField {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
     }
 }
 
@@ -250,14 +262,17 @@ impl ZedisFormOptions {
     }
 
     /// Attach a submit handler that receives all field values on form submission.
-    pub fn on_submit(mut self, on_submit: ZedisFormSubmitHandler) -> Self {
-        self.on_submit = Some(on_submit);
+    pub fn on_submit(
+        mut self,
+        on_submit: impl Fn(IndexMap<SharedString, SharedString>, &mut Window, &mut Context<ZedisForm>) -> bool + 'static,
+    ) -> Self {
+        self.on_submit = Some(Rc::new(on_submit));
         self
     }
 
     /// Attach a cancel handler invoked when the cancel button is clicked.
-    pub fn on_cancel(mut self, on_cancel: ZedisFormCancelHandler) -> Self {
-        self.on_cancel = Some(on_cancel);
+    pub fn on_cancel(mut self, on_cancel: impl Fn(&mut Window, &mut Context<ZedisForm>) -> bool + 'static) -> Self {
+        self.on_cancel = Some(Rc::new(on_cancel));
         self
     }
 
@@ -319,6 +334,7 @@ pub struct ZedisForm {
     foot_actions: Option<ZedisFormActionsBuilder>,
     tabs: Option<Vec<SharedString>>,
     _subscriptions: Vec<Subscription>,
+    pub is_processing: bool,
 }
 
 impl ZedisForm {
@@ -384,9 +400,7 @@ impl ZedisForm {
                     if field.field_type == ZedisFormFieldType::InputNumber {
                         subscriptions.push(cx.subscribe_in(&state, window, move |this, state, event, window, cx| {
                             let NumberInputEvent::Step(action) = event;
-                            let Ok(value) = state.read(cx).value().parse::<i64>() else {
-                                return;
-                            };
+                            let value = state.read(cx).value().parse::<i64>().unwrap_or_default();
                             let new_val = match action {
                                 StepAction::Increment => value.saturating_add(1),
                                 StepAction::Decrement => value.saturating_sub(1),
@@ -438,6 +452,7 @@ impl ZedisForm {
             add_field_placeholder: options.add_field_placeholder,
             add_value_placeholder: options.add_value_placeholder,
             support_add_fields: options.support_add_fields,
+            is_processing: false,
             _subscriptions: subscriptions,
         };
         if this.support_add_fields {
@@ -458,12 +473,10 @@ impl ZedisForm {
         }
     }
 
-    /// Validate all fields, collect their values, and invoke the submit handler.
-    /// Runs required-checks first, then custom validators per field.
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn try_get_values(&mut self, cx: &mut Context<Self>) -> Option<IndexMap<SharedString, SharedString>> {
         self.errors.clear();
         let mut has_errors = false;
-        let mut values = HashMap::new();
+        let mut values = IndexMap::new();
 
         for (field, state) in &self.field_states {
             let value = match state {
@@ -485,21 +498,33 @@ impl ZedisForm {
                 self.errors.insert(field.name.clone(), err_msg);
                 has_errors = true;
             }
-            values.insert(field.name.clone(), value);
+            values.insert(field.name.clone(), value.into());
         }
 
         if has_errors {
             cx.notify();
-            return;
+            return None;
         }
         for (field_state, value_state) in &self.add_field_states {
-            let field = field_state.read(cx).value().to_string();
-            let value = value_state.read(cx).value().to_string();
-            values.insert(field.into(), value);
+            let field = field_state.read(cx).value();
+            let value = value_state.read(cx).value();
+            values.insert(field, value);
         }
+        Some(values)
+    }
 
-        if let Some(on_submit) = &self.on_submit {
-            on_submit(values, window, cx);
+    /// Validate all fields, collect their values, and invoke the submit handler.
+    /// Runs required-checks first, then custom validators per field.
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(values) = self.try_get_values(cx) else {
+            return;
+        };
+        let Some(on_submit) = &self.on_submit else {
+            return;
+        };
+        if on_submit(values, window, cx) {
+            self.is_processing = true;
+            cx.notify();
         }
     }
     fn remove_add_field(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -512,6 +537,35 @@ impl ZedisForm {
             cx.new(|cx| InputState::new(window, cx).placeholder(self.add_value_placeholder.clone())),
         ));
         cx.notify();
+    }
+
+    pub fn reset_form(
+        &mut self,
+        values: &IndexMap<SharedString, SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (field, state) in &self.field_states {
+            if let Some(value) = values.get(&field.name) {
+                match state {
+                    ZedisFormFieldState::Input(state) => {
+                        state.update(cx, |state, cx| {
+                            state.set_value(value.clone(), window, cx);
+                        });
+                    }
+                    ZedisFormFieldState::RadioGroup(state) => {
+                        state.update(cx, |state, _cx| {
+                            *state = value.parse::<usize>().unwrap_or(0);
+                        });
+                    }
+                    ZedisFormFieldState::Checkbox(state) => {
+                        state.update(cx, |state, _cx| {
+                            *state = value == "true";
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -591,7 +645,8 @@ impl Render for ZedisForm {
                             new_field(field).child(
                                 Input::new(state)
                                     .disabled(field.readonly)
-                                    .when(field.mask, |this| this.mask_toggle()),
+                                    .when(field.mask, |this| this.mask_toggle())
+                                    .refine_style(&field.style),
                             ),
                         );
                     }
@@ -683,6 +738,7 @@ impl Render for ZedisForm {
             buttons.push(
                 Button::new(button_id)
                     .label(self.cancel_label.clone())
+                    .disabled(self.is_processing)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.cancel(window, cx);
                     })),
@@ -693,6 +749,7 @@ impl Render for ZedisForm {
             buttons.push(
                 Button::new(button_id)
                     .label(self.confirm_label.clone())
+                    .disabled(self.is_processing)
                     .primary()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.submit(window, cx);
@@ -718,8 +775,15 @@ impl Render for ZedisForm {
             exists_buttons = true;
         }
         if exists_buttons {
-            form_container = form_container
-                .child(field().child(h_flex().justify_end().child(left_buttons).child(right_buttons).gap_4()));
+            form_container = form_container.child(
+                field().child(
+                    h_flex()
+                        .justify_between()
+                        .child(left_buttons)
+                        .child(right_buttons)
+                        .gap_4(),
+                ),
+            );
         }
 
         div().child(form_container).overflow_y_scrollbar()

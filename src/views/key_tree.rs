@@ -296,6 +296,7 @@ impl ListDelegate for KeyTreeDelegate {
                 .bg(bg)
                 .py_2()
                 .px_2()
+                .mb_1()
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
                     div()

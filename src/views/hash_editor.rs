@@ -29,6 +29,7 @@ use crate::{
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use zedis_ui::ZedisFormFieldType;
 
 /// Data adapter for Redis HASH values to work with the KV table component.
 ///
@@ -194,7 +195,7 @@ impl ZedisHashEditor {
             ZedisKvTable::<ZedisHashValues>::new(
                 vec![
                     KvTableColumn::new("Field", Some(field_width)), // Field name column (flexible width)
-                    KvTableColumn::new("Value", None),              // Field value column (flexible width)
+                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor), // Field value column (flexible width)
                 ],
                 server_state,
                 window,
@@ -209,6 +210,10 @@ impl ZedisHashEditor {
 impl Render for ZedisHashEditor {
     /// Renders the HASH editor as a full-size container with the table.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.table_state.clone()).into_any_element()
+        div()
+            .size_full()
+            .min_h_0()
+            .child(self.table_state.clone())
+            .into_any_element()
     }
 }

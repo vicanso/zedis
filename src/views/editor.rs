@@ -105,6 +105,10 @@ impl ZedisEditor {
                     this.selected_key_at = Some(Instant::now());
                     this.start_auto_refresh(None, cx);
                 }
+                ServerEvent::ValueLoaded => {
+                    // stream editor is different of each key, so we need to destroy it
+                    this.stream_editor.take();
+                }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
                 }

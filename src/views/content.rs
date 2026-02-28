@@ -682,6 +682,7 @@ impl Render for ZedisContent {
                                     .absolute()
                                     .inset_0()
                                     .size_full()
+                                    .overflow_hidden()
                                     .when(is_metrics, |this| this.child(self.render_metrics(window, cx)))
                                     .when(!is_metrics, |this| this.child(self.render_editor(window, cx))),
                             ),

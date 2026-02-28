@@ -99,8 +99,10 @@ tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 url = "2.5.8"
 uuid = "1.19.0"
 zedis-ui = { path = "crates/zedis-ui" }
+indexmap = { workspace = true }
 
 [workspace.dependencies]
+indexmap = "2.13.0"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "font-kit",

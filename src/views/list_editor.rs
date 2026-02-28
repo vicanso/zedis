@@ -20,6 +20,7 @@ use crate::{
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
 use tracing::info;
+use zedis_ui::ZedisFormFieldType;
 
 /// Manages Redis List values and their display state.
 ///
@@ -232,7 +233,12 @@ impl ZedisListEditor {
     /// Initializes a single-column table to display list values.
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisListValues>::new(vec![KvTableColumn::new_flex("Value")], server_state, window, cx)
+            ZedisKvTable::<ZedisListValues>::new(
+                vec![KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor)],
+                server_state,
+                window,
+                cx,
+            )
         });
 
         info!("Creating new list editor view");
@@ -243,6 +249,10 @@ impl ZedisListEditor {
 
 impl Render for ZedisListEditor {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.table_state.clone()).into_any_element()
+        div()
+            .size_full()
+            .min_h_0()
+            .child(self.table_state.clone())
+            .into_any_element()
     }
 }

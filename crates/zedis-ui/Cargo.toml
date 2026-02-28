@@ -17,3 +17,4 @@ rust-version = "1.88.0"
 [dependencies]
 gpui = { workspace = true }
 gpui-component = { workspace = true }
+indexmap = { workspace = true }

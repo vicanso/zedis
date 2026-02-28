@@ -21,9 +21,8 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     label::Label,
 };
+use indexmap::IndexMap;
 use rust_i18n::t;
-use std::collections::HashMap;
-use std::rc::Rc;
 use substring::Substring;
 use tracing::info;
 use zedis_ui::ZedisCard;
@@ -96,12 +95,12 @@ impl ZedisServers {
         let server_id = redis_server.id.clone();
         let is_new = server_id.is_empty();
         let server_type_list = i18n_servers(cx, "server_type_list");
-        let validate_host = Rc::new(|s: &str| {
+        let validate_host = |s: &str| {
             if s.len() <= 1024 && s.is_ascii() {
                 return None;
             }
             Some("host is invalid".into())
-        });
+        };
 
         let fields = vec![
             ZedisFormField::new("name", i18n_common(cx, "name"))
@@ -205,8 +204,8 @@ impl ZedisServers {
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::Checkbox),
         ];
-        let on_submit = Rc::new(
-            move |values: HashMap<SharedString, String>, window: &mut Window, cx: &mut Context<ZedisForm>| {
+        let on_submit =
+            move |values: IndexMap<SharedString, SharedString>, window: &mut Window, cx: &mut Context<ZedisForm>| {
                 let redis_server = RedisServer::from_form_data(&server_id, &values);
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
@@ -215,12 +214,11 @@ impl ZedisServers {
                 });
                 window.close_dialog(cx);
                 true
-            },
-        );
-        let on_cancel = Rc::new(move |window: &mut Window, cx: &mut Context<ZedisForm>| {
+            };
+        let on_cancel = move |window: &mut Window, cx: &mut Context<ZedisForm>| {
             window.close_dialog(cx);
             true
-        });
+        };
         let options = ZedisFormOptions::new(fields)
             .on_submit(on_submit)
             .on_cancel(on_cancel)

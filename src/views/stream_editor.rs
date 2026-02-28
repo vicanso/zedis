@@ -19,16 +19,7 @@ use crate::{
     views::{KvTableColumn, KvTableMode, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
-
-fn new_fields(value: &RedisValue) -> Vec<SharedString> {
-    let mut fields = if let Some(stream_value) = value.stream_value() {
-        stream_value.fields()
-    } else {
-        vec![]
-    };
-    fields.insert(0, "Entry Id".to_string().into());
-    fields
-}
+use zedis_ui::ZedisFormFieldType;
 
 /// Manages Redis Stream values and their display state.
 ///
@@ -112,7 +103,7 @@ impl ZedisKvFetcher for ZedisStreamValues {
         1
     }
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
-        let fields = new_fields(&value);
+        let fields = value.stream_fields();
         let mut this = Self {
             server_state,
             value,
@@ -200,12 +191,12 @@ impl ZedisKvFetcher for ZedisStreamValues {
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
 
     fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
-        let field_values: Vec<(SharedString, SharedString)> = self
-            .fields
-            .iter()
-            .zip(values.iter())
-            .map(|(field, value)| (field.clone(), value.clone()))
-            .collect();
+        let mut field_values = Vec::with_capacity(values.len() / 2);
+        let mut iter = values.into_iter();
+
+        while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
+            field_values.push((key, value));
+        }
 
         let entry_id = field_values
             .first()
@@ -215,7 +206,7 @@ impl ZedisKvFetcher for ZedisStreamValues {
         let field_values: Vec<(SharedString, SharedString)> = field_values
             .into_iter()
             .skip(1)
-            .filter(|(_, value)| !value.is_empty())
+            .filter(|(name, value)| !name.is_empty() && !value.is_empty())
             .collect();
 
         self.server_state.update(cx, |this, cx| {
@@ -231,7 +222,7 @@ pub struct ZedisStreamEditor {
 impl ZedisStreamEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fields = if let Some(values) = server_state.read(cx).value() {
-            new_fields(values)
+            values.stream_fields()
         } else {
             vec![]
         };
@@ -245,7 +236,7 @@ impl ZedisStreamEditor {
                         if index == 0 {
                             KvTableColumn::new_auto_created("Entry Id")
                         } else {
-                            KvTableColumn::new(field.as_str(), None)
+                            KvTableColumn::new(field.as_str(), None).field_type(ZedisFormFieldType::Editor)
                         }
                     })
                     .collect(),
@@ -262,6 +253,10 @@ impl ZedisStreamEditor {
 impl Render for ZedisStreamEditor {
     /// Renders the stream editor as a full-size container with the table.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.table_state.clone()).into_any_element()
+        div()
+            .size_full()
+            .min_h_0()
+            .child(self.table_state.clone())
+            .into_any_element()
     }
 }

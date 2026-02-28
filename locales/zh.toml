@@ -59,6 +59,7 @@ ttl_placeholder = "如：1d, 1h"
 score_placeholder = "输入分数 (默认: 0.0)"
 
 remove_tooltip = "移除项"
+remove_title = "确认删除"
 remove_item_prompt = "确定要删除此项: %{value} (行号 %{row}) 吗？"
 update_tooltip = "更新项"
 

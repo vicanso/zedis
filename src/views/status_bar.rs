@@ -15,6 +15,7 @@
 use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
+    constants::STATUS_BAR_HEIGHT,
     helpers::{get_font_family, humanize_keystroke},
     states::{
         ErrorMessage, GlobalEvent, Route, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState,
@@ -22,7 +23,7 @@ use crate::{
     },
 };
 use chrono::{Local, LocalResult, TimeZone};
-use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -587,6 +588,7 @@ impl Render for ZedisStatusBar {
         }
         h_flex()
             .justify_between()
+            .h(px(STATUS_BAR_HEIGHT))
             .text_sm()
             .py_1p5()
             .px_4()

@@ -18,6 +18,7 @@ use crate::{
 };
 use arc_swap::ArcSwap;
 use gpui::SharedString;
+use indexmap::IndexMap;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
@@ -90,7 +91,7 @@ pub struct RedisServer {
     pub ssh_key: Option<String>,
 }
 impl RedisServer {
-    pub fn from_form_data(id: &str, data: &HashMap<SharedString, String>) -> Self {
+    pub fn from_form_data(id: &str, data: &IndexMap<SharedString, SharedString>) -> Self {
         let get_str = |k: &str| data.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
         let get_parsed = |k: &str| get_str(k).and_then(|s| s.parse().ok());
