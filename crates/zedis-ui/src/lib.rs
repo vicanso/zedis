@@ -13,9 +13,11 @@
 // limitations under the License.
 
 mod card;
+mod dialog;
 mod form;
 mod loading;
 
 pub use card::*;
+pub use dialog::*;
 pub use form::*;
 pub use loading::*;

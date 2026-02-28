@@ -29,3 +29,4 @@ target
 
 cargo-sources.json
 bacon.prefs.toml
+settings.local.json

@@ -37,7 +37,7 @@ use indexmap::IndexMap;
 use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
-use zedis_ui::{ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
+use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 bitflags::bitflags! {
     /// Defines the operations supported by the table.
@@ -522,33 +522,26 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
         let entity = cx.entity().clone();
 
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
-            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-            let message = t!(
-                "common.remove_item_prompt",
-                row = row_ix + 1,
-                value = value,
-                locale = locale
-            );
-            let title = i18n_common(cx, "remove_title");
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message = t!(
+            "common.remove_item_prompt",
+            row = row_ix + 1,
+            value = value,
+            locale = locale
+        );
+        let title = i18n_common(cx, "remove_title");
 
-            let fetcher = fetcher.clone();
-            let entity = entity.clone();
-
-            dialog
-                .title(title)
-                .overlay_closable(false)
-                .button_props(dialog_button_props(cx))
-                .child(message.to_string())
-                .on_ok(move |_, window, cx| {
-                    fetcher.remove(row_ix, cx);
-                    entity.update(cx, |this, _cx| {
-                        this.edit_row = None;
-                    });
-                    window.close_dialog(cx);
-                    true
-                })
-        });
+        ZedisDialog::new_alert(title, message.to_string())
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                fetcher.remove(row_ix, cx);
+                entity.update(cx, |this, _cx| {
+                    this.edit_row = None;
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
     }
     fn enhance_handle_add_or_update_value(
         &mut self,
