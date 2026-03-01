@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::MemuAction;
 use crate::{
     assets::CustomIconName,
     states::{FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
@@ -87,6 +88,11 @@ impl ZedisTitleBar {
                 Icon::new(IconName::Settings2),
                 Box::new(SettingsAction::Editor),
                 move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
+            )
+            .menu_element_with_icon(
+                Icon::new(IconName::Info),
+                Box::new(MemuAction::About),
+                move |_window, cx| Label::new(i18n_sidebar(cx, "about")),
             )
     }
 }
