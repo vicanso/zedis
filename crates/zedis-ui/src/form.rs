@@ -178,6 +178,8 @@ impl Styled for ZedisFormField {
     }
 }
 
+impl gpui::prelude::FluentBuilder for ZedisFormField {}
+
 /// Configuration for constructing a [`ZedisForm`]. Collects field descriptors,
 /// tab labels, button labels, and event handlers before entity creation.
 pub struct ZedisFormOptions {
@@ -187,6 +189,7 @@ pub struct ZedisFormOptions {
     fields: Vec<ZedisFormField>,
     required_error_msg: SharedString,
     confirm_label: SharedString,
+    confirm_tooltip: Option<SharedString>,
     cancel_label: SharedString,
     add_field_placeholder: SharedString,
     add_value_placeholder: SharedString,
@@ -204,6 +207,7 @@ impl Default for ZedisFormOptions {
             description: None,
             fields: Vec::new(),
             required_error_msg: "Required".into(),
+            confirm_tooltip: None,
             confirm_label: "Confirm".into(),
             cancel_label: "Cancel".into(),
             add_field_placeholder: "Enter field".into(),
@@ -240,6 +244,12 @@ impl ZedisFormOptions {
     /// Set the label for the confirm/submit button.
     pub fn confirm_label(mut self, label: impl Into<SharedString>) -> Self {
         self.confirm_label = label.into();
+        self
+    }
+
+    /// Set the tooltip for the confirm/submit button.
+    pub fn confirm_tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.confirm_tooltip = Some(tooltip.into());
         self
     }
 
@@ -296,6 +306,7 @@ impl ZedisFormOptions {
 
     /// Set the action buttons for the footer.
     pub fn foot_actions<F, I>(mut self, builder: F) -> Self
+
     where
         F: Fn(&mut Window, &mut Context<ZedisForm>) -> I + 'static,
         I: IntoIterator,
@@ -308,6 +319,8 @@ impl ZedisFormOptions {
     }
 }
 
+impl gpui::prelude::FluentBuilder for ZedisFormOptions {}
+
 /// A dynamic form component built on GPUI. Manages a heterogeneous list of
 /// form fields (text inputs, number inputs, checkboxes, radio groups), optional
 /// tab-based grouping, validation, and submit/cancel actions.
@@ -318,6 +331,7 @@ pub struct ZedisForm {
     title: Option<SharedString>,
     description: Option<SharedString>,
     confirm_label: SharedString,
+    confirm_tooltip: Option<SharedString>,
     cancel_label: SharedString,
     /// One-shot flag: focus the designated field on the first render only.
     should_focus: bool,
@@ -445,6 +459,7 @@ impl ZedisForm {
             tabs: options.tabs,
             on_submit: options.on_submit,
             on_cancel: options.on_cancel,
+            confirm_tooltip: options.confirm_tooltip,
             tab_selected_index: cx.new(|_cx| 0),
             should_focus: true,
             foot_actions: options.foot_actions,
@@ -750,6 +765,7 @@ impl Render for ZedisForm {
                 Button::new(button_id)
                     .label(self.confirm_label.clone())
                     .disabled(self.is_processing)
+                    .when_some(self.confirm_tooltip.clone(), |this, tooltip| this.tooltip(tooltip))
                     .primary()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.submit(window, cx);
