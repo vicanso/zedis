@@ -15,16 +15,87 @@
 use crate::assets::Assets;
 use chrono::{Datelike, Local};
 use gpui::{
-    App, Bounds, Image, ImageFormat, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, img, prelude::*,
-    px, size,
+    App, Bounds, ClipboardItem, Image, ImageFormat, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions,
+    img, prelude::*, px, size,
 };
-use gpui_component::{ActiveTheme, Sizable, StyledExt, button::Button, h_flex, label::Label, v_flex};
+use gpui_component::{
+    ActiveTheme, Sizable, StyledExt, button::Button, h_flex, label::Label, scroll::ScrollableElement, v_flex,
+};
+use std::process::Command;
 use std::sync::Arc;
 
-struct About;
+pub fn get_basic_gpu_info() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("system_profiler").arg("SPDisplaysDataType").output() {
+            let info = String::from_utf8_lossy(&output.stdout);
+            for line in info.lines() {
+                if line.contains("Chipset Model:") {
+                    return line.replace("Chipset Model:", "").trim().to_string();
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("wmic")
+            .args(["path", "win32_VideoController", "get", "name"])
+            .output()
+        {
+            let info = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = info.lines().filter(|l| !l.trim().is_empty()).collect();
+            if lines.len() > 1 {
+                return lines[1].trim().to_string();
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = Command::new("sh").args(["-c", "lspci | grep -i vga"]).output() {
+            let info = String::from_utf8_lossy(&output.stdout);
+            if !info.trim().is_empty() {
+                if let Some(desc) = info.split(": ").last() {
+                    return desc.trim().to_string();
+                }
+                return info.trim().to_string();
+            }
+        }
+    }
+
+    "Unknown GPU".to_string()
+}
+
+struct About {
+    system_info: Option<String>,
+}
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
+
+impl About {
+    fn collect_system_info(window: &Window, _cx: &Context<Self>) -> String {
+        let os = os_info::get();
+        let scale_factor = window.scale_factor();
+        let locale = sys_locale::get_locale().unwrap_or_else(|| "unknown".into());
+        let theme = window.appearance();
+
+        let mut lines = vec![
+            format!("OS: {} {}", os.os_type(), os.version()),
+            format!("Arch: {}", os.architecture().unwrap_or("unknown")),
+            format!("Locale: {locale}"),
+            format!("Scale Factor: {scale_factor}"),
+            format!("Theme: {theme:?}"),
+        ];
+        let gpu_info = get_basic_gpu_info();
+        if !gpu_info.is_empty() {
+            lines.push(format!("GPU: {gpu_info}"));
+        }
+
+        lines.join("\n")
+    }
+}
 
 impl Render for About {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -123,8 +194,50 @@ impl Render for About {
                             .on_click(move |_, _window, cx| {
                                 cx.open_url("https://github.com/vicanso/zedis/issues");
                             }),
+                    )
+                    .child(
+                        Button::new("sysinfo")
+                            .label("System Info")
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let info = About::collect_system_info(window, cx);
+                                this.system_info = Some(info);
+                                cx.notify();
+                            })),
                     ),
             )
+            .when_some(self.system_info.clone(), |this, info| {
+                let info_for_copy = info.clone();
+                this.child(
+                    v_flex()
+                        .my_2()
+                        .px_4()
+                        .py_2()
+                        .w(px(400.))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().secondary)
+                        .gap_1()
+                        .relative()
+                        .child(
+                            h_flex().justify_end().absolute().right_2().top_2().child(
+                                Button::new("copy-sysinfo")
+                                    .label("Copy")
+                                    .xsmall()
+                                    .on_click(move |_, _window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(info_for_copy.clone()));
+                                    }),
+                            ),
+                        )
+                        .children(info.lines().map(|line| {
+                            Label::new(line.to_string())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                        })),
+                )
+            })
+            .overflow_y_scrollbar()
     }
 }
 
@@ -148,5 +261,5 @@ pub fn open_about_window(cx: &mut App) {
         ..Default::default()
     };
 
-    let _ = cx.open_window(options, |_, cx| cx.new(|_cx| About));
+    let _ = cx.open_window(options, |_, cx| cx.new(|_cx| About { system_info: None }));
 }
