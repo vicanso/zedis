@@ -16,7 +16,7 @@ use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
-    helpers::EditorAction,
+    helpers::{EditorAction, humanize_keystroke},
     states::{
         KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
         i18n_list_editor,
@@ -627,11 +627,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 }
                 field = field.field_type(field_type);
             }
-            // if key_type == KeyType::Zset && column.name.to_lowercase() == "score" {
-            //     field = field.field_type(ZedisFormFieldType::InputNumber);
-            // } else {
-            //     field = field.field_type(ZedisFormFieldType::Editor).h(px(300.));
-            // }
 
             if !is_adding && let Some(value) = self.original_values.get(&column.name) {
                 field = field.default_value(value.clone());
@@ -652,36 +647,41 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 submit_entity.update(cx, |this, cx| {
                     this.enhance_handle_add_or_update_value(values, window, cx);
                 });
-                // self.handle_add_or_update_value(window, cx);
                 true
             };
         let can_remove = self.mode.contains(KvTableMode::REMOVE);
         let can_update = self.mode.contains(KvTableMode::UPDATE);
-        let mut form_opts = ZedisFormOptions::new(fields).on_cancel(on_cancel);
-        if is_adding || can_update {
-            form_opts = form_opts.on_submit(on_submit);
-        }
-        if !is_adding && can_remove {
-            let remove_label = i18n_common(cx, "remove");
-            form_opts = form_opts.foot_actions(move |_window, _cx| {
-                vec![
-                    Button::new("remove-edit-btn")
-                        .icon(CustomIconName::FileXCorner)
-                        .label(remove_label.clone())
-                        .on_click({
-                            let remove_entity = remove_entity.clone();
-                            move |_, window, cx| {
-                                remove_entity.update(cx, |this, cx| {
-                                    this.handle_remove_row(window, cx);
-                                });
-                            }
-                        }),
-                ]
-            });
-        }
-        if key_type == KeyType::Stream {
-            form_opts = form_opts.support_add_fields();
-        }
+        let form_opts = ZedisFormOptions::new(fields)
+            .on_cancel(on_cancel)
+            .cancel_label(i18n_common(cx, "cancel"))
+            .when(is_adding || can_update, |this| {
+                this.on_submit(on_submit).confirm_tooltip(humanize_keystroke("cmd-s"))
+            })
+            .when_else(
+                is_adding,
+                |this| this.confirm_label(i18n_common(cx, "save")),
+                |this| this.confirm_label(i18n_common(cx, "update")),
+            )
+            .when(!is_adding && can_remove, |this| {
+                let remove_label = i18n_common(cx, "remove");
+                this.foot_actions(move |_window, _cx| {
+                    vec![
+                        Button::new("remove-edit-btn")
+                            .icon(CustomIconName::FileXCorner)
+                            .label(remove_label.clone())
+                            .on_click({
+                                let remove_entity = remove_entity.clone();
+                                move |_, window, cx| {
+                                    remove_entity.update(cx, |this, cx| {
+                                        this.handle_remove_row(window, cx);
+                                    });
+                                }
+                            }),
+                    ]
+                })
+            })
+            .when(key_type == KeyType::Stream, |this| this.support_add_fields());
+
         let form = cx.new(|cx| ZedisForm::new("kv-table-edit-form", form_opts, window, cx));
         self.editor_form = Some(form.clone());
         form.clone()

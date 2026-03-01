@@ -49,6 +49,8 @@ pub struct ZedisDialog {
     alert: bool,
 }
 
+impl gpui::prelude::FluentBuilder for ZedisDialog {}
+
 impl ZedisDialog {
     /// Creates a new `ZedisDialog` builder with default settings.
     pub fn new(title: impl Into<SharedString>) -> Self {
