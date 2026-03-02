@@ -14,6 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
+    constants::EDITOR_KEY_BAR_HEIGHT,
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisStreamEditor, ZedisZsetEditor},
@@ -71,6 +72,13 @@ pub struct ZedisEditor {
 
 fn format_ttl_string(ttl: &str) -> String {
     let trimmed = ttl.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    if trimmed.ends_with('.') {
+        return format!("{}0s", trimmed);
+    }
 
     let ends_with_digit = trimmed.chars().last().is_some_and(|c| c.is_ascii_digit());
 
@@ -471,7 +479,8 @@ impl ZedisEditor {
 
         let content = key.clone();
         h_flex()
-            .p_2()
+            .px_2()
+            .h(px(EDITOR_KEY_BAR_HEIGHT))
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()
