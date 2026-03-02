@@ -83,8 +83,8 @@ pub struct ZedisContent {
 
     /// Cached current route to avoid unnecessary updates
     current_route: Route,
-    should_focus: Option<bool>,
-    should_focus_cmd_input: Option<bool>,
+    should_focus: bool,
+    should_focus_cmd_input: bool,
     focus_handle: FocusHandle,
 
     /// Event subscriptions for reactive updates
@@ -139,12 +139,8 @@ impl ZedisContent {
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
                 ServerEvent::TerminalToggled(terminal) => {
-                    this.should_focus = Some(true);
-                    if *terminal {
-                        this.should_focus_cmd_input = Some(true);
-                    } else {
-                        this.should_focus_cmd_input = None;
-                    }
+                    this.should_focus = true;
+                    this.should_focus_cmd_input = *terminal;
                     cx.notify();
                 }
                 ServerEvent::ServerInfoUpdated => {
@@ -161,7 +157,7 @@ impl ZedisContent {
         let global_store = cx.global::<ZedisGlobalStore>().read(cx);
         let key_tree_width = global_store.key_tree_width();
         let route = global_store.route();
-        let cmd_input_state = cx.new(|cx| InputState::new(window, cx));
+        let cmd_input_state = cx.new(|cx| InputState::new(window, cx).auto_grow(1, 3));
         subscriptions.push(
             cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| match event {
                 InputEvent::PressEnter { .. } => {
@@ -225,8 +221,8 @@ impl ZedisContent {
             cmd_input_state,
             cmd_suggestions: Vec::new(),
             cmd_suggestion_index: None,
-            should_focus: None,
-            should_focus_cmd_input: None,
+            should_focus: false,
+            should_focus_cmd_input: false,
             cmd_output_scroll_handle: ScrollHandle::new(),
             cmd_history_index: None,
             focus_handle,
@@ -325,37 +321,41 @@ impl ZedisContent {
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
         cx.spawn(async move |handle, cx| {
-            let command_clone = command.clone();
-            let task = cx.background_spawn(async move {
-                let parts: Vec<_> = command.split_whitespace().map(|s| s.to_string()).collect();
-                if parts.is_empty() {
-                    return Ok(SharedString::default());
-                }
-                let cmd_name = parts[0].clone();
-                let args = parts[1..].to_vec();
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let data: redis::Value = cmd(&cmd_name).arg(&args).query_async(&mut conn).await?;
-                let _ = get_cmd_history_manager().add_record(server_id.as_str(), command.as_str());
-                Ok(redis_value_to_string(&data).into())
-            });
-            let result: Result<SharedString> = task.await;
-            let content: SharedString = match result {
-                Ok(result) => result,
-                Err(e) => e.to_string().into(),
-            };
-
-            handle.update(cx, |this, cx| {
-                this.cmd_outputs.extend(vec![
-                    format!("{CMD_LABEL} {command_clone}").into(),
-                    content,
-                    SharedString::default(),
-                ]);
-                let scroll_handle = this.cmd_output_scroll_handle.clone();
-                cx.notify();
-                cx.defer(move |_cx| {
-                    scroll_handle.scroll_to_bottom();
+            for command in command.lines() {
+                let command = command.trim().to_string();
+                let command_clone = command.clone();
+                let server_id = server_id.clone();
+                let task = cx.background_spawn(async move {
+                    let parts: Vec<_> = command.split_whitespace().map(|s| s.to_string()).collect();
+                    if parts.is_empty() {
+                        return Ok(SharedString::default());
+                    }
+                    let cmd_name = parts[0].clone();
+                    let args = parts[1..].to_vec();
+                    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                    let data: redis::Value = cmd(&cmd_name).arg(&args).query_async(&mut conn).await?;
+                    let _ = get_cmd_history_manager().add_record(server_id.as_str(), command.as_str());
+                    Ok(redis_value_to_string(&data).into())
                 });
-            })
+                let result: Result<SharedString> = task.await;
+                let content: SharedString = match result {
+                    Ok(result) => result,
+                    Err(e) => e.to_string().into(),
+                };
+
+                let _ = handle.update(cx, |this, cx| {
+                    this.cmd_outputs.extend(vec![
+                        format!("{CMD_LABEL} {command_clone}").into(),
+                        content,
+                        SharedString::default(),
+                    ]);
+                    let scroll_handle = this.cmd_output_scroll_handle.clone();
+                    cx.notify();
+                    cx.defer(move |_cx| {
+                        scroll_handle.scroll_to_bottom();
+                    });
+                });
+            }
         })
         .detach();
     }
@@ -483,7 +483,7 @@ impl ZedisContent {
         }
         let (key_tree_width, min_width, max_width) = get_key_tree_widths(self.key_tree_width);
         let right_panel_content = if server_state.read(cx).is_terminal() {
-            if let Some(true) = self.should_focus_cmd_input.take() {
+            if std::mem::take(&mut self.should_focus_cmd_input) {
                 self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
             }
             let font_family: SharedString = get_font_family().into();
@@ -654,7 +654,7 @@ impl Render for ZedisContent {
     /// 3. Otherwise -> show editor interface (key tree + value editor)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
-        if let Some(true) = self.should_focus.take() {
+        if std::mem::take(&mut self.should_focus) {
             self.focus_handle.focus(window, cx);
         }
         let base = v_flex()
