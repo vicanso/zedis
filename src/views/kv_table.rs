@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT};
 use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
@@ -23,6 +24,7 @@ use crate::{
     },
 };
 use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
+use gpui_component::TITLE_BAR_HEIGHT;
 use gpui_component::highlighter::Language;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
@@ -38,6 +40,8 @@ use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
+
+const FOOTER_HEIGHT: f32 = 50.0;
 
 bitflags::bitflags! {
     /// Defines the operations supported by the table.
@@ -602,6 +606,25 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     .options(vec!["RPUSH".into(), "LPUSH".into()]),
             );
         }
+        let mut reset_form_height = window.viewport_size().height.as_f32()
+            - TITLE_BAR_HEIGHT.as_f32()
+            - STATUS_BAR_HEIGHT
+            - EDITOR_KEY_BAR_HEIGHT
+            - FOOTER_HEIGHT;
+        let mut flex_field_count = 0;
+
+        for column in self.columns.iter() {
+            if column.column_type != KvTableColumnType::Value {
+                continue;
+            }
+            if column.flex {
+                flex_field_count += 1;
+                continue;
+            }
+            reset_form_height -= 60.;
+        }
+        let flex_field_height = (reset_form_height / flex_field_count as f32).max(150.);
+
         let mut first = true;
         for column in self.columns.iter() {
             if column.column_type != KvTableColumnType::Value {
@@ -619,7 +642,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
             // TODO adjust to flex_1
             if column.flex {
-                field = field.h(px(300.));
+                field = field.h(px(flex_field_height - 30.));
             }
             if let Some(field_type) = column.field_type.clone() {
                 if field_type == ZedisFormFieldType::Editor && !column.flex {

@@ -82,6 +82,8 @@ impl About {
         let theme = window.appearance();
 
         let mut lines = vec![
+            format!("Version: {VERSION}"),
+            format!("Git SHA: {GIT_SHA}"),
             format!("OS: {} {}", os.os_type(), os.version()),
             format!("Arch: {}", os.architecture().unwrap_or("unknown")),
             format!("Locale: {locale}"),

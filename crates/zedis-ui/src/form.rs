@@ -27,7 +27,7 @@ use gpui_component::radio::RadioGroup;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::text::TextView;
-use gpui_component::{ActiveTheme, Disableable, IconName, StyledExt, h_flex};
+use gpui_component::{ActiveTheme, Disableable, IconName, RopeExt, StyledExt, h_flex};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::mem::take;
@@ -306,7 +306,6 @@ impl ZedisFormOptions {
 
     /// Set the action buttons for the footer.
     pub fn foot_actions<F, I>(mut self, builder: F) -> Self
-
     where
         F: Fn(&mut Window, &mut Context<ZedisForm>) -> I + 'static,
         I: IntoIterator,
@@ -581,6 +580,7 @@ impl ZedisForm {
                 }
             }
         }
+        self.should_focus = true;
     }
 }
 
@@ -593,7 +593,9 @@ impl Render for ZedisForm {
                     && let ZedisFormFieldState::Input(state) = state
                 {
                     state.update(cx, |state, cx| {
-                        state.focus(window, cx);
+                        let text = state.text();
+                        let end_pos = text.offset_to_position(text.bytes().len());
+                        state.set_cursor_position(end_pos, window, cx);
                     });
                     break;
                 }

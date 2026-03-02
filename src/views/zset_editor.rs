@@ -29,6 +29,7 @@ use crate::{
     views::{KvTableColumn, ZedisKvTable},
 };
 use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use zedis_ui::ZedisFormFieldType;
 
 /// Data adapter for Redis ZSET values to work with the KV table component.
 ///
@@ -199,7 +200,7 @@ impl ZedisZsetEditor {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisZsetValues>::new(
                 vec![
-                    KvTableColumn::new_flex("Value"),        // Member name column (flexible width)
+                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor), // Member name column (flexible width)
                     KvTableColumn::new("Score", Some(150.)), // Score column (fixed 150px width)
                 ],
                 server_state,
