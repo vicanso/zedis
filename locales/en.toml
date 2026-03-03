@@ -224,6 +224,16 @@ redis_connection_timeout_placeholder = "Enter redis connection timeout (default:
 redis_response_timeout = "Redis Response Timeout"
 redis_response_timeout_placeholder = "Enter redis response timeout (default: 60s)"
 
+[metrics]
+memory = "Memory"
+clients = "Clients"
+ops = "OPS"
+latency = "Latency"
+hit_rate = "Hit Rate"
+net_in = "Net In"
+net_out = "Net Out"
+evicted_keys = "Evicted"
+
 [proto_editor]
 title = "Proto Editor"
 server_name = "Server Name"

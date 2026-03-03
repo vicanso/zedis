@@ -24,6 +24,7 @@ pub use i18n::i18n_hash_editor;
 pub use i18n::i18n_key_tree;
 pub use i18n::i18n_kv_table;
 pub use i18n::i18n_list_editor;
+pub use i18n::i18n_metrics;
 pub use i18n::i18n_proto_editor;
 pub use i18n::i18n_servers;
 pub use i18n::i18n_set_editor;

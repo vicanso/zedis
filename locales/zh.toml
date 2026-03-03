@@ -224,6 +224,16 @@ redis_connection_timeout_placeholder = "输入 redis 连接超时 (默认: 30s)"
 redis_response_timeout = "Redis 响应超时"
 redis_response_timeout_placeholder = "输入 redis 响应超时 (默认: 60s)"
 
+[metrics]
+memory = "内存"
+clients = "连接数"
+ops = "OPS"
+latency = "延迟"
+hit_rate = "命中率"
+net_in = "入站流量"
+net_out = "出站流量"
+evicted_keys = "淘汰键"
+
 [proto_editor]
 title = "Proto 编辑器"
 server_name = "服务器名称"
