@@ -1127,6 +1127,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2908,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#90cf81cb00a85204bffeb28b9aae1b3493731399"
+source = "git+https://github.com/zed-industries/zed#1c39e192f1fa83a6d131d4f43d13ade53e8a424d"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -2918,7 +2928,6 @@ dependencies = [
  "calloop",
  "calloop-wayland-source",
  "collections",
- "cosmic-text",
  "filedescriptor",
  "futures",
  "gpui",
@@ -2931,6 +2940,7 @@ dependencies = [
  "open",
  "parking_lot",
  "pathfinder_geometry",
+ "pollster 0.4.0",
  "profiling",
  "raw-window-handle",
  "smallvec",
@@ -2949,7 +2959,6 @@ dependencies = [
  "x11-clipboard",
  "x11rb",
  "xkbcommon",
- "zed-font-kit",
  "zed-scap",
  "zed-xim",
 ]
@@ -2957,7 +2966,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#90cf81cb00a85204bffeb28b9aae1b3493731399"
+source = "git+https://github.com/zed-industries/zed#1c39e192f1fa83a6d131d4f43d13ade53e8a424d"
 dependencies = [
  "anyhow",
  "async-task",
@@ -3010,11 +3019,13 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#90cf81cb00a85204bffeb28b9aae1b3493731399"
+source = "git+https://github.com/zed-industries/zed#1c39e192f1fa83a6d131d4f43d13ade53e8a424d"
 dependencies = [
+ "console_error_panic_hook",
  "gpui",
  "gpui_linux",
  "gpui_macos",
+ "gpui_web",
  "gpui_windows",
 ]
 
@@ -3028,28 +3039,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_web"
+version = "0.1.0"
+source = "git+https://github.com/zed-industries/zed#1c39e192f1fa83a6d131d4f43d13ade53e8a424d"
+dependencies = [
+ "anyhow",
+ "console_error_panic_hook",
+ "futures",
+ "gpui",
+ "gpui_wgpu",
+ "js-sys",
+ "log",
+ "parking_lot",
+ "raw-window-handle",
+ "smallvec",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm_thread",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#90cf81cb00a85204bffeb28b9aae1b3493731399"
+source = "git+https://github.com/zed-industries/zed#1c39e192f1fa83a6d131d4f43d13ade53e8a424d"
 dependencies = [
  "anyhow",
  "bytemuck",
  "collections",
+ "cosmic-text",
  "etagere",
  "gpui",
+ "gpui_util",
+ "itertools 0.14.0",
+ "js-sys",
  "log",
  "parking_lot",
+ "pollster 0.4.0",
  "profiling",
  "raw-window-handle",
- "smol",
- "util",
+ "smallvec",
+ "swash",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
+ "zed-font-kit",
 ]
 
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#90cf81cb00a85204bffeb28b9aae1b3493731399"
+source = "git+https://github.com/zed-industries/zed#1c39e192f1fa83a6d131d4f43d13ade53e8a424d"
 dependencies = [
  "anyhow",
  "collections",
@@ -8438,6 +8481,18 @@ dependencies = [
  "indexmap",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "wasm_thread"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7516db7f32decdadb1c3b8deb1b7d78b9df7606c5cc2f6241737c2ab3a0258e"
+dependencies = [
+ "futures",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

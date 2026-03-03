@@ -24,9 +24,9 @@
 //! - Incremental loading of large HASHes with pagination
 
 use crate::{
+    components::KvTableColumn,
     components::ZedisKvFetcher,
     states::{KeyType, RedisValue, ZedisServerState},
-    components::KvTableColumn,
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -44,7 +44,9 @@ struct ZedisHashValues {
 }
 
 impl ZedisKvFetcher for ZedisHashValues {
-    fn key_type(&self) -> KeyType { KeyType::Hash }
+    fn key_type(&self) -> KeyType {
+        KeyType::Hash
+    }
 
     /// Creates a new data adapter instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {

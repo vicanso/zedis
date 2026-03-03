@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::{
+    components::KvTableColumn,
     components::ZedisKvFetcher,
     helpers::fast_contains_ignore_case,
     states::{KeyType, RedisValue, ZedisServerState},
-    components::KvTableColumn,
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};

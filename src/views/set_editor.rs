@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::{
+    components::KvTableColumn,
     components::ZedisKvFetcher,
     states::{KeyType, RedisValue, ZedisServerState},
-    components::KvTableColumn,
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -34,7 +34,9 @@ struct ZedisSetValues {
 }
 
 impl ZedisKvFetcher for ZedisSetValues {
-    fn key_type(&self) -> KeyType { KeyType::Set }
+    fn key_type(&self) -> KeyType {
+        KeyType::Set
+    }
 
     /// Adds a new member to the SET.
     ///

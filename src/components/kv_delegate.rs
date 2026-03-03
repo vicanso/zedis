@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::states::{KeyType, RedisValue, ZedisServerState};
 use super::{KvTableColumn, KvTableColumnType};
+use crate::states::{KeyType, RedisValue, ZedisServerState};
 use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, StyledExt, h_flex,
@@ -59,13 +59,19 @@ pub trait ZedisKvFetcher: 'static {
     fn remove(&self, index: usize, _cx: &mut App);
 
     /// Whether form fields are required when adding/editing.
-    fn fields_required(&self) -> bool { true }
+    fn fields_required(&self) -> bool {
+        true
+    }
 
     /// Whether submitted form values should include field names alongside values.
-    fn include_field_names(&self) -> bool { false }
+    fn include_field_names(&self) -> bool {
+        false
+    }
 
     /// Whether the edit form should support dynamic add-fields.
-    fn support_add_fields(&self) -> bool { false }
+    fn support_add_fields(&self) -> bool {
+        false
+    }
 
     /// Filters data based on a keyword.
     ///

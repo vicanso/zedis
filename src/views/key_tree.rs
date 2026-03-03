@@ -704,6 +704,13 @@ impl ZedisKeyTree {
     }
 
     fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prefix: Option<SharedString> = if let Some(key) = self.server_state.read(cx).key()
+            && let Some((prefix, _)) = key.rsplit_once(":")
+        {
+            Some(format!("{prefix}:").into())
+        } else {
+            None
+        };
         let category_list = ["String", "List", "Set", "Zset", "Hash", "Stream"];
         // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5
         let fields = vec![
@@ -712,6 +719,7 @@ impl ZedisKeyTree {
                 .options(category_list.iter().map(|s| s.to_string().into()).collect()),
             ZedisFormField::new("key", i18n_common(cx, "key"))
                 .placeholder(i18n_common(cx, "key_placeholder"))
+                .when_some(prefix, |this, prefix| this.default_value(prefix))
                 .focus()
                 .validate(move |s| {
                     if validate_long_string(s) {
@@ -796,8 +804,15 @@ impl ZedisKeyTree {
                         // They are stored as sequential entries in the values map
                         // after the static fields.
                         let static_keys = [
-                            "category", "key", "ttl", "value", "score", "member",
-                            "hash_field", "hash_value", "stream_id",
+                            "category",
+                            "key",
+                            "ttl",
+                            "value",
+                            "score",
+                            "member",
+                            "hash_field",
+                            "hash_value",
+                            "stream_id",
                         ];
                         let mut has_dynamic = false;
                         for (k, v) in &values {

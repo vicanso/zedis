@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{
-    ClipboardItem, Image, Render, SharedString, Window, img, prelude::*, px,
-};
+use gpui::{ClipboardItem, Image, Render, SharedString, Window, img, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt, button::Button, h_flex, label::Label, scroll::ScrollableElement, v_flex,
 };
@@ -28,11 +26,7 @@ pub struct AboutLink {
 }
 
 impl AboutLink {
-    pub fn new(
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        url: impl Into<SharedString>,
-    ) -> Self {
+    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, url: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -136,14 +130,11 @@ impl Render for ZedisAboutPage {
         let mut links_row = h_flex().gap_3().items_center().mt_4();
         for link in &self.config.links {
             let url = link.url.clone();
-            links_row = links_row.child(
-                Button::new(link.id.clone())
-                    .label(link.label.clone())
-                    .small()
-                    .on_click(move |_, _window, cx| {
-                        cx.open_url(&url);
-                    }),
-            );
+            links_row = links_row.child(Button::new(link.id.clone()).label(link.label.clone()).small().on_click(
+                move |_, _window, cx| {
+                    cx.open_url(&url);
+                },
+            ));
         }
         if self.config.system_info_collector.is_some() {
             links_row = links_row.child(
@@ -181,9 +172,7 @@ impl Render for ZedisAboutPage {
                                 .label("Copy")
                                 .xsmall()
                                 .on_click(move |_, _window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        info_for_copy.clone(),
-                                    ));
+                                    cx.write_to_clipboard(ClipboardItem::new_string(info_for_copy.clone()));
                                 }),
                         ),
                     )

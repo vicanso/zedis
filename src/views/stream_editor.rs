@@ -14,9 +14,9 @@
 
 use crate::{
     components::ZedisKvFetcher,
+    components::{KvTableColumn, KvTableMode},
     helpers::fast_contains_ignore_case,
     states::{KeyType, RedisValue, ZedisServerState},
-    components::{KvTableColumn, KvTableMode},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -100,9 +100,15 @@ impl ZedisKvFetcher for ZedisStreamValues {
     fn key_type(&self) -> KeyType {
         KeyType::Stream
     }
-    fn fields_required(&self) -> bool { false }
-    fn include_field_names(&self) -> bool { true }
-    fn support_add_fields(&self) -> bool { true }
+    fn fields_required(&self) -> bool {
+        false
+    }
+    fn include_field_names(&self) -> bool {
+        true
+    }
+    fn support_add_fields(&self) -> bool {
+        true
+    }
     fn primary_index(&self) -> usize {
         1
     }

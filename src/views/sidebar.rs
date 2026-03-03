@@ -17,12 +17,7 @@ use crate::{
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_sidebar},
 };
 use gpui::{Context, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
-use gpui_component::{
-    ActiveTheme, Icon, IconName,
-    label::Label,
-    list::ListItem,
-    v_flex,
-};
+use gpui_component::{ActiveTheme, Icon, IconName, label::Label, list::ListItem, v_flex};
 use tracing::info;
 
 // Constants for UI layout
@@ -184,7 +179,6 @@ impl ZedisSidebar {
         })
         .size_full()
     }
-
 }
 
 impl Render for ZedisSidebar {

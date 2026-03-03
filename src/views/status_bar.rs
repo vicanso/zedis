@@ -418,9 +418,7 @@ impl ZedisStatusBar {
                             .small()
                             .tooltip(readonly_tooltip)
                             .when(self.readonly, |this| this.icon(Icon::new(CustomIconName::Lock)))
-                            .when(!self.readonly, |this| {
-                                this.icon(Icon::new(CustomIconName::LockOpen))
-                            })
+                            .when(!self.readonly, |this| this.icon(Icon::new(CustomIconName::LockOpen)))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.server_state.update(cx, |state, cx| {
                                     state.toggle_readonly(cx);
@@ -455,17 +453,11 @@ impl ZedisStatusBar {
                         div()
                             .child(
                                 h_flex()
-                                    .child(
-                                        Icon::new(CustomIconName::Network)
-                                            .text_color(cx.theme().primary)
-                                            .mr_1(),
-                                    )
+                                    .child(Icon::new(CustomIconName::Network).text_color(cx.theme().primary).mr_1())
                                     .child(Label::new(server_state.nodes.clone())),
                             )
                             .id("zedis-servers")
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(nodes_description.clone()).build(window, cx)
-                            }),
+                            .tooltip(move |window, cx| Tooltip::new(nodes_description.clone()).build(window, cx)),
                     ),
             )
             .child(
@@ -478,24 +470,20 @@ impl ZedisStatusBar {
                             .small()
                             .icon(CustomIconName::Activity)
                             .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.global::<ZedisGlobalStore>().clone().update(
-                                    cx,
-                                    |state, cx| {
-                                        let route = if state.route() == Route::Metrics {
-                                            Route::Editor
-                                        } else {
-                                            Route::Metrics
-                                        };
-                                        state.go_to(route, cx);
-                                    },
-                                );
+                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                    let route = if state.route() == Route::Metrics {
+                                        Route::Editor
+                                    } else {
+                                        Route::Metrics
+                                    };
+                                    state.go_to(route, cx);
+                                });
                             })),
                     )
                     .child(
                         metric_badge(
                             "zedis-status-bar-latency",
-                            Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
-                                .text_color(cx.theme().primary),
+                            Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary),
                             server_state.latency.0.clone(),
                             i18n_common(cx, "latency"),
                         )
