@@ -13,11 +13,14 @@
 // limitations under the License.
 
 use super::{KvTableColumn, KvTableColumnType};
-use crate::states::{KeyType, RedisValue, ZedisServerState};
-use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
+use crate::states::{KeyType, RedisValue, ZedisServerState, i18n_common};
+use gpui::{App, ClipboardItem, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, StyledExt, h_flex,
+    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
+    button::{Button, ButtonVariants},
+    h_flex,
     label::Label,
+    notification::Notification,
     table::{Column, TableDelegate, TableState},
 };
 use std::{cell::Cell, rc::Rc, sync::Arc};
@@ -215,9 +218,30 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             return base.child(Label::new((row_ix + 1).to_string()).text_align(column.align).w_full());
         }
 
-        // Default: Render value as label
+        // Default: Render value as label with copy button on hover
         let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
-        base.child(Label::new(value).text_align(column.align))
+        let group_name: SharedString = format!("td-{}-{}", row_ix, col_ix).into();
+        let copied_message = i18n_common(cx, "copied_to_clipboard");
+        base.group(group_name.clone())
+            .child(Label::new(value.clone()).text_align(column.align).flex_1().min_w_0())
+            .child(
+                div()
+                    .id(("copy-wrapper", row_ix * 100 + col_ix))
+                    .invisible()
+                    .group_hover(group_name, |style| style.visible())
+                    .flex_none()
+                    .on_click(|_, _, cx: &mut App| cx.stop_propagation())
+                    .child(
+                        Button::new(("copy-cell", row_ix * 100 + col_ix))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Copy)
+                            .on_click(move |_, window, cx: &mut App| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+                                window.push_notification(Notification::info(copied_message.clone()), cx);
+                            }),
+                    ),
+            )
     }
     /// Returns whether all data has been loaded (end of file).
     fn has_more(&self, _: &App) -> bool {
