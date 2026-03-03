@@ -28,7 +28,7 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
-    states::{ServerEvent, i18n_hash_editor},
+    states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_hash_editor},
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -213,13 +213,15 @@ impl ZedisServerState {
                     if hash.done && !hash.values.iter().any(|(f, _)| f == &field_clone) {
                         hash.values.push((field_clone, value_clone));
                     }
+                    if hash.size > SUCCESS_NOTIFY_THRESHOLD {
+                        this.emit_success_notification(
+                            i18n_hash_editor(cx, "add_value_success_tips"),
+                            i18n_hash_editor(cx, "add_value_success"),
+                            cx,
+                        );
+                    }
                 }
                 cx.emit(ServerEvent::ValueAdded);
-                this.emit_success_notification(
-                    i18n_hash_editor(cx, "add_value_success_tips"),
-                    i18n_hash_editor(cx, "add_value_success"),
-                    cx,
-                );
             },
         );
     }

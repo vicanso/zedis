@@ -16,7 +16,7 @@ use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT};
 use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
-    components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
+    components::{INDEX_COLUMN_NAME, KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvDelegate, ZedisKvFetcher},
     helpers::{EditorAction, humanize_keystroke},
     states::{
         KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
@@ -43,90 +43,8 @@ use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, Zedis
 
 const FOOTER_HEIGHT: f32 = 50.0;
 
-bitflags::bitflags! {
-    /// Defines the operations supported by the table.
-    ///
-    /// Use bitwise operations to combine multiple modes:
-    /// - `KvTableMode::ADD | KvTableMode::UPDATE` - Allow add and update
-    /// - `KvTableMode::ALL` - Allow all operations
-    /// - `KvTableMode::empty()` - Read-only mode (no operations)
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct KvTableMode: u8 {
-        /// Support adding new values
-        const ADD    = 0b0001;
-        /// Support updating existing values
-        const UPDATE = 0b0010;
-        /// Support removing values
-        const REMOVE = 0b0100;
-        /// Support filtering/searching values
-        const FILTER = 0b1000;
-        /// All operations enabled
-        const ALL    = Self::ADD.bits() | Self::UPDATE.bits() | Self::REMOVE.bits() | Self::FILTER.bits();
-    }
-}
-
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
-
-/// Defines the type of table column for different purposes.
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
-pub enum KvTableColumnType {
-    /// Standard value column displaying data
-    #[default]
-    Value,
-    /// Row index/number column
-    Index,
-}
-
-/// Configuration for a table column including name, width, and alignment.
-#[derive(Clone, Default, Debug)]
-pub struct KvTableColumn {
-    /// Whether the column is readonly
-    pub readonly: bool,
-    /// Type of the field
-    pub field_type: Option<ZedisFormFieldType>,
-    /// Whether the column is flexible
-    pub flex: bool,
-    /// Type of the column
-    pub column_type: KvTableColumnType,
-    /// Display name of the column
-    pub name: SharedString,
-    /// Optional fixed width in pixels
-    pub width: Option<f32>,
-    /// Text alignment (left, center, right)
-    pub align: Option<TextAlign>,
-    /// Whether the column is auto-created
-    pub auto_created: bool,
-}
-
-impl KvTableColumn {
-    /// Creates a new value column with the given name and optional width.
-    pub fn new(name: &str, width: Option<f32>) -> Self {
-        Self {
-            name: name.to_string().into(),
-            width,
-            ..Default::default()
-        }
-    }
-    pub fn new_flex(name: &str) -> Self {
-        Self {
-            name: name.to_string().into(),
-            flex: true,
-            ..Default::default()
-        }
-    }
-    pub fn new_auto_created(name: &str) -> Self {
-        Self {
-            name: name.to_string().into(),
-            auto_created: true,
-            ..Default::default()
-        }
-    }
-    pub fn field_type(mut self, field_type: ZedisFormFieldType) -> Self {
-        self.field_type = Some(field_type);
-        self
-    }
-}
 
 /// A generic table view for displaying Redis key-value data.
 ///
@@ -336,10 +254,14 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         // Subscribe to row selection events (mode check will be done in handler)
-        subscriptions.push(cx.subscribe(&table_state, |this, _, event, cx| {
-            if let TableEvent::SelectRow(row_ix) = event {
+        subscriptions.push(cx.subscribe(&table_state, |this, _, event, cx| match event {
+            TableEvent::SelectRow(row_ix) => {
                 this.handle_select_row(*row_ix, cx);
             }
+            TableEvent::ClearSelection => {
+                this.edit_row = None;
+            }
+            _ => {}
         }));
 
         let value_states = columns
@@ -444,14 +366,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let value = self.fetcher.get(row_ix, index + 1).unwrap_or_default();
             self.original_values.insert(column.name.clone(), value);
         }
-        // let values = self
-        //     .value_states
-        //     .iter()
-        //     .map(|(index, _)| self.fetcher.get(row_ix, *index + 1).unwrap_or_default())
-        //     .collect::<Vec<_>>();
         self.editor_form = None;
         self.values_modified = false;
-        // self.original_values = values;
     }
     fn handle_add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Only allow adding if ADD mode is enabled
@@ -463,7 +379,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.list_push_mode_state.update(cx, |state, _| {
             *state = 0;
         });
-        let mut foucused = false;
+        let mut focused = false;
         self.value_states.iter().for_each(|(index, state)| {
             let auto_created = self
                 .columns
@@ -472,9 +388,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 .unwrap_or(false);
 
             state.update(cx, |input, cx| {
-                if !auto_created && !foucused {
+                if !auto_created && !focused {
                     input.focus(window, cx);
-                    foucused = true;
+                    focused = true;
                 }
                 input.set_value(SharedString::default(), window, cx);
             });
@@ -483,21 +399,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.original_values.clear();
         self.values_modified = false;
     }
-    // fn check_values_modified(&mut self, cx: &mut Context<Self>) {
-    //     let mut values_modified = false;
-    //     for (index, (_, state)) in self.value_states.iter().enumerate() {
-    //         let value = state.read(cx).value();
-    //         if self
-    //             .original_values
-    //             .get(index)
-    //             .map(|original_value| original_value.clone() != value)
-    //             .unwrap_or(true)
-    //         {
-    //             values_modified = true;
-    //         }
-    //     }
-    //     self.values_modified = values_modified;
-    // }
 
     /// Triggers a filter operation using the current keyword from the input field.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
@@ -571,9 +472,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }
 
         let mut values = Vec::with_capacity(data.len());
-        let key_type = self.fetcher.key_type();
+        let include_field_names = self.fetcher.include_field_names();
         for (name, value) in data {
-            if key_type == KeyType::Stream {
+            if include_field_names {
                 values.push(name);
             }
             values.push(value);
@@ -598,19 +499,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }
         let mut fields = Vec::with_capacity(4);
         let is_adding = self.is_adding_row();
-        let key_type = self.fetcher.key_type();
-        if is_adding && key_type == KeyType::List {
-            fields.push(
-                ZedisFormField::new("position", i18n_list_editor(cx, "position"))
-                    .field_type(ZedisFormFieldType::RadioGroup)
-                    .options(vec!["RPUSH".into(), "LPUSH".into()]),
-            );
-        }
         let mut reset_form_height = window.viewport_size().height.as_f32()
             - TITLE_BAR_HEIGHT.as_f32()
             - STATUS_BAR_HEIGHT
             - EDITOR_KEY_BAR_HEIGHT
             - FOOTER_HEIGHT;
+        let normal_field_height = 60.;
+        if is_adding && self.fetcher.key_type() == KeyType::List {
+            fields.push(
+                ZedisFormField::new("position", i18n_list_editor(cx, "position"))
+                    .field_type(ZedisFormFieldType::RadioGroup)
+                    .options(vec!["RPUSH".into(), "LPUSH".into()]),
+            );
+            reset_form_height -= normal_field_height;
+        }
+
         let mut flex_field_count = 0;
 
         for column in self.columns.iter() {
@@ -621,7 +524,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 flex_field_count += 1;
                 continue;
             }
-            reset_form_height -= 60.;
+            reset_form_height -= normal_field_height;
         }
         let flex_field_height = (reset_form_height / flex_field_count as f32).max(150.);
 
@@ -633,12 +536,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let mut field = ZedisFormField::new(column.name.clone(), column.name.clone())
                 .focus()
                 .font_family(get_font_family());
-            if key_type != KeyType::Stream {
+            if self.fetcher.fields_required() {
                 field = field.required();
             }
             if first {
                 field = field.focus();
-                first = true;
+                first = false;
             }
             // TODO adjust to flex_1
             if column.flex {
@@ -703,7 +606,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     ]
                 })
             })
-            .when(key_type == KeyType::Stream, |this| this.support_add_fields());
+            .when(self.fetcher.support_add_fields(), |this| this.support_add_fields());
 
         let form = cx.new(|cx| ZedisForm::new("kv-table-edit-form", form_opts, window, cx));
         self.editor_form = Some(form.clone());
@@ -843,3 +746,28 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             .into_any_element()
     }
 }
+
+/// Generates a KvTable-based editor struct and its `Render` implementation.
+///
+/// Each generated editor wraps a `ZedisKvTable<$values>` and renders it
+/// as a full-size container. The `new()` constructor is left to be
+/// implemented manually per editor.
+macro_rules! define_kv_editor {
+    ($editor:ident, $values:ident) => {
+        pub struct $editor {
+            table_state: gpui::Entity<$crate::views::ZedisKvTable<$values>>,
+        }
+
+        impl gpui::Render for $editor {
+            fn render(&mut self, _window: &mut gpui::Window, _cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                gpui::div()
+                    .size_full()
+                    .min_h_0()
+                    .child(self.table_state.clone())
+                    .into_any_element()
+            }
+        }
+    };
+}
+
+pub(crate) use define_kv_editor;

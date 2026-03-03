@@ -16,9 +16,10 @@ use crate::{
     components::ZedisKvFetcher,
     helpers::fast_contains_ignore_case,
     states::{KeyType, RedisValue, ZedisServerState},
-    views::{KvTableColumn, KvTableMode, ZedisKvTable},
+    components::{KvTableColumn, KvTableMode},
+    views::{ZedisKvTable, kv_table::define_kv_editor},
 };
-use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use gpui::{App, Entity, SharedString, Window, prelude::*};
 use zedis_ui::ZedisFormFieldType;
 
 /// Manages Redis Stream values and their display state.
@@ -99,6 +100,9 @@ impl ZedisKvFetcher for ZedisStreamValues {
     fn key_type(&self) -> KeyType {
         KeyType::Stream
     }
+    fn fields_required(&self) -> bool { false }
+    fn include_field_names(&self) -> bool { true }
+    fn support_add_fields(&self) -> bool { true }
     fn primary_index(&self) -> usize {
         1
     }
@@ -215,9 +219,7 @@ impl ZedisKvFetcher for ZedisStreamValues {
     }
 }
 
-pub struct ZedisStreamEditor {
-    table_state: Entity<ZedisKvTable<ZedisStreamValues>>,
-}
+define_kv_editor!(ZedisStreamEditor, ZedisStreamValues);
 
 impl ZedisStreamEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -247,16 +249,5 @@ impl ZedisStreamEditor {
             .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER)
         });
         Self { table_state }
-    }
-}
-
-impl Render for ZedisStreamEditor {
-    /// Renders the stream editor as a full-size container with the table.
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .min_h_0()
-            .child(self.table_state.clone())
-            .into_any_element()
     }
 }

@@ -34,6 +34,24 @@ use gpui_component::{
 };
 use std::{sync::Arc, time::Duration};
 use tracing::{debug, info};
+use zedis_ui::ZedisDivider;
+
+/// Creates a disabled ghost button used as a metric badge in the status bar.
+#[inline]
+fn metric_badge(
+    id: impl Into<gpui::ElementId>,
+    icon: impl Into<Icon>,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
+) -> Button {
+    Button::new(id)
+        .ghost()
+        .px_1()
+        .disabled(true)
+        .tooltip(tooltip)
+        .icon(icon)
+        .label(label)
+}
 
 /// Formats the database size and scan count string "count/total".
 #[inline]
@@ -48,26 +66,22 @@ fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
 /// Formats the latency string and determines the color based on the delay.
 #[inline]
 fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (SharedString, Hsla) {
-    if let Some(latency) = latency {
-        let ms = latency.as_millis();
-        let theme = cx.theme();
-        // Determine color based on latency thresholds
-        let color = if ms < 50 {
-            theme.green
-        } else if ms < 500 {
-            theme.yellow
-        } else {
-            theme.red
-        };
-        // Format string
-        if ms < 1000 {
-            (format!("{ms}ms").into(), color)
-        } else {
-            (format!("{:.2}s", ms as f64 / 1000.0).into(), color)
-        }
+    let Some(latency) = latency else {
+        return ("--".into(), cx.theme().primary);
+    };
+    let ms = latency.as_millis();
+    let theme = cx.theme();
+    let color = match ms {
+        0..50 => theme.green,
+        50..500 => theme.yellow,
+        _ => theme.red,
+    };
+    let label = if ms < 1000 {
+        format!("{ms}ms")
     } else {
-        ("--".to_string().into(), cx.theme().primary)
-    }
+        format!("{:.2}s", ms as f64 / 1000.0)
+    };
+    (label.into(), color)
 }
 
 /// Formats the node count and version information.
@@ -360,12 +374,8 @@ impl ZedisStatusBar {
             }
         }));
     }
-    /// Render a vertical divider line
-    fn render_divider(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().h_4().w_px().flex_none().bg(cx.theme().muted_foreground).mx_4()
-    }
     /// Render the server status
-    fn render_server_status(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_server_status(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
         let nodes_description = server_state.nodes_description.clone();
@@ -382,124 +392,143 @@ impl ZedisStatusBar {
             server_state.slow_logs.join("\n").into()
         };
 
-        h_flex()
-            .items_center()
-            .gap_2()
+        ZedisDivider::new()
             .child(
-                Button::new("zedis-status-bar-server-terminal")
-                    .outline()
-                    .small()
-                    .tooltip(terminal_tooltip)
-                    .icon(IconName::SquareTerminal)
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state.update(cx, |state, cx| {
-                            state.toggle_terminal(cx);
-                        });
-                    })),
-            )
-            .when(server_state.supports_db_selection, |this| {
-                this.child(Select::new(&self.db_state).mt_1().small())
-            })
-            .child(
-                Button::new("zedis-status-bar-server-toggle-readonly")
-                    .outline()
-                    .small()
-                    .tooltip(readonly_tooltip)
-                    .when(self.readonly, |this| this.icon(Icon::new(CustomIconName::Lock)))
-                    .when(!self.readonly, |this| this.icon(Icon::new(CustomIconName::LockOpen)))
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state.update(cx, |state, cx| {
-                            state.toggle_readonly(cx);
-                        });
-                    })),
-            )
-            .child(self.render_divider(window, cx))
-            .child(
-                Button::new("zedis-status-bar-scan-more")
-                    .outline()
-                    .small()
-                    .disabled(is_completed)
-                    .tooltip(if is_completed {
-                        i18n_status_bar(cx, "scan_completed")
-                    } else {
-                        i18n_status_bar(cx, "scan_more_keys")
-                    })
-                    .mr_1()
-                    .icon(CustomIconName::ChevronsDown)
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state.update(cx, |state, cx| {
-                            state.scan_next(cx);
-                        });
-                    })),
-            )
-            .child(Label::new(server_state.size.clone()).mr_2())
-            .child(
-                div()
+                h_flex()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        h_flex()
-                            .child(Icon::new(CustomIconName::Network).text_color(cx.theme().primary).mr_1())
-                            .child(Label::new(server_state.nodes.clone())),
+                        Button::new("zedis-status-bar-server-terminal")
+                            .outline()
+                            .small()
+                            .tooltip(terminal_tooltip)
+                            .icon(IconName::SquareTerminal)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.server_state.update(cx, |state, cx| {
+                                    state.toggle_terminal(cx);
+                                });
+                            })),
                     )
-                    .id("zedis-servers")
-                    .tooltip(move |window, cx| Tooltip::new(nodes_description.clone()).build(window, cx)),
+                    .when(server_state.supports_db_selection, |this| {
+                        this.child(Select::new(&self.db_state).mt_1().small())
+                    })
+                    .child(
+                        Button::new("zedis-status-bar-server-toggle-readonly")
+                            .outline()
+                            .small()
+                            .tooltip(readonly_tooltip)
+                            .when(self.readonly, |this| this.icon(Icon::new(CustomIconName::Lock)))
+                            .when(!self.readonly, |this| {
+                                this.icon(Icon::new(CustomIconName::LockOpen))
+                            })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.server_state.update(cx, |state, cx| {
+                                    state.toggle_readonly(cx);
+                                });
+                            })),
+                    ),
             )
-            .child(self.render_divider(window, cx))
             .child(
-                Button::new("zedis-status-bar-server-metrics")
-                    .outline()
-                    .small()
-                    .icon(CustomIconName::Activity)
-                    .on_click(cx.listener(|_this, _, _window, cx| {
-                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                            let route = if state.route() == Route::Metrics {
-                                Route::Editor
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("zedis-status-bar-scan-more")
+                            .outline()
+                            .small()
+                            .disabled(is_completed)
+                            .tooltip(if is_completed {
+                                i18n_status_bar(cx, "scan_completed")
                             } else {
-                                Route::Metrics
-                            };
-                            state.go_to(route, cx);
-                        });
-                    })),
+                                i18n_status_bar(cx, "scan_more_keys")
+                            })
+                            .mr_1()
+                            .icon(CustomIconName::ChevronsDown)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.server_state.update(cx, |state, cx| {
+                                    state.scan_next(cx);
+                                });
+                            })),
+                    )
+                    .child(Label::new(server_state.size.clone()).mr_2())
+                    .child(
+                        div()
+                            .child(
+                                h_flex()
+                                    .child(
+                                        Icon::new(CustomIconName::Network)
+                                            .text_color(cx.theme().primary)
+                                            .mr_1(),
+                                    )
+                                    .child(Label::new(server_state.nodes.clone())),
+                            )
+                            .id("zedis-servers")
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(nodes_description.clone()).build(window, cx)
+                            }),
+                    ),
             )
             .child(
-                Button::new("zedis-status-bar-latency")
-                    .ghost()
-                    .px_1()
-                    .disabled(true)
-                    .tooltip(i18n_common(cx, "latency"))
-                    .icon(Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary))
-                    .text_color(server_state.latency.1)
-                    .label(server_state.latency.0.clone())
-                    .font_family(get_font_family()),
-            )
-            .child(
-                Button::new("zedis-status-bar-used-memory")
-                    .ghost()
-                    .px_1()
-                    .disabled(true)
-                    .tooltip(i18n_common(cx, "used_memory"))
-                    .icon(Icon::new(CustomIconName::MemoryStick))
-                    .text_color(cx.theme().primary)
-                    .label(server_state.used_memory.clone()),
-            )
-            .child(
-                Button::new("zedis-status-bar-clients")
-                    .ghost()
-                    .px_1()
-                    .disabled(true)
-                    .text_color(cx.theme().primary)
-                    .tooltip(i18n_common(cx, "clients"))
-                    .icon(Icon::new(CustomIconName::AudioWaveform))
-                    .label(server_state.clients.clone()),
-            )
-            .child(
-                Button::new("zedis-status-slow-logs")
-                    .ghost()
-                    .px_1()
-                    .disabled(true)
-                    .text_color(cx.theme().primary)
-                    .tooltip(slow_logs_tooltips)
-                    .icon(Icon::new(CustomIconName::Snail))
-                    .label(server_state.slow_logs.len().to_string()),
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("zedis-status-bar-server-metrics")
+                            .outline()
+                            .small()
+                            .icon(CustomIconName::Activity)
+                            .on_click(cx.listener(|_this, _, _window, cx| {
+                                cx.global::<ZedisGlobalStore>().clone().update(
+                                    cx,
+                                    |state, cx| {
+                                        let route = if state.route() == Route::Metrics {
+                                            Route::Editor
+                                        } else {
+                                            Route::Metrics
+                                        };
+                                        state.go_to(route, cx);
+                                    },
+                                );
+                            })),
+                    )
+                    .child(
+                        metric_badge(
+                            "zedis-status-bar-latency",
+                            Icon::new(CustomIconName::ChevronsLeftRightEllipsis)
+                                .text_color(cx.theme().primary),
+                            server_state.latency.0.clone(),
+                            i18n_common(cx, "latency"),
+                        )
+                        .text_color(server_state.latency.1)
+                        .font_family(get_font_family()),
+                    )
+                    .child(
+                        metric_badge(
+                            "zedis-status-bar-used-memory",
+                            Icon::new(CustomIconName::MemoryStick),
+                            server_state.used_memory.clone(),
+                            i18n_common(cx, "used_memory"),
+                        )
+                        .text_color(cx.theme().primary),
+                    )
+                    .child(
+                        metric_badge(
+                            "zedis-status-bar-clients",
+                            Icon::new(CustomIconName::AudioWaveform),
+                            server_state.clients.clone(),
+                            i18n_common(cx, "clients"),
+                        )
+                        .text_color(cx.theme().primary),
+                    )
+                    .child(
+                        metric_badge(
+                            "zedis-status-slow-logs",
+                            Icon::new(CustomIconName::Snail),
+                            server_state.slow_logs.len().to_string(),
+                            slow_logs_tooltips,
+                        )
+                        .text_color(cx.theme().primary),
+                    ),
             )
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -596,14 +625,19 @@ impl Render for ZedisStatusBar {
             .border_t_1()
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
-            .child(self.render_server_status(window, cx))
-            .child(self.render_divider(window, cx))
-            .child(self.render_editor_settings(window, cx))
-            .when(self.state.data_format.is_some(), |this| {
-                this.child(self.render_divider(window, cx))
-            })
-            .child(self.render_data_format(window, cx))
-            .child(self.render_viewer_mode(window, cx))
+            .child(
+                ZedisDivider::new()
+                    .child(self.render_server_status(window, cx))
+                    .child(self.render_editor_settings(window, cx))
+                    .when(self.state.data_format.is_some(), |this| {
+                        this.child(
+                            h_flex()
+                                .items_center()
+                                .child(self.render_data_format(window, cx))
+                                .child(self.render_viewer_mode(window, cx)),
+                        )
+                    }),
+            )
             .child(self.render_errors(window, cx))
     }
 }

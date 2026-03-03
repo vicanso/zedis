@@ -14,7 +14,6 @@
 
 use crate::{
     assets::CustomIconName,
-    components::{FormDialog, FormField, open_add_form_dialog},
     db::get_search_history_manager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
@@ -28,7 +27,7 @@ use gpui::{
     Task, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, StyledExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -43,9 +42,9 @@ use gpui_component::{
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{rc::Rc, str::FromStr, time::Duration};
+use std::{str::FromStr, time::Duration};
 use tracing::info;
-use zedis_ui::{ZedisDialog, ZedisSkeletonLoading};
+use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
 
 // Constants for tree layout and behavior
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
@@ -706,41 +705,125 @@ impl ZedisKeyTree {
 
     fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let category_list = ["String", "List", "Set", "Zset", "Hash", "Stream"];
+        // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5
         let fields = vec![
-            FormField::new(i18n_key_tree(cx, "category"))
-                .with_options(category_list.iter().map(|s| s.to_string().into()).collect()),
-            FormField::new(i18n_common(cx, "key"))
-                .with_placeholder(i18n_common(cx, "key_placeholder"))
-                .with_focus()
-                .with_validate(validate_long_string),
-            FormField::new(i18n_common(cx, "ttl"))
-                .with_placeholder(i18n_common(cx, "ttl_placeholder"))
-                .with_validate(validate_ttl),
+            ZedisFormField::new("category", i18n_key_tree(cx, "category"))
+                .field_type(ZedisFormFieldType::RadioGroup)
+                .options(category_list.iter().map(|s| s.to_string().into()).collect()),
+            ZedisFormField::new("key", i18n_common(cx, "key"))
+                .placeholder(i18n_common(cx, "key_placeholder"))
+                .focus()
+                .validate(move |s| {
+                    if validate_long_string(s) {
+                        None
+                    } else {
+                        Some("Too long".into())
+                    }
+                }),
+            ZedisFormField::new("ttl", i18n_common(cx, "ttl"))
+                .placeholder(i18n_common(cx, "ttl_placeholder"))
+                .validate(move |s| {
+                    if validate_ttl(s) {
+                        None
+                    } else {
+                        Some("Invalid TTL".into())
+                    }
+                }),
+            // Value field for String, List, Set
+            ZedisFormField::new("value", i18n_common(cx, "value"))
+                .placeholder(i18n_common(cx, "value_placeholder"))
+                .visible_on("category", &[0, 1, 2]),
+            // Score + Member fields for Zset
+            ZedisFormField::new("score", i18n_common(cx, "score"))
+                .placeholder(i18n_common(cx, "score_placeholder"))
+                .visible_on("category", &[3]),
+            ZedisFormField::new("member", i18n_common(cx, "member"))
+                .placeholder(i18n_common(cx, "member_placeholder"))
+                .visible_on("category", &[3]),
+            // Field + Value fields for Hash
+            ZedisFormField::new("hash_field", i18n_common(cx, "field"))
+                .placeholder(i18n_common(cx, "field_placeholder"))
+                .visible_on("category", &[4]),
+            ZedisFormField::new("hash_value", i18n_common(cx, "value"))
+                .placeholder(i18n_common(cx, "value_placeholder"))
+                .visible_on("category", &[4]),
+            // Stream ID field for Stream only
+            ZedisFormField::new("stream_id", i18n_common(cx, "stream_id"))
+                .placeholder(i18n_common(cx, "stream_id_placeholder"))
+                .visible_on("category", &[5]),
         ];
         let server_state = self.server_state.clone();
-        let handle_submit = Rc::new(move |values: Vec<SharedString>, window: &mut Window, cx: &mut App| {
-            if values.len() != 3 {
-                return false;
-            }
-            let index = values[0].parse::<usize>().unwrap_or(0);
-            let category = category_list.get(index).cloned().unwrap_or_default();
 
-            server_state.update(cx, |this, cx| {
-                this.add_key(category.to_string().into(), values[1].clone(), values[2].clone(), cx);
-            });
-            window.close_dialog(cx);
-            true
-        });
+        ZedisFormOptions::new(fields)
+            .title(i18n_key_tree(cx, "add_key_title"))
+            .confirm_label(i18n_common(cx, "confirm"))
+            .cancel_label(i18n_common(cx, "cancel"))
+            .support_add_fields_on("category", &[5])
+            .add_field_placeholder(i18n_common(cx, "field_placeholder"))
+            .add_value_placeholder(i18n_common(cx, "value_placeholder"))
+            .on_dialog_submit(move |values, _window, cx| {
+                let category_index = values
+                    .get("category")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let category = category_list.get(category_index).cloned().unwrap_or_default();
+                let key = values.get("key").cloned().unwrap_or_default();
+                let ttl = values.get("ttl").cloned().unwrap_or_default();
 
-        open_add_form_dialog(
-            FormDialog {
-                title: i18n_key_tree(cx, "add_key_title"),
-                fields,
-                handle_submit,
-            },
-            window,
-            cx,
-        );
+                let key_type = KeyType::from(category.to_lowercase().as_str());
+                let seed = key_type.seed_args();
+                let get_or_seed = |name: &str, index: usize| -> SharedString {
+                    values
+                        .get(name)
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| seed.get(index).unwrap_or(&"").to_string().into())
+                };
+                let args: Vec<SharedString> = match key_type {
+                    KeyType::String | KeyType::List | KeyType::Set => {
+                        vec![get_or_seed("value", 0)]
+                    }
+                    KeyType::Zset => {
+                        vec![get_or_seed("score", 0), get_or_seed("member", 1)]
+                    }
+                    KeyType::Hash => {
+                        vec![get_or_seed("hash_field", 0), get_or_seed("hash_value", 1)]
+                    }
+                    KeyType::Stream => {
+                        // stream_id + dynamic field-value pairs from add_fields
+                        let mut args = vec![get_or_seed("stream_id", 0)];
+                        // Collect dynamic field-value pairs added by the user.
+                        // They are stored as sequential entries in the values map
+                        // after the static fields.
+                        let static_keys = [
+                            "category", "key", "ttl", "value", "score", "member",
+                            "hash_field", "hash_value", "stream_id",
+                        ];
+                        let mut has_dynamic = false;
+                        for (k, v) in &values {
+                            if !static_keys.contains(&k.as_ref()) {
+                                args.push(k.clone());
+                                args.push(v.clone());
+                                has_dynamic = true;
+                            }
+                        }
+                        if !has_dynamic {
+                            // Fallback to seed_args field-value pair
+                            args.push(seed.get(1).unwrap_or(&"field").to_string().into());
+                            args.push(seed.get(2).unwrap_or(&"value").to_string().into());
+                        }
+                        args
+                    }
+                    _ => seed.into_iter().map(|s| s.to_string().into()).collect(),
+                };
+
+                server_state.update(cx, |this, cx| {
+                    this.add_key(category.to_string().into(), key, ttl, args, cx);
+                });
+                true
+            })
+            .open_dialog(window, cx);
+
         let entity_id = cx.entity_id();
         cx.defer(move |cx| {
             cx.notify(entity_id);

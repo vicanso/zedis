@@ -23,6 +23,8 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
 
+pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
+
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum DataFormat {
     #[default]
@@ -383,6 +385,32 @@ impl KeyType {
             KeyType::Stream => "STRM",
             KeyType::Vectorset => "VEC",
             KeyType::Unknown => "",
+        }
+    }
+
+    /// Returns the Redis command used to create a key of this type.
+    pub fn create_command(&self) -> &'static str {
+        match self {
+            KeyType::String => "SET",
+            KeyType::List => "LPUSH",
+            KeyType::Set => "SADD",
+            KeyType::Zset => "ZADD",
+            KeyType::Hash => "HSET",
+            KeyType::Stream => "XADD",
+            _ => "",
+        }
+    }
+
+    /// Returns the minimal seed arguments required to create a key of this type.
+    pub fn seed_args(&self) -> Vec<&'static str> {
+        match self {
+            KeyType::String => vec![""],
+            KeyType::List => vec!["item"],
+            KeyType::Set => vec!["member"],
+            KeyType::Zset => vec!["1", "member"],
+            KeyType::Hash => vec!["field", "value"],
+            KeyType::Stream => vec!["*", "field", "value"],
+            _ => vec![],
         }
     }
 

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::states::{KeyType, RedisValue, ZedisServerState};
-use crate::views::{KvTableColumn, KvTableColumnType};
+use super::{KvTableColumn, KvTableColumnType};
 use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, StyledExt, h_flex,
@@ -58,7 +58,22 @@ pub trait ZedisKvFetcher: 'static {
     /// Removes an item at the specified index.
     fn remove(&self, index: usize, _cx: &mut App);
 
+    /// Whether form fields are required when adding/editing.
+    fn fields_required(&self) -> bool { true }
+
+    /// Whether submitted form values should include field names alongside values.
+    fn include_field_names(&self) -> bool { false }
+
+    /// Whether the edit form should support dynamic add-fields.
+    fn support_add_fields(&self) -> bool { false }
+
     /// Filters data based on a keyword.
+    ///
+    /// Filtering strategy varies by data type:
+    /// - **Client-side** (List, Stream): searches already-loaded data in memory,
+    ///   maintains visible item index mapping for correct row operations.
+    /// - **Server-side** (Set, Hash, Zset): sends keyword to server,
+    ///   resets scan cursor and loads matching results via SCAN commands.
     fn filter(&self, keyword: SharedString, _cx: &mut App);
 
     /// Adds values for a new row.

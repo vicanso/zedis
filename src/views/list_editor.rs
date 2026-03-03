@@ -16,9 +16,10 @@ use crate::{
     components::ZedisKvFetcher,
     helpers::fast_contains_ignore_case,
     states::{KeyType, RedisValue, ZedisServerState},
-    views::{KvTableColumn, ZedisKvTable},
+    components::KvTableColumn,
+    views::{ZedisKvTable, kv_table::define_kv_editor},
 };
-use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use gpui::{App, Entity, SharedString, Window, prelude::*};
 use tracing::info;
 use zedis_ui::ZedisFormFieldType;
 
@@ -211,26 +212,9 @@ impl ZedisKvFetcher for ZedisListValues {
     }
 }
 
-/// Editor view for Redis List data type.
-///
-/// Provides a table-based interface for viewing and manipulating Redis lists,
-/// supporting operations like LRANGE, LSET, LREM, LPUSH, and RPUSH.
-///
-/// Features:
-/// - Paginated loading of large lists
-/// - Keyword-based filtering
-/// - In-place value editing
-/// - Add values to either end of the list
-/// - Delete individual items
-pub struct ZedisListEditor {
-    /// Table component managing the list data display and interactions
-    table_state: Entity<ZedisKvTable<ZedisListValues>>,
-}
+define_kv_editor!(ZedisListEditor, ZedisListValues);
 
 impl ZedisListEditor {
-    /// Creates a new list editor view for the given server state.
-    ///
-    /// Initializes a single-column table to display list values.
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisListValues>::new(
@@ -244,15 +228,5 @@ impl ZedisListEditor {
         info!("Creating new list editor view");
 
         Self { table_state }
-    }
-}
-
-impl Render for ZedisListEditor {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .min_h_0()
-            .child(self.table_state.clone())
-            .into_any_element()
     }
 }

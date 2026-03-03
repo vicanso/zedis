@@ -26,9 +26,10 @@
 use crate::{
     components::ZedisKvFetcher,
     states::{KeyType, RedisValue, ZedisServerState},
-    views::{KvTableColumn, ZedisKvTable},
+    components::KvTableColumn,
+    views::{ZedisKvTable, kv_table::define_kv_editor},
 };
-use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use gpui::{App, Entity, SharedString, Window, prelude::*};
 use zedis_ui::ZedisFormFieldType;
 
 /// Data adapter for Redis ZSET values to work with the KV table component.
@@ -175,33 +176,15 @@ impl ZedisKvFetcher for ZedisZsetValues {
     }
 }
 
-/// Main ZSET editor view component.
-///
-/// Provides a table-based UI for viewing and managing Redis ZSET values.
-/// Wraps the generic `ZedisKvTable` component with ZSET-specific configuration
-/// including two columns (member name and score).
-pub struct ZedisZsetEditor {
-    /// The table component that renders the ZSET members and scores
-    table_state: Entity<ZedisKvTable<ZedisZsetValues>>,
-}
+define_kv_editor!(ZedisZsetEditor, ZedisZsetValues);
 
 impl ZedisZsetEditor {
-    /// Creates a new ZSET editor instance.
-    ///
-    /// # Arguments
-    /// * `server_state` - Reference to the server state for Redis operations
-    /// * `window` - GPUI window handle
-    /// * `cx` - GPUI context for component initialization
-    ///
-    /// # Returns
-    /// A new `ZedisZsetEditor` instance with a two-column table (Value and Score)
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Initialize the KV table with two columns: member and score
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisZsetValues>::new(
                 vec![
-                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor), // Member name column (flexible width)
-                    KvTableColumn::new("Score", Some(150.)), // Score column (fixed 150px width)
+                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
+                    KvTableColumn::new("Score", Some(150.)),
                 ],
                 server_state,
                 window,
@@ -210,16 +193,5 @@ impl ZedisZsetEditor {
         });
 
         Self { table_state }
-    }
-}
-
-impl Render for ZedisZsetEditor {
-    /// Renders the ZSET editor as a full-size container with the table.
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .min_h_0()
-            .child(self.table_state.clone())
-            .into_any_element()
     }
 }

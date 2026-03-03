@@ -37,7 +37,7 @@ pub use content::ZedisContent;
 pub use editor::ZedisEditor;
 pub use hash_editor::ZedisHashEditor;
 pub use key_tree::ZedisKeyTree;
-pub use kv_table::{KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvTable};
+pub use kv_table::ZedisKvTable;
 pub use list_editor::ZedisListEditor;
 pub use metrics::ZedisMetrics;
 pub use proto_editor::ZedisProtoEditor;

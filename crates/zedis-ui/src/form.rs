@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use gpui::{
-    AnyElement, ElementId, Entity, FontWeight, Render, SharedString, StyleRefinement, Subscription, Window, div,
-    prelude::*,
+    AnyElement, App, ElementId, Entity, FontWeight, Pixels, Render, SharedString, StyleRefinement, Subscription,
+    Window, div, prelude::*,
 };
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
@@ -27,11 +27,22 @@ use gpui_component::radio::RadioGroup;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::text::TextView;
-use gpui_component::{ActiveTheme, Disableable, IconName, RopeExt, StyledExt, h_flex};
+use gpui_component::{ActiveTheme, Disableable, IconName, RopeExt, StyledExt, WindowExt, h_flex};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::mem::take;
 use std::rc::Rc;
+
+/// Arranges buttons following platform conventions.
+///
+/// - macOS/Linux: primary button on the right
+/// - Windows: primary button on the left
+pub fn platform_buttons(mut buttons: Vec<Button>) -> Vec<Button> {
+    if cfg!(target_os = "windows") {
+        buttons.reverse();
+    }
+    buttons
+}
 use std::sync::Arc;
 
 /// Callback invoked on form submission with all field values collected as a map.
@@ -82,6 +93,9 @@ pub struct ZedisFormField {
     /// Whether this field should receive focus on the first render.
     focus: bool,
     readonly: bool,
+    /// When set, the field is only visible when the referenced RadioGroup's
+    /// selected index is in the given list.
+    visible_on: Option<(SharedString, Vec<usize>)>,
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
@@ -107,6 +121,7 @@ impl ZedisFormField {
             focus: false,
             mask: false,
             readonly: false,
+            visible_on: None,
             style: StyleRefinement::default(),
         }
     }
@@ -170,6 +185,13 @@ impl ZedisFormField {
         self.readonly = true;
         self
     }
+
+    /// Make this field visible only when the RadioGroup with the given name
+    /// has its selected index in `indices`.
+    pub fn visible_on(mut self, name: impl Into<SharedString>, indices: &[usize]) -> Self {
+        self.visible_on = Some((name.into(), indices.to_vec()));
+        self
+    }
 }
 
 impl Styled for ZedisFormField {
@@ -196,7 +218,12 @@ pub struct ZedisFormOptions {
     on_submit: Option<ZedisFormSubmitHandler>,
     on_cancel: Option<ZedisFormCancelHandler>,
     foot_actions: Option<ZedisFormActionsBuilder>,
+    dialog_submit: Option<ZedisFormDialogSubmitHandler>,
+    dialog_max_height: Option<Pixels>,
     support_add_fields: bool,
+    /// When set, the add-fields section is only shown when the referenced
+    /// RadioGroup's selected index is in the given list.
+    support_add_fields_on: Option<(SharedString, Vec<usize>)>,
 }
 
 impl Default for ZedisFormOptions {
@@ -215,7 +242,10 @@ impl Default for ZedisFormOptions {
             on_submit: None,
             on_cancel: None,
             foot_actions: None,
+            dialog_submit: None,
+            dialog_max_height: None,
             support_add_fields: false,
+            support_add_fields_on: None,
         }
     }
 }
@@ -292,6 +322,14 @@ impl ZedisFormOptions {
         self
     }
 
+    /// Conditionally show the add-fields section only when the referenced
+    /// RadioGroup's selected index is in `indices`.
+    pub fn support_add_fields_on(mut self, name: impl Into<SharedString>, indices: &[usize]) -> Self {
+        self.support_add_fields = true;
+        self.support_add_fields_on = Some((name.into(), indices.to_vec()));
+        self
+    }
+
     /// Set the placeholder for the add field input.
     pub fn add_field_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.add_field_placeholder = placeholder.into();
@@ -320,6 +358,106 @@ impl ZedisFormOptions {
 
 impl gpui::prelude::FluentBuilder for ZedisFormOptions {}
 
+/// Handler closure invoked on dialog form submission.
+/// Receives field values as an `IndexMap`, and should return `true` if the
+/// submission was handled successfully (the dialog will be closed automatically).
+type ZedisFormDialogSubmitHandler =
+    Rc<dyn Fn(IndexMap<SharedString, SharedString>, &mut Window, &mut App) -> bool + 'static>;
+
+impl ZedisFormOptions {
+    /// Opens this form inside a modal dialog overlay.
+    ///
+    /// This is a convenience method that wraps the form in a `window.open_dialog`
+    /// call, automatically handling dialog close on submit/cancel.
+    ///
+    /// The submit handler receives `IndexMap<SharedString, SharedString>` and
+    /// `&mut App` (not `&mut Context<ZedisForm>`), making it easier to use from
+    /// any context without needing a reference to the form entity.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// ZedisFormOptions::new(vec![
+    ///     ZedisFormField::new("name", "Name").placeholder("Enter name").focus(),
+    ///     ZedisFormField::new("age", "Age").field_type(ZedisFormFieldType::InputNumber),
+    /// ])
+    /// .title("Add User")
+    /// .on_dialog_submit(move |values, window, cx| {
+    ///     let name = values.get("name").cloned().unwrap_or_default();
+    ///     // ... handle submission ...
+    ///     true
+    /// })
+    /// .open_dialog(window, cx);
+    /// ```
+    pub fn on_dialog_submit(
+        mut self,
+        handler: impl Fn(IndexMap<SharedString, SharedString>, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        self.dialog_submit = Some(Rc::new(handler));
+        self
+    }
+
+    /// Set the maximum height for the form content area when opened in a dialog.
+    pub fn dialog_max_height(mut self, max_height: Pixels) -> Self {
+        self.dialog_max_height = Some(max_height);
+        self
+    }
+
+    pub fn open_dialog(mut self, window: &mut Window, cx: &mut App) {
+        // Wrap the dialog-level submit handler into a form-level on_submit.
+        // The wrapper auto-closes the dialog when the handler returns true.
+        if let Some(dialog_handler) = self.dialog_submit.take() {
+            self.on_submit = Some(Rc::new(move |values, window, cx| {
+                if dialog_handler(values, window, cx) {
+                    window.close_dialog(cx);
+                    return true;
+                }
+                false
+            }));
+        }
+
+        // Set on_cancel to close the dialog.
+        self.on_cancel = Some(Rc::new(|window, cx| {
+            window.close_dialog(cx);
+            true
+        }));
+
+        let title = self.title.clone();
+        self.title = None;
+        let max_height = self.dialog_max_height.take();
+        // Create the form entity once; the dialog closure (called every frame)
+        // just clones the entity handle.
+        let form = cx.new(|cx| {
+            let mut f = ZedisForm::new("dialog-form", self, window, cx);
+            f.in_dialog = true;
+            f
+        });
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let mut d = dialog.overlay(true).overlay_closable(true);
+            if let Some(t) = &title {
+                d = d.title(t.clone());
+            }
+            // Wrap in a max-height container if specified.
+            let child: AnyElement = if let Some(mh) = max_height {
+                div().max_h(mh).child(form.clone()).into_any_element()
+            } else {
+                form.clone().into_any_element()
+            };
+            // Override the Dialog's default on_ok (which closes on Enter)
+            // to trigger form validation and submit instead.
+            let form_for_ok = form.clone();
+            d.child(child).on_ok(move |_, window, cx| {
+                form_for_ok.update(cx, |form, cx| {
+                    form.submit(window, cx);
+                });
+                // Don't close here — the submit handler closes on success.
+                false
+            })
+        });
+    }
+}
+
 /// A dynamic form component built on GPUI. Manages a heterogeneous list of
 /// form fields (text inputs, number inputs, checkboxes, radio groups), optional
 /// tab-based grouping, validation, and submit/cancel actions.
@@ -340,6 +478,7 @@ pub struct ZedisForm {
     add_value_placeholder: SharedString,
     tab_selected_index: Entity<usize>,
     support_add_fields: bool,
+    support_add_fields_on: Option<(SharedString, Vec<usize>)>,
     errors: HashMap<SharedString, SharedString>,
     required_msg: SharedString,
     on_submit: Option<ZedisFormSubmitHandler>,
@@ -348,6 +487,7 @@ pub struct ZedisForm {
     tabs: Option<Vec<SharedString>>,
     _subscriptions: Vec<Subscription>,
     pub is_processing: bool,
+    in_dialog: bool,
 }
 
 impl ZedisForm {
@@ -400,14 +540,23 @@ impl ZedisForm {
                     }
 
                     // Clear validation errors when the user edits the field.
+                    // For single-line inputs, also submit the form on Enter.
                     let name_clone = name.clone();
-                    subscriptions.push(
-                        cx.subscribe_in(&state, window, move |this, _state, event, _window, cx| {
-                            if let InputEvent::Change = event {
+                    let is_single_line = matches!(
+                        field.field_type,
+                        ZedisFormFieldType::Input | ZedisFormFieldType::InputNumber
+                    );
+                    subscriptions.push(cx.subscribe_in(&state, window, move |this, _state, event, window, cx| {
+                        match event {
+                            InputEvent::Change => {
                                 this.on_value_change(name_clone.clone(), cx);
                             }
-                        }),
-                    );
+                            InputEvent::PressEnter { .. } if is_single_line && !this.in_dialog => {
+                                this.submit(window, cx);
+                            }
+                            _ => {}
+                        }
+                    }));
 
                     // Handle increment/decrement steps for number inputs.
                     if field.field_type == ZedisFormFieldType::InputNumber {
@@ -466,13 +615,59 @@ impl ZedisForm {
             add_field_placeholder: options.add_field_placeholder,
             add_value_placeholder: options.add_value_placeholder,
             support_add_fields: options.support_add_fields,
+            support_add_fields_on: options.support_add_fields_on,
             is_processing: false,
+            in_dialog: false,
             _subscriptions: subscriptions,
         };
         if this.support_add_fields {
             this.add_field(window, cx);
         }
         this
+    }
+
+    /// Returns `true` if the field should be displayed given the current tab
+    /// and RadioGroup state.
+    fn is_field_visible(&self, field: &ZedisFormField, active_tab_index: usize, cx: &App) -> bool {
+        if let Some(tab_index) = field.tab_index
+            && tab_index != active_tab_index
+        {
+            return false;
+        }
+        if let Some((ref radio_name, ref indices)) = field.visible_on {
+            let selected = self.radio_group_selected(radio_name, cx);
+            if !indices.contains(&selected) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns the selected index of a RadioGroup field by name.
+    fn radio_group_selected(&self, name: &str, cx: &App) -> usize {
+        self.field_states
+            .iter()
+            .find_map(|(f, s)| {
+                if f.name.as_ref() == name
+                    && let ZedisFormFieldState::RadioGroup(state) = s
+                {
+                    return Some(*state.read(cx));
+                }
+                None
+            })
+            .unwrap_or(0)
+    }
+
+    /// Returns `true` if the dynamic add-fields section should be displayed.
+    fn should_show_add_fields(&self, cx: &App) -> bool {
+        if !self.support_add_fields {
+            return false;
+        }
+        if let Some((ref radio_name, ref indices)) = self.support_add_fields_on {
+            let selected = self.radio_group_selected(radio_name, cx);
+            return indices.contains(&selected);
+        }
+        true
     }
 
     /// Clear the validation error for a specific field when its value changes.
@@ -492,7 +687,11 @@ impl ZedisForm {
         let mut has_errors = false;
         let mut values = IndexMap::new();
 
+        let active_tab_index = *self.tab_selected_index.read(cx);
         for (field, state) in &self.field_states {
+            if !self.is_field_visible(field, active_tab_index, cx) {
+                continue;
+            }
             let value = match state {
                 ZedisFormFieldState::Input(state) => state.read(cx).value().to_string(),
                 ZedisFormFieldState::RadioGroup(state) => state.read(cx).to_string(),
@@ -519,17 +718,22 @@ impl ZedisForm {
             cx.notify();
             return None;
         }
-        for (field_state, value_state) in &self.add_field_states {
-            let field = field_state.read(cx).value();
-            let value = value_state.read(cx).value();
-            values.insert(field, value);
+        if self.should_show_add_fields(cx) {
+            for (field_state, value_state) in &self.add_field_states {
+                let field = field_state.read(cx).value();
+                let value = value_state.read(cx).value();
+                values.insert(field, value);
+            }
         }
         Some(values)
     }
 
     /// Validate all fields, collect their values, and invoke the submit handler.
     /// Runs required-checks first, then custom validators per field.
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_processing {
+            return;
+        }
         let Some(values) = self.try_get_values(cx) else {
             return;
         };
@@ -645,10 +849,7 @@ impl Render for ZedisForm {
         let active_tab_index = *self.tab_selected_index.read(cx);
 
         for (index, (field, field_state)) in self.field_states.iter().enumerate() {
-            // Skip fields that belong to a different tab.
-            if let Some(tab_index) = field.tab_index
-                && tab_index != active_tab_index
-            {
+            if !self.is_field_visible(field, active_tab_index, cx) {
                 continue;
             }
 
@@ -689,6 +890,7 @@ impl Render for ZedisForm {
                     let id = ElementId::NamedChild(parent_id.clone(), index.to_string().into());
                     let state = state.clone();
                     let selected = *state.read(cx);
+                    let form_entity = cx.entity().clone();
                     form_container = form_container.child(
                         new_field(field).child(
                             RadioGroup::horizontal(id)
@@ -699,6 +901,7 @@ impl Render for ZedisForm {
                                     state.update(cx, |state, _| {
                                         *state = *index;
                                     });
+                                    form_entity.update(cx, |_, cx| cx.notify());
                                 }),
                         ),
                     );
@@ -706,24 +909,27 @@ impl Render for ZedisForm {
             }
         }
 
-        for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
-            form_container = form_container.child(
-                field().child(
-                    h_flex()
-                        .gap_2()
-                        .child(Input::new(field_state))
-                        .child(Input::new(value_state))
-                        .child(
-                            Button::new(("remove-add-field", index))
-                                .icon(IconName::CircleX)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_add_field(index, cx);
-                                })),
-                        ),
-                ),
-            )
+        let show_add_fields = self.should_show_add_fields(cx);
+        if show_add_fields {
+            for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
+                form_container = form_container.child(
+                    field().child(
+                        h_flex()
+                            .gap_2()
+                            .child(Input::new(field_state))
+                            .child(Input::new(value_state))
+                            .child(
+                                Button::new(("remove-add-field", index))
+                                    .icon(IconName::CircleX)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remove_add_field(index, cx);
+                                    })),
+                            ),
+                    ),
+                )
+            }
         }
-        if self.support_add_fields {
+        if show_add_fields {
             form_container =
                 form_container.child(field().child(h_flex().justify_end().child(
                     Button::new("add-add-field").icon(IconName::Plus).on_click(cx.listener(
@@ -775,10 +981,7 @@ impl Render for ZedisForm {
             );
         }
 
-        // Windows convention: primary button on the left; macOS/Linux: on the right.
-        if cfg!(target_os = "windows") {
-            buttons.reverse();
-        }
+        let buttons = platform_buttons(buttons);
         let mut right_buttons = h_flex().justify_end().gap_4();
         let mut left_buttons = h_flex().justify_start().gap_4();
 

@@ -14,10 +14,11 @@
 
 use crate::{
     components::ZedisKvFetcher,
-    states::{RedisValue, ZedisServerState},
-    views::{KvTableColumn, ZedisKvTable},
+    states::{KeyType, RedisValue, ZedisServerState},
+    components::KvTableColumn,
+    views::{ZedisKvTable, kv_table::define_kv_editor},
 };
-use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use gpui::{App, Entity, SharedString, Window, prelude::*};
 use tracing::info;
 use zedis_ui::ZedisFormFieldType;
 
@@ -33,6 +34,8 @@ struct ZedisSetValues {
 }
 
 impl ZedisKvFetcher for ZedisSetValues {
+    fn key_type(&self) -> KeyType { KeyType::Set }
+
     /// Adds a new member to the SET.
     ///
     /// # Arguments
@@ -132,27 +135,10 @@ impl ZedisKvFetcher for ZedisSetValues {
     }
 }
 
-/// Main SET editor view component.
-///
-/// Provides a table-based UI for viewing and managing Redis SET values.
-/// Wraps the generic `ZedisKvTable` component with SET-specific configuration.
-pub struct ZedisSetEditor {
-    /// The table component that renders the SET members
-    table_state: Entity<ZedisKvTable<ZedisSetValues>>,
-}
+define_kv_editor!(ZedisSetEditor, ZedisSetValues);
 
 impl ZedisSetEditor {
-    /// Creates a new SET editor instance.
-    ///
-    /// # Arguments
-    /// * `server_state` - Reference to the server state for Redis operations
-    /// * `window` - GPUI window handle
-    /// * `cx` - GPUI context for component initialization
-    ///
-    /// # Returns
-    /// A new `ZedisSetEditor` instance with a single-column table
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Initialize the KV table with a single "Value" column
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisSetValues>::new(
                 vec![KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor)],
@@ -164,16 +150,5 @@ impl ZedisSetEditor {
 
         info!("Creating new SET editor view");
         Self { table_state }
-    }
-}
-
-impl Render for ZedisSetEditor {
-    /// Renders the SET editor as a full-size container with the table.
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .min_h_0()
-            .child(self.table_state.clone())
-            .into_any_element()
     }
 }

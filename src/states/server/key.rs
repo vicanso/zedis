@@ -672,7 +672,14 @@ impl ZedisServerState {
         );
     }
 
-    pub fn add_key(&mut self, category: SharedString, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
+    pub fn add_key(
+        &mut self,
+        category: SharedString,
+        key: SharedString,
+        ttl: SharedString,
+        args: Vec<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         let key: SharedString = key.trim().to_string().into();
         if key.is_empty() {
             return;
@@ -700,55 +707,21 @@ impl ZedisServerState {
                         message: "Key already exists".to_string(),
                     });
                 }
-                match key_type {
-                    KeyType::String => {
-                        let _: () = cmd("SET").arg(key.as_str()).arg("").query_async(&mut conn).await?;
-                    }
-                    KeyType::List => {
-                        let _: () = cmd("LPUSH")
-                            .arg(key.as_str())
-                            .arg("list item 1")
-                            .query_async(&mut conn)
-                            .await?;
-                    }
-                    KeyType::Set => {
-                        let _: () = cmd("SADD")
-                            .arg(key.as_str())
-                            .arg("set item 1")
-                            .query_async(&mut conn)
-                            .await?;
-                    }
-                    KeyType::Zset => {
-                        let _: () = cmd("ZADD")
-                            .arg(key.as_str())
-                            .arg(1.0)
-                            .arg("zset item 1")
-                            .query_async(&mut conn)
-                            .await?;
-                    }
-                    KeyType::Hash => {
-                        let _: () = cmd("HSET")
-                            .arg(key.as_str())
-                            .arg("field1")
-                            .arg("value1")
-                            .query_async(&mut conn)
-                            .await?;
-                    }
-                    KeyType::Stream => {
-                        let _: () = cmd("XADD")
-                            .arg(key.as_str())
-                            .arg("*")
-                            .arg("field")
-                            .arg("value")
-                            .query_async(&mut conn)
-                            .await?;
-                    }
-                    _ => {
-                        return Err(Error::Invalid {
-                            message: "Invalid key type".to_string(),
-                        });
-                    }
-                };
+
+                let command = key_type.create_command();
+                if command.is_empty() {
+                    return Err(Error::Invalid {
+                        message: "Invalid key type".to_string(),
+                    });
+                }
+
+                let mut c = cmd(command);
+                c.arg(key.as_str());
+                for a in &args {
+                    c.arg(a.as_str());
+                }
+                let _: () = c.query_async(&mut conn).await?;
+
                 if let Some(ttl_duration) = ttl_duration {
                     let _: () = cmd("EXPIRE")
                         .arg(key.as_str())

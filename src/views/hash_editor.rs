@@ -25,10 +25,11 @@
 
 use crate::{
     components::ZedisKvFetcher,
-    states::{RedisValue, ZedisServerState},
-    views::{KvTableColumn, ZedisKvTable},
+    states::{KeyType, RedisValue, ZedisServerState},
+    components::KvTableColumn,
+    views::{ZedisKvTable, kv_table::define_kv_editor},
 };
-use gpui::{App, Entity, SharedString, Window, div, prelude::*};
+use gpui::{App, Entity, SharedString, Window, prelude::*};
 use zedis_ui::ZedisFormFieldType;
 
 /// Data adapter for Redis HASH values to work with the KV table component.
@@ -43,6 +44,8 @@ struct ZedisHashValues {
 }
 
 impl ZedisKvFetcher for ZedisHashValues {
+    fn key_type(&self) -> KeyType { KeyType::Hash }
+
     /// Creates a new data adapter instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         Self { server_state, value }
@@ -160,26 +163,9 @@ impl ZedisKvFetcher for ZedisHashValues {
         });
     }
 }
-/// Main HASH editor view component.
-///
-/// Provides a table-based UI for viewing and managing Redis HASH values.
-/// Wraps the generic `ZedisKvTable` component with HASH-specific configuration
-/// including two columns (field name and field value).
-pub struct ZedisHashEditor {
-    /// The table component that renders the HASH field-value pairs
-    table_state: Entity<ZedisKvTable<ZedisHashValues>>,
-}
+define_kv_editor!(ZedisHashEditor, ZedisHashValues);
 
 impl ZedisHashEditor {
-    /// Creates a new HASH editor instance.
-    ///
-    /// # Arguments
-    /// * `server_state` - Reference to the server state for Redis operations
-    /// * `window` - GPUI window handle
-    /// * `cx` - GPUI context for component initialization
-    ///
-    /// # Returns
-    /// A new `ZedisHashEditor` instance with a two-column table (Field and Value)
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let window_width = window.viewport_size().width.to_f64();
         let field_width = if window_width > 1800. {
@@ -190,12 +176,11 @@ impl ZedisHashEditor {
             0.4
         };
 
-        // Initialize the KV table with two columns: field and value
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisHashValues>::new(
                 vec![
-                    KvTableColumn::new("Field", Some(field_width)), // Field name column (flexible width)
-                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor), // Field value column (flexible width)
+                    KvTableColumn::new("Field", Some(field_width)),
+                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
                 ],
                 server_state,
                 window,
@@ -204,16 +189,5 @@ impl ZedisHashEditor {
         });
 
         Self { table_state }
-    }
-}
-
-impl Render for ZedisHashEditor {
-    /// Renders the HASH editor as a full-size container with the table.
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .min_h_0()
-            .child(self.table_state.clone())
-            .into_any_element()
     }
 }

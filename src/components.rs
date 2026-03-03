@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod dialog;
 mod kv_delegate;
+mod kv_types;
 
-pub use dialog::*;
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};
+pub use kv_types::{KvTableColumn, KvTableColumnType, KvTableMode};

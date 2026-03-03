@@ -21,13 +21,12 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     label::Label,
 };
-use indexmap::IndexMap;
 use rust_i18n::t;
 use substring::Substring;
 use tracing::info;
 use zedis_ui::ZedisCard;
 use zedis_ui::ZedisDialog;
-use zedis_ui::{ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
+use zedis_ui::{ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 // Constants for UI layout
 const DEFAULT_REDIS_PORT: u16 = 6379;
@@ -199,45 +198,34 @@ impl ZedisServers {
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::Checkbox),
         ];
-        let on_submit =
-            move |values: IndexMap<SharedString, SharedString>, window: &mut Window, cx: &mut Context<ZedisForm>| {
-                let redis_server = RedisServer::from_form_data(&server_id, &values);
-                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                    store.update(cx, |state, cx| {
-                        state.upsert_server(redis_server, cx);
-                    })
-                });
-                window.close_dialog(cx);
-                true
-            };
-        let on_cancel = move |window: &mut Window, cx: &mut Context<ZedisForm>| {
-            window.close_dialog(cx);
-            true
-        };
-        let options = ZedisFormOptions::new(fields)
-            .on_submit(on_submit)
-            .on_cancel(on_cancel)
-            .tabs(vec![
-                i18n_servers(cx, "tab_general"),
-                i18n_servers(cx, "tab_tls"),
-                i18n_servers(cx, "tab_ssh"),
-                i18n_servers(cx, "tab_advanced"),
-            ]);
-        let form = cx.new(|cx| ZedisForm::new("servers-form", options, window, cx));
-        // Set dialog title based on add/update mode
         let title = if is_new {
             i18n_servers(cx, "add_server_title")
         } else {
             i18n_servers(cx, "update_server_title")
         };
         let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
-        ZedisDialog::new(title)
-            .overlay_closable(true)
-            .child(move || {
-                let form = form.clone();
-                div().id("servers-scrollable-container").max_h(max_h).child(form)
+
+        ZedisFormOptions::new(fields)
+            .title(title)
+            .tabs(vec![
+                i18n_servers(cx, "tab_general"),
+                i18n_servers(cx, "tab_tls"),
+                i18n_servers(cx, "tab_ssh"),
+                i18n_servers(cx, "tab_advanced"),
+            ])
+            .confirm_label(i18n_common(cx, "confirm"))
+            .cancel_label(i18n_common(cx, "cancel"))
+            .dialog_max_height(max_h)
+            .on_dialog_submit(move |values, _window, cx| {
+                let redis_server = RedisServer::from_form_data(&server_id, &values);
+                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                    store.update(cx, |state, cx| {
+                        state.upsert_server(redis_server, cx);
+                    })
+                });
+                true
             })
-            .open(window, cx);
+            .open_dialog(window, cx);
     }
 }
 

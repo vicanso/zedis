@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod about;
 mod card;
 mod dialog;
+mod divider;
 mod form;
 mod loading;
 
+pub use about::*;
 pub use card::*;
 pub use dialog::*;
+pub use divider::*;
 pub use form::*;
 pub use loading::*;

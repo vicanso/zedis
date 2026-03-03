@@ -29,7 +29,7 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
-    states::{ServerEvent, i18n_zset_editor},
+    states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_zset_editor},
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -323,14 +323,17 @@ impl ZedisServerState {
                 if !is_removed
                     && let Some(RedisValueData::Zset(zset_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
-                    Arc::make_mut(zset_data).size += count;
+                    let zset = Arc::make_mut(zset_data);
+                    zset.size += count;
+                    if zset.size > SUCCESS_NOTIFY_THRESHOLD {
+                        this.emit_success_notification(
+                            i18n_zset_editor(cx, "add_value_success_tips"),
+                            i18n_zset_editor(cx, "add_value_success"),
+                            cx,
+                        );
+                    }
                 }
                 cx.emit(ServerEvent::ValueAdded);
-                this.emit_success_notification(
-                    i18n_zset_editor(cx, "add_value_success_tips"),
-                    i18n_zset_editor(cx, "add_value_success"),
-                    cx,
-                );
             },
         );
     }

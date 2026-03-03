@@ -13,33 +13,20 @@
 // limitations under the License.
 
 use crate::{
-    assets::CustomIconName,
     connection::get_servers,
-    helpers::is_development,
-    states::{
-        FontSize, FontSizeAction, GlobalEvent, LocaleAction, Route, SettingsAction, ThemeAction, ZedisGlobalStore,
-        i18n_sidebar,
-    },
+    states::{GlobalEvent, Route, ZedisGlobalStore, i18n_sidebar},
 };
-use gpui::{Context, Corner, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
+use gpui::{Context, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, ThemeMode,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Icon, IconName,
     label::Label,
     list::ListItem,
-    menu::DropdownMenu,
     v_flex,
 };
 use tracing::info;
 
 // Constants for UI layout
-const ICON_PADDING: Pixels = px(8.0);
-const ICON_MARGIN: Pixels = px(4.0);
-const LABEL_PADDING: Pixels = px(2.0);
-const STAR_BUTTON_HEIGHT: f32 = 48.0;
-const SETTINGS_BUTTON_HEIGHT: f32 = 44.0;
 const SERVER_LIST_ITEM_BORDER_WIDTH: f32 = 3.0;
-const SETTINGS_ICON_SIZE: f32 = 18.0;
 
 /// Internal state for sidebar component
 ///
@@ -198,174 +185,16 @@ impl ZedisSidebar {
         .size_full()
     }
 
-    /// Render settings button with dropdown menu
-    ///
-    /// The dropdown contains two submenus:
-    /// 1. Theme selection (Light/Dark/System)
-    /// 2. Language selection (English/Chinese)
-    ///
-    /// Changes are saved to disk and applied immediately across all windows.
-    fn render_settings_button(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-
-        // Determine currently selected theme mode
-        let current_action = match store.theme() {
-            Some(ThemeMode::Light) => ThemeAction::Light,
-            Some(ThemeMode::Dark) => ThemeAction::Dark,
-            _ => ThemeAction::System,
-        };
-
-        // Determine currently selected locale
-        let locale = store.locale();
-        let current_locale = match locale {
-            "zh" => LocaleAction::Zh,
-            _ => LocaleAction::En,
-        };
-        let current_font_size = store.font_size();
-
-        let btn = Button::new("zedis-sidebar-setting-btn")
-            .ghost()
-            .w_full()
-            .h(px(SETTINGS_BUTTON_HEIGHT))
-            .tooltip(i18n_sidebar(cx, "settings"))
-            .child(Icon::new(IconName::Settings).size(px(SETTINGS_ICON_SIZE)))
-            .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
-                let theme_text = i18n_sidebar(cx, "theme");
-                let lang_text = i18n_sidebar(cx, "lang");
-                let font_size_text = i18n_sidebar(cx, "font_size");
-
-                // Theme submenu with light/dark/system options
-                menu.submenu_with_icon(
-                    Some(Icon::new(IconName::Sun).px(ICON_PADDING).mr(ICON_MARGIN)),
-                    theme_text,
-                    window,
-                    cx,
-                    move |submenu, _window, _cx| {
-                        submenu
-                            .menu_element_with_check(
-                                current_action == ThemeAction::Light,
-                                Box::new(ThemeAction::Light),
-                                |_window, cx| Label::new(i18n_sidebar(cx, "light")).text_xs().p(LABEL_PADDING),
-                            )
-                            .menu_element_with_check(
-                                current_action == ThemeAction::Dark,
-                                Box::new(ThemeAction::Dark),
-                                |_window, cx| Label::new(i18n_sidebar(cx, "dark")).text_xs().p(LABEL_PADDING),
-                            )
-                            .menu_element_with_check(
-                                current_action == ThemeAction::System,
-                                Box::new(ThemeAction::System),
-                                |_window, cx| Label::new(i18n_sidebar(cx, "system")).text_xs().p(LABEL_PADDING),
-                            )
-                    },
-                )
-                // Language submenu with Chinese/English options
-                .submenu_with_icon(
-                    Some(Icon::new(CustomIconName::Languages).px(ICON_PADDING).mr(ICON_MARGIN)),
-                    lang_text,
-                    window,
-                    cx,
-                    move |submenu, _window, _cx| {
-                        submenu
-                            .menu_element_with_check(
-                                current_locale == LocaleAction::Zh,
-                                Box::new(LocaleAction::Zh),
-                                |_window, _cx| Label::new("中文").text_xs().p(LABEL_PADDING),
-                            )
-                            .menu_element_with_check(
-                                current_locale == LocaleAction::En,
-                                Box::new(LocaleAction::En),
-                                |_window, _cx| Label::new("English").text_xs().p(LABEL_PADDING),
-                            )
-                    },
-                )
-                .submenu_with_icon(
-                    Some(Icon::new(CustomIconName::ALargeSmall).px(ICON_PADDING).mr(ICON_MARGIN)),
-                    font_size_text,
-                    window,
-                    cx,
-                    move |submenu, _window, _cx| {
-                        submenu
-                            .menu_element_with_check(
-                                current_font_size == FontSize::Large,
-                                Box::new(FontSizeAction::Large),
-                                move |_window, cx| {
-                                    let text = i18n_sidebar(cx, "font_size_large");
-                                    Label::new(text).text_xs().p(LABEL_PADDING)
-                                },
-                            )
-                            .menu_element_with_check(
-                                current_font_size == FontSize::Medium,
-                                Box::new(FontSizeAction::Medium),
-                                move |_window, cx| {
-                                    let text = i18n_sidebar(cx, "font_size_medium");
-                                    Label::new(text).text_xs().p(LABEL_PADDING)
-                                },
-                            )
-                            .menu_element_with_check(
-                                current_font_size == FontSize::Small,
-                                Box::new(FontSizeAction::Small),
-                                move |_window, cx| {
-                                    let text = i18n_sidebar(cx, "font_size_small");
-                                    Label::new(text).text_xs().p(LABEL_PADDING)
-                                },
-                            )
-                    },
-                )
-                .menu_element_with_icon(
-                    Icon::new(IconName::Settings2),
-                    Box::new(SettingsAction::Editor),
-                    move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")).p(LABEL_PADDING),
-                )
-            });
-        div().border_t_1().border_color(cx.theme().border).child(btn)
-    }
-
-    /// Render GitHub star button (link to repository)
-    fn render_star(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().border_b_1().border_color(cx.theme().border).child(
-            Button::new("github")
-                .ghost()
-                .h(px(STAR_BUTTON_HEIGHT))
-                .w_full()
-                .tooltip(i18n_sidebar(cx, "star"))
-                .child(
-                    v_flex()
-                        .items_center()
-                        .justify_center()
-                        .child(Icon::new(IconName::Github))
-                        .child(Label::new("ZEDIS").text_xs()),
-                )
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.open_url("https://github.com/vicanso/zedis");
-                })),
-        )
-    }
 }
 
 impl Render for ZedisSidebar {
-    /// Main render method - displays vertical sidebar with navigation and settings
-    ///
-    /// Layout structure (top to bottom):
-    /// 1. GitHub star button
-    /// 2. Server list (scrollable, takes remaining space)
-    /// 3. Settings button (theme & language)
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let show_settings_button = is_development();
-
         v_flex()
             .size_full()
             .id("sidebar-container")
             .justify_start()
             .border_r_1()
             .border_color(cx.theme().border)
-            .when(show_settings_button, |this| this.child(self.render_star(window, cx)))
-            .child(
-                // Server list takes up remaining vertical space
-                div().flex_1().size_full().child(self.render_server_list(window, cx)),
-            )
-            .when(show_settings_button, |this| {
-                this.child(self.render_settings_button(window, cx))
-            })
+            .child(div().flex_1().size_full().child(self.render_server_list(window, cx)))
     }
 }
