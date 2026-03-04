@@ -11,9 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use gpui::{Pixels, px};
 
-pub const SIDEBAR_WIDTH: f32 = 80.0;
-pub const KEY_TREE_MIN_WIDTH: f32 = 275.0;
-pub const KEY_TREE_MAX_WIDTH: f32 = 800.0;
-pub const STATUS_BAR_HEIGHT: f32 = 35.0;
-pub const EDITOR_KEY_BAR_HEIGHT: f32 = 40.0;
+pub const SIDEBAR_WIDTH: Pixels = px(80.0);
+pub const KEY_TREE_MIN_WIDTH: Pixels = px(275.0);
+pub const KEY_TREE_MAX_WIDTH: Pixels = px(800.0);
+pub const KEY_TREE_KEYWORD_INPUT_HEIGHT: Pixels = px(40.0);
+pub const STATUS_BAR_HEIGHT: Pixels = px(35.0);
+pub const EDITOR_KEY_BAR_HEIGHT: Pixels = px(40.0);

@@ -161,7 +161,7 @@ impl Render for Zedis {
                     .size_full()
                     .child(
                         div()
-                            .w(px(SIDEBAR_WIDTH))
+                            .w(SIDEBAR_WIDTH)
                             .flex_none()
                             .h_full()
                             .child(self.sidebar.clone()),

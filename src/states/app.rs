@@ -283,7 +283,7 @@ impl ZedisAppState {
         let bounds = self.bounds?;
         let width = bounds.size.width.as_f32();
         let (key_tree_width, _, _) = get_key_tree_widths(self.key_tree_width);
-        Some((width - SIDEBAR_WIDTH - key_tree_width.as_f32()).into())
+        Some((width - SIDEBAR_WIDTH.as_f32() - key_tree_width.as_f32()).into())
     }
     pub fn set_key_tree_width(&mut self, width: Pixels) {
         self.key_tree_width = width;

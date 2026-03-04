@@ -15,15 +15,15 @@
 use crate::constants::KEY_TREE_MAX_WIDTH;
 use crate::constants::KEY_TREE_MIN_WIDTH;
 use crate::error::Error;
-use gpui::{Pixels, px};
+use gpui::Pixels;
 use ruzstd::decoding::StreamingDecoder;
 use std::io::Read;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn get_key_tree_widths(width: Pixels) -> (Pixels, Pixels, Pixels) {
-    let min_width = px(KEY_TREE_MIN_WIDTH);
-    let max_width = px(KEY_TREE_MAX_WIDTH);
+    let min_width = KEY_TREE_MIN_WIDTH;
+    let max_width = KEY_TREE_MAX_WIDTH;
     (width.max(min_width), min_width, max_width)
 }
 

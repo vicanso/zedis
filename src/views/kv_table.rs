@@ -501,8 +501,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let is_adding = self.is_adding_row();
         let mut reset_form_height = window.viewport_size().height.as_f32()
             - TITLE_BAR_HEIGHT.as_f32()
-            - STATUS_BAR_HEIGHT
-            - EDITOR_KEY_BAR_HEIGHT
+            - STATUS_BAR_HEIGHT.as_f32()
+            - EDITOR_KEY_BAR_HEIGHT.as_f32()
             - FOOTER_HEIGHT;
         let normal_field_height = 60.;
         if is_adding && self.fetcher.key_type() == KeyType::List {
@@ -659,7 +659,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                         div().flex_1().w_full().child(
                             DataTable::new(&self.table_state)
                                 .stripe(true) // Alternating row colors for better readability
-                                .bordered(true) // Table borders
+                                .bordered(false) // Table borders
                                 .scrollbar_visible(true, true), // Show both scrollbars
                         ),
                     )

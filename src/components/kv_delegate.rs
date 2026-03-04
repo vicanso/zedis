@@ -16,7 +16,7 @@ use super::{KvTableColumn, KvTableColumnType};
 use crate::states::{KeyType, RedisValue, ZedisServerState, i18n_common};
 use gpui::{App, ClipboardItem, Edges, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -223,7 +223,14 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         let group_name: SharedString = format!("td-{}-{}", row_ix, col_ix).into();
         let copied_message = i18n_common(cx, "copied_to_clipboard");
         base.group(group_name.clone())
-            .child(Label::new(value.clone()).text_align(column.align).flex_1().min_w_0())
+            .overflow_hidden()
+            .child(
+                Label::new(value.clone())
+                    .text_align(column.align)
+                    .text_ellipsis()
+                    .flex_1()
+                    .min_w_0(),
+            )
             .child(
                 div()
                     .id(("copy-wrapper", row_ix * 100 + col_ix))
@@ -234,7 +241,6 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                     .child(
                         Button::new(("copy-cell", row_ix * 100 + col_ix))
                             .ghost()
-                            .xsmall()
                             .icon(IconName::Copy)
                             .on_click(move |_, window, cx: &mut App| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));

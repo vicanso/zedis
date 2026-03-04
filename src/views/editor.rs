@@ -480,7 +480,7 @@ impl ZedisEditor {
         let content = key.clone();
         h_flex()
             .px_2()
-            .h(px(EDITOR_KEY_BAR_HEIGHT))
+            .h(EDITOR_KEY_BAR_HEIGHT)
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()

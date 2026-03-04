@@ -19,6 +19,10 @@ jobs:
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v6
+      - name: Delete old nightly release and tag
+        if: github.ref == 'refs/heads/main'
+        run: gh release delete nightly --cleanup-tag -y || true
   macos:
     needs: prepare_vars
     name: macos-${{ matrix.dmg_suffix }}

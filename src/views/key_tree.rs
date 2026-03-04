@@ -14,6 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
+    constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::get_search_history_manager,
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
@@ -719,6 +720,7 @@ impl ZedisKeyTree {
                 .options(category_list.iter().map(|s| s.to_string().into()).collect()),
             ZedisFormField::new("key", i18n_common(cx, "key"))
                 .placeholder(i18n_common(cx, "key_placeholder"))
+                .required()
                 .when_some(prefix, |this, prefix| this.default_value(prefix))
                 .focus()
                 .validate(move |s| {
@@ -740,6 +742,7 @@ impl ZedisKeyTree {
             // Value field for String, List, Set
             ZedisFormField::new("value", i18n_common(cx, "value"))
                 .placeholder(i18n_common(cx, "value_placeholder"))
+                .required()
                 .visible_on("category", &[0, 1, 2]),
             // Score + Member fields for Zset
             ZedisFormField::new("score", i18n_common(cx, "score"))
@@ -747,13 +750,16 @@ impl ZedisKeyTree {
                 .visible_on("category", &[3]),
             ZedisFormField::new("member", i18n_common(cx, "member"))
                 .placeholder(i18n_common(cx, "member_placeholder"))
+                .required()
                 .visible_on("category", &[3]),
             // Field + Value fields for Hash
             ZedisFormField::new("hash_field", i18n_common(cx, "field"))
                 .placeholder(i18n_common(cx, "field_placeholder"))
+                .required()
                 .visible_on("category", &[4]),
             ZedisFormField::new("hash_value", i18n_common(cx, "value"))
                 .placeholder(i18n_common(cx, "value_placeholder"))
+                .required()
                 .visible_on("category", &[4]),
             // Stream ID field for Stream only
             ZedisFormField::new("stream_id", i18n_common(cx, "stream_id"))
@@ -1081,10 +1087,14 @@ impl ZedisKeyTree {
             });
 
         h_flex()
-            .p_2()
-            .gap_2()
+            .flex_shrink_0()
+            .px_2()
+            .h(KEY_TREE_KEYWORD_INPUT_HEIGHT)
             .border_b_1()
             .border_color(cx.theme().border)
+            .items_center()
+            .w_full()
+            .gap_x_2()
             .child(keyword_input)
             .child(
                 Button::new("key-tree-add-btn")

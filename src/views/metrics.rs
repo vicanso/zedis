@@ -18,8 +18,8 @@ use crate::states::{ZedisServerState, i18n_common, i18n_metrics};
 use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{
-    App, Background, Bounds, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign,
-    Window, canvas, div, linear_color_stop, linear_gradient, prelude::*, px,
+    App, Background, Bounds, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, canvas, div,
+    linear_color_stop, linear_gradient, prelude::*, px,
 };
 use gpui_component::h_flex;
 use gpui_component::plot::{
@@ -32,11 +32,46 @@ use std::time::Duration;
 use zedis_ui::ZedisSkeletonLoading;
 
 const TIME_FORMAT: &str = "%H:%M:%S";
-const CHART_CARD_HEIGHT: f32 = 300.;
+const CHART_CARD_HEIGHT: Pixels = px(300.);
 const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const BYTES_TO_MB: f64 = 1_000_000.;
 const Y_LABEL_WIDTH: f32 = 45.;
 const Y_TICK_COUNT: usize = 4;
+
+struct ChartParams {
+    dates: Vec<SharedString>,
+    y_max: f64,
+    y_format: Box<dyn Fn(f64) -> String>,
+    tick_margin: usize,
+    border: Hsla,
+    muted_fg: Hsla,
+}
+
+struct ChartFrame {
+    height: f32,
+    x_labels: Vec<AxisText>,
+    y_grid: Vec<f32>,
+    y_labels: Vec<AxisText>,
+    border: Hsla,
+}
+
+impl ChartFrame {
+    fn paint(self, bounds: &Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        Grid::new()
+            .y(self.y_grid)
+            .stroke(self.border)
+            .dash_array(&[px(4.), px(2.)])
+            .paint(bounds, window);
+
+        PlotAxis::new()
+            .x(self.height)
+            .x_label(self.x_labels)
+            .y(px(0.))
+            .y_label(self.y_labels)
+            .stroke(self.border)
+            .paint(bounds, window, cx);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct MetricsCpu {
@@ -316,31 +351,6 @@ fn make_y_ticks(
     (grid, labels)
 }
 
-fn paint_chart_frame(
-    bounds: &Bounds<Pixels>,
-    height: f32,
-    x_labels: Vec<AxisText>,
-    y_grid: Vec<f32>,
-    y_labels: Vec<AxisText>,
-    border: Hsla,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    Grid::new()
-        .y(y_grid)
-        .stroke(border)
-        .dash_array(&[px(4.), px(2.)])
-        .paint(bounds, window);
-
-    PlotAxis::new()
-        .x(height)
-        .x_label(x_labels)
-        .y(px(0.))
-        .y_label(y_labels)
-        .stroke(border)
-        .paint(bounds, window, cx);
-}
-
 fn make_x_labels_point(
     dates: &[SharedString],
     x: &ScalePoint<SharedString>,
@@ -393,17 +403,13 @@ fn make_x_labels_band(
 }
 
 fn make_area_canvas(
-    dates: Vec<SharedString>,
+    params: ChartParams,
     series: Vec<(Vec<f64>, Hsla, Background)>,
-    y_max: f64,
-    y_format: impl Fn(f64) -> String + 'static,
-    tick_margin: usize,
-    border: Hsla,
-    muted_fg: Hsla,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
+            let ChartParams { dates, y_max, y_format, tick_margin, border, muted_fg } = &params;
             if dates.is_empty() {
                 return;
             }
@@ -411,20 +417,16 @@ fn make_area_canvas(
             let height = bounds.size.height.as_f32() - AXIS_GAP;
 
             let x = ScalePoint::new(dates.clone(), vec![0., width - Y_LABEL_WIDTH]);
-            let y = ScaleLinear::new(vec![0., y_max], vec![height, 10.]);
+            let y = ScaleLinear::new(vec![0., *y_max], vec![height, 10.]);
 
-            let x_labels = make_x_labels_point(&dates, &x, tick_margin, muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(y_max, &y, &y_format, muted_fg);
-            paint_chart_frame(&bounds, height, x_labels, y_grid, y_labels, border, window, cx);
+            let x_labels = make_x_labels_point(dates, &x, *tick_margin, *muted_fg);
+            let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
+            ChartFrame { height, x_labels, y_grid, y_labels, border: *border }.paint(&bounds, window, cx);
 
             for (values, stroke, fill) in series.iter() {
                 let x_c = x.clone();
                 let y_c = y.clone();
-                let data: Vec<(SharedString, f64)> = dates
-                    .iter()
-                    .cloned()
-                    .zip(values.iter().copied())
-                    .collect();
+                let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
 
                 Area::new()
                     .data(data)
@@ -441,19 +443,15 @@ fn make_area_canvas(
 }
 
 fn make_line_canvas(
-    dates: Vec<SharedString>,
+    params: ChartParams,
     values: Vec<f64>,
     stroke: Hsla,
     step_after: bool,
-    y_max: f64,
-    y_format: impl Fn(f64) -> String + 'static,
-    tick_margin: usize,
-    border: Hsla,
-    muted_fg: Hsla,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
+            let ChartParams { dates, y_max, y_format, tick_margin, border, muted_fg } = &params;
             if dates.is_empty() {
                 return;
             }
@@ -461,16 +459,13 @@ fn make_line_canvas(
             let height = bounds.size.height.as_f32() - AXIS_GAP;
 
             let x = ScalePoint::new(dates.clone(), vec![0., width - Y_LABEL_WIDTH]);
-            let y = ScaleLinear::new(vec![0., y_max], vec![height, 10.]);
+            let y = ScaleLinear::new(vec![0., *y_max], vec![height, 10.]);
 
-            let x_labels = make_x_labels_point(&dates, &x, tick_margin, muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(y_max, &y, &y_format, muted_fg);
-            paint_chart_frame(&bounds, height, x_labels, y_grid, y_labels, border, window, cx);
+            let x_labels = make_x_labels_point(dates, &x, *tick_margin, *muted_fg);
+            let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
+            ChartFrame { height, x_labels, y_grid, y_labels, border: *border }.paint(&bounds, window, cx);
 
-            let data: Vec<(SharedString, f64)> = dates
-                .into_iter()
-                .zip(values.into_iter())
-                .collect();
+            let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
 
             let mut line = Line::new()
                 .data(data)
@@ -489,18 +484,14 @@ fn make_line_canvas(
 }
 
 fn make_bar_canvas(
-    dates: Vec<SharedString>,
+    params: ChartParams,
     values: Vec<f64>,
     fill_color: Hsla,
-    y_max: f64,
-    y_format: impl Fn(f64) -> String + 'static,
-    tick_margin: usize,
-    border: Hsla,
-    muted_fg: Hsla,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
+            let ChartParams { dates, y_max, y_format, tick_margin, border, muted_fg } = &params;
             if dates.is_empty() {
                 return;
             }
@@ -511,16 +502,13 @@ fn make_bar_canvas(
                 .padding_inner(0.4)
                 .padding_outer(0.2);
             let band_width = x.band_width();
-            let y = ScaleLinear::new(vec![0., y_max], vec![height, 10.]);
+            let y = ScaleLinear::new(vec![0., *y_max], vec![height, 10.]);
 
-            let x_labels = make_x_labels_band(&dates, &x, band_width, tick_margin, muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(y_max, &y, &y_format, muted_fg);
-            paint_chart_frame(&bounds, height, x_labels, y_grid, y_labels, border, window, cx);
+            let x_labels = make_x_labels_band(dates, &x, band_width, *tick_margin, *muted_fg);
+            let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
+            ChartFrame { height, x_labels, y_grid, y_labels, border: *border }.paint(&bounds, window, cx);
 
-            let data: Vec<(SharedString, f64)> = dates
-                .into_iter()
-                .zip(values.into_iter())
-                .collect();
+            let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
 
             Bar::new()
                 .data(data)
@@ -592,7 +580,7 @@ impl ZedisMetrics {
     ) -> impl IntoElement {
         v_flex()
             .flex_1()
-            .h(px(CHART_CARD_HEIGHT))
+            .h(CHART_CARD_HEIGHT)
             .border_1()
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius_lg)
@@ -601,12 +589,24 @@ impl ZedisMetrics {
             .child(chart)
     }
 
-    fn render_stat_card(
+    fn chart_params(
         &self,
         cx: &mut Context<Self>,
-        label: SharedString,
-        value: String,
-    ) -> impl IntoElement {
+        dates: Vec<SharedString>,
+        y_max: f64,
+        y_format: impl Fn(f64) -> String + 'static,
+    ) -> ChartParams {
+        ChartParams {
+            dates,
+            y_max,
+            y_format: Box::new(y_format),
+            tick_margin: self.tick_margin,
+            border: cx.theme().border,
+            muted_fg: cx.theme().muted_foreground,
+        }
+    }
+
+    fn render_stat_card(&self, cx: &mut Context<Self>, label: SharedString, value: String) -> impl IntoElement {
         let theme = cx.theme();
         v_flex()
             .flex_1()
@@ -627,10 +627,7 @@ impl ZedisMetrics {
         let memory = if m.used_memory == 0 {
             "--".to_string()
         } else {
-            humansize::format_size(
-                m.used_memory,
-                humansize::FormatSizeOptions::default().decimal_places(0),
-            )
+            humansize::format_size(m.used_memory, humansize::FormatSizeOptions::default().decimal_places(0))
         };
 
         let clients = format!("{} / {}", m.connected_clients, m.blocked_clients);
@@ -674,46 +671,46 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_cpu_percent, self.metrics_chart_data.max_cpu_percent
         );
         let dates: Vec<SharedString> = self.metrics_chart_data.cpu.iter().map(|d| d.date.clone()).collect();
-        let sys_values: Vec<f64> = self.metrics_chart_data.cpu.iter().map(|d| d.used_cpu_sys_percent).collect();
-        let user_values: Vec<f64> = self.metrics_chart_data.cpu.iter().map(|d| d.used_cpu_user_percent).collect();
+        let sys_values: Vec<f64> = self
+            .metrics_chart_data
+            .cpu
+            .iter()
+            .map(|d| d.used_cpu_sys_percent)
+            .collect();
+        let user_values: Vec<f64> = self
+            .metrics_chart_data
+            .cpu
+            .iter()
+            .map(|d| d.used_cpu_user_percent)
+            .collect();
         let max_val = self.metrics_chart_data.max_cpu_percent.max(0.01);
         let chart_1 = cx.theme().chart_1;
         let chart_2 = cx.theme().chart_2;
         let bg = cx.theme().background;
-        self.render_chart_card(
-            cx,
-            label,
-            make_area_canvas(
-                dates,
-                vec![
-                    (
-                        sys_values,
-                        chart_1,
-                        linear_gradient(
-                            0.,
-                            linear_color_stop(chart_1.opacity(0.4), 1.),
-                            linear_color_stop(bg.opacity(0.3), 0.),
-                        )
-                        .into(),
+        let chart = make_area_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.1}%", v)),
+            vec![
+                (
+                    sys_values,
+                    chart_1,
+                    linear_gradient(
+                        0.,
+                        linear_color_stop(chart_1.opacity(0.4), 1.),
+                        linear_color_stop(bg.opacity(0.3), 0.),
                     ),
-                    (
-                        user_values,
-                        chart_2,
-                        linear_gradient(
-                            0.,
-                            linear_color_stop(chart_2.opacity(0.4), 1.),
-                            linear_color_stop(bg.opacity(0.3), 0.),
-                        )
-                        .into(),
+                ),
+                (
+                    user_values,
+                    chart_2,
+                    linear_gradient(
+                        0.,
+                        linear_color_stop(chart_2.opacity(0.4), 1.),
+                        linear_color_stop(bg.opacity(0.3), 0.),
                     ),
-                ],
-                max_val,
-                |v| format!("{:.1}%", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+                ),
+            ],
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_memory_usage_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -724,20 +721,13 @@ impl ZedisMetrics {
         let dates: Vec<SharedString> = self.metrics_chart_data.memory.iter().map(|d| d.date.clone()).collect();
         let values: Vec<f64> = self.metrics_chart_data.memory.iter().map(|d| d.used_memory).collect();
         let max_val = self.metrics_chart_data.max_memory.max(0.01);
-        self.render_chart_card(
-            cx,
-            label,
-            make_bar_canvas(
-                dates,
-                values,
-                cx.theme().chart_2,
-                max_val,
-                |v| format!("{:.0}", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let fill_color = cx.theme().chart_2;
+        let chart = make_bar_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            values,
+            fill_color,
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_latency_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -748,21 +738,14 @@ impl ZedisMetrics {
         let dates: Vec<SharedString> = self.metrics_chart_data.latency.iter().map(|d| d.date.clone()).collect();
         let values: Vec<f64> = self.metrics_chart_data.latency.iter().map(|d| d.latency_ms).collect();
         let max_val = self.metrics_chart_data.max_latency_ms.max(0.01);
-        self.render_chart_card(
-            cx,
-            label,
-            make_line_canvas(
-                dates,
-                values,
-                cx.theme().chart_2,
-                false,
-                max_val,
-                |v| format!("{:.0}", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let stroke = cx.theme().chart_2;
+        let chart = make_line_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            values,
+            stroke,
+            false,
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_connected_clients_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -770,24 +753,27 @@ impl ZedisMetrics {
             "Connected Clients: {:.0} - {:.0}",
             self.metrics_chart_data.min_connected_clients, self.metrics_chart_data.max_connected_clients
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.connected_clients.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.connected_clients.iter().map(|d| d.connected_clients).collect();
+        let dates: Vec<SharedString> = self
+            .metrics_chart_data
+            .connected_clients
+            .iter()
+            .map(|d| d.date.clone())
+            .collect();
+        let values: Vec<f64> = self
+            .metrics_chart_data
+            .connected_clients
+            .iter()
+            .map(|d| d.connected_clients)
+            .collect();
         let max_val = self.metrics_chart_data.max_connected_clients.max(0.01);
-        self.render_chart_card(
-            cx,
-            label,
-            make_line_canvas(
-                dates,
-                values,
-                cx.theme().chart_2,
-                true,
-                max_val,
-                |v| format!("{:.0}", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let stroke = cx.theme().chart_2;
+        let chart = make_line_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            values,
+            stroke,
+            true,
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_total_commands_processed_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -795,24 +781,27 @@ impl ZedisMetrics {
             "Total Commands Processed: {:.0} - {:.0}",
             self.metrics_chart_data.min_total_commands_processed, self.metrics_chart_data.max_total_commands_processed
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.total_commands_processed.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.total_commands_processed.iter().map(|d| d.total_commands_processed).collect();
+        let dates: Vec<SharedString> = self
+            .metrics_chart_data
+            .total_commands_processed
+            .iter()
+            .map(|d| d.date.clone())
+            .collect();
+        let values: Vec<f64> = self
+            .metrics_chart_data
+            .total_commands_processed
+            .iter()
+            .map(|d| d.total_commands_processed)
+            .collect();
         let max_val = self.metrics_chart_data.max_total_commands_processed.max(0.01);
-        self.render_chart_card(
-            cx,
-            label,
-            make_line_canvas(
-                dates,
-                values,
-                cx.theme().chart_2,
-                false,
-                max_val,
-                |v| format!("{:.0}", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let stroke = cx.theme().chart_2;
+        let chart = make_line_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            values,
+            stroke,
+            false,
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_output_kbps_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -820,23 +809,25 @@ impl ZedisMetrics {
             "Output KBPS: {:.0} - {:.0}",
             self.metrics_chart_data.min_output_kbps, self.metrics_chart_data.max_output_kbps
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.output_kbps.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.output_kbps.iter().map(|d| d.output_kbps).collect();
+        let dates: Vec<SharedString> = self
+            .metrics_chart_data
+            .output_kbps
+            .iter()
+            .map(|d| d.date.clone())
+            .collect();
+        let values: Vec<f64> = self
+            .metrics_chart_data
+            .output_kbps
+            .iter()
+            .map(|d| d.output_kbps)
+            .collect();
         let max_val = self.metrics_chart_data.max_output_kbps.max(0.01);
         let chart_2 = cx.theme().chart_2;
-        self.render_chart_card(
-            cx,
-            label,
-            make_area_canvas(
-                dates,
-                vec![(values, chart_2, chart_2.opacity(0.4).into())],
-                max_val,
-                |v| format!("{:.0}", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let chart = make_area_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            vec![(values, chart_2, chart_2.opacity(0.4).into())],
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_key_hit_rate_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -844,23 +835,26 @@ impl ZedisMetrics {
             "Key Hit Rate: {:.0}% - {:.0}%",
             self.metrics_chart_data.min_key_hit_rate, self.metrics_chart_data.max_key_hit_rate
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.key_hit_rate.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.key_hit_rate.iter().map(|d| d.key_hit_rate).collect();
+        let dates: Vec<SharedString> = self
+            .metrics_chart_data
+            .key_hit_rate
+            .iter()
+            .map(|d| d.date.clone())
+            .collect();
+        let values: Vec<f64> = self
+            .metrics_chart_data
+            .key_hit_rate
+            .iter()
+            .map(|d| d.key_hit_rate)
+            .collect();
         let max_val = self.metrics_chart_data.max_key_hit_rate.max(0.01);
-        self.render_chart_card(
-            cx,
-            label,
-            make_bar_canvas(
-                dates,
-                values,
-                cx.theme().chart_2,
-                max_val,
-                |v| format!("{:.0}%", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let fill_color = cx.theme().chart_2;
+        let chart = make_bar_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}%", v)),
+            values,
+            fill_color,
+        );
+        self.render_chart_card(cx, label, chart)
     }
 
     fn render_evicted_keys_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -868,23 +862,25 @@ impl ZedisMetrics {
             "Evicted Keys: {:.0} - {:.0}",
             self.metrics_chart_data.min_evicted_keys, self.metrics_chart_data.max_evicted_keys
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.evicted_keys.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.evicted_keys.iter().map(|d| d.evicted_keys).collect();
+        let dates: Vec<SharedString> = self
+            .metrics_chart_data
+            .evicted_keys
+            .iter()
+            .map(|d| d.date.clone())
+            .collect();
+        let values: Vec<f64> = self
+            .metrics_chart_data
+            .evicted_keys
+            .iter()
+            .map(|d| d.evicted_keys)
+            .collect();
         let max_val = self.metrics_chart_data.max_evicted_keys.max(0.01);
         let chart_2 = cx.theme().chart_2;
-        self.render_chart_card(
-            cx,
-            label,
-            make_area_canvas(
-                dates,
-                vec![(values, chart_2, chart_2.opacity(0.4).into())],
-                max_val,
-                |v| format!("{:.0}", v),
-                self.tick_margin,
-                cx.theme().border,
-                cx.theme().muted_foreground,
-            ),
-        )
+        let chart = make_area_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            vec![(values, chart_2, chart_2.opacity(0.4).into())],
+        );
+        self.render_chart_card(cx, label, chart)
     }
 }
 
