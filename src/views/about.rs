@@ -133,7 +133,6 @@ pub fn open_about_window(cx: &mut App) {
         is_resizable: false,
         titlebar: Some(TitlebarOptions {
             title: Some("About Zedis".into()),
-            appears_transparent: true,
             ..Default::default()
         }),
         focus: true,
