@@ -337,7 +337,7 @@ impl ZedisServerState {
                 }
                 Err(e) => {
                     // Connection is invalid, remove cached client
-                    get_connection_manager().remove_client(&server_id_clone);
+                    get_connection_manager().remove_client(&server_id_clone, db);
                     error!(error = %e, "Ping failed, client connection removed");
                 }
             },

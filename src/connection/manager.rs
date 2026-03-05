@@ -15,7 +15,7 @@
 use super::{
     async_connection::{
         RedisAsyncConn, get_redis_connection_timeout, get_redis_response_timeout, open_single_connection,
-        query_async_masters,
+        query_async_masters, remove_connection_from_pool,
     },
     config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
@@ -153,6 +153,7 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     let mut nodes = Vec::new();
 
     for line in raw_data.trim().lines() {
+        debug!(line, "cluster nodes");
         let parts: Vec<&str> = line.split_whitespace().collect();
 
         // Basic validation: ensure enough columns exist
@@ -576,7 +577,7 @@ impl RedisClient {
 }
 
 pub struct ConnectionManager {
-    clients: TtlCache<String, RedisClient>,
+    clients: TtlCache<u64, RedisClient>,
 }
 
 /// Detects the type of Redis server (Sentinel, Cluster, or Standalone).
@@ -713,7 +714,9 @@ impl ConnectionManager {
                     .map(|item| {
                         let mut tmp_config = config.clone();
                         tmp_config.port = item.port;
-                        tmp_config.host = item.ip.clone();
+                        if !item.ip.is_empty() {
+                            tmp_config.host = item.ip.clone();
+                        }
 
                         RedisNode {
                             server: tmp_config,
@@ -785,13 +788,18 @@ impl ConnectionManager {
             )),
         }
     }
-    pub fn remove_client(&self, name: &str) {
-        self.clients.remove(&name.to_string());
+    pub fn remove_client(&self, server_id: &str, db: usize) {
+        let Ok(config) = get_server(server_id) else {
+            return;
+        };
+        let key = config.get_hash(db);
+        self.clients.remove(&key);
+        remove_connection_from_pool(&config, db);
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
     pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
         let config = get_server(server_id)?;
-        let key = format!("{:x}:{}", config.get_hash(), db);
+        let key = config.get_hash(db);
         if let Some(client) = self.clients.get(&key) {
             debug!(server_id, db, "get client from cache");
             return Ok(client.clone());

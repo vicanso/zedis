@@ -62,7 +62,7 @@ impl MultiplexedConnectionCache {
 
 /// Global connection pool that caches Redis connections.
 /// Key: (config_hash, database_number), Value: MultiplexedConnection
-static CONNECTION_POOL: LazyLock<TtlCache<(u64, usize), Arc<MultiplexedConnectionCache>>> =
+static CONNECTION_POOL: LazyLock<TtlCache<u64, Arc<MultiplexedConnectionCache>>> =
     LazyLock::new(|| TtlCache::new(Duration::from_secs(5 * 60)));
 
 /// Clears expired connections from the connection pool.
@@ -123,8 +123,7 @@ pub fn get_redis_response_timeout() -> Duration {
 /// A multiplexed Redis connection connected to the specified database
 pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<MultiplexedConnection> {
     // Generate a unique key for this connection based on config hash and database number
-    let hash = config.get_hash();
-    let key = (hash, db);
+    let key = config.get_hash(db);
     // Try to reuse an existing connection from the pool
     if let Some(conn) = CONNECTION_POOL.get(&key)
         && let Some(conn) = conn.get_connection().await
@@ -159,6 +158,10 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
     Ok(conn)
 }
 
+pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
+    let key = config.get_hash(db);
+    CONNECTION_POOL.remove(&key);
+}
 /// Creates a Redis client from the server configuration.
 ///
 /// This function builds either a TLS-enabled or regular Redis client

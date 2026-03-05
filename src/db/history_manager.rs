@@ -83,6 +83,37 @@ impl HistoryManager {
         Ok(history)
     }
 
+    pub fn remove_record(&self, server_id: &str, keyword: &str) -> Result<Vec<SharedString>> {
+        let keyword = keyword.trim();
+        if keyword.is_empty() {
+            return self.records(server_id);
+        }
+        let db = get_database()?;
+        let write_txn = db.begin_write()?;
+
+        let history = {
+            let mut table = write_txn.open_table(self.definition)?;
+            let mut history = if let Some(history) = self.history_cache.get(server_id) {
+                history.clone()
+            } else if let Some(v) = table.get(server_id)? {
+                serde_json::from_str(v.value())?
+            } else {
+                Vec::new()
+            };
+            let len_before = history.len();
+            history.retain(|x| x.as_ref() != keyword);
+            if history.len() != len_before {
+                self.history_cache.insert(server_id.to_string(), history.clone());
+                let json_val = serde_json::to_string(&history)?;
+                table.insert(server_id, json_val.as_str())?;
+            }
+            history
+        };
+
+        write_txn.commit()?;
+        Ok(history)
+    }
+
     pub fn clear_history(&self, server_id: &str) -> Result<()> {
         self.history_cache.remove(server_id);
         let db = get_database()?;

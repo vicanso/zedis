@@ -2,7 +2,9 @@
 use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{ProtoManager, init_database};
-use crate::helpers::{MemuAction, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys};
+use crate::helpers::{
+    MemuAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys,
+};
 use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
@@ -152,6 +154,7 @@ impl Render for Zedis {
 
         let content = v_flex()
             .id(PKG_NAME)
+            .font_family(get_default_font_family())
             .size_full()
             .child(self.render_titlebar(window, cx))
             .child(
@@ -159,13 +162,7 @@ impl Render for Zedis {
                     .id(PKG_NAME)
                     .bg(cx.theme().background)
                     .size_full()
-                    .child(
-                        div()
-                            .w(SIDEBAR_WIDTH)
-                            .flex_none()
-                            .h_full()
-                            .child(self.sidebar.clone()),
-                    )
+                    .child(div().w(SIDEBAR_WIDTH).flex_none().h_full().child(self.sidebar.clone()))
                     .child(self.content.clone())
                     .children(dialog_layer)
                     .children(notification_layer),

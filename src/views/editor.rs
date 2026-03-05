@@ -15,6 +15,7 @@
 use crate::{
     assets::CustomIconName,
     constants::EDITOR_KEY_BAR_HEIGHT,
+    db::get_favorites_manager,
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisStreamEditor, ZedisZsetEditor},
@@ -478,6 +479,23 @@ impl ZedisEditor {
         );
 
         let content = key.clone();
+        let server_id = server_state.server_id().to_string();
+        let is_favorited = get_favorites_manager()
+            .records(&server_id)
+            .unwrap_or_default()
+            .iter()
+            .any(|k| k.as_ref() == key.as_ref());
+        let favorite_icon = if is_favorited {
+            IconName::StarFill
+        } else {
+            IconName::Star
+        };
+        let favorite_tooltip = if is_favorited {
+            i18n_editor(cx, "remove_favorite_tooltip")
+        } else {
+            i18n_editor(cx, "add_favorite_tooltip")
+        };
+        let favorite_key = key.clone();
         h_flex()
             .px_2()
             .h(EDITOR_KEY_BAR_HEIGHT)
@@ -495,6 +513,32 @@ impl ZedisEditor {
                     .on_click(cx.listener(move |_this, _event, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));
                         window.push_notification(Notification::info(i18n_editor(cx, "copied_key_to_clipboard")), cx);
+                    })),
+            )
+            .child(
+                Button::new("zedis-editor-favorite-key")
+                    .outline()
+                    .ml_1()
+                    .tooltip(favorite_tooltip)
+                    .icon(favorite_icon)
+                    .on_click(cx.listener(move |_this, _event, _window, cx| {
+                        let server_id = _this.server_state.read(cx).server_id().to_string();
+                        let key = favorite_key.clone();
+                        let is_favorited = is_favorited;
+                        cx.spawn(async move |_, cx| {
+                            let _ = cx
+                                .background_spawn(async move {
+                                    let manager = get_favorites_manager();
+                                    if is_favorited {
+                                        let _ = manager.remove_record(&server_id, key.as_ref());
+                                    } else {
+                                        let _ = manager.add_record(&server_id, key.as_ref());
+                                    }
+                                })
+                                .await;
+                        })
+                        .detach();
+                        cx.notify();
                     })),
             )
             .child(

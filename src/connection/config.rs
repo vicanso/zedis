@@ -141,9 +141,10 @@ impl RedisServer {
             readonly: get_bool("readonly"),
         }
     }
-    pub fn get_hash(&self) -> u64 {
+    pub fn get_hash(&self, db: usize) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
+        db.hash(&mut hasher);
         hasher.finish()
     }
     pub fn is_ssh_tunnel(&self) -> bool {
@@ -269,7 +270,7 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     // Check for new or modified configs
     for (id, new_server) in configs.iter() {
         if let Some(old_server) = old_configs.get(id) {
-            if old_server.get_hash() != new_server.get_hash() {
+            if old_server.get_hash(0) != new_server.get_hash(0) {
                 debug!(name = new_server.name, "modified config");
             }
         } else {

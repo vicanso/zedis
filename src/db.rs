@@ -20,17 +20,20 @@ use std::sync::OnceLock;
 use tracing::debug;
 
 mod cmd_history_manager;
+mod favorites_manager;
 mod history_manager;
 mod protos;
 mod search_history_manager;
 
 pub use cmd_history_manager::*;
+pub use favorites_manager::*;
 pub use protos::*;
 pub use search_history_manager::*;
 
 const SEARCH_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
 const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
 const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd_history");
+const FAVORITY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -55,6 +58,7 @@ pub fn init_database() -> Result<()> {
     {
         write_txn.open_table(SEARCH_HISTORY_TABLE)?;
         write_txn.open_table(PROTO_TABLE)?;
+        write_txn.open_table(FAVORITY_TABLE)?;
     }
     write_txn.commit()?;
     debug!(path = db_path.display().to_string(), "database initialized success");

@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
-    db::get_search_history_manager,
+    db::{get_favorites_manager, get_search_history_manager},
     helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
     states::{
         KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
@@ -66,6 +66,8 @@ enum KeyTreeAction {
     CollapseAllKeys,
     ToggleMultiSelectMode,
     AutoRefresh(u32),
+    SelectFavoriteKey(SharedString),
+    ClearFavorites,
 }
 
 #[derive(Default)]
@@ -977,9 +979,11 @@ impl ZedisKeyTree {
         let server_state = self.server_state.read(cx);
         let scanning = server_state.scanning();
         let readonly = server_state.readonly();
-        let server_id = server_state.server_id();
-        if server_id != self.state.server_id.as_str() {
-            self.state.server_id = server_id.to_string().into();
+        let server_id = server_state.server_id().to_string();
+        let server_id_changed = server_id.as_str() != self.state.server_id.as_str();
+        let _ = server_state;
+        if server_id_changed {
+            self.state.server_id = server_id.clone().into();
             self.keyword_state.update(cx, |state, cx| {
                 state.set_value(SharedString::default(), window, cx);
             });
@@ -992,35 +996,88 @@ impl ZedisKeyTree {
             QueryMode::Prefix => Icon::new(CustomIconName::ChevronUp), // ~ for prefix
             QueryMode::Exact => Icon::new(CustomIconName::Equal), // = for exact match
         };
+        let server_id_for_favorites: SharedString = server_id.clone().into();
         let query_mode_dropdown = DropdownButton::new("dropdown")
             .button(Button::new("key-tree-query-mode-btn").ghost().px_2().icon(icon))
-            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _window, cx| {
-                let mut menu = menu.label(i18n_key_tree(cx, "search_history"));
-                let keywords = server_state_clone.read(cx).search_history();
-                let no_keywords = keywords.is_empty();
-                for keyword in keywords {
-                    menu = menu.menu_element(Box::new(KeyTreeAction::Search(keyword.clone())), move |_, _cx| {
-                        Label::new(keyword.clone())
-                    });
-                }
-                if !no_keywords {
-                    menu = menu.menu_element_with_icon(
-                        CustomIconName::Eraser,
-                        Box::new(KeyTreeAction::Clear),
-                        move |_, cx| Label::new(i18n_key_tree(cx, "clear_history")),
-                    );
-                }
-                menu.separator()
-                    .label(i18n_key_tree(cx, "query_mode"))
-                    .menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
-                        Label::new(i18n_key_tree(cx, "query_mode_all")).ml_2().text_xs()
-                    })
-                    .menu_element_with_check(query_mode == QueryMode::Prefix, Box::new(QueryMode::Prefix), |_, cx| {
-                        Label::new(i18n_key_tree(cx, "query_mode_prefix")).ml_2().text_xs()
-                    })
-                    .menu_element_with_check(query_mode == QueryMode::Exact, Box::new(QueryMode::Exact), |_, cx| {
-                        Label::new(i18n_key_tree(cx, "query_mode_exact")).ml_2().text_xs()
-                    })
+            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, window, cx| {
+                let favorites = get_favorites_manager()
+                    .records(server_id_for_favorites.as_ref())
+                    .unwrap_or_default();
+                let server_state_for_history = server_state_clone.clone();
+                menu.submenu_with_icon(
+                    Some(Icon::new(IconName::Star)),
+                    i18n_key_tree(cx, "favorite_keys"),
+                    window,
+                    cx,
+                    move |submenu, _window, cx| {
+                        let mut submenu = submenu;
+                        if favorites.is_empty() {
+                            submenu = submenu.label(i18n_key_tree(cx, "no_favorite_keys"));
+                        } else {
+                            for key in &favorites {
+                                let key_clone = key.clone();
+                                submenu = submenu.menu_element(
+                                    Box::new(KeyTreeAction::SelectFavoriteKey(key.clone())),
+                                    move |_, _cx| Label::new(key_clone.clone()).text_ellipsis(),
+                                );
+                            }
+                            submenu = submenu.separator().menu_element_with_icon(
+                                CustomIconName::Eraser,
+                                Box::new(KeyTreeAction::ClearFavorites),
+                                move |_, cx| Label::new(i18n_key_tree(cx, "clear_favorites")),
+                            );
+                        }
+                        submenu
+                    },
+                )
+                .submenu_with_icon(
+                    Some(Icon::new(CustomIconName::Clock3)),
+                    i18n_key_tree(cx, "search_history"),
+                    window,
+                    cx,
+                    move |submenu, _window, cx| {
+                        let mut submenu = submenu;
+                        let keywords = server_state_for_history.read(cx).search_history();
+                        if keywords.is_empty() {
+                            submenu = submenu.label(i18n_key_tree(cx, "no_search_history"));
+                        } else {
+                            for keyword in keywords {
+                                submenu = submenu
+                                    .menu_element(Box::new(KeyTreeAction::Search(keyword.clone())), move |_, _cx| {
+                                        Label::new(keyword.clone())
+                                    });
+                            }
+                            submenu = submenu.separator().menu_element_with_icon(
+                                CustomIconName::Eraser,
+                                Box::new(KeyTreeAction::Clear),
+                                move |_, cx| Label::new(i18n_key_tree(cx, "clear_history")),
+                            );
+                        }
+                        submenu
+                    },
+                )
+                .submenu_with_icon(
+                    Some(Icon::new(IconName::Asterisk)),
+                    i18n_key_tree(cx, "query_mode"),
+                    window,
+                    cx,
+                    move |submenu, _window, _cx| {
+                        submenu
+                            .menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
+                                Label::new(i18n_key_tree(cx, "query_mode_all"))
+                            })
+                            .menu_element_with_check(
+                                query_mode == QueryMode::Prefix,
+                                Box::new(QueryMode::Prefix),
+                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_prefix")),
+                            )
+                            .menu_element_with_check(
+                                query_mode == QueryMode::Exact,
+                                Box::new(QueryMode::Exact),
+                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")),
+                            )
+                    },
+                )
             });
         let search_btn = Button::new("key-tree-search-btn")
             .ghost()
@@ -1181,6 +1238,20 @@ impl Render for ZedisKeyTree {
                 }
                 KeyTreeAction::Clear => {
                     this.handle_clear_history(cx);
+                }
+                KeyTreeAction::SelectFavoriteKey(key) => {
+                    this.select_item(key.clone(), false, false, cx);
+                }
+                KeyTreeAction::ClearFavorites => {
+                    let server_id = this.server_state.read(cx).server_id().to_string();
+                    cx.spawn(async move |_, cx| {
+                        let _ = cx
+                            .background_spawn(async move {
+                                let _ = get_favorites_manager().clear_history(&server_id);
+                            })
+                            .await;
+                    })
+                    .detach();
                 }
                 KeyTreeAction::DeleteMultipleKeys => {
                     let keys = this.key_tree_list_state.update(cx, |state, _cx| {

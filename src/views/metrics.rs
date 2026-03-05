@@ -402,14 +402,18 @@ fn make_x_labels_band(
         .collect()
 }
 
-fn make_area_canvas(
-    params: ChartParams,
-    series: Vec<(Vec<f64>, Hsla, Background)>,
-) -> impl IntoElement {
+fn make_area_canvas(params: ChartParams, series: Vec<(Vec<f64>, Hsla, Background)>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
-            let ChartParams { dates, y_max, y_format, tick_margin, border, muted_fg } = &params;
+            let ChartParams {
+                dates,
+                y_max,
+                y_format,
+                tick_margin,
+                border,
+                muted_fg,
+            } = &params;
             if dates.is_empty() {
                 return;
             }
@@ -421,7 +425,14 @@ fn make_area_canvas(
 
             let x_labels = make_x_labels_point(dates, &x, *tick_margin, *muted_fg);
             let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
-            ChartFrame { height, x_labels, y_grid, y_labels, border: *border }.paint(&bounds, window, cx);
+            ChartFrame {
+                height,
+                x_labels,
+                y_grid,
+                y_labels,
+                border: *border,
+            }
+            .paint(&bounds, window, cx);
 
             for (values, stroke, fill) in series.iter() {
                 let x_c = x.clone();
@@ -442,16 +453,18 @@ fn make_area_canvas(
     .size_full()
 }
 
-fn make_line_canvas(
-    params: ChartParams,
-    values: Vec<f64>,
-    stroke: Hsla,
-    step_after: bool,
-) -> impl IntoElement {
+fn make_line_canvas(params: ChartParams, values: Vec<f64>, stroke: Hsla, step_after: bool) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
-            let ChartParams { dates, y_max, y_format, tick_margin, border, muted_fg } = &params;
+            let ChartParams {
+                dates,
+                y_max,
+                y_format,
+                tick_margin,
+                border,
+                muted_fg,
+            } = &params;
             if dates.is_empty() {
                 return;
             }
@@ -463,7 +476,14 @@ fn make_line_canvas(
 
             let x_labels = make_x_labels_point(dates, &x, *tick_margin, *muted_fg);
             let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
-            ChartFrame { height, x_labels, y_grid, y_labels, border: *border }.paint(&bounds, window, cx);
+            ChartFrame {
+                height,
+                x_labels,
+                y_grid,
+                y_labels,
+                border: *border,
+            }
+            .paint(&bounds, window, cx);
 
             let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
 
@@ -483,15 +503,18 @@ fn make_line_canvas(
     .size_full()
 }
 
-fn make_bar_canvas(
-    params: ChartParams,
-    values: Vec<f64>,
-    fill_color: Hsla,
-) -> impl IntoElement {
+fn make_bar_canvas(params: ChartParams, values: Vec<f64>, fill_color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
-            let ChartParams { dates, y_max, y_format, tick_margin, border, muted_fg } = &params;
+            let ChartParams {
+                dates,
+                y_max,
+                y_format,
+                tick_margin,
+                border,
+                muted_fg,
+            } = &params;
             if dates.is_empty() {
                 return;
             }
@@ -506,7 +529,14 @@ fn make_bar_canvas(
 
             let x_labels = make_x_labels_band(dates, &x, band_width, *tick_margin, *muted_fg);
             let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
-            ChartFrame { height, x_labels, y_grid, y_labels, border: *border }.paint(&bounds, window, cx);
+            ChartFrame {
+                height,
+                x_labels,
+                y_grid,
+                y_labels,
+                border: *border,
+            }
+            .paint(&bounds, window, cx);
 
             let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
 

@@ -274,7 +274,8 @@ impl ZedisServerState {
                     let message = format!("{} failed", name.as_str());
                     error!(error = %e, message);
                     // only add error message if the server id is the same as the current server id
-                    if this.server_id == server_id {
+                    // ignore refresh redis info error
+                    if this.server_id == server_id && name != ServerTask::RefreshRedisInfo {
                         this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
                     }
                 }

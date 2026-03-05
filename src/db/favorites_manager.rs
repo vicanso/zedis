@@ -12,25 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::env;
+use super::FAVORITY_TABLE;
+use super::history_manager::HistoryManager;
+use std::sync::LazyLock;
 
-mod action;
-mod common;
-mod font;
-mod fs;
-mod string;
-mod time;
-mod ttl_cache;
-mod validate;
+static FAVORITES_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| HistoryManager::new(FAVORITY_TABLE));
 
-pub use action::*;
-pub use common::*;
-pub use font::*;
-pub use fs::*;
-pub use string::*;
-pub use time::{parse_duration, unix_ts, unix_ts_millis};
-pub use ttl_cache::*;
-pub use validate::*;
-pub fn is_development() -> bool {
-    env::var("RUST_ENV").unwrap_or_default() == "dev"
+pub fn get_favorites_manager() -> &'static HistoryManager {
+    &FAVORITES_MANAGER
 }

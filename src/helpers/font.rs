@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use gpui::SharedString;
+
 pub fn get_font_family() -> String {
     if cfg!(target_os = "macos") {
         "Menlo".to_string()
@@ -19,5 +21,23 @@ pub fn get_font_family() -> String {
         "Cascadia Code".to_string()
     } else {
         "monospace".to_string()
+    }
+}
+
+pub fn get_default_font_family() -> SharedString {
+    #[cfg(target_os = "macos")]
+    {
+        ".AppleSystemUIFont, PingFang SC, Helvetica Neue".into()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // 确保你的 add_fonts 已经把 HarmonyOS 或其他中文字体加载进去了
+        "Segoe UI, HarmonyOS Sans SC, Microsoft YaHei UI".into()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        "Ubuntu, Noto Sans CJK SC".into()
     }
 }
