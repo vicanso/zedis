@@ -27,7 +27,7 @@ use crate::{
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, MoveDown, MoveUp, Position},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
@@ -420,19 +420,13 @@ impl ZedisContent {
     ///
     /// This function is called when the user presses the up or down arrow keys
     /// to navigate through the command history.
-    fn handle_cmd_history(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_cmd_history(&mut self, is_up: bool, window: &mut Window, cx: &mut Context<Self>) {
         let server_id = self.server_state.read(cx).server_id();
         if server_id.is_empty() {
             return;
         }
 
-        let offset: i32 = match event.keystroke.key.as_str() {
-            "down" => -1,
-            "up" => 1,
-            _ => {
-                return;
-            }
-        };
+        let offset: i32 = if is_up { 1 } else { -1 };
         let records = get_cmd_history_manager().records(server_id).unwrap_or_default();
         if records.is_empty() {
             return;
@@ -454,6 +448,7 @@ impl ZedisContent {
         if let Some(value) = records.get(index) {
             self.cmd_input_state.update(cx, |this, cx| {
                 this.set_value(value.clone(), window, cx);
+                this.set_cursor_position(Position::new(0, u32::MAX), window, cx);
             });
             self.cmd_history_index = Some(index);
         }
@@ -487,44 +482,47 @@ impl ZedisContent {
                 self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
             }
             let font_family: SharedString = get_font_family().into();
-            let handle_suggestion_key_down = cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                let input_key = event.keystroke.key.as_str();
-                if !["down", "up"].contains(&input_key) {
-                    this.cmd_history_index = None;
-                    return;
-                }
-
+            let handle_cmd_arrow = |this: &mut Self, is_up: bool, window: &mut Window, cx: &mut Context<Self>| {
                 let input = this.cmd_input_state.read(cx).value();
                 if input.is_empty() || this.cmd_history_index.is_some() {
-                    this.handle_cmd_history(event, window, cx);
+                    this.handle_cmd_history(is_up, window, cx);
+                    cx.stop_propagation();
                     return;
                 }
                 if this.cmd_suggestions.is_empty() {
                     return;
                 }
                 let max = this.cmd_suggestions.len() - 1;
-                let new_index = match input_key {
-                    "down" => {
-                        if let Some(current) = this.cmd_suggestion_index {
-                            Some((current + 1).min(max))
-                        } else {
-                            Some(0)
-                        }
+                let new_index = if is_up {
+                    if let Some(current) = this.cmd_suggestion_index {
+                        if current > 0 { current - 1 } else { max }
+                    } else {
+                        max
                     }
-                    "up" => {
-                        if let Some(current) = this.cmd_suggestion_index {
-                            if current > 0 { Some(current - 1) } else { Some(max) }
-                        } else {
-                            Some(max)
-                        }
-                    }
-                    _ => None,
+                } else if let Some(current) = this.cmd_suggestion_index {
+                    (current + 1).min(max)
+                } else {
+                    0
                 };
-                if let Some(new_index) = new_index {
-                    this.cmd_suggestion_index = Some(new_index);
-                    cx.notify();
-                    cx.stop_propagation();
+                this.cmd_suggestion_index = Some(new_index);
+                if let Some(cmd) = this.cmd_suggestions.get(new_index) {
+                    let cmd: SharedString = cmd.clone().into();
+                    this.cmd_input_state.update(cx, |state, cx| {
+                        state.set_value(cmd, window, cx);
+                        state.set_cursor_position(Position::new(0, u32::MAX), window, cx);
+                    });
                 }
+                cx.notify();
+                cx.stop_propagation();
+            };
+            let handle_move_up = cx.listener(move |this, _: &MoveUp, window, cx| {
+                handle_cmd_arrow(this, true, window, cx);
+            });
+            let handle_move_down = cx.listener(move |this, _: &MoveDown, window, cx| {
+                handle_cmd_arrow(this, false, window, cx);
+            });
+            let handle_other_keys = cx.listener(|this, _: &gpui::KeyDownEvent, _window, _cx| {
+                this.cmd_history_index = None;
             });
 
             v_flex()
@@ -589,7 +587,9 @@ impl ZedisContent {
                                 .w_full()
                                 .border_t_1()
                                 .border_color(cx.theme().border)
-                                .on_key_down(handle_suggestion_key_down)
+                                .capture_action(handle_move_up)
+                                .capture_action(handle_move_down)
+                                .on_key_down(handle_other_keys)
                                 .child(
                                     Input::new(&self.cmd_input_state)
                                         .font_family(font_family)

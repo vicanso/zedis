@@ -21,13 +21,13 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::form::{field, v_form};
 use gpui_component::highlighter::Language;
-use gpui_component::input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
+use gpui_component::input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, Position, StepAction};
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::text::TextView;
-use gpui_component::{ActiveTheme, Disableable, IconName, RopeExt, StyledExt, WindowExt, h_flex};
+use gpui_component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::mem::take;
@@ -797,9 +797,7 @@ impl Render for ZedisForm {
                     && let ZedisFormFieldState::Input(state) = state
                 {
                     state.update(cx, |state, cx| {
-                        let text = state.text();
-                        let end_pos = text.offset_to_position(text.bytes().len());
-                        state.set_cursor_position(end_pos, window, cx);
+                        state.set_cursor_position(Position::new(0, u32::MAX), window, cx);
                     });
                     break;
                 }
