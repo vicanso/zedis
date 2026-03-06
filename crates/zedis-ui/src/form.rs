@@ -634,6 +634,11 @@ impl ZedisForm {
         {
             return false;
         }
+        self.is_field_visible_on(field, cx)
+    }
+
+    /// Returns `true` if the field should be displayed given the current RadioGroup state.
+    fn is_field_visible_on(&self, field: &ZedisFormField, cx: &App) -> bool {
         if let Some((ref radio_name, ref indices)) = field.visible_on {
             let selected = self.radio_group_selected(radio_name, cx);
             if !indices.contains(&selected) {
@@ -687,9 +692,8 @@ impl ZedisForm {
         let mut has_errors = false;
         let mut values = IndexMap::new();
 
-        let active_tab_index = *self.tab_selected_index.read(cx);
         for (field, state) in &self.field_states {
-            if !self.is_field_visible(field, active_tab_index, cx) {
+            if !self.is_field_visible_on(field, cx) {
                 continue;
             }
             let value = match state {

@@ -449,7 +449,7 @@ impl ZedisAppState {
             });
             let result: Result<()> = task.await;
             if let Err(e) = &result {
-                error!(error = %e, "Failed to remove server");
+                error!(error = %e, "Failed to upsert server");
             }
             handle.update(cx, |_this, cx| {
                 cx.emit(GlobalEvent::ServerListUpdated);
