@@ -175,6 +175,7 @@ soft_wrap_tooltip = "启用软换行以显示长行"
 data_format_tooltip = "数据格式"
 viewer = "视图:"
 toggle_readonly_tooltip = "切换只读模式 (当前会话)"
+metrics_tooltip = "切换服务器指标"
 
 [list_editor]
 position = "位置"

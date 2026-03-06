@@ -157,7 +157,7 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
 }
 
 /// Redis value data variants for different data types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RedisValueData {
     Bytes(Arc<RedisBytesValue>),
     List(Arc<RedisListValue>),
@@ -168,7 +168,7 @@ pub enum RedisValueData {
 }
 
 /// Redis Set value structure with pagination support
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisSetValue {
     pub keyword: Option<SharedString>,
     pub cursor: u64,
@@ -185,7 +185,7 @@ pub enum SortOrder {
 }
 
 /// Redis Sorted Set value structure with pagination and sorting support
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisZsetValue {
     pub keyword: Option<SharedString>,
     pub cursor: u64,
@@ -196,7 +196,7 @@ pub struct RedisZsetValue {
 }
 
 /// Redis Hash value structure with pagination support
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisHashValue {
     pub cursor: u64,
     pub keyword: Option<SharedString>,
@@ -206,7 +206,7 @@ pub struct RedisHashValue {
 }
 
 /// Redis List value structure
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisListValue {
     pub keyword: Option<SharedString>,
     pub size: usize,
@@ -216,7 +216,7 @@ pub struct RedisListValue {
 /// Structure: (Message ID, Vec<(Field, Value)>)
 pub type RedisStreamEntry = (SharedString, Vec<(SharedString, SharedString)>);
 /// Redis Stream value structure with pagination support
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisStreamValue {
     /// Optional keyword filter for searching stream entries.
     pub keyword: Option<SharedString>,
@@ -288,7 +288,7 @@ impl ViewMode {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisBytesValue {
     pub format: DataFormat,
     pub bytes: Bytes,
@@ -439,7 +439,7 @@ pub enum RedisValueStatus {
 }
 
 /// Redis value with metadata including type, data, expiration, and status
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisValue {
     pub(crate) status: RedisValueStatus,
     pub(crate) key_type: KeyType,

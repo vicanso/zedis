@@ -469,6 +469,7 @@ impl ZedisStatusBar {
                             .outline()
                             .small()
                             .icon(CustomIconName::Activity)
+                            .tooltip(i18n_status_bar(cx, "metrics_tooltip"))
                             .on_click(cx.listener(|_this, _, _window, cx| {
                                 cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
                                     let route = if state.route() == Route::Metrics {

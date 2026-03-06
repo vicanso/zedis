@@ -399,7 +399,8 @@ impl ZedisServerState {
         self.spawn(
             task,
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let mut conn = client.connection().clone();
                 let (t, ttl): (String, i64) = pipe()
                     .cmd("TYPE")
                     .arg(key.as_str())
@@ -407,16 +408,14 @@ impl ZedisServerState {
                     .arg(key.as_str())
                     .query_async(&mut conn)
                     .await?;
-                // the key does not exist
                 if ttl == -2 {
                     return Ok(RedisValue {
                         expire_at: Some(-2),
                         ..Default::default()
                     });
                 }
-                // Calculate absolute expiration timestamp
                 let expire_at = match ttl {
-                    -1 => Some(-1), // Persistent
+                    -1 => Some(-1),
                     t if t >= 0 => Some(unix_ts() + t),
                     _ => None,
                 };
@@ -441,37 +440,34 @@ impl ZedisServerState {
                         message: "unsupported key type".to_string(),
                     }),
                 }?;
-                if let Ok(client) = get_connection_manager().get_client(&server_id, db).await
-                    && let Ok(memory_usage) = client.memory_usage(key.as_str(), key_type.as_str()).await
-                {
+                if let Ok(memory_usage) = client.memory_usage(key.as_str(), key_type.as_str()).await {
                     redis_value.size = memory_usage;
                 }
-
                 redis_value.expire_at = expire_at;
-
                 Ok(redis_value)
             },
             move |this, result, cx| {
-                // if the key is not the same as the selected key, return
-                if this.key != Some(current_key.clone()) {
+                if this.key.as_ref() != Some(&current_key) {
                     return;
                 }
                 match result {
                     Ok(value) => {
-                        if !value.is_expired()
-                            && let Some(key) = this.key.as_ref()
-                        {
-                            let mut should_refresh_key_tree = false;
-                            if let Some(k) = this.keys.get_mut(key) {
+                        if this.value.as_ref() == Some(&value) {
+                            return;
+                        }
+                        if !value.is_expired() {
+                            let need_refresh = if let Some(k) = this.keys.get_mut(&current_key) {
                                 if *k != value.key_type {
-                                    should_refresh_key_tree = true;
                                     *k = value.key_type();
+                                    true
+                                } else {
+                                    false
                                 }
                             } else {
-                                should_refresh_key_tree = true;
-                                this.keys.insert(key.clone(), value.key_type());
-                            }
-                            if should_refresh_key_tree {
+                                this.keys.insert(current_key, value.key_type());
+                                true
+                            };
+                            if need_refresh {
                                 this.key_tree_id = Uuid::now_v7().to_string().into();
                             }
                         }
