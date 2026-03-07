@@ -444,14 +444,18 @@ impl ZedisAppState {
                     servers.push(server);
                 }
                 save_servers(servers.clone()).await?;
-
                 Ok(())
             });
             let result: Result<()> = task.await;
-            if let Err(e) = &result {
-                error!(error = %e, "Failed to upsert server");
-            }
+
             handle.update(cx, |_this, cx| {
+                if let Err(e) = &result {
+                    error!(error = %e, "Failed to upsert server");
+                    cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                        e.to_string().into(),
+                    )));
+                    return;
+                }
                 cx.emit(GlobalEvent::ServerListUpdated);
                 cx.notify();
             })

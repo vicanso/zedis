@@ -81,7 +81,9 @@ pub struct ZedisFormField {
     name: SharedString,
     label: SharedString,
     placeholder: SharedString,
-    /// When set, the field is only visible on the tab at this index.
+    /// Assigns this field to a specific tab (display-only).
+    /// The field is hidden when another tab is active, but its value is
+    /// **always** included on form submission regardless of the active tab.
     tab_index: Option<usize>,
     default_value: Option<SharedString>,
     field_type: ZedisFormFieldType,
@@ -93,8 +95,9 @@ pub struct ZedisFormField {
     /// Whether this field should receive focus on the first render.
     focus: bool,
     readonly: bool,
-    /// When set, the field is only visible when the referenced RadioGroup's
-    /// selected index is in the given list.
+    /// Makes this field conditionally dependent on a RadioGroup's selection.
+    /// Unlike `tab_index`, when the condition is **not** met the field is both
+    /// hidden from the UI **and** excluded from the submitted values.
     visible_on: Option<(SharedString, Vec<usize>)>,
 }
 
@@ -626,19 +629,22 @@ impl ZedisForm {
         this
     }
 
-    /// Returns `true` if the field should be displayed given the current tab
-    /// and RadioGroup state.
-    fn is_field_visible(&self, field: &ZedisFormField, active_tab_index: usize, cx: &App) -> bool {
+    /// Whether this field should be rendered in the current view.
+    /// Checks both tab membership (`tab_index`) and conditional dependency
+    /// (`visible_on`).
+    fn should_render_field(&self, field: &ZedisFormField, active_tab_index: usize, cx: &App) -> bool {
         if let Some(tab_index) = field.tab_index
             && tab_index != active_tab_index
         {
             return false;
         }
-        self.is_field_visible_on(field, cx)
+        self.should_collect_field_value(field, cx)
     }
 
-    /// Returns `true` if the field should be displayed given the current RadioGroup state.
-    fn is_field_visible_on(&self, field: &ZedisFormField, cx: &App) -> bool {
+    /// Whether this field's value should be collected on form submission.
+    /// Only checks `visible_on` — fields on inactive tabs (`tab_index`) are
+    /// still submitted because tab switching is purely a UI concern.
+    fn should_collect_field_value(&self, field: &ZedisFormField, cx: &App) -> bool {
         if let Some((ref radio_name, ref indices)) = field.visible_on {
             let selected = self.radio_group_selected(radio_name, cx);
             if !indices.contains(&selected) {
@@ -693,7 +699,7 @@ impl ZedisForm {
         let mut values = IndexMap::new();
 
         for (field, state) in &self.field_states {
-            if !self.is_field_visible_on(field, cx) {
+            if !self.should_collect_field_value(field, cx) {
                 continue;
             }
             let value = match state {
@@ -851,7 +857,7 @@ impl Render for ZedisForm {
         let active_tab_index = *self.tab_selected_index.read(cx);
 
         for (index, (field, field_state)) in self.field_states.iter().enumerate() {
-            if !self.is_field_visible(field, active_tab_index, cx) {
+            if !self.should_render_field(field, active_tab_index, cx) {
                 continue;
             }
 
