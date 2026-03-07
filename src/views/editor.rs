@@ -110,7 +110,7 @@ impl ZedisEditor {
         // Subscribe to server events to track when keys are selected
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
-                ServerEvent::KeySelected => {
+                ServerEvent::KeySelected(_) => {
                     this.selected_key_at = Some(Instant::now());
                     this.start_auto_refresh(None, cx);
                 }
@@ -332,7 +332,6 @@ impl ZedisEditor {
             let size_label = i18n_common(cx, "size");
             btns.push(
                 Label::new(format!("{size_label} : {size}"))
-                    .ml_2()
                     .text_sm()
                     .into_any_element(),
             );
@@ -358,7 +357,6 @@ impl ZedisEditor {
 
             btns.push(
                 Button::new("zedis-editor-save-key")
-                    .ml_2()
                     .disabled(self.readonly || !value_modified || should_show_loading)
                     .outline()
                     .label(i18n_common(cx, "save"))
@@ -376,7 +374,6 @@ impl ZedisEditor {
             let ttl_btn = if self.ttl_edit_mode {
                 // Show input field with confirmation button
                 Input::new(&self.ttl_input_state)
-                    .ml_2()
                     .max_w(px(TTL_INPUT_MAX_WIDTH))
                     .suffix(
                         Button::new("zedis-editor-ttl-update-btn")
@@ -399,7 +396,6 @@ impl ZedisEditor {
                     .into()
                 };
                 Button::new("zedis-editor-ttl-btn")
-                    .ml_2()
                     .outline()
                     .w(px(TTL_INPUT_MAX_WIDTH))
                     .disabled(self.readonly || should_show_loading)
@@ -426,7 +422,6 @@ impl ZedisEditor {
             DropdownButton::new("zedis-editor-reload-key")
                 .button(
                     Button::new("zedis-editor-reload-now")
-                        .ml_2()
                         .outline()
                         .disabled(should_show_loading)
                         .when(auto_refresh_interval_sec > 0, |this| {
@@ -460,7 +455,6 @@ impl ZedisEditor {
         // Add delete button
         btns.push(
             Button::new("zedis-editor-delete-key")
-                .ml_2()
                 .outline()
                 .disabled(self.readonly || should_show_loading)
                 .tooltip(if self.readonly {
@@ -502,6 +496,7 @@ impl ZedisEditor {
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()
+            .gap_2()
             .w_full()
             .child(
                 // Copy key button
@@ -518,7 +513,6 @@ impl ZedisEditor {
             .child(
                 Button::new("zedis-editor-favorite-key")
                     .outline()
-                    .ml_1()
                     .tooltip(favorite_tooltip)
                     .icon(favorite_icon)
                     .on_click(cx.listener(move |_this, _event, _window, cx| {
@@ -547,7 +541,6 @@ impl ZedisEditor {
                     .flex_1()
                     .w_0()
                     .overflow_hidden()
-                    .mx_2()
                     .child(Label::new(key).text_ellipsis().whitespace_nowrap()),
             )
             .children(btns)

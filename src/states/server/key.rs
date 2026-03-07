@@ -507,7 +507,7 @@ impl ZedisServerState {
                 ..Default::default()
             });
         }
-        cx.emit(ServerEvent::KeySelected);
+        cx.emit(ServerEvent::KeySelected(key.clone()));
         cx.notify();
 
         self.get_value(key, ServerTask::Selectkey, cx);

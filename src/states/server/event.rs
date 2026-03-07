@@ -142,7 +142,7 @@ pub enum ServerEvent {
     TerminalToggled(bool),
 
     /// A key has been selected for viewing/editing
-    KeySelected,
+    KeySelected(SharedString),
     /// Key scan operation has started
     KeyScanStarted,
     /// Key scan found a new batch of keys.

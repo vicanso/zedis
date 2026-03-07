@@ -458,6 +458,9 @@ impl ZedisKeyTree {
                         cx.notify();
                     }
                 }
+                ServerEvent::KeySelected(key) => {
+                    this.update_expand(key.clone(), cx);
+                }
                 ServerEvent::KeyScanFinished => {
                     let keys = server_state.read(cx).keys();
                     let global_state = cx.global::<ZedisGlobalStore>().read(cx);
@@ -588,6 +591,23 @@ impl ZedisKeyTree {
     fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
         self.state.scroll_to_index = Some(IndexPath::new(0));
+    }
+    fn update_expand(&mut self, selected_key: SharedString, cx: &mut Context<Self>) {
+        let (separator, max_depth) = {
+            let global_state = cx.global::<ZedisGlobalStore>().read(cx);
+            (
+                global_state.key_separator().to_string(),
+                global_state.max_key_tree_depth(),
+            )
+        };
+        if !selected_key.contains(separator.as_str()) {
+            return;
+        }
+        let parts: Vec<&str> = selected_key.splitn(max_depth, separator.as_str()).collect();
+        for i in 1..parts.len() {
+            let prefix: SharedString = parts[..i].join(separator.as_str()).into();
+            self.state.expanded_items.insert(prefix);
+        }
     }
 
     /// Update the key tree structure when server state changes

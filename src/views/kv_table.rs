@@ -208,7 +208,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     });
                 }
                 // Clear search when key selection changes
-                ServerEvent::KeySelected => {
+                ServerEvent::KeySelected(_) => {
                     this.edit_row = None;
                     this.key_changed = Some(true);
                 }
