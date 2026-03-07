@@ -648,7 +648,7 @@ impl ZedisMetrics {
             .child(Label::new(value).font_semibold())
     }
 
-    fn render_stat_cards(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_stat_cards(&self, columns: u16, cx: &mut Context<Self>) -> impl IntoElement {
         let m = match self.latest_metrics {
             Some(m) => m,
             None => return div().into_any_element(),
@@ -683,7 +683,7 @@ impl ZedisMetrics {
             .w_full()
             .grid()
             .gap_2()
-            .grid_cols(4)
+            .grid_cols(columns * 2)
             .child(self.render_stat_card(cx, i18n_metrics(cx, "memory"), memory))
             .child(self.render_stat_card(cx, i18n_metrics(cx, "clients"), clients))
             .child(self.render_stat_card(cx, i18n_metrics(cx, "ops"), ops))
@@ -697,8 +697,10 @@ impl ZedisMetrics {
 
     fn render_cpu_usage_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "CPU Usage: {:.2}% - {:.2}%",
-            self.metrics_chart_data.min_cpu_percent, self.metrics_chart_data.max_cpu_percent
+            "{}: {:.2}% - {:.2}%",
+            i18n_metrics(cx, "cpu_usage"),
+            self.metrics_chart_data.min_cpu_percent,
+            self.metrics_chart_data.max_cpu_percent
         );
         let dates: Vec<SharedString> = self.metrics_chart_data.cpu.iter().map(|d| d.date.clone()).collect();
         let sys_values: Vec<f64> = self
@@ -745,8 +747,10 @@ impl ZedisMetrics {
 
     fn render_memory_usage_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Memory Usage: {:.0}MB - {:.0}MB",
-            self.metrics_chart_data.min_memory, self.metrics_chart_data.max_memory
+            "{}: {:.0}MB - {:.0}MB",
+            i18n_metrics(cx, "memory_usage"),
+            self.metrics_chart_data.min_memory,
+            self.metrics_chart_data.max_memory
         );
         let dates: Vec<SharedString> = self.metrics_chart_data.memory.iter().map(|d| d.date.clone()).collect();
         let values: Vec<f64> = self.metrics_chart_data.memory.iter().map(|d| d.used_memory).collect();
@@ -762,8 +766,10 @@ impl ZedisMetrics {
 
     fn render_latency_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Latency: {:.0}ms - {:.0}ms",
-            self.metrics_chart_data.min_latency_ms, self.metrics_chart_data.max_latency_ms
+            "{}: {:.0}ms - {:.0}ms",
+            i18n_metrics(cx, "latency"),
+            self.metrics_chart_data.min_latency_ms,
+            self.metrics_chart_data.max_latency_ms
         );
         let dates: Vec<SharedString> = self.metrics_chart_data.latency.iter().map(|d| d.date.clone()).collect();
         let values: Vec<f64> = self.metrics_chart_data.latency.iter().map(|d| d.latency_ms).collect();
@@ -780,8 +786,10 @@ impl ZedisMetrics {
 
     fn render_connected_clients_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Connected Clients: {:.0} - {:.0}",
-            self.metrics_chart_data.min_connected_clients, self.metrics_chart_data.max_connected_clients
+            "{}: {:.0} - {:.0}",
+            i18n_metrics(cx, "connected_clients"),
+            self.metrics_chart_data.min_connected_clients,
+            self.metrics_chart_data.max_connected_clients
         );
         let dates: Vec<SharedString> = self
             .metrics_chart_data
@@ -808,8 +816,10 @@ impl ZedisMetrics {
 
     fn render_total_commands_processed_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Total Commands Processed: {:.0} - {:.0}",
-            self.metrics_chart_data.min_total_commands_processed, self.metrics_chart_data.max_total_commands_processed
+            "{}: {:.0} - {:.0}",
+            i18n_metrics(cx, "total_commands_processed"),
+            self.metrics_chart_data.min_total_commands_processed,
+            self.metrics_chart_data.max_total_commands_processed
         );
         let dates: Vec<SharedString> = self
             .metrics_chart_data
@@ -836,8 +846,10 @@ impl ZedisMetrics {
 
     fn render_output_kbps_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Output KBPS: {:.0} - {:.0}",
-            self.metrics_chart_data.min_output_kbps, self.metrics_chart_data.max_output_kbps
+            "{}: {:.0} - {:.0}",
+            i18n_metrics(cx, "output_kbps"),
+            self.metrics_chart_data.min_output_kbps,
+            self.metrics_chart_data.max_output_kbps
         );
         let dates: Vec<SharedString> = self
             .metrics_chart_data
@@ -862,8 +874,10 @@ impl ZedisMetrics {
 
     fn render_key_hit_rate_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Key Hit Rate: {:.0}% - {:.0}%",
-            self.metrics_chart_data.min_key_hit_rate, self.metrics_chart_data.max_key_hit_rate
+            "{}: {:.0}% - {:.0}%",
+            i18n_metrics(cx, "key_hit_rate"),
+            self.metrics_chart_data.min_key_hit_rate,
+            self.metrics_chart_data.max_key_hit_rate
         );
         let dates: Vec<SharedString> = self
             .metrics_chart_data
@@ -889,8 +903,10 @@ impl ZedisMetrics {
 
     fn render_evicted_keys_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "Evicted Keys: {:.0} - {:.0}",
-            self.metrics_chart_data.min_evicted_keys, self.metrics_chart_data.max_evicted_keys
+            "{}: {:.0} - {:.0}",
+            i18n_metrics(cx, "evicted_keys"),
+            self.metrics_chart_data.min_evicted_keys,
+            self.metrics_chart_data.max_evicted_keys
         );
         let dates: Vec<SharedString> = self
             .metrics_chart_data
@@ -945,13 +961,14 @@ impl Render for ZedisMetrics {
                     .justify_start()
                     .child(
                         h_flex()
+                            .items_center()
                             .col_span_full()
                             .justify_between()
                             .px_2()
                             .child(Label::new(self.title.clone()))
                             .child(Label::new(time_range)),
                     )
-                    .child(self.render_stat_cards(cx))
+                    .child(self.render_stat_cards(columns, cx))
                     .when(has_chart_data, |this| {
                         this.child(self.render_cpu_usage_chart(cx))
                             .child(self.render_memory_usage_chart(cx))

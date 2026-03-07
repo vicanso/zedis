@@ -240,6 +240,12 @@ hit_rate = "Hit Rate"
 net_in = "Net In"
 net_out = "Net Out"
 evicted_keys = "Evicted"
+cpu_usage = "CPU Usage"
+memory_usage = "Memory Usage"
+connected_clients = "Connected Clients"
+total_commands_processed = "Total Commands Processed"
+output_kbps = "Output KBPS"
+key_hit_rate = "Key Hit Rate"
 
 [proto_editor]
 title = "Proto Editor"
