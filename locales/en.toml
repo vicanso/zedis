@@ -167,6 +167,7 @@ delete_folder_title = "Delete Folder"
 delete_folder_prompt = "Are you sure you want to delete this folder: %{folder}?"
 delete_keys_title = "Delete Keys"
 delete_keys_prompt = "Are you sure you want to delete these keys: %{keys}?"
+pubsub_mode = "Pubsub Mode"
 
 
 [status_bar]
@@ -270,3 +271,20 @@ remove_proto_title = "Delete Proto"
 remove_proto_prompt = "Are you sure you want to delete this proto: \"%{name}\"?"
 field_errors_title = "Save Proto Failed"
 field_errors_message = "Please verify the following fields and try again:\n\n%{errors}"
+
+[pubsub_editor]
+subscribe_channel_placeholder = "Enter channel pattern to subscribe"
+subscribe = "Subscribe"
+unsubscribe = "Unsubscribe"
+publish_channel_placeholder = "Enter channel to publish"
+publish_message_placeholder = "Enter message to publish"
+publish = "Publish"
+timestamp = "Timestamp"
+channel = "Channel"
+message = "Message"
+no_messages = "No messages yet. Subscribe to a channel to start receiving messages."
+subscribed = "Subscribed to: %{channel}"
+unsubscribed = "Unsubscribed from: %{channel}"
+published = "Published to: %{channel}"
+subscribe_failed = "Subscribe failed"
+publish_failed = "Publish failed"

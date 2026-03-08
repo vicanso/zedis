@@ -66,6 +66,7 @@ enum KeyTreeAction {
     DeleteFolder(SharedString),
     CollapseAllKeys,
     ToggleMultiSelectMode,
+    ChangeChannelMode,
     AutoRefresh(u32),
     SelectFavoriteKey(SharedString),
     ClearFavorites,
@@ -1197,6 +1198,11 @@ impl ZedisKeyTree {
                         submenu
                     },
                 )
+                .menu_element_with_icon(
+                    Icon::new(CustomIconName::Rss),
+                    Box::new(KeyTreeAction::ChangeChannelMode),
+                    move |_, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
+                )
             });
 
         h_flex()
@@ -1267,6 +1273,11 @@ impl Render for ZedisKeyTree {
                 this.state.query_mode = new_mode;
             }))
             .on_action(cx.listener(|this, e: &KeyTreeAction, window, cx| match e {
+                KeyTreeAction::ChangeChannelMode => {
+                    this.server_state.update(cx, |state, cx| {
+                        state.change_channel_mode(cx);
+                    });
+                }
                 KeyTreeAction::AutoRefresh(interval) => {
                     this.state.refresh_interval_sec = *interval;
                     this.start_auto_refresh(cx);
