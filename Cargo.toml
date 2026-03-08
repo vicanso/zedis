@@ -111,6 +111,7 @@ url = "2.5.8"
 uuid = "1.19.0"
 zedis-ui = { path = "crates/zedis-ui" }
 indexmap = { workspace = true }
+simdutf8 = "0.1.5"
 
 [workspace.dependencies]
 indexmap = "2.13.0"
