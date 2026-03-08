@@ -76,6 +76,7 @@ pub enum CustomIconName {
     SquareCheck,
     ListX,
     Snail,
+    Rss,
 }
 
 impl CustomIconName {
@@ -115,6 +116,7 @@ impl CustomIconName {
             CustomIconName::SquareCheck => "icons/square-check.svg",
             CustomIconName::ListX => "icons/list-x.svg",
             CustomIconName::Snail => "icons/snail.svg",
+            CustomIconName::Rss => "icons/rss.svg",
         }
         .into()
     }

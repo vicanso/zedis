@@ -18,7 +18,10 @@ use crate::{
     db::get_favorites_manager,
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
-    views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisStreamEditor, ZedisZsetEditor},
+    views::{
+        ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor,
+        ZedisZsetEditor,
+    },
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
@@ -53,6 +56,7 @@ pub struct ZedisEditor {
     zset_editor: Option<Entity<ZedisZsetEditor>>,
     hash_editor: Option<Entity<ZedisHashEditor>>,
     stream_editor: Option<Entity<ZedisStreamEditor>>,
+    pubsub_editor: Option<Entity<ZedisPubsubEditor>>,
 
     /// TTL editing state
     should_enter_ttl_edit_mode: Option<bool>,
@@ -164,6 +168,7 @@ impl ZedisEditor {
             zset_editor: None,
             hash_editor: None,
             stream_editor: None,
+            pubsub_editor: None,
             readonly,
             ttl_edit_mode: false,
             ttl_input_state,
@@ -565,6 +570,9 @@ impl ZedisEditor {
         if key_type != KeyType::Stream {
             let _ = self.stream_editor.take();
         }
+        if key_type != KeyType::Channel {
+            let _ = self.pubsub_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -620,6 +628,14 @@ impl ZedisEditor {
                 });
                 editor.clone().into_any_element()
             }
+            KeyType::Channel => {
+                self.reset_editors(KeyType::Channel);
+                let editor = self.pubsub_editor.get_or_insert_with(|| {
+                    debug!("Creating new pubsub editor");
+                    cx.new(|cx| ZedisPubsubEditor::new(self.server_state.clone(), window, cx))
+                });
+                editor.clone().into_any_element()
+            }
             _ => {
                 // Default to bytes editor for String type and other types
                 self.reset_editors(KeyType::String);
@@ -638,9 +654,10 @@ impl Render for ZedisEditor {
     /// Main render method - displays key info bar and appropriate editor
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
+        let is_channel_mode = server_state.is_channel_mode();
 
         // Don't render anything if no key is selected
-        if server_state.key().is_none() {
+        if !is_channel_mode && server_state.key().is_none() {
             return v_flex().into_any_element();
         }
         if let Some(true) = self.should_enter_ttl_edit_mode.take() {
@@ -650,7 +667,7 @@ impl Render for ZedisEditor {
         v_flex()
             .w_full()
             .h_full()
-            .child(self.render_select_key(cx))
+            .when(!is_channel_mode, |this| this.child(self.render_select_key(cx)))
             .child(self.render_editor(window, cx))
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {

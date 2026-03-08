@@ -95,6 +95,9 @@ pub enum ServerTask {
 
     /// Save edited value back to Redis
     SaveValue,
+
+    /// Publish a message to a channel
+    PublishMessage,
 }
 
 impl ServerTask {
@@ -128,6 +131,7 @@ impl ServerTask {
             ServerTask::RemoveHashField => "remove_hash_field",
             ServerTask::AddStreamEntry => "add_stream_entry",
             ServerTask::RemoveStreamEntry => "remove_stream_entry",
+            ServerTask::PublishMessage => "publish_message",
         }
     }
 }
@@ -176,6 +180,9 @@ pub enum ServerEvent {
     SoftWrapToggled(bool),
     /// An error occurred.
     ErrorOccurred(ErrorMessage),
+
+    /// A pubsub message was published
+    PubsubMessagePublished,
 
     /// Trigger Action
     EditionActionTriggered(EditorAction),

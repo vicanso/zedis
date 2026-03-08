@@ -372,6 +372,7 @@ pub enum KeyType {
     Hash,
     Stream,
     Vectorset,
+    Channel,
 }
 impl KeyType {
     /// Returns the abbreviated string representation of the key type
@@ -384,6 +385,7 @@ impl KeyType {
             KeyType::Zset => "ZSET",
             KeyType::Stream => "STRM",
             KeyType::Vectorset => "VEC",
+            KeyType::Channel => "CHANNEL",
             KeyType::Unknown => "",
         }
     }
@@ -424,7 +426,7 @@ impl KeyType {
             KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),     // Red
             KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),    // Green
             KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // Pink
-            KeyType::Unknown => gpui::hsla(0.0, 0.0, 0.4, 1.0),   // Gray
+            _ => gpui::hsla(0.0, 0.0, 0.4, 1.0),                  // Gray
         }
     }
 }

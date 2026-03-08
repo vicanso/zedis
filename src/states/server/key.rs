@@ -489,6 +489,41 @@ impl ZedisServerState {
     pub fn reload_value(&mut self, key: SharedString, cx: &mut Context<Self>) {
         self.get_value(key, ServerTask::ReloadValue, cx);
     }
+    pub fn is_channel_mode(&self) -> bool {
+        self.value.as_ref().is_some_and(|v| v.key_type == KeyType::Channel)
+    }
+    /// Sets the channel mode for current server.
+    pub fn change_channel_mode(&mut self, cx: &mut Context<Self>) {
+        self.value = Some(RedisValue {
+            key_type: KeyType::Channel,
+            ..Default::default()
+        });
+        self.key = None;
+        cx.notify();
+    }
+
+    /// Publishes a message to a Redis channel.
+    pub fn publish_message(&mut self, channel: SharedString, message: SharedString, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        self.spawn(
+            ServerTask::PublishMessage,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let _: u64 = cmd("PUBLISH")
+                    .arg(channel.as_str())
+                    .arg(message.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |_this, _result, cx| {
+                cx.emit(ServerEvent::PubsubMessagePublished);
+                cx.notify();
+            },
+            cx,
+        );
+    }
 
     /// Selects a key and fetches its details (Type, TTL, Value).
     pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
