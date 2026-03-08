@@ -23,10 +23,12 @@ use russh::client::{Handle, Handler};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
+use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -346,6 +348,99 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
     Ok(session)
 }
 
+/// A rustls `ServerCertVerifier` that accepts any server certificate.
+/// Used when the user enables "insecure" / skip-verification mode.
+#[derive(Debug)]
+struct InsecureServerCertVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for InsecureServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Builds a `TlsConnector` from the server's TLS configuration.
+///
+/// Handles insecure mode (skip verification), custom root CA, and
+/// optional mTLS (client certificate + key).
+fn build_tls_connector(config: &RedisServer) -> Result<TlsConnector> {
+    let insecure = config.insecure.unwrap_or(false);
+
+    let builder = if insecure {
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(InsecureServerCertVerifier))
+    } else {
+        let mut root_store = rustls::RootCertStore::empty();
+        if let Some(root_cert) = &config.root_cert
+            && !root_cert.is_empty()
+        {
+            let certs: Vec<_> = rustls_pemfile::certs(&mut root_cert.as_bytes())
+                .filter_map(|r| r.ok())
+                .collect();
+            root_store.add_parsable_certificates(certs);
+        } else {
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
+        rustls::ClientConfig::builder().with_root_certificates(root_store)
+    };
+
+    let tls_config = if let Some(client_cert) = &config.client_cert
+        && let Some(client_key) = &config.client_key
+        && !client_cert.is_empty()
+        && !client_key.is_empty()
+    {
+        let certs: Vec<_> = rustls_pemfile::certs(&mut client_cert.as_bytes())
+            .filter_map(|r| r.ok())
+            .collect();
+        let key = rustls_pemfile::private_key(&mut client_key.as_bytes())
+            .map_err(|e| Error::Invalid {
+                message: format!("Failed to parse client key: {e}"),
+            })?
+            .ok_or_else(|| Error::Invalid {
+                message: "No private key found in client key PEM".to_string(),
+            })?;
+        builder.with_client_auth_cert(certs, key).map_err(|e| Error::Invalid {
+            message: format!("TLS client auth config failed: {e}"),
+        })?
+    } else {
+        builder.with_no_client_auth()
+    };
+
+    Ok(TlsConnector::from(Arc::new(tls_config)))
+}
+
 /// Opens a Redis connection through an SSH tunnel.
 ///
 /// This function establishes an SSH session using the provided configuration,
@@ -360,42 +455,58 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
 ///
 /// A multiplexed Redis connection ready for use
 pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
-    // Extract SSH tunnel configuration
     let ssh_addr = config.ssh_addr.clone().unwrap_or_default();
     let ssh_user = config.ssh_username.clone().unwrap_or_default();
     let ssh_key = config.ssh_key.clone().unwrap_or_default();
     let ssh_password = config.ssh_password.clone().unwrap_or_default();
-    // Extract Redis server details
     let host = config.host.to_string();
     let port = config.port;
     let username = config.username.clone();
     let password = config.password.clone();
+    let tls_connector = if config.tls.unwrap_or(false) {
+        Some(build_tls_connector(config)?)
+    } else {
+        None
+    };
+
     run_in_tokio(async move {
-        // Get or initialize an SSH session
         let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password).await?;
-        // Open a direct TCP channel through the SSH tunnel to the Redis server
         let channel = session
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
             .await?;
         debug!(ssh_addr, ssh_user, host, port, "open direct tcpip success");
-        // Wrap the SSH channel in a Redis-compatible stream
-        let compat_stream = SshRedisStream::new(channel.into_stream());
+        let ssh_stream = SshRedisStream::new(channel.into_stream());
         let info = RedisConnectionInfo::default();
         let conn_config = redis::AsyncConnectionConfig::new()
             .set_connection_timeout(Some(get_redis_connection_timeout()))
             .set_response_timeout(Some(get_redis_response_timeout()));
-        // Create a multiplexed connection with the stream
-        let (mut connection, driver) =
-            MultiplexedConnection::new_with_config(&info, compat_stream, conn_config).await?;
-        // Spawn a background task to drive the connection
-        tokio::spawn(async move {
-            driver.await;
-            info!("Redis driver task finished");
-        });
-        // Authenticate with Redis if password is provided
+
+        let mut connection = if let Some(tls_connector) = tls_connector {
+            let server_name = ServerName::try_from(host.as_str())
+                .map_err(|_| Error::Invalid {
+                    message: format!("Invalid TLS server name: {host}"),
+                })?
+                .to_owned();
+            let tls_stream = tls_connector.connect(server_name, ssh_stream).await.map_err(|e| Error::Invalid {
+                message: format!("TLS handshake over SSH tunnel failed: {e}"),
+            })?;
+            debug!("TLS handshake over SSH tunnel succeeded");
+            let (conn, driver) = MultiplexedConnection::new_with_config(&info, tls_stream, conn_config).await?;
+            tokio::spawn(async move {
+                driver.await;
+                info!("Redis driver task finished");
+            });
+            conn
+        } else {
+            let (conn, driver) = MultiplexedConnection::new_with_config(&info, ssh_stream, conn_config).await?;
+            tokio::spawn(async move {
+                driver.await;
+                info!("Redis driver task finished");
+            });
+            conn
+        };
         if let Some(password) = password {
             let mut auth_cmd = cmd("AUTH");
-            // Use ACL authentication (username + password) if username is provided
             if let Some(user) = username {
                 auth_cmd.arg(user);
             }

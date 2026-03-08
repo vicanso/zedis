@@ -51,18 +51,21 @@ impl Connect for SshMultiplexedConnection {
             let id = connection_info.redis_settings().username().unwrap_or_default();
             let mut config =
                 get_server(id).map_err(|e| (ErrorKind::InvalidClientConfig, "get_server", e.to_string()))?;
-            let (target_host, target_port) = match connection_info.addr() {
-                redis::ConnectionAddr::Tcp(host, port) => (host, port),
-                redis::ConnectionAddr::TcpTls { host, port, .. } => (host, port),
+            let (target_host, target_port, tls) = match connection_info.addr() {
+                redis::ConnectionAddr::Tcp(host, port) => (host, port, false),
+                redis::ConnectionAddr::TcpTls { host, port, .. } => (host, port, true),
                 _ => {
                     return Err(RedisError::from((
                         ErrorKind::InvalidClientConfig,
-                        "Ssh tunnel supports tcp only",
+                        "Ssh tunnel supports tcp and tls only",
                     )));
                 }
             };
             config.host = target_host.to_string();
             config.port = *target_port;
+            if tls {
+                config.tls = Some(true);
+            }
             let connection = open_single_ssh_tunnel_connection(&config).await.map_err(|e| {
                 (
                     ErrorKind::InvalidClientConfig,
