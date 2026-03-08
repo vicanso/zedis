@@ -293,10 +293,12 @@ pub struct RedisClient {
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
     version: Version,
+    is_valkey: bool,
     connection: RedisAsyncConn,
 }
 #[derive(Debug, Clone, Default)]
 pub struct RedisClientDescription {
+    pub is_valkey: bool,
     pub server_type: SharedString,
     pub master_nodes: SharedString,
     pub slave_nodes: SharedString,
@@ -324,6 +326,7 @@ impl RedisClient {
             .map(|node| node.host_port().clone())
             .collect();
         RedisClientDescription {
+            is_valkey: self.is_valkey,
             server_type: format!("{:?}", self.server_type).into(),
             master_nodes: master_nodes.join(",").into(),
             slave_nodes: slave_nodes.join(",").into(),
@@ -853,29 +856,42 @@ impl ConnectionManager {
             nodes,
             master_nodes,
             version: Version::new(0, 0, 0),
+            is_valkey: false,
             connection,
         };
         let mut conn = client.connection.clone();
-        client.version = match server_type {
+        let get_version = |info: InfoDict| -> (bool, Option<Version>) {
+            if let Some(v) = info.get::<String>("valkey_version") {
+                return (true, Version::parse(&v).ok());
+            }
+            if let Some(v) = info.get::<String>("redis_version") {
+                return (false, Version::parse(&v).ok());
+            }
+            (false, None)
+        };
+
+        (client.is_valkey, client.version) = match server_type {
             ServerType::Cluster => {
                 let info: redis::Value = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                let mut version = "unknown".to_string();
+                let mut version = None;
+                let mut is_valkey = false;
                 if let redis::Value::Map(items) = info {
                     for (_, node_info_val) in items {
-                        if let Ok(info) = InfoDict::from_redis_value(node_info_val)
-                            && let Some(v) = info.get::<String>("redis_version")
-                        {
-                            version = v;
-                            break;
+                        if let Ok(info) = InfoDict::from_redis_value(node_info_val) {
+                            if let (valkey, Some(v)) = get_version(info) {
+                                version = Some(v);
+                                is_valkey = valkey;
+                                break;
+                            }
                         }
                     }
                 }
-                Version::parse(&version).unwrap_or(Version::new(0, 0, 0))
+                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
             }
             _ => {
                 let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                let version = info.get::<String>("redis_version").unwrap_or_default();
-                Version::parse(&version).unwrap_or(Version::new(0, 0, 0))
+                let (is_valkey, version) = get_version(info);
+                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
             }
         };
 

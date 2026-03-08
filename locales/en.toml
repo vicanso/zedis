@@ -90,6 +90,8 @@ master_nodes = "Master"
 slave_nodes = "Slave"
 settings_tooltip = "Open settings"
 github_tooltip = "Star on GitHub"
+yes = "Yes"
+no = "No"
 
 [servers]
 master_name = "Master Name"

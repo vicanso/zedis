@@ -95,7 +95,16 @@ fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Conte
     let t = i18n_sidebar(cx, "server_type");
     let master_nodes = i18n_sidebar(cx, "master_nodes");
     let slave_nodes = i18n_sidebar(cx, "slave_nodes");
-    let mut messages = Vec::with_capacity(3);
+    let mut messages = Vec::with_capacity(4);
+
+    messages.push(format!(
+        "Valkey: {}",
+        if description.is_valkey {
+            i18n_sidebar(cx, "yes")
+        } else {
+            i18n_sidebar(cx, "no")
+        }
+    ));
     messages.push(format!("{t}: {}", description.server_type.as_str()));
     messages.push(format!("{master_nodes}: {}", description.master_nodes));
     if !description.slave_nodes.is_empty() {

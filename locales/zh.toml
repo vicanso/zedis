@@ -89,6 +89,8 @@ master_nodes = "主节点"
 slave_nodes = "从节点"
 settings_tooltip = "打开设置"
 github_tooltip = "在 GitHub 上关注"
+yes = "是"
+no = "否"
 
 
 [servers]
