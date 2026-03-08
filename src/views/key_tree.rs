@@ -43,6 +43,7 @@ use gpui_component::{
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::{str::FromStr, time::Duration};
 use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
@@ -112,12 +113,16 @@ fn new_key_tree_items(
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
     let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
+    // Tracks standalone keys whose HashMap slot was taken over by a folder
+    // with the same name (e.g. key "test" exists alongside "test:key1").
+    // These are re-inserted as **siblings** of the folder so both remain
+    // visible at the same tree level.
+    let mut promoted_leaves: Vec<(SharedString, KeyType, SharedString, usize)> = Vec::new();
 
     for (key, key_type) in keys {
         if !keyword.is_empty() && !key.contains(keyword.as_str()) {
             continue;
         }
-        // no colon in the key, it's a simple key
         if !key.contains(separator) {
             items.insert(
                 key.clone(),
@@ -133,16 +138,32 @@ fn new_key_tree_items(
 
         let mut dir = String::with_capacity(50);
         let mut key_tree_item: Option<KeyTreeItem> = None;
-        // max levels of depth
         for (index, k) in key.splitn(max_key_tree_depth, separator).enumerate() {
-            // if key_tree_item is not None, it means we are in a folder
-            // because it's not the last part of the key
             let expanded = index == 0 || expanded_items_set.contains(dir.as_str());
-            if let Some(key_tree_item) = key_tree_item.take() {
-                let entry = items.entry(key_tree_item.id.clone()).or_insert_with(|| key_tree_item);
-                entry.is_folder = true;
-                entry.children_count += 1;
-                entry.expanded = expanded;
+            if let Some(pending) = key_tree_item.take() {
+                match items.entry(pending.id.clone()) {
+                    Occupied(mut e) => {
+                        let existing = e.get_mut();
+                        if !existing.is_folder {
+                            promoted_leaves.push((
+                                existing.id.clone(),
+                                existing.key_type,
+                                existing.label.clone(),
+                                existing.depth,
+                            ));
+                        }
+                        existing.is_folder = true;
+                        existing.children_count += 1;
+                        existing.expanded = expanded;
+                    }
+                    Vacant(e) => {
+                        let mut item = pending;
+                        item.is_folder = true;
+                        item.children_count = 1;
+                        item.expanded = expanded;
+                        e.insert(item);
+                    }
+                }
             }
 
             if !expanded {
@@ -170,13 +191,28 @@ fn new_key_tree_items(
 
     let mut children_map: AHashMap<String, Vec<KeyTreeItem>> = AHashMap::new();
 
-    let mut result = Vec::with_capacity(items.len());
-
     for item in items.into_values() {
         let size = item.id.len() - item.label.len();
         let parent_id = if size == 0 { "" } else { &item.id[..(size - 1)] };
         children_map.entry(parent_id.to_string()).or_default().push(item);
     }
+
+    for (key_id, key_type, label, depth) in promoted_leaves {
+        let size = key_id.len() - label.len();
+        let parent_id = if size == 0 { "" } else { &key_id[..(size - 1)] };
+        children_map
+            .entry(parent_id.to_string())
+            .or_default()
+            .push(KeyTreeItem {
+                id: key_id,
+                label,
+                depth,
+                key_type,
+                ..Default::default()
+            });
+    }
+
+    let mut result = Vec::with_capacity(children_map.values().map(|v| v.len()).sum());
 
     fn build_sorted_list(parent_id: &str, map: &mut AHashMap<String, Vec<KeyTreeItem>>, result: &mut Vec<KeyTreeItem>) {
         if let Some(mut children) = map.remove(parent_id) {
