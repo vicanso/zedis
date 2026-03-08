@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.2.6](https://github.com/vicanso/zedis/compare/v0.2.5..v0.2.6) - 2026-03-08
+
+### ⛰️  Features
+
+- *(ui)* Support adding dynamic fields and editor component in form - ([4420bc9](https://github.com/vicanso/zedis/commit/4420bc9404bd9a4a447dbb531b00ed936fab6a9f))
+- *(ui)* Add foot action builder support to zedis form - ([a9a0815](https://github.com/vicanso/zedis/commit/a9a081573fa2e5a9541a15f4735251ecccf632b3))
+- Add version detection for valkey - ([fd9f306](https://github.com/vicanso/zedis/commit/fd9f306eee617f57d0ff92ac960f58ed5784736c))
+- Add tls support for ssh tunnel connections - ([91becef](https://github.com/vicanso/zedis/commit/91becef5c09c967a6780864beeac7f8fb17ec55b))
+- Add support for favoriting keys - ([87560d9](https://github.com/vicanso/zedis/commit/87560d9be575a3dcb9b3db55fe9836ec4509a4ae))
+- Add y-axis label support and optimize chart logic - ([b6f7ecd](https://github.com/vicanso/zedis/commit/b6f7ecd1eeda02cd51edc2e9778e409e4062ee00))
+- Support pasting values into kv table - ([b493a91](https://github.com/vicanso/zedis/commit/b493a91851ccb640cfbc201d1c65a72105ee8bf3))
+- Support copying multiple commands in cli - ([34d6585](https://github.com/vicanso/zedis/commit/34d65855f86b84ac4e8123bddc5c938c78008423))
+- Support decimal values for ttl settings - ([adb3d6b](https://github.com/vicanso/zedis/commit/adb3d6b245015b11185c4b9e469d5af9c7d377c0))
+
+### 🐛 Bug Fixes
+
+- Resolve conflict between "test" directory and "test" key - ([0836ed2](https://github.com/vicanso/zedis/commit/0836ed2f074d13322be05704843f2a018227b969))
+- Fix get value of form - ([fae10c2](https://github.com/vicanso/zedis/commit/fae10c271f8f96ea24ea2227ec14ca08fdc8f199))
+- Keyboard navigation for command history in cli - ([58c5cf9](https://github.com/vicanso/zedis/commit/58c5cf959f0502ea2feb5414ec6fa38b74c6e32c))
+
+### 🚜 Refactor
+
+- *(kv-table)* Optimize edit and add logic - ([a39dc51](https://github.com/vicanso/zedis/commit/a39dc5114f19cb2af28b812a18fd0521e1d38874))
+- *(ui)* Migrate form to zedis-ui crate and use custom components - ([85e3983](https://github.com/vicanso/zedis/commit/85e39839d6ddfadb623867370cb63567b6974961))
+- Support get connection not from cache pool - ([8e8b56b](https://github.com/vicanso/zedis/commit/8e8b56bfe282ad10bc1313b6c9e9cc55fe3754ea))
+- Detect utf8 encoding before decompression to avoid redundant processing - ([8992c54](https://github.com/vicanso/zedis/commit/8992c54c73b97dd4d100bc080c8cd8e050ba5aa4))
+- Clarify form field visibility vs submission semantics - ([c5627ac](https://github.com/vicanso/zedis/commit/c5627ac298aa2836a831f2da03648d03187ef5a9))
+- Optimize metrics page with i18n label support - ([a28eff4](https://github.com/vicanso/zedis/commit/a28eff41359950b32299d22e8393fe2bf13bf0b6))
+- Automatically select and expand directory when adding a new key - ([964bf76](https://github.com/vicanso/zedis/commit/964bf76ffeaa5c9c8312cc7b8396383f51a704fa))
+- Skip auto-refresh if data hasn't changed - ([857e10d](https://github.com/vicanso/zedis/commit/857e10da1272e4326ff0161f4480958a68695437))
+- Remove appears_transparent from about window - ([301ca09](https://github.com/vicanso/zedis/commit/301ca095ab75610a742091096105a51ce2b7c28c))
+- Optimize copy logic and text ellipsis for kv table - ([dac4044](https://github.com/vicanso/zedis/commit/dac4044c698c88a69f09c94f75f416a726d4a929))
+- Adjust components - ([eee421b](https://github.com/vicanso/zedis/commit/eee421b568287206ee75f98b2798961ecc9d15c5))
+- Optimize element height calculation in KV table - ([548cc70](https://github.com/vicanso/zedis/commit/548cc70d4acfaef36c6f61c908aeeb988cfd0de9))
+- Add "About" link to the feature dropdown menu - ([f648e46](https://github.com/vicanso/zedis/commit/f648e46d6e597b10fd7f270c78d1197f805790e7))
+- Add system information display to about page - ([067b01d](https://github.com/vicanso/zedis/commit/067b01d17985ff49705ae8bb567c798a3ec815ca))
+- Add `FluentBuilder` for dialog and form - ([27fad16](https://github.com/vicanso/zedis/commit/27fad16598f899c9cefdf23a5e295dacd10862b9))
+- Adjust dialog component - ([d2f1750](https://github.com/vicanso/zedis/commit/d2f1750a3066902403dbc759b909a5158aa1a3bc))
+- Use development versions of gpui and gpui-component - ([6b2a187](https://github.com/vicanso/zedis/commit/6b2a1877ed950ea2d1d5c3a453c1684391412fa1))
+
+### 📚 Documentation
+
+- Update skills - ([89c9090](https://github.com/vicanso/zedis/commit/89c9090a1c6b6244d705c9cff65a0391c079a383))
+
+### ⚙️ Miscellaneous Tasks
+
+- Fix build for linux - ([3c38cad](https://github.com/vicanso/zedis/commit/3c38cad766d9f4e181c1d2cf72bd969e313e7e53))
+
 ## [0.2.5](https://github.com/vicanso/zedis/compare/v0.2.4..v0.2.5) - 2026-02-23
 
 ### ⛰️  Features
