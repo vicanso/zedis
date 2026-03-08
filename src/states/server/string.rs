@@ -125,7 +125,7 @@ impl RedisBytesValue {
             DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
             _ => {
-                let is_utf8 = simdutf8::basic::from_utf8(&data).is_ok();
+                let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
                 if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
                     && let Ok(data) = ProtoManager::decode_data(&id, data)
                 {

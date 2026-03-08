@@ -110,27 +110,32 @@ pub fn get_redis_response_timeout() -> Duration {
 /// Opens a single Redis connection with connection pooling support.
 ///
 /// This function attempts to reuse an existing connection from the pool if available
-/// and healthy. If not, it creates a new connection (either through SSH tunnel or direct).
+/// and healthy (when caching is enabled). If not, or if caching is bypassed, it creates
+/// a new connection (either through SSH tunnel or direct).
 /// The connection is then configured to use the specified database.
 ///
 /// # Arguments
 ///
 /// * `config` - Redis server configuration
 /// * `db` - Database number to select (0-15 typically)
+/// * `use_cache` - If true, attempts to retrieve from and store the connection in the global pool
 ///
 /// # Returns
 ///
 /// A multiplexed Redis connection connected to the specified database
-pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<MultiplexedConnection> {
+pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: bool) -> Result<MultiplexedConnection> {
     // Generate a unique key for this connection based on config hash and database number
     let key = config.get_hash(db);
-    // Try to reuse an existing connection from the pool
-    if let Some(conn) = CONNECTION_POOL.get(&key)
+
+    // Try to reuse an existing connection from the pool if caching is enabled
+    if use_cache
+        && let Some(conn) = CONNECTION_POOL.get(&key)
         && let Some(conn) = conn.get_connection().await
     {
         debug!(name = config.name, "get connection from pool");
         return Ok(conn);
     }
+
     // Create a new connection: SSH tunnel or direct connection
     let mut conn = if config.is_ssh_tunnel() {
         open_single_ssh_tunnel_connection(config).await?
@@ -142,12 +147,17 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
             .set_response_timeout(Some(get_redis_response_timeout()));
         client.get_multiplexed_async_connection_with_config(&cfg).await?
     };
+
     // Select the specified database if not the default (db 0)
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
         debug!(name = config.name, db, "select database");
     }
-    // Cache the connection in the pool for future reuse
+    if !use_cache {
+        return Ok(conn);
+    }
+
+    // Cache the connection in the pool for future reuse if caching is enabled
     CONNECTION_POOL.insert(
         key,
         Arc::new(MultiplexedConnectionCache {
@@ -155,9 +165,9 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
             check_time: AtomicU64::new(now_secs()),
         }),
     );
+
     Ok(conn)
 }
-
 pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
     let key = config.get_hash(db);
     CONNECTION_POOL.remove(&key);
@@ -272,7 +282,7 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
                 smol::Timer::after(delay).await;
             }
             // Establish a multiplexed async connection to the specific node.
-            let mut conn = open_single_connection(&addr, db).await?;
+            let mut conn = open_single_connection(&addr, db, true).await?;
 
             // Execute the command asynchronously.
             let value: T = current_cmd.query_async(&mut conn).await?;

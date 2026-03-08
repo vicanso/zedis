@@ -182,10 +182,10 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
 }
 
 /// Establishes an asynchronous connection based on the client type.
-async fn get_async_connection(client: &RClient, db: usize) -> Result<RedisAsyncConn> {
+async fn get_async_connection(client: &RClient, db: usize, use_cache: bool) -> Result<RedisAsyncConn> {
     match client {
         RClient::Single(config) => {
-            let conn = open_single_connection(config, db).await?;
+            let conn = open_single_connection(config, db, use_cache).await?;
             Ok(RedisAsyncConn::Single(conn))
         }
         RClient::Cluster(client) => {
@@ -669,7 +669,7 @@ impl ConnectionManager {
     async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_server(name)?;
         let (mut conn, server_type) = {
-            let conn = match open_single_connection(&config, 0).await {
+            let conn = match open_single_connection(&config, 0, false).await {
                 Ok(conn) => conn,
                 Err(e) => {
                     if !e.to_string().contains("AuthenticationFailed") {
@@ -687,7 +687,7 @@ impl ConnectionManager {
                     // detect server type again
                     let mut tmp_config = config.clone();
                     tmp_config.password = None;
-                    open_single_connection(&tmp_config, 0).await?
+                    open_single_connection(&tmp_config, 0, false).await?
                 }
             };
             if let Some(server_type) = config.server_type
@@ -799,14 +799,9 @@ impl ConnectionManager {
         self.clients.remove(&key);
         remove_connection_from_pool(&config, db);
     }
-    /// Retrieves or creates a RedisClient for the given configuration name.
-    pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
+    /// Retrieves or creates a RedisClient for the given configuration name without caching.
+    pub async fn get_client_without_cache(&self, server_id: &str, db: usize) -> Result<RedisClient> {
         let config = get_server(server_id)?;
-        let key = config.get_hash(db);
-        if let Some(client) = self.clients.get(&key) {
-            debug!(server_id, db, "get client from cache");
-            return Ok(client.clone());
-        }
         let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
         debug!(server_id, server_type = ?server_type, nodes = ?nodes, "get redis nodes");
         let Some(first_node) = nodes.first() else {
@@ -841,7 +836,7 @@ impl ConnectionManager {
             .collect();
         let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();
         info!(master_nodes = ?master_nodes_description, "server master nodes");
-        let connection = get_async_connection(&client, db).await?;
+        let connection = get_async_connection(&client, db, false).await?;
         let access_mode = if safe_check_user_readonly(connection.clone()).await {
             AccessMode::StrictReadOnly
         } else if config.readonly.unwrap_or(false) {
@@ -877,12 +872,12 @@ impl ConnectionManager {
                 let mut is_valkey = false;
                 if let redis::Value::Map(items) = info {
                     for (_, node_info_val) in items {
-                        if let Ok(info) = InfoDict::from_redis_value(node_info_val) {
-                            if let (valkey, Some(v)) = get_version(info) {
-                                version = Some(v);
-                                is_valkey = valkey;
-                                break;
-                            }
+                        if let Ok(info) = InfoDict::from_redis_value(node_info_val)
+                            && let (valkey, Some(v)) = get_version(info)
+                        {
+                            version = Some(v);
+                            is_valkey = valkey;
+                            break;
                         }
                     }
                 }
@@ -896,7 +891,17 @@ impl ConnectionManager {
         };
 
         debug!(server_id, version = client.version(), db, access_mode = ?client.access_mode(), "create redis client success");
-
+        Ok(client)
+    }
+    /// Retrieves or creates a RedisClient for the given configuration name.
+    pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
+        let config = get_server(server_id)?;
+        let key = config.get_hash(db);
+        if let Some(client) = self.clients.get(&key) {
+            debug!(server_id, db, "get client from cache");
+            return Ok(client.clone());
+        }
+        let client = self.get_client_without_cache(server_id, db).await?;
         // Cache the client
         self.clients.insert(key, client.clone());
         Ok(client)
