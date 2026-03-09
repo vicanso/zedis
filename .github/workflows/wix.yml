@@ -1,0 +1,70 @@
+name: "test"
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+    branches: [wix]
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.93.0
+  APP_NAME: Zedis
+
+jobs:
+  prepare_vars:
+    runs-on: ubuntu-latest
+    outputs:
+      build_date: ${{ steps.date.outputs.date }}
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v6
+      - name: Delete old nightly release and tag
+        if: github.ref == 'refs/heads/main'
+        run: gh release delete nightly --cleanup-tag -y || true
+ 
+  windows:
+    needs: prepare_vars
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            suffix: x86_64
+          - target: aarch64-pc-windows-msvc
+            suffix: aarch64
+    steps:
+      - uses: actions/checkout@v6
+      - name: setup node
+        uses: actions/setup-node@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-${{ matrix.target }}-build
+      - name: release
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          cargo build --release --target ${{ matrix.target }} --features mimalloc
+
+          cargo install cargo-wix
+          cargo wix --no-build -p zedis-gui --target ${{ matrix.target }}
+          ls target/wix/*
+
+          mv target/wix/zedis-*.msi ./zedis.msi
+      - name: zip
+        shell: powershell
+        run: |
+          ls .
+          $zipName = "zedis-windows-${{ matrix.suffix }}.zip"
+          Compress-Archive -Path zedis.msi -Destination $zipName
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          winget install wingetcreate
+    
