@@ -56,7 +56,7 @@ jobs:
 
           cargo install cargo-wix
           cargo wix --no-build -p zedis-gui --target ${{ matrix.target }}
-          ls target/${{ matrix.target }}/release
+          ls target/wix/*
 
           mv target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
       - name: zip
