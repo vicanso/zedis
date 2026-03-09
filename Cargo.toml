@@ -102,7 +102,7 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = [
     "ring",
     "tls12",
 ] }
-rustls-pemfile = "2.2.0"
+rustls-pki-types = { version = "1.14.0", features = ["std"] }
 webpki-roots = "1.0.6"
 toml = "0.9.10"
 tracing = "0.1.44"

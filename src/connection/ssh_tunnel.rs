@@ -24,6 +24,8 @@ use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
 use rustls::pki_types::ServerName;
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
@@ -406,7 +408,7 @@ fn build_tls_connector(config: &RedisServer) -> Result<TlsConnector> {
         if let Some(root_cert) = &config.root_cert
             && !root_cert.is_empty()
         {
-            let certs: Vec<_> = rustls_pemfile::certs(&mut root_cert.as_bytes())
+            let certs: Vec<_> = CertificateDer::pem_slice_iter(root_cert.as_bytes())
                 .filter_map(|r| r.ok())
                 .collect();
             root_store.add_parsable_certificates(certs);
@@ -421,16 +423,12 @@ fn build_tls_connector(config: &RedisServer) -> Result<TlsConnector> {
         && !client_cert.is_empty()
         && !client_key.is_empty()
     {
-        let certs: Vec<_> = rustls_pemfile::certs(&mut client_cert.as_bytes())
+        let certs: Vec<_> = CertificateDer::pem_slice_iter(client_cert.as_bytes())
             .filter_map(|r| r.ok())
             .collect();
-        let key = rustls_pemfile::private_key(&mut client_key.as_bytes())
-            .map_err(|e| Error::Invalid {
-                message: format!("Failed to parse client key: {e}"),
-            })?
-            .ok_or_else(|| Error::Invalid {
-                message: "No private key found in client key PEM".to_string(),
-            })?;
+        let key = PrivateKeyDer::from_pem_slice(client_key.as_bytes()).map_err(|e| Error::Invalid {
+            message: format!("Failed to parse client key: {e}"),
+        })?;
         builder.with_client_auth_cert(certs, key).map_err(|e| Error::Invalid {
             message: format!("TLS client auth config failed: {e}"),
         })?
