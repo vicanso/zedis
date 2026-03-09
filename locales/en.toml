@@ -273,7 +273,7 @@ field_errors_title = "Save Proto Failed"
 field_errors_message = "Please verify the following fields and try again:\n\n%{errors}"
 
 [pubsub_editor]
-subscribe_channel_placeholder = "Enter channel pattern to subscribe"
+subscribe_channel_placeholder = "Enter channel pattern to subscribe, multiple channels separated by spaces"
 subscribe = "Subscribe"
 unsubscribe = "Unsubscribe"
 publish_channel_placeholder = "Enter channel to publish"

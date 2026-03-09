@@ -1062,32 +1062,6 @@ impl ZedisKeyTree {
                     .unwrap_or_default();
                 let server_state_for_history = server_state_clone.clone();
                 menu.submenu_with_icon(
-                    Some(Icon::new(IconName::Star)),
-                    i18n_key_tree(cx, "favorite_keys"),
-                    window,
-                    cx,
-                    move |submenu, _window, cx| {
-                        let mut submenu = submenu;
-                        if favorites.is_empty() {
-                            submenu = submenu.label(i18n_key_tree(cx, "no_favorite_keys"));
-                        } else {
-                            for key in &favorites {
-                                let key_clone = key.clone();
-                                submenu = submenu.menu_element(
-                                    Box::new(KeyTreeAction::SelectFavoriteKey(key.clone())),
-                                    move |_, _cx| Label::new(key_clone.clone()).text_ellipsis(),
-                                );
-                            }
-                            submenu = submenu.separator().menu_element_with_icon(
-                                CustomIconName::Eraser,
-                                Box::new(KeyTreeAction::ClearFavorites),
-                                move |_, cx| Label::new(i18n_key_tree(cx, "clear_favorites")),
-                            );
-                        }
-                        submenu
-                    },
-                )
-                .submenu_with_icon(
                     Some(Icon::new(CustomIconName::Clock3)),
                     i18n_key_tree(cx, "search_history"),
                     window,
@@ -1108,6 +1082,32 @@ impl ZedisKeyTree {
                                 CustomIconName::Eraser,
                                 Box::new(KeyTreeAction::Clear),
                                 move |_, cx| Label::new(i18n_key_tree(cx, "clear_history")),
+                            );
+                        }
+                        submenu
+                    },
+                )
+                .submenu_with_icon(
+                    Some(Icon::new(IconName::Star)),
+                    i18n_key_tree(cx, "favorite_keys"),
+                    window,
+                    cx,
+                    move |submenu, _window, cx| {
+                        let mut submenu = submenu;
+                        if favorites.is_empty() {
+                            submenu = submenu.label(i18n_key_tree(cx, "no_favorite_keys"));
+                        } else {
+                            for key in &favorites {
+                                let key_clone = key.clone();
+                                submenu = submenu.menu_element(
+                                    Box::new(KeyTreeAction::SelectFavoriteKey(key.clone())),
+                                    move |_, _cx| Label::new(key_clone.clone()).text_ellipsis(),
+                                );
+                            }
+                            submenu = submenu.separator().menu_element_with_icon(
+                                CustomIconName::Eraser,
+                                Box::new(KeyTreeAction::ClearFavorites),
+                                move |_, cx| Label::new(i18n_key_tree(cx, "clear_favorites")),
                             );
                         }
                         submenu
