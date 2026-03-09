@@ -58,13 +58,13 @@ jobs:
           cargo wix --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/wix/*
 
-          mv target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
+          mv target/wix/zedis-*.msi ./zedis.msi
       - name: zip
         shell: powershell
         run: |
           ls .
           $zipName = "zedis-windows-${{ matrix.suffix }}.zip"
-          Compress-Archive -Path zedis.exe -Destination $zipName
+          Compress-Archive -Path zedis.msi -Destination $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
           winget install wingetcreate
     
