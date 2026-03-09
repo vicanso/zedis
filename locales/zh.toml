@@ -273,7 +273,7 @@ field_errors_title = "保存 Proto 失败"
 field_errors_message = "请验证以下字段并重试:\n\n%{errors}"
 
 [pubsub_editor]
-subscribe_channel_placeholder = "输入要订阅的频道"
+subscribe_channel_placeholder = "输入要订阅的频道，多个频道用空格分隔"
 subscribe = "订阅"
 unsubscribe = "取消订阅"
 publish_channel_placeholder = "输入要发布的频道"
