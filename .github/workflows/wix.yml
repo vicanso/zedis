@@ -53,8 +53,11 @@ jobs:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
           cargo build --release --target ${{ matrix.target }} --features mimalloc
+
+          cargo install cargo-wix
           cargo wix --target ${{ matrix.target }} --features mimalloc
-          ls -lh target/${{ matrix.target }}/release
+          ls target/${{ matrix.target }}/release
+
           mv target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
       - name: zip
         shell: powershell
