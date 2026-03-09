@@ -55,7 +55,7 @@ jobs:
           cargo build --release --target ${{ matrix.target }} --features mimalloc
 
           cargo install cargo-wix
-          cargo wix --no-build --target ${{ matrix.target }}
+          cargo wix --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/${{ matrix.target }}/release
 
           mv target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
