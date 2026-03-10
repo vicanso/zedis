@@ -5,6 +5,9 @@ lint:
 fmt:
 	cargo fmt
 
+build-cmd:
+	cargo run --package zedis-cmd-builder
+
 dev:
 	bacon run
 

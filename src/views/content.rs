@@ -326,8 +326,10 @@ impl ZedisContent {
                 let command_clone = command.clone();
                 let server_id = server_id.clone();
                 let task = cx.background_spawn(async move {
-                    let parts: Vec<_> = command.split_whitespace().map(|s| s.to_string()).collect();
-                    if parts.is_empty() {
+                    let Some(parts) = shlex::split(&command) else {
+                        return Ok(SharedString::default());
+                    };
+                    if parts.len() < 2 {
                         return Ok(SharedString::default());
                     }
                     let cmd_name = parts[0].clone();
