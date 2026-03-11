@@ -19,7 +19,7 @@
 /// with timestamp, channel, and message columns.
 use crate::connection::get_connection_manager;
 use crate::error::Error;
-use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_pubsub_editor};
+use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
 use chrono::Local;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
@@ -349,9 +349,9 @@ impl ZedisPubsubEditor {
                         match msg_opt {
                             Some(msg) => {
                                 let channel: String = msg.get_channel_name().to_string();
-                                let payload: String = msg.get_payload::<String>().unwrap_or_default();
+                                let payload = msg.get_payload_bytes();
+                                let (_, text) = detect_and_decode(payload, 1024);
                                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
                                 // Update both the editor's own message list and the
                                 // table delegate's reference so the UI stays in sync.
                                 let result = entity.update(cx, move |this, cx| {
@@ -361,7 +361,7 @@ impl ZedisPubsubEditor {
                                         PubsubMessage {
                                             timestamp: timestamp.into(),
                                             channel: channel.into(),
-                                            message: payload.into(),
+                                            message: text,
                                         },
                                     );
                                     let messages = Arc::new(msgs);

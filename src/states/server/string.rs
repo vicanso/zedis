@@ -87,6 +87,49 @@ fn format_text(data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, S
     }
 }
 
+pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat, SharedString) {
+    let (initial_format, _) = detect_format(data);
+    let process_decompressed = |decompressed: Option<Vec<u8>>| {
+        decompressed.and_then(|vec| format_text(&vec, max_truncate_length).map(|(_, text)| (DataFormat::Preview, text)))
+    };
+    let result = match initial_format {
+        DataFormat::MessagePack => rmp_serde::from_slice::<serde_json::Value>(data)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .map(|s| (DataFormat::Preview, SharedString::from(s))),
+
+        DataFormat::Gzip => process_decompressed({
+            let mut decoder = GzDecoder::new(data);
+            let mut vec = Vec::with_capacity(data.len() * 2);
+            decoder.read_to_end(&mut vec).ok().map(|_| vec)
+        }),
+
+        DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
+
+        DataFormat::Snappy => process_decompressed({
+            let mut decoder = FrameDecoder::new(data);
+            let mut vec = Vec::with_capacity(data.len() * 2);
+            decoder.read_to_end(&mut vec).ok().map(|_| vec)
+        }),
+
+        DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
+
+        _ => {
+            let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
+            if !is_utf8 && let Ok(decompressed) = decompress_size_prepended(data) {
+                process_decompressed(Some(decompressed))
+            } else {
+                format_text(data, max_truncate_length)
+            }
+        }
+    };
+    if let Some((new_format, text)) = result {
+        (new_format, text)
+    } else {
+        (initial_format, SharedString::new(String::from_utf8_lossy(data)))
+    }
+}
+
 impl RedisBytesValue {
     pub fn detect_and_update(&mut self, server_id: &str, key: &str, max_truncate_length: usize) {
         let data = self.bytes.as_ref();
