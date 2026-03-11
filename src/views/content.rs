@@ -21,7 +21,8 @@ use crate::{
     },
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
-        ZedisEditor, ZedisKeyTree, ZedisMetrics, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisStatusBar,
+        ZedisEditor, ZedisKeyTree, ZedisMetrics, ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisSlowlogEditor,
+        ZedisStatusBar,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
@@ -69,6 +70,7 @@ pub struct ZedisContent {
     proto_editor: Option<Entity<ZedisProtoEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     metrics: Option<Entity<ZedisMetrics>>,
+    slowlog_editor: Option<Entity<ZedisSlowlogEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
     cmd_output_scroll_handle: ScrollHandle,
@@ -106,6 +108,9 @@ impl ZedisContent {
         }
         if route != Route::Protos {
             self.proto_editor.take();
+        }
+        if route != Route::Slowlog {
+            self.slowlog_editor.take();
         }
     }
     /// Create a new content view with route-aware view management
@@ -214,6 +219,7 @@ impl ZedisContent {
             value_editor: None,
             setting_editor: None,
             metrics: None,
+            slowlog_editor: None,
             key_tree: None,
             cmd_outputs: Vec::with_capacity(5),
             redis_commands: Vec::new(),
@@ -406,6 +412,16 @@ impl ZedisContent {
             })
             .clone();
         div().size_full().child(metrics)
+    }
+    fn render_slowlog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let slowlog = self
+            .slowlog_editor
+            .get_or_insert_with(|| {
+                debug!("Creating new slowlog editor view");
+                cx.new(|cx| ZedisSlowlogEditor::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(slowlog)
     }
     /// Render a loading skeleton screen with animated placeholders
     ///
@@ -674,6 +690,7 @@ impl Render for ZedisContent {
                 // Route 2: Loading state (show skeleton while connecting/loading)
                 let is_busy = self.server_state.read(cx).is_busy();
                 let is_metrics = route == Route::Metrics;
+                let is_slowlog = route == Route::Slowlog;
 
                 // Route 3: Main editor interface
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
@@ -686,7 +703,8 @@ impl Render for ZedisContent {
                                     .size_full()
                                     .overflow_hidden()
                                     .when(is_metrics, |this| this.child(self.render_metrics(window, cx)))
-                                    .when(!is_metrics, |this| this.child(self.render_editor(window, cx))),
+                                    .when(is_slowlog, |this| this.child(self.render_slowlog(window, cx)))
+                                    .when(!is_metrics && !is_slowlog, |this| this.child(self.render_editor(window, cx))),
                             ),
                         )
                     })

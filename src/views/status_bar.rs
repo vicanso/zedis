@@ -22,7 +22,6 @@ use crate::{
         get_session_option, i18n_common, i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
-use chrono::{Local, LocalResult, TimeZone};
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
@@ -127,7 +126,7 @@ struct StatusBarServerState {
     scan_finished: bool,
     soft_wrap: bool,
     nodes_description: SharedString,
-    slow_logs: Vec<SharedString>,
+    last_slow_log_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -339,24 +338,24 @@ impl ZedisStatusBar {
                 humansize::FormatSizeOptions::default().decimal_places(0),
             )
         };
-        let slow_logs = state
-            .slow_logs()
-            .iter()
-            .map(|log| {
-                let time = if let LocalResult::Single(time) = Local.timestamp_opt(log.timestamp, 0) {
-                    time.format("%H:%M:%S").to_string()
-                } else {
-                    "--".to_string()
-                };
-                let cmd = if let Some(cmd) = log.args.first() {
-                    cmd.clone()
-                } else {
-                    "--".to_string()
-                };
-                let client = log.client_addr.clone().unwrap_or("--".to_string());
-                format!("{time}: {client} {cmd} {}ms", log.duration.as_millis()).into()
-            })
-            .collect::<Vec<_>>();
+        // let slow_logs = state
+        //     .slow_logs()
+        //     .iter()
+        //     .map(|log| {
+        //         let time = if let LocalResult::Single(time) = Local.timestamp_opt(log.timestamp, 0) {
+        //             time.format("%H:%M:%S").to_string()
+        //         } else {
+        //             "--".to_string()
+        //         };
+        //         let cmd = if let Some(cmd) = log.args.first() {
+        //             cmd.clone()
+        //         } else {
+        //             "--".to_string()
+        //         };
+        //         let client = log.client_addr.clone().unwrap_or("--".to_string());
+        //         format!("{time}: {client} {cmd} {}ms", log.duration.as_millis()).into()
+        //     })
+        //     .collect::<Vec<_>>();
         self.state.server_state = StatusBarServerState {
             supports_db_selection: state.supports_db_selection(),
             server_id: state.server_id().to_string().into(),
@@ -366,7 +365,7 @@ impl ZedisStatusBar {
             clients: clients.into(),
             nodes: format_nodes(state.nodes(), state.version()),
             scan_finished: state.scan_completed(),
-            slow_logs,
+            last_slow_log_count: state.last_slow_log_count(),
             soft_wrap: state.soft_wrap(),
             nodes_description: format_nodes_description(state.nodes_description().clone(), cx),
         };
@@ -394,12 +393,6 @@ impl ZedisStatusBar {
             humanize_keystroke("cmd-j")
         );
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
-
-        let slow_logs_tooltips = if server_state.slow_logs.is_empty() {
-            i18n_common(cx, "slow_logs")
-        } else {
-            server_state.slow_logs.join("\n").into()
-        };
 
         ZedisDivider::new()
             .child(
@@ -522,9 +515,20 @@ impl ZedisStatusBar {
                         metric_badge(
                             "zedis-status-slow-logs",
                             Icon::new(CustomIconName::Snail),
-                            server_state.slow_logs.len().to_string(),
-                            slow_logs_tooltips,
+                            server_state.last_slow_log_count.to_string(),
+                            i18n_common(cx, "slow_logs"),
                         )
+                        .disabled(false)
+                        .on_click(cx.listener(|_this, _, _window, cx| {
+                            cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                let route = if state.route() == Route::Slowlog {
+                                    Route::Editor
+                                } else {
+                                    Route::Slowlog
+                                };
+                                state.go_to(route, cx);
+                            });
+                        }))
                         .text_color(cx.theme().primary),
                     ),
             )

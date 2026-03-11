@@ -41,6 +41,7 @@ pub enum Route {
     Settings,
     Protos,
     Metrics,
+    Slowlog,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

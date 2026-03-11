@@ -312,7 +312,7 @@ impl ZedisServerState {
                 let now = unix_ts();
                 let slow_logs = if now - last_checked_at > 60 {
                     // ignore get slow error
-                    let slow_logs = client.get_slow_logs(Some(last_checked_at)).await.unwrap_or_default();
+                    let slow_logs = client.get_slow_logs().await.unwrap_or_default();
                     Some(slow_logs)
                 } else {
                     None
@@ -330,6 +330,13 @@ impl ZedisServerState {
                     METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
                     this.redis_info = Some(info);
                     if let Some(slow_logs) = slow_logs {
+                        let mut count = 0;
+                        for item in slow_logs.iter() {
+                            if item.timestamp > last_checked_at {
+                                count += 1;
+                            }
+                        }
+                        this.last_slow_log_count = count;
                         this.slow_logs = slow_logs;
                         this.last_slow_logs_checked_at = unix_ts();
                     }

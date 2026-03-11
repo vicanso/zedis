@@ -78,6 +78,7 @@ pub enum RedisServerStatus {
 pub struct ZedisServerState {
     redis_info: Option<RedisInfo>,
     last_slow_logs_checked_at: i64,
+    last_slow_log_count: usize,
     slow_logs: Vec<SlowLogEntry>,
 
     /// Whether the terminal is open
@@ -387,6 +388,10 @@ impl ZedisServerState {
     /// Get the slow logs
     pub fn slow_logs(&self) -> &Vec<SlowLogEntry> {
         &self.slow_logs
+    }
+    /// Get the last slow log count
+    pub fn last_slow_log_count(&self) -> usize {
+        self.last_slow_log_count
     }
 
     /// Get cluster node counts (master, replica)

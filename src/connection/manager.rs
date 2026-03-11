@@ -29,6 +29,7 @@ use regex::Regex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     sync::LazyLock,
     time::Duration,
@@ -481,22 +482,15 @@ impl RedisClient {
 
     /// Returns the slow logs of the Redis server, optionally filtered by timestamp.
     ///
-    /// # Arguments
-    /// * `after_timestamp` - Optional Unix timestamp (seconds). Only returns logs with timestamp > this value.
-    ///
     /// # Returns
     /// * `Vec<SlowLogEntry>` - A vector of slow log entries.
-    pub async fn get_slow_logs(&self, after_timestamp: Option<i64>) -> Result<Vec<SlowLogEntry>> {
+    pub async fn get_slow_logs(&self) -> Result<Vec<SlowLogEntry>> {
         let logs_arr: Vec<Vec<SlowLogEntry>> = self
-            .query_async_masters(vec![cmd("SLOWLOG").arg("GET").arg("200").clone()])
+            .query_async_masters(vec![cmd("SLOWLOG").arg("GET").clone()])
             .await?;
 
         let mut logs: Vec<SlowLogEntry> = logs_arr.into_iter().flatten().collect();
-
-        // Filter by timestamp if provided
-        if let Some(ts) = after_timestamp {
-            logs.retain(|entry| entry.timestamp > ts);
-        }
+        logs.sort_unstable_by_key(|entry| Reverse(entry.timestamp));
 
         Ok(logs)
     }

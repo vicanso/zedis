@@ -91,3 +91,8 @@ pub fn i18n_pubsub_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("pubsub_editor.{key}"), locale = locale).into()
 }
+
+pub fn i18n_slowlog_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("slowlog_editor.{key}"), locale = locale).into()
+}
