@@ -83,8 +83,8 @@ async fn get_redis_zset_value(
     let values = raw_values
         .iter()
         .map(|(name, score)| {
-            let name = String::from_utf8_lossy(name).to_string();
-            (name.into(), *score)
+            let name = SharedString::new(String::from_utf8_lossy(name));
+            (name, *score)
         })
         .collect();
 
@@ -135,12 +135,12 @@ async fn search_redis_zset_value(
         let score_bytes = &chunk[1];
 
         // Parse score from bytes
-        let score_str = String::from_utf8_lossy(score_bytes).to_string();
+        let score_str = String::from_utf8_lossy(score_bytes);
         let score = score_str.parse::<f64>().unwrap_or_default();
 
         // Convert member to string
-        let name = String::from_utf8_lossy(member).to_string();
-        values.push((name.into(), score));
+        let name = SharedString::new(String::from_utf8_lossy(member));
+        values.push((name, score));
     }
 
     Ok((next_cursor, values))

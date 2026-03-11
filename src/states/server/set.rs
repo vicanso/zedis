@@ -44,7 +44,7 @@ async fn get_redis_set_value(
     keyword: Option<SharedString>,
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<String>)> {
+) -> Result<(u64, Vec<SharedString>)> {
     // Build pattern: wrap keyword with wildcards or match all
     let pattern = keyword
         .as_ref()
@@ -70,7 +70,7 @@ async fn get_redis_set_value(
     // Convert bytes to UTF-8 strings (lossy conversion for non-UTF8 data)
     let values = raw_values
         .iter()
-        .map(|v| String::from_utf8_lossy(v).to_string())
+        .map(|v| SharedString::new(String::from_utf8_lossy(v)))
         .collect();
 
     Ok((next_cursor, values))
@@ -102,7 +102,7 @@ pub(crate) async fn first_load_set_value(conn: &mut RedisAsyncConn, key: &str) -
         data: Some(RedisValueData::Set(Arc::new(RedisSetValue {
             cursor,
             size,
-            values: values.into_iter().map(|v| v.into()).collect(),
+            values,
             done,
             ..Default::default()
         }))),
@@ -324,7 +324,7 @@ impl ZedisServerState {
 
                     // Append new members to existing list
                     if !new_values.is_empty() {
-                        set.values.extend(new_values.into_iter().map(|v| v.into()));
+                        set.values.extend(new_values);
                     }
 
                     // Auto-load more batches when filtering until we have enough results

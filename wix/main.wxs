@@ -85,16 +85,12 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='zedis-gui Installation'/>
 
-        <Directory Id='TARGETDIR' Name='SourceDir'>
+          <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='ProgramMenuFolder' />
+            <Directory Id='DesktopFolder' />
+
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='zedis-gui'>
-                    <!--
-                      Disabling the license sidecar file in the installer is a two step process:
-
-                      1. Comment out or remove the `Component` tag along with its contents.
-                      2. Comment out or remove the `ComponentRef` tag with the "License" Id
-                         attribute value further down in this file.
-                    -->
                     <Component Id='License' Guid='*'>
                         <File Id='LicenseFile'
                             DiskId='1'
@@ -119,7 +115,22 @@
                                 Name='zedis.exe'
                                 DiskId='1'
                                 Source='$(var.CargoTargetBinDir)\zedis.exe'
-                                KeyPath='yes'/>
+                                KeyPath='yes'>
+                                
+                                <Shortcut Id="ApplicationStartMenuShortcut"
+                                          Directory="ProgramMenuFolder"
+                                          Name="Zedis"
+                                          Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                                          WorkingDirectory="Bin"
+                                          Advertise="yes" />
+
+                                <Shortcut Id="ApplicationDesktopShortcut"
+                                          Directory="DesktopFolder"
+                                          Name="Zedis"
+                                          Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                                          WorkingDirectory="Bin"
+                                          Advertise="yes" />
+                            </File>
                         </Component>
                     </Directory>
                 </Directory>

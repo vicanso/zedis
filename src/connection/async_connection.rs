@@ -47,13 +47,13 @@ struct MultiplexedConnectionCache {
 impl MultiplexedConnectionCache {
     async fn get_connection(&self) -> Option<MultiplexedConnection> {
         let now = now_secs();
-        let last_check = self.check_time.load(Ordering::Relaxed);
+        let last_check = self.check_time.load(Ordering::Acquire);
         if now - last_check < 60 {
             return Some(self.conn.clone());
         }
         let mut conn = self.conn.clone();
         if let Ok(()) = cmd("PING").query_async(&mut conn).await {
-            self.check_time.store(now, Ordering::Relaxed);
+            self.check_time.store(now, Ordering::Release);
             return Some(conn);
         }
         None

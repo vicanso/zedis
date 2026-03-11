@@ -135,7 +135,7 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditor
         ViewMode::Hex => create_hex_view(),
 
         ViewMode::Plain => {
-            let text = String::from_utf8_lossy(&value.bytes).to_string().into();
+            let text = SharedString::new(String::from_utf8_lossy(&value.bytes));
             ByteEditorData::Text(text)
         }
 

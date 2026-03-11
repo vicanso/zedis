@@ -84,8 +84,8 @@ async fn get_redis_hash_value(
         .iter()
         .map(|(field, value)| {
             (
-                String::from_utf8_lossy(field).to_string().into(),
-                String::from_utf8_lossy(value).to_string().into(),
+                SharedString::new(String::from_utf8_lossy(field)),
+                SharedString::new(String::from_utf8_lossy(value)),
             )
         })
         .collect();

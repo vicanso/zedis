@@ -571,7 +571,7 @@ impl RedisClient {
             keys.extend(
                 keys_in_node
                     .iter()
-                    .map(|k| String::from_utf8_lossy(k).to_string().into()),
+                    .map(|k| SharedString::new(String::from_utf8_lossy(k))),
             );
         }
         keys.sort_unstable();

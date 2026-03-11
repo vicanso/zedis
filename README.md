@@ -57,7 +57,7 @@ yay -S zedis-bin
 - **Virtual List**: Efficiently handle lists with 100k+ keys using virtual scrolling and `SCAN` iteration.
 
 ### 🧠 Smart Data Viewer
-**Comprehensive Type Support**: Native editors for **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, and **Stream**.
+**Comprehensive Type Support**: Native editors for **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, **Stream**, and real-time **Pub/Sub** channels.
 
 Zedis automatically detects content types (`ViewerMode::Auto`) and renders them in the most useful format:
 - **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP**, and **ZSTD** data (e.g., compressed JSON is automatically unpacked and pretty-printed).
@@ -75,6 +75,7 @@ Zedis automatically detects content types (`ViewerMode::Auto`) and renders them 
 - **TLS/SSL**: Full support for encrypted connections, including custom CA, Client Certificates, and Private Keys.
 
 ### ⚡ Productivity
+- **Pub/Sub Messaging**: Fully integrated Publisher and Subscriber interface. Listen to channels or pattern subscriptions in real-time, broadcast messages, and instantly decode complex payloads using the smart data viewer.
 - **Namespace Grouping**: Automatically renders keys separated by colons (`:`) into a nested **Tree View** (e.g., `user:1001:profile`). Easily manage millions of keys by performing batch operations, such as deleting an entire key directory.
 - **Integrated CLI**: Experience the power of `redis-cli` directly within Zedis. Execute raw commands, view text outputs, and leverage your existing command-line muscle memory without leaving the app.
 - **Auto Refresh**: Monitor live data with configurable refresh intervals for both **Key Lists** and **Key Values**. Perfect for watching active queues or volatile cache data without manual reloading.
@@ -94,7 +95,6 @@ Transform how you monitor Redis with a built-in, GPU-accelerated performance das
 - **Live Server Metrics**: Keep a pulse on your instance with beautifully rendered, real-time charts for **CPU**, **Memory**, and **Network I/O** (kbps).
 - **Deep Diagnostics**: Instantly spot bottlenecks by tracking **Command Throughput (OPS)**, **Latency**, and **Client Connections**.
 - **Cache Health**: Monitor critical business metrics like **Key Hit Rate** and **Evicted Keys** to prevent cache avalanches and OOM scenarios before they happen.
-
 🚧 Development Status
 
 Zedis is currently in early active development. To maintain development velocity and architectural flexibility, we are not accepting Pull Requests at this time.

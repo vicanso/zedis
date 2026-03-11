@@ -48,10 +48,10 @@ impl<K: Eq + Hash + Debug, V: Clone> TtlCache<K, V> {
     pub fn get(&self, key: &K) -> Option<V> {
         let item = self.cache.get(key)?;
         let now = now_secs();
-        if item.expired_at.load(Ordering::Relaxed) < now {
+        if item.expired_at.load(Ordering::Acquire) < now {
             return None;
         }
-        item.expired_at.store(now + self.idle.as_secs(), Ordering::Relaxed);
+        item.expired_at.store(now + self.idle.as_secs(), Ordering::Release);
         Some(item.value.clone())
     }
     pub fn insert(&self, key: K, value: V) {
@@ -71,7 +71,7 @@ impl<K: Eq + Hash + Debug, V: Clone> TtlCache<K, V> {
         let now = now_secs();
         let mut count = 0;
         self.cache.retain(|_, item| {
-            let available = item.expired_at.load(Ordering::Relaxed) > now;
+            let available = item.expired_at.load(Ordering::Acquire) > now;
             if !available {
                 count += 1;
             }

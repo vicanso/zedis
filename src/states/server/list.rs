@@ -31,13 +31,21 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// Fetch a range of elements from a Redis List.
 ///
 /// Returns a vector of strings. Binary data is lossily converted to UTF-8.
-async fn get_redis_list_value(conn: &mut RedisAsyncConn, key: &str, start: usize, stop: usize) -> Result<Vec<String>> {
+async fn get_redis_list_value(
+    conn: &mut RedisAsyncConn,
+    key: &str,
+    start: usize,
+    stop: usize,
+) -> Result<Vec<SharedString>> {
     // Fetch raw bytes to handle binary data safely
     let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(start).arg(stop).query_async(conn).await?;
     if value.is_empty() {
         return Ok(vec![]);
     }
-    let value: Vec<String> = value.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect();
+    let value: Vec<SharedString> = value
+        .iter()
+        .map(|v| SharedString::new(String::from_utf8_lossy(v)))
+        .collect();
     Ok(value)
 }
 
@@ -50,7 +58,7 @@ pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) 
         key_type: KeyType::List,
         data: Some(RedisValueData::List(Arc::new(RedisListValue {
             size,
-            values: values.into_iter().map(|v| v.into()).collect(),
+            values,
             ..Default::default()
         }))),
         expire_at: None,
@@ -283,7 +291,7 @@ impl ZedisServerState {
                     // Append new items to the existing list
                     if let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                         let list = Arc::make_mut(list_data);
-                        list.values.extend(new_values.into_iter().map(|v| v.into()));
+                        list.values.extend(new_values);
                     }
                 }
                 cx.emit(ServerEvent::ValuePaginationFinished);

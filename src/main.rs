@@ -239,7 +239,7 @@ impl Render for Zedis {
     }
 }
 
-fn init_logger() {
+fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
     let mut level = Level::INFO;
     if let Ok(log_level) = env::var("RUST_LOG")
         && let Ok(value) = Level::from_str(log_level.as_str())
@@ -258,19 +258,17 @@ fn init_logger() {
         .with_timer(timer)
         .with_ansi(is_development())
         .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing::subscriber::set_global_default(subscriber)?;
+    Ok(())
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
-fn main() {
-    init_logger();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_logger()?;
     let app = gpui_platform::application().with_assets(assets::Assets);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
-    if let Err(e) = get_servers() {
-        error!(error = %e, "get servers fail",);
-    }
     if let Err(e) = get_servers() {
         error!(error = %e, "get servers fail",);
     }
@@ -373,4 +371,5 @@ fn main() {
         })
         .detach();
     });
+    Ok(())
 }
