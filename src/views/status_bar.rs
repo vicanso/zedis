@@ -473,14 +473,18 @@ impl ZedisStatusBar {
                         .font_family(get_font_family()),
                     )
                     .child(
-                        metric_badge(
-                            "zedis-status-bar-used-memory",
-                            Icon::new(CustomIconName::MemoryStick),
-                            server_state.used_memory.clone(),
-                            i18n_common(cx, "used_memory"),
-                        )
-                        .text_color(cx.theme().primary),
+                        Button::new("zedis-status-bar-server-memory-analysis")
+                            .outline()
+                            .small()
+                            .icon(CustomIconName::MemoryStick)
+                            .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
+                            .on_click(cx.listener(|_this, _, _window, cx| {
+                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                    state.toggle_route((Route::MemoryAnalysis, Route::Editor), cx);
+                                });
+                            })),
                     )
+                    .child(Label::new(server_state.used_memory.clone()))
                     .child(
                         metric_badge(
                             "zedis-status-bar-clients",

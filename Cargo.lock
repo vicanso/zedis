@@ -10323,6 +10323,7 @@ dependencies = [
  "pretty-hex",
  "prost-reflect",
  "protox",
+ "rand 0.9.2",
  "redb",
  "redis",
  "regex",

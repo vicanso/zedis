@@ -24,6 +24,7 @@ use crate::helpers::TtlCache;
 use crate::{connection::async_connection::set_client_name, error::Error};
 use futures::future::try_join_all;
 use gpui::SharedString;
+use rand::Rng;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
 use regex::Regex;
 use semver::Version;
@@ -524,6 +525,33 @@ impl RedisClient {
     /// * `usize` - The number of master nodes.
     pub fn count_masters(&self) -> Result<usize> {
         Ok(self.master_nodes.len())
+    }
+    /// Samples a subset of keys from the Redis server.
+    /// # Arguments
+    /// * `ratio` - The ratio of keys to sample.
+    /// * `cursors` - The cursors to continue the scan from.
+    /// # Returns
+    /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the sampled keys.
+    pub async fn sample_scan(&self, ratio: f32, cursors: Option<Vec<u64>>) -> Result<(Vec<u64>, Vec<SharedString>)> {
+        let pattern = "*";
+        let count = 2000;
+        let (cursors, raw_keys) = if let Some(cursors) = cursors {
+            self.scan(cursors, pattern, count).await?
+        } else {
+            self.first_scan(pattern, count).await?
+        };
+        let estimated_capacity = (raw_keys.len() as f32 * ratio) as usize + 1;
+        let mut sampled_keys = Vec::with_capacity(estimated_capacity);
+
+        let mut rng = rand::rng();
+
+        for key in raw_keys {
+            if rng.random::<f32>() < ratio {
+                sampled_keys.push(key);
+            }
+        }
+
+        Ok((cursors, sampled_keys))
     }
     /// Initiates a SCAN operation across all masters.
     /// # Arguments
