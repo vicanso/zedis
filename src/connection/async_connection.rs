@@ -30,7 +30,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::{sync::LazyLock, time::Duration};
-use tracing::debug;
+use tracing::{debug, error};
+
+const CLIENT_NAME: &str = concat!("zedis:v", env!("CARGO_PKG_VERSION"));
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -107,6 +109,13 @@ pub fn get_redis_response_timeout() -> Duration {
     GLOBAL_REDIS_CONFIG.load().response_timeout
 }
 
+pub(crate) async fn set_client_name(conn: &mut impl ConnectionLike) {
+    // ignore error
+    if let Err(err) = cmd("CLIENT").arg("SETNAME").arg(CLIENT_NAME).exec_async(conn).await {
+        error!(error = %err, "set client name failed");
+    }
+}
+
 /// Opens a single Redis connection with connection pooling support.
 ///
 /// This function attempts to reuse an existing connection from the pool if available
@@ -148,6 +157,7 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
         client.get_multiplexed_async_connection_with_config(&cfg).await?
     };
 
+    set_client_name(&mut conn).await;
     // Select the specified database if not the default (db 0)
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;

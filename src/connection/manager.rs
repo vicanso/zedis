@@ -20,8 +20,8 @@ use super::{
     config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
-use crate::error::Error;
 use crate::helpers::TtlCache;
+use crate::{connection::async_connection::set_client_name, error::Error};
 use futures::future::try_join_all;
 use gpui::SharedString;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
@@ -193,12 +193,14 @@ async fn get_async_connection(client: &RClient, db: usize, use_cache: bool) -> R
             let cfg = cluster::ClusterConfig::default()
                 .set_connection_timeout(get_redis_connection_timeout())
                 .set_response_timeout(get_redis_response_timeout());
-            let conn = client.get_async_connection_with_config(cfg).await?;
+            let mut conn = client.get_async_connection_with_config(cfg).await?;
+            set_client_name(&mut conn).await;
             Ok(RedisAsyncConn::Cluster(conn))
         }
         RClient::SshCluster(client) => {
-            let conn: redis::cluster_async::ClusterConnection<SshMultiplexedConnection> =
+            let mut conn: redis::cluster_async::ClusterConnection<SshMultiplexedConnection> =
                 client.get_async_generic_connection().await?;
+            set_client_name(&mut conn).await;
             Ok(RedisAsyncConn::SshCluster(conn))
         }
     }

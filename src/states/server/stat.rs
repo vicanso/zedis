@@ -297,7 +297,12 @@ impl ZedisServerState {
             return;
         }
 
-        let last_checked_at = self.last_slow_logs_checked_at;
+        let slow_logs_check_interval = 60;
+        let mut last_slow_logs_checked_at = self.last_slow_logs_checked_at;
+        if last_slow_logs_checked_at == 0 {
+            last_slow_logs_checked_at = unix_ts() - slow_logs_check_interval;
+        }
+
         let server_id = self.server_id.clone();
         let db = self.db;
         let server_id_clone = server_id.clone();
@@ -310,7 +315,7 @@ impl ZedisServerState {
                 client.ping().await?;
                 let latency = start.elapsed();
                 let now = unix_ts();
-                let slow_logs = if now - last_checked_at > 60 {
+                let slow_logs = if now - last_slow_logs_checked_at >= slow_logs_check_interval {
                     // ignore get slow error
                     let slow_logs = client.get_slow_logs().await.unwrap_or_default();
                     Some(slow_logs)
@@ -330,13 +335,10 @@ impl ZedisServerState {
                     METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
                     this.redis_info = Some(info);
                     if let Some(slow_logs) = slow_logs {
-                        let mut count = 0;
-                        for item in slow_logs.iter() {
-                            if item.timestamp > last_checked_at {
-                                count += 1;
-                            }
-                        }
-                        this.last_slow_log_count = count;
+                        this.last_slow_log_count = slow_logs
+                            .iter()
+                            .filter(|item| item.timestamp >= last_slow_logs_checked_at)
+                            .count();
                         this.slow_logs = slow_logs;
                         this.last_slow_logs_checked_at = unix_ts();
                     }

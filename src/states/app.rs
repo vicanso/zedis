@@ -302,6 +302,12 @@ impl ZedisAppState {
             cx.notify();
         }
     }
+    pub fn toggle_route(&mut self, routes: (Route, Route), cx: &mut Context<Self>) {
+        let route = if self.route == routes.0 { routes.1 } else { routes.0 };
+        self.route = route;
+        cx.emit(GlobalEvent::RouteChanged(route));
+        cx.notify();
+    }
     pub fn font_size(&self) -> FontSize {
         self.font_size.unwrap_or(FontSize::Medium)
     }

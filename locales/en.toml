@@ -179,7 +179,9 @@ soft_wrap_tooltip = "Enable soft wrap for long lines"
 data_format_tooltip = "Data format"
 viewer = "Viewer:"
 toggle_readonly_tooltip = "Toggle read-only mode (Current session only)"
-metrics_tooltip = "Toggle server metrics"
+toggle_metrics_tooltip = "Toggle server metrics"
+toggle_slowlog_tooltip = "Toggle slowlog panel"
+
 
 [list_editor]
 position = "Position"

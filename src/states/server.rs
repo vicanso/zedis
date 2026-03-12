@@ -192,6 +192,9 @@ impl ZedisServerState {
         self.value = None;
         self.reset_scan();
         self.terminal = false;
+        self.last_slow_logs_checked_at = 0;
+        self.last_slow_log_count = 0;
+        self.slow_logs.clear();
     }
 
     /// Add new keys to the key map (deduplicating automatically)
