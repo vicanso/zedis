@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{AnyElement, App, Window, div, prelude::*};
-use gpui_component::{ActiveTheme, h_flex};
+use gpui::{AnyElement, App, StyleRefinement, Window, div, prelude::*};
+use gpui_component::{ActiveTheme, StyledExt, h_flex};
 
 /// A container that automatically inserts vertical divider lines between its children.
 #[derive(IntoElement, Default)]
 pub struct ZedisDivider {
+    style: StyleRefinement,
     children: Vec<AnyElement>,
 }
 
@@ -35,12 +36,17 @@ impl ZedisDivider {
         if condition { then(self) } else { self }
     }
 }
+impl Styled for ZedisDivider {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
 
 impl RenderOnce for ZedisDivider {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let color = cx.theme().muted_foreground;
         let last = self.children.len().saturating_sub(1);
-        let mut container = h_flex().items_center();
+        let mut container = h_flex().items_center().refine_style(&self.style);
         for (i, child) in self.children.into_iter().enumerate() {
             container = container.child(child);
             if i < last {

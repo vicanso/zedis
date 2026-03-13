@@ -80,6 +80,17 @@ impl From<usize> for ServerType {
     }
 }
 
+pub struct KeyMemoryUsage {
+    // key name
+    pub key: SharedString,
+    // memory usage in bytes
+    pub memory_usage: u64,
+    // key type
+    pub key_type: String,
+    // ttl in seconds
+    pub ttl: i64,
+}
+
 // Wrapper for the underlying Redis client
 #[derive(Clone)]
 enum RClient {
@@ -531,27 +542,75 @@ impl RedisClient {
     /// * `ratio` - The ratio of keys to sample.
     /// * `cursors` - The cursors to continue the scan from.
     /// # Returns
-    /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the sampled keys.
-    pub async fn sample_scan(&self, ratio: f32, cursors: Option<Vec<u64>>) -> Result<(Vec<u64>, Vec<SharedString>)> {
+    /// * `(Vec<u64>, Vec<KeyMemoryUsage>)` - A tuple containing the new cursors and the key memory usage.
+    pub async fn sample_scan_memory_usage(
+        &self,
+        ratio: f32,
+        cursors: Option<Vec<u64>>,
+    ) -> Result<(Vec<u64>, Vec<KeyMemoryUsage>)> {
         let pattern = "*";
-        let count = 2000;
-        let (cursors, raw_keys) = if let Some(cursors) = cursors {
-            self.scan(cursors, pattern, count).await?
-        } else {
-            self.first_scan(pattern, count).await?
-        };
-        let estimated_capacity = (raw_keys.len() as f32 * ratio) as usize + 1;
-        let mut sampled_keys = Vec::with_capacity(estimated_capacity);
+        let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, 500).await?;
 
-        let mut rng = rand::rng();
+        if ratio < 1.0 {
+            let mut rng = rand::rng();
+            for keys in keys_per_node.iter_mut() {
+                keys.retain(|_| rng.random::<f32>() < ratio);
+            }
+        }
+        let capacity = keys_per_node.iter().map(|keys| keys.len()).sum();
+        let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        let mut keys_memory_usage = Vec::with_capacity(capacity);
+        for (index, keys) in keys_per_node.iter().enumerate() {
+            if keys.is_empty() {
+                continue;
+            }
+            let mut pipe = redis::pipe();
+            for key in keys {
+                pipe.cmd("TYPE")
+                    .arg(key.as_str())
+                    .cmd("MEMORY")
+                    .arg("USAGE")
+                    .arg(key.as_str())
+                    .cmd("TTL")
+                    .arg(key.as_str());
+            }
+            let Some(addr) = master_addrs.get(index) else {
+                continue;
+            };
+            let mut conn = open_single_connection(addr, self.db, true).await?;
+            let results: Vec<Value> = pipe.query_async(&mut conn).await?;
 
-        for key in raw_keys {
-            if rng.random::<f32>() < ratio {
-                sampled_keys.push(key);
+            for (i, chunk) in results.chunks_exact(3).enumerate() {
+                let key = keys[i].clone();
+
+                let key_type = match &chunk[0] {
+                    Value::SimpleString(s) => s.clone(),
+                    Value::BulkString(d) => String::from_utf8_lossy(d).to_string(),
+                    _ => "unknown".to_string(),
+                };
+
+                let memory: u64 = match &chunk[1] {
+                    Value::Int(m) => *m as u64,
+                    _ => 0,
+                };
+
+                let ttl: i64 = match &chunk[2] {
+                    Value::Int(t) => *t,
+                    _ => -2, // -2 表示 key 不存在
+                };
+                if ttl == -2 {
+                    continue;
+                }
+                keys_memory_usage.push(KeyMemoryUsage {
+                    key: key.clone(),
+                    memory_usage: memory,
+                    key_type,
+                    ttl,
+                });
             }
         }
 
-        Ok((cursors, sampled_keys))
+        Ok((cursors, keys_memory_usage))
     }
     /// Initiates a SCAN operation across all masters.
     /// # Arguments
@@ -560,11 +619,65 @@ impl RedisClient {
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
     pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<SharedString>)> {
-        let master_count = self.count_masters()?;
-        let cursors = vec![0; master_count];
-
-        let (cursors, keys) = self.scan(cursors, pattern, count).await?;
+        let (cursors, keys) = self.scan(None, pattern, count).await?;
         Ok((cursors, keys))
+    }
+    async fn scan_nodes(
+        &self,
+        cursors: Option<Vec<u64>>,
+        pattern: &str,
+        count: u64,
+    ) -> Result<(Vec<u64>, Vec<Vec<SharedString>>)> {
+        debug!("scan, cursors: {cursors:?}, pattern: {pattern}, count: {count}");
+        let mut first_scan = false;
+        let new_cursors = if let Some(cursors) = cursors {
+            cursors
+        } else {
+            first_scan = true;
+            let master_count = self.count_masters()?;
+            vec![0; master_count]
+        };
+
+        if !first_scan && new_cursors.iter().all(|&c| c == 0) {
+            return Ok((new_cursors.clone(), vec![vec![]; new_cursors.len()]));
+        }
+
+        let mut active_indices = Vec::with_capacity(new_cursors.len());
+        let mut cmds = Vec::with_capacity(new_cursors.len());
+
+        for (idx, &cursor) in new_cursors.iter().enumerate() {
+            if first_scan || cursor != 0 {
+                active_indices.push(idx);
+                cmds.push(
+                    cmd("SCAN")
+                        .cursor_arg(cursor)
+                        .arg("MATCH")
+                        .arg(pattern)
+                        .arg("COUNT")
+                        .arg(count)
+                        .clone(),
+                );
+            }
+        }
+
+        let values: Vec<(u64, Vec<Vec<u8>>)> = self.query_async_masters(cmds).await?;
+
+        let mut next_cursors = new_cursors.clone();
+
+        let mut keys_per_node: Vec<Vec<SharedString>> = vec![vec![]; new_cursors.len()];
+
+        for (active_idx, (new_cursor, keys_in_node)) in active_indices.into_iter().zip(values) {
+            next_cursors[active_idx] = new_cursor;
+
+            let node_keys: Vec<SharedString> = keys_in_node
+                .into_iter()
+                .map(|k| SharedString::new(String::from_utf8_lossy(&k).into_owned()))
+                .collect();
+
+            keys_per_node[active_idx] = node_keys;
+        }
+
+        Ok((next_cursors, keys_per_node))
     }
     /// Continues a SCAN operation.
     /// # Arguments
@@ -573,33 +686,18 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
-    pub async fn scan(&self, cursors: Vec<u64>, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<SharedString>)> {
-        debug!("scan, cursors: {cursors:?}, pattern: {pattern}, count: {count}");
-        let cmds: Vec<Cmd> = cursors
-            .iter()
-            .map(|cursor| {
-                cmd("SCAN")
-                    .cursor_arg(*cursor)
-                    .arg("MATCH")
-                    .arg(pattern)
-                    .arg("COUNT")
-                    .arg(count)
-                    .clone()
-            })
-            .collect();
-        let values: Vec<(u64, Vec<Vec<u8>>)> = self.query_async_masters(cmds).await?;
-        let mut cursors = Vec::with_capacity(values.len());
-        let mut keys = Vec::with_capacity(values[0].1.len() * values.len());
-        for (cursor, keys_in_node) in values {
-            cursors.push(cursor);
-            keys.extend(
-                keys_in_node
-                    .iter()
-                    .map(|k| SharedString::new(String::from_utf8_lossy(k))),
-            );
+    pub async fn scan(
+        &self,
+        cursors: Option<Vec<u64>>,
+        pattern: &str,
+        count: u64,
+    ) -> Result<(Vec<u64>, Vec<SharedString>)> {
+        let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
+        let mut all_keys = Vec::with_capacity(keys_per_node.iter().map(|ks| ks.len()).sum());
+        for keys in keys_per_node.into_iter() {
+            all_keys.extend(keys);
         }
-        keys.sort_unstable();
-        Ok((cursors, keys))
+        Ok((new_cursors, all_keys))
     }
 }
 

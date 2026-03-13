@@ -419,7 +419,6 @@ impl ZedisServerState {
     pub fn db(&self) -> usize {
         self.db
     }
-
     /// Get whether the server supports database selection
     pub fn supports_db_selection(&self) -> bool {
         self.supports_db_selection

@@ -155,7 +155,7 @@ impl ZedisServerState {
                     key_scan_count
                 };
                 if let Some(cursors) = cursors {
-                    client.scan(cursors, &pattern, count).await
+                    client.scan(Some(cursors), &pattern, count).await
                 } else {
                     client.first_scan(&pattern, count).await
                 }
@@ -344,7 +344,7 @@ impl ZedisServerState {
                 // to gather a sufficient amount without blocking for too long.
                 for _ in 0..20 {
                     let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(cursors, &pattern, key_scan_count).await?
+                        client.scan(Some(cursors), &pattern, key_scan_count).await?
                     } else {
                         client.first_scan(&pattern, key_scan_count).await?
                     };
@@ -591,7 +591,7 @@ impl ZedisServerState {
                 // to gather a sufficient amount without blocking for too long.
                 for _ in 0..20 {
                     let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(cursors, &pattern, count).await?
+                        client.scan(Some(cursors), &pattern, count).await?
                     } else {
                         client.first_scan(&pattern, count).await?
                     };

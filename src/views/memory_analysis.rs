@@ -18,10 +18,11 @@
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
 /// 2. Top 20 single keys by memory (keys without the separator)
 use crate::assets::CustomIconName;
-use crate::connection::get_connection_manager;
+use crate::connection::{KeyMemoryUsage, get_connection_manager};
 use crate::constants::SIDEBAR_WIDTH;
+use crate::helpers::format_duration;
 use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_memory_analysis};
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
@@ -34,7 +35,9 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashMap;
+use std::time::Duration;
 use tracing::{debug, error};
+use zedis_ui::ZedisDivider;
 
 /// Maximum rows kept per table.
 const TOP_N: usize = 20;
@@ -47,7 +50,7 @@ const SECTION_TITLE_HEIGHT: f32 = 30.;
 
 /// Calculate the pixel height needed for a DataTable with the given row count.
 /// Includes 1 header row + data rows.
-fn table_height(row_count: usize) -> gpui::Pixels {
+fn table_height(row_count: usize) -> Pixels {
     px(((row_count + 1) as f32) * TABLE_ROW_HEIGHT)
 }
 
@@ -60,12 +63,18 @@ struct PrefixRow {
     prefix: SharedString,
     /// Estimated key count (sampled × 1/ratio)
     key_count: u64,
+    /// Display key count (with "~" prefix)
+    display_key_count: SharedString,
     /// Estimated memory in bytes
     memory_bytes: u64,
     /// Human-readable estimated memory (with "~" prefix)
     memory: SharedString,
     /// Comma-separated key types
     types: SharedString,
+    /// Display average TTL (with "~" prefix)
+    avg_ttl: SharedString,
+    /// Average TTL in seconds (-1 means no expiry)
+    avg_ttl_secs: f64,
 }
 
 /// A row in the single-key table.
@@ -79,6 +88,10 @@ struct SingleKeyRow {
     memory: SharedString,
     /// Key type
     key_type: SharedString,
+    /// TTL display string
+    ttl: SharedString,
+    /// TTL in seconds for sorting (-1 = no expiry, -2 = not exists)
+    ttl_secs: i64,
 }
 
 // ─── Column constants ────────────────────────────────────────────────────────
@@ -87,13 +100,14 @@ const COL_PREFIX: &str = "prefix";
 const COL_KEY_COUNT: &str = "key_count";
 const COL_MEMORY: &str = "memory";
 const COL_TYPES: &str = "types";
-
+const COL_AVG_TTL: &str = "avg_ttl";
 const COL_KEY: &str = "key";
 const COL_KEY_TYPE: &str = "key_type";
+const COL_TTL: &str = "ttl";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn make_paddings() -> Option<Edges<gpui::Pixels>> {
+fn make_paddings() -> Option<Edges<Pixels>> {
     Some(Edges {
         top: px(2.),
         bottom: px(2.),
@@ -104,6 +118,13 @@ fn make_paddings() -> Option<Edges<gpui::Pixels>> {
 
 fn format_memory(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::FormatSizeOptions::default().decimal_places(2))
+}
+
+fn format_ttl(avg_secs: f64) -> String {
+    if avg_secs < 0.0 {
+        return "Perm".to_string();
+    }
+    format_duration(Duration::from_secs(avg_secs as u64))
 }
 
 fn format_thousands(n: u64) -> String {
@@ -126,7 +147,10 @@ fn render_copy_cell(
     id_prefix: &'static str,
     copied_message: SharedString,
 ) -> impl IntoElement {
+    // This is the only necessary string allocation.
+    // It serves as a globally unique Group identifier for the hover state.
     let group_name: SharedString = format!("{id_prefix}-td-{row_ix}-{col_ix}").into();
+
     h_flex()
         .size_full()
         .when_some(column.paddings, |this, paddings| this.paddings(paddings))
@@ -137,17 +161,23 @@ fn render_copy_cell(
                 .text_align(column.align)
                 .text_ellipsis()
                 .flex_1()
+                // Essential for text_ellipsis to work inside a flex container
                 .min_w_0(),
         )
         .child(
             div()
-                .id(("copy-wrapper", row_ix * 100 + col_ix))
+                // Clever trick: Reuse the group_name (SharedString) combined with a usize index.
+                // This perfectly matches GPUI's `impl From<(SharedString, usize)> for ElementId`.
+                // It requires zero extra heap allocation and guarantees absolute uniqueness!
+                .id((group_name.clone(), 0_usize))
                 .invisible()
-                .group_hover(group_name, |style| style.visible())
+                .group_hover(group_name.clone(), |style| style.visible())
                 .flex_none()
+                // Stop event propagation to prevent triggering row selection events
                 .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
                 .child(
-                    Button::new(("copy-cell", row_ix * 100 + col_ix))
+                    // Reuse the same group_name, but with index 1 to distinguish the Button's ID
+                    Button::new((group_name.clone(), 1_usize))
                         .ghost()
                         .icon(IconName::Copy)
                         .on_click(move |_, window, cx: &mut gpui::App| {
@@ -161,7 +191,7 @@ fn render_copy_cell(
 const TYPE_KEY_WIDTH: f32 = 140.;
 const MEMORY_KEY_WIDTH: f32 = 200.;
 const COUNT_KEY_WIDTH: f32 = 150.;
-const TABLE_PADDING: f32 = 30.;
+const TTL_KEY_WIDTH: f32 = 120.;
 
 // ─── Prefix table delegate ───────────────────────────────────────────────────
 
@@ -174,21 +204,35 @@ struct PrefixTableDelegate {
 impl PrefixTableDelegate {
     fn new(rows: Vec<PrefixRow>, window: &mut Window, _cx: &mut gpui::App) -> Self {
         let content_width = (window.viewport_size().width - SIDEBAR_WIDTH).as_f32();
-        let prefix_w = content_width - COUNT_KEY_WIDTH - MEMORY_KEY_WIDTH - TYPE_KEY_WIDTH - TABLE_PADDING;
 
-        let column_keys = vec![COL_PREFIX, COL_KEY_COUNT, COL_MEMORY, COL_TYPES];
-        let widths = [prefix_w, COUNT_KEY_WIDTH, MEMORY_KEY_WIDTH, TYPE_KEY_WIDTH];
+        // Use padding offsets to prevent horizontal scrollbars
+        let padding_offset = 16.0;
+        let scrollbar_offset = 10.0;
+        let prefix_w = content_width
+            - COUNT_KEY_WIDTH
+            - MEMORY_KEY_WIDTH
+            - TYPE_KEY_WIDTH
+            - TTL_KEY_WIDTH
+            - padding_offset
+            - scrollbar_offset;
+
+        let column_keys = vec![COL_PREFIX, COL_KEY_COUNT, COL_MEMORY, COL_AVG_TTL, COL_TYPES];
+        let widths = [
+            prefix_w,
+            COUNT_KEY_WIDTH,
+            MEMORY_KEY_WIDTH,
+            TTL_KEY_WIDTH,
+            TYPE_KEY_WIDTH,
+        ];
+
         let columns = column_keys
-            .iter()
+            .clone()
+            .into_iter()
             .zip(widths)
-            .map(|(&key, w)| {
-                Column::new(key, SharedString::default())
-                    .width(w)
-                    .sortable()
-                    .map(|mut c| {
-                        c.paddings = make_paddings();
-                        c
-                    })
+            .map(|(key, w)| {
+                let mut c = Column::new(key, SharedString::default()).width(w).sortable();
+                c.paddings = make_paddings();
+                c
             })
             .collect();
 
@@ -224,6 +268,10 @@ impl TableDelegate for PrefixTableDelegate {
                 COL_PREFIX => a.prefix.cmp(&b.prefix),
                 COL_KEY_COUNT => a.key_count.cmp(&b.key_count),
                 COL_MEMORY => a.memory_bytes.cmp(&b.memory_bytes),
+                COL_AVG_TTL => a
+                    .avg_ttl_secs
+                    .partial_cmp(&b.avg_ttl_secs)
+                    .unwrap_or(std::cmp::Ordering::Equal),
                 COL_TYPES => a.types.cmp(&b.types),
                 _ => std::cmp::Ordering::Equal,
             };
@@ -266,12 +314,15 @@ impl TableDelegate for PrefixTableDelegate {
             .get(row_ix)
             .map(|r| match col_ix {
                 0 => r.prefix.clone(),
-                1 => format!("~{}", r.key_count).into(),
-                2 => format!("~{}", r.memory).into(),
-                3 => r.types.clone(),
+                1 => r.display_key_count.clone(),
+                2 => r.memory.clone(),
+                3 => r.avg_ttl.clone(),
+                4 => r.types.clone(),
                 _ => "--".into(),
             })
-            .unwrap_or("--".into());
+            .unwrap_or_else(|| "--".into());
+
+        // Uses our highly optimized render_copy_cell function
         render_copy_cell(
             row_ix,
             col_ix,
@@ -302,21 +353,24 @@ struct SingleKeyTableDelegate {
 impl SingleKeyTableDelegate {
     fn new(rows: Vec<SingleKeyRow>, window: &mut Window, _cx: &mut gpui::App) -> Self {
         let content_width = (window.viewport_size().width - SIDEBAR_WIDTH).as_f32();
-        let key_w = content_width - MEMORY_KEY_WIDTH - TYPE_KEY_WIDTH - TABLE_PADDING;
 
-        let column_keys = vec![COL_KEY, COL_MEMORY, COL_KEY_TYPE];
-        let widths = [key_w, MEMORY_KEY_WIDTH, TYPE_KEY_WIDTH];
+        let padding_offset = 16.0;
+        let scrollbar_offset = 10.0;
+        let key_w =
+            content_width - MEMORY_KEY_WIDTH - TTL_KEY_WIDTH - TYPE_KEY_WIDTH - padding_offset - scrollbar_offset;
+
+        let column_keys = vec![COL_KEY, COL_MEMORY, COL_TTL, COL_KEY_TYPE];
+        let widths = [key_w, MEMORY_KEY_WIDTH, TTL_KEY_WIDTH, TYPE_KEY_WIDTH];
+
         let columns = column_keys
-            .iter()
+            .clone()
+            .into_iter()
             .zip(widths)
-            .map(|(&key, w)| {
-                Column::new(key, SharedString::default())
-                    .width(w)
-                    .sortable()
-                    .map(|mut c| {
-                        c.paddings = make_paddings();
-                        c
-                    })
+            .map(|(key, w)| {
+                let mut c = Column::new(key, SharedString::default()).width(w).sortable();
+
+                c.paddings = make_paddings();
+                c
             })
             .collect();
 
@@ -351,6 +405,7 @@ impl TableDelegate for SingleKeyTableDelegate {
             let ord = match key {
                 COL_KEY => a.key.cmp(&b.key),
                 COL_MEMORY => a.memory_bytes.cmp(&b.memory_bytes),
+                COL_TTL => a.ttl_secs.cmp(&b.ttl_secs),
                 COL_KEY_TYPE => a.key_type.cmp(&b.key_type),
                 _ => std::cmp::Ordering::Equal,
             };
@@ -394,10 +449,11 @@ impl TableDelegate for SingleKeyTableDelegate {
             .map(|r| match col_ix {
                 0 => r.key.clone(),
                 1 => r.memory.clone(),
-                2 => r.key_type.clone(),
+                2 => r.ttl.clone(),
+                3 => r.key_type.clone(),
                 _ => "--".into(),
             })
-            .unwrap_or("--".into());
+            .unwrap_or_else(|| "--".into());
         render_copy_cell(
             row_ix,
             col_ix,
@@ -424,6 +480,12 @@ struct PrefixStats {
     key_count: u64,
     memory_bytes: u64,
     types: std::collections::HashSet<String>,
+    /// Sum of TTL values (only keys with TTL > 0).
+    ttl_sum: i64,
+    /// Count of keys that have a TTL (TTL > 0).
+    ttl_count: u64,
+    /// Count of keys with no expiry (TTL == -1).
+    perm_count: u64,
 }
 
 /// Keeps a capped top-N collection sorted by memory descending.
@@ -470,27 +532,56 @@ impl<T> TopN<T> {
 
 fn build_prefix_rows(prefix_map: &HashMap<String, PrefixStats>, ratio: f32, key_separator: &str) -> Vec<PrefixRow> {
     let scale = if ratio > 0.0 { 1.0 / ratio } else { 1.0 };
+
+    //  Determine if we are sampling to prepend the "~" indicator
+    let is_sampled = ratio > 0.0 && ratio < 1.0;
+    let est_prefix = if is_sampled { "~" } else { "" };
+
     let mut rows: Vec<PrefixRow> = prefix_map
         .iter()
         .map(|(prefix, stats)| {
+            // Raw numeric values for internal logic and sorting
             let est_count = (stats.key_count as f32 * scale) as u64;
             let est_mem = (stats.memory_bytes as f32 * scale) as u64;
+
             let mut types: Vec<&String> = stats.types.iter().collect();
             types.sort();
+
+            let avg_ttl_secs = if stats.ttl_count > 0 {
+                stats.ttl_sum as f64 / stats.ttl_count as f64
+            } else {
+                -1.0
+            };
+
             PrefixRow {
                 prefix: format!("{prefix}{key_separator}*").into(),
+
+                // Keep raw values for TableDelegate's perform_sort
                 key_count: est_count,
                 memory_bytes: est_mem,
-                memory: format_memory(est_mem).into(),
+                avg_ttl_secs,
+
+                // Pre-format all display strings here (Zero-Allocation trick)
+                // Add the "~" prefix and format with thousands separators
+                display_key_count: format!("{est_prefix}{}", format_thousands(est_count)).into(),
+
+                // Add the "~" prefix to the human-readable memory
+                memory: format!("{est_prefix}{}", format_memory(est_mem)).into(),
+
                 types: types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ").into(),
+                avg_ttl: format_ttl(avg_ttl_secs).into(),
             }
         })
         .collect();
+
+    // Sort descending by memory usage
     rows.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
+
+    // Truncate to keep the UI snappy
     rows.truncate(TOP_N);
+
     rows
 }
-
 fn build_single_rows(top: &TopN<SingleKeyRow>) -> Vec<SingleKeyRow> {
     top.items.clone()
 }
@@ -579,7 +670,7 @@ impl ZedisMemoryAnalysis {
         if let Some(dbsize) = self.dbsize {
             let sampled_keys = (dbsize as f32 * self.ratio) as u64;
             // Each key needs ~2 commands (TYPE + MEMORY USAGE), plus SCAN rounds
-            let scan_rounds = if dbsize > 0 { dbsize / 2000 + 1 } else { 0 };
+            let scan_rounds = if dbsize > 0 { dbsize / 1000 + 1 } else { 0 };
             self.est_commands = sampled_keys * 2 + scan_rounds;
         }
     }
@@ -609,21 +700,20 @@ impl ZedisMemoryAnalysis {
             let mut single_top: TopN<SingleKeyRow> = TopN::new(TOP_N);
             let mut cursors: Option<Vec<u64>> = None;
             let mut total_sampled: u64 = 0;
-            let concurrency = 5;
 
             loop {
-                // Step 2: Sample scan
                 let scan_task = cx.background_spawn({
                     let server_id = server_id.clone();
                     let cursors_clone = cursors.clone();
                     async move {
                         let client = get_connection_manager().get_client(&server_id, db).await?;
-                        let (new_cursors, keys) = client.sample_scan(ratio, cursors_clone).await?;
-                        Ok::<(Vec<u64>, Vec<SharedString>), crate::error::Error>((new_cursors, keys))
+                        let (new_cursors, keys_memory_usage) =
+                            client.sample_scan_memory_usage(ratio, cursors_clone).await?;
+                        Ok::<(Vec<u64>, Vec<KeyMemoryUsage>), crate::error::Error>((new_cursors, keys_memory_usage))
                     }
                 });
 
-                let (new_cursors, keys) = match scan_task.await {
+                let (new_cursors, keys_memory_usage) = match scan_task.await {
                     Ok(result) => result,
                     Err(e) => {
                         error!(error = %e, "Failed to sample scan for memory analysis");
@@ -631,62 +721,45 @@ impl ZedisMemoryAnalysis {
                     }
                 };
 
-                if keys.is_empty() && new_cursors.iter().all(|c| *c == 0) {
+                if keys_memory_usage.is_empty() && new_cursors.iter().all(|c| *c == 0) {
                     break;
                 }
 
-                // Step 3: Get type and memory_usage with concurrency of 5
-                for chunk in keys.chunks(concurrency) {
-                    let futures: Vec<_> = chunk
-                        .iter()
-                        .map(|key| {
-                            let server_id = server_id.clone();
-                            let key = key.clone();
-                            cx.background_spawn(async move {
-                                let client = get_connection_manager().get_client(&server_id, db).await?;
-                                let mut conn = client.connection();
-                                let (key_type, memory): (String, u64) = redis::pipe()
-                                    .cmd("TYPE")
-                                    .arg(key.as_str())
-                                    .cmd("MEMORY")
-                                    .arg("USAGE")
-                                    .arg(key.as_str())
-                                    .query_async(&mut conn)
-                                    .await?;
-                                Ok::<(SharedString, String, u64), crate::error::Error>((key, key_type, memory))
-                            })
-                        })
-                        .collect();
+                // Classify and accumulate from the already-fetched data
+                for item in &keys_memory_usage {
+                    let key = &item.key;
+                    let memory = item.memory_usage;
+                    let ttl = item.ttl;
+                    let key_type = &item.key_type;
 
-                    for future in futures {
-                        match future.await {
-                            Ok((key, key_type, memory)) => {
-                                // Step 4: Classify and accumulate
-                                if let Some(pos) = key.find(&key_separator) {
-                                    let prefix = &key[..pos];
-                                    let stats = prefix_map.entry(prefix.to_string()).or_default();
-                                    stats.key_count += 1;
-                                    stats.memory_bytes += memory;
-                                    if !key_type.is_empty() && key_type != "none" {
-                                        stats.types.insert(key_type);
-                                    }
-                                } else if single_top.should_insert(memory) {
-                                    let row = SingleKeyRow {
-                                        key: key.clone(),
-                                        memory_bytes: memory,
-                                        memory: format_memory(memory).into(),
-                                        key_type: key_type.into(),
-                                    };
-                                    single_top.insert(row, |r| r.memory_bytes);
-                                }
-                                total_sampled += 1;
-                            }
-                            Err(e) => {
-                                debug!(error = %e, "Failed to get key info, skipping");
-                            }
+                    if let Some(pos) = key.find(&key_separator) {
+                        let prefix = &key[..pos];
+                        let stats = prefix_map.entry(prefix.to_string()).or_default();
+                        stats.key_count += 1;
+                        stats.memory_bytes += memory;
+                        if ttl > 0 {
+                            stats.ttl_sum += ttl;
+                            stats.ttl_count += 1;
+                        } else if ttl == -1 {
+                            stats.perm_count += 1;
+                        }
+                        if !key_type.is_empty() && key_type != "none" {
+                            stats.types.insert(key_type.clone());
                         }
                     }
+                    if single_top.should_insert(memory) {
+                        let row = SingleKeyRow {
+                            key: key.clone(),
+                            memory_bytes: memory,
+                            memory: format_memory(memory).into(),
+                            key_type: SharedString::from(key_type.clone()),
+                            ttl: format_ttl(ttl as f64).into(),
+                            ttl_secs: ttl,
+                        };
+                        single_top.insert(row, |r| r.memory_bytes);
+                    }
                 }
+                total_sampled += keys_memory_usage.len() as u64;
 
                 // Update progress
                 let pct = if expected_sample_keys > 0 {
@@ -708,7 +781,6 @@ impl ZedisMemoryAnalysis {
                     cx.notify();
                 });
 
-                // Step 5: Check if scan is complete
                 if new_cursors.iter().all(|c| *c == 0) {
                     break;
                 }
@@ -721,10 +793,9 @@ impl ZedisMemoryAnalysis {
             let single_rows = build_single_rows(&single_top);
             let pc = prefix_rows.len();
             let sc = single_rows.len();
-            let progress_text: SharedString = "100%".into();
             let _ = handle.update(cx, |this, cx| {
                 this.status = AnalysisStatus::Finished;
-                this.progress = progress_text;
+                this.progress = "100%".into();
                 this.prefix_count = pc;
                 this.single_count = sc;
                 prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
@@ -735,87 +806,55 @@ impl ZedisMemoryAnalysis {
 
         cx.notify();
     }
-}
 
-impl gpui::Render for ZedisMemoryAnalysis {
-    fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        // Sync ratio InputState when changed programmatically
-        if self.ratio_dirty {
-            self.ratio_dirty = false;
-            let ratio_text = format!("{:.4}", self.ratio);
-            self.ratio_input_state
-                .update(cx, |s, cx| s.set_value(ratio_text, window, cx));
-        }
-
+    fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let is_running = self.status == AnalysisStatus::Running;
         let is_idle = self.status == AnalysisStatus::Idle;
-        let has_prefix = self.prefix_count > 0;
-        let has_single = self.single_count > 0;
-        let has_data = has_prefix || has_single;
+        let stat_item = |cx: &mut gpui::Context<Self>, key: &'static str, value: SharedString| {
+            h_flex()
+                .gap_1()
+                .child(
+                    Label::new(i18n_memory_analysis(cx, key))
+                        .text_color(cx.theme().muted_foreground)
+                        .text_sm(),
+                )
+                .child(Label::new(value).text_sm().font_weight(gpui::FontWeight::MEDIUM))
+        };
 
-        v_flex()
-            .size_full()
-            .overflow_hidden()
-            .gap_2()
-            // ── Toolbar ──
+        ZedisDivider::new()
+            .gap_4()
+            // Read-only data information display
             .child(
                 h_flex()
-                    .w_full()
-                    .h(px(40.))
-                    .px_2()
-                    .gap_2()
+                    .gap_4() // Use moderate spacing inside the data group
                     .items_center()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(Icon::new(CustomIconName::MemoryStick))
-                    .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
                     // DB Size
                     .when_some(self.dbsize, |this, dbsize| {
-                        this.child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    Label::new(i18n_memory_analysis(cx, "dbsize"))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .text_sm(),
-                                )
-                                .child(Label::new(format_thousands(dbsize)).text_sm()),
-                        )
+                        this.child(stat_item(cx, "dbsize", format_thousands(dbsize).into()))
                     })
                     // Estimated commands
                     .when(self.est_commands > 0, |this| {
-                        this.child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    Label::new(i18n_memory_analysis(cx, "est_commands"))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .text_sm(),
-                                )
-                                .child(Label::new(format!("~{}", format_thousands(self.est_commands))).text_sm()),
-                        )
+                        this.child(stat_item(
+                            cx,
+                            "est_commands",
+                            format!("~{}", format_thousands(self.est_commands)).into(),
+                        ))
                     })
                     // Progress
                     .when(!is_idle, |this| {
-                        this.child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    Label::new(i18n_memory_analysis(cx, "progress"))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .text_sm(),
-                                )
-                                .child(Label::new(self.progress.clone()).text_sm()),
-                        )
-                    })
+                        this.child(stat_item(cx, "progress", self.progress.clone()))
+                    }),
+            )
+            // ─── User interaction operation area ───
+            .child(
+                h_flex()
+                    .gap_3() // Input box and button are closely related, spacing is smaller
+                    .items_center()
                     // Sample Ratio input
                     .when_some(self.dbsize, |this, _| {
                         this.child(
                             h_flex()
-                                .gap_1()
+                                .gap_2()
                                 .items_center()
                                 .child(
                                     Label::new(i18n_memory_analysis(cx, "sample_ratio"))
@@ -825,11 +864,12 @@ impl gpui::Render for ZedisMemoryAnalysis {
                                 .child(
                                     Input::new(&self.ratio_input_state)
                                         .small()
-                                        .w(px(80.))
+                                        .w(px(70.))
                                         .disabled(is_running),
                                 ),
                         )
                     })
+                    // Start Button
                     .child(
                         Button::new("start-analysis")
                             .primary()
@@ -844,6 +884,76 @@ impl gpui::Render for ZedisMemoryAnalysis {
                                 this.start_analysis(cx);
                             })),
                     ),
+            )
+    }
+    fn render_table_section(
+        &mut self,
+        title_key: &'static str,
+        count: usize,
+        table_view: impl IntoElement,
+        _window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_3()
+                    .h(px(SECTION_TITLE_HEIGHT))
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Label::new(i18n_memory_analysis(cx, title_key))
+                            .text_color(cx.theme().foreground)
+                            .text_sm(),
+                    )
+                    .child(
+                        Label::new(format!("(Top {})", count))
+                            .text_color(cx.theme().muted_foreground)
+                            .text_sm(),
+                    ),
+            )
+            .child(div().w_full().h(table_height(count)).child(table_view))
+    }
+}
+
+impl gpui::Render for ZedisMemoryAnalysis {
+    fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // Sync ratio InputState when changed programmatically
+        if self.ratio_dirty {
+            self.ratio_dirty = false;
+            let ratio_text = format!("{:.4}", self.ratio);
+            self.ratio_input_state
+                .update(cx, |s, cx| s.set_value(ratio_text, window, cx));
+        }
+
+        let is_running = self.status == AnalysisStatus::Running;
+        let has_prefix = self.prefix_count > 0;
+        let has_single = self.single_count > 0;
+        let has_data = has_prefix || has_single;
+
+        v_flex()
+            .size_full()
+            .overflow_hidden()
+            .gap_2()
+            // ── Toolbar ──
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(40.))
+                    .px_4()
+                    .justify_between()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Icon::new(CustomIconName::MemoryStick))
+                            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground)),
+                    )
+                    .child(self.render_toolbar_functions(cx)),
             )
             // ── Body ──
             .child({
@@ -862,73 +972,36 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     ));
                 }
 
+                // Apply the closure to render the prefix table
                 if has_prefix {
-                    let prefix_table_h = table_height(self.prefix_count);
-                    body = body.child(
-                        v_flex()
-                            .w_full()
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .px_3()
-                                    .h(px(SECTION_TITLE_HEIGHT))
-                                    .gap_2()
-                                    .items_center()
-                                    .child(
-                                        Label::new(i18n_memory_analysis(cx, "prefix_table_title"))
-                                            .text_color(cx.theme().foreground)
-                                            .text_sm(),
-                                    )
-                                    .child(
-                                        Label::new(format!("(Top {})", self.prefix_count))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_sm(),
-                                    ),
-                            )
-                            .child(
-                                div().w_full().h(prefix_table_h).child(
-                                    DataTable::new(&self.prefix_table)
-                                        .stripe(true)
-                                        .bordered(true)
-                                        .scrollbar_visible(false, false),
-                                ),
-                            ),
-                    );
+                    let table = DataTable::new(&self.prefix_table)
+                        .stripe(true)
+                        .bordered(true)
+                        .scrollbar_visible(false, false);
+
+                    body = body.child(self.render_table_section(
+                        "prefix_table_title",
+                        self.prefix_count,
+                        table,
+                        window,
+                        cx,
+                    ));
                 }
 
+                // Apply the closure to render the single key table
                 if has_single {
-                    let single_table_h = table_height(self.single_count);
-                    body = body.child(
-                        v_flex()
-                            .w_full()
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .px_3()
-                                    .h(px(SECTION_TITLE_HEIGHT))
-                                    .gap_2()
-                                    .items_center()
-                                    .border_color(cx.theme().border)
-                                    .child(
-                                        Label::new(i18n_memory_analysis(cx, "single_table_title"))
-                                            .text_color(cx.theme().foreground)
-                                            .text_sm(),
-                                    )
-                                    .child(
-                                        Label::new(format!("(Top {})", self.single_count))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_sm(),
-                                    ),
-                            )
-                            .child(
-                                div().w_full().h(single_table_h).child(
-                                    DataTable::new(&self.single_table)
-                                        .stripe(true)
-                                        .bordered(true)
-                                        .scrollbar_visible(false, false),
-                                ),
-                            ),
-                    );
+                    let table = DataTable::new(&self.single_table)
+                        .stripe(true)
+                        .bordered(true)
+                        .scrollbar_visible(false, false);
+
+                    body = body.child(self.render_table_section(
+                        "single_table_title",
+                        self.single_count,
+                        table,
+                        window,
+                        cx,
+                    ));
                 }
 
                 body
