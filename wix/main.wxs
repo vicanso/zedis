@@ -95,7 +95,7 @@
                         WorkingDirectory="APPLICATIONFOLDER"
                         Icon="ProductICO"
                         Target="[!exe0]" />
-                    <RegistryValue Root="HKMU" Key="Software\TreeXie\Zedis" Name="installed_sm"
+                    <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed_sm"
                         Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
@@ -108,7 +108,7 @@
                         WorkingDirectory="APPLICATIONFOLDER"
                         Icon="ProductICO"
                         Target="[!exe0]" />
-                    <RegistryValue Root="HKMU" Key="Software\TreeXie\Zedis" Name="installed_dt"
+                    <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed_dt"
                         Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
