@@ -294,7 +294,9 @@ impl ZedisServerState {
                 }
                 callback(this, result, cx);
                 let latency = start.elapsed();
-                info!(name = name.as_str(), latency = latency.as_millis(), "Task completed");
+                if name != ServerTask::RefreshRedisInfo {
+                    info!(name = name.as_str(), latency = latency.as_millis(), "Task completed");
+                }
             })
         })
         .detach();

@@ -123,6 +123,9 @@ tab_ssh = "SSH Tunnel"
 tab_advanced = "Advanced"
 field_errors_title = "Save Server Failed"
 field_errors_message = "Please verify the following fields and try again:\n\n%{errors}"
+test_connection = "Test"
+test_connection_success = "Connection successful"
+test_connection_failed = "Connection failed: %{error}"
 
 [editor]
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"

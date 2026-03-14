@@ -123,6 +123,9 @@ tab_ssh = "SSH 隧道"
 tab_advanced = "高级"
 field_errors_title = "保存服务器失败"
 field_errors_message = "请验证以下字段并重试:\n\n%{errors}"
+test_connection = "测试"
+test_connection_success = "连接成功"
+test_connection_failed = "连接失败: %{error}"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
