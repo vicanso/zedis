@@ -155,7 +155,10 @@ impl RedisServer {
         let tls = self.tls.unwrap_or(false);
         let scheme = if tls { "rediss" } else { "redis" };
 
-        let url = match (&self.password, &self.username) {
+        let safe_pwd = self.password.as_deref().filter(|s| !s.trim().is_empty());
+        let safe_usr = self.username.as_deref().filter(|s| !s.trim().is_empty());
+
+        let url = match (safe_pwd, safe_usr) {
             (Some(pwd), Some(username)) => {
                 let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
                 let username_enc = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
