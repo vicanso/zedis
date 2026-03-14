@@ -85,13 +85,33 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='zedis Installation'/>
 
-          <Directory Id='TARGETDIR' Name='SourceDir'>
-            <Directory Id='ProgramMenuFolder' />
-            <Directory Id='DesktopFolder' />
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='ProgramMenuFolder'>
+                <Component Id='StartMenuShortcutComp' Guid='*'>
+                    <Shortcut Id="ApplicationStartMenuShortcut"
+                              Name="Zedis"
+                              Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                              WorkingDirectory="APPLICATIONFOLDER"
+                              Icon="ProductICO"
+                              Target="[!exe0]" />
+                    <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed_sm" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+            </Directory>
+
+            <Directory Id='DesktopFolder'>
+                <Component Id='DesktopShortcutComp' Guid='*'>
+                    <Shortcut Id="ApplicationDesktopShortcut"
+                              Name="Zedis"
+                              Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                              WorkingDirectory="APPLICATIONFOLDER"
+                              Icon="ProductICO"
+                              Target="[!exe0]" />
+                    <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed_dt" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+            </Directory>
 
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='zedis'>
-                    
                     <Component Id='License' Guid='*'>
                         <File Id='LicenseFile' DiskId='1' Source='wix\License.rtf' KeyPath='yes'/>
                     </Component>
@@ -103,29 +123,10 @@
                     <Component Id='binary0' Guid='*'>
                         <File Id='exe0' Name='zedis.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\zedis.exe' KeyPath='yes'/>
                     </Component>
-
-                    <Component Id='ApplicationShortcuts' Guid='*'>
-                        <Shortcut Id="ApplicationDesktopShortcut"
-                                  Directory="DesktopFolder"
-                                  Name="Zedis"
-                                  Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
-                                  WorkingDirectory="APPLICATIONFOLDER"
-                                  Icon="ProductICO"
-                                  Target="[!exe0]" />
-                        
-                        <Shortcut Id="ApplicationStartMenuShortcut"
-                                  Directory="ProgramMenuFolder"
-                                  Name="Zedis"
-                                  Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
-                                  WorkingDirectory="APPLICATIONFOLDER"
-                                  Icon="ProductICO"
-                                  Target="[!exe0]" />
-                        
-                        <RegistryValue Root="HKMU" Key="Software\TreeXie\Zedis" Name="installed" Type="integer" Value="1" KeyPath="yes" />
-                    </Component>
-
                 </Directory>
             </Directory>
+
+        </Directory>
 
 
         </Directory>
@@ -139,18 +140,17 @@
             AllowAdvertise='no'
             Display='expand'
             Absent='disallow'>
-            <!--
-              Comment out or remove the following `ComponentRef` tag to remove
-              the license sidecar file from the installer.
-            -->
-            <ComponentRef Id='License'/>
             
+            <ComponentRef Id='License'/>
             <ComponentRef Id='binary0'/>
+            
+            <ComponentRef Id='StartMenuShortcutComp'/>
+            <ComponentRef Id='DesktopShortcutComp'/>
 
             <Feature
                 Id='Environment'
                 Title='PATH Environment Variable'
-                Description='Add the install location of the [ProductName] executable to the PATH system environment variable. This allows the [ProductName] executable to be called from any location.'
+                Description='Add the install location of the [ProductName] executable to the PATH system environment variable.'
                 Level='1'
                 Absent='allow'>
                 <ComponentRef Id='Path'/>
