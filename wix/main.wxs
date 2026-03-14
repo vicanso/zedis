@@ -50,11 +50,11 @@
   destination for 32-bit versus 64-bit installers. Removal of these lines will
   cause installation errors.
 -->
-<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
-    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
-<?else ?>
-    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
-<?endif ?>
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder"?>
+<?else?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder"?>
+<?endif?>
 
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
 
@@ -76,60 +76,63 @@
             Compressed='yes'
             InstallScope='perMachine'
             SummaryCodepage='1252'
-            />
+        />
 
         <MajorUpgrade
             Schedule='afterInstallInitialize'
-            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
 
-        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='zedis Installation'/>
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1' />
+        <Property Id='DiskPrompt' Value='zedis Installation' />
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
+
             <Directory Id='ProgramMenuFolder'>
                 <Component Id='StartMenuShortcutComp' Guid='*'>
                     <Shortcut Id="ApplicationStartMenuShortcut"
-                              Name="Zedis"
-                              Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
-                              WorkingDirectory="APPLICATIONFOLDER"
-                              Icon="ProductICO"
-                              Target="[!exe0]" />
-                    <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed_sm" Type="integer" Value="1" KeyPath="yes" />
+                        Name="Zedis"
+                        Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                        WorkingDirectory="APPLICATIONFOLDER"
+                        Icon="ProductICO"
+                        Target="[!exe0]" />
+                    <RegistryValue Root="HKMU" Key="Software\TreeXie\Zedis" Name="installed_sm"
+                        Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
 
             <Directory Id='DesktopFolder'>
                 <Component Id='DesktopShortcutComp' Guid='*'>
                     <Shortcut Id="ApplicationDesktopShortcut"
-                              Name="Zedis"
-                              Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
-                              WorkingDirectory="APPLICATIONFOLDER"
-                              Icon="ProductICO"
-                              Target="[!exe0]" />
-                    <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed_dt" Type="integer" Value="1" KeyPath="yes" />
+                        Name="Zedis"
+                        Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                        WorkingDirectory="APPLICATIONFOLDER"
+                        Icon="ProductICO"
+                        Target="[!exe0]" />
+                    <RegistryValue Root="HKMU" Key="Software\TreeXie\Zedis" Name="installed_dt"
+                        Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
 
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='zedis'>
                     <Component Id='License' Guid='*'>
-                        <File Id='LicenseFile' DiskId='1' Source='wix\License.rtf' KeyPath='yes'/>
+                        <File Id='LicenseFile' DiskId='1' Source='wix\License.rtf' KeyPath='yes' />
                     </Component>
-                    
+
                     <Component Id='Path' Guid='DFDDCBB9-78C5-4D18-8D82-6C0195148AF1' KeyPath='yes'>
-                        <Environment Id='PATH' Name='PATH' Value='[APPLICATIONFOLDER]' Permanent='no' Part='last' Action='set' System='yes'/>
+                        <Environment Id='PATH' Name='PATH' Value='[APPLICATIONFOLDER]'
+                            Permanent='no' Part='last' Action='set' System='yes' />
                     </Component>
 
                     <Component Id='binary0' Guid='*'>
-                        <File Id='exe0' Name='zedis.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\zedis.exe' KeyPath='yes'/>
+                        <File Id='exe0' Name='zedis.exe' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\zedis.exe' KeyPath='yes' />
                     </Component>
                 </Directory>
             </Directory>
 
         </Directory>
 
-
-        </Directory>
 
         <Feature
             Id='Binaries'
@@ -140,12 +143,12 @@
             AllowAdvertise='no'
             Display='expand'
             Absent='disallow'>
-            
-            <ComponentRef Id='License'/>
-            <ComponentRef Id='binary0'/>
-            
-            <ComponentRef Id='StartMenuShortcutComp'/>
-            <ComponentRef Id='DesktopShortcutComp'/>
+
+            <ComponentRef Id='License' />
+            <ComponentRef Id='binary0' />
+
+            <ComponentRef Id='StartMenuShortcutComp' />
+            <ComponentRef Id='DesktopShortcutComp' />
 
             <Feature
                 Id='Environment'
@@ -153,20 +156,20 @@
                 Description='Add the install location of the [ProductName] executable to the PATH system environment variable.'
                 Level='1'
                 Absent='allow'>
-                <ComponentRef Id='Path'/>
+                <ComponentRef Id='Path' />
             </Feature>
         </Feature>
 
-        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize' />
 
-        
-        <Icon Id='ProductICO' SourceFile='icons\zedis.ico'/>
+
+        <Icon Id='ProductICO' SourceFile='icons\zedis.ico' />
         <Property Id='ARPPRODUCTICON' Value='ProductICO' />
 
-        <Property Id='ARPHELPLINK' Value='https://github.com/vicanso/zedis'/>
-        
+        <Property Id='ARPHELPLINK' Value='https://github.com/vicanso/zedis' />
+
         <UI>
-            <UIRef Id='WixUI_FeatureTree'/>
+            <UIRef Id='WixUI_FeatureTree' />
             <!--
               Disabling the EULA dialog in the installer is a two step process:
 
@@ -174,18 +177,22 @@
                  2. Comment out or remove the `<WiXVariable Id='WixUILicenseRtf'...` tag further down
 
             -->
-            <!--<Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>-->
-            <!--<Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>-->
-            
+            <!--<Publish
+            Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg'
+            Order='99'>1</Publish>-->
+            <!--<Publish
+            Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg'
+            Order='99'>1</Publish>-->
+
         </UI>
 
         <!--
           Disabling the EULA dialog in the installer requires commenting out
           or removing the following `WixVariable` tag
         -->
-        <WixVariable Id='WixUILicenseRtf' Value='wix\License.rtf'/>
-        
-        
+        <WixVariable Id='WixUILicenseRtf' Value='wix\License.rtf' />
+
+
         <!--
           Uncomment the next `WixVariable` tag to customize the installer's
           Graphical User Interface (GUI) and add a custom banner image across
@@ -194,9 +201,10 @@
 
           The banner BMP dimensions are 493 x 58 pixels.
         -->
-        <!--<WixVariable Id='WixUIBannerBmp' Value='wix\Banner.bmp'/>-->
+        <!--<WixVariable
+        Id='WixUIBannerBmp' Value='wix\Banner.bmp'/>-->
 
-        
+
         <!--
           Uncomment the next `WixVariable` tag to customize the installer's
           Graphical User Interface (GUI) and add a custom image to the first
@@ -205,7 +213,8 @@
 
           The dialog BMP dimensions are 493 x 312 pixels.
         -->
-        <!--<WixVariable Id='WixUIDialogBmp' Value='wix\Dialog.bmp'/>-->
+        <!--<WixVariable
+        Id='WixUIDialogBmp' Value='wix\Dialog.bmp'/>-->
 
     </Product>
 
