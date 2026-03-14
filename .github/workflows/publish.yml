@@ -173,7 +173,7 @@ jobs:
         run: |
           cargo install cargo-wix
           cargo build --release --target ${{ matrix.target }} --features mimalloc
-          cargo wix --no-build -p zedis-gui --target ${{ matrix.target }}
+          cargo wix --nocapture --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/wix/*
           mv target/wix/zedis-*.msi ./zedis.msi
       - name: zip

@@ -121,7 +121,7 @@
                                   Icon="ProductICO"
                                   Target="[!exe0]" />
                         
-                        <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+                        <RegistryValue Root="HKMU" Key="Software\TreeXie\Zedis" Name="installed" Type="integer" Value="1" KeyPath="yes" />
                     </Component>
 
                 </Directory>
