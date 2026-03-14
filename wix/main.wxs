@@ -60,8 +60,8 @@
 
     <Product
         Id='*'
-        Name='zedis-gui'
-        UpgradeCode='ED8C06B9-2E4E-4C87-B9D1-F93CE1871304'
+        Name='zedis'
+        UpgradeCode='9D2B579F-9F85-4717-ABA3-F82CF881CA99'
         Manufacturer='Tree Xie'
         Language='1033'
         Codepage='1252'
@@ -83,58 +83,51 @@
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='zedis-gui Installation'/>
+        <Property Id='DiskPrompt' Value='zedis Installation'/>
 
           <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='ProgramMenuFolder' />
             <Directory Id='DesktopFolder' />
 
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
-                <Directory Id='APPLICATIONFOLDER' Name='zedis-gui'>
+                <Directory Id='APPLICATIONFOLDER' Name='zedis'>
+                    
                     <Component Id='License' Guid='*'>
-                        <File Id='LicenseFile'
-                            DiskId='1'
-                            Source='wix\License.rtf'
-                            KeyPath='yes'/>
+                        <File Id='LicenseFile' DiskId='1' Source='wix\License.rtf' KeyPath='yes'/>
                     </Component>
                     
-                    <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='DFDDCBB9-78C5-4D18-8D82-6C0195148AF1' KeyPath='yes'>
-                            <Environment
-                                Id='PATH'
-                                Name='PATH'
-                                Value='[Bin]'
-                                Permanent='no'
-                                Part='last'
-                                Action='set'
-                                System='yes'/>
-                        </Component>
-                        <Component Id='binary0' Guid='*'>
-                            <File
-                                Id='exe0'
-                                Name='zedis.exe'
-                                DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\zedis.exe'
-                                KeyPath='yes'>
-                                
-                                <Shortcut Id="ApplicationStartMenuShortcut"
-                                          Directory="ProgramMenuFolder"
-                                          Name="Zedis"
-                                          Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
-                                          WorkingDirectory="Bin"
-                                          Advertise="yes" />
+                    <Component Id='Path' Guid='DFDDCBB9-78C5-4D18-8D82-6C0195148AF1' KeyPath='yes'>
+                        <Environment Id='PATH' Name='PATH' Value='[APPLICATIONFOLDER]' Permanent='no' Part='last' Action='set' System='yes'/>
+                    </Component>
 
-                                <Shortcut Id="ApplicationDesktopShortcut"
-                                          Directory="DesktopFolder"
-                                          Name="Zedis"
-                                          Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
-                                          WorkingDirectory="Bin"
-                                          Advertise="yes" />
-                            </File>
-                        </Component>
-                    </Directory>
+                    <Component Id='binary0' Guid='*'>
+                        <File Id='exe0' Name='zedis.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\zedis.exe' KeyPath='yes'/>
+                    </Component>
+
+                    <Component Id='ApplicationShortcuts' Guid='*'>
+                        <Shortcut Id="ApplicationDesktopShortcut"
+                                  Directory="DesktopFolder"
+                                  Name="Zedis"
+                                  Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                                  WorkingDirectory="APPLICATIONFOLDER"
+                                  Icon="ProductICO"
+                                  Target="[!exe0]" />
+                        
+                        <Shortcut Id="ApplicationStartMenuShortcut"
+                                  Directory="ProgramMenuFolder"
+                                  Name="Zedis"
+                                  Description="Zedis - A High-Performance, GPU-Accelerated Redis Client"
+                                  WorkingDirectory="APPLICATIONFOLDER"
+                                  Icon="ProductICO"
+                                  Target="[!exe0]" />
+                        
+                        <RegistryValue Root="HKCU" Key="Software\TreeXie\Zedis" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+                    </Component>
+
                 </Directory>
             </Directory>
+
+
         </Directory>
 
         <Feature
@@ -167,14 +160,8 @@
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
         
-        <!--
-          Uncomment the following `Icon` and `Property` tags to change the product icon.
-
-          The product icon is the graphic that appears in the Add/Remove
-          Programs control panel for the application.
-        -->
-        <!--<Icon Id='ProductICO' SourceFile='wix\Product.ico'/>-->
-        <!--<Property Id='ARPPRODUCTICON' Value='ProductICO' />-->
+        <Icon Id='ProductICO' SourceFile='icons\zedis.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO' />
 
         <Property Id='ARPHELPLINK' Value='https://github.com/vicanso/zedis'/>
         
