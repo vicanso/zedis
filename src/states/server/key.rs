@@ -37,7 +37,7 @@ use std::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
-const DEFAULT_SCAN_RESULT_MAX: usize = 1_000;
+const DEFAULT_SCAN_RESULT_MAX: usize = 3_000;
 
 impl ZedisServerState {
     /// Fills the type of keys that are currently loaded but have an unknown type.
@@ -150,7 +150,7 @@ impl ZedisServerState {
                 };
                 // Adjust count based on keyword specificity
                 let count = if keyword.is_empty() {
-                    (key_scan_count / 5).max(1000)
+                    (key_scan_count / 5).max(500)
                 } else {
                     key_scan_count
                 };
@@ -193,8 +193,6 @@ impl ZedisServerState {
                     && let Some(key) = this.keys.keys().next()
                 {
                     this.select_key(key.clone(), cx);
-                } else {
-                    this.fill_key_types(None, cx);
                 }
             },
             cx,
@@ -225,7 +223,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok((_, keys)) = result {
-                    let new_keys_set: AHashSet<SharedString> = keys.iter().cloned().collect();
+                    let new_keys_set: AHashSet<SharedString> = keys.iter().map(|(k, _)| k.clone()).collect();
 
                     let keys_to_remove: Vec<SharedString> = this
                         .keys
@@ -234,11 +232,8 @@ impl ZedisServerState {
                         .cloned()
                         .collect();
 
-                    let keys_to_add: Vec<SharedString> = new_keys_set
-                        .iter()
-                        .filter(|k| !this.keys.contains_key(*k))
-                        .cloned()
-                        .collect();
+                    let keys_to_add: Vec<(SharedString, SharedString)> =
+                        keys.into_iter().filter(|(k, _)| !this.keys.contains_key(k)).collect();
 
                     let has_changes = !keys_to_remove.is_empty() || !keys_to_add.is_empty();
                     debug!(
@@ -260,7 +255,6 @@ impl ZedisServerState {
                         } else {
                             this.extend_keys(keys_to_add);
                         }
-                        this.fill_key_types(None, cx);
                         cx.notify();
                     }
                 }
@@ -373,13 +367,10 @@ impl ZedisServerState {
                     this.extend_keys(keys);
                 }
                 cx.notify();
-                // Resolve types for the keys under this prefix
                 if this.keys.len() == 1
                     && let Some(key) = this.keys.keys().next()
                 {
                     this.select_key(key.clone(), cx);
-                } else {
-                    this.fill_key_types(Some(prefix.clone()), cx);
                 }
                 cx.emit(ServerEvent::KeyScanFinished);
             },
@@ -587,21 +578,14 @@ impl ZedisServerState {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let count = 10_000;
                 let mut cursors: Option<Vec<u64>> = None;
-                // Attempt to fetch keys in a loop (up to 20 iterations)
-                // to gather a sufficient amount without blocking for too long.
                 for _ in 0..20 {
-                    let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(Some(cursors), &pattern, count).await?
-                    } else {
-                        client.first_scan(&pattern, count).await?
-                    };
-                    client.unlike_keys(keys).await?;
+                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count).await?;
+                    client.unlike_keys(keys_per_node).await?;
 
-                    // Break if scan cycle finishes
-                    if new_cursor.iter().sum::<u64>() == 0 {
+                    if new_cursors.iter().sum::<u64>() == 0 {
                         break;
                     }
-                    cursors = Some(new_cursor);
+                    cursors = Some(new_cursors);
                 }
 
                 Ok(())
@@ -626,7 +610,7 @@ impl ZedisServerState {
             ServerTask::DeleteKeys,
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                client.unlike_keys(keys).await
+                client.unlike_keys_scattered(keys).await
             },
             move |this, result, cx| {
                 if let Ok(()) = result {

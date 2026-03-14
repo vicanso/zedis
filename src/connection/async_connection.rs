@@ -271,33 +271,78 @@ impl ConnectionLike for RedisAsyncConn {
 /// # Arguments
 ///
 /// * `addrs` - A vector of Redis connection strings (e.g., "redis://127.0.0.1").
-/// * `cmds` - A vector of commands to execute. If there are fewer commands than addresses,
-///   the first command is reused for the remaining addresses.
+/// * `cmds` - A vector of commands to execute.
 pub(crate) async fn query_async_masters<T: FromRedisValue>(
     addrs: Vec<RedisServer>,
     db: usize,
-    cmds: Vec<Cmd>,
-) -> Result<Vec<T>> {
-    let first_cmd = cmds.first().ok_or_else(|| Error::Invalid {
-        message: "Commands are empty".to_string(),
-    })?;
+    cmds: Vec<Option<Cmd>>,
+) -> Result<Vec<Option<T>>> {
+    if addrs.len() != cmds.len() {
+        return Err(Error::Invalid {
+            message: "Commands and addresses length mismatch".to_string(),
+        });
+    }
     let tasks = addrs.into_iter().enumerate().map(|(index, addr)| {
         // Clone data to move ownership into the async block.
-        // let addr = addr.to_string();
-        // Use the specific command for this index, or fallback to the first command.
-        let current_cmd = cmds.get(index).unwrap_or(first_cmd).clone();
+        let current_cmd = cmds[index].clone();
 
         async move {
             if let Some(delay) = *DELAY {
                 smol::Timer::after(delay).await;
             }
+            let Some(current_cmd) = current_cmd else {
+                return Ok::<Option<T>, Error>(None);
+            };
             // Establish a multiplexed async connection to the specific node.
             let mut conn = open_single_connection(&addr, db, true).await?;
 
             // Execute the command asynchronously.
             let value: T = current_cmd.query_async(&mut conn).await?;
 
-            Ok::<T, Error>(value)
+            Ok::<Option<T>, Error>(Some(value))
+        }
+    });
+
+    let values = try_join_all(tasks).await?;
+
+    Ok(values)
+}
+
+/// Queries multiple Redis master nodes concurrently using pipelines.
+///
+/// Similar to `query_async_masters`, but executes a `Pipeline` (batched commands)
+/// per node instead of a single `Cmd`.
+///
+/// # Arguments
+///
+/// * `addrs` - A vector of Redis server configurations.
+/// * `db` - Database number to select.
+/// * `pipes` - A vector of optional pipelines to execute on each node.
+pub(crate) async fn query_async_masters_pipeline(
+    addrs: Vec<RedisServer>,
+    db: usize,
+    pipes: Vec<Option<Pipeline>>,
+) -> Result<Vec<Option<Vec<Value>>>> {
+    if addrs.len() != pipes.len() {
+        return Err(Error::Invalid {
+            message: "Pipelines and addresses length mismatch".to_string(),
+        });
+    }
+    let tasks = addrs.into_iter().enumerate().map(|(index, addr)| {
+        let current_pipe = pipes[index].clone();
+
+        async move {
+            if let Some(delay) = *DELAY {
+                smol::Timer::after(delay).await;
+            }
+            let Some(current_pipe) = current_pipe else {
+                return Ok::<Option<Vec<Value>>, Error>(None);
+            };
+            let mut conn = open_single_connection(&addr, db, true).await?;
+
+            let values: Vec<Value> = current_pipe.query_async(&mut conn).await?;
+
+            Ok::<Option<Vec<Value>>, Error>(Some(values))
         }
     });
 

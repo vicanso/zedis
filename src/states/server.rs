@@ -25,8 +25,8 @@ use gpui::prelude::*;
 use parking_lot::RwLock;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::debug;
-use tracing::error;
+use std::time::Instant;
+use tracing::{debug, error, info};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 
@@ -197,18 +197,26 @@ impl ZedisServerState {
         self.slow_logs.clear();
     }
 
-    /// Add new keys to the key map (deduplicating automatically)
+    /// Add new keys with their types to the key map (deduplicating automatically)
     ///
     /// If any new keys were added, generates a new tree ID to trigger UI refresh
-    fn extend_keys(&mut self, keys: Vec<SharedString>) {
+    fn extend_keys(&mut self, keys: Vec<(SharedString, SharedString)>) {
         self.keys.reserve(keys.len());
         let mut insert_count = 0;
 
-        for key in keys {
-            self.keys.entry(key).or_insert_with(|| {
-                insert_count += 1;
-                KeyType::Unknown
-            });
+        for (key, key_type) in keys {
+            let kt = KeyType::from(key_type.as_ref());
+            self.keys
+                .entry(key)
+                .and_modify(|existing| {
+                    if *existing == KeyType::Unknown && kt != KeyType::Unknown {
+                        *existing = kt;
+                    }
+                })
+                .or_insert_with(|| {
+                    insert_count += 1;
+                    kt
+                });
         }
 
         // Update tree ID only if new keys were added
@@ -266,6 +274,7 @@ impl ZedisServerState {
         cx.emit(ServerEvent::TaskStarted(name.clone()));
         debug!(name = name.as_str(), "Spawning background task");
         let server_id = self.server_id.clone();
+        let start = Instant::now();
 
         cx.spawn(async move |handle, cx| {
             // Run task in background executor (thread pool)
@@ -284,6 +293,8 @@ impl ZedisServerState {
                     }
                 }
                 callback(this, result, cx);
+                let latency = start.elapsed();
+                info!(name = name.as_str(), latency = latency.as_millis(), "Task completed");
             })
         })
         .detach();

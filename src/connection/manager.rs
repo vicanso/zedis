@@ -15,7 +15,7 @@
 use super::{
     async_connection::{
         RedisAsyncConn, get_redis_connection_timeout, get_redis_response_timeout, open_single_connection,
-        query_async_masters, remove_connection_from_pool,
+        query_async_masters, query_async_masters_pipeline, remove_connection_from_pool,
     },
     config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
@@ -369,21 +369,42 @@ impl RedisClient {
         self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
     }
 
-    pub async fn unlike_keys(&self, keys: Vec<SharedString>) -> Result<(), Error> {
+    /// Unlinks keys on all master nodes concurrently.
+    /// # Arguments
+    /// * `keys_per_node` - A vector of vectors of keys, one for each master node.
+    /// # Returns
+    /// * `Result<(), Error>` - The result of the operation.
+    pub async fn unlike_keys(&self, keys_per_node: Vec<Vec<SharedString>>) -> Result<(), Error> {
+        let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        for (index, keys) in keys_per_node.iter().enumerate() {
+            if keys.is_empty() {
+                continue;
+            }
+            let mut pipe = redis::pipe();
+            for key in keys {
+                pipe.cmd("UNLINK").arg(key.as_str());
+            }
+            pipes[index] = Some(pipe);
+        }
+        query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+        Ok(())
+    }
+
+    /// Unlinks keys that may be distributed across different nodes.
+    pub async fn unlike_keys_scattered(&self, keys: Vec<SharedString>) -> Result<(), Error> {
         if keys.is_empty() {
             return Ok(());
         }
         if !self.is_cluster() {
             let mut conn = self.connection();
             let mut pipe = redis::pipe();
-            for key in keys {
+            for key in &keys {
                 pipe.cmd("UNLINK").arg(key.as_str());
             }
             let _: () = pipe.query_async(&mut conn).await?;
             return Ok(());
         }
-
-        // cluster mode
         let conn = self.connection();
         for chunk in keys.chunks(1000) {
             let futures = chunk.iter().map(|key| {
@@ -398,6 +419,12 @@ impl RedisClient {
         Ok(())
     }
 
+    /// Returns the memory usage of a key.
+    /// # Arguments
+    /// * `key` - The key to get the memory usage of.
+    /// * `key_type` - The type of the key.
+    /// # Returns
+    /// * `Result<u64>` - The memory usage of the key.
     pub async fn memory_usage(&self, key: &str, key_type: &str) -> Result<u64> {
         let mut conn = self.connection.clone();
         let key_type = key_type.to_lowercase();
@@ -514,6 +541,29 @@ impl RedisClient {
     /// # Returns
     /// * `Vec<T>` - A vector of results from the commands.
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
+        let Some(first) = cmds.first() else {
+            return Err(Error::Invalid {
+                message: "Commands are empty".to_string(),
+            });
+        };
+        let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        let mut new_cmds = vec![Some(first.clone()); addrs.len()];
+        for (index, cmd) in cmds.iter().enumerate() {
+            new_cmds[index] = Some(cmd.clone());
+        }
+        let values = query_async_masters(addrs, self.db, new_cmds).await?;
+        let values: Vec<T> = values.into_iter().flatten().collect();
+        Ok(values)
+    }
+    /// Executes commands on all master nodes concurrently.
+    /// # Arguments
+    /// * `cmds` - A vector of commands to execute.
+    /// # Returns
+    /// * `Vec<Option<T>>` - A vector of results from the commands.
+    pub async fn query_async_masters_with_option<T: FromRedisValue>(
+        &self,
+        cmds: Vec<Option<Cmd>>,
+    ) -> Result<Vec<Option<T>>> {
         let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
         let values = query_async_masters(addrs, self.db, cmds).await?;
         Ok(values)
@@ -559,7 +609,7 @@ impl RedisClient {
         }
         let capacity = keys_per_node.iter().map(|keys| keys.len()).sum();
         let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
-        let mut keys_memory_usage = Vec::with_capacity(capacity);
+        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
         for (index, keys) in keys_per_node.iter().enumerate() {
             if keys.is_empty() {
                 continue;
@@ -574,14 +624,22 @@ impl RedisClient {
                     .cmd("TTL")
                     .arg(key.as_str());
             }
-            let Some(addr) = master_addrs.get(index) else {
+            pipes[index] = Some(pipe);
+        }
+
+        let results_per_node = query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+
+        let mut keys_memory_usage = Vec::with_capacity(capacity);
+        for (index, results) in results_per_node.into_iter().enumerate() {
+            let Some(results) = results else {
                 continue;
             };
-            let mut conn = open_single_connection(addr, self.db, true).await?;
-            let results: Vec<Value> = pipe.query_async(&mut conn).await?;
-
+            let keys = &keys_per_node[index];
             for (i, chunk) in results.chunks_exact(3).enumerate() {
-                let key = keys[i].clone();
+                if i >= keys.len() {
+                    break;
+                }
+                let key = &keys[i];
 
                 let key_type = match &chunk[0] {
                     Value::SimpleString(s) => s.clone(),
@@ -596,7 +654,7 @@ impl RedisClient {
 
                 let ttl: i64 = match &chunk[2] {
                     Value::Int(t) => *t,
-                    _ => -2, // -2 表示 key 不存在
+                    _ => -2,
                 };
                 if ttl == -2 {
                     continue;
@@ -618,11 +676,11 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
-    pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<SharedString>)> {
+    pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<(SharedString, SharedString)>)> {
         let (cursors, keys) = self.scan(None, pattern, count).await?;
         Ok((cursors, keys))
     }
-    async fn scan_nodes(
+    pub async fn scan_nodes(
         &self,
         cursors: Option<Vec<u64>>,
         pattern: &str,
@@ -630,7 +688,7 @@ impl RedisClient {
     ) -> Result<(Vec<u64>, Vec<Vec<SharedString>>)> {
         debug!("scan, cursors: {cursors:?}, pattern: {pattern}, count: {count}");
         let mut first_scan = false;
-        let new_cursors = if let Some(cursors) = cursors {
+        let cur = if let Some(cursors) = cursors {
             cursors
         } else {
             first_scan = true;
@@ -638,43 +696,44 @@ impl RedisClient {
             vec![0; master_count]
         };
 
-        if !first_scan && new_cursors.iter().all(|&c| c == 0) {
-            return Ok((new_cursors.clone(), vec![vec![]; new_cursors.len()]));
+        if !first_scan && cur.iter().all(|&c| c == 0) {
+            return Ok((cur.clone(), vec![vec![]; cur.len()]));
         }
 
-        let mut active_indices = Vec::with_capacity(new_cursors.len());
-        let mut cmds = Vec::with_capacity(new_cursors.len());
+        // Build one Option<Cmd> per master: Some for active nodes, None for completed ones.
+        let cmds: Vec<Option<Cmd>> = cur
+            .iter()
+            .map(|&cursor| {
+                if first_scan || cursor != 0 {
+                    Some(
+                        cmd("SCAN")
+                            .cursor_arg(cursor)
+                            .arg("MATCH")
+                            .arg(pattern)
+                            .arg("COUNT")
+                            .arg(count)
+                            .clone(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        for (idx, &cursor) in new_cursors.iter().enumerate() {
-            if first_scan || cursor != 0 {
-                active_indices.push(idx);
-                cmds.push(
-                    cmd("SCAN")
-                        .cursor_arg(cursor)
-                        .arg("MATCH")
-                        .arg(pattern)
-                        .arg("COUNT")
-                        .arg(count)
-                        .clone(),
-                );
+        let values: Vec<Option<(u64, Vec<Vec<u8>>)>> = self.query_async_masters_with_option(cmds).await?;
+
+        let mut next_cursors = cur;
+        let mut keys_per_node: Vec<Vec<SharedString>> = vec![vec![]; next_cursors.len()];
+
+        for (idx, result) in values.into_iter().enumerate() {
+            if let Some((new_cursor, keys_in_node)) = result {
+                next_cursors[idx] = new_cursor;
+                let mut node_keys = Vec::with_capacity(keys_in_node.len());
+                for k in keys_in_node {
+                    node_keys.push(SharedString::new(String::from_utf8_lossy(&k).into_owned()));
+                }
+                keys_per_node[idx] = node_keys;
             }
-        }
-
-        let values: Vec<(u64, Vec<Vec<u8>>)> = self.query_async_masters(cmds).await?;
-
-        let mut next_cursors = new_cursors.clone();
-
-        let mut keys_per_node: Vec<Vec<SharedString>> = vec![vec![]; new_cursors.len()];
-
-        for (active_idx, (new_cursor, keys_in_node)) in active_indices.into_iter().zip(values) {
-            next_cursors[active_idx] = new_cursor;
-
-            let node_keys: Vec<SharedString> = keys_in_node
-                .into_iter()
-                .map(|k| SharedString::new(String::from_utf8_lossy(&k).into_owned()))
-                .collect();
-
-            keys_per_node[active_idx] = node_keys;
         }
 
         Ok((next_cursors, keys_per_node))
@@ -691,11 +750,39 @@ impl RedisClient {
         cursors: Option<Vec<u64>>,
         pattern: &str,
         count: u64,
-    ) -> Result<(Vec<u64>, Vec<SharedString>)> {
+    ) -> Result<(Vec<u64>, Vec<(SharedString, SharedString)>)> {
         let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
-        let mut all_keys = Vec::with_capacity(keys_per_node.iter().map(|ks| ks.len()).sum());
-        for keys in keys_per_node.into_iter() {
-            all_keys.extend(keys);
+
+        // Build TYPE pipelines per node
+        let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        let mut type_pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        for (idx, keys) in keys_per_node.iter().enumerate() {
+            if !keys.is_empty() {
+                let mut pipe = redis::pipe();
+                for key in keys {
+                    pipe.cmd("TYPE").arg(key.as_str());
+                }
+                type_pipes[idx] = Some(pipe);
+            }
+        }
+
+        let type_results = query_async_masters_pipeline(master_addrs, self.db, type_pipes).await?;
+
+        let capacity: usize = keys_per_node.iter().map(|ks| ks.len()).sum();
+        let mut all_keys = Vec::with_capacity(capacity);
+        for (idx, keys) in keys_per_node.into_iter().enumerate() {
+            let types = type_results.get(idx).and_then(|r| r.as_ref());
+            for (i, key) in keys.into_iter().enumerate() {
+                let key_type = types
+                    .and_then(|vals| vals.get(i))
+                    .map(|val| match val {
+                        Value::SimpleString(s) => SharedString::from(s.clone()),
+                        Value::BulkString(d) => SharedString::from(String::from_utf8_lossy(d).into_owned()),
+                        _ => SharedString::default(),
+                    })
+                    .unwrap_or_default();
+                all_keys.push((key, key_type));
+            }
         }
         Ok((new_cursors, all_keys))
     }

@@ -394,7 +394,7 @@ impl ZedisAppState {
             .unwrap_or_default()
     }
     pub fn key_scan_count(&self) -> usize {
-        self.key_scan_count.unwrap_or(10_000)
+        self.key_scan_count.unwrap_or(1_000)
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
         self.key_scan_count = Some(key_scan_count);
