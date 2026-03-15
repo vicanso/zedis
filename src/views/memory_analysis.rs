@@ -20,6 +20,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{KeyMemoryUsage, get_connection_manager};
 use crate::constants::SIDEBAR_WIDTH;
+use crate::error::Error;
 use crate::helpers::format_duration;
 use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_memory_analysis};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -47,6 +48,8 @@ const TABLE_ROW_HEIGHT: f32 = 32.;
 
 /// Section title bar height (py_1p5 padding + text).
 const SECTION_TITLE_HEIGHT: f32 = 30.;
+
+const DEFAULT_SCAN_COUNT: u64 = 100;
 
 /// Calculate the pixel height needed for a DataTable with the given row count.
 /// Includes 1 header row + data rows.
@@ -614,7 +617,10 @@ pub struct ZedisMemoryAnalysis {
     ratio_input_state: Entity<InputState>,
     /// True when ratio changed programmatically and InputState needs sync.
     ratio_dirty: bool,
-    /// Estimated Redis commands = sampled_keys * 2 + scan_rounds.
+    /// User-editable scan count per round.
+    scan_count: u64,
+    scan_count_input_state: Entity<InputState>,
+    /// Estimated Redis commands.
     est_commands: u64,
     _subscriptions: Vec<Subscription>,
 }
@@ -628,17 +634,34 @@ impl ZedisMemoryAnalysis {
             cx.new(|cx| TableState::new(SingleKeyTableDelegate::new(Vec::new(), window, cx), window, cx));
 
         let ratio_input_state = cx.new(|cx| InputState::new(window, cx).default_value("1".to_string()));
+        let scan_count_input_state =
+            cx.new(|cx| InputState::new(window, cx).default_value(DEFAULT_SCAN_COUNT.to_string()));
 
         let dbsize = server_state.read(cx).dbsize();
 
         // Listen for ratio input blur to update ratio
         subscriptions.push(
             cx.subscribe_in(&ratio_input_state, window, |this, state, event, _window, cx| {
-                if let InputEvent::Blur = event {
+                if let InputEvent::Change = event {
                     let text = state.read(cx).value();
                     if let Ok(v) = text.parse::<f32>() {
                         let v = v.clamp(0.001, 1.0);
                         this.ratio = v;
+                        this.update_est_commands();
+                        cx.notify();
+                    }
+                }
+            }),
+        );
+
+        // Listen for scan count input blur to update scan_count
+        subscriptions.push(
+            cx.subscribe_in(&scan_count_input_state, window, |this, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    let text = state.read(cx).value();
+                    if let Ok(v) = text.parse::<u64>() {
+                        let v = v.clamp(10, 10000);
+                        this.scan_count = v;
                         this.update_est_commands();
                         cx.notify();
                     }
@@ -659,6 +682,8 @@ impl ZedisMemoryAnalysis {
             ratio: 1.0,
             ratio_input_state,
             ratio_dirty: false,
+            scan_count: DEFAULT_SCAN_COUNT,
+            scan_count_input_state,
             est_commands: 0,
             _subscriptions: subscriptions,
         };
@@ -668,12 +693,24 @@ impl ZedisMemoryAnalysis {
 
     fn update_est_commands(&mut self) {
         if let Some(dbsize) = self.dbsize {
+            let scan_count = self.scan_count.max(1);
             let sampled_keys = (dbsize as f32 * self.ratio) as u64;
-            // Each key needs ~2 commands (TYPE + MEMORY USAGE), plus SCAN rounds
-            let scan_rounds = if dbsize > 0 { dbsize / 1000 + 1 } else { 0 };
-            self.est_commands = sampled_keys * 2 + scan_rounds;
+            // SCAN rounds to iterate all keys (count=scan_count per round)
+            let scan_rounds = if dbsize > 0 { dbsize / scan_count + 1 } else { 0 };
+            // Each round needs commands (TYPE + MEMORY USAGE + TTL) sent via pipeline
+            self.est_commands = (sampled_keys / scan_count) + scan_rounds;
         }
     }
+    fn stop_analysis(&mut self, cx: &mut gpui::Context<Self>) {
+        self.analysis_task.take();
+        self.status = if self.prefix_count > 0 || self.single_count > 0 {
+            AnalysisStatus::Finished
+        } else {
+            AnalysisStatus::Idle
+        };
+        cx.notify();
+    }
+
     fn start_analysis(&mut self, cx: &mut gpui::Context<Self>) {
         self.status = AnalysisStatus::Running;
         self.progress = "0%".into();
@@ -691,7 +728,7 @@ impl ZedisMemoryAnalysis {
         let key_separator = cx.global::<ZedisGlobalStore>().read(cx).key_separator().to_string();
         let ratio = self.ratio;
         let dbsize = self.dbsize.unwrap_or(0);
-        let expected_sample_keys = (dbsize as f32 * ratio) as u64;
+        let scan_count = self.scan_count;
 
         self.analysis_task = Some(cx.spawn(async move |handle, cx| {
             debug!(dbsize, ratio, "Memory analysis: using sample ratio");
@@ -699,7 +736,7 @@ impl ZedisMemoryAnalysis {
             let mut prefix_map: HashMap<String, PrefixStats> = HashMap::new();
             let mut single_top: TopN<SingleKeyRow> = TopN::new(TOP_N);
             let mut cursors: Option<Vec<u64>> = None;
-            let mut total_sampled: u64 = 0;
+            let mut analysis_count: u64 = 0;
 
             loop {
                 let scan_task = cx.background_spawn({
@@ -707,19 +744,21 @@ impl ZedisMemoryAnalysis {
                     let cursors_clone = cursors.clone();
                     async move {
                         let client = get_connection_manager().get_client(&server_id, db).await?;
-                        let (new_cursors, keys_memory_usage) =
-                            client.sample_scan_memory_usage(ratio, cursors_clone).await?;
-                        Ok::<(Vec<u64>, Vec<KeyMemoryUsage>), crate::error::Error>((new_cursors, keys_memory_usage))
+                        let (count, new_cursors, keys_memory_usage) = client
+                            .sample_scan_memory_usage(ratio, scan_count, cursors_clone)
+                            .await?;
+                        Ok::<(u64, Vec<u64>, Vec<KeyMemoryUsage>), Error>((count, new_cursors, keys_memory_usage))
                     }
                 });
 
-                let (new_cursors, keys_memory_usage) = match scan_task.await {
+                let (count, new_cursors, keys_memory_usage) = match scan_task.await {
                     Ok(result) => result,
                     Err(e) => {
                         error!(error = %e, "Failed to sample scan for memory analysis");
                         break;
                     }
                 };
+                analysis_count += count;
 
                 if keys_memory_usage.is_empty() && new_cursors.iter().all(|c| *c == 0) {
                     break;
@@ -759,11 +798,10 @@ impl ZedisMemoryAnalysis {
                         single_top.insert(row, |r| r.memory_bytes);
                     }
                 }
-                total_sampled += keys_memory_usage.len() as u64;
 
                 // Update progress
-                let pct = if expected_sample_keys > 0 {
-                    ((total_sampled as f32 / expected_sample_keys as f32) * 100.0).min(99.0) as u32
+                let pct = if analysis_count > 0 && dbsize > 0 {
+                    ((analysis_count as f32 / dbsize as f32) * 100.0).min(99.0) as u32
                 } else {
                     99
                 };
@@ -850,6 +888,23 @@ impl ZedisMemoryAnalysis {
                 h_flex()
                     .gap_3() // Input box and button are closely related, spacing is smaller
                     .items_center()
+                    // Scan Count input
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Label::new(i18n_memory_analysis(cx, "scan_count"))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .text_sm(),
+                            )
+                            .child(
+                                Input::new(&self.scan_count_input_state)
+                                    .small()
+                                    .w(px(70.))
+                                    .disabled(is_running),
+                            ),
+                    )
                     // Sample Ratio input
                     .when_some(self.dbsize, |this, _| {
                         this.child(
@@ -869,21 +924,25 @@ impl ZedisMemoryAnalysis {
                                 ),
                         )
                     })
-                    // Start Button
-                    .child(
+                    // Start / Stop Button
+                    .child(if is_running {
+                        Button::new("stop-analysis")
+                            .danger()
+                            .small()
+                            .label(i18n_memory_analysis(cx, "stop"))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.stop_analysis(cx);
+                            }))
+                    } else {
                         Button::new("start-analysis")
                             .primary()
                             .small()
-                            .disabled(is_running || self.dbsize.is_none())
-                            .label(if is_running {
-                                i18n_memory_analysis(cx, "analyzing")
-                            } else {
-                                i18n_memory_analysis(cx, "start")
-                            })
+                            .disabled(self.dbsize.is_none())
+                            .label(i18n_memory_analysis(cx, "start"))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.start_analysis(cx);
-                            })),
-                    ),
+                            }))
+                    }),
             )
     }
     fn render_table_section(

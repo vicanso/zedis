@@ -590,16 +590,20 @@ impl RedisClient {
     /// Samples a subset of keys from the Redis server.
     /// # Arguments
     /// * `ratio` - The ratio of keys to sample.
+    /// * `count` - The count of keys to sample.
     /// * `cursors` - The cursors to continue the scan from.
     /// # Returns
     /// * `(Vec<u64>, Vec<KeyMemoryUsage>)` - A tuple containing the new cursors and the key memory usage.
     pub async fn sample_scan_memory_usage(
         &self,
         ratio: f32,
+        count: u64,
         cursors: Option<Vec<u64>>,
-    ) -> Result<(Vec<u64>, Vec<KeyMemoryUsage>)> {
+    ) -> Result<(u64, Vec<u64>, Vec<KeyMemoryUsage>)> {
         let pattern = "*";
-        let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, 500).await?;
+        let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
+
+        let total_count: usize = keys_per_node.iter().map(|keys| keys.len()).sum();
 
         if ratio < 1.0 {
             let mut rng = rand::rng();
@@ -621,6 +625,8 @@ impl RedisClient {
                     .cmd("MEMORY")
                     .arg("USAGE")
                     .arg(key.as_str())
+                    .arg("SAMPLES")
+                    .arg("5")
                     .cmd("TTL")
                     .arg(key.as_str());
             }
@@ -668,7 +674,7 @@ impl RedisClient {
             }
         }
 
-        Ok((cursors, keys_memory_usage))
+        Ok((total_count as u64, cursors, keys_memory_usage))
     }
     /// Initiates a SCAN operation across all masters.
     /// # Arguments
