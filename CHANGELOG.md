@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.2.7](https://github.com/vicanso/zedis/compare/v0.2.6..v0.2.7) - 2026-03-15
+
+### ⛰️  Features
+
+- Add command and execution time filters for slow logs - ([79e43c2](https://github.com/vicanso/zedis/commit/79e43c2b3029b4174e63336650eb8f511c27c016))
+- Add connection test feature - ([edb8412](https://github.com/vicanso/zedis/commit/edb8412ef35047e73ecf629d671669b83b4aa252))
+- Add memory analysis view for redis keys - ([b55fc2a](https://github.com/vicanso/zedis/commit/b55fc2a0e673feadc72da6cb1cdf0cad4c4e7d72))
+- Add slow log table view - ([d8b0b7a](https://github.com/vicanso/zedis/commit/d8b0b7ad9cbc143639bb5c01592dd9ec9578739e))
+- Add automatic decoding for message queue data - ([0c585fc](https://github.com/vicanso/zedis/commit/0c585fcfd2ef3d8f6b9ef10fba1d175828b596f5))
+- Add table view for pub/sub messages - ([35fec44](https://github.com/vicanso/zedis/commit/35fec4481d061742b9e3fff12d2653f1b501ff78))
+
+### 🐛 Bug Fixes
+
+- *(windows)* Resolve missing icon for application shortcuts - ([9e49211](https://github.com/vicanso/zedis/commit/9e492117adcb8782a3457fbd44f8f6d89fdcd26d))
+- Fix git2 ([#32](https://github.com/orhun/git-cliff/issues/32)) - ([39d2af0](https://github.com/vicanso/zedis/commit/39d2af0d2c578696e90ad5f975a3b4048fc00c6e))
+
+### 🚜 Refactor
+
+- Prevent empty username and password strings in connection url - ([3e508a0](https://github.com/vicanso/zedis/commit/3e508a059d919ff90bff01d925e6cf92efaff4db))
+- Add column sorting to slow logs table - ([1da35a2](https://github.com/vicanso/zedis/commit/1da35a2b3f86d2b845be91108e5c5b69e53723f6))
+- Optimize SharedString conversion logic - ([1554519](https://github.com/vicanso/zedis/commit/15545196ae23e84cfb6dec6594260e0b99b53765))
+- Adjust pubsub editor - ([c450eee](https://github.com/vicanso/zedis/commit/c450eeec2c6ecdffd36212af7f61ba4fce34f221))
+- Optimize redis command documentation generation - ([6737343](https://github.com/vicanso/zedis/commit/6737343d9693e71bfac6e38e1b792840f9708a95))
+
+### 📚 Documentation
+
+- Update documentation - ([be1d5fd](https://github.com/vicanso/zedis/commit/be1d5fda6a292eb7a84daf432fd3144b49d9ac09))
+
+### ⚡ Performance
+
+- Add sleep intervals to profiling to reduce redis server load - ([e1aa72e](https://github.com/vicanso/zedis/commit/e1aa72e8562ef9d0e8d2896f9ae7dbe095e8018e))
+- Optimize key scanning and memory sampling logic - ([2bd3c9e](https://github.com/vicanso/zedis/commit/2bd3c9e7bd1e1680e4e112cbe38470208081562f))
+- Optimize scan logic for cluster mode - ([6e59a94](https://github.com/vicanso/zedis/commit/6e59a94a841a4d344ab02a31424e8c2c4c2e3eb7))
+- Optimize memory analysis using pipelining for better performance - ([643f2d1](https://github.com/vicanso/zedis/commit/643f2d1e82f05d307255164ac4a355c3c68f27ef))
+
+### ⚙️ Miscellaneous Tasks
+
+- Add GitHub issue templates - ([42051da](https://github.com/vicanso/zedis/commit/42051da40cdfa34b2447912410180fffa29e1125))
+- Fix cargo wix build for windows - ([be8b8fe](https://github.com/vicanso/zedis/commit/be8b8fe196ecc4c11f2e2796fead715910af548c))
+- Fix cargo wix build for windows - ([bf4647a](https://github.com/vicanso/zedis/commit/bf4647a8df95445438ec39c0a143372e32cf7cbd))
+- Fix cargo wix build for windows - ([51d3374](https://github.com/vicanso/zedis/commit/51d3374eca5aad09b677a9b20a6ed9346a65eb01))
+- Fix cargo wix build for windows - ([30db027](https://github.com/vicanso/zedis/commit/30db0272ae6b046a6bbad8d8a0237b6342a292b4))
+- Adjust windows build script - ([7671f08](https://github.com/vicanso/zedis/commit/7671f08ebd8ceb1baaa665cb119a4d72ed483d0e))
+- Update wix script - ([a242218](https://github.com/vicanso/zedis/commit/a2422182a20184b7b6f6cb73a8a2b2dfe4f6792e))
+- Update wix script - ([f055572](https://github.com/vicanso/zedis/commit/f055572f0548fb450bc60c1051b65749889f1e13))
+- Update wix script - ([4ef3e59](https://github.com/vicanso/zedis/commit/4ef3e5939fa85e0c3f2a6f76f8095be5ec11d9a7))
+- Update wix script - ([c168de9](https://github.com/vicanso/zedis/commit/c168de9b984851bcd4e2841145a1be945eed25d3))
+- Update wix script - ([6c39e08](https://github.com/vicanso/zedis/commit/6c39e08420179f4585bdf5f46c07235bbc7da974))
+- Add build script for wix - ([6263856](https://github.com/vicanso/zedis/commit/626385674317c46fb94be3359c74db3eaf12294b))
+- Use rustls-pki-types instead of rustls-pemfile ([#4](https://github.com/orhun/git-cliff/issues/4)) - ([d31000e](https://github.com/vicanso/zedis/commit/d31000e1a4c4ab7ffcacc7603490fc362c91cf29))
+
 ## [0.2.6](https://github.com/vicanso/zedis/compare/v0.2.5..v0.2.6) - 2026-03-08
 
 ### ⛰️  Features
