@@ -36,7 +36,7 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error};
 use zedis_ui::ZedisDivider;
 
@@ -737,16 +737,23 @@ impl ZedisMemoryAnalysis {
             let mut single_top: TopN<SingleKeyRow> = TopN::new(TOP_N);
             let mut cursors: Option<Vec<u64>> = None;
             let mut analysis_count: u64 = 0;
+            let redis_process_ratio = 0.5;
+            let min_sleep = Duration::from_micros(500);
+            let max_sleep = Duration::from_millis(20);
 
             loop {
                 let scan_task = cx.background_spawn({
                     let server_id = server_id.clone();
                     let cursors_clone = cursors.clone();
                     async move {
+                        let start = Instant::now();
                         let client = get_connection_manager().get_client(&server_id, db).await?;
                         let (count, new_cursors, keys_memory_usage) = client
                             .sample_scan_memory_usage(ratio, scan_count, cursors_clone)
                             .await?;
+                        let base_sleep = start.elapsed().mul_f64(redis_process_ratio);
+                        let sleep_duration = base_sleep.clamp(min_sleep, max_sleep);
+                        smol::Timer::after(sleep_duration).await;
                         Ok::<(u64, Vec<u64>, Vec<KeyMemoryUsage>), Error>((count, new_cursors, keys_memory_usage))
                     }
                 });

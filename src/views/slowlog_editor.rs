@@ -152,7 +152,7 @@ impl SlowlogTableDelegate {
         let content_width = window_width - SIDEBAR_WIDTH;
         let timestamp_width = 200.;
         let duration_width = 130.;
-        let command_width = 120.;
+        let command_width = 150.;
         let client_width = 200.;
         // Subtract a small gutter (10 px) so the table doesn't overflow horizontally.
         let remaining_width =
