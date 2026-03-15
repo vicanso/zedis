@@ -285,6 +285,7 @@ command = "Command"
 args = "Arguments"
 client = "Client"
 no_slowlogs = "No slow log entries. Entries appear here once the periodic refresh collects them."
+min_duration = "≥"
 
 [pubsub_editor]
 subscribe_channel_placeholder = "Enter channel pattern to subscribe, multiple channels separated by spaces"

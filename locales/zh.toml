@@ -284,6 +284,7 @@ command = "命令"
 args = "参数"
 client = "客户端"
 no_slowlogs = "暂无慢日志。定期刷新后将在此处显示。"
+min_duration = "≥"
 
 [pubsub_editor]
 subscribe_channel_placeholder = "输入要订阅的频道，多个频道用空格分隔"
