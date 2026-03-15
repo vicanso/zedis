@@ -263,7 +263,7 @@ impl ZedisServerState {
         );
     }
     pub fn handle_filter(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        self.reset_scan();
+        self.reset_scan(cx);
         match self.query_mode {
             QueryMode::Prefix => self.scan_prefix(keyword, cx),
             QueryMode::Exact => self.select_key(keyword, cx),
@@ -276,7 +276,7 @@ impl ZedisServerState {
     }
     /// Initiates a new scan for keys matching the keyword.
     pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        self.reset_scan();
+        self.reset_scan(cx);
         self.scanning = true;
         self.keyword = keyword.clone();
         cx.emit(ServerEvent::KeyScanStarted);
@@ -366,13 +366,13 @@ impl ZedisServerState {
                     }
                     this.extend_keys(keys);
                 }
+                cx.emit(ServerEvent::KeyScanFinished);
                 cx.notify();
                 if this.keys.len() == 1
                     && let Some(key) = this.keys.keys().next()
                 {
                     this.select_key(key.clone(), cx);
                 }
-                cx.emit(ServerEvent::KeyScanFinished);
             },
             cx,
         );
@@ -532,6 +532,9 @@ impl ZedisServerState {
                 status: RedisValueStatus::Loading,
                 ..Default::default()
             });
+        }
+        if !self.keys.contains_key(&key) {
+            self.keys.insert(key.clone(), KeyType::Unknown);
         }
         cx.emit(ServerEvent::KeySelected(key.clone()));
         cx.notify();

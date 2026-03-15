@@ -147,6 +147,8 @@ pub enum ServerEvent {
 
     /// A key has been selected for viewing/editing
     KeySelected(SharedString),
+    /// Key scan reset
+    KeyScanReset,
     /// Key scan operation has started
     KeyScanStarted,
     /// Key scan found a new batch of keys.

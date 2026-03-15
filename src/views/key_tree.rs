@@ -470,10 +470,6 @@ impl ZedisKeyTree {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        // Subscribe to server state changes to rebuild tree when keys change
-        subscriptions.push(cx.observe(&server_state, |this, _model, cx| {
-            this.update_key_tree(false, cx);
-        }));
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeyCollapseAll => {
@@ -498,25 +494,32 @@ impl ZedisKeyTree {
                 ServerEvent::KeySelected(key) => {
                     this.update_expand(key.clone(), cx);
                 }
+                ServerEvent::KeyScanReset => {
+                    this.reset_expand(cx);
+                    this.update_key_tree(true, cx);
+                }
+                ServerEvent::KeyScanPaged => {
+                    this.update_key_tree(false, cx);
+                }
                 ServerEvent::KeyScanFinished => {
                     let keys = server_state.read(cx).keys();
                     let global_state = cx.global::<ZedisGlobalStore>().read(cx);
-                    if keys.len() > global_state.auto_expand_threshold() {
-                        return;
+                    if keys.len() < global_state.auto_expand_threshold() {
+                        let key_separator = global_state.key_separator();
+                        let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
+                        keys.iter().for_each(|(key, _)| {
+                            if !key.contains(key_separator) {
+                                return;
+                            }
+                            let parts: Vec<&str> = key.split(key_separator).collect();
+                            for i in 1..parts.len() {
+                                let prefix = parts[..i].join(key_separator);
+                                expanded_items.insert(prefix.into());
+                            }
+                        });
+                        this.state.expanded_items = expanded_items;
                     }
-                    let key_separator = global_state.key_separator();
-                    let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
-                    keys.iter().for_each(|(key, _)| {
-                        if !key.contains(key_separator) {
-                            return;
-                        }
-                        let parts: Vec<&str> = key.split(key_separator).collect();
-                        for i in 1..parts.len() {
-                            let prefix = parts[..i].join(key_separator);
-                            expanded_items.insert(prefix.into());
-                        }
-                    });
-                    this.state.expanded_items = expanded_items;
+                    this.update_key_tree(true, cx);
                     cx.notify();
                 }
                 _ => {}
@@ -641,9 +644,15 @@ impl ZedisKeyTree {
             return;
         }
         let parts: Vec<&str> = selected_key.splitn(max_depth, separator.as_str()).collect();
+        let mut inserted_count = 0;
         for i in 1..parts.len() {
             let prefix: SharedString = parts[..i].join(separator.as_str()).into();
-            self.state.expanded_items.insert(prefix);
+            if self.state.expanded_items.insert(prefix) {
+                inserted_count += 1;
+            }
+        }
+        if inserted_count > 0 {
+            self.update_key_tree(true, cx);
         }
     }
 

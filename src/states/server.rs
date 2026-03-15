@@ -167,7 +167,7 @@ impl ZedisServerState {
     /// Reset all scan-related state (clears keys, cursors, etc.)
     ///
     /// Called when switching servers or starting a new scan
-    pub fn reset_scan(&mut self) {
+    pub fn reset_scan(&mut self, cx: &mut Context<Self>) {
         self.keyword = SharedString::default();
         self.cursors = None;
         self.keys.clear();
@@ -176,10 +176,11 @@ impl ZedisServerState {
         self.scan_completed = false;
         self.scan_times = 0;
         self.loaded_prefixes.clear();
+        cx.emit(ServerEvent::KeyScanReset);
     }
 
     /// Reset all state when switching to a different server
-    fn reset(&mut self) {
+    fn reset(&mut self, cx: &mut Context<Self>) {
         self.server_id = SharedString::default();
         self.version = SharedString::default();
         self.nodes = (0, 0);
@@ -190,7 +191,7 @@ impl ZedisServerState {
         self.key = None;
         self.redis_info = None;
         self.value = None;
-        self.reset_scan();
+        self.reset_scan(cx);
         self.terminal = false;
         self.last_slow_logs_checked_at = 0;
         self.last_slow_log_count = 0;
@@ -478,7 +479,7 @@ impl ZedisServerState {
         // Only proceed if selecting a different server
         if self.server_id != server_id || self.db != db {
             get_metrics_cache().remove_server(self.server_id.as_str());
-            self.reset();
+            self.reset(cx);
             self.server_id = server_id.clone();
             self.db = db;
 
@@ -563,8 +564,8 @@ impl ZedisServerState {
                     cx.emit(ServerEvent::ServerInfoUpdated);
                     cx.notify();
 
-                    // Auto-scan keys if in All mode
-                    if this.query_mode == QueryMode::All {
+                    // Auto-scan keys if not exact mode
+                    if this.query_mode != QueryMode::Exact {
                         this.scan_keys(server_id, SharedString::default(), cx);
                     } else {
                         this.scanning = false;
