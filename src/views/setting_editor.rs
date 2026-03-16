@@ -303,21 +303,23 @@ impl Render for ZedisSettingEditor {
                         "redis_response_timeout",
                         Input::new(&self.redis_response_timeout_state),
                     ))
-                    .child(
-                        field().label(i18n_settings(cx, "tray_enabled")).child(
-                            Checkbox::new("tray-enabled")
-                                .label(i18n_settings(cx, "tray_enabled_label"))
-                                .checked(self.tray_enabled)
-                                .mt(px(7.))
-                                .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                                    this.tray_enabled = *checked;
-                                    let enabled = *checked;
-                                    update_app_state_and_save(cx, "save_tray_enabled", move |state, _| {
-                                        state.set_tray_enabled(enabled);
-                                    });
-                                })),
-                        ),
-                    )
+                    .when(cfg!(not(target_os = "linux")), |this| {
+                        this.child(
+                            field().label(i18n_settings(cx, "tray_enabled")).child(
+                                Checkbox::new("tray-enabled")
+                                    .label(i18n_settings(cx, "tray_enabled_label"))
+                                    .checked(self.tray_enabled)
+                                    .mt(px(7.))
+                                    .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                        this.tray_enabled = *checked;
+                                        let enabled = *checked;
+                                        update_app_state_and_save(cx, "save_tray_enabled", move |state, _| {
+                                            state.set_tray_enabled(enabled);
+                                        });
+                                    })),
+                            ),
+                        )
+                    })
                     .child(
                         field()
                             .col_span(cols as u16)
