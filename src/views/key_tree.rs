@@ -44,7 +44,7 @@ use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::{str::FromStr, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
 
@@ -79,6 +79,10 @@ struct KeyTreeState {
     server_id: SharedString,
     /// Unique ID for the current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
+    /// Cached key tree ID — tracks which key_tree_id the cached_keys correspond to
+    cached_key_tree_id: SharedString,
+    /// Cached sorted keys snapshot to avoid re-cloning from server state on every rebuild
+    cached_keys: Arc<Vec<(SharedString, KeyType)>>,
     /// Whether the tree is empty (no keys found)
     is_empty: bool,
     /// Current query mode (All/Prefix/Exact)
@@ -435,6 +439,8 @@ pub struct ZedisKeyTree {
     focus_handle: FocusHandle,
 
     auto_refresh_task: Option<Task<()>>,
+    /// Debounce task for scan paged events to avoid rapid rebuilds
+    scan_paged_debounce: Option<Task<()>>,
 
     state: KeyTreeState,
 
@@ -499,7 +505,18 @@ impl ZedisKeyTree {
                     this.update_key_tree(true, cx);
                 }
                 ServerEvent::KeyScanPaged => {
-                    this.update_key_tree(false, cx);
+                    // Throttle: only schedule a rebuild if no debounce task is pending
+                    if this.scan_paged_debounce.is_none() {
+                        this.scan_paged_debounce = Some(cx.spawn(async move |handle, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(100))
+                                .await;
+                            let _ = handle.update(cx, |this: &mut ZedisKeyTree, cx| {
+                                this.scan_paged_debounce = None;
+                                this.update_key_tree(false, cx);
+                            });
+                        }));
+                    }
                 }
                 ServerEvent::KeyScanFinished => {
                     let keys = server_state.read(cx).keys();
@@ -593,6 +610,7 @@ impl ZedisKeyTree {
             server_state,
             should_enter_add_key_mode: None,
             auto_refresh_task: None,
+            scan_paged_debounce: None,
             _subscriptions: subscriptions,
         };
 
@@ -661,6 +679,9 @@ impl ZedisKeyTree {
     /// Rebuilds the tree only if the tree ID has changed (indicating new keys loaded).
     /// Preserves expanded folder state across rebuilds. Auto-expands all folders
     /// if the total key count is below the threshold.
+    ///
+    /// Uses a cached keys snapshot to avoid re-cloning all keys from server state
+    /// when only expanded_items changed (e.g., folder expand/collapse).
     fn update_key_tree(&mut self, force_update: bool, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let key_tree_id = server_state.key_tree_id();
@@ -679,9 +700,16 @@ impl ZedisKeyTree {
         }
         self.state.key_tree_id = key_tree_id.to_string().into();
 
-        // Auto-expand all folders if key count is small
-        let keys_snapshot: Vec<(SharedString, KeyType)> =
-            server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
+        // Only re-clone keys from server state when key_tree_id actually changed
+        // (keys added/removed/type changed). For expand/collapse, reuse cached snapshot.
+        if self.state.cached_key_tree_id != key_tree_id {
+            let keys_snapshot: Vec<(SharedString, KeyType)> =
+                server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
+            self.state.cached_keys = Arc::new(keys_snapshot);
+            self.state.cached_key_tree_id = key_tree_id.to_string().into();
+        }
+
+        let keys_snapshot = self.state.cached_keys.clone();
         let readonly = server_state.readonly();
         let expanded_items = self.state.expanded_items.clone();
 
@@ -696,7 +724,7 @@ impl ZedisKeyTree {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
                     let items =
-                        new_key_tree_items(keys_snapshot, keyword, expanded_items, &separator, max_key_tree_depth);
+                        new_key_tree_items((*keys_snapshot).clone(), keyword, expanded_items, &separator, max_key_tree_depth);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
                 });

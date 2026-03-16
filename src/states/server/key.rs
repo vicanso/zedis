@@ -29,7 +29,7 @@ use crate::{
     helpers::{parse_duration, unix_ts},
 };
 use ahash::AHashSet;
-use futures::{StreamExt, stream};
+use futures::stream::{self, StreamExt};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::sync::Arc;
@@ -82,28 +82,45 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         keys.sort_unstable();
-        // Spawn a background task to fetch types concurrently
+        // Spawn a background task to fetch types
         self.spawn(
             ServerTask::FillKeyTypes,
             move || async move {
-                let conn = get_connection_manager().get_connection(&server_id, db).await?;
-                // Use a stream to execute commands concurrently with backpressure
-                let types: Vec<(SharedString, String)> = stream::iter(keys.iter().cloned())
-                    .map(|key| {
-                        let mut conn_clone = conn.clone();
-                        let key = key.clone();
-                        async move {
-                            let t: String = cmd("TYPE")
-                                .arg(key.as_str())
-                                .query_async(&mut conn_clone)
-                                .await
-                                .unwrap_or_default();
-                            (key, t)
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let mut types = Vec::with_capacity(keys.len());
+                if client.is_cluster() {
+                    // Cluster mode: keys may be on different nodes, use concurrent requests
+                    let conn = client.connection().clone();
+                    let results: Vec<(SharedString, String)> = stream::iter(keys.iter().cloned())
+                        .map(|key| {
+                            let mut conn_clone = conn.clone();
+                            async move {
+                                let t: String = cmd("TYPE")
+                                    .arg(key.as_str())
+                                    .query_async(&mut conn_clone)
+                                    .await
+                                    .unwrap_or_default();
+                                (key, t)
+                            }
+                        })
+                        .buffer_unordered(100)
+                        .collect()
+                        .await;
+                    types = results;
+                } else {
+                    // Non-cluster: use pipeline to batch TYPE commands, reducing RTT
+                    let mut conn = client.connection().clone();
+                    for chunk in keys.chunks(500) {
+                        let mut pipeline = pipe();
+                        for key in chunk {
+                            pipeline.cmd("TYPE").arg(key.as_str());
                         }
-                    })
-                    .buffer_unordered(100) // Limit concurrency to 100
-                    .collect::<Vec<_>>()
-                    .await;
+                        let results: Vec<String> = pipeline.query_async(&mut conn).await?;
+                        for (key, t) in chunk.iter().zip(results) {
+                            types.push((key.clone(), t));
+                        }
+                    }
+                }
                 Ok(types)
             },
             move |this, result, cx| {

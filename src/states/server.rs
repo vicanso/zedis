@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager};
+use crate::connection::{AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server};
 use crate::db::get_search_history_manager;
 use crate::error::Error;
 use crate::states::server::event::{ServerEvent, ServerTask};
@@ -228,7 +228,8 @@ impl ZedisServerState {
 
     /// Add an error message to the history and emit error event
     ///
-    /// Maintains a rolling window of MAX_ERROR_MESSAGES most recent errors
+    /// Maintains a rolling window of MAX_ERROR_MESSAGES most recent errors.
+    /// Includes server_id and db context for easier debugging.
     fn add_error_message(&mut self, category: String, message: String, cx: &mut Context<Self>) {
         let mut guard = self.error_messages.write();
 
@@ -237,9 +238,16 @@ impl ZedisServerState {
             guard.remove(0);
         }
 
+        let server_name = get_server(&self.server_id).map(|s| s.name).unwrap_or_default();
+        let context_message: SharedString = if server_name.is_empty() {
+            format!("[{category}] {message}").into()
+        } else {
+            format!("[{category}] [{server_name}:{}] {message}", self.db).into()
+        };
+
         let info = ErrorMessage {
             category: category.into(),
-            message: message.into(),
+            message: context_message,
         };
         guard.push(info.clone());
         self.emit_error_notification(info.message.clone(), cx);
@@ -285,8 +293,12 @@ impl ZedisServerState {
             // Update state with result on main thread
             handle.update(cx, move |this, cx| {
                 if let Err(e) = &result {
-                    let message = format!("{} failed", name.as_str());
-                    error!(error = %e, message);
+                    error!(
+                        task = name.as_str(),
+                        server_id = server_id.as_str(),
+                        error = %e,
+                        "Task failed"
+                    );
                     // only add error message if the server id is the same as the current server id
                     // ignore refresh redis info error
                     if this.server_id == server_id && name != ServerTask::RefreshRedisInfo {
@@ -296,7 +308,12 @@ impl ZedisServerState {
                 callback(this, result, cx);
                 let latency = start.elapsed();
                 if name != ServerTask::RefreshRedisInfo {
-                    info!(name = name.as_str(), latency = latency.as_millis(), "Task completed");
+                    info!(
+                        task = name.as_str(),
+                        server_id = server_id.as_str(),
+                        latency_ms = latency.as_millis(),
+                        "Task completed"
+                    );
                 }
             })
         })

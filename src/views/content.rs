@@ -97,6 +97,9 @@ pub struct ZedisContent {
 impl ZedisContent {
     fn clear_views(&mut self) {
         let route = self.current_route;
+        if route != Route::Home {
+            self.servers.take();
+        }
         if route != Route::Editor && route != Route::Metrics {
             self.key_tree.take();
             self.value_editor.take();
