@@ -36,6 +36,7 @@ mod db;
 mod error;
 mod helpers;
 mod states;
+mod tray;
 mod views;
 
 pub struct Zedis {
@@ -315,7 +316,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(theme) = app_store.read(cx).theme() {
             Theme::change(theme, None, cx);
         }
+        let tray_enabled = app_store.read(cx).tray_enabled();
         cx.set_global(app_store);
+        if tray_enabled {
+            tray::init_tray(cx);
+        }
         cx.bind_keys(new_hot_keys());
         cx.on_action(|e: &MemuAction, cx: &mut App| match e {
             MemuAction::Quit => {

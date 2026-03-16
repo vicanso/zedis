@@ -18,7 +18,7 @@ use crate::error::Error;
 use crate::states::{
     GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props, i18n_common, i18n_servers,
 };
-use gpui::{SharedString, Window, div, prelude::*, px};
+use gpui::{SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
@@ -49,16 +49,51 @@ const THEME_DARKEN_AMOUNT_LIGHT: f32 = 0.02;
 /// - Click to connect functionality
 ///
 /// Uses a responsive grid layout that adjusts columns based on viewport width.
-pub struct ZedisServers {}
+pub struct ZedisServers {
+    should_popup_new_server: bool,
+    _subscriptions: Vec<Subscription>,
+}
 
 impl ZedisServers {
     /// Create a new server management view
     ///
     /// Initializes all input field states with appropriate placeholders
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         info!("Creating new servers view");
 
-        Self {}
+        let global_state = cx.global::<ZedisGlobalStore>().state();
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe(&global_state, |this, state, event, cx| {
+            if let GlobalEvent::RouteChanged(Route::Home) = event
+                && state
+                    .read(cx)
+                    .get_route_query()
+                    .map(|query| query.contains_key("new"))
+                    .unwrap_or(false)
+            {
+                this.should_popup_new_server = true;
+                cx.notify();
+            }
+        }));
+        if let Some(query) = global_state.read(cx).get_route_query()
+            && query.contains_key("new")
+        {
+            cx.defer_in(window, |this, window, cx| {
+                this.add_or_update_server_dialog(
+                    &RedisServer {
+                        port: DEFAULT_REDIS_PORT,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            });
+        }
+
+        Self {
+            should_popup_new_server: false,
+            _subscriptions: subscriptions,
+        }
     }
     /// Show confirmation dialog and remove server from configuration
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>, server_id: &str) {
@@ -314,6 +349,17 @@ impl Render for ZedisServers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = window.viewport_size().width;
 
+        if std::mem::take(&mut self.should_popup_new_server) {
+            self.add_or_update_server_dialog(
+                &RedisServer {
+                    port: DEFAULT_REDIS_PORT,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        }
+
         // Responsive grid columns based on viewport width
         let cols = match width {
             width if width < px(VIEWPORT_BREAKPOINT_SMALL) => 1,
@@ -409,7 +455,6 @@ impl Render for ZedisServers {
                     .on_click(Box::new(handle_select_server))
             })
             .collect();
-
         // Render responsive grid with server cards + add new server card
         div()
             .grid()

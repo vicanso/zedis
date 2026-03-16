@@ -723,8 +723,12 @@ impl Render for ZedisContent {
                                     .overflow_hidden()
                                     .when(is_metrics, |this| this.child(self.render_metrics(window, cx)))
                                     .when(is_slowlog, |this| this.child(self.render_slowlog(window, cx)))
-                                    .when(is_memory_analysis, |this| this.child(self.render_memory_analysis(window, cx)))
-                                    .when(!is_metrics && !is_slowlog && !is_memory_analysis, |this| this.child(self.render_editor(window, cx))),
+                                    .when(is_memory_analysis, |this| {
+                                        this.child(self.render_memory_analysis(window, cx))
+                                    })
+                                    .when(!is_metrics && !is_slowlog && !is_memory_analysis, |this| {
+                                        this.child(self.render_editor(window, cx))
+                                    }),
                             ),
                         )
                     })

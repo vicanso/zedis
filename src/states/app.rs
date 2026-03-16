@@ -25,6 +25,7 @@ use gpui_component::{ThemeMode, dialog::DialogButtonProps};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use sys_locale::get_locale;
@@ -183,6 +184,7 @@ pub enum GlobalEvent {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
+    query: Option<HashMap<String, String>>,
     locale: Option<String>,
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
@@ -196,6 +198,7 @@ pub struct ZedisAppState {
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
     selected_server: Option<(String, usize)>,
+    tray_enabled: Option<bool>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -296,12 +299,23 @@ impl ZedisAppState {
     pub fn bounds(&self) -> Option<&Bounds<Pixels>> {
         self.bounds.as_ref()
     }
-    pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
-        if self.route != route {
-            self.route = route;
-            cx.emit(GlobalEvent::RouteChanged(route));
-            cx.notify();
+    fn go_to_with_query(&mut self, route: Route, query: Option<HashMap<String, String>>, cx: &mut Context<Self>) {
+        if self.route == route && self.query == query {
+            return;
         }
+        self.query = query;
+        self.route = route;
+        cx.emit(GlobalEvent::RouteChanged(route));
+        cx.notify();
+    }
+    pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.go_to_with_query(route, None, cx);
+    }
+    pub fn go_with_query(&mut self, route: Route, query: HashMap<String, String>, cx: &mut Context<Self>) {
+        self.go_to_with_query(route, Some(query), cx);
+    }
+    pub fn get_route_query(&self) -> Option<&HashMap<String, String>> {
+        self.query.as_ref()
     }
     pub fn toggle_route(&mut self, routes: (Route, Route), cx: &mut Context<Self>) {
         let route = if self.route == routes.0 { routes.1 } else { routes.0 };
@@ -405,8 +419,18 @@ impl ZedisAppState {
     pub fn set_auto_expand_threshold(&mut self, auto_expand_threshold: usize) {
         self.auto_expand_threshold = Some(auto_expand_threshold);
     }
+    pub fn tray_enabled(&self) -> bool {
+        self.tray_enabled.unwrap_or(true)
+    }
+    pub fn set_tray_enabled(&mut self, enabled: bool) {
+        self.tray_enabled = Some(enabled);
+    }
     pub fn selected_server(&self) -> Option<&(String, usize)> {
         self.selected_server.as_ref()
+    }
+    pub fn clear_selected_server(&mut self, cx: &mut Context<Self>) {
+        self.selected_server = None;
+        cx.emit(GlobalEvent::ServerSelected(SharedString::default(), 0));
     }
     pub fn set_selected_server(&mut self, selected_server: (String, usize), cx: &mut Context<Self>) {
         let (server_id, db) = selected_server.clone();

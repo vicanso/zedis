@@ -238,6 +238,8 @@ redis_connection_timeout = "Redis 连接超时"
 redis_connection_timeout_placeholder = "输入 redis 连接超时 (默认: 30s)"
 redis_response_timeout = "Redis 响应超时"
 redis_response_timeout_placeholder = "输入 redis 响应超时 (默认: 60s)"
+tray_enabled = "系统托盘"
+tray_enabled_label = "启用系统托盘 (重启生效)"
 
 [metrics]
 memory = "内存"

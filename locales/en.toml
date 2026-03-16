@@ -239,6 +239,8 @@ redis_connection_timeout = "Redis Connection Timeout"
 redis_connection_timeout_placeholder = "Enter redis connection timeout (default: 30s)"
 redis_response_timeout = "Redis Response Timeout"
 redis_response_timeout_placeholder = "Enter redis response timeout (default: 60s)"
+tray_enabled = "System Tray"
+tray_enabled_label = "Enable system tray (restart required)"
 
 [metrics]
 memory = "Memory"
