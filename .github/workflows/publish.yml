@@ -173,6 +173,8 @@ jobs:
         run: |
           cargo install cargo-wix
           cargo build --release --target ${{ matrix.target }} --features mimalloc
+          cp target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
+
           cargo wix --nocapture --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/wix/*
           mv target/wix/zedis-*.msi ./zedis.msi
@@ -181,13 +183,18 @@ jobs:
         run: |
           ls .
           $zipName = "zedis-windows-${{ matrix.suffix }}.zip"
-          Compress-Archive -Path zedis.msi -Destination $zipName
+          Compress-Archive -Path zedis.exe -Destination $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+          $msiZipName = "zedis-windows-${{ matrix.suffix }}.msi.zip"
+          Compress-Archive -Path zedis.msi -Destination $msiZipName
+          echo "MSI_ZIP_NAME=$msiZipName" >> $env:GITHUB_ENV
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           ./.github/workflows/upload_asset.sh ./${{ env.ZIP_NAME }} $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./${{ env.MSI_ZIP_NAME }} $GITHUB_TOKEN
       - name: Release Nightly Assets
         uses: softprops/action-gh-release@v2
         with:
@@ -197,6 +204,7 @@ jobs:
             prerelease: true  
             files: |
               ${{ env.ZIP_NAME }}
+              ${{ env.MSI_ZIP_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   linux:
