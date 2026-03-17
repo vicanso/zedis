@@ -16,10 +16,10 @@ use crate::{
     assets::CustomIconName,
     connection::RedisClientDescription,
     constants::STATUS_BAR_HEIGHT,
-    helpers::{get_font_family, humanize_keystroke},
+    helpers::humanize_keystroke,
     states::{
         ErrorMessage, GlobalEvent, Route, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState,
-        get_session_option, i18n_common, i18n_sidebar, i18n_status_bar, save_session_option,
+        get_session_option, i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -34,23 +34,6 @@ use gpui_component::{
 use std::{sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
-
-/// Creates a disabled ghost button used as a metric badge in the status bar.
-#[inline]
-fn metric_badge(
-    id: impl Into<gpui::ElementId>,
-    icon: impl Into<Icon>,
-    label: impl Into<SharedString>,
-    tooltip: impl Into<SharedString>,
-) -> Button {
-    Button::new(id)
-        .ghost()
-        .px_1()
-        .disabled(true)
-        .tooltip(tooltip)
-        .icon(icon)
-        .label(label)
-}
 
 /// Formats the database size and scan count string "count/total".
 #[inline]
@@ -385,7 +368,7 @@ impl ZedisStatusBar {
                     .gap_2()
                     .child(
                         Button::new("zedis-status-bar-server-terminal")
-                            .outline()
+                            .ghost()
                             .small()
                             .tooltip(terminal_tooltip)
                             .icon(IconName::SquareTerminal)
@@ -400,7 +383,7 @@ impl ZedisStatusBar {
                     })
                     .child(
                         Button::new("zedis-status-bar-server-toggle-readonly")
-                            .outline()
+                            .ghost()
                             .small()
                             .tooltip(readonly_tooltip)
                             .when(self.readonly, |this| this.icon(Icon::new(CustomIconName::Lock)))
@@ -418,7 +401,7 @@ impl ZedisStatusBar {
                     .gap_2()
                     .child(
                         Button::new("zedis-status-bar-scan-more")
-                            .outline()
+                            .ghost()
                             .small()
                             .disabled(is_completed)
                             .tooltip(if is_completed {
@@ -455,7 +438,7 @@ impl ZedisStatusBar {
                             .gap_2()
                             .child(
                                 Button::new("zedis-status-bar-server-metrics")
-                                    .outline()
+                                    .ghost()
                                     .small()
                                     .icon(CustomIconName::Activity)
                                     .tooltip(i18n_status_bar(cx, "toggle_metrics_tooltip"))
@@ -465,23 +448,14 @@ impl ZedisStatusBar {
                                         });
                                     })),
                             )
-                            .child(
-                                metric_badge(
-                                    "zedis-status-bar-latency",
-                                    Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary),
-                                    server_state.latency.0.clone(),
-                                    i18n_common(cx, "latency"),
-                                )
-                                .text_color(server_state.latency.1)
-                                .font_family(get_font_family()),
-                            ),
+                            .child(Label::new(server_state.latency.0.clone()).text_color(server_state.latency.1)),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .child(
                                 Button::new("zedis-status-bar-server-memory-analysis")
-                                    .outline()
+                                    .ghost()
                                     .small()
                                     .icon(CustomIconName::MemoryStick)
                                     .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
@@ -498,7 +472,7 @@ impl ZedisStatusBar {
                             .gap_2()
                             .child(
                                 Button::new("zedis-status-bar-clients")
-                                    .outline()
+                                    .ghost()
                                     .small()
                                     .icon(Icon::new(CustomIconName::AudioWaveform))
                                     .tooltip(i18n_status_bar(cx, "toggle_clients_tooltip"))
@@ -515,7 +489,7 @@ impl ZedisStatusBar {
                             .gap_2()
                             .child(
                                 Button::new("zedis-status-bar-server-slow-logs")
-                                    .outline()
+                                    .ghost()
                                     .small()
                                     .icon(CustomIconName::Snail)
                                     .tooltip(i18n_status_bar(cx, "toggle_slowlog_tooltip"))
