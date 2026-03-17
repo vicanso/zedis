@@ -306,6 +306,20 @@ published = "Published to: %{channel}"
 subscribe_failed = "Subscribe failed"
 publish_failed = "Publish failed"
 
+[tray]
+header = "Zedis"
+active = "Active: %{name}"
+active_none = "Active: --"
+mem = "  Mem: %{value}"
+mem_none = "  Mem: --"
+ops = "  OPS: %{value}"
+ops_high_latency = "  OPS: %{value} (High Latency)"
+ops_none = "  OPS: --"
+quick_connect = "Quick Connect"
+new_connection = "New Connection..."
+preferences = "Preferences..."
+quit = "Quit Zedis"
+
 [memory_analysis]
 title = "Memory Analysis"
 start = "Start Analysis"

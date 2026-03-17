@@ -1,0 +1,12 @@
+[advisories]
+ignore = [
+    # gtk3 pulled by tray-icon for Linux; we don't use tray on Linux
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    "RUSTSEC-2024-0429",
+]

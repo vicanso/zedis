@@ -34,6 +34,7 @@ pub use i18n::i18n_set_editor;
 pub use i18n::i18n_settings;
 pub use i18n::i18n_sidebar;
 pub use i18n::i18n_status_bar;
+pub use i18n::i18n_tray;
 pub use i18n::i18n_zset_editor;
 pub use server::ErrorMessage;
 pub use server::ZedisServerState;

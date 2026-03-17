@@ -14,8 +14,9 @@
 
 use crate::connection::{RedisServer, get_servers};
 use crate::states::Route::{Editor, Home, Settings};
-use crate::states::{RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache};
+use crate::states::{RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
 use gpui::{App, BorrowAppContext, Context};
+use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -48,24 +49,24 @@ struct TrayMenuState {
 }
 
 impl TrayMenuState {
-    fn build(servers: &[RedisServer]) -> (Menu, Self) {
+    fn build(servers: &[RedisServer], cx: &App) -> (Menu, Self) {
         let menu = Menu::new();
 
         // Header
-        let _ = menu.append(&MenuItem::with_id(MENU_ID_SHOW, "Zedis", true, None));
+        let _ = menu.append(&MenuItem::with_id(MENU_ID_SHOW, i18n_tray(cx, "header"), true, None));
         let _ = menu.append(&PredefinedMenuItem::separator());
 
         // Active server info
-        let active_label = MenuItem::new("Active: --", false, None);
-        let mem_label = MenuItem::new("  Mem: --", false, None);
-        let ops_label = MenuItem::new("  OPS: --", false, None);
+        let active_label = MenuItem::new(i18n_tray(cx, "active_none"), false, None);
+        let mem_label = MenuItem::new(i18n_tray(cx, "mem_none"), false, None);
+        let ops_label = MenuItem::new(i18n_tray(cx, "ops_none"), false, None);
         let _ = menu.append(&active_label);
         let _ = menu.append(&mem_label);
         let _ = menu.append(&ops_label);
         let _ = menu.append(&PredefinedMenuItem::separator());
 
         // Quick Connect submenu
-        let quick_connect = Submenu::new("Quick Connect", true);
+        let quick_connect = Submenu::new(i18n_tray(cx, "quick_connect"), true);
         let mut server_items = Vec::with_capacity(servers.len());
         let mut server_ids_snapshot = Vec::with_capacity(servers.len());
         for server in servers {
@@ -81,18 +82,23 @@ impl TrayMenuState {
         // New Connection
         let _ = menu.append(&MenuItem::with_id(
             MENU_ID_NEW_CONNECTION,
-            "New Connection...",
+            i18n_tray(cx, "new_connection"),
             true,
             None,
         ));
         let _ = menu.append(&PredefinedMenuItem::separator());
 
         // Preferences
-        let _ = menu.append(&MenuItem::with_id(MENU_ID_PREFERENCES, "Preferences...", true, None));
+        let _ = menu.append(&MenuItem::with_id(
+            MENU_ID_PREFERENCES,
+            i18n_tray(cx, "preferences"),
+            true,
+            None,
+        ));
         let _ = menu.append(&PredefinedMenuItem::separator());
 
         // Quit
-        let _ = menu.append(&MenuItem::with_id(MENU_ID_QUIT, "Quit Zedis", true, None));
+        let _ = menu.append(&MenuItem::with_id(MENU_ID_QUIT, i18n_tray(cx, "quit"), true, None));
 
         let state = Self {
             active_label,
@@ -110,6 +116,7 @@ impl TrayMenuState {
         servers: &[RedisServer],
         active_server_id: Option<&str>,
         active_metrics: Option<&RedisMetrics>,
+        cx: &App,
     ) -> bool {
         // Check if server list changed
         let current_ids: Vec<&str> = servers.iter().map(|s| s.id.as_str()).collect();
@@ -119,6 +126,7 @@ impl TrayMenuState {
         }
 
         let has_active = active_metrics.is_some();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
 
         // Update active server section
         if let (Some(server_id), Some(m)) = (active_server_id, active_metrics) {
@@ -127,21 +135,25 @@ impl TrayMenuState {
                 .find(|s| s.id == server_id)
                 .map(|s| s.name.as_str())
                 .unwrap_or(server_id);
-            self.active_label.set_text(format!("Active: {server_name}"));
-            self.mem_label.set_text(format!(
-                "  Mem: {}",
-                humansize::format_size(m.used_memory, humansize::DECIMAL)
-            ));
+            self.active_label
+                .set_text(t!("tray.active", name = server_name, locale = locale));
+            let mem_value = humansize::format_size(m.used_memory, humansize::DECIMAL);
+            self.mem_label
+                .set_text(t!("tray.mem", value = mem_value, locale = locale));
             let ops_text = if m.latency_ms > 100 {
-                format!("  OPS: {} (High Latency)", m.instantaneous_ops_per_sec)
+                t!(
+                    "tray.ops_high_latency",
+                    value = m.instantaneous_ops_per_sec,
+                    locale = locale
+                )
             } else {
-                format!("  OPS: {}", m.instantaneous_ops_per_sec)
+                t!("tray.ops", value = m.instantaneous_ops_per_sec, locale = locale)
             };
             self.ops_label.set_text(ops_text);
         } else {
-            self.active_label.set_text("Active: --");
-            self.mem_label.set_text("  Mem: --");
-            self.ops_label.set_text("  OPS: --");
+            self.active_label.set_text(i18n_tray(cx, "active_none"));
+            self.mem_label.set_text(i18n_tray(cx, "mem_none"));
+            self.ops_label.set_text(i18n_tray(cx, "ops_none"));
         }
 
         // Update Quick Connect indicators
@@ -184,10 +196,10 @@ fn refresh_tray_menu(state: &Rc<RefCell<TrayMenuState>>, tray: &Rc<tray_icon::Tr
     let (servers, active, active_metrics) = collect_refresh_data(cx);
     let need_rebuild = state
         .borrow()
-        .refresh(&servers, active.as_deref(), active_metrics.as_ref());
+        .refresh(&servers, active.as_deref(), active_metrics.as_ref(), cx);
     if need_rebuild {
-        let (new_menu, new_state) = TrayMenuState::build(&servers);
-        new_state.refresh(&servers, active.as_deref(), active_metrics.as_ref());
+        let (new_menu, new_state) = TrayMenuState::build(&servers, cx);
+        new_state.refresh(&servers, active.as_deref(), active_metrics.as_ref(), cx);
         *state.borrow_mut() = new_state;
         tray.set_menu(Some(Box::new(new_menu)));
     }
@@ -196,7 +208,7 @@ fn refresh_tray_menu(state: &Rc<RefCell<TrayMenuState>>, tray: &Rc<tray_icon::Tr
 pub fn init_tray(cx: &mut App) {
     let icon = load_icon();
     let servers = get_servers().unwrap_or_default();
-    let (menu, menu_state) = TrayMenuState::build(&servers);
+    let (menu, menu_state) = TrayMenuState::build(&servers, cx);
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))

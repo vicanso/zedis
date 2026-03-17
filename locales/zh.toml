@@ -305,6 +305,20 @@ published = "已发布到: %{channel}"
 subscribe_failed = "订阅失败"
 publish_failed = "发布失败"
 
+[tray]
+header = "Zedis"
+active = "当前: %{name}"
+active_none = "当前: --"
+mem = "  内存: %{value}"
+mem_none = "  内存: --"
+ops = "  OPS: %{value}"
+ops_high_latency = "  OPS: %{value} (高延迟)"
+ops_none = "  OPS: --"
+quick_connect = "快速连接"
+new_connection = "新建连接..."
+preferences = "偏好设置..."
+quit = "退出 Zedis"
+
 [memory_analysis]
 title = "内存分析"
 start = "开始分析"
