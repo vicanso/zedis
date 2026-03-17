@@ -393,6 +393,18 @@ impl ZedisStatusBar {
                                     state.toggle_readonly(cx);
                                 });
                             })),
+                    )
+                    .child(
+                        Button::new("zedis-status-bar-server-monitor")
+                            .ghost()
+                            .small()
+                            .icon(CustomIconName::Radar)
+                            .tooltip(i18n_status_bar(cx, "toggle_monitor_tooltip"))
+                            .on_click(cx.listener(|_this, _, _window, cx| {
+                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                    state.toggle_route((Route::Monitor, Route::Editor), cx);
+                                });
+                            })),
                     ),
             )
             .child(

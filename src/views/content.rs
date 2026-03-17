@@ -21,8 +21,8 @@ use crate::{
     },
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
-        ZedisClientsManager, ZedisEditor, ZedisKeyTree, ZedisMemoryAnalysis, ZedisMetrics, ZedisProtoEditor,
-        ZedisServers, ZedisSettingEditor, ZedisSlowlogEditor, ZedisStatusBar,
+        ZedisClientsManager, ZedisEditor, ZedisKeyTree, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
+        ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisSlowlogEditor, ZedisStatusBar,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
@@ -73,6 +73,7 @@ pub struct ZedisContent {
     slowlog_editor: Option<Entity<ZedisSlowlogEditor>>,
     memory_analysis: Option<Entity<ZedisMemoryAnalysis>>,
     clients_manager: Option<Entity<ZedisClientsManager>>,
+    monitor: Option<Entity<ZedisMonitor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
     cmd_output_scroll_handle: ScrollHandle,
@@ -122,6 +123,9 @@ impl ZedisContent {
         }
         if route != Route::Clients {
             self.clients_manager.take();
+        }
+        if route != Route::Monitor {
+            self.monitor.take();
         }
     }
     /// Create a new content view with route-aware view management
@@ -233,6 +237,7 @@ impl ZedisContent {
             slowlog_editor: None,
             memory_analysis: None,
             clients_manager: None,
+            monitor: None,
             key_tree: None,
             cmd_outputs: Vec::with_capacity(5),
             redis_commands: Vec::new(),
@@ -455,6 +460,16 @@ impl ZedisContent {
             })
             .clone();
         div().size_full().child(clients)
+    }
+    fn render_monitor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let monitor = self
+            .monitor
+            .get_or_insert_with(|| {
+                debug!("Creating new monitor view");
+                cx.new(|cx| ZedisMonitor::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(monitor)
     }
     /// Render a loading skeleton screen with animated placeholders
     ///
@@ -726,6 +741,7 @@ impl Render for ZedisContent {
                 let is_slowlog = route == Route::Slowlog;
                 let is_memory_analysis = route == Route::MemoryAnalysis;
                 let is_clients = route == Route::Clients;
+                let is_monitor = route == Route::Monitor;
 
                 // Route 3: Main editor interface
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
@@ -743,8 +759,9 @@ impl Render for ZedisContent {
                                         this.child(self.render_memory_analysis(window, cx))
                                     })
                                     .when(is_clients, |this| this.child(self.render_clients(window, cx)))
+                                    .when(is_monitor, |this| this.child(self.render_monitor(window, cx)))
                                     .when(
-                                        !is_metrics && !is_slowlog && !is_memory_analysis && !is_clients,
+                                        !is_metrics && !is_slowlog && !is_memory_analysis && !is_clients && !is_monitor,
                                         |this| this.child(self.render_editor(window, cx)),
                                     ),
                             ),

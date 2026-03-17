@@ -45,6 +45,7 @@ pub enum Route {
     Slowlog,
     MemoryAnalysis,
     Clients,
+    Monitor,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

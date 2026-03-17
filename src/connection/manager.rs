@@ -332,6 +332,11 @@ impl RedisClient {
         self.access_mode
     }
 
+    /// Returns the list of master node server configurations.
+    pub fn master_servers(&self) -> Vec<RedisServer> {
+        self.master_nodes.iter().map(|node| node.server.clone()).collect()
+    }
+
     pub fn nodes_description(&self) -> RedisClientDescription {
         let master_nodes: Vec<String> = self.master_nodes.iter().map(|node| node.host_port()).collect();
         let slave_nodes: Vec<String> = self

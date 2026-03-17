@@ -79,6 +79,7 @@ pub enum CustomIconName {
     Rss,
     Laptop,
     HardDrive,
+    Radar,
 }
 
 impl CustomIconName {
@@ -121,6 +122,7 @@ impl CustomIconName {
             CustomIconName::Rss => "icons/rss.svg",
             CustomIconName::Laptop => "icons/laptop.svg",
             CustomIconName::HardDrive => "icons/hard-drive.svg",
+            CustomIconName::Radar => "icons/radar.svg",
         }
         .into()
     }

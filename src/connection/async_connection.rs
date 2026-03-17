@@ -194,7 +194,7 @@ pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
 /// # Returns
 ///
 /// A Redis client ready to establish connections
-fn open_single_client(config: &RedisServer) -> Result<Client> {
+pub fn open_single_client(config: &RedisServer) -> Result<Client> {
     let url = config.get_connection_url();
     // Build client with TLS if certificates are provided
     let client = if let Some(certificates) = config.tls_certificates() {
@@ -203,6 +203,16 @@ fn open_single_client(config: &RedisServer) -> Result<Client> {
         Client::open(url)?
     };
     Ok(client)
+}
+
+/// Opens a dedicated `Monitor` connection for the given Redis server.
+///
+/// This creates a non-multiplexed connection suitable for the Redis MONITOR
+/// command, which streams all commands received by the server.
+pub async fn open_monitor_connection(config: &RedisServer) -> Result<redis::aio::Monitor> {
+    let client = open_single_client(config)?;
+    let monitor = client.get_async_monitor().await?;
+    Ok(monitor)
 }
 
 /// A wrapper enum for Redis asynchronous connections.

@@ -22,7 +22,7 @@ mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
 
-pub use async_connection::{RedisAsyncConn, open_single_connection, set_redis_connection_timeout, set_redis_response_timeout};
+pub use async_connection::{RedisAsyncConn, open_monitor_connection, open_single_connection, set_redis_connection_timeout, set_redis_response_timeout};
 pub use config::{RedisServer, get_server, get_servers, save_servers};
 pub use manager::{AccessMode, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager};
 pub fn clear_expired_cache() {

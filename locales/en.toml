@@ -186,6 +186,7 @@ toggle_metrics_tooltip = "Toggle server metrics"
 toggle_slowlog_tooltip = "Toggle slowlog panel"
 toggle_memory_analysis_tooltip = "Toggle memory analysis"
 toggle_clients_tooltip = "Toggle client management"
+toggle_monitor_tooltip = "Toggle live monitor"
 
 
 [list_editor]
@@ -364,3 +365,18 @@ prefix_table_title = "Prefix Groups"
 single_table_title = "Single Keys"
 no_data = "Click \"Start Analysis\" to sample keys and analyze memory usage by prefix."
 toggle_tooltip = "Memory Analysis"
+
+[monitor]
+title = "Live Monitor"
+start = "Start"
+stop = "Stop"
+clear = "Clear"
+monitoring = "Monitoring..."
+timestamp = "Timestamp"
+node = "Node"
+command = "Command"
+args = "Arguments"
+client = "Client"
+db = "DB"
+no_data = "Click \"Start\" to begin monitoring Redis commands in real time."
+max_records_tip = "Reached maximum record limit (%{max}), oldest entries are being discarded."
