@@ -14,6 +14,7 @@
 
 mod about;
 mod bytes_editor;
+mod clients_manager;
 mod content;
 mod editor;
 mod hash_editor;
@@ -36,6 +37,7 @@ mod zset_editor;
 
 pub use about::open_about_window;
 pub use bytes_editor::ZedisBytesEditor;
+pub use clients_manager::ZedisClientsManager;
 pub use content::ZedisContent;
 pub use editor::ZedisEditor;
 pub use hash_editor::ZedisHashEditor;

@@ -97,6 +97,11 @@ pub fn i18n_slowlog_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("slowlog_editor.{key}"), locale = locale).into()
 }
 
+pub fn i18n_clients_manager<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("clients_manager.{key}"), locale = locale).into()
+}
+
 pub fn i18n_tray(cx: &App, key: &str) -> String {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("tray.{key}"), locale = locale).to_string()

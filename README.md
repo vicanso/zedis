@@ -94,6 +94,7 @@ Transform how you monitor Redis with a built-in, GPU-accelerated performance das
 - **Live Server Metrics**: Keep a pulse on your instance with beautifully rendered, real-time charts for **CPU**, **Memory**, and **Network I/O** (kbps).
 - **Memory Analyzer**: Deep dive into your Redis memory footprint. Visualize data distribution, instantly identify large keys (**BigKeys**), and optimize your storage efficiency to prevent OOM scenarios.
 - **Slowlog Inspector**: Pinpoint performance bottlenecks with a dedicated Slowlogs panel. Effortlessly track slow queries, view exact execution times, and analyze command arguments to optimize your application's responsiveness.
+- **Client Management**: Visually explore and manage active connections via an intuitive interface for `CLIENT LIST`. Sort clients by IP, connected duration, or idle time, and effortlessly terminate (`CLIENT KILL`) rogue or zombie connections with a single click to prevent server blocking.
 - **Deep Diagnostics**: Instantly spot system limits by tracking **Command Throughput (OPS)**, **Latency**, and **Client Connections**.
 - **Cache Health**: Monitor critical business metrics like **Key Hit Rate** and **Evicted Keys** to prevent cache avalanches before they happen.
 

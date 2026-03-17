@@ -526,7 +526,7 @@ impl RedisClient {
     /// # Returns
     /// * `Vec<SlowLogEntry>` - A vector of slow log entries.
     pub async fn get_slow_logs(&self) -> Result<Vec<SlowLogEntry>> {
-        let logs_arr: Vec<Vec<SlowLogEntry>> = self
+        let (_, logs_arr): (_, Vec<Vec<SlowLogEntry>>) = self
             .query_async_masters(vec![cmd("SLOWLOG").arg("GET").clone()])
             .await?;
 
@@ -540,7 +540,7 @@ impl RedisClient {
     /// * `cmds` - A vector of commands to execute.
     /// # Returns
     /// * `Vec<T>` - A vector of results from the commands.
-    pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<Vec<T>> {
+    pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<(Vec<RedisServer>, Vec<T>)> {
         let Some(first) = cmds.first() else {
             return Err(Error::Invalid {
                 message: "Commands are empty".to_string(),
@@ -551,9 +551,9 @@ impl RedisClient {
         for (index, cmd) in cmds.iter().enumerate() {
             new_cmds[index] = Some(cmd.clone());
         }
-        let values = query_async_masters(addrs, self.db, new_cmds).await?;
+        let values = query_async_masters(&addrs, self.db, new_cmds).await?;
         let values: Vec<T> = values.into_iter().flatten().collect();
-        Ok(values)
+        Ok((addrs, values))
     }
     /// Executes commands on all master nodes concurrently.
     /// # Arguments
@@ -565,14 +565,14 @@ impl RedisClient {
         cmds: Vec<Option<Cmd>>,
     ) -> Result<Vec<Option<T>>> {
         let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
-        let values = query_async_masters(addrs, self.db, cmds).await?;
+        let values = query_async_masters(&addrs, self.db, cmds).await?;
         Ok(values)
     }
     /// Calculates the total DB size across all masters.
     /// # Returns
     /// * `u64` - The total DB size.
     pub async fn dbsize(&self) -> Result<u64> {
-        let list = self.query_async_masters(vec![cmd("DBSIZE")]).await?;
+        let (_, list): (_, Vec<u64>) = self.query_async_masters(vec![cmd("DBSIZE")]).await?;
         Ok(list.iter().sum())
     }
     /// Pings the server to check connectivity.

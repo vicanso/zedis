@@ -273,7 +273,7 @@ impl ConnectionLike for RedisAsyncConn {
 /// * `addrs` - A vector of Redis connection strings (e.g., "redis://127.0.0.1").
 /// * `cmds` - A vector of commands to execute.
 pub(crate) async fn query_async_masters<T: FromRedisValue>(
-    addrs: Vec<RedisServer>,
+    addrs: &[RedisServer],
     db: usize,
     cmds: Vec<Option<Cmd>>,
 ) -> Result<Vec<Option<T>>> {
@@ -282,7 +282,7 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
             message: "Commands and addresses length mismatch".to_string(),
         });
     }
-    let tasks = addrs.into_iter().enumerate().map(|(index, addr)| {
+    let tasks = addrs.iter().enumerate().map(|(index, addr)| {
         // Clone data to move ownership into the async block.
         let current_cmd = cmds[index].clone();
 
@@ -294,7 +294,7 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
                 return Ok::<Option<T>, Error>(None);
             };
             // Establish a multiplexed async connection to the specific node.
-            let mut conn = open_single_connection(&addr, db, true).await?;
+            let mut conn = open_single_connection(addr, db, true).await?;
 
             // Execute the command asynchronously.
             let value: T = current_cmd.query_async(&mut conn).await?;

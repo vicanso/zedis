@@ -449,64 +449,84 @@ impl ZedisStatusBar {
             .child(
                 h_flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .child(
-                        Button::new("zedis-status-bar-server-metrics")
-                            .outline()
-                            .small()
-                            .icon(CustomIconName::Activity)
-                            .tooltip(i18n_status_bar(cx, "toggle_metrics_tooltip"))
-                            .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                    state.toggle_route((Route::Metrics, Route::Editor), cx);
-                                });
-                            })),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("zedis-status-bar-server-metrics")
+                                    .outline()
+                                    .small()
+                                    .icon(CustomIconName::Activity)
+                                    .tooltip(i18n_status_bar(cx, "toggle_metrics_tooltip"))
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                            state.toggle_route((Route::Metrics, Route::Editor), cx);
+                                        });
+                                    })),
+                            )
+                            .child(
+                                metric_badge(
+                                    "zedis-status-bar-latency",
+                                    Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary),
+                                    server_state.latency.0.clone(),
+                                    i18n_common(cx, "latency"),
+                                )
+                                .text_color(server_state.latency.1)
+                                .font_family(get_font_family()),
+                            ),
                     )
                     .child(
-                        metric_badge(
-                            "zedis-status-bar-latency",
-                            Icon::new(CustomIconName::ChevronsLeftRightEllipsis).text_color(cx.theme().primary),
-                            server_state.latency.0.clone(),
-                            i18n_common(cx, "latency"),
-                        )
-                        .text_color(server_state.latency.1)
-                        .font_family(get_font_family()),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("zedis-status-bar-server-memory-analysis")
+                                    .outline()
+                                    .small()
+                                    .icon(CustomIconName::MemoryStick)
+                                    .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                            state.toggle_route((Route::MemoryAnalysis, Route::Editor), cx);
+                                        });
+                                    })),
+                            )
+                            .child(Label::new(server_state.used_memory.clone())),
                     )
                     .child(
-                        Button::new("zedis-status-bar-server-memory-analysis")
-                            .outline()
-                            .small()
-                            .icon(CustomIconName::MemoryStick)
-                            .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
-                            .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                    state.toggle_route((Route::MemoryAnalysis, Route::Editor), cx);
-                                });
-                            })),
-                    )
-                    .child(Label::new(server_state.used_memory.clone()))
-                    .child(
-                        metric_badge(
-                            "zedis-status-bar-clients",
-                            Icon::new(CustomIconName::AudioWaveform),
-                            server_state.clients.clone(),
-                            i18n_common(cx, "clients"),
-                        )
-                        .text_color(cx.theme().primary),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("zedis-status-bar-clients")
+                                    .outline()
+                                    .small()
+                                    .icon(Icon::new(CustomIconName::AudioWaveform))
+                                    .tooltip(i18n_status_bar(cx, "toggle_clients_tooltip"))
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                            state.toggle_route((Route::Clients, Route::Editor), cx);
+                                        });
+                                    })),
+                            )
+                            .child(Label::new(server_state.clients.clone())),
                     )
                     .child(
-                        Button::new("zedis-status-bar-server-slow-logs")
-                            .outline()
-                            .small()
-                            .icon(CustomIconName::Snail)
-                            .tooltip(i18n_status_bar(cx, "toggle_slowlog_tooltip"))
-                            .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                    state.toggle_route((Route::Slowlog, Route::Editor), cx);
-                                });
-                            })),
-                    )
-                    .child(Label::new(server_state.slow_log_tips.clone())),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("zedis-status-bar-server-slow-logs")
+                                    .outline()
+                                    .small()
+                                    .icon(CustomIconName::Snail)
+                                    .tooltip(i18n_status_bar(cx, "toggle_slowlog_tooltip"))
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                            state.toggle_route((Route::Slowlog, Route::Editor), cx);
+                                        });
+                                    })),
+                            )
+                            .child(Label::new(server_state.slow_log_tips.clone())),
+                    ),
             )
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

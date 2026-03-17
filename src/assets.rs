@@ -77,6 +77,8 @@ pub enum CustomIconName {
     ListX,
     Snail,
     Rss,
+    Laptop,
+    HardDrive,
 }
 
 impl CustomIconName {
@@ -117,6 +119,8 @@ impl CustomIconName {
             CustomIconName::ListX => "icons/list-x.svg",
             CustomIconName::Snail => "icons/snail.svg",
             CustomIconName::Rss => "icons/rss.svg",
+            CustomIconName::Laptop => "icons/laptop.svg",
+            CustomIconName::HardDrive => "icons/hard-drive.svg",
         }
         .into()
     }

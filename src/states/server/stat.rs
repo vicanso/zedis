@@ -323,7 +323,8 @@ impl ZedisServerState {
                     None
                 };
 
-                let list: Vec<String> = client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
+                let (_, list): (_, Vec<String>) =
+                    client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 let mut info = aggregate_redis_info(infos);
                 info.metrics.timestamp_ms = unix_ts_millis();
