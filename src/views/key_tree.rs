@@ -439,8 +439,6 @@ pub struct ZedisKeyTree {
     focus_handle: FocusHandle,
 
     auto_refresh_task: Option<Task<()>>,
-    /// Debounce task for scan paged events to avoid rapid rebuilds
-    scan_paged_debounce: Option<Task<()>>,
 
     state: KeyTreeState,
 
@@ -480,10 +478,12 @@ impl ZedisKeyTree {
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeyCollapseAll => {
                     this.state.expanded_items.clear();
-                    this.update_key_tree(true, cx);
                 }
                 ServerEvent::ServerSelected(_) => {
                     this.reset(cx);
+                }
+                ServerEvent::KeyTreeUpdated => {
+                    this.update_key_tree(true, cx);
                 }
                 ServerEvent::ServerInfoUpdated => {
                     let readonly = server_state.read(cx).readonly();
@@ -502,41 +502,9 @@ impl ZedisKeyTree {
                 }
                 ServerEvent::KeyScanReset => {
                     this.reset_expand(cx);
-                    this.update_key_tree(true, cx);
-                }
-                ServerEvent::KeyScanPaged => {
-                    // Throttle: only schedule a rebuild if no debounce task is pending
-                    if this.scan_paged_debounce.is_none() {
-                        this.scan_paged_debounce = Some(cx.spawn(async move |handle, cx| {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(100))
-                                .await;
-                            let _ = handle.update(cx, |this: &mut ZedisKeyTree, cx| {
-                                this.scan_paged_debounce = None;
-                                this.update_key_tree(false, cx);
-                            });
-                        }));
-                    }
                 }
                 ServerEvent::KeyScanFinished => {
-                    let keys = server_state.read(cx).keys();
-                    let global_state = cx.global::<ZedisGlobalStore>().read(cx);
-                    if keys.len() < global_state.auto_expand_threshold() {
-                        let key_separator = global_state.key_separator();
-                        let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
-                        keys.iter().for_each(|(key, _)| {
-                            if !key.contains(key_separator) {
-                                return;
-                            }
-                            let parts: Vec<&str> = key.split(key_separator).collect();
-                            for i in 1..parts.len() {
-                                let prefix = parts[..i].join(key_separator);
-                                expanded_items.insert(prefix.into());
-                            }
-                        });
-                        this.state.expanded_items = expanded_items;
-                    }
-                    this.update_key_tree(true, cx);
+                    this.check_and_expand_keys(cx);
                     cx.notify();
                 }
                 _ => {}
@@ -610,7 +578,6 @@ impl ZedisKeyTree {
             server_state,
             should_enter_add_key_mode: None,
             auto_refresh_task: None,
-            scan_paged_debounce: None,
             _subscriptions: subscriptions,
         };
 
@@ -670,7 +637,27 @@ impl ZedisKeyTree {
             }
         }
         if inserted_count > 0 {
+            self.check_and_expand_keys(cx);
             self.update_key_tree(true, cx);
+        }
+    }
+    fn check_and_expand_keys(&mut self, cx: &mut Context<Self>) {
+        let keys = self.server_state.read(cx).keys();
+        let global_state = cx.global::<ZedisGlobalStore>().read(cx);
+        if keys.len() < global_state.auto_expand_threshold() {
+            let key_separator = global_state.key_separator();
+            let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
+            keys.iter().for_each(|(key, _)| {
+                if !key.contains(key_separator) {
+                    return;
+                }
+                let parts: Vec<&str> = key.split(key_separator).collect();
+                for i in 1..parts.len() {
+                    let prefix = parts[..i].join(key_separator);
+                    expanded_items.insert(prefix.into());
+                }
+            });
+            self.state.expanded_items = expanded_items;
         }
     }
 
@@ -723,8 +710,13 @@ impl ZedisKeyTree {
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
-                    let items =
-                        new_key_tree_items((*keys_snapshot).clone(), keyword, expanded_items, &separator, max_key_tree_depth);
+                    let items = new_key_tree_items(
+                        (*keys_snapshot).clone(),
+                        keyword,
+                        expanded_items,
+                        &separator,
+                        max_key_tree_depth,
+                    );
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
                 });
@@ -1374,7 +1366,7 @@ impl Render for ZedisKeyTree {
                         .button_props(dialog_button_props(cx))
                         .on_ok(move |_, _, cx| {
                             server_state.update(cx, |state, cx| {
-                                state.unlink_key(keys.clone(), cx);
+                                state.unlink_keys(keys.clone(), cx);
                             });
                             true
                         })

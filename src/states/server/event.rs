@@ -158,6 +158,9 @@ pub enum ServerEvent {
     /// Key collapse all
     KeyCollapseAll,
 
+    /// Key tree has been updated
+    KeyTreeUpdated,
+
     /// A key's value has been fetched (initial load).
     ValueLoaded,
     /// A key's value has been updated

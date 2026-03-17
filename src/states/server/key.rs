@@ -198,6 +198,7 @@ impl ZedisServerState {
                 if this.cursors.is_some() {
                     cx.emit(ServerEvent::KeyScanPaged);
                 }
+                cx.emit(ServerEvent::KeyTreeUpdated);
                 // Automatically load more if we haven't reached the limit and scan isn't done
                 if this.cursors.is_some() && this.keys.len() < max {
                     // run again
@@ -290,6 +291,7 @@ impl ZedisServerState {
     /// Collapse all keys
     pub fn collapse_all_keys(&mut self, cx: &mut Context<Self>) {
         cx.emit(ServerEvent::KeyCollapseAll);
+        cx.emit(ServerEvent::KeyTreeUpdated);
     }
     /// Initiates a new scan for keys matching the keyword.
     pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
@@ -384,7 +386,7 @@ impl ZedisServerState {
                     this.extend_keys(keys);
                 }
                 cx.emit(ServerEvent::KeyScanFinished);
-                cx.notify();
+                cx.emit(ServerEvent::KeyTreeUpdated);
                 if this.keys.len() == 1
                     && let Some(key) = this.keys.keys().next()
                 {
@@ -477,6 +479,7 @@ impl ZedisServerState {
                             };
                             if need_refresh {
                                 this.key_tree_id = Uuid::now_v7().to_string().into();
+                                cx.emit(ServerEvent::KeyTreeUpdated);
                             }
                         }
                         this.value = Some(value);
@@ -580,6 +583,7 @@ impl ZedisServerState {
                         this.value = None;
                     }
                 }
+                cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
             },
             cx,
@@ -616,13 +620,14 @@ impl ZedisServerState {
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
+                cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
             },
             cx,
         );
     }
 
-    pub fn unlink_key(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
+    pub fn unlink_keys(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
         let remove_keys = keys.clone();
@@ -638,6 +643,7 @@ impl ZedisServerState {
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
+                cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
             },
             cx,

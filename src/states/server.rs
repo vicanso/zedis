@@ -177,6 +177,7 @@ impl ZedisServerState {
         self.scan_times = 0;
         self.loaded_prefixes.clear();
         cx.emit(ServerEvent::KeyScanReset);
+        cx.emit(ServerEvent::KeyTreeUpdated);
     }
 
     /// Reset all state when switching to a different server
