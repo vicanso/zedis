@@ -700,11 +700,13 @@ impl ZedisProtoEditor {
                     .child(Label::new(i18n_proto_editor(cx, "title")).text_xl()),
             )
             .child(
-                div().flex_1().w_full().child(
-                    DataTable::new(&self.table_state)
-                        .stripe(true)
-                        .bordered(true)
-                        .scrollbar_visible(true, true),
+                div().flex_1().w_full().relative().child(
+                    div().absolute().inset_0().size_full().overflow_hidden().child(
+                        DataTable::new(&self.table_state)
+                            .stripe(true)
+                            .bordered(true)
+                            .scrollbar_visible(true, true),
+                    ),
                 ),
             )
             .child(
