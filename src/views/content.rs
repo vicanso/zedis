@@ -353,7 +353,7 @@ impl ZedisContent {
                     let Some(parts) = shlex::split(&command) else {
                         return Ok(SharedString::default());
                     };
-                    if parts.len() < 2 {
+                    if parts.len() < 1 {
                         return Ok(SharedString::default());
                     }
                     let cmd_name = parts[0].clone();

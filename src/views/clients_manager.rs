@@ -145,7 +145,7 @@ impl ClientsTableDelegate {
     fn new(rows: Vec<ClientRow>, readonly: bool, window: &mut Window, _cx: &mut gpui::App) -> Self {
         let window_width = window.viewport_size().width;
         let content_width = window_width - SIDEBAR_WIDTH;
-        let id_width = 100.;
+        let id_width = 120.;
         let name_width = 150.;
         let age_width = 110.;
         let idle_width = 110.;
