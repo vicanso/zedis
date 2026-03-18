@@ -9,7 +9,7 @@
 [![blazingly fast](https://www.blazingly.fast/api/badge.svg?repo=vicanso%2Fzedis)](https://www.blazingly.fast)
 
 
-![Zedis](./assets/demo.gif)
+<video src="./assets/demo.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ---
 

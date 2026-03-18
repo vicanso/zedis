@@ -10,8 +10,7 @@ A High-Performance, GPU-Accelerated Redis Client Built with **Rust** 🦀 and **
 [![blazingly fast](https://www.blazingly.fast/api/badge.svg?repo=vicanso%2Fzedis)](https://www.blazingly.fast)
 
 
-
-![Zedis](https://raw.githubusercontent.com/vicanso/zedis/main/assets/demo.gif)
+<video src="./assets/demo.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ---
 
