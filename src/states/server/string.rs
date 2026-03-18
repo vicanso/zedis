@@ -198,16 +198,3 @@ pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) 
         ..Default::default()
     })
 }
-
-// pub(crate) async fn get_redis_value(
-//     mut data: RedisBytesValue,
-//     key: &str,
-//     max_truncate_length: usize,
-// ) -> Result<RedisValue> {
-//     data.detect_and_update(key, max_truncate_length);
-//     Ok(RedisValue {
-//         key_type: KeyType::String,
-//         data: Some(RedisValueData::Bytes(Arc::new(data))),
-//         ..Default::default()
-//     })
-// }

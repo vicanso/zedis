@@ -104,7 +104,7 @@ impl ByteEditorData {
 /// String representation (either original string or hex dump)
 fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditorData {
     if value.bytes.is_empty() {
-        return ByteEditorData::Text(SharedString::default());
+        return ByteEditorData::Text(value.text.clone().unwrap_or_default());
     }
 
     let create_hex_view = || {
@@ -320,8 +320,10 @@ impl ZedisBytesEditor {
         let readonly = server_state.readonly();
 
         let redis_bytes_value = value.and_then(|v| v.bytes_value());
+        let is_redis_json = value.map(|v| v.is_redis_json()).unwrap_or(false);
+
         if let Some(redis_bytes_value) = &redis_bytes_value {
-            self.readonly = readonly || !redis_bytes_value.is_utf8_text();
+            self.readonly = readonly || !redis_bytes_value.is_utf8_text() || is_redis_json;
             self.data = format_byte_editor_data(redis_bytes_value, cx);
         } else {
             self.data = ByteEditorData::Text(SharedString::default());

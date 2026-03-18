@@ -32,6 +32,7 @@ use value::{KeyType, RedisValue, RedisValueData};
 
 pub mod event;
 pub mod hash;
+pub mod json;
 pub mod key;
 pub mod list;
 pub mod set;

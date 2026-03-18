@@ -15,6 +15,7 @@
 use super::{
     ServerEvent, ServerTask, ZedisServerState,
     hash::first_load_hash_value,
+    json::get_redis_json_value,
     list::first_load_list_value,
     set::first_load_set_value,
     stream::first_load_stream_value,
@@ -446,6 +447,7 @@ impl ZedisServerState {
                     KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
                     KeyType::Hash => first_load_hash_value(&mut conn, &key).await,
                     KeyType::Stream => first_load_stream_value(&mut conn, &key).await,
+                    KeyType::Json => get_redis_json_value(&mut conn, &key).await,
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),

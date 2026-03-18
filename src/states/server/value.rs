@@ -373,6 +373,7 @@ pub enum KeyType {
     Stream,
     Vectorset,
     Channel,
+    Json,
 }
 impl KeyType {
     /// Returns the abbreviated string representation of the key type
@@ -386,6 +387,7 @@ impl KeyType {
             KeyType::Stream => "STRM",
             KeyType::Vectorset => "VEC",
             KeyType::Channel => "CHANNEL",
+            KeyType::Json => "JSON",
             KeyType::Unknown => "",
         }
     }
@@ -461,6 +463,11 @@ impl RedisValue {
         matches!(self.status, RedisValueStatus::Loading)
     }
 
+    /// Checks if the value is a Redis JSON type
+    pub fn is_redis_json(&self) -> bool {
+        matches!(self.key_type, KeyType::Json)
+    }
+
     /// Returns the bytes value if the data is a Bytes type
     pub fn bytes_value(&self) -> Option<Arc<RedisBytesValue>> {
         if let Some(RedisValueData::Bytes(value)) = self.data.as_ref() {
@@ -521,6 +528,7 @@ impl From<&str> for KeyType {
             "stream" => KeyType::Stream,
             "vectorset" => KeyType::Vectorset,
             "string" => KeyType::String,
+            "ReJSON-RL" => KeyType::Json,
             _ => KeyType::Unknown,
         }
     }
