@@ -8,8 +8,7 @@
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/vicanso/zedis/total)
 [![blazingly fast](https://www.blazingly.fast/api/badge.svg?repo=vicanso%2Fzedis)](https://www.blazingly.fast)
 
-
-<video src="./assets/demo.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/217cc0a7-cc7e-40d0-ac7e-1ec61c36a02b" autoplay loop muted playsinline width="100%"></video>
 
 ---
 
