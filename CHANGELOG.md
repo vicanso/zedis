@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.3.0](https://github.com/vicanso/zedis/compare/v0.2.7..v0.3.0) - 2026-03-19
+
+### ⛰️  Features
+
+- Add read-only support for ReJSON-RL data type ([#59](https://github.com/orhun/git-cliff/issues/59)) - ([e38d0c3](https://github.com/vicanso/zedis/commit/e38d0c3debe2d77c1ff17bef7bda1eec9458fb91))
+- Implement Live Monitor for real-time command streaming - ([b2bd846](https://github.com/vicanso/zedis/commit/b2bd846a89078ed255701ecb61a1f6f1fc87a1bc))
+- Add client management dashboard - ([713ed0d](https://github.com/vicanso/zedis/commit/713ed0d10be1b2c38395644f4d9861d6ee3d547b))
+- Add system tray support for quick server status monitoring - ([8bf8d67](https://github.com/vicanso/zedis/commit/8bf8d67edb9bca53afbba3706bbe0b08e3b03247))
+
+### 🐛 Bug Fixes
+
+- Fix clippy error - ([55d7197](https://github.com/vicanso/zedis/commit/55d719708f511f08947871ff958089f674a45d87))
+- Resolve single command execution in cli mode - ([f977ff7](https://github.com/vicanso/zedis/commit/f977ff7431ffe67631815baef4739673f7e00b01))
+- Resolve incorrect rendering of proto editor - ([02d5f46](https://github.com/vicanso/zedis/commit/02d5f4654dfc3b5745ba3db24c933a4369156a25))
+- Fix lz4_flex ([#58](https://github.com/orhun/git-cliff/issues/58)) - ([98ab121](https://github.com/vicanso/zedis/commit/98ab1215b64f8198387a98094143b0768a7f38c1))
+
+### 🚜 Refactor
+
+- Unify keytree refresh events and fix sync issue on key deletion - ([ae59e6d](https://github.com/vicanso/zedis/commit/ae59e6dbd567a26524c29367235a18726a422d81))
+- Add i18n support for system tray - ([587971d](https://github.com/vicanso/zedis/commit/587971df8f29a4b9e5e6fc0e5a98394135772500))
+- Enable system tray for non-Linux platforms only - ([9b71637](https://github.com/vicanso/zedis/commit/9b71637342242e2914750656af9eca017cf7ff4e))
+- Only enable system tray for non-Linux platforms only - ([24bddd1](https://github.com/vicanso/zedis/commit/24bddd119ce129cad04a07d5c38be06d26ff3def))
+- Optimize error handling and keytree rendering - ([13aa492](https://github.com/vicanso/zedis/commit/13aa492f8cbdf7a123c91d2693a1651e2c928ff4))
+
+### 📚 Documentation
+
+- Change video source to GitHub asset link - ([ad9decc](https://github.com/vicanso/zedis/commit/ad9deccd8dae64b4bee0a33fcb1f1baf72defb4a))
+- Update demo video - ([e9e0592](https://github.com/vicanso/zedis/commit/e9e05922376423bafa30dd09acdab771407b181a))
+
+### ⚡ Performance
+
+- Optimize keytree refresh logic during scan operations - ([37eaac4](https://github.com/vicanso/zedis/commit/37eaac4f290025425d9b2c52fc6ab5183cecde68))
+
+### 🎨 Styling
+
+- Optimize status bar layout for better clarity - ([4a01818](https://github.com/vicanso/zedis/commit/4a0181873b92bd0817f38fbd4296028b393bfe32))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update Windows build to generate both MSI and EXE installers ([#49](https://github.com/orhun/git-cliff/issues/49)) - ([07da2d4](https://github.com/vicanso/zedis/commit/07da2d4f67e1bea15d6bbbdc7aa579f1c4d288e2))
+
 ## [0.2.7](https://github.com/vicanso/zedis/compare/v0.2.6..v0.2.7) - 2026-03-15
 
 ### ⛰️  Features
