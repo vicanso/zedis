@@ -320,10 +320,9 @@ impl ZedisBytesEditor {
         let readonly = server_state.readonly();
 
         let redis_bytes_value = value.and_then(|v| v.bytes_value());
-        let is_redis_json = value.map(|v| v.is_redis_json()).unwrap_or(false);
 
         if let Some(redis_bytes_value) = &redis_bytes_value {
-            self.readonly = readonly || !redis_bytes_value.is_utf8_text() || is_redis_json;
+            self.readonly = readonly || !redis_bytes_value.is_utf8_text();
             self.data = format_byte_editor_data(redis_bytes_value, cx);
         } else {
             self.data = ByteEditorData::Text(SharedString::default());

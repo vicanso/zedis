@@ -552,6 +552,7 @@ impl ZedisServerState {
         };
         let format = original_bytes_value.format;
         let original_size = value.size;
+        let is_redis_json = value.is_redis_json();
 
         value.status = RedisValueStatus::Updating;
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
@@ -568,17 +569,26 @@ impl ZedisServerState {
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let mut conn = client.connection();
-                let mut binding = cmd("SET");
-                let mut new_cmd = binding.arg(key.as_str()).arg(new_value.as_str());
-                // keep ttl if the version is at least 6.0.0
-                new_cmd = if client.is_at_least_version("6.0.0") {
-                    new_cmd.arg("KEEPTTL")
-                } else if ttl > 0 {
-                    new_cmd.arg("PX").arg(ttl)
+                if is_redis_json {
+                    let _: () = cmd("JSON.SET")
+                        .arg(key.as_str())
+                        .arg("$")
+                        .arg(new_value.as_str())
+                        .query_async(&mut conn)
+                        .await?;
                 } else {
-                    new_cmd
-                };
-                let _: () = new_cmd.query_async(&mut conn).await?;
+                    let mut binding = cmd("SET");
+                    let mut new_cmd = binding.arg(key.as_str()).arg(new_value.as_str());
+                    // keep ttl if the version is at least 6.0.0
+                    new_cmd = if client.is_at_least_version("6.0.0") {
+                        new_cmd.arg("KEEPTTL")
+                    } else if ttl > 0 {
+                        new_cmd.arg("PX").arg(ttl)
+                    } else {
+                        new_cmd
+                    };
+                    let _: () = new_cmd.query_async(&mut conn).await?;
+                }
 
                 let mut size = None;
                 if let Ok(memory_usage) = cmd("MEMORY")
