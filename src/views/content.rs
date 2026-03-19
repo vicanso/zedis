@@ -25,9 +25,10 @@ use crate::{
         ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisSlowlogEditor, ZedisStatusBar,
     },
 };
-use gpui::{Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{Entity, FocusHandle, Pixels, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme,
+    highlighter::Language,
     input::{Input, InputEvent, InputState, MoveDown, MoveUp, Position},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -76,9 +77,10 @@ pub struct ZedisContent {
     monitor: Option<Entity<ZedisMonitor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
-    cmd_output_scroll_handle: ScrollHandle,
+    cmd_output_state: Entity<InputState>,
+    cmd_output_text: String,
+    cmd_output_dirty: bool,
     cmd_input_state: Entity<InputState>,
-    cmd_outputs: Vec<SharedString>,
     redis_commands: Vec<SharedString>,
     cmd_suggestions: Vec<String>,
     cmd_suggestion_index: Option<usize>,
@@ -177,6 +179,13 @@ impl ZedisContent {
         let global_store = cx.global::<ZedisGlobalStore>().read(cx);
         let key_tree_width = global_store.key_tree_width();
         let route = global_store.route();
+        let cmd_output_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor(Language::from_str("bash").name())
+                .line_number(true)
+                .searchable(true)
+                .soft_wrap(true)
+        });
         let cmd_input_state = cx.new(|cx| InputState::new(window, cx).auto_grow(1, 3));
         subscriptions.push(
             cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| match event {
@@ -239,15 +248,16 @@ impl ZedisContent {
             clients_manager: None,
             monitor: None,
             key_tree: None,
-            cmd_outputs: Vec::with_capacity(5),
             redis_commands: Vec::new(),
             key_tree_width,
+            cmd_output_state,
+            cmd_output_text: String::new(),
+            cmd_output_dirty: false,
             cmd_input_state,
             cmd_suggestions: Vec::new(),
             cmd_suggestion_index: None,
             should_focus: false,
             should_focus_cmd_input: false,
-            cmd_output_scroll_handle: ScrollHandle::new(),
             cmd_history_index: None,
             focus_handle,
             proto_editor: None,
@@ -255,14 +265,8 @@ impl ZedisContent {
         }
     }
     fn reset_cmd_state(&mut self, _cx: &mut Context<Self>) {
-        self.cmd_outputs.clear();
-        self.cmd_outputs.extend(
-            ZEDIS_LOGO
-                .replace("{VERSION}", VERSION)
-                .lines()
-                .map(|line| line.to_string().into()),
-        );
-        self.cmd_output_scroll_handle = ScrollHandle::new();
+        self.cmd_output_text = ZEDIS_LOGO.replace("{VERSION}", VERSION);
+        self.cmd_output_dirty = true;
     }
     fn update_redis_commands(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
@@ -370,16 +374,11 @@ impl ZedisContent {
                 };
 
                 let _ = handle.update(cx, |this, cx| {
-                    this.cmd_outputs.extend(vec![
-                        format!("{CMD_LABEL} {command_clone}").into(),
-                        content,
-                        SharedString::default(),
-                    ]);
-                    let scroll_handle = this.cmd_output_scroll_handle.clone();
+                    use std::fmt::Write;
+                    let _ = writeln!(this.cmd_output_text, "{CMD_LABEL} {command_clone}");
+                    let _ = writeln!(this.cmd_output_text, "{content}");
+                    this.cmd_output_dirty = true;
                     cx.notify();
-                    cx.defer(move |_cx| {
-                        scroll_handle.scroll_to_bottom();
-                    });
                 });
             }
         })
@@ -591,23 +590,31 @@ impl ZedisContent {
                 this.cmd_history_index = None;
             });
 
+            if std::mem::take(&mut self.cmd_output_dirty) {
+                let text = SharedString::from(self.cmd_output_text.clone());
+                self.cmd_output_state.update(cx, |state, cx| {
+                    state.set_value(text, window, cx);
+                    state.set_cursor_position(Position::new(u32::MAX, u32::MAX), window, cx);
+                });
+                self.should_focus_cmd_input = true;
+            }
+
             v_flex()
                 .w_full()
                 .h_full()
                 .child(
-                    div()
-                        .id("cmd-output-scrollable-container")
-                        .track_scroll(&self.cmd_output_scroll_handle)
-                        .flex_1()
-                        .w_full()
-                        .overflow_y_scroll()
-                        .child(
-                            v_flex().p_2().gap_1().children(
-                                self.cmd_outputs
-                                    .iter()
-                                    .map(|line| div().child(Label::new(line.clone()).font_family(font_family.clone()))),
-                            ),
+                    div().flex_1().w_full().relative().child(
+                        div().absolute().inset_0().size_full().overflow_hidden().child(
+                            Input::new(&self.cmd_output_state)
+                                .w_full()
+                                .h_full()
+                                .font_family(font_family.clone())
+                                .disabled(true)
+                                .appearance(false)
+                                .bordered(false)
+                                .focus_bordered(false),
                         ),
+                    ),
                 )
                 .child(
                     v_flex()
