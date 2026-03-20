@@ -1144,7 +1144,7 @@ impl ConnectionManager {
             }
         };
 
-        debug!(server_id, version = client.version(), db, access_mode = ?client.access_mode(), "create redis client success");
+        debug!(server_id, version = client.version(), modules = ?client.modules, db, access_mode = ?client.access_mode(), "create redis client success");
         Ok(client)
     }
     /// Retrieves or creates a RedisClient for the given configuration name.

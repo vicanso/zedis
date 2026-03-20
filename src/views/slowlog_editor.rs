@@ -542,11 +542,12 @@ impl gpui::Render for ZedisSlowlogEditor {
             .overflow_hidden()
             // Toolbar
             .child(
-                ZedisDivider::new()
+                h_flex()
                     .px_4()
                     .h(px(40.))
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .justify_between()
                     .child(
                         h_flex()
                             .gap_2()
@@ -559,20 +560,23 @@ impl gpui::Render for ZedisSlowlogEditor {
                             ),
                     )
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
+                        ZedisDivider::new()
                             .child(
-                                Label::new(i18n_slowlog_editor(cx, "min_duration"))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .text_sm(),
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        Label::new(i18n_slowlog_editor(cx, "min_duration"))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .text_sm(),
+                                    )
+                                    .child(Input::new(&self.duration_input_state).xsmall().w(px(60.)))
+                                    .child(Label::new("ms").text_color(cx.theme().muted_foreground).text_sm()),
                             )
-                            .child(Input::new(&self.duration_input_state).xsmall().w(px(60.)))
-                            .child(Label::new("ms").text_color(cx.theme().muted_foreground).text_sm()),
-                    )
-                    .when(!command_buttons.is_empty(), |this| {
-                        this.child(h_flex().gap_2().children(command_buttons))
-                    }),
+                            .when(!command_buttons.is_empty(), |this| {
+                                this.child(h_flex().gap_2().children(command_buttons))
+                            }),
+                    ),
             )
             // Table body
             .child(
