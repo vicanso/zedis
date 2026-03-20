@@ -19,6 +19,7 @@ use chrono::Local;
 use gpui::{Hsla, SharedString, prelude::*};
 use redis::cmd;
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -534,13 +535,53 @@ impl From<&str> for KeyType {
     }
 }
 
+/// Compute a RFC 7396 JSON Merge Patch from `old` to `new`.
+///
+/// - Changed/added fields appear with their new value.
+/// - Deleted fields appear as `null`.
+/// - Returns `None` when both values are identical (no patch needed).
+fn json_merge_diff(old: &JsonValue, new: &JsonValue) -> Option<JsonValue> {
+    if old == new {
+        return None;
+    }
+    match (old, new) {
+        (JsonValue::Object(old_map), JsonValue::Object(new_map)) => {
+            let mut patch = serde_json::Map::new();
+            // Detect changed and added keys
+            for (k, new_v) in new_map {
+                if let Some(old_v) = old_map.get(k) {
+                    if let Some(sub_patch) = json_merge_diff(old_v, new_v) {
+                        patch.insert(k.clone(), sub_patch);
+                    }
+                } else {
+                    // New key
+                    patch.insert(k.clone(), new_v.clone());
+                }
+            }
+            // Detect deleted keys
+            for k in old_map.keys() {
+                if !new_map.contains_key(k) {
+                    patch.insert(k.clone(), JsonValue::Null);
+                }
+            }
+            if patch.is_empty() {
+                None
+            } else {
+                Some(JsonValue::Object(patch))
+            }
+        }
+        // For non-object types (arrays, primitives), return the new value directly
+        _ => Some(new.clone()),
+    }
+}
+
 impl ZedisServerState {
-    /// Saves a new value for a Redis string key
+    /// Updates a new value for a Redis string key
     ///
     /// This method updates the UI immediately with the new value and then
     /// asynchronously persists it to Redis. If the save fails, the original
     /// value is restored.
-    pub fn save_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
+    pub fn update_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
         let Some(value) = self.value.as_mut() else {
@@ -553,6 +594,22 @@ impl ZedisServerState {
         let format = original_bytes_value.format;
         let original_size = value.size;
         let is_redis_json = value.is_redis_json();
+
+        // For JSON type, compute a merge patch (RFC 7396) between old and new values.
+        // Three possible outcomes:
+        // - Some(Some(patch)): fields changed, use JSON.MERGE with the diff
+        // - Some(None): no changes, skip the write entirely
+        // - None: parse failed or non-JSON, fall back to JSON.SET
+        let json_merge_patch: Option<Option<String>> = if is_redis_json {
+            original_bytes_value.text.as_deref().and_then(|old_text| {
+                let old_json = serde_json::from_str::<JsonValue>(old_text).ok()?;
+                let new_json = serde_json::from_str::<JsonValue>(new_value.as_ref()).ok()?;
+                let patch = json_merge_diff(&old_json, &new_json);
+                Some(patch.and_then(|p| serde_json::to_string(&p).ok()))
+            })
+        } else {
+            None
+        };
 
         value.status = RedisValueStatus::Updating;
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
@@ -570,12 +627,29 @@ impl ZedisServerState {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let mut conn = client.connection();
                 if is_redis_json {
-                    let _: () = cmd("JSON.SET")
-                        .arg(key.as_str())
-                        .arg("$")
-                        .arg(new_value.as_str())
-                        .query_async(&mut conn)
-                        .await?;
+                    match json_merge_patch {
+                        Some(Some(patch)) => {
+                            // Partial update: only send changed fields
+                            let _: () = cmd("JSON.MERGE")
+                                .arg(key.as_str())
+                                .arg("$")
+                                .arg(patch.as_str())
+                                .query_async(&mut conn)
+                                .await?;
+                        }
+                        Some(None) => {
+                            // No changes, skip write
+                        }
+                        None => {
+                            // Parse failed or root type changed, full replace
+                            let _: () = cmd("JSON.SET")
+                                .arg(key.as_str())
+                                .arg("$")
+                                .arg(new_value.as_str())
+                                .query_async(&mut conn)
+                                .await?;
+                        }
+                    }
                 } else {
                     let mut binding = cmd("SET");
                     let mut new_cmd = binding.arg(key.as_str()).arg(new_value.as_str());
