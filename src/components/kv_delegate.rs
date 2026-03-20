@@ -91,6 +91,18 @@ pub trait ZedisKvFetcher: 'static {
     /// Updates values for a specific row.
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
 
+    /// Returns updated column definitions if they may change dynamically (e.g., Stream fields).
+    /// Default returns `None` (columns are static).
+    fn columns(&self) -> Option<Vec<KvTableColumn>> {
+        None
+    }
+
+    /// Whether the edit form should be readonly when viewing an existing row.
+    /// When `true`, selecting a row shows values as read-only; only adding allows editing.
+    fn readonly_on_edit(&self) -> bool {
+        false
+    }
+
     /// Factory method to create a new instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
@@ -156,6 +168,31 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     pub fn set_fetcher(&mut self, fetcher: Arc<T>) {
         self.fetcher = fetcher;
         self.processing = Rc::new(Cell::new(false));
+    }
+
+    /// Replaces the column definitions (e.g., when Stream fields change).
+    pub fn set_columns(&mut self, columns: Vec<KvTableColumn>) {
+        let ui_columns = columns
+            .iter()
+            .map(|item| {
+                Column::new(item.name.clone(), item.name.clone())
+                    .when_some(item.width, |col, width| col.width(width))
+                    .map(|mut col| {
+                        if let Some(align) = item.align {
+                            col.align = align;
+                        }
+                        col.paddings = Some(Edges {
+                            top: px(2.),
+                            bottom: px(2.),
+                            left: px(10.),
+                            right: px(10.),
+                        });
+                        col
+                    })
+            })
+            .collect();
+        self.table_columns = columns;
+        self.columns = ui_columns;
     }
 }
 

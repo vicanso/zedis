@@ -47,12 +47,13 @@ yay -S zedis-bin
 - **虚拟列表**：借助虚拟滚动技术与 `SCAN` 迭代，毫不费力地高效渲染 10 万+ 级别的数据列表。
 
 ### 🧠 智能数据查看器
-**全面数据类型支持**：原生支持编辑 **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, **Stream** 以及实时的 **Pub/Sub**（发布/订阅）频道。
+**全面数据类型支持**：原生支持编辑 **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, **Stream**,  **RedisJSON (ReJSON-RL)** 以及实时的 **Pub/Sub**（发布/订阅）频道。
 
 Zedis 会自动检测内容类型 (`ViewerMode::Auto`)，并以最直观、实用的格式进行渲染：
 - **无感自动解压**：自动检测并解压 **LZ4**, **SNAPPY**, **GZIP**, 和 **ZSTD** 压缩数据（例如：自动解压并格式化被压缩的 JSON 数据）。
 - **富文本内容支持**：
-  - **JSON**：自动**格式化（Pretty-print）**并提供完整的**语法高亮**。
+  - **RedisJSON (ReJSON)**: 提供完整的读写支持。在编辑数据时，Zedis 会智能计算符合 RFC 7396 标准的 JSON Merge Patch 差异，通过下发极简的 JSON.MERGE 命令实现字段级的局部更新，彻底告别低效且昂贵的全量文档覆盖。
+  - **JSON**: 针对标准的 JSON 字符串，提供自动格式化排版（Pretty-printing）与完整的语法高亮支持。
   - **Protobuf**：零配置反序列化，并带有**语法高亮**。
   - **MessagePack**：将二进制 MsgPack 数据反序列化为易读的类 JSON 格式。
   - **图片**：原生预览存储的图片文件 (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`)。

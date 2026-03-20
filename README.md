@@ -54,12 +54,13 @@ yay -S zedis-bin
 - **Virtual List**: Efficiently handle lists with 100k+ keys using virtual scrolling and `SCAN` iteration.
 
 ### 🧠 Smart Data Viewer
-**Comprehensive Type Support**: Native editors for **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, **Stream**, and real-time **Pub/Sub** channels.
+**Comprehensive Type Support**: Native editors for **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, **Stream**, **RedisJSON (ReJSON-RL)**, and real-time **Pub/Sub** channels.
 
 Zedis automatically detects content types (`ViewerMode::Auto`) and renders them in the most useful format:
 - **Automatic Decompression**: Transparently detects and decompresses **LZ4**, **SNAPPY**, **GZIP**, and **ZSTD** data (e.g., compressed JSON is automatically unpacked and pretty-printed).
 - **Rich Content Support**:
-  - **JSON**: Automatic **pretty-printing** with full **syntax highlighting**.
+  - **RedisJSON (ReJSON)**: Full read/write support. Zedis intelligently computes RFC 7396 JSON Merge Patch diffs when editing, sending minimal `JSON.MERGE` commands for partial field updates instead of heavy, full-document overwrites.
+  - **JSON**: Automatic **pretty-printing** with full **syntax highlighting** for standard JSON strings.
   - **Protobuf**: Zero-config deserialization with **syntax highlighting**.
   - **MessagePack**: Deserializes binary MsgPack data into a readable JSON-like format.
   - **Images**: Native preview for stored images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`).
@@ -96,6 +97,8 @@ Transform how you monitor Redis with a built-in, GPU-accelerated performance das
 - **Client Management**: Visually explore and manage active connections via an intuitive interface for `CLIENT LIST`. Sort clients by IP, connected duration, or idle time, and effortlessly terminate (`CLIENT KILL`) rogue or zombie connections with a single click to prevent server blocking.
 - **Deep Diagnostics**: Instantly spot system limits by tracking **Command Throughput (OPS)**, **Latency**, and **Client Connections**.
 - **Cache Health**: Monitor critical business metrics like **Key Hit Rate** and **Evicted Keys** to prevent cache avalanches before they happen.
+
+
 🚧 Development Status
 
 Zedis is currently in early active development. To maintain development velocity and architectural flexibility, we are not accepting Pull Requests at this time.

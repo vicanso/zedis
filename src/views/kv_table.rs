@@ -68,6 +68,8 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     loading: bool,
     /// Flag indicating the selected key has changed (triggers input reset)
     key_changed: Option<bool>,
+    /// Flag indicating columns have changed and delegate needs rebuild
+    columns_dirty: bool,
     /// Whether the table is readonly
     readonly: bool,
     /// Supported operations mode (add, update, remove, filter)
@@ -203,6 +205,22 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     this.done = fetcher.is_done();
                     this.items_count = fetcher.rows_count();
                     this.total_count = fetcher.count();
+
+                    // Check if columns changed (e.g., Stream with new fields)
+                    if let Some(new_columns) = fetcher.columns() {
+                        let columns_changed = new_columns.len() != this.columns.len()
+                            || new_columns
+                                .iter()
+                                .zip(this.columns.iter())
+                                .any(|(a, b)| a.name != b.name);
+                        if columns_changed {
+                            this.columns = new_columns.clone();
+                            this.columns_dirty = true;
+                            this.edit_row = None;
+                            this.editor_form = None;
+                        }
+                    }
+
                     this.table_state.update(cx, |state, _| {
                         state.delegate_mut().set_fetcher(fetcher);
                     });
@@ -296,6 +314,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             done,
             loading: false,
             key_changed: None,
+            columns_dirty: false,
             edit_row: None,
             values_should_fill: false,
             original_values: IndexMap::new(),
@@ -529,8 +548,13 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let flex_field_height = (reset_form_height / flex_field_count as f32).max(150.);
 
         let mut first = true;
+        let readonly_on_edit = !is_adding && self.fetcher.readonly_on_edit();
         for column in self.columns.iter() {
             if column.column_type != KvTableColumnType::Value {
+                continue;
+            }
+            let value = self.original_values.get(&column.name);
+            if readonly_on_edit && value.map(|item| item.is_empty()).unwrap_or(true) {
                 continue;
             }
             let mut field = ZedisFormField::new(column.name.clone(), column.name.clone())
@@ -554,7 +578,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 field = field.field_type(field_type);
             }
 
-            if !is_adding && let Some(value) = self.original_values.get(&column.name) {
+            if !is_adding && let Some(value) = value {
                 field = field.default_value(value.clone());
             }
             fields.push(field);
@@ -606,9 +630,17 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     ]
                 })
             })
-            .when(self.fetcher.support_add_fields(), |this| this.support_add_fields());
+            .when(!readonly_on_edit && self.fetcher.support_add_fields(), |this| {
+                this.support_add_fields()
+            });
 
-        let form = cx.new(|cx| ZedisForm::new("kv-table-edit-form", form_opts, window, cx));
+        let form = cx.new(|cx| {
+            let mut f = ZedisForm::new("kv-table-edit-form", form_opts, window, cx);
+            if readonly_on_edit {
+                f.set_disabled(true, cx);
+            }
+            f
+        });
         self.editor_form = Some(form.clone());
         form.clone()
     }
@@ -616,6 +648,40 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_color = cx.theme().muted_foreground;
+
+        // Rebuild delegate columns when they changed (e.g., Stream with new fields)
+        if std::mem::take(&mut self.columns_dirty) {
+            let new_delegate_columns = Self::new_columns(self.columns.clone(), window, cx);
+            // Rebuild value_states for the new columns
+            self.value_states = self
+                .columns
+                .iter()
+                .enumerate()
+                .flat_map(|(index, column)| {
+                    if column.column_type != KvTableColumnType::Value {
+                        return None;
+                    }
+                    let state = cx.new(|cx| {
+                        if column.readonly {
+                            InputState::new(window, cx)
+                        } else {
+                            InputState::new(window, cx)
+                                .code_editor(Language::from_str("json").name())
+                                .line_number(true)
+                                .indent_guides(true)
+                                .searchable(true)
+                                .soft_wrap(true)
+                        }
+                    });
+                    Some((index, state))
+                })
+                .collect();
+            self.table_state.update(cx, |state, cx| {
+                state.delegate_mut().set_columns(new_delegate_columns);
+                state.refresh(cx);
+            });
+        }
+
         // Clear search input when key changes
         if let Some(true) = self.key_changed.take() {
             self.keyword_state.update(cx, |input, cx| {

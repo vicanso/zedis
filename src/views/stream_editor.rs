@@ -112,6 +112,24 @@ impl ZedisKvFetcher for ZedisStreamValues {
     fn primary_index(&self) -> usize {
         1
     }
+    fn readonly_on_edit(&self) -> bool {
+        true
+    }
+    fn columns(&self) -> Option<Vec<KvTableColumn>> {
+        Some(
+            self.fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    if index == 0 {
+                        KvTableColumn::new_auto_created("Entry Id")
+                    } else {
+                        KvTableColumn::new(field.as_str(), None).field_type(ZedisFormFieldType::Editor)
+                    }
+                })
+                .collect(),
+        )
+    }
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         let fields = value.stream_fields();
         let mut this = Self {

@@ -502,6 +502,7 @@ pub struct ZedisForm {
     tabs: Option<Vec<SharedString>>,
     _subscriptions: Vec<Subscription>,
     pub is_processing: bool,
+    disabled: bool,
     in_dialog: bool,
 }
 
@@ -632,6 +633,7 @@ impl ZedisForm {
             support_add_fields: options.support_add_fields,
             support_add_fields_on: options.support_add_fields_on,
             is_processing: false,
+            disabled: false,
             in_dialog: false,
             _subscriptions: subscriptions,
         };
@@ -767,6 +769,12 @@ impl ZedisForm {
             cx.notify();
         }
     }
+    /// Disable or enable all form inputs and buttons.
+    pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        self.disabled = disabled;
+        cx.notify();
+    }
+
     fn remove_add_field(&mut self, index: usize, cx: &mut Context<Self>) {
         self.add_field_states.remove(index);
         cx.notify();
@@ -868,21 +876,25 @@ impl Render for ZedisForm {
         // Read the active tab index once to avoid repeated entity reads inside the loop.
         let active_tab_index = *self.tab_selected_index.read(cx);
 
+        let form_disabled = self.disabled;
+
         for (index, (field, field_state)) in self.field_states.iter().enumerate() {
             if !self.should_render_field(field, active_tab_index, cx) {
                 continue;
             }
 
+            let field_disabled = form_disabled || field.readonly;
+
             match field_state {
                 ZedisFormFieldState::Input(state) => {
                     if field.field_type == ZedisFormFieldType::InputNumber {
                         form_container = form_container
-                            .child(new_field(field).child(NumberInput::new(state).disabled(field.readonly)));
+                            .child(new_field(field).child(NumberInput::new(state).disabled(field_disabled)));
                     } else {
                         form_container = form_container.child(
                             new_field(field).child(
                                 Input::new(state)
-                                    .disabled(field.readonly)
+                                    .disabled(field_disabled)
                                     .when(field.mask, |this| this.mask_toggle())
                                     .refine_style(&field.style),
                             ),
@@ -897,7 +909,7 @@ impl Render for ZedisForm {
                             Checkbox::new(id)
                                 .label(field.placeholder.clone())
                                 .checked(*state.read(cx))
-                                .disabled(field.readonly)
+                                .disabled(field_disabled)
                                 .on_click(move |check, _, cx| {
                                     state_clone.update(cx, |state, _| {
                                         *state = *check;
@@ -916,7 +928,7 @@ impl Render for ZedisForm {
                             RadioGroup::horizontal(id)
                                 .children(field.options.clone().unwrap_or_default())
                                 .selected_index(Some(selected))
-                                .disabled(field.readonly)
+                                .disabled(field_disabled)
                                 .on_click(move |index, _, cx| {
                                     state.update(cx, |state, _| {
                                         *state = *index;
@@ -936,11 +948,12 @@ impl Render for ZedisForm {
                     field().child(
                         h_flex()
                             .gap_2()
-                            .child(Input::new(field_state))
-                            .child(Input::new(value_state))
+                            .child(Input::new(field_state).disabled(form_disabled))
+                            .child(Input::new(value_state).disabled(form_disabled))
                             .child(
                                 Button::new(("remove-add-field", index))
                                     .icon(IconName::CircleX)
+                                    .disabled(form_disabled)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.remove_add_field(index, cx);
                                     })),
@@ -952,11 +965,12 @@ impl Render for ZedisForm {
         if show_add_fields {
             form_container =
                 form_container.child(field().child(h_flex().justify_end().child(
-                    Button::new("add-add-field").icon(IconName::Plus).on_click(cx.listener(
-                        move |this, _, window, cx| {
+                    Button::new("add-add-field")
+                        .icon(IconName::Plus)
+                        .disabled(form_disabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.add_field(window, cx);
-                        },
-                    )),
+                        })),
                 )));
         }
 
@@ -975,13 +989,14 @@ impl Render for ZedisForm {
         }
 
         // Build action buttons (cancel on the left, confirm/primary on the right).
+        let buttons_disabled = form_disabled || self.is_processing;
         let mut buttons = Vec::with_capacity(2);
         if self.on_cancel.is_some() {
             let button_id = ElementId::NamedChild(parent_id.clone(), "cancel".into());
             buttons.push(
                 Button::new(button_id)
                     .label(self.cancel_label.clone())
-                    .disabled(self.is_processing)
+                    .disabled(buttons_disabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.cancel(window, cx);
                     })),
@@ -992,7 +1007,7 @@ impl Render for ZedisForm {
             buttons.push(
                 Button::new(button_id)
                     .label(self.confirm_label.clone())
-                    .disabled(self.is_processing)
+                    .disabled(buttons_disabled)
                     .when_some(self.confirm_tooltip.clone(), |this, tooltip| this.tooltip(tooltip))
                     .primary()
                     .on_click(cx.listener(move |this, _, window, cx| {
