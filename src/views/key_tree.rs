@@ -800,8 +800,13 @@ impl ZedisKeyTree {
         } else {
             None
         };
-        let category_list = ["String", "List", "Set", "Zset", "Hash", "Stream"];
-        // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5
+        let supports_rejson = self.server_state.read(cx).supports_rejson();
+        let mut category_list = vec!["String", "List", "Set", "Zset", "Hash", "Stream"];
+        if supports_rejson {
+            category_list.push("Json");
+        }
+        // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5, Json=6(optional)
+        let json_index = category_list.iter().position(|&s| s == "Json");
         let fields = vec![
             ZedisFormField::new("category", i18n_key_tree(cx, "category"))
                 .field_type(ZedisFormFieldType::RadioGroup)
@@ -853,6 +858,14 @@ impl ZedisKeyTree {
             ZedisFormField::new("stream_id", i18n_common(cx, "stream_id"))
                 .placeholder(i18n_common(cx, "stream_id_placeholder"))
                 .visible_on("category", &[5]),
+            // JSON value field (only when Json type is available)
+            ZedisFormField::new("json_value", i18n_common(cx, "value"))
+                .placeholder("{}")
+                .default_value("{}")
+                .required()
+                .field_type(ZedisFormFieldType::Editor)
+                .h(px(90.))
+                .visible_on("category", &json_index.map_or(vec![], |i| vec![i])),
         ];
         let server_state = self.server_state.clone();
 
@@ -868,7 +881,7 @@ impl ZedisKeyTree {
                     .get("category")
                     .and_then(|v| v.parse::<usize>().ok())
                     .unwrap_or(0);
-                let category = category_list.get(category_index).cloned().unwrap_or_default();
+                let category = category_list.get(category_index).copied().unwrap_or_default();
                 let key = values.get("key").cloned().unwrap_or_default();
                 let ttl = values.get("ttl").cloned().unwrap_or_default();
 
@@ -891,6 +904,11 @@ impl ZedisKeyTree {
                     KeyType::Hash => {
                         vec![get_or_seed("hash_field", 0), get_or_seed("hash_value", 1)]
                     }
+                    KeyType::Json => {
+                        // JSON.SET key $ <json_value>
+                        let json_value = get_or_seed("json_value", 1);
+                        vec!["$".into(), json_value]
+                    }
                     KeyType::Stream => {
                         // stream_id + dynamic field-value pairs from add_fields
                         let mut args = vec![get_or_seed("stream_id", 0)];
@@ -907,6 +925,7 @@ impl ZedisKeyTree {
                             "hash_field",
                             "hash_value",
                             "stream_id",
+                            "json_value",
                         ];
                         let mut has_dynamic = false;
                         for (k, v) in &values {
@@ -931,6 +950,7 @@ impl ZedisKeyTree {
                 });
                 true
             })
+            .dialog_width(px(480.))
             .open_dialog(window, cx);
 
         let entity_id = cx.entity_id();

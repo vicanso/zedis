@@ -100,6 +100,9 @@ pub struct ZedisServerState {
     /// Access mode
     access_mode: AccessMode,
 
+    /// Whether the server supports ReJSON module
+    supports_rejson: bool,
+
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
 
@@ -361,6 +364,11 @@ impl ZedisServerState {
         self.search_history.clear();
     }
 
+    /// Get whether the server supports ReJSON module
+    pub fn supports_rejson(&self) -> bool {
+        self.supports_rejson
+    }
+
     /// Get whether the server is readonly
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
@@ -552,6 +560,7 @@ impl ZedisServerState {
                     let nodes_description = client.nodes_description();
                     let supports_db_selection = client.supports_db_selection();
                     let access_mode = client.access_mode();
+                    let supports_rejson = client.supports_rejson();
                     Ok((
                         dbsize,
                         nodes,
@@ -559,6 +568,7 @@ impl ZedisServerState {
                         version,
                         supports_db_selection,
                         access_mode,
+                        supports_rejson,
                     ))
                 },
                 move |this, result, cx| {
@@ -568,7 +578,7 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection, access_mode)) = result
+                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection, access_mode, supports_rejson)) = result
                     {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
@@ -576,6 +586,7 @@ impl ZedisServerState {
                         this.version = version.into();
                         this.supports_db_selection = supports_db_selection;
                         this.access_mode = access_mode;
+                        this.supports_rejson = supports_rejson;
                     };
 
                     let server_id = this.server_id.clone();

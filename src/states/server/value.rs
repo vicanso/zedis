@@ -402,6 +402,7 @@ impl KeyType {
             KeyType::Zset => "ZADD",
             KeyType::Hash => "HSET",
             KeyType::Stream => "XADD",
+            KeyType::Json => "JSON.SET",
             _ => "",
         }
     }
@@ -415,6 +416,7 @@ impl KeyType {
             KeyType::Zset => vec!["1", "member"],
             KeyType::Hash => vec!["field", "value"],
             KeyType::Stream => vec!["*", "field", "value"],
+            KeyType::Json => vec!["$", "{}"],
             _ => vec![],
         }
     }
@@ -530,6 +532,7 @@ impl From<&str> for KeyType {
             "vectorset" => KeyType::Vectorset,
             "string" => KeyType::String,
             "ReJSON-RL" => KeyType::Json,
+            "json" => KeyType::Json,
             _ => KeyType::Unknown,
         }
     }

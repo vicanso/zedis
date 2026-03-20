@@ -222,6 +222,7 @@ pub struct ZedisFormOptions {
     on_cancel: Option<ZedisFormCancelHandler>,
     foot_actions: Option<ZedisFormActionsBuilder>,
     dialog_submit: Option<ZedisFormDialogSubmitHandler>,
+    dialog_width: Option<Pixels>,
     dialog_max_height: Option<Pixels>,
     support_add_fields: bool,
     /// When set, the add-fields section is only shown when the referenced
@@ -246,6 +247,7 @@ impl Default for ZedisFormOptions {
             on_cancel: None,
             foot_actions: None,
             dialog_submit: None,
+            dialog_width: None,
             dialog_max_height: None,
             support_add_fields: false,
             support_add_fields_on: None,
@@ -400,6 +402,12 @@ impl ZedisFormOptions {
         self
     }
 
+    /// Set the width of the dialog.
+    pub fn dialog_width(mut self, width: Pixels) -> Self {
+        self.dialog_width = Some(width);
+        self
+    }
+
     /// Set the maximum height for the form content area when opened in a dialog.
     pub fn dialog_max_height(mut self, max_height: Pixels) -> Self {
         self.dialog_max_height = Some(max_height);
@@ -427,6 +435,7 @@ impl ZedisFormOptions {
 
         let title = self.title.clone();
         self.title = None;
+        let dialog_width = self.dialog_width.take();
         let max_height = self.dialog_max_height.take();
         // Create the form entity once; the dialog closure (called every frame)
         // just clones the entity handle.
@@ -438,6 +447,9 @@ impl ZedisFormOptions {
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let mut d = dialog.overlay(true).overlay_closable(true);
+            if let Some(w) = dialog_width {
+                d = d.width(w);
+            }
             if let Some(t) = &title {
                 d = d.title(t.clone());
             }

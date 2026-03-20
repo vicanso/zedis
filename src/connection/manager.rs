@@ -304,6 +304,7 @@ impl FromRedisValue for SlowLogEntry {
 pub struct RedisClient {
     access_mode: AccessMode,
     db: usize,
+    modules: Vec<String>,
     server_type: ServerType,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
@@ -372,6 +373,9 @@ impl RedisClient {
     /// * `bool` - True if the client version is at least the given version, false otherwise.
     pub fn is_at_least_version(&self, version: &str) -> bool {
         self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
+    }
+    pub fn supports_rejson(&self) -> bool {
+        self.modules.iter().any(|m| m == "ReJSON")
     }
 
     /// Unlinks keys on all master nodes concurrently.
@@ -879,6 +883,23 @@ async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
     }
 }
 
+async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<String>> {
+    let module_list: Vec<redis::Value> = cmd("MODULE").arg("LIST").query_async(&mut conn).await?;
+    let mut modules = Vec::with_capacity(module_list.len());
+    for module_info in module_list {
+        if let Value::Array(info_kv) = module_info {
+            // 遍历内部的 Key-Value 数组 (例如 ["name", "ReJSON", "ver", 20407])
+            let mut iter = info_kv.chunks(2);
+            while let Some([redis::Value::BulkString(key), redis::Value::BulkString(val)]) = iter.next() {
+                if key == b"name" {
+                    modules.push(String::from_utf8_lossy(val).into_owned());
+                }
+            }
+        }
+    }
+    Ok(modules)
+}
+
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
@@ -1075,8 +1096,10 @@ impl ConnectionManager {
         } else {
             AccessMode::ReadWrite
         };
+        let modules = get_modules(connection.clone()).await.unwrap_or_default();
         let mut client = RedisClient {
             db,
+            modules,
             access_mode,
             server_type: server_type.clone(),
             nodes,
