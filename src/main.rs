@@ -340,6 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 MenuItem::action("About Zedis", MemuAction::About),
                 MenuItem::action("Quit", MemuAction::Quit),
             ],
+            disabled: false,
         }]);
 
         cx.spawn(async move |cx| {
