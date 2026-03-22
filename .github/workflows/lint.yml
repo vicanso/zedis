@@ -13,7 +13,7 @@ env:
 
 jobs:
   macos:
-    name: macos-${{ matrix.dmg_suffix }}
+    name: macos-${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,10 +21,8 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            dmg_suffix: aarch64
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            dmg_suffix: x86_64
     steps:
       - uses: actions/checkout@v6
       - name: setup node
@@ -36,13 +34,12 @@ jobs:
       - name: install tools
         run: |
           rustup update
-          rustup component add clippy
-          cargo install cargo-bundle
+          rustup component add clippy rustfmt
           cargo install typos-cli
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-build-${{ matrix.target }}
+          key: macos-lint-${{ matrix.target }}
       - name: lint
         run: |
           cargo fmt --check
