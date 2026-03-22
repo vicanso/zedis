@@ -1,0 +1,49 @@
+name: "Lint"
+on:
+    push:
+      branches: [ "**" ]
+    pull_request:
+      branches: [ "**" ]
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.94.0
+  APP_NAME: Zedis
+
+jobs:
+  macos:
+    name: macos-${{ matrix.dmg_suffix }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            dmg_suffix: aarch64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            dmg_suffix: x86_64
+    steps:
+      - uses: actions/checkout@v6
+      - name: setup node
+        uses: actions/setup-node@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - name: install tools
+        run: |
+          rustup update
+          rustup component add clippy
+          cargo install cargo-bundle
+          cargo install typos-cli
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-build-${{ matrix.target }}
+      - name: lint
+        run: |
+          cargo fmt --check
+          make lint

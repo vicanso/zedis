@@ -1,28 +1,47 @@
-# 🚧 Pull Requests are NOT accepted at this stage
-# 🚧 现阶段暂不接受 Pull Requests
+# 🎉 Welcome to Zedis! / 欢迎贡献 Zedis!
 
 ## 🇬🇧 English
-Thank you for your interest in Zedis!
+Thank you for taking the time to contribute to Zedis! 🦀
 
-**Please DO NOT submit this Pull Request.**
+> ⚠️ **IMPORTANT CONTRIBUTING GUIDELINES:**
+> 1. **New Features:** Before writing code for a new feature, **please open an Issue first** to discuss it. This ensures it aligns with our roadmap and saves your time!
+> 2. **Typos & Grammar:** Please **DO NOT** open PRs *solely* for fixing minor typos, formatting, or grammar issues in documentation/comments. We prefer to batch these or fix them alongside larger code changes.
 
-Zedis is currently in **early active development (Pre-Alpha)**. The internal architecture and APIs are undergoing frequent breaking changes. To maintain development velocity and avoid conflicts, we are **not accepting external code contributions** at this time.
+To help us review your Pull Request efficiently, please provide the following information.
 
-* **Any PR submitted now will be closed without review.**
-* If you found a bug or have a suggestion, please [Open an Issue](https://github.com/vicanso/zedis/issues) instead.
-* We will announce when we are ready for contributions. Thank you for your understanding!
+### Description
+### Type of Change
+- [ ] 🐛 Bug fix (non-breaking change which fixes an issue)
+- [ ] ✨ New feature (I have opened an Issue and discussed it beforehand)
+- [ ] 🛠️ Refactoring / Tech debt (changes to internal architecture or performance)
+- [ ] 📝 Documentation / i18n update
+
+### Developer Checklist
+- [ ] I have run `cargo fmt` to format the code.
+- [ ] I have run `cargo clippy` and resolved any warnings.
+- [ ] My code builds and runs successfully.
+- [ ] (Optional) I have tested this on: [ ] macOS / [ ] Windows / [ ] Linux.
 
 ---
 
 ## 🇨🇳 中文
-感谢你对 Zedis 的关注！
+感谢你为 Zedis 贡献代码！🦀
 
-**请不要提交此 Pull Request。**
+> ⚠️ **重要贡献指南：**
+> 1. **关于新特性：** 在编写新功能的代码前，**请务必先提交 Issue 进行讨论**，以确保其符合项目规划，避免浪费你的精力！
+> 2. **关于拼写与语法：** 请 **不要** 提交仅仅为了修复文档/注释中个别拼写、格式或语法错误的 PR。我们倾向于集中批量处理这些小问题，或者在提交较大功能代码时顺手修复。
 
-Zedis 目前处于 **早期核心开发阶段 (Pre-Alpha)**。底层的架构和 API 变动非常频繁。为了保证开发节奏和避免代码冲突，我们 **暂时不接受外部的代码贡献**。
+为了帮助我们更高效地进行 Code Review，请提供以下信息。
 
-* **现阶段提交的任何 PR 都将被直接关闭，不做审查。**
-* 如果你发现了 Bug 或有建议，请移步 [提交 Issue](https://github.com/vicanso/zedis/issues)。
-* 等核心功能稳定后，我们会开放贡献通道。感谢你的理解与支持！
+### 变动描述
+### 变动类型
+- [ ] 🐛 Bug 修复 (修复现有问题的非破坏性修改)
+- [ ] ✨ 新特性 (我已提前提交 Issue 并经过了讨论和评估)
+- [ ] 🛠️ 代码重构 / 性能优化 (底层架构调整，不影响外部行为)
+- [ ] 📝 文档完善 / 多语言 (i18n) 更新
 
-- [ ] I have read the warning above and understand my PR may be closed.
+### 开发者自查表
+- [ ] 我已运行 `cargo fmt` 格式化代码。
+- [ ] 我已运行 `cargo clippy` 并修复了所有警告。
+- [ ] 我的代码可以在本地成功编译并运行。
+- [ ] (可选) 我已在以下平台进行过测试： [ ] macOS / [ ] Windows / [ ] Linux。

@@ -99,11 +99,6 @@ Transform how you monitor Redis with a built-in, GPU-accelerated performance das
 - **Cache Health**: Monitor critical business metrics like **Key Hit Rate** and **Evicted Keys** to prevent cache avalanches before they happen.
 
 
-🚧 Development Status
-
-Zedis is currently in early active development. To maintain development velocity and architectural flexibility, we are not accepting Pull Requests at this time.
-
-We will open up for contributions once the core architecture stabilizes. Please Star or Watch the repository to stay updated!
 
 
 ## 📄 License

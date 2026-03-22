@@ -485,9 +485,12 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
                     message: format!("Invalid TLS server name: {host}"),
                 })?
                 .to_owned();
-            let tls_stream = tls_connector.connect(server_name, ssh_stream).await.map_err(|e| Error::Invalid {
-                message: format!("TLS handshake over SSH tunnel failed: {e}"),
-            })?;
+            let tls_stream = tls_connector
+                .connect(server_name, ssh_stream)
+                .await
+                .map_err(|e| Error::Invalid {
+                    message: format!("TLS handshake over SSH tunnel failed: {e}"),
+                })?;
             debug!("TLS handshake over SSH tunnel succeeded");
             let (conn, driver) = MultiplexedConnection::new_with_config(&info, tls_stream, conn_config).await?;
             tokio::spawn(async move {

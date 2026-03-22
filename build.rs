@@ -23,8 +23,7 @@ fn collect_keys(table: &toml::Table, prefix: &str, keys: &mut BTreeSet<String>) 
 fn check_locales() {
     let locales_dir = std::path::Path::new("locales");
 
-    let en_src = std::fs::read_to_string(locales_dir.join("en.toml"))
-        .expect("locales/en.toml not found");
+    let en_src = std::fs::read_to_string(locales_dir.join("en.toml")).expect("locales/en.toml not found");
     let en_table: toml::Table = toml::from_str(&en_src).expect("failed to parse locales/en.toml");
     let mut en_keys = BTreeSet::new();
     collect_keys(&en_table, "", &mut en_keys);
@@ -41,10 +40,9 @@ fn check_locales() {
             continue;
         }
 
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("failed to read {}", path.display()));
-        let table: toml::Table = toml::from_str(&src)
-            .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
+        let table: toml::Table =
+            toml::from_str(&src).unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
         let mut keys = BTreeSet::new();
         collect_keys(&table, "", &mut keys);
 

@@ -963,15 +963,18 @@ impl Render for ZedisForm {
             }
         }
         if show_add_fields {
-            form_container =
-                form_container.child(field().child(h_flex().justify_end().child(
-                    Button::new("add-add-field")
-                        .icon(IconName::Plus)
-                        .disabled(form_disabled)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.add_field(window, cx);
-                        })),
-                )));
+            form_container = form_container.child(
+                field().child(
+                    h_flex().justify_end().child(
+                        Button::new("add-add-field")
+                            .icon(IconName::Plus)
+                            .disabled(form_disabled)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_field(window, cx);
+                            })),
+                    ),
+                ),
+            );
         }
 
         // Render validation errors as a markdown alert.
