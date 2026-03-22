@@ -202,6 +202,12 @@ impl Render for Zedis {
                 let locale = match e {
                     LocaleAction::Zh => "zh",
                     LocaleAction::En => "en",
+                    LocaleAction::Ja => "ja",
+                    LocaleAction::Ru => "ru",
+                    LocaleAction::Pt => "pt",
+                    LocaleAction::De => "de",
+                    LocaleAction::Fr => "fr",
+                    LocaleAction::Es => "es",
                 };
 
                 // Save locale preference and refresh UI

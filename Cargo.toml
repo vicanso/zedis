@@ -144,6 +144,7 @@ gpui_macros = { git = "https://github.com/zed-industries/zed" }
 winres = "0.1.12"
 vergen = { version = "9.1.0", features = ["build"] }
 vergen-git2 = "9.1.0"
+toml = "0.9.10"
 
 [package.metadata.cargo-machete]
 ignored = ["gpui_macros", "rustls"]

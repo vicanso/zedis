@@ -533,11 +533,6 @@ impl ZedisServerState {
                 self.search_history = history;
             }
             cx.emit(ServerEvent::ServerSelected(server_id));
-            cx.notify();
-
-            if self.server_id.is_empty() {
-                return;
-            }
 
             // Set loading state
             self.server_status = RedisServerStatus::Loading;
@@ -578,7 +573,15 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection, access_mode, supports_rejson)) = result
+                    if let Ok((
+                        dbsize,
+                        nodes,
+                        nodes_description,
+                        version,
+                        supports_db_selection,
+                        access_mode,
+                        supports_rejson,
+                    )) = result
                     {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
@@ -592,14 +595,14 @@ impl ZedisServerState {
                     let server_id = this.server_id.clone();
                     this.server_status = RedisServerStatus::Idle;
                     cx.emit(ServerEvent::ServerInfoUpdated);
-                    cx.notify();
-
-                    // Auto-scan keys if not exact mode
-                    if this.query_mode != QueryMode::Exact {
-                        this.scan_keys(server_id, SharedString::default(), cx);
-                    } else {
+                    let is_exact_mode = this.query_mode == QueryMode::Exact;
+                    if is_exact_mode {
                         this.scanning = false;
-                        cx.notify();
+                    }
+                    cx.notify();
+                    // Auto-scan keys if not exact mode
+                    if !is_exact_mode {
+                        this.scan_keys(server_id, SharedString::default(), cx);
                     }
                 },
                 cx,

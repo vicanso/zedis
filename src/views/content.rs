@@ -150,6 +150,9 @@ impl ZedisContent {
                     cx.notify();
                 }
                 GlobalEvent::ServerSelected(server_id, db) => {
+                    if server_id.is_empty() {
+                        return;
+                    }
                     this.server_state.update(cx, |state, cx| {
                         state.select(server_id.clone(), *db, cx);
                     });

@@ -60,6 +60,12 @@ impl ZedisTitleBar {
             .label(i18n_sidebar(cx, "lang"))
             .menu_with_check("中文", locale == "zh", Box::new(LocaleAction::Zh))
             .menu_with_check("English", locale == "en", Box::new(LocaleAction::En))
+            .menu_with_check("日本語", locale == "ja", Box::new(LocaleAction::Ja))
+            .menu_with_check("Русский", locale == "ru", Box::new(LocaleAction::Ru))
+            .menu_with_check("Português", locale == "pt", Box::new(LocaleAction::Pt))
+            .menu_with_check("Deutsch", locale == "de", Box::new(LocaleAction::De))
+            .menu_with_check("Français", locale == "fr", Box::new(LocaleAction::Fr))
+            .menu_with_check("Español", locale == "es", Box::new(LocaleAction::Es))
             .separator()
             // theme menu
             .label(i18n_sidebar(cx, "theme"))

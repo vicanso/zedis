@@ -83,6 +83,18 @@ pub enum LocaleAction {
     En,
     /// Chinese language
     Zh,
+    /// Japanese language
+    Ja,
+    /// Russian language
+    Ru,
+    /// Portuguese language
+    Pt,
+    /// German language
+    De,
+    /// French language
+    Fr,
+    /// Spanish language
+    Es,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]

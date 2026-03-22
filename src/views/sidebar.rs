@@ -170,7 +170,11 @@ impl ZedisSidebar {
                             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                 store.update(cx, |state, cx| {
                                     state.go_to(route, cx);
-                                    state.set_selected_server((server_id.to_string(), 0), cx);
+                                    if server_id.is_empty() {
+                                        state.clear_selected_server(cx);
+                                    } else {
+                                        state.set_selected_server((server_id.to_string(), 0), cx);
+                                    }
                                 });
                             });
                         })
