@@ -20,8 +20,8 @@ To help us review your Pull Request efficiently, please provide the following in
 - [ ] I have run `cargo fmt` to format the code.
 - [ ] I have run `cargo clippy` and resolved any warnings.
 - [ ] My code builds and runs successfully.
+- [ ] ⚖️ **I have read and agree to the [Zedis Contributor License Agreement](CLA.md), confirming my contribution is original and licensed under the project's open-source terms.**
 - [ ] (Optional) I have tested this on: [ ] macOS / [ ] Windows / [ ] Linux.
-
 ---
 
 ## 🇨🇳 中文
@@ -44,4 +44,5 @@ To help us review your Pull Request efficiently, please provide the following in
 - [ ] 我已运行 `cargo fmt` 格式化代码。
 - [ ] 我已运行 `cargo clippy` 并修复了所有警告。
 - [ ] 我的代码可以在本地成功编译并运行。
+- [ ] ⚖️ **我已阅读并同意 [Zedis 贡献者许可协议](CLA.md)，确认我的贡献为原创，并授权在项目的开源协议下使用。**
 - [ ] (可选) 我已在以下平台进行过测试： [ ] macOS / [ ] Windows / [ ] Linux。
