@@ -1,5 +1,23 @@
 中文 | [English](./README.md)
 
+<h1 align="center">Zedis</h1>
+
+<p align="center">
+  <strong>一个使用 Rust 🦀 和 GPUI ⚡️ 构建的高性能、GPU 加速的 Redis 客户端</strong>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  <a href="https://x.com/tree0507"><img src="https://img.shields.io/twitter/follow/tree0507?style=social" alt="Twitter Follow"></a>
+  <img src="https://img.shields.io/github/downloads/vicanso/zedis/total" alt="Downloads">
+  <a href="https://www.blazingly.fast"><img src="https://www.blazingly.fast/api/badge.svg?repo=vicanso%2Fzedis" alt="blazingly fast"></a>
+</p>
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/217cc0a7-cc7e-40d0-ac7e-1ec61c36a02b" autoplay loop muted playsinline width="100%"></video>
+</p>
+
+
 # Zedis
 
 一个使用 **Rust** 🦀 和 **GPUI** ⚡️ 构建的高性能、GPU 加速的 Redis 客户端
@@ -12,16 +30,47 @@
 
 ---
 
-## 📖 简介
+## 🤔 为什么选择 Zedis？
 
-**Zedis** 是为追求速度的开发者设计的下一代 Redis GUI 客户端。
+厌倦了那些仅仅为了显示一个 JSON 字符串就吃掉几 GB 内存的 Electron Redis 客户端，或者在你不小心点击了一个包含 10 万个元素的键时直接卡死？我们也有同感。
 
-与处理大数据集时容易感到卡顿的基于 Electron 的客户端不同，Zedis 基于 **GPUI**（驱动 [Zed Editor](https://zed.dev) 的同一渲染引擎）构建。这确保了原生的、60 FPS 的流畅体验，即使在浏览数百万个键时，内存占用也极低。
+**Zedis** 专为追求原生性能的开发者而生，从零开始打造。由 **GPUI**（[Zed Editor](https://zed.dev) 背后同款革命性渲染引擎）驱动，即便在浏览超大数据库时，Zedis 也能以极低的内存占用，带来流畅丝滑的 60+ FPS 原生体验。
 
-## 📦 安装方式
+## ✨ 核心特性
+
+### 🚀 极速原生体验
+- **GPU 渲染**：每一个像素都在 GPU 上绘制，滚动零延迟，标签页秒切换。
+- **虚拟列表**：从容浏览百万级键数量的实例。虚拟滚动结合 `SCAN` 迭代，确保界面永不阻塞。
+- **跨平台**：在 **macOS**、**Windows** 和 **Linux** 上均有真正的原生体验，完整支持浅色、深色和跟随系统主题。
+
+### 🧠 智能数据查看器
+告别手动解码。Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据：
+- **自动解压缩**：透明解包 `LZ4`、`SNAPPY`、`GZIP` 和 `ZSTD` 压缩数据。
+- **丰富内容解码**：
+  - **JSON & RedisJSON**：完整读写支持，内置美化输出与语法高亮。智能计算 RFC 7396 Merge Patch 差异，发送最小化的 `JSON.MERGE` 命令，而非全量覆盖写入。
+  - **Protobuf & MessagePack**：零配置二进制反序列化，输出为可读的类 JSON 格式。
+  - **媒体 & 十六进制**：原生预览图片（`PNG`、`JPG`、`WEBP`、`SVG`、`GIF`），以及自适应 8/16 字节十六进制转储，用于查看原始二进制数据。
+
+### 📊 实时可观测性
+内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。
+- **实时指标**：精美渲染的 CPU、内存和网络 I/O 实时图表。
+- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。
+- **深度诊断**：追踪慢日志，通过关键字过滤实时监控 `MONITOR` 流，并通过直观的 GUI 管理活跃客户端（`CLIENT LIST/KILL`）。
+
+### 🛡️ 企业级安全与效率
+- **只读模式**：锁定连接，防止在生产环境中误操作写入数据。
+- **高级隧道**：完整支持 TLS/SSL（自定义 CA、客户端证书）和 SSH 隧道（密码、私钥、SSH Agent）。
+- **集成 CLI**：内置 `redis-cli` 终端，无需离开应用即可使用命令行。
+- **命名空间树视图**：自动将以冒号（`:`）分隔的键整理为易于管理的嵌套目录树结构。
+
+---
+
+## 📦 安装
+
+准备好感受极速体验了吗？通过你喜欢的包管理器安装 Zedis：
 
 ### macOS
-推荐使用 Homebrew 安装：
+推荐通过 Homebrew 安装：
 
 ```bash
 brew install --cask zedis
@@ -34,64 +83,26 @@ scoop bucket add extras
 scoop install zedis
 ```
 
-### Arch linux
+### Linux (Arch)
 
 ```bash
 yay -S zedis-bin
 ```
 
-## ✨ 核心特性
+### Cargo（跨平台源码编译）
 
-### 🚀 极致疾速
-- **GPU 渲染**：所有 UI 元素均基于 GPU 渲染，带来如丝般顺滑的操作体验。
-- **虚拟列表**：借助虚拟滚动技术与 `SCAN` 迭代，毫不费力地高效渲染 10 万+ 级别的数据列表。
+```bash
+cargo install --locked zedis-gui
+```
 
-### 🧠 智能数据查看器
-**全面数据类型支持**：原生支持编辑 **String**, **List**, **Set**, **Sorted Set (ZSet)**, **Hash**, **Stream**,  **RedisJSON (ReJSON-RL)** 以及实时的 **Pub/Sub**（发布/订阅）频道。
+---
 
-Zedis 会自动检测内容类型 (`ViewerMode::Auto`)，并以最直观、实用的格式进行渲染：
-- **无感自动解压**：自动检测并解压 **LZ4**, **SNAPPY**, **GZIP**, 和 **ZSTD** 压缩数据（例如：自动解压并格式化被压缩的 JSON 数据）。
-- **富文本内容支持**：
-  - **RedisJSON (ReJSON)**: 提供完整的读写支持。在编辑数据时，Zedis 会智能计算符合 RFC 7396 标准的 JSON Merge Patch 差异，通过下发极简的 JSON.MERGE 命令实现字段级的局部更新，彻底告别低效且昂贵的全量文档覆盖。
-  - **JSON**: 针对标准的 JSON 字符串，提供自动格式化排版（Pretty-printing）与完整的语法高亮支持。
-  - **Protobuf**：零配置反序列化，并带有**语法高亮**。
-  - **MessagePack**：将二进制 MsgPack 数据反序列化为易读的类 JSON 格式。
-  - **图片**：原生预览存储的图片文件 (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`)。
-- **十六进制视图**：自适应 8/16 字节的 Hex 视图，用于深度分析原始二进制数据。
-- **文本**：支持严格的 UTF-8 验证与超大文本的高效显示。
+## 🤝 参与贡献
 
-### 🛡️ 安全防护
-- **只读模式**：将连接标记为**只读**，防止任何意外的写入或删除操作。让您在排查生产环境时毫无后顾之忧。
-- **SSH 隧道**：通过堡垒机安全访问内网 Redis 实例。全面支持密码、私钥以及 SSH Agent 身份认证。
-- **TLS/SSL 加密**：全面支持加密连接，支持自定义 CA 证书、客户端证书和私钥配置。
+我们希望将 Zedis 打造成终极 Redis 客户端，非常欢迎你的参与！无论是新增功能、翻译界面还是修复 Bug，一切贡献都受到欢迎。
 
-### ⚡ 高效生产力
-- **Pub/Sub 消息平台**：完全集成的发布与订阅界面。实时监听频道或模式匹配订阅、广播消息，并使用智能数据查看器瞬间解码复杂的 Payload（负载内容）。
-- **命名空间分组**：自动将以冒号 (`:`) 分隔的 Key 渲染为嵌套的**树状视图**（例如 `user:1001:profile`）。轻松管理数百万个 Key，支持一键删除整个目录下的批量操作。
-- **内置 CLI**：在 Zedis 内直接体验 `redis-cli` 的强大能力。执行原生命令、查看文本输出，无缝衔接您的命令行肌肉记忆，无需离开应用。
-- **自动刷新**：为**键列表 (Key Lists)** 和**键值 (Key Values)** 配置自定义刷新频率，实时监控活数据。非常适合盯盘活跃队列或高频更新的缓存数据，告别繁琐的手动刷新。
-- **命令自动补全**：智能的 **IntelliSense 风格** Redis 代码补全。根据您的 Redis 服务器版本，实时提供精准的语法建议和参数提示。
-- **搜索历史**：在本地自动记录您的搜索记录。历史记录基于**连接隔离**，确保生产环境的查询记录绝不会污染您的本地开发工作流。
-- **批量操作**：支持跨选多个 Key 进行批量删除，或根据特定前缀一次性清理数据，极大地简化海量数据管理。
-
-### 🎨 现代化体验
-- **跨平台原生体验**：由 GPUI 强力驱动，Zedis 在 **macOS**, **Windows**, 和 **Linux** 上均能提供丝滑、一致的原生级体验。
-- **智能拓扑检测**：自动识别 **单机 (Standalone)**, **集群 (Cluster)**, 或 **哨兵 (Sentinel)** 架构。只需连接任意节点，Zedis 即可自动完成拓扑映射。
-- **主题切换**：内置 **明亮 (Light)**, **暗黑 (Dark)** 主题，支持跟随 **系统 (System)** 自动切换。
-- **国际化 (I18n)**：全面支持 **英语** 与 **简体中文**。
-- **响应式布局**：自适应分割面板设计，完美适配任何尺寸的显示器窗口。
-
-### 📊 实时可观测性与诊断
-借助内置的、GPU 加速的性能看板与深度诊断工具，彻底重塑您监控 Redis 的方式。
-- **实时服务器指标**：通过精美流畅的实时图表，持续掌握实例的 **CPU**, **内存**, 和 **网络 I/O** (kbps) 脉搏。
-- **内存分析器 (Memory Analyzer)**：深入剖析 Redis 内存占用。直观可视化数据分布，瞬间定位大键 (**BigKeys**)，优化存储效率，把 OOM（内存溢出）危机扼杀在摇篮里。
-- **慢查询排查 (Slowlog Inspector)**：通过专属的慢日志面板精准锁定性能瓶颈。轻松追踪慢查询，查看精确的执行耗时，并深度剖析命令参数，助力应用程序响应速度的极致优化。
-- **Live Monitor (实时流量监控)**：瞬间获取应用程序与 Redis 交互的全局视野。通过如丝般顺滑的 UI 实时流式渲染 `MONITOR` 命令的输出，并提供强大的关键字和命令类型过滤功能，帮您轻松驾驭海量数据流，随时随地 Debug 复杂业务逻辑。
-- **客户端连接管理**：通过直观的界面可视化探索和管理 `CLIENT LIST`（活跃连接）。支持按 IP、连接时长或闲置时间对客户端进行排序，一键踢掉 (`CLIENT KILL`) 僵尸连接或流氓连接，有效防止服务器阻塞。
-- **深度诊断**：通过追踪 **命令吞吐量 (OPS)**, **延迟 (Latency)**, 和 **客户端连接数**，瞬间探明系统性能极限。
-- **缓存健康度**：密切监控关键业务指标，如 **键命中率 (Key Hit Rate)** 和 **驱逐键 (Evicted Keys)**，防患于未然，彻底告别缓存雪崩。
-
+请阅读我们的[贡献指南](https://www.google.com/search?q=CONTRIBUTING.md)开始参与。提交 PR 即表示你同意我们的[贡献者许可协议（CLA）](https://www.google.com/search?q=CLA.md)。
 
 ## 📄 许可证
 
-本项目采用 [Apache License, Version 2.0](./LICENSE) 授权。
+Zedis 是根据 [Apache License 2.0](./LICENSE) 授权的开源软件。

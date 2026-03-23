@@ -42,12 +42,10 @@ impl AssetSource for Assets {
 }
 
 pub enum CustomIconName {
-    Key,
     DatabaseZap,
     FileXCorner,
     FilePenLine,
     FilePlusCorner,
-    ChevronsLeftRightEllipsis,
     ChevronsDown,
     ChevronUp,
     FileCheckCorner,
@@ -56,7 +54,6 @@ pub enum CustomIconName {
     Network,
     Equal,
     Activity,
-    Languages,
     RotateCw,
     CircleCheckBig,
     CircleDotDashed,
@@ -64,7 +61,6 @@ pub enum CustomIconName {
     MemoryStick,
     AudioWaveform,
     Binary,
-    ALargeSmall,
     ListChecvronsDownUp,
     Lock,
     LockOpen,
@@ -80,17 +76,16 @@ pub enum CustomIconName {
     Laptop,
     HardDrive,
     Radar,
+    SunMoon,
 }
 
 impl CustomIconName {
     pub fn path(self) -> SharedString {
         match self {
-            CustomIconName::Key => "icons/key.svg",
             CustomIconName::DatabaseZap => "icons/database-zap.svg",
             CustomIconName::FileXCorner => "icons/file-x-corner.svg",
             CustomIconName::FilePenLine => "icons/file-pen-line.svg",
             CustomIconName::FilePlusCorner => "icons/file-plus-corner.svg",
-            CustomIconName::ChevronsLeftRightEllipsis => "icons/chevrons-left-right-ellipsis.svg",
             CustomIconName::ChevronsDown => "icons/chevrons-down.svg",
             CustomIconName::ChevronUp => "icons/chevron-up.svg",
             CustomIconName::FileCheckCorner => "icons/file-check-corner.svg",
@@ -99,7 +94,6 @@ impl CustomIconName {
             CustomIconName::Network => "icons/network.svg",
             CustomIconName::Equal => "icons/equal.svg",
             CustomIconName::Activity => "icons/activity.svg",
-            CustomIconName::Languages => "icons/languages.svg",
             CustomIconName::RotateCw => "icons/rotate-cw.svg",
             CustomIconName::CircleCheckBig => "icons/circle-check-big.svg",
             CustomIconName::CircleDotDashed => "icons/circle-dot-dashed.svg",
@@ -107,7 +101,6 @@ impl CustomIconName {
             CustomIconName::MemoryStick => "icons/memory-stick.svg",
             CustomIconName::AudioWaveform => "icons/audio-waveform.svg",
             CustomIconName::Binary => "icons/binary.svg",
-            CustomIconName::ALargeSmall => "icons/a-large-small.svg",
             CustomIconName::ListChecvronsDownUp => "icons/list-chevrons-down-up.svg",
             CustomIconName::Lock => "icons/lock.svg",
             CustomIconName::LockOpen => "icons/lock-open.svg",
@@ -123,6 +116,7 @@ impl CustomIconName {
             CustomIconName::Laptop => "icons/laptop.svg",
             CustomIconName::HardDrive => "icons/hard-drive.svg",
             CustomIconName::Radar => "icons/radar.svg",
+            CustomIconName::SunMoon => "icons/sun-moon.svg",
         }
         .into()
     }

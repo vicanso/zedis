@@ -14,7 +14,7 @@
 
 use crate::{
     helpers::{get_or_create_config_dir, parse_duration},
-    states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
+    states::{FontSize, ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
 use gpui::{Entity, Subscription, Window, prelude::*, px};
 use gpui_component::{
@@ -22,6 +22,7 @@ use gpui_component::{
     form::{Field, field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
+    radio::RadioGroup,
     v_flex,
 };
 
@@ -35,6 +36,8 @@ pub struct ZedisSettingEditor {
     redis_connection_timeout_state: Entity<InputState>,
     redis_response_timeout_state: Entity<InputState>,
     tray_enabled: bool,
+    font_size: FontSize,
+    locale: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -83,6 +86,8 @@ impl ZedisSettingEditor {
         let redis_response_timeout = store.redis_response_timeout();
         let key_scan_count = store.key_scan_count();
         let tray_enabled = store.tray_enabled();
+        let font_size = store.font_size();
+        let locale = store.locale().to_string();
         let max_key_tree_depth_state = Self::create_input_state(
             window,
             cx,
@@ -250,6 +255,8 @@ impl ZedisSettingEditor {
             redis_response_timeout_state,
             redis_connection_timeout_state,
             tray_enabled,
+            font_size,
+            locale,
         }
     }
     fn render_field(cx: &Context<Self>, label_key: &str, input_element: impl IntoElement) -> Field {
@@ -261,6 +268,23 @@ impl Render for ZedisSettingEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cols = if window.viewport_size().width < px(800.) { 1 } else { 2 };
 
+        let font_size_index = match self.font_size {
+            FontSize::Large => 0,
+            FontSize::Medium => 1,
+            FontSize::Small => 2,
+        };
+        let locale_index = match self.locale.as_str() {
+            "zh" => 0,
+            "en" => 1,
+            "ja" => 2,
+            "ru" => 3,
+            "pt" => 4,
+            "de" => 5,
+            "fr" => 6,
+            "es" => 7,
+            _ => 1,
+        };
+
         v_flex()
             .p_5()
             .child(Label::new(i18n_settings(cx, "title")).text_3xl().mb_2())
@@ -268,6 +292,62 @@ impl Render for ZedisSettingEditor {
                 v_form()
                     .flex_1()
                     .columns(cols)
+                    .child(
+                        field().label(i18n_settings(cx, "font_size")).child(
+                            RadioGroup::horizontal("font-size-group")
+                                .mt(px(8.))
+                                .children(vec![
+                                    i18n_settings(cx, "font_size_large"),
+                                    i18n_settings(cx, "font_size_medium"),
+                                    i18n_settings(cx, "font_size_small"),
+                                ])
+                                .selected_index(Some(font_size_index))
+                                .on_click(cx.listener(|this, index: &usize, _window, cx| {
+                                    let font_size = match *index {
+                                        0 => Some(FontSize::Large),
+                                        2 => Some(FontSize::Small),
+                                        _ => None,
+                                    };
+                                    this.font_size = font_size.unwrap_or(FontSize::Medium);
+                                    update_app_state_and_save(cx, "save_font_size", move |state, _| {
+                                        state.set_font_size(font_size);
+                                    });
+                                })),
+                        ),
+                    )
+                    .child(
+                        field().col_span(cols as u16).label(i18n_settings(cx, "lang")).child(
+                            RadioGroup::horizontal("locale-group")
+                                .mt(px(8.))
+                                .children(vec![
+                                    "English",
+                                    "中文",
+                                    "Русский",
+                                    "日本語",
+                                    "Português",
+                                    "Español",
+                                    "Deutsch",
+                                    "Français",
+                                ])
+                                .selected_index(Some(locale_index))
+                                .on_click(cx.listener(|this, index: &usize, _window, cx| {
+                                    let locale = match *index {
+                                        1 => "zh",
+                                        2 => "ru",
+                                        3 => "ja",
+                                        4 => "pt",
+                                        5 => "es",
+                                        6 => "de",
+                                        7 => "fr",
+                                        _ => "en",
+                                    };
+                                    this.locale = locale.to_string();
+                                    update_app_state_and_save(cx, "save_locale", move |state, _| {
+                                        state.set_locale(locale.to_string());
+                                    });
+                                })),
+                        ),
+                    )
                     .child(Self::render_field(
                         cx,
                         "max_key_tree_depth",

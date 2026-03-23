@@ -15,7 +15,7 @@
 use crate::helpers::MemuAction;
 use crate::{
     assets::CustomIconName,
-    states::{FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
+    states::{SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
 };
 use gpui::{App, Context, Corner, Window, prelude::*};
 use gpui_component::{
@@ -35,56 +35,44 @@ impl ZedisTitleBar {
 
     fn render_settings_menu(this: PopupMenu, cx: &App) -> PopupMenu {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let (font_size, locale, theme) = (store.font_size(), store.locale(), store.theme());
+        let theme = store.theme();
+        let light_checked = theme == Some(ThemeMode::Light);
+        let dark_checked = theme == Some(ThemeMode::Dark);
+        let system_checked = theme.is_none();
 
-        this
-            // font size menu
-            .label(i18n_sidebar(cx, "font_size"))
-            .menu_with_check(
-                i18n_sidebar(cx, "font_size_large"),
-                font_size == FontSize::Large,
-                Box::new(FontSizeAction::Large),
-            )
-            .menu_with_check(
-                i18n_sidebar(cx, "font_size_medium"),
-                font_size == FontSize::Medium,
-                Box::new(FontSizeAction::Medium),
-            )
-            .menu_with_check(
-                i18n_sidebar(cx, "font_size_small"),
-                font_size == FontSize::Small,
-                Box::new(FontSizeAction::Small),
-            )
-            .separator()
-            // language menu
-            .label(i18n_sidebar(cx, "lang"))
-            .menu_with_check("中文", locale == "zh", Box::new(LocaleAction::Zh))
-            .menu_with_check("English", locale == "en", Box::new(LocaleAction::En))
-            .menu_with_check("日本語", locale == "ja", Box::new(LocaleAction::Ja))
-            .menu_with_check("Русский", locale == "ru", Box::new(LocaleAction::Ru))
-            .menu_with_check("Português", locale == "pt", Box::new(LocaleAction::Pt))
-            .menu_with_check("Deutsch", locale == "de", Box::new(LocaleAction::De))
-            .menu_with_check("Français", locale == "fr", Box::new(LocaleAction::Fr))
-            .menu_with_check("Español", locale == "es", Box::new(LocaleAction::Es))
-            .separator()
-            // theme menu
-            .label(i18n_sidebar(cx, "theme"))
-            .menu_with_check(
-                i18n_sidebar(cx, "light"),
-                theme == Some(ThemeMode::Light),
+        let this = this.label(i18n_sidebar(cx, "theme"));
+
+        let this = if light_checked {
+            this.menu_with_check(i18n_sidebar(cx, "light"), true, Box::new(ThemeAction::Light))
+        } else {
+            this.menu_element_with_icon(
+                Icon::new(IconName::Sun),
                 Box::new(ThemeAction::Light),
+                move |_window, cx| Label::new(i18n_sidebar(cx, "light")),
             )
-            .menu_with_check(
-                i18n_sidebar(cx, "dark"),
-                theme == Some(ThemeMode::Dark),
+        };
+
+        let this = if dark_checked {
+            this.menu_with_check(i18n_sidebar(cx, "dark"), true, Box::new(ThemeAction::Dark))
+        } else {
+            this.menu_element_with_icon(
+                Icon::new(IconName::Moon),
                 Box::new(ThemeAction::Dark),
+                move |_window, cx| Label::new(i18n_sidebar(cx, "dark")),
             )
-            .menu_with_check(
-                i18n_sidebar(cx, "system"),
-                theme.is_none(),
+        };
+
+        let this = if system_checked {
+            this.menu_with_check(i18n_sidebar(cx, "system"), true, Box::new(ThemeAction::System))
+        } else {
+            this.menu_element_with_icon(
+                Icon::new(CustomIconName::SunMoon),
                 Box::new(ThemeAction::System),
+                move |_window, cx| Label::new(i18n_sidebar(cx, "system")),
             )
-            .separator()
+        };
+
+        this.separator()
             .menu_element_with_icon(
                 Icon::new(CustomIconName::SwatchBook),
                 Box::new(SettingsAction::Protos),
