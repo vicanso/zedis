@@ -18,6 +18,7 @@ mod dialog;
 mod divider;
 mod form;
 mod loading;
+mod select;
 
 pub use about::*;
 pub use card::*;
@@ -25,3 +26,4 @@ pub use dialog::*;
 pub use divider::*;
 pub use form::*;
 pub use loading::*;
+pub use select::*;

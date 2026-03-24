@@ -22,7 +22,7 @@ use crate::{
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
         ZedisClientsManager, ZedisEditor, ZedisKeyTree, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
-        ZedisProtoEditor, ZedisServers, ZedisSettingEditor, ZedisSlowlogEditor, ZedisStatusBar,
+        ZedisProtoEditor, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, SharedString, Subscription, Window, div, prelude::*, px};
@@ -67,7 +67,6 @@ pub struct ZedisContent {
 
     /// Cached views - lazily initialized and cleared when switching routes
     servers: Option<Entity<ZedisServers>>,
-    setting_editor: Option<Entity<ZedisSettingEditor>>,
     proto_editor: Option<Entity<ZedisProtoEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     metrics: Option<Entity<ZedisMetrics>>,
@@ -110,9 +109,6 @@ impl ZedisContent {
         }
         if route != Route::Metrics {
             self.metrics.take();
-        }
-        if route != Route::Settings {
-            self.setting_editor.take();
         }
         if route != Route::Protos {
             self.proto_editor.take();
@@ -244,7 +240,6 @@ impl ZedisContent {
             current_route: route,
             servers: None,
             value_editor: None,
-            setting_editor: None,
             metrics: None,
             slowlog_editor: None,
             memory_analysis: None,
@@ -402,16 +397,6 @@ impl ZedisContent {
             .clone();
 
         div().m(px(SERVERS_MARGIN)).child(servers)
-    }
-    fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = self
-            .setting_editor
-            .get_or_insert_with(|| {
-                debug!("Creating new settings view");
-                cx.new(|cx| ZedisSettingEditor::new(window, cx))
-            })
-            .clone();
-        div().child(settings)
     }
     fn render_proto_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let proto_editor = self
@@ -741,8 +726,7 @@ impl Render for ZedisContent {
 
         // Route 1: Server management view
         match route {
-            Route::Home => base.child(self.render_servers(window, cx)).into_any_element(),
-            Route::Settings => base.child(self.render_settings(window, cx)).into_any_element(),
+            Route::Home | Route::Settings => base.child(self.render_servers(window, cx)).into_any_element(),
             Route::Protos => base.child(self.render_proto_editor(window, cx)).into_any_element(),
             _ => {
                 // Route 2: Loading state (show skeleton while connecting/loading)

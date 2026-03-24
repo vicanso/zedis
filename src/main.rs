@@ -9,7 +9,7 @@ use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
 };
-use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window};
+use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window, open_settings_window};
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, prelude::*, px, size,
@@ -228,18 +228,12 @@ impl Render for Zedis {
                     state.set_font_size(font_size);
                 });
             }))
-            .on_action(cx.listener(move |_this, e: &SettingsAction, _window, cx| {
-                let action = *e;
-                let mut route = None;
-                if action == SettingsAction::Editor {
-                    route = Some(Route::Settings);
-                } else if action == SettingsAction::Protos {
-                    route = Some(Route::Protos);
-                }
-                if let Some(route) = route {
+            .on_action(cx.listener(move |_this, e: &SettingsAction, _window, cx| match e {
+                SettingsAction::Editor => open_settings_window(cx),
+                SettingsAction::Protos => {
                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                         store.update(cx, |state, cx| {
-                            state.go_to(route, cx);
+                            state.go_to(Route::Protos, cx);
                         });
                     });
                 }

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::Assets;
+use crate::views::secondary_window::open_secondary_window;
 use chrono::{Datelike, Local};
 use gpui::{
     App, Bounds, Image, ImageFormat, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px,
@@ -123,22 +124,21 @@ fn build_config() -> AboutConfig {
 }
 
 pub fn open_about_window(cx: &mut App) {
-    let width = px(600.);
-    let height = px(500.);
-    let window_size = size(width, height);
-
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
-        is_movable: false,
-        is_resizable: false,
-        titlebar: Some(TitlebarOptions {
-            title: Some("About Zedis".into()),
+    let window_size = size(px(600.), px(500.));
+    open_secondary_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
+            is_movable: false,
+            is_resizable: false,
+            titlebar: Some(TitlebarOptions {
+                title: Some("About Zedis".into()),
+                ..Default::default()
+            }),
+            focus: true,
+            kind: WindowKind::Normal,
             ..Default::default()
-        }),
-        focus: true,
-        kind: WindowKind::Normal,
-        ..Default::default()
-    };
-
-    let _ = cx.open_window(options, |_, cx| cx.new(|_cx| ZedisAboutPage::new(build_config())));
+        },
+        cx,
+        |_window, cx| cx.new(|_cx| ZedisAboutPage::new(build_config())),
+    );
 }
