@@ -515,7 +515,7 @@ impl ZedisKeyTree {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder(i18n_common(cx, "filter_placeholder"))
+                .placeholder(i18n_common(cx, "keyword_placeholder"))
         });
         // initial focus
         keyword_state.update(cx, |state, cx| {

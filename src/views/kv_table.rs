@@ -41,7 +41,7 @@ use std::sync::Arc;
 use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
-const FOOTER_HEIGHT: f32 = 50.0;
+pub const FOOTER_HEIGHT: f32 = 50.0;
 
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
@@ -91,6 +91,8 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     editor_form: Option<Entity<ZedisForm>>,
     /// Fetcher instance
     fetcher: Arc<T>,
+    /// Whether the auxiliary info view is currently active (e.g. Stream XINFO)
+    is_info_view: bool,
     /// Event subscriptions for server state and input changes
     _subscriptions: Vec<Subscription>,
 }
@@ -229,6 +231,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 ServerEvent::KeySelected(_) => {
                     this.edit_row = None;
                     this.key_changed = Some(true);
+                    this.is_info_view = false;
                 }
                 _ => {}
             }
@@ -325,9 +328,22 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             fetcher,
             columns,
             editor_form: None,
+            is_info_view: false,
             list_push_mode_state: cx.new(|_cx| 0),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Returns whether the auxiliary info view is currently active.
+    pub fn is_info_view(&self) -> bool {
+        self.is_info_view
+    }
+
+    /// Toggles the auxiliary info view and notifies the fetcher.
+    pub fn set_info_view(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.is_info_view = active;
+        self.fetcher.toggle_info_view(active, cx);
+        cx.notify();
     }
 
     /// Sets the operation mode for the table.
@@ -692,6 +708,8 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         // Determine if operations are allowed based on mode
         let can_add = self.mode.contains(KvTableMode::ADD);
         let can_filter = self.mode.contains(KvTableMode::FILTER);
+        let can_reverse = self.fetcher.support_reverse();
+        let is_reverse = self.fetcher.current_reverse();
 
         // Search button with loading state
         let search_btn = Button::new("kv-table-search-btn")
@@ -755,6 +773,41 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                                 .w(px(KEYWORD_INPUT_WIDTH))
                                                 .suffix(search_btn)
                                                 .cleanable(true),
+                                        )
+                                    })
+                                    .when(can_reverse, |this| {
+                                        let tooltip_key = if is_reverse {
+                                            "sort_desc_tooltip"
+                                        } else {
+                                            "sort_asc_tooltip"
+                                        };
+                                        this.child(
+                                            Button::new("sort-order-btn")
+                                                .icon(if is_reverse {
+                                                    IconName::ArrowDown
+                                                } else {
+                                                    IconName::ArrowUp
+                                                })
+                                                .tooltip(i18n_kv_table(cx, tooltip_key))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.fetcher.toggle_reverse(!is_reverse, cx);
+                                                })),
+                                        )
+                                    })
+                                    .when(self.fetcher.support_info_view(), |this| {
+                                        let is_info = self.is_info_view;
+                                        let tooltip_key = if is_info { "data_tooltip" } else { "info_tooltip" };
+                                        this.child(
+                                            Button::new("info-view-btn")
+                                                .icon(if is_info {
+                                                    IconName::LayoutDashboard
+                                                } else {
+                                                    IconName::Info
+                                                })
+                                                .tooltip(i18n_kv_table(cx, tooltip_key))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.set_info_view(!is_info, cx);
+                                                })),
                                         )
                                     })
                                     .flex_1(),

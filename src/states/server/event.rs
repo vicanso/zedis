@@ -92,6 +92,8 @@ pub enum ServerTask {
     AddStreamEntry,
     /// Remove a stream entry
     RemoveStreamEntry,
+    /// Fetch XINFO / XPENDING stats for a stream
+    FetchStreamInfo,
 
     /// Save edited value back to Redis
     SaveValue,
@@ -131,6 +133,7 @@ impl ServerTask {
             ServerTask::RemoveHashField => "remove_hash_field",
             ServerTask::AddStreamEntry => "add_stream_entry",
             ServerTask::RemoveStreamEntry => "remove_stream_entry",
+            ServerTask::FetchStreamInfo => "fetch_stream_info",
             ServerTask::PublishMessage => "publish_message",
         }
     }

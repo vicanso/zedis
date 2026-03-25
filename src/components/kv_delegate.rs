@@ -103,6 +103,30 @@ pub trait ZedisKvFetcher: 'static {
         false
     }
 
+    /// Whether this data type supports reverse sort order toggling.
+    /// Only Stream returns `true` (XRANGE vs XREVRANGE).
+    fn support_reverse(&self) -> bool {
+        false
+    }
+
+    /// Returns the current reverse flag for this data source.
+    fn current_reverse(&self) -> bool {
+        false
+    }
+
+    /// Triggers a full reload with the given sort order.
+    /// Called when the user clicks the sort-order toggle button.
+    fn toggle_reverse(&self, _reverse: bool, _cx: &mut App) {}
+
+    /// Whether this data type supports an auxiliary info view (e.g. Stream XINFO).
+    fn support_info_view(&self) -> bool {
+        false
+    }
+
+    /// Called when the info-view toggle changes state.
+    /// `active = true` means the user switched to the info view.
+    fn toggle_info_view(&self, _active: bool, _cx: &mut App) {}
+
     /// Factory method to create a new instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }

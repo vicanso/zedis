@@ -216,14 +216,72 @@ pub struct RedisListValue {
 
 /// Structure: (Message ID, Vec<(Field, Value)>)
 pub type RedisStreamEntry = (SharedString, Vec<(SharedString, SharedString)>);
+/// A single consumer within a stream group (from XINFO CONSUMERS).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StreamConsumerDetail {
+    pub name: SharedString,
+    /// Number of messages pending delivery to this consumer.
+    pub pending: usize,
+    /// Milliseconds since the consumer last interacted with the server.
+    pub idle_ms: i64,
+}
+
+/// A pending-message entry (from XPENDING key group - + count).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StreamPendingEntry {
+    pub id: SharedString,
+    pub consumer: SharedString,
+    /// Milliseconds elapsed since the message was delivered.
+    pub idle_ms: i64,
+    /// Number of times the message has been delivered.
+    pub delivery_count: i64,
+}
+
+/// Full details for one consumer group (from XINFO GROUPS + XINFO CONSUMERS + XPENDING).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StreamGroupDetail {
+    pub name: SharedString,
+    pub consumers_count: usize,
+    pub pending_count: usize,
+    pub last_delivered_id: SharedString,
+    /// Number of entries not yet delivered to any consumer (0 = no lag).
+    pub lag: i64,
+    pub consumers: Vec<StreamConsumerDetail>,
+    pub pending_entries: Vec<StreamPendingEntry>,
+}
+
+/// Macro-level stream metrics from XINFO STREAM.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StreamSummary {
+    /// Number of consumer groups subscribed to this stream.
+    pub groups_count: usize,
+    /// ID of the first (oldest) entry in the stream.
+    pub first_entry_id: SharedString,
+    /// ID of the last (newest) entry in the stream.
+    pub last_entry_id: SharedString,
+    /// Number of internal radix-tree keys (structural).
+    pub radix_tree_keys: usize,
+    /// Number of radix-tree nodes — proxy for memory footprint.
+    pub radix_tree_nodes: usize,
+}
+
+/// Aggregated stream statistics fetched on demand (XINFO + XPENDING).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StreamInfoData {
+    /// Macro-level stream metrics (XINFO STREAM).
+    pub summary: Option<StreamSummary>,
+    pub groups: Vec<StreamGroupDetail>,
+}
+
 /// Redis Stream value structure with pagination support
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisStreamValue {
     /// Optional keyword filter for searching stream entries.
     pub keyword: Option<SharedString>,
 
-    /// The ID of the last entry loaded, used for pagination (e.g., "1700000000000-0").
-    /// Stream uses IDs as cursors for XREVRANGE/XRANGE.
+    /// The ID of the last entry loaded, used as cursor for the next page.
+    /// For ascending (XRANGE) this is the highest ID seen; for descending
+    /// (XREVRANGE) this is the lowest ID seen.
     pub cursor: String,
 
     /// Total count of items in the stream (XLEN).
@@ -234,6 +292,14 @@ pub struct RedisStreamValue {
 
     /// The stream entries.
     pub values: Vec<RedisStreamEntry>,
+
+    /// When `true` entries are loaded newest-first via XREVRANGE; otherwise
+    /// oldest-first via XRANGE.
+    pub reverse: bool,
+
+    /// Group/consumer/pending statistics loaded on demand via `fetch_stream_info`.
+    /// `None` until explicitly fetched.
+    pub info: Option<Arc<StreamInfoData>>,
 }
 
 impl RedisStreamValue {

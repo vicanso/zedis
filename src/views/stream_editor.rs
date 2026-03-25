@@ -15,11 +15,22 @@
 use crate::{
     components::ZedisKvFetcher,
     components::{KvTableColumn, KvTableMode},
-    helpers::fast_contains_ignore_case,
-    states::{KeyType, RedisValue, ZedisServerState},
-    views::{ZedisKvTable, kv_table::define_kv_editor},
+    helpers::{fast_contains_ignore_case, format_duration},
+    states::{KeyType, RedisValue, ServerEvent, StreamInfoData, ZedisServerState, i18n_kv_table, i18n_stream_editor},
+    views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
-use gpui::{App, Entity, SharedString, Window, prelude::*};
+use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui_component::{
+    ActiveTheme, IconName,
+    button::Button,
+    h_flex,
+    label::Label,
+    scroll::ScrollableElement,
+    table::{Column, DataTable, TableDelegate, TableState},
+    v_flex,
+};
+use std::sync::Arc;
+use std::time::Duration;
 use zedis_ui::ZedisFormFieldType;
 
 /// Manages Redis Stream values and their display state.
@@ -216,6 +227,30 @@ impl ZedisKvFetcher for ZedisStreamValues {
         });
     }
 
+    fn support_reverse(&self) -> bool {
+        true
+    }
+
+    fn current_reverse(&self) -> bool {
+        self.value.stream_value().is_some_and(|v| v.reverse)
+    }
+
+    fn toggle_reverse(&self, reverse: bool, cx: &mut App) {
+        self.server_state.update(cx, |state, cx| {
+            state.reload_stream_value(reverse, cx);
+        });
+    }
+
+    fn support_info_view(&self) -> bool {
+        true
+    }
+
+    fn toggle_info_view(&self, active: bool, cx: &mut App) {
+        if active {
+            self.server_state.update(cx, |s, cx| s.fetch_stream_info(cx));
+        }
+    }
+
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
 
     fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
@@ -243,7 +278,91 @@ impl ZedisKvFetcher for ZedisStreamValues {
     }
 }
 
-define_kv_editor!(ZedisStreamEditor, ZedisStreamValues);
+// ─── Simple flat-data table delegate ────────────────────────────────────────
+
+/// A lightweight `TableDelegate` backed by static column names and row data.
+/// Used to render Stream XINFO tables (groups, consumers, pending entries).
+struct SimpleTableDelegate {
+    column_names: Vec<SharedString>,
+    columns: Vec<Column>,
+    rows: Vec<Vec<SharedString>>,
+}
+
+impl SimpleTableDelegate {
+    /// `cols` is a list of `(name, width)` pairs; pass `None` for flexible width.
+    fn new(cols: Vec<(SharedString, Option<f32>)>, rows: Vec<Vec<SharedString>>) -> Self {
+        let column_names = cols.iter().map(|(n, _)| n.clone()).collect();
+        let columns = cols
+            .iter()
+            .map(|(n, w)| {
+                let col = Column::new(n.clone(), n.clone());
+                if let Some(w) = w { col.width(*w) } else { col }
+            })
+            .collect();
+        Self {
+            column_names,
+            columns,
+            rows,
+        }
+    }
+}
+
+impl TableDelegate for SimpleTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+    fn rows_count(&self, _: &App) -> usize {
+        self.rows.len()
+    }
+    fn column(&self, ix: usize, _: &App) -> Column {
+        self.columns[ix].clone()
+    }
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut gpui::Context<TableState<Self>>,
+    ) -> impl gpui::IntoElement {
+        let name = self.column_names.get(col_ix).cloned().unwrap_or_default();
+        h_flex()
+            .size_full()
+            .px_2()
+            .child(Label::new(name).text_sm().text_color(cx.theme().primary))
+    }
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        _: &mut gpui::Context<TableState<Self>>,
+    ) -> impl gpui::IntoElement {
+        let value = self
+            .rows
+            .get(row_ix)
+            .and_then(|r| r.get(col_ix))
+            .cloned()
+            .unwrap_or_default();
+        h_flex()
+            .size_full()
+            .px_2()
+            .child(Label::new(value).text_xs().text_ellipsis())
+    }
+    fn has_more(&self, _: &App) -> bool {
+        false
+    }
+}
+
+// ─── Stream editor ───────────────────────────────────────────────────────────
+
+pub struct ZedisStreamEditor {
+    table_state: Entity<ZedisKvTable<ZedisStreamValues>>,
+    server_state: Entity<ZedisServerState>,
+    /// Merged groups+consumers table (Group | Last-ID | Lag | Consumer | Pending | Idle )
+    groups_consumers_table: Option<Entity<TableState<SimpleTableDelegate>>>,
+    /// Pending-entries table (Group | Entry ID | Consumer | Idle | Deliveries)
+    pending_table: Option<Entity<TableState<SimpleTableDelegate>>>,
+    _subscriptions: Vec<Subscription>,
+}
 
 impl ZedisStreamEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -266,12 +385,288 @@ impl ZedisStreamEditor {
                         }
                     })
                     .collect(),
-                server_state,
+                server_state.clone(),
                 window,
                 cx,
             )
             .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER)
         });
-        Self { table_state }
+
+        // Observe the inner table so we re-render when is_info_view toggles
+        let obs = cx.observe(&table_state, |_, _, cx| cx.notify());
+
+        // Rebuild info tables when fresh XINFO data arrives; reset them on key change
+        let sub = cx.subscribe_in(
+            &server_state,
+            window,
+            |this, server_state, event: &ServerEvent, window, cx| match event {
+                ServerEvent::ValueUpdated => {
+                    let stream_info = server_state
+                        .read(cx)
+                        .value()
+                        .and_then(|v| v.stream_value())
+                        .and_then(|sv| sv.info.clone());
+                    if let Some(info) = stream_info {
+                        this.rebuild_info_tables(&info, window, cx);
+                    }
+                    cx.notify();
+                }
+                ServerEvent::KeySelected(_) => {
+                    this.groups_consumers_table = None;
+                    this.pending_table = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
+
+        Self {
+            table_state,
+            server_state,
+            groups_consumers_table: None,
+            pending_table: None,
+            _subscriptions: vec![obs, sub],
+        }
+    }
+
+    /// Rebuilds the two info DataTables from freshly-fetched `StreamInfoData`.
+    fn rebuild_info_tables(&mut self, info: &Arc<StreamInfoData>, window: &mut Window, cx: &mut Context<Self>) {
+        // Merged groups + consumers table.
+        // One row per consumer; groups without consumers get a single placeholder row.
+        // Columns: Group | Last Delivered ID | Lag | Consumer | Pending | Idle
+        let gc_columns = vec![
+            (i18n_stream_editor(cx, "col_group"), Some(140.)),
+            (i18n_stream_editor(cx, "col_last_delivered_id"), Some(160.)),
+            (i18n_stream_editor(cx, "col_lag"), Some(60.)),
+            (i18n_stream_editor(cx, "col_consumer"), Some(140.)),
+            (i18n_stream_editor(cx, "col_pending"), Some(80.)),
+            (i18n_stream_editor(cx, "col_idle_ms"), None),
+        ];
+        let gc_rows: Vec<Vec<SharedString>> = info
+            .groups
+            .iter()
+            .flat_map(|g| {
+                if g.consumers.is_empty() {
+                    vec![vec![
+                        g.name.clone(),
+                        g.last_delivered_id.clone(),
+                        g.lag.to_string().into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
+                    ]]
+                } else {
+                    g.consumers
+                        .iter()
+                        .map(|c| {
+                            vec![
+                                g.name.clone(),
+                                g.last_delivered_id.clone(),
+                                g.lag.to_string().into(),
+                                c.name.clone(),
+                                c.pending.to_string().into(),
+                                format_duration(Duration::from_millis(c.idle_ms as u64)).into(),
+                            ]
+                        })
+                        .collect()
+                }
+            })
+            .collect();
+        self.groups_consumers_table =
+            Some(cx.new(|cx| TableState::new(SimpleTableDelegate::new(gc_columns, gc_rows), window, cx)));
+
+        // All pending entries, flattened across groups
+        // Columns: Group | Entry ID | Consumer | Idle(ms) | Deliveries
+        let pending_columns = vec![
+            (i18n_stream_editor(cx, "col_group"), Some(140.)),
+            (i18n_stream_editor(cx, "col_entry_id"), Some(160.)),
+            (i18n_stream_editor(cx, "col_consumer"), Some(140.)),
+            (i18n_stream_editor(cx, "col_idle_ms"), Some(100.)),
+            (i18n_stream_editor(cx, "col_deliveries"), None),
+        ];
+        let pending_rows: Vec<Vec<SharedString>> = info
+            .groups
+            .iter()
+            .flat_map(|g| {
+                g.pending_entries.iter().map(|p| {
+                    vec![
+                        g.name.clone(),
+                        p.id.clone(),
+                        p.consumer.clone(),
+                        format_duration(Duration::from_millis(p.idle_ms as u64)).into(),
+                        p.delivery_count.to_string().into(),
+                    ]
+                })
+            })
+            .collect();
+        self.pending_table =
+            Some(cx.new(|cx| TableState::new(SimpleTableDelegate::new(pending_columns, pending_rows), window, cx)));
+    }
+
+    /// Renders a single labelled metric: small muted label above a bold value.
+    fn render_metric(&self, label: SharedString, value: SharedString, muted: gpui::Hsla) -> impl gpui::IntoElement {
+        v_flex()
+            .gap_0p5()
+            .child(Label::new(label).text_xs().text_color(muted))
+            .child(Label::new(value).text_sm())
+    }
+
+    fn render_info_view(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+
+        let stream_value = self
+            .server_state
+            .read(cx)
+            .value()
+            .and_then(|v| v.stream_value())
+            .cloned();
+
+        let stream_info = stream_value.as_ref().and_then(|sv| sv.info.clone());
+
+        let base = v_flex().size_full().overflow_y_scrollbar().p_4().gap_4();
+
+        let Some(info) = stream_info else {
+            return base
+                .child(
+                    Label::new(i18n_stream_editor(cx, "loading"))
+                        .text_sm()
+                        .text_color(muted),
+                )
+                .into_any_element();
+        };
+
+        // ── Stream summary card ───────────────────────────────────────────────
+        let length = stream_value.as_ref().map_or(0, |sv| sv.size);
+        let summary = info.summary.clone();
+
+        let summary_card = v_flex()
+            .w_full()
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .child(
+                Label::new(i18n_stream_editor(cx, "stream_summary_title"))
+                    .text_xs()
+                    .text_color(muted),
+            )
+            .child(
+                h_flex()
+                    .gap_6()
+                    .flex_wrap()
+                    .child(self.render_metric(i18n_stream_editor(cx, "col_length"), length.to_string().into(), muted))
+                    .when_some(summary.as_ref(), |this, s| {
+                        this.child(self.render_metric(
+                            i18n_stream_editor(cx, "col_groups_count"),
+                            s.groups_count.to_string().into(),
+                            muted,
+                        ))
+                    })
+                    .when_some(summary.as_ref(), |this, s| {
+                        this.child(self.render_metric(
+                            i18n_stream_editor(cx, "col_first_entry_id"),
+                            s.first_entry_id.clone(),
+                            muted,
+                        ))
+                        .child(self.render_metric(
+                            i18n_stream_editor(cx, "col_last_entry_id"),
+                            s.last_entry_id.clone(),
+                            muted,
+                        ))
+                        .child(self.render_metric(
+                            i18n_stream_editor(cx, "col_radix_tree_nodes"),
+                            s.radix_tree_nodes.to_string().into(),
+                            muted,
+                        ))
+                        .child(self.render_metric(
+                            i18n_stream_editor(cx, "col_radix_tree_keys"),
+                            s.radix_tree_keys.to_string().into(),
+                            muted,
+                        ))
+                    }),
+            );
+
+        let mut result = base.child(summary_card);
+
+        if info.groups.is_empty() {
+            return result
+                .child(
+                    Label::new(i18n_stream_editor(cx, "no_consumer_groups"))
+                        .text_sm()
+                        .text_color(muted),
+                )
+                .into_any_element();
+        }
+
+        if let Some(ref t) = self.groups_consumers_table {
+            result = result
+                .child(
+                    Label::new(i18n_stream_editor(cx, "consumer_groups_title"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(160.))
+                        .border_1()
+                        .border_color(border)
+                        .rounded_lg()
+                        .overflow_hidden()
+                        .child(DataTable::new(t).stripe(true).bordered(false)),
+                );
+        }
+
+        if let Some(ref t) = self.pending_table {
+            result = result
+                .child(
+                    Label::new(i18n_stream_editor(cx, "pending_entries_title"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(160.))
+                        .border_1()
+                        .border_color(border)
+                        .rounded_lg()
+                        .overflow_hidden()
+                        .child(DataTable::new(t).stripe(true).bordered(false)),
+                );
+        }
+
+        result.into_any_element()
+    }
+}
+
+impl Render for ZedisStreamEditor {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_info = self.table_state.read(cx).is_info_view();
+
+        // KvTable is always rendered so its footer toolbar (sort + info toggle)
+        // stays visible.  In info mode it is clamped to the footer height so
+        // only the toolbar strip shows; the info content fills the space above.
+        v_flex()
+            .size_full()
+            .when(is_info, |this| {
+                this.child(div().flex_1().min_h_0().child(self.render_info_view(cx)))
+                    .child(
+                        h_flex().flex_none().h(px(FOOTER_HEIGHT)).px_3().gap_2().child(
+                            Button::new("info-view-btn")
+                                .icon(IconName::LayoutDashboard)
+                                .tooltip(i18n_kv_table(cx, "data_tooltip"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.table_state.update(cx, |t, cx| t.set_info_view(!is_info, cx));
+                                })),
+                        ),
+                    )
+            })
+            .when(!is_info, |this| {
+                this.child(div().flex_1().min_h_0().child(self.table_state.clone()))
+            })
+            .into_any_element()
     }
 }

@@ -446,7 +446,7 @@ impl ZedisServerState {
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
                     KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
                     KeyType::Hash => first_load_hash_value(&mut conn, &key).await,
-                    KeyType::Stream => first_load_stream_value(&mut conn, &key).await,
+                    KeyType::Stream => first_load_stream_value(&mut conn, &key, true).await,
                     KeyType::Json => get_redis_json_value(&mut conn, &key).await,
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
