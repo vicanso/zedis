@@ -708,8 +708,6 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         // Determine if operations are allowed based on mode
         let can_add = self.mode.contains(KvTableMode::ADD);
         let can_filter = self.mode.contains(KvTableMode::FILTER);
-        let can_reverse = self.fetcher.support_reverse();
-        let is_reverse = self.fetcher.current_reverse();
 
         // Search button with loading state
         let search_btn = Button::new("kv-table-search-btn")
@@ -773,25 +771,6 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                                 .w(px(KEYWORD_INPUT_WIDTH))
                                                 .suffix(search_btn)
                                                 .cleanable(true),
-                                        )
-                                    })
-                                    .when(can_reverse, |this| {
-                                        let tooltip_key = if is_reverse {
-                                            "sort_desc_tooltip"
-                                        } else {
-                                            "sort_asc_tooltip"
-                                        };
-                                        this.child(
-                                            Button::new("sort-order-btn")
-                                                .icon(if is_reverse {
-                                                    IconName::ArrowDown
-                                                } else {
-                                                    IconName::ArrowUp
-                                                })
-                                                .tooltip(i18n_kv_table(cx, tooltip_key))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.fetcher.toggle_reverse(!is_reverse, cx);
-                                                })),
                                         )
                                     })
                                     .when(self.fetcher.support_info_view(), |this| {

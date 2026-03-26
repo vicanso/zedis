@@ -21,7 +21,7 @@ use gpui_component::{
     h_flex,
     label::Label,
     notification::Notification,
-    table::{Column, TableDelegate, TableState},
+    table::{Column, ColumnSort, TableDelegate, TableState},
 };
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
@@ -154,11 +154,22 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     /// * `cx` - GPUI application context
     pub fn new(columns: Vec<KvTableColumn>, fetcher: Arc<T>, _window: &mut Window, _cx: &mut App) -> Self {
         // Convert KvTableColumns to UI Columns and initialize input states
+        let primary_ix = fetcher.primary_index();
+        let support_reverse = fetcher.support_reverse();
+        let is_reverse = fetcher.current_reverse();
         let ui_columns = columns
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(ix, item)| {
                 Column::new(item.name.clone(), item.name.clone())
                     .when_some(item.width, |col, width| col.width(width))
+                    .when(ix == primary_ix && support_reverse, |col| {
+                        col.sort(if is_reverse {
+                            ColumnSort::Descending
+                        } else {
+                            ColumnSort::Ascending
+                        })
+                    })
                     .map(|mut col| {
                         if let Some(align) = item.align {
                             col.align = align;
@@ -196,11 +207,22 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
 
     /// Replaces the column definitions (e.g., when Stream fields change).
     pub fn set_columns(&mut self, columns: Vec<KvTableColumn>) {
+        let primary_ix = self.fetcher.primary_index();
+        let support_reverse = self.fetcher.support_reverse();
+        let is_reverse = self.fetcher.current_reverse();
         let ui_columns = columns
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(ix, item)| {
                 Column::new(item.name.clone(), item.name.clone())
                     .when_some(item.width, |col, width| col.width(width))
+                    .when(ix == primary_ix && support_reverse, |col| {
+                        col.sort(if is_reverse {
+                            ColumnSort::Descending
+                        } else {
+                            ColumnSort::Ascending
+                        })
+                    })
                     .map(|mut col| {
                         if let Some(align) = item.align {
                             col.align = align;
@@ -233,7 +255,6 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         self.columns[index].clone()
     }
 
-    /// Renders a table header cell with styled column name.
     fn render_th(
         &mut self,
         col_ix: usize,
@@ -241,15 +262,32 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
+        let primary_color = cx.theme().primary;
+
         div()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .child(
                 Label::new(column.name.clone())
                     .text_align(column.align)
-                    .text_color(cx.theme().primary)
+                    .text_color(primary_color)
                     .text_sm(),
             )
+    }
+
+    /// Handles sort toggling for the primary column (e.g., Stream Entry ID).
+    /// Descending/Default → reverse=true (XREVRANGE), Ascending → reverse=false (XRANGE).
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        if col_ix == self.fetcher.primary_index() && self.fetcher.support_reverse() {
+            let reverse = matches!(sort, ColumnSort::Descending | ColumnSort::Default);
+            self.fetcher.toggle_reverse(reverse, cx);
+        }
     }
 
     /// Renders a table data cell, handling different column types:
