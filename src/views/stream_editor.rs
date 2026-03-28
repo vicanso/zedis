@@ -17,7 +17,7 @@ use crate::{
     components::{KvTableColumn, KvTableMode},
     helpers::{fast_contains_ignore_case, format_duration},
     states::{KeyType, RedisValue, ServerEvent, StreamInfoData, ZedisServerState, i18n_kv_table, i18n_stream_editor},
-    views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
+    views::ZedisKvTable,
 };
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -241,16 +241,6 @@ impl ZedisKvFetcher for ZedisStreamValues {
         });
     }
 
-    fn support_info_view(&self) -> bool {
-        true
-    }
-
-    fn toggle_info_view(&self, active: bool, cx: &mut App) {
-        if active {
-            self.server_state.update(cx, |s, cx| s.fetch_stream_info(cx));
-        }
-    }
-
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
 
     fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
@@ -357,6 +347,8 @@ impl TableDelegate for SimpleTableDelegate {
 pub struct ZedisStreamEditor {
     table_state: Entity<ZedisKvTable<ZedisStreamValues>>,
     server_state: Entity<ZedisServerState>,
+    /// Whether the auxiliary info view (XINFO) is currently shown.
+    is_info_view: bool,
     /// Merged groups+consumers table (Group | Last-ID | Lag | Consumer | Pending | Idle )
     groups_consumers_table: Option<Entity<TableState<SimpleTableDelegate>>>,
     /// Pending-entries table (Group | Entry ID | Consumer | Idle | Deliveries)
@@ -392,8 +384,41 @@ impl ZedisStreamEditor {
             .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER)
         });
 
-        // Observe the inner table so we re-render when is_info_view toggles
-        let obs = cx.observe(&table_state, |_, _, cx| cx.notify());
+        // Register the info-view toggle button in the kv table footer.
+        // The factory is called each render so icon/tooltip reflect current state.
+        let weak = cx.weak_entity();
+        table_state.update(cx, |table, _cx| {
+            let weak = weak.clone();
+            table.set_action_button_factory(Box::new(move |_window, cx| {
+                let Some(editor) = weak.upgrade() else {
+                    return vec![];
+                };
+                let is_info = editor.read(cx).is_info_view;
+                let icon = if is_info {
+                    IconName::LayoutDashboard
+                } else {
+                    IconName::Info
+                };
+                let tooltip: SharedString = i18n_kv_table(cx, if is_info { "data_tooltip" } else { "info_tooltip" });
+                let weak_click = weak.clone();
+                vec![
+                    Button::new("info-view-btn")
+                        .icon(icon)
+                        .tooltip(tooltip)
+                        .on_click(move |_, _, cx| {
+                            if let Some(editor) = weak_click.upgrade() {
+                                editor.update(cx, |this, cx| {
+                                    this.is_info_view = !this.is_info_view;
+                                    if this.is_info_view {
+                                        this.server_state.update(cx, |s, cx| s.fetch_stream_info(cx));
+                                    }
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                ]
+            }));
+        });
 
         // Rebuild info tables when fresh XINFO data arrives; reset them on key change
         let sub = cx.subscribe_in(
@@ -412,6 +437,7 @@ impl ZedisStreamEditor {
                     cx.notify();
                 }
                 ServerEvent::KeySelected(_) => {
+                    this.is_info_view = false;
                     this.groups_consumers_table = None;
                     this.pending_table = None;
                     cx.notify();
@@ -423,9 +449,10 @@ impl ZedisStreamEditor {
         Self {
             table_state,
             server_state,
+            is_info_view: false,
             groups_consumers_table: None,
             pending_table: None,
-            _subscriptions: vec![obs, sub],
+            _subscriptions: vec![sub],
         }
     }
 
@@ -644,25 +671,12 @@ impl ZedisStreamEditor {
 
 impl Render for ZedisStreamEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_info = self.table_state.read(cx).is_info_view();
+        let is_info = self.is_info_view;
 
-        // KvTable is always rendered so its footer toolbar (sort + info toggle)
-        // stays visible.  In info mode it is clamped to the footer height so
-        // only the toolbar strip shows; the info content fills the space above.
         v_flex()
             .size_full()
             .when(is_info, |this| {
                 this.child(div().flex_1().min_h_0().child(self.render_info_view(cx)))
-                    .child(
-                        h_flex().flex_none().h(px(FOOTER_HEIGHT)).px_3().gap_2().child(
-                            Button::new("info-view-btn")
-                                .icon(IconName::LayoutDashboard)
-                                .tooltip(i18n_kv_table(cx, "data_tooltip"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.table_state.update(cx, |t, cx| t.set_info_view(!is_info, cx));
-                                })),
-                        ),
-                    )
             })
             .when(!is_info, |this| {
                 this.child(div().flex_1().min_h_0().child(self.table_state.clone()))

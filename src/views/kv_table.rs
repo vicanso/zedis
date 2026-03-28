@@ -23,7 +23,7 @@ use crate::{
         i18n_list_editor,
     },
 };
-use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
+use gpui::{App, Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::TITLE_BAR_HEIGHT;
 use gpui_component::highlighter::Language;
 use gpui_component::{
@@ -42,9 +42,10 @@ use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 pub const FOOTER_HEIGHT: f32 = 50.0;
-
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
+
+type ZedisKvTableActionButtonFactory = Box<dyn Fn(&mut Window, &mut App) -> Vec<Button>>;
 
 /// A generic table view for displaying Redis key-value data.
 ///
@@ -91,8 +92,10 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     editor_form: Option<Entity<ZedisForm>>,
     /// Fetcher instance
     fetcher: Arc<T>,
-    /// Whether the auxiliary info view is currently active (e.g. Stream XINFO)
-    is_info_view: bool,
+    /// Factory that produces extra action buttons for the footer toolbar each render.
+    /// Set by the owner of this table (e.g. ZedisStreamEditor) so button logic
+    /// can reference the owner's entity context.
+    action_button_factory: Option<ZedisKvTableActionButtonFactory>,
     /// Event subscriptions for server state and input changes
     _subscriptions: Vec<Subscription>,
 }
@@ -231,7 +234,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 ServerEvent::KeySelected(_) => {
                     this.edit_row = None;
                     this.key_changed = Some(true);
-                    this.is_info_view = false;
                 }
                 _ => {}
             }
@@ -328,22 +330,17 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             fetcher,
             columns,
             editor_form: None,
-            is_info_view: false,
+            action_button_factory: None,
             list_push_mode_state: cx.new(|_cx| 0),
             _subscriptions: subscriptions,
         }
     }
 
-    /// Returns whether the auxiliary info view is currently active.
-    pub fn is_info_view(&self) -> bool {
-        self.is_info_view
-    }
-
-    /// Toggles the auxiliary info view and notifies the fetcher.
-    pub fn set_info_view(&mut self, active: bool, cx: &mut Context<Self>) {
-        self.is_info_view = active;
-        self.fetcher.toggle_info_view(active, cx);
-        cx.notify();
+    /// Sets a factory closure that produces extra action buttons for the footer each render.
+    /// Call this from the component that owns this table (e.g. ZedisStreamEditor)
+    /// to inject custom buttons whose click handlers reference the owner's entity context.
+    pub fn set_action_button_factory(&mut self, factory: ZedisKvTableActionButtonFactory) {
+        self.action_button_factory = Some(factory);
     }
 
     /// Sets the operation mode for the table.
@@ -773,21 +770,8 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                                 .cleanable(true),
                                         )
                                     })
-                                    .when(self.fetcher.support_info_view(), |this| {
-                                        let is_info = self.is_info_view;
-                                        let tooltip_key = if is_info { "data_tooltip" } else { "info_tooltip" };
-                                        this.child(
-                                            Button::new("info-view-btn")
-                                                .icon(if is_info {
-                                                    IconName::LayoutDashboard
-                                                } else {
-                                                    IconName::Info
-                                                })
-                                                .tooltip(i18n_kv_table(cx, tooltip_key))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.set_info_view(!is_info, cx);
-                                                })),
-                                        )
+                                    .when_some(self.action_button_factory.as_ref(), |this, factory| {
+                                        this.children(factory(window, cx))
                                     })
                                     .flex_1(),
                             )

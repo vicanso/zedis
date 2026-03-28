@@ -118,15 +118,6 @@ pub trait ZedisKvFetcher: 'static {
     /// Called when the user clicks the sort-order toggle button.
     fn toggle_reverse(&self, _reverse: bool, _cx: &mut App) {}
 
-    /// Whether this data type supports an auxiliary info view (e.g. Stream XINFO).
-    fn support_info_view(&self) -> bool {
-        false
-    }
-
-    /// Called when the info-view toggle changes state.
-    /// `active = true` means the user switched to the info view.
-    fn toggle_info_view(&self, _active: bool, _cx: &mut App) {}
-
     /// Factory method to create a new instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
