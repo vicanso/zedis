@@ -296,16 +296,13 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
             let mut hash_alg = None;
             let mut is_detect_hash_alg = false;
             for key in identities {
-                if !is_detect_hash_alg && key.algorithm().is_rsa() {
-                    hash_alg = if key.algorithm().is_rsa() {
-                        session.best_supported_rsa_hash().await.unwrap_or(None).flatten()
-                    } else {
-                        None
-                    };
+                let public_key = key.public_key().into_owned();
+                if !is_detect_hash_alg && public_key.algorithm().is_rsa() {
+                    hash_alg = session.best_supported_rsa_hash().await.unwrap_or(None).flatten();
                     is_detect_hash_alg = true;
                 }
                 match session
-                    .authenticate_publickey_with(user, key, hash_alg, &mut agent)
+                    .authenticate_publickey_with(user, public_key, hash_alg, &mut agent)
                     .await
                 {
                     Ok(AuthResult::Success) => {

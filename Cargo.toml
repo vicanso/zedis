@@ -82,7 +82,7 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 regex = "1.12.3"
 rmp-serde = "1.3.1"
-russh = { version = "0.58.0", default-features = false, features = [
+russh = { version = "0.58.1", default-features = false, features = [
     "ring",
     "flate2",
     "rsa",
