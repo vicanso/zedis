@@ -179,8 +179,10 @@ impl ZedisServerState {
                 }
             },
             move |this, result, cx| {
+                let mut should_select_processing_key = false;
                 match result {
                     Ok((cursors, keys)) => {
+                        should_select_processing_key = keys.iter().find(|(k, _)| k == &processing_keyword).is_some();
                         debug!("cursors: {cursors:?}, keys count: {}", keys.len());
                         // Check if scan is complete (all cursors returned to 0)
                         if cursors.iter().sum::<u64>() == 0 {
@@ -200,6 +202,9 @@ impl ZedisServerState {
                     cx.emit(ServerEvent::KeyScanPaged);
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
+                if should_select_processing_key {
+                    this.select_key(processing_keyword.clone(), cx);
+                }
                 // Automatically load more if we haven't reached the limit and scan isn't done
                 if this.cursors.is_some() && this.keys.len() < max {
                     // run again
@@ -210,6 +215,7 @@ impl ZedisServerState {
                 cx.notify();
                 if this.keys.len() == 1
                     && let Some(key) = this.keys.keys().next()
+                    && *key != this.key.clone().unwrap_or_default()
                 {
                     this.select_key(key.clone(), cx);
                 }
