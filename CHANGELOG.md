@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.1](https://github.com/vicanso/zedis/compare/v0.3.0..v0.3.1) - 2026-03-28
+## [0.3.2](https://github.com/vicanso/zedis/compare/v0.3.0..v0.3.2) - 2026-03-28
 
 ### ⛰️  Features
 
@@ -13,6 +13,8 @@
 
 ### 🐛 Bug Fixes
 
+- Fix loading status of kvtable - ([56bb544](https://github.com/vicanso/zedis/commit/56bb544f79f239bd0437a14461e52eeb1dddff79))
+- Fix libcrux-sha3 ([#62](https://github.com/orhun/git-cliff/issues/62)) - ([b6b266a](https://github.com/vicanso/zedis/commit/b6b266aebeb8feb3a048c673d6e65170d4a805fa))
 - Fix build for macod x86 - ([f3a721c](https://github.com/vicanso/zedis/commit/f3a721c538dc2b835d2cba827abfd106549b2bf6))
 
 ### 🚜 Refactor
@@ -38,6 +40,7 @@
 - Update pull request template - ([fbf5968](https://github.com/vicanso/zedis/commit/fbf5968c40618ac0d9110fa4cdb8955876956963))
 - Add rustfmt component - ([94395ab](https://github.com/vicanso/zedis/commit/94395abeae836fe9fc07ec509396781cf96e7c78))
 - Update dependencies and rust toolchain to latest - ([51642c7](https://github.com/vicanso/zedis/commit/51642c7f309fd346771067390063caafdcc3b2df))
+
 
 ## [0.3.0](https://github.com/vicanso/zedis/compare/v0.2.7..v0.3.0) - 2026-03-19
 
