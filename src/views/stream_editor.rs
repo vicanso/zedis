@@ -678,20 +678,15 @@ impl Render for ZedisStreamEditor {
             .when(is_info, |this| {
                 this.child(div().flex_1().min_h_0().child(self.render_info_view(cx)))
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .h(px(FOOTER_HEIGHT))
-                            .px_3()
-                            .gap_2()
-                            .child(
-                                Button::new("info-view-btn")
-                                    .icon(IconName::LayoutDashboard)
-                                    .tooltip(i18n_kv_table(cx, "data_tooltip"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.is_info_view = false;
-                                        cx.notify();
-                                    })),
-                            ),
+                        h_flex().flex_none().h(px(FOOTER_HEIGHT)).px_3().gap_2().child(
+                            Button::new("info-view-btn")
+                                .icon(IconName::LayoutDashboard)
+                                .tooltip(i18n_kv_table(cx, "data_tooltip"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.is_info_view = false;
+                                    cx.notify();
+                                })),
+                        ),
                     )
             })
             .when(!is_info, |this| {
