@@ -426,14 +426,14 @@ impl ZedisServerState {
             return;
         };
 
-        // Update UI to show loading state
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
-
         let (cursor, reverse) = match value.stream_value() {
             Some(stream) => (stream.cursor.clone(), stream.reverse),
             None => return,
         };
+
+        // Update UI to show loading state
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
 
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -476,7 +476,7 @@ impl ZedisServerState {
                 }
                 cx.notify();
                 if should_load_more {
-                    this.load_more_hash_value(cx);
+                    this.load_more_stream_value(cx);
                 }
             },
             cx,

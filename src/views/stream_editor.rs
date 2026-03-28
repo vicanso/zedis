@@ -17,7 +17,7 @@ use crate::{
     components::{KvTableColumn, KvTableMode},
     helpers::{fast_contains_ignore_case, format_duration},
     states::{KeyType, RedisValue, ServerEvent, StreamInfoData, ZedisServerState, i18n_kv_table, i18n_stream_editor},
-    views::ZedisKvTable,
+    views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -677,6 +677,22 @@ impl Render for ZedisStreamEditor {
             .size_full()
             .when(is_info, |this| {
                 this.child(div().flex_1().min_h_0().child(self.render_info_view(cx)))
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .h(px(FOOTER_HEIGHT))
+                            .px_3()
+                            .gap_2()
+                            .child(
+                                Button::new("info-view-btn")
+                                    .icon(IconName::LayoutDashboard)
+                                    .tooltip(i18n_kv_table(cx, "data_tooltip"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.is_info_view = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
             })
             .when(!is_info, |this| {
                 this.child(div().flex_1().min_h_0().child(self.table_state.clone()))

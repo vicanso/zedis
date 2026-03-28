@@ -260,14 +260,14 @@ impl ZedisServerState {
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
 
         // Check if we have valid list data
         let current_len = match value.list_value() {
             Some(list) => list.values.len(),
             None => return,
         };
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
 
         let server_id = self.server_id.clone();
         let db = self.db;

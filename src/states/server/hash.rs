@@ -355,15 +355,15 @@ impl ZedisServerState {
             return;
         };
 
-        // Update UI to show loading state
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
-
         // Extract current cursor and filter keyword from HASH state
         let (cursor, keyword) = match value.hash_value() {
             Some(hash) => (hash.cursor, hash.keyword.clone()),
             None => return,
         };
+
+        // Update UI to show loading state
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
 
         let server_id = self.server_id.clone();
         let db = self.db;

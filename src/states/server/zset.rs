@@ -384,14 +384,14 @@ impl ZedisServerState {
             return;
         };
 
+        // Extract current ZSET state
+        let Some(zset) = value.zset_value().cloned() else {
+            return;
+        };
         // Update UI to show loading state
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        // Extract current ZSET state
-        let Some(zset) = value.zset_value() else {
-            return;
-        };
         let current_len = zset.values.len();
         let sort_order = zset.sort_order;
         let keyword = zset.keyword.clone().unwrap_or_default();
