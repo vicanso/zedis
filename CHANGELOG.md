@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.3.1](https://github.com/vicanso/zedis/compare/v0.3.0..v0.3.1) - 2026-03-28
+
+### ⛰️  Features
+
+- Add action_button_factory support to kv table for custom actions - ([746f6b8](https://github.com/vicanso/zedis/commit/746f6b802f53807f153c2d5af8ed9d5f1f43c95e))
+- Support sorting and status inspection for redis streams ([#61](https://github.com/orhun/git-cliff/issues/61)) - ([d487f89](https://github.com/vicanso/zedis/commit/d487f89fae1e4cc41359852912f65871794aa198))
+- Add i18n support for more languages - ([ac9c618](https://github.com/vicanso/zedis/commit/ac9c618586516f95396d454d6b5c6afae01e69d9))
+- Add support for creating new ReJSON-RL keys ([#59](https://github.com/orhun/git-cliff/issues/59)) - ([3fc70c6](https://github.com/vicanso/zedis/commit/3fc70c659c4c94a9be7e826f760816f6395235b8))
+- Support partial field updates for redis json using JSON.MERGE - ([eb4ed3d](https://github.com/vicanso/zedis/commit/eb4ed3dd44312717f903cdd52aa4e18cf23a86cf))
+- Support overwriting ReJSON-RL data - ([512c69f](https://github.com/vicanso/zedis/commit/512c69f6fb62c0887d063f8784e9665bdce0004b))
+
+### 🐛 Bug Fixes
+
+- Fix build for macod x86 - ([f3a721c](https://github.com/vicanso/zedis/commit/f3a721c538dc2b835d2cba827abfd106549b2bf6))
+
+### 🚜 Refactor
+
+- *(setting)* Open settings in a separate window - ([d4588c4](https://github.com/vicanso/zedis/commit/d4588c4f432e4ad0b2bd13c59eb63d7ffc2078b9))
+- Refine sorting interaction and default order for stream table - ([e8f8b57](https://github.com/vicanso/zedis/commit/e8f8b574bb93484d6fe83e7fd4008e9285b262c4))
+- Adjust language and font setting - ([b746c67](https://github.com/vicanso/zedis/commit/b746c67a726aba4bc86527c752ff2fb105897478))
+- Enhance stream data visualization in table and form - ([374cb18](https://github.com/vicanso/zedis/commit/374cb18440e6de3151d638d7f39a21b6b9cdcf03))
+- Change redis command terminal to read-only editor mode - ([cd588e6](https://github.com/vicanso/zedis/commit/cd588e62fb2842dc5c8ff1ea077a8ff911cf7f09))
+
+### 📚 Documentation
+
+- Adjust PR template to include code merge guidelines - ([dcb23b1](https://github.com/vicanso/zedis/commit/dcb23b10eb5ffb77dcd56be1919c8a03ffafb95d))
+- Update demo image - ([aa7c86e](https://github.com/vicanso/zedis/commit/aa7c86edf08fe9035a214a6c9d041619969c1b2a))
+
+### 🎨 Styling
+
+- Optimize Slow Logs toolbar layout and spacing - ([de09f79](https://github.com/vicanso/zedis/commit/de09f79891f1cabb2665a11a6bb2529a5c35a95a))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update rust version - ([1ed238a](https://github.com/vicanso/zedis/commit/1ed238aaee9f053c88552244fedb02150387eb20))
+- Update pull request template - ([fbf5968](https://github.com/vicanso/zedis/commit/fbf5968c40618ac0d9110fa4cdb8955876956963))
+- Add rustfmt component - ([94395ab](https://github.com/vicanso/zedis/commit/94395abeae836fe9fc07ec509396781cf96e7c78))
+- Update dependencies and rust toolchain to latest - ([51642c7](https://github.com/vicanso/zedis/commit/51642c7f309fd346771067390063caafdcc3b2df))
+
 ## [0.3.0](https://github.com/vicanso/zedis/compare/v0.2.7..v0.3.0) - 2026-03-19
 
 ### ⛰️  Features
