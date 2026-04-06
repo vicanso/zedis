@@ -91,8 +91,8 @@ pub struct ZedisServerState {
     /// Search history
     search_history: Vec<SharedString>,
 
-    /// Whether the server supports database selection
-    supports_db_selection: bool,
+    /// Total number of databases
+    databases: usize,
 
     /// Currently selected database
     db: usize,
@@ -460,9 +460,10 @@ impl ZedisServerState {
     pub fn db(&self) -> usize {
         self.db
     }
-    /// Get whether the server supports database selection
-    pub fn supports_db_selection(&self) -> bool {
-        self.supports_db_selection
+
+    /// Get the total number of databases
+    pub fn databases(&self) -> usize {
+        self.databases
     }
 
     /// Get whether to soft wrap the editor
@@ -553,7 +554,7 @@ impl ZedisServerState {
                     let version = client.version().to_string();
                     let nodes = client.nodes();
                     let nodes_description = client.nodes_description();
-                    let supports_db_selection = client.supports_db_selection();
+                    let databases = client.databases();
                     let access_mode = client.access_mode();
                     let supports_rejson = client.supports_rejson();
                     Ok((
@@ -561,7 +562,7 @@ impl ZedisServerState {
                         nodes,
                         nodes_description,
                         version,
-                        supports_db_selection,
+                        databases,
                         access_mode,
                         supports_rejson,
                     ))
@@ -573,21 +574,14 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((
-                        dbsize,
-                        nodes,
-                        nodes_description,
-                        version,
-                        supports_db_selection,
-                        access_mode,
-                        supports_rejson,
-                    )) = result
+                    if let Ok((dbsize, nodes, nodes_description, version, databases, access_mode, supports_rejson)) =
+                        result
                     {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
                         this.nodes_description = Arc::new(nodes_description);
                         this.version = version.into();
-                        this.supports_db_selection = supports_db_selection;
+                        this.databases = databases;
                         this.access_mode = access_mode;
                         this.supports_rejson = supports_rejson;
                     };

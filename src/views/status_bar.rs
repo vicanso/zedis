@@ -99,7 +99,6 @@ fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Conte
 
 #[derive(Default)]
 struct StatusBarServerState {
-    supports_db_selection: bool,
     server_id: SharedString,
     size: SharedString,
     latency: (SharedString, Hsla),
@@ -144,8 +143,10 @@ pub struct ZedisStatusBar {
     db_state: Entity<SelectState<Vec<DbInfo>>>,
     should_reset_viewer_mode: Option<bool>,
     should_reset_db: Option<bool>,
+    should_rebuild_db_items: Option<usize>,
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
+    databases: usize,
     readonly: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -165,6 +166,11 @@ impl ZedisStatusBar {
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
+                    let databases = server_state.read(cx).databases();
+                    if this.databases != databases {
+                        this.databases = databases;
+                        this.should_rebuild_db_items = Some(databases);
+                    }
                     server_state.update(cx, |state, cx| {
                         state.refresh_redis_info(cx);
                     });
@@ -241,13 +247,7 @@ impl ZedisStatusBar {
             },
         ));
 
-        let db_items = (0..16)
-            .map(|db| DbInfo {
-                label: format!("DB: {}", db).into(),
-                db,
-            })
-            .collect::<Vec<_>>();
-        let db_state = cx.new(|cx| SelectState::new(db_items, Some(IndexPath::new(0)), window, cx));
+        let db_state = cx.new(|cx| SelectState::new(vec![], Some(IndexPath::new(0)), window, cx));
         subscriptions.push(cx.subscribe_in(
             &db_state,
             window,
@@ -272,8 +272,11 @@ impl ZedisStatusBar {
             }
         }));
         let readonly = server_state.read(cx).readonly();
+        let databases = server_state.read(cx).databases();
 
         let mut this = Self {
+            databases,
+            should_rebuild_db_items: Some(databases),
             heartbeat_task: None,
             viewer_mode_state,
             db_state,
@@ -324,7 +327,6 @@ impl ZedisStatusBar {
 
         let slow_log_tips = format!("{} / {}", state.last_slow_log_count(), state.slow_logs().len()).into();
         self.state.server_state = StatusBarServerState {
-            supports_db_selection: state.supports_db_selection(),
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
             latency: format_latency(Some(Duration::from_millis(redis_info.metrics.latency_ms)), cx),
@@ -378,7 +380,7 @@ impl ZedisStatusBar {
                                 });
                             })),
                     )
-                    .when(server_state.supports_db_selection, |this| {
+                    .when(self.databases > 1, |this| {
                         this.child(Select::new(&self.db_state).mt_1().small())
                     })
                     .child(
@@ -597,6 +599,17 @@ impl Render for ZedisStatusBar {
                 .unwrap_or_default();
             self.db_state.update(cx, |state, cx| {
                 state.set_selected_index(Some(IndexPath::new(db)), window, cx);
+            });
+        }
+        if let Some(databases) = self.should_rebuild_db_items.take() {
+            let db_items = (0..databases)
+                .map(|db| DbInfo {
+                    label: format!("DB: {}", db).into(),
+                    db,
+                })
+                .collect::<Vec<_>>();
+            self.db_state.update(cx, |state, cx| {
+                state.set_items(db_items, window, cx);
             });
         }
         h_flex()

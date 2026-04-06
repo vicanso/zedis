@@ -304,6 +304,7 @@ impl FromRedisValue for SlowLogEntry {
 pub struct RedisClient {
     access_mode: AccessMode,
     db: usize,
+    databases: usize,
     modules: Vec<String>,
     server_type: ServerType,
     nodes: Vec<RedisNode>,
@@ -326,8 +327,8 @@ impl RedisClient {
     pub fn version(&self) -> String {
         self.version.to_string()
     }
-    pub fn supports_db_selection(&self) -> bool {
-        self.server_type != ServerType::Cluster
+    pub fn databases(&self) -> usize {
+        self.databases
     }
     pub fn access_mode(&self) -> AccessMode {
         self.access_mode
@@ -899,7 +900,11 @@ async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<String>> {
     }
     Ok(modules)
 }
-
+async fn get_databases(mut conn: RedisAsyncConn) -> Result<usize> {
+    let db_config: Vec<String> = cmd("CONFIG").arg("GET").arg("databases").query_async(&mut conn).await?;
+    let databases = db_config.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+    Ok(databases)
+}
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
@@ -1097,8 +1102,10 @@ impl ConnectionManager {
             AccessMode::ReadWrite
         };
         let modules = get_modules(connection.clone()).await.unwrap_or_default();
+        let databases = get_databases(connection.clone()).await.unwrap_or(1);
         let mut client = RedisClient {
             db,
+            databases,
             modules,
             access_mode,
             server_type: server_type.clone(),
