@@ -18,8 +18,8 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::humanize_keystroke,
     states::{
-        ErrorMessage, GlobalEvent, Route, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState,
-        get_session_option, i18n_sidebar, i18n_status_bar, save_session_option,
+        ErrorMessage, Route, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option,
+        i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -77,20 +77,19 @@ fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Conte
     let t = i18n_sidebar(cx, "server_type");
     let master_nodes = i18n_sidebar(cx, "master_nodes");
     let slave_nodes = i18n_sidebar(cx, "slave_nodes");
-    let mut messages = Vec::with_capacity(4);
+    let modules_label = i18n_sidebar(cx, "modules");
+    let mut messages = Vec::with_capacity(5);
 
-    messages.push(format!(
-        "Valkey: {}",
-        if description.is_valkey {
-            i18n_sidebar(cx, "yes")
-        } else {
-            i18n_sidebar(cx, "no")
-        }
-    ));
+    if description.is_valkey {
+        messages.push(format!("Valkey: {}", i18n_sidebar(cx, "yes")));
+    }
     messages.push(format!("{t}: {}", description.server_type.as_str()));
     messages.push(format!("{master_nodes}: {}", description.master_nodes));
     if !description.slave_nodes.is_empty() {
         messages.push(format!("{slave_nodes}: {}", description.slave_nodes));
+    }
+    if !description.modules.is_empty() {
+        messages.push(format!("{modules_label}: {}", description.modules));
     }
     messages.join("\n").into()
 }
@@ -265,12 +264,7 @@ impl ZedisStatusBar {
                 }
             },
         ));
-        let global_state = cx.global::<ZedisGlobalStore>().state();
-        subscriptions.push(cx.subscribe(&global_state, |this, _global_state, event, _cx| {
-            if let GlobalEvent::ServerSelected(_, _) = event {
-                this.should_reset_db = Some(true);
-            }
-        }));
+
         let readonly = server_state.read(cx).readonly();
         let databases = server_state.read(cx).databases();
 
@@ -300,6 +294,7 @@ impl ZedisStatusBar {
         } else {
             self.state.server_state.size = SharedString::default();
         }
+        self.should_reset_db = Some(true);
         self.state.data_format = None;
         self.state.error = None;
     }

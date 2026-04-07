@@ -305,7 +305,7 @@ pub struct RedisClient {
     access_mode: AccessMode,
     db: usize,
     databases: usize,
-    modules: Vec<String>,
+    modules: Vec<(String, Version)>,
     server_type: ServerType,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
@@ -319,6 +319,7 @@ pub struct RedisClientDescription {
     pub server_type: SharedString,
     pub master_nodes: SharedString,
     pub slave_nodes: SharedString,
+    pub modules: SharedString,
 }
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -347,11 +348,18 @@ impl RedisClient {
             .filter(|node| !master_nodes.contains(&node.host_port()))
             .map(|node| node.host_port().clone())
             .collect();
+        let modules = self
+            .modules
+            .iter()
+            .map(|(name, ver)| format!("{name}@{ver}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         RedisClientDescription {
             is_valkey: self.is_valkey,
             server_type: format!("{:?}", self.server_type).into(),
             master_nodes: master_nodes.join(",").into(),
             slave_nodes: slave_nodes.join(",").into(),
+            modules: modules.into(),
         }
     }
     /// Returns the connection to the Redis server.
@@ -376,7 +384,7 @@ impl RedisClient {
         self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
     }
     pub fn supports_rejson(&self) -> bool {
-        self.modules.iter().any(|m| m == "ReJSON")
+        self.modules.iter().any(|(name, _)| name == "ReJSON")
     }
 
     /// Unlinks keys on all master nodes concurrently.
@@ -884,17 +892,35 @@ async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
     }
 }
 
-async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<String>> {
+async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<(String, Version)>> {
     let module_list: Vec<redis::Value> = cmd("MODULE").arg("LIST").query_async(&mut conn).await?;
     let mut modules = Vec::with_capacity(module_list.len());
     for module_info in module_list {
         if let Value::Array(info_kv) = module_info {
             // 遍历内部的 Key-Value 数组 (例如 ["name", "ReJSON", "ver", 20407])
+            let mut name: Option<String> = None;
+            let mut version = Version::new(0, 0, 0);
             let mut iter = info_kv.chunks(2);
-            while let Some([redis::Value::BulkString(key), redis::Value::BulkString(val)]) = iter.next() {
-                if key == b"name" {
-                    modules.push(String::from_utf8_lossy(val).into_owned());
+            while let Some([key, val]) = iter.next() {
+                if let Value::BulkString(k) = key {
+                    match k.as_slice() {
+                        b"name" => {
+                            if let Value::BulkString(v) = val {
+                                name = Some(String::from_utf8_lossy(v).into_owned());
+                            }
+                        }
+                        b"ver" => {
+                            if let Value::Int(v) = val {
+                                let v = *v as u64;
+                                version = Version::new(v / 10000, (v % 10000) / 100, v % 100);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
+            }
+            if let Some(name) = name {
+                modules.push((name, version));
             }
         }
     }
