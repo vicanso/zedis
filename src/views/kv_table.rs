@@ -395,7 +395,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             if column.column_type != KvTableColumnType::Value {
                 continue;
             }
-            let value = self.fetcher.get(row_ix, index + 1).unwrap_or_default();
+            let value = self.fetcher.get_edit(row_ix, index + 1).unwrap_or_default();
             self.original_values.insert(column.name.clone(), value);
         }
         self.editor_form = None;

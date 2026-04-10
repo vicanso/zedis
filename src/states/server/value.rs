@@ -20,6 +20,7 @@ use gpui::{Hsla, SharedString, prelude::*};
 use redis::cmd;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -204,6 +205,9 @@ pub struct RedisHashValue {
     pub size: usize,
     pub done: bool,
     pub values: Vec<(SharedString, SharedString)>,
+    /// Per-field TTL in seconds (only populated on Redis 7.4+).
+    /// A field absent from this map has no expiry.
+    pub field_ttls: HashMap<SharedString, i64>,
 }
 
 /// Redis List value structure

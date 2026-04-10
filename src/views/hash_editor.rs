@@ -26,16 +26,22 @@
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
+    helpers::format_duration,
     states::{KeyType, RedisValue, ZedisServerState},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
+use std::time::Duration;
 use zedis_ui::ZedisFormFieldType;
+
+/// Column index for the TTL column (1-based, after field and value columns).
+const TTL_COL_IX: usize = 3;
 
 /// Data adapter for Redis HASH values to work with the KV table component.
 ///
 /// This struct implements the `ZedisKvFetcher` trait to provide data access
 /// and operations for the two-column table view (field and value columns).
+/// On Redis 7.4+ an extra TTL column is shown and editable.
 struct ZedisHashValues {
     /// Current Redis HASH value data
     value: RedisValue,
@@ -58,16 +64,37 @@ impl ZedisKvFetcher for ZedisHashValues {
     /// Column layout:
     /// - Column 1: Field name
     /// - Column 2: Field value
+    /// - Column 3: TTL in seconds (Redis 7.4+, empty string = no expiry)
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         let hash = self.value.hash_value()?;
         let (field, value) = hash.values.get(row_ix)?;
 
-        // Column 2 is the value, others show the field name
+        if col_ix == TTL_COL_IX {
+            return Some(match hash.field_ttls.get(field).copied() {
+                Some(t) => format_duration(Duration::from_secs(t as u64)).into(),
+                None => SharedString::default(),
+            });
+        }
+
         if col_ix == 2 {
             Some(value.clone())
         } else {
             Some(field.clone())
         }
+    }
+
+    /// Returns the raw seconds for the TTL column in the edit form, while
+    /// `get` returns a human-readable duration for the display table.
+    fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
+        if col_ix == TTL_COL_IX {
+            let hash = self.value.hash_value()?;
+            let (field, _) = hash.values.get(row_ix)?;
+            return Some(match hash.field_ttls.get(field).copied() {
+                Some(t) => format!("{}", t).into(),
+                None => SharedString::default(),
+            });
+        }
+        self.get(row_ix, col_ix)
     }
 
     /// Returns the total number of fields in the HASH (from Redis HLEN).
@@ -125,29 +152,49 @@ impl ZedisKvFetcher for ZedisHashValues {
         });
     }
 
-    /// Handles inline editing of a HASH field's value.
+    /// Handles inline editing of a HASH field's value (and optionally TTL).
     ///
-    /// Called when the user edits the value column directly in the table.
-    /// Updates the value for the existing field using Redis HSET.
+    /// Called when the user saves edits in the table row form.
+    /// values[0] = new field name, values[1] = new value, values[2] = new TTL (optional).
     fn handle_update_value(&self, row_ix: usize, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
-        // Extract field name and new value from values
         let Some(field) = values.first() else {
             return;
         };
         let Some(value) = values.get(1) else {
             return;
         };
-        let Some(old_field) = self
-            .value
-            .hash_value()
-            .and_then(|v| v.values.get(row_ix).map(|(field, _)| field.clone()))
-        else {
+        let Some((old_field, _)) = self.value.hash_value().and_then(|v| v.values.get(row_ix).cloned()) else {
             return;
         };
 
-        // Execute update operation
+        // Parse optional TTL from values[2]; None means "leave TTL unchanged"
+        let ttl: Option<i64> = values.get(2).and_then(|ttl_str| {
+            let s = ttl_str.trim();
+            if s.is_empty() {
+                // Empty input: only request persist if there was a TTL before
+                let had_ttl = self
+                    .value
+                    .hash_value()
+                    .map(|h| h.field_ttls.contains_key(&old_field))
+                    .unwrap_or(false);
+                if had_ttl { Some(-1) } else { None }
+            } else {
+                use crate::helpers::parse_duration;
+                let new_secs = parse_duration(s).map(|d| d.as_secs() as i64).unwrap_or(-1);
+                let old_secs = self
+                    .value
+                    .hash_value()
+                    .and_then(|h| h.field_ttls.get(&old_field).copied())
+                    .unwrap_or(-1);
+                // Only include TTL if it actually changed
+                if new_secs != old_secs { Some(new_secs) } else { None }
+            }
+        });
+
+        let field = field.clone();
+        let value = value.clone();
         self.server_state.update(cx, |this, cx| {
-            this.update_hash_value(old_field, field.clone(), value.clone(), cx);
+            this.update_hash_value(old_field, field, value, ttl, cx);
         });
     }
 
@@ -169,6 +216,8 @@ define_kv_editor!(ZedisHashEditor, ZedisHashValues);
 
 impl ZedisHashEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let supports_field_ttl = server_state.read(cx).supports_hash_field_ttl();
+
         let window_width = window.viewport_size().width.to_f64();
         let field_width = if window_width > 1800. {
             0.2
@@ -178,17 +227,16 @@ impl ZedisHashEditor {
             0.4
         };
 
-        let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisHashValues>::new(
-                vec![
-                    KvTableColumn::new("Field", Some(field_width)),
-                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
-                ],
-                server_state,
-                window,
-                cx,
-            )
-        });
+        let mut columns = vec![
+            KvTableColumn::new("Field", Some(field_width)),
+            KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
+        ];
+        if supports_field_ttl {
+            // TTL column: fixed 90px, shows seconds remaining (empty = no expiry)
+            columns.push(KvTableColumn::new("TTL(s)", Some(120.)));
+        }
+
+        let table_state = cx.new(|cx| ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx));
 
         Self { table_state }
     }

@@ -32,6 +32,7 @@ use crate::{
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -93,6 +94,33 @@ async fn get_redis_hash_value(
     Ok((next_cursor, values))
 }
 
+/// Fetches per-field TTLs for the given fields using the Redis HTTL command.
+///
+/// Only available on Redis 7.4+. Returns a map of field → TTL (seconds).
+/// Fields with no expiry (HTTL returns -1) are omitted from the map.
+async fn get_hash_field_ttls(
+    conn: &mut RedisAsyncConn,
+    key: &str,
+    fields: &[SharedString],
+) -> Result<HashMap<SharedString, i64>> {
+    if fields.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut c = cmd("HTTL");
+    c.arg(key).arg("FIELDS").arg(fields.len());
+    for field in fields {
+        c.arg(field.as_ref());
+    }
+    let ttls: Vec<i64> = c.query_async(conn).await?;
+    let map = fields
+        .iter()
+        .zip(ttls.iter())
+        .filter(|(_, ttl)| **ttl >= 0)
+        .map(|(field, ttl)| (field.clone(), *ttl))
+        .collect();
+    Ok(map)
+}
+
 /// Performs initial load of a Redis HASH value.
 ///
 /// Fetches the total number of fields (HLEN) and loads the first batch of field-value
@@ -101,10 +129,15 @@ async fn get_redis_hash_value(
 /// # Arguments
 /// * `conn` - Redis async connection
 /// * `key` - The HASH key to load
+/// * `supports_field_ttl` - Whether the server supports per-field TTL (Redis 7.4+)
 ///
 /// # Returns
 /// A `RedisValue` containing HASH metadata and initial field-value pairs
-pub(crate) async fn first_load_hash_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
+pub(crate) async fn first_load_hash_value(
+    conn: &mut RedisAsyncConn,
+    key: &str,
+    supports_field_ttl: bool,
+) -> Result<RedisValue> {
     // Get total number of fields in the HASH
     let size: usize = cmd("HLEN").arg(key).query_async(conn).await?;
 
@@ -114,6 +147,13 @@ pub(crate) async fn first_load_hash_value(conn: &mut RedisAsyncConn, key: &str) 
     // If cursor is 0, all values have been loaded in one iteration
     let done = cursor == 0;
 
+    let field_ttls = if supports_field_ttl {
+        let field_names: Vec<SharedString> = values.iter().map(|(f, _)| f.clone()).collect();
+        get_hash_field_ttls(conn, key, &field_names).await.unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
     Ok(RedisValue {
         key_type: KeyType::Hash,
         data: Some(RedisValueData::Hash(Arc::new(RedisHashValue {
@@ -121,6 +161,7 @@ pub(crate) async fn first_load_hash_value(conn: &mut RedisAsyncConn, key: &str) 
             size,
             values,
             done,
+            field_ttls,
             ..Default::default()
         }))),
         ..Default::default()
@@ -226,19 +267,20 @@ impl ZedisServerState {
         );
     }
     /// Updates a field-value pair in the Redis HASH.
-    ///
     /// Uses HSET command to update the value of the specified field.
     ///
     /// # Arguments
-    /// * `old_field` - The old field name
-    /// * `new_field` - The field name to update
-    /// * `new_value` - The value to set for the field
-    /// * `cx` - GPUI context for spawning async tasks and UI updates
+    /// * `old_field` - The current field name (before any rename)
+    /// * `new_field` - The new field name (same as `old_field` when not renaming)
+    /// * `new_value` - The new value to store
+    /// * `ttl`       - `Some(secs)` sets HEXPIRE, `Some(-1)` calls HPERSIST, `None` leaves TTL unchanged
+    /// * `cx`        - GPUI context
     pub fn update_hash_value(
         &mut self,
         old_field: SharedString,
         new_field: SharedString,
         new_value: SharedString,
+        ttl: Option<i64>,
         cx: &mut Context<Self>,
     ) {
         let old_field_clone = old_field.clone();
@@ -250,14 +292,21 @@ impl ZedisServerState {
             ServerTask::UpdateHashField,
             cx,
             move |hash| {
-                // Optimistic UI update: Replace old entry with new entry
+                // Optimistic UI update: replace field entry
                 if let Some(pos) = hash.values.iter().position(|(f, _)| f == &old_field_clone) {
-                    hash.values[pos] = (new_field_clone, new_value_clone);
+                    hash.values[pos] = (new_field_clone.clone(), new_value_clone);
+                }
+                // Optimistic TTL update
+                if let Some(t) = ttl {
+                    if t > 0 {
+                        hash.field_ttls.insert(new_field_clone, t);
+                    } else {
+                        hash.field_ttls.remove(&new_field_clone);
+                    }
                 }
             },
             move |key, mut conn| async move {
                 if is_rename {
-                    // Pipeline: Insert new field then delete old field
                     let _: () = redis::pipe()
                         .atomic()
                         .cmd("HSET")
@@ -277,6 +326,27 @@ impl ZedisServerState {
                         .query_async(&mut conn)
                         .await?;
                 }
+                // Apply TTL change in the same task
+                if let Some(t) = ttl {
+                    if t > 0 {
+                        let _: Vec<i64> = cmd("HEXPIRE")
+                            .arg(&key)
+                            .arg(t)
+                            .arg("FIELDS")
+                            .arg(1)
+                            .arg(new_field.as_ref())
+                            .query_async(&mut conn)
+                            .await?;
+                    } else {
+                        let _: Vec<i64> = cmd("HPERSIST")
+                            .arg(&key)
+                            .arg("FIELDS")
+                            .arg(1)
+                            .arg(new_field.as_ref())
+                            .query_async(&mut conn)
+                            .await?;
+                    }
+                }
                 Ok(())
             },
             |this, _, cx| {
@@ -284,7 +354,6 @@ impl ZedisServerState {
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
-        // self.add_or_update_hash_value(new_field, new_value, cx);
     }
     /// Applies a filter to HASH fields by resetting the scan state with a keyword.
     ///
@@ -367,23 +436,33 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
+        let supports_field_ttl = self.supports_hash_field_ttl();
         cx.emit(ServerEvent::ValuePaginationStarted);
 
         self.spawn(
             ServerTask::LoadMoreValue,
-            // Async operation: fetch next batch using HSCAN
+            // Async operation: fetch next batch using HSCAN (+ optional HTTL)
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // Use larger batch size when filtering to reduce round trips
                 let count = if keyword.is_some() { 1000 } else { 100 };
 
-                get_redis_hash_value(&mut conn, &key, keyword, cursor, count).await
+                let (new_cursor, new_values) = get_redis_hash_value(&mut conn, &key, keyword, cursor, count).await?;
+
+                let ttls = if supports_field_ttl && !new_values.is_empty() {
+                    let fields: Vec<SharedString> = new_values.iter().map(|(f, _)| f.clone()).collect();
+                    get_hash_field_ttls(&mut conn, &key, &fields).await.unwrap_or_default()
+                } else {
+                    HashMap::new()
+                };
+
+                Ok((new_cursor, new_values, ttls))
             },
             // UI callback: merge results into local state
             move |this, result, cx| {
                 let mut should_load_more = false;
-                if let Ok((new_cursor, new_values)) = result
+                if let Ok((new_cursor, new_values, new_ttls)) = result
                     && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
                     let hash = Arc::make_mut(hash_data);
@@ -398,6 +477,8 @@ impl ZedisServerState {
                     if !new_values.is_empty() {
                         hash.values.extend(new_values);
                     }
+                    hash.field_ttls.extend(new_ttls);
+
                     if !hash.done && hash.values.len() < 50 {
                         should_load_more = true;
                     }

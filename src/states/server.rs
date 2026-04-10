@@ -452,6 +452,15 @@ impl ZedisServerState {
         &self.version
     }
 
+    /// Returns true when the connected Redis server supports per-field hash TTL
+    /// commands (HEXPIRE, HTTL, HPERSIST), introduced in Redis 7.4.
+    pub fn supports_hash_field_ttl(&self) -> bool {
+        use semver::Version;
+        Version::parse(self.version.as_ref())
+            .map(|v| v >= Version::new(7, 4, 0))
+            .unwrap_or(false)
+    }
+
     /// Get the currently selected server id
     pub fn server_id(&self) -> &str {
         &self.server_id

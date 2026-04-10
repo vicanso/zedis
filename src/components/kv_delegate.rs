@@ -33,8 +33,16 @@ pub trait ZedisKvFetcher: 'static {
     fn key_type(&self) -> KeyType {
         KeyType::Unknown
     }
-    /// Retrieves a value for a specific cell in the table.
+    /// Retrieves a value for a specific cell in the table (display form).
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString>;
+
+    /// Retrieves a value for a specific cell in the edit form.
+    ///
+    /// Defaults to `get`. Override when the display format differs from the
+    /// editable format (e.g. a humanized duration vs. raw seconds).
+    fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
+        self.get(row_ix, col_ix)
+    }
 
     /// Returns the total count of items available.
     fn count(&self) -> usize;
