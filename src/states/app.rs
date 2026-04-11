@@ -41,6 +41,7 @@ pub enum Route {
     Editor,
     Settings,
     Protos,
+    Scripts,
     Metrics,
     Slowlog,
     MemoryAnalysis,
@@ -107,6 +108,7 @@ pub enum FontSizeAction {
 pub enum SettingsAction {
     Editor,
     Protos,
+    Scripts,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

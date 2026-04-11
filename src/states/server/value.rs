@@ -44,6 +44,7 @@ pub enum DataFormat {
     Snappy,
     Protobuf,
     MessagePack,
+    Script,
 }
 
 impl DataFormat {
@@ -63,6 +64,7 @@ impl DataFormat {
             DataFormat::Zstd => "zstd",
             DataFormat::Protobuf => "protobuf",
             DataFormat::MessagePack => "messagepack",
+            DataFormat::Script => "script",
         }
     }
 }

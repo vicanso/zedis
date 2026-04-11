@@ -22,7 +22,7 @@ use crate::{
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
         ZedisClientsManager, ZedisEditor, ZedisKeyTree, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
-        ZedisProtoEditor, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar,
+        ZedisProtoEditor, ZedisScriptEditor, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, SharedString, Subscription, Window, div, prelude::*, px};
@@ -68,6 +68,7 @@ pub struct ZedisContent {
     /// Cached views - lazily initialized and cleared when switching routes
     servers: Option<Entity<ZedisServers>>,
     proto_editor: Option<Entity<ZedisProtoEditor>>,
+    script_editor: Option<Entity<ZedisScriptEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     metrics: Option<Entity<ZedisMetrics>>,
     slowlog_editor: Option<Entity<ZedisSlowlogEditor>>,
@@ -112,6 +113,9 @@ impl ZedisContent {
         }
         if route != Route::Protos {
             self.proto_editor.take();
+        }
+        if route != Route::Scripts {
+            self.script_editor.take();
         }
         if route != Route::Slowlog {
             self.slowlog_editor.take();
@@ -259,6 +263,7 @@ impl ZedisContent {
             cmd_history_index: None,
             focus_handle,
             proto_editor: None,
+            script_editor: None,
             _subscriptions: subscriptions,
         }
     }
@@ -407,6 +412,16 @@ impl ZedisContent {
             })
             .clone();
         div().size_full().child(proto_editor)
+    }
+    fn render_script_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let script_editor = self
+            .script_editor
+            .get_or_insert_with(|| {
+                debug!("Creating new script editor view");
+                cx.new(|cx| ZedisScriptEditor::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(script_editor)
     }
     fn render_metrics(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let metrics = self
@@ -728,6 +743,7 @@ impl Render for ZedisContent {
         match route {
             Route::Home | Route::Settings => base.child(self.render_servers(window, cx)).into_any_element(),
             Route::Protos => base.child(self.render_proto_editor(window, cx)).into_any_element(),
+            Route::Scripts => base.child(self.render_script_editor(window, cx)).into_any_element(),
             _ => {
                 // Route 2: Loading state (show skeleton while connecting/loading)
                 let is_busy = self.server_state.read(cx).is_busy();

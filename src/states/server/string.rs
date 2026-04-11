@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::value::{DataFormat, RedisBytesValue, detect_format};
-use crate::db::ProtoManager;
+use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::decompress_zstd;
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
@@ -170,9 +170,13 @@ impl RedisBytesValue {
             _ => {
                 let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
                 if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
-                    && let Ok(data) = ProtoManager::decode_data(&id, data)
+                    && let Ok(decoded) = ProtoManager::decode_data(&id, data)
                 {
-                    Some((DataFormat::Protobuf, SharedString::from(data)))
+                    Some((DataFormat::Protobuf, SharedString::from(decoded)))
+                } else if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
+                    && let Ok(output) = ScriptManager::execute(&id, key, data)
+                {
+                    Some((DataFormat::Script, SharedString::from(output)))
                 } else if !is_utf8 && let Ok(decompressed) = decompress_size_prepended(data) {
                     process_decompressed(Some(decompressed))
                 } else {

@@ -30,6 +30,7 @@ pub use i18n::i18n_metrics;
 pub use i18n::i18n_monitor;
 pub use i18n::i18n_proto_editor;
 pub use i18n::i18n_pubsub_editor;
+pub use i18n::i18n_script_editor;
 pub use i18n::i18n_servers;
 pub use i18n::i18n_set_editor;
 pub use i18n::i18n_settings;

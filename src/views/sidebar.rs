@@ -121,7 +121,10 @@ impl ZedisSidebar {
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let servers = self.state.server_names.clone();
         let current_server_id_clone = self.state.server_id.clone();
-        let is_match_route = !matches!(cx.global::<ZedisGlobalStore>().read(cx).route(), Route::Protos);
+        let is_match_route = !matches!(
+            cx.global::<ZedisGlobalStore>().read(cx).route(),
+            Route::Protos | Route::Scripts
+        );
 
         let home_label = i18n_sidebar(cx, "home");
         let list_active_color = cx.theme().list_active;

@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
-use crate::db::{ProtoManager, init_database};
+use crate::db::{ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
     MemuAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys,
 };
@@ -237,6 +237,13 @@ impl Render for Zedis {
                         });
                     });
                 }
+                SettingsAction::Scripts => {
+                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                        store.update(cx, |state, cx| {
+                            state.go_to(Route::Scripts, cx);
+                        });
+                    });
+                }
             }))
     }
 }
@@ -375,6 +382,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cx.background_spawn(async move {
                 if let Err(e) = ProtoManager::init() {
                     error!(error = %e, "init protos fail",);
+                }
+                if let Err(e) = ScriptManager::init() {
+                    error!(error = %e, "init script viewers fail",);
                 }
             })
             .await;
