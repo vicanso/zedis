@@ -39,6 +39,8 @@ Stop manually decoding your data. Zedis automatically detects (`ViewerMode::Auto
   - **JSON & RedisJSON**: Full read/write support with pretty-printing and syntax highlighting. Smartly computes RFC 7396 Merge Patch diffs to send minimal `JSON.MERGE` commands instead of heavy document overwrites.
   - **Protobuf & MessagePack**: Zero-config binary deserialization into readable JSON-like formats.
   - **Media & Hex**: Native preview for images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`) and an adaptive 8/16-byte Hex dump for raw binary.
+- **Custom Script Viewer**: Pipe any Redis value through an external shell command for fully custom decoding. Configure a shell command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`) and Zedis runs it via `sh -c` (Unix/macOS) or `cmd /c` (Windows), displaying stdout as the formatted value. Perfect for base64, custom binary protocols, or any tool in your `$PATH`. Key patterns are matched by exact, prefix, suffix, or regex rules per server.
+- **Hash Field-Level TTL** (Redis 7.4+): Set individual expiry times on specific hash fields using `HEXPIRE` / `HPERSIST` — no need to restructure your data model just to expire a subset of fields.
 
 ### 📊 Real-Time Observability
 Transform how you monitor your Redis instances with a built-in, GPU-accelerated dashboard.
