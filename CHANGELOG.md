@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.2](https://github.com/vicanso/zedis/compare/v0.3.1..v0.3.2) - 2026-04-12
+
+### ⛰️  Features
+
+- Support custom scripts for data parsing ([#66](https://github.com/orhun/git-cliff/issues/66)) - ([c231d7b](https://github.com/vicanso/zedis/commit/c231d7bc9935cf332a52275f2426f0f4a2f26359))
+- Support field-level ttl for hash (redis 7.4+) - ([2f93fb4](https://github.com/vicanso/zedis/commit/2f93fb40b983458e5ec3bb8c21bff3038b69d9e9))
+- Display loaded redis modules in the status bar - ([a4eb85a](https://github.com/vicanso/zedis/commit/a4eb85a70cbe1658dca5f683ff8904558161f32d))
+- Dynamically render database list based on server info ([#66](https://github.com/orhun/git-cliff/issues/66)) - ([eeea878](https://github.com/vicanso/zedis/commit/eeea8784e59b3bf5ab571ae3e34a163516e55281))
+
+### 🐛 Bug Fixes
+
+- Limit to a single secondary window per unique page ([#64](https://github.com/orhun/git-cliff/issues/64)) - ([3086053](https://github.com/vicanso/zedis/commit/3086053e98f9961bce75b3ced2b693d26c12ed60))
+
+### 🚜 Refactor
+
+- Auto-select exact match key during scan results - ([64afead](https://github.com/vicanso/zedis/commit/64afead9bf112082b29c156885796f3ceef27748))
+
+### 📚 Documentation
+
+- Update readme - ([30398a7](https://github.com/vicanso/zedis/commit/30398a73f2666d21fe4d16730c4433d1c41e22ae))
+
 ## [0.3.2](https://github.com/vicanso/zedis/compare/v0.3.0..v0.3.2) - 2026-03-28
 
 ### ⛰️  Features
