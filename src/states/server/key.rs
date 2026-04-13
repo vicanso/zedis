@@ -404,6 +404,24 @@ impl ZedisServerState {
         );
     }
 
+    /// Force-refreshes keys under a prefix, bypassing all load caches.
+    ///
+    /// Unlike `scan_prefix`, this always re-scans from Redis regardless of whether the
+    /// prefix was previously loaded or the global scan is complete.  Existing keys under
+    /// the prefix are removed first so the result is a clean, up-to-date snapshot.
+    pub fn refresh_prefix(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
+        // Drop any cached state for this prefix (and sub-prefixes)
+        self.loaded_prefixes
+            .retain(|p| !p.as_str().starts_with(prefix.as_str()));
+        // Remove stale keys so the tree shows only what Redis returns
+        self.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
+        // Clear scan_completed so scan_prefix performs a full Redis re-scan rather than
+        // short-circuiting to fill_key_types.  scan_prefix will restore it via the
+        // KeyScanFinished path if the prefix scan itself completes fully.
+        self.scan_completed = false;
+        self.scan_prefix(prefix, cx);
+    }
+
     fn get_value(&mut self, key: SharedString, task: ServerTask, cx: &mut Context<Self>) {
         if key.is_empty() {
             return;

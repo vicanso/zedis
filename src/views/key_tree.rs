@@ -64,6 +64,7 @@ enum KeyTreeAction {
     DeleteMultipleKeys,
     DeleteKey(SharedString),
     DeleteFolder(SharedString),
+    RefreshFolder(SharedString),
     CollapseAllKeys,
     ToggleMultiSelectMode,
     ChangeChannelMode,
@@ -363,6 +364,11 @@ impl ListDelegate for KeyTreeDelegate {
                             } else {
                                 menu = if is_folder {
                                     menu.menu_element_with_icon(
+                                        CustomIconName::RotateCw,
+                                        Box::new(KeyTreeAction::RefreshFolder(id.clone())),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
+                                    )
+                                    .menu_element_with_icon(
                                         CustomIconName::X,
                                         Box::new(KeyTreeAction::DeleteFolder(id)),
                                         move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
@@ -1407,6 +1413,12 @@ impl Render for ZedisKeyTree {
                             true
                         })
                         .open(window, cx);
+                }
+                KeyTreeAction::RefreshFolder(id) => {
+                    let id = id.clone();
+                    this.server_state.update(cx, |state, cx| {
+                        state.refresh_prefix(format!("{}:", id.as_str()).into(), cx);
+                    });
                 }
                 KeyTreeAction::DeleteFolder(id) => {
                     let id = id.clone();
