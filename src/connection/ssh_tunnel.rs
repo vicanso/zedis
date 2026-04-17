@@ -26,6 +26,8 @@ use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
 use rustls::pki_types::ServerName;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
@@ -175,15 +177,36 @@ async fn is_alive(session: Arc<SshHandle>) -> bool {
 ///
 /// * `addr` - SSH server address in "host:port" or "host" format (defaults to port 22)
 /// * `user` - SSH username for authentication
-/// * `key` - Optional SSH private key (file path or key content)
-/// * `password` - Optional password for key decryption or password authentication
+/// * `key` - Optional SSH private key file path or key content
+/// * `passphrase` - Optional passphrase for decrypting the private key
+/// * `password` - Optional password for password authentication
+/// * `use_key_auth` - Whether to use private key authentication
+/// * `allow_agent_auth` - Whether agent authentication is allowed as a fallback
 ///
 /// # Returns
 ///
 /// An Arc-wrapped SSH session handle ready for use
-pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<Arc<SshHandle>> {
-    // Generate unique identifier for this SSH connection
-    let id = format!("{user}@{addr}");
+pub async fn get_or_init_ssh_session(
+    addr: &str,
+    user: &str,
+    key: &str,
+    passphrase: &str,
+    password: &str,
+    use_key_auth: bool,
+    allow_agent_auth: bool,
+) -> Result<Arc<SshHandle>> {
+    let mut hasher = DefaultHasher::new();
+    addr.hash(&mut hasher);
+    user.hash(&mut hasher);
+    use_key_auth.hash(&mut hasher);
+    if use_key_auth {
+        key.hash(&mut hasher);
+        passphrase.hash(&mut hasher);
+    } else {
+        password.hash(&mut hasher);
+        allow_agent_auth.hash(&mut hasher);
+    }
+    let id = format!("{user}@{addr}#{}", hasher.finish());
     // Check cache for existing session
     let cached_session = SSH_SESSION.get(&id);
     if let Some(session) = cached_session {
@@ -195,7 +218,7 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
     }
     debug!(id, "start to create new ssh session");
     // Create new session if none exists or cached session is dead
-    let session = new_ssh_session(addr, user, key, password).await?;
+    let session = new_ssh_session(addr, user, key, passphrase, password, use_key_auth, allow_agent_auth).await?;
     info!(id, "new ssh session established");
     let session = Arc::new(session);
     // Cache the new session for future reuse
@@ -218,8 +241,11 @@ fn is_pem_format(data: &str) -> bool {
 ///
 /// * `addr` - SSH server address in "host:port" or "host" format (defaults to port 22)
 /// * `user` - SSH username for authentication
-/// * `key` - Optional SSH private key (file path or PEM/OpenSSH format content)
-/// * `password` - Optional password for key decryption or password authentication
+/// * `key` - Optional SSH private key file path
+/// * `passphrase` - Optional private key passphrase
+/// * `password` - Optional password for password authentication
+/// * `use_key_auth` - Whether to use private key authentication
+/// * `allow_agent_auth` - Whether agent authentication is allowed as a fallback
 ///
 /// # Returns
 ///
@@ -227,12 +253,18 @@ fn is_pem_format(data: &str) -> bool {
 ///
 /// # Authentication Methods
 ///
-/// 1. Public Key: If `key` is provided, attempts public key authentication
-///    - If key is a valid file path, loads the key from disk
-///    - Otherwise, decodes the key from the string content
-/// 2. Password: If only `password` is provided, uses password authentication
-/// 3. Error: If neither key nor password is provided, returns an error
-async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<SshHandle> {
+/// 1. Public Key: Uses the selected key file and optional passphrase
+/// 2. Password: Uses password authentication
+/// 3. SSH Agent: Only used as a fallback for older configs with no explicit mode
+async fn new_ssh_session(
+    addr: &str,
+    user: &str,
+    key: &str,
+    passphrase: &str,
+    password: &str,
+    use_key_auth: bool,
+    allow_agent_auth: bool,
+) -> Result<SshHandle> {
     // Configure SSH client with keepalive to maintain connection
     let config = russh::client::Config {
         keepalive_interval: Some(Duration::from_secs(5 * 60)),
@@ -258,14 +290,18 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
     let mut session = russh::client::connect(config, (host, port), handler).await?;
 
     // Authenticate using provided credentials
-    let auth_res = if !key.is_empty() {
+    let auth_res = if use_key_auth {
+        if key.is_empty() {
+            return Err(Error::Invalid {
+                message: "SSH key file is required".to_string(),
+            });
+        }
+        let passphrase = (!passphrase.is_empty()).then_some(passphrase);
         let key_pair = if is_pem_format(key) {
-            // Decode key from string content
-            decode_secret_key(key, None)?
+            decode_secret_key(key, passphrase)?
         } else {
             let key = resolve_path(key);
-            // Load key from file path
-            load_secret_key(key, None)?
+            load_secret_key(key, passphrase)?
         };
         let key = Arc::new(key_pair);
         let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
@@ -275,6 +311,10 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
         debug!(user, "password authentication");
         // Password authentication
         session.authenticate_password(user, password).await?
+    } else if !allow_agent_auth {
+        return Err(Error::Invalid {
+            message: "SSH password is required".to_string(),
+        });
     } else {
         #[cfg(not(unix))]
         {
@@ -452,8 +492,23 @@ fn build_tls_connector(config: &RedisServer) -> Result<TlsConnector> {
 pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
     let ssh_addr = config.ssh_addr.clone().unwrap_or_default();
     let ssh_user = config.ssh_username.clone().unwrap_or_default();
-    let ssh_key = config.ssh_key.clone().unwrap_or_default();
-    let ssh_password = config.ssh_password.clone().unwrap_or_default();
+    let use_key_auth = config.uses_ssh_key_auth();
+    let ssh_key = if use_key_auth {
+        config.ssh_key.clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let ssh_passphrase = if use_key_auth {
+        config.ssh_passphrase.clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let ssh_password = if use_key_auth {
+        String::new()
+    } else {
+        config.ssh_password.clone().unwrap_or_default()
+    };
+    let allow_agent_auth = config.ssh_auth_mode.is_none() && ssh_key.is_empty() && ssh_password.is_empty();
     let host = config.host.to_string();
     let port = config.port;
     let username = config.username.clone();
@@ -465,7 +520,16 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
     };
 
     run_in_tokio(async move {
-        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password).await?;
+        let session = get_or_init_ssh_session(
+            &ssh_addr,
+            &ssh_user,
+            &ssh_key,
+            &ssh_passphrase,
+            &ssh_password,
+            use_key_auth,
+            allow_agent_auth,
+        )
+        .await?;
         let channel = session
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
             .await?;

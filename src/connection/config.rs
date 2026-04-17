@@ -33,6 +33,9 @@ use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+pub const SSH_AUTH_MODE_PASSWORD: usize = 0;
+pub const SSH_AUTH_MODE_KEY: usize = 1;
+
 #[derive(Debug, Clone, Default)]
 struct RedisUrl {
     host: String,
@@ -87,8 +90,10 @@ pub struct RedisServer {
     pub readonly: Option<bool>,
     pub ssh_addr: Option<String>,
     pub ssh_username: Option<String>,
+    pub ssh_auth_mode: Option<usize>,
     pub ssh_password: Option<String>,
     pub ssh_key: Option<String>,
+    pub ssh_passphrase: Option<String>,
 }
 impl RedisServer {
     pub fn from_form_data(id: &str, data: &IndexMap<SharedString, SharedString>) -> Self {
@@ -110,6 +115,24 @@ impl RedisServer {
         if redis_url.tls {
             tls = Some(true);
         }
+        let mut ssh_auth_mode = get_parsed("ssh_auth_mode").map(|s| s as usize);
+        let mut ssh_password = get_str("ssh_password");
+        let mut ssh_key = get_str("ssh_key");
+        let mut ssh_passphrase = get_str("ssh_passphrase");
+        let resolved_ssh_auth_mode = ssh_auth_mode.unwrap_or_else(|| {
+            if ssh_key.as_ref().is_some_and(|key| !key.is_empty()) {
+                SSH_AUTH_MODE_KEY
+            } else {
+                SSH_AUTH_MODE_PASSWORD
+            }
+        });
+        ssh_auth_mode = Some(resolved_ssh_auth_mode);
+        if resolved_ssh_auth_mode == SSH_AUTH_MODE_KEY {
+            ssh_password = None;
+        } else {
+            ssh_key = None;
+            ssh_passphrase = None;
+        }
 
         Self {
             id: id.to_string(),
@@ -130,8 +153,10 @@ impl RedisServer {
 
             ssh_addr: get_str("ssh_addr"),
             ssh_username: get_str("ssh_username"),
-            ssh_password: get_str("ssh_password"),
-            ssh_key: get_str("ssh_key"),
+            ssh_auth_mode,
+            ssh_password,
+            ssh_key,
+            ssh_passphrase,
 
             server_type: get_parsed("server_type").map(|s| s as usize),
 
@@ -140,6 +165,18 @@ impl RedisServer {
             ssh_tunnel: get_bool("ssh_tunnel"),
             readonly: get_bool("readonly"),
         }
+    }
+    pub fn resolved_ssh_auth_mode(&self) -> usize {
+        self.ssh_auth_mode.unwrap_or_else(|| {
+            if self.ssh_key.as_ref().is_some_and(|key| !key.trim().is_empty()) {
+                SSH_AUTH_MODE_KEY
+            } else {
+                SSH_AUTH_MODE_PASSWORD
+            }
+        })
+    }
+    pub fn uses_ssh_key_auth(&self) -> bool {
+        self.resolved_ssh_auth_mode() == SSH_AUTH_MODE_KEY
     }
     pub fn get_hash(&self, db: usize) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -242,8 +279,23 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         if let Some(ssh_password) = &server.ssh_password {
             server.ssh_password = Some(decrypt(ssh_password).unwrap_or(ssh_password.clone()));
         }
+        if let Some(ssh_passphrase) = &server.ssh_passphrase {
+            server.ssh_passphrase = Some(decrypt(ssh_passphrase).unwrap_or(ssh_passphrase.clone()));
+        }
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
+        }
+        if server.uses_ssh_key_auth() {
+            if server.ssh_passphrase.is_none() {
+                server.ssh_passphrase = server.ssh_password.take();
+            } else {
+                server.ssh_password = None;
+            }
+            server.ssh_auth_mode = Some(SSH_AUTH_MODE_KEY);
+        } else {
+            server.ssh_key = None;
+            server.ssh_passphrase = None;
+            server.ssh_auth_mode = Some(SSH_AUTH_MODE_PASSWORD);
         }
         configs.insert(server.id.clone(), server.clone());
     }
@@ -255,12 +307,23 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
 pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     let mut configs = HashMap::new();
     for server in servers.iter_mut() {
+        if server.uses_ssh_key_auth() {
+            server.ssh_password = None;
+            server.ssh_auth_mode = Some(SSH_AUTH_MODE_KEY);
+        } else {
+            server.ssh_key = None;
+            server.ssh_passphrase = None;
+            server.ssh_auth_mode = Some(SSH_AUTH_MODE_PASSWORD);
+        }
         configs.insert(server.id.clone(), server.clone());
         if let Some(password) = &server.password {
             server.password = Some(encrypt(password)?);
         }
         if let Some(ssh_password) = &server.ssh_password {
             server.ssh_password = Some(encrypt(ssh_password)?);
+        }
+        if let Some(ssh_passphrase) = &server.ssh_passphrase {
+            server.ssh_passphrase = Some(encrypt(ssh_passphrase)?);
         }
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(encrypt(ssh_key)?);

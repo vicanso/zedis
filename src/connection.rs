@@ -26,7 +26,7 @@ pub use async_connection::{
     RedisAsyncConn, open_monitor_connection, open_single_connection, set_redis_connection_timeout,
     set_redis_response_timeout,
 };
-pub use config::{RedisServer, get_server, get_servers, save_servers};
+pub use config::{RedisServer, SSH_AUTH_MODE_KEY, SSH_AUTH_MODE_PASSWORD, get_server, get_servers, save_servers};
 pub use manager::{AccessMode, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager};
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();

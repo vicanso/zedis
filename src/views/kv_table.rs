@@ -627,7 +627,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             )
             .when(!is_adding && can_remove, |this| {
                 let remove_label = i18n_common(cx, "remove");
-                this.foot_actions(move |_window, _cx| {
+                this.foot_actions(move |_form, _window, _cx| {
                     vec![
                         Button::new("remove-edit-btn")
                             .icon(CustomIconName::FileXCorner)

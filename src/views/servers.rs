@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{RedisServer, get_servers, open_single_connection};
+use crate::connection::{RedisServer, SSH_AUTH_MODE_KEY, SSH_AUTH_MODE_PASSWORD, get_servers, open_single_connection};
 use crate::error::Error;
 use crate::states::{
     GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props, i18n_common, i18n_servers,
 };
 use gpui::{SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Colorize, Icon, IconName, WindowExt,
+    ActiveTheme, Colorize, Disableable, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
 };
@@ -209,16 +209,33 @@ impl ZedisServers {
                 .default_value(redis_server.ssh_username.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "ssh_username_placeholder"))
                 .tab_index(2),
+            ZedisFormField::new("ssh_auth_mode", i18n_servers(cx, "ssh_auth_mode"))
+                .default_value(redis_server.resolved_ssh_auth_mode().to_string())
+                .options(vec![
+                    i18n_servers(cx, "ssh_auth_password"),
+                    i18n_servers(cx, "ssh_auth_key"),
+                ])
+                .tab_index(2)
+                .field_type(ZedisFormFieldType::RadioGroup),
             ZedisFormField::new("ssh_password", i18n_servers(cx, "ssh_password"))
                 .default_value(redis_server.ssh_password.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "ssh_password_placeholder"))
                 .mask()
-                .tab_index(2),
+                .tab_index(2)
+                .visible_on("ssh_auth_mode", &[SSH_AUTH_MODE_PASSWORD]),
             ZedisFormField::new("ssh_key", i18n_servers(cx, "ssh_key"))
                 .default_value(redis_server.ssh_key.clone().unwrap_or_default())
-                .placeholder(i18n_servers(cx, "ssh_key_placeholder"))
+                .placeholder(i18n_servers(cx, "select_ssh_key_file_prompt"))
+                .file_prompt(i18n_servers(cx, "select_ssh_key_file_prompt"))
                 .tab_index(2)
-                .field_type(ZedisFormFieldType::AutoGrow(2, 100)),
+                .visible_on("ssh_auth_mode", &[SSH_AUTH_MODE_KEY])
+                .field_type(ZedisFormFieldType::FilePicker),
+            ZedisFormField::new("ssh_passphrase", i18n_servers(cx, "ssh_passphrase"))
+                .default_value(redis_server.ssh_passphrase.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "ssh_passphrase_placeholder"))
+                .mask()
+                .tab_index(2)
+                .visible_on("ssh_auth_mode", &[SSH_AUTH_MODE_KEY]),
             // tab advanced
             ZedisFormField::new("server_type", i18n_servers(cx, "server_type"))
                 .default_value(redis_server.server_type.unwrap_or(0).to_string())
@@ -258,73 +275,78 @@ impl ZedisServers {
             .confirm_label(i18n_common(cx, "confirm"))
             .cancel_label(i18n_common(cx, "cancel"))
             .dialog_max_height(max_h)
-            .foot_actions(move |_window, cx: &mut Context<zedis_ui::ZedisForm>| {
+            .foot_actions(move |form, _window, cx: &mut Context<zedis_ui::ZedisForm>| {
                 let locale = locale.clone();
                 let test_label = test_label.clone();
-                vec![Button::new("test-connection").label(test_label).on_click(cx.listener(
-                    move |form, _, _window, cx| {
-                        if form.is_processing {
-                            return;
-                        }
-                        let Some(values) = form.try_get_values(cx) else {
-                            return;
-                        };
-                        let server = RedisServer::from_form_data("", &values);
-                        let locale = locale.clone();
-                        form.is_processing = true;
-                        cx.notify();
-                        cx.spawn(async move |handle, cx| {
-                            let result = async {
-                                let with_pass = server.password.is_some();
-                                let mut conn = match open_single_connection(&server, 0, false).await {
-                                    Ok(conn) => conn,
-                                    Err(e) => {
-                                        if with_pass && e.to_string().contains("authentication failed") {
-                                            let mut new_server = server.clone();
-                                            new_server.password = None;
-                                            if open_single_connection(&new_server, 0, false).await.is_ok() {
-                                                return Err(Error::Invalid {
-                                                    message: "Client sent AUTH, but no password is set".to_string(),
-                                                });
-                                            }
-                                        }
-
-                                        return Err(e);
-                                    }
-                                };
-                                let _: () = cmd("PING").query_async(&mut conn).await?;
-                                Ok::<(), Error>(())
+                let buttons_disabled = form.is_processing;
+                let test_locale = locale.clone();
+                vec![
+                    Button::new("test-connection")
+                        .label(test_label)
+                        .disabled(buttons_disabled)
+                        .on_click(cx.listener(move |form, _, _window, cx| {
+                            if form.is_processing {
+                                return;
                             }
-                            .await;
-                            handle
-                                .update(cx, |form, cx| {
-                                    form.is_processing = false;
-                                    let notification = match result {
-                                        Ok(()) => {
-                                            let msg = t!("servers.test_connection_success", locale = &locale);
-                                            NotificationAction::new_success(msg.into())
-                                        }
+                            let Some(values) = form.try_get_values(cx) else {
+                                return;
+                            };
+                            let server = RedisServer::from_form_data("", &values);
+                            let locale = test_locale.clone();
+                            form.is_processing = true;
+                            cx.notify();
+                            cx.spawn(async move |handle, cx| {
+                                let result = async {
+                                    let with_pass = server.password.is_some();
+                                    let mut conn = match open_single_connection(&server, 0, false).await {
+                                        Ok(conn) => conn,
                                         Err(e) => {
-                                            let msg = t!(
-                                                "servers.test_connection_failed",
-                                                error = e.to_string(),
-                                                locale = &locale
-                                            );
-                                            NotificationAction::new_error(msg.into())
+                                            if with_pass && e.to_string().contains("authentication failed") {
+                                                let mut new_server = server.clone();
+                                                new_server.password = None;
+                                                if open_single_connection(&new_server, 0, false).await.is_ok() {
+                                                    return Err(Error::Invalid {
+                                                        message: "Client sent AUTH, but no password is set".to_string(),
+                                                    });
+                                                }
+                                            }
+
+                                            return Err(e);
                                         }
                                     };
-                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                        store.update(cx, |_state, cx| {
-                                            cx.emit(GlobalEvent::Notification(notification));
+                                    let _: () = cmd("PING").query_async(&mut conn).await?;
+                                    Ok::<(), Error>(())
+                                }
+                                .await;
+                                handle
+                                    .update(cx, |form, cx| {
+                                        form.is_processing = false;
+                                        let notification = match result {
+                                            Ok(()) => {
+                                                let msg = t!("servers.test_connection_success", locale = &locale);
+                                                NotificationAction::new_success(msg.into())
+                                            }
+                                            Err(e) => {
+                                                let msg = t!(
+                                                    "servers.test_connection_failed",
+                                                    error = e.to_string(),
+                                                    locale = &locale
+                                                );
+                                                NotificationAction::new_error(msg.into())
+                                            }
+                                        };
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |_state, cx| {
+                                                cx.emit(GlobalEvent::Notification(notification));
+                                            });
                                         });
-                                    });
-                                    cx.notify();
-                                })
-                                .ok();
-                        })
-                        .detach();
-                    },
-                ))]
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            })
+                            .detach();
+                        })),
+                ]
             })
             .on_dialog_submit(move |values, _window, cx| {
                 let redis_server = RedisServer::from_form_data(&server_id, &values);

@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use gpui::{
-    AnyElement, App, ElementId, Entity, FontWeight, Pixels, Render, SharedString, StyleRefinement, Subscription,
-    Window, div, prelude::*,
+    AnyElement, App, ElementId, Entity, FontWeight, PathPromptOptions, Pixels, Render, SharedString, StyleRefinement,
+    Subscription, Window, div, prelude::*,
 };
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
@@ -58,7 +58,7 @@ type ZedisFormValidateHandler = Rc<dyn Fn(&str) -> Option<SharedString> + 'stati
 type ZedisFormCancelHandler = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> bool + 'static>;
 
 /// Callback invoked to build the action buttons for the footer.
-pub type ZedisFormActionsBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> Vec<AnyElement>>;
+pub type ZedisFormActionsBuilder = Rc<dyn Fn(&ZedisForm, &mut Window, &mut Context<ZedisForm>) -> Vec<AnyElement>>;
 
 /// Supported field widget types for the form builder.
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -70,6 +70,7 @@ pub enum ZedisFormFieldType {
     Checkbox,
     /// Auto-growing text area with `(min_rows, max_rows)`.
     AutoGrow(usize, usize),
+    FilePicker,
     Editor,
 }
 
@@ -87,6 +88,7 @@ pub struct ZedisFormField {
     tab_index: Option<usize>,
     default_value: Option<SharedString>,
     field_type: ZedisFormFieldType,
+    file_prompt: Option<SharedString>,
     /// Options list for `RadioGroup` fields.
     options: Option<Vec<SharedString>>,
     validate: Option<ZedisFormValidateHandler>,
@@ -117,6 +119,7 @@ impl ZedisFormField {
             placeholder: SharedString::default(),
             default_value: None,
             field_type: ZedisFormFieldType::Input,
+            file_prompt: None,
             options: None,
             validate: None,
             tab_index: None,
@@ -138,6 +141,12 @@ impl ZedisFormField {
     /// Set the widget type for this field (defaults to `Input`).
     pub fn field_type(mut self, ty: ZedisFormFieldType) -> Self {
         self.field_type = ty;
+        self
+    }
+
+    /// Set the prompt text used by file picker fields.
+    pub fn file_prompt(mut self, prompt: impl Into<SharedString>) -> Self {
+        self.file_prompt = Some(prompt.into());
         self
     }
 
@@ -350,12 +359,15 @@ impl ZedisFormOptions {
     /// Set the action buttons for the footer.
     pub fn foot_actions<F, I>(mut self, builder: F) -> Self
     where
-        F: Fn(&mut Window, &mut Context<ZedisForm>) -> I + 'static,
+        F: Fn(&ZedisForm, &mut Window, &mut Context<ZedisForm>) -> I + 'static,
         I: IntoIterator,
         I::Item: IntoElement,
     {
-        self.foot_actions = Some(Rc::new(move |window, cx| {
-            builder(window, cx).into_iter().map(|e| e.into_any_element()).collect()
+        self.foot_actions = Some(Rc::new(move |form, window, cx| {
+            builder(form, window, cx)
+                .into_iter()
+                .map(|e| e.into_any_element())
+                .collect()
         }));
         self
     }
@@ -528,6 +540,7 @@ impl ZedisForm {
                 ZedisFormFieldType::Input
                 | ZedisFormFieldType::InputNumber
                 | ZedisFormFieldType::AutoGrow(_, _)
+                | ZedisFormFieldType::FilePicker
                 | ZedisFormFieldType::Editor => {
                     let state = cx.new(|cx| {
                         let mut state = InputState::new(window, cx)
@@ -816,6 +829,61 @@ impl ZedisForm {
         }
         self.should_focus = true;
     }
+
+    /// Returns the currently selected tab index for tabbed forms.
+    pub fn active_tab_index(&self, cx: &App) -> usize {
+        *self.tab_selected_index.read(cx)
+    }
+
+    /// Updates a single field value by name without resetting the whole form.
+    pub fn set_field_value(
+        &mut self,
+        name: &str,
+        value: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let value = value.into();
+        let mut updated = false;
+
+        for (field, state) in &self.field_states {
+            if field.name.as_ref() != name {
+                continue;
+            }
+
+            match state {
+                ZedisFormFieldState::Input(state) => {
+                    state.update(cx, |state, cx| {
+                        state.set_value(value.clone(), window, cx);
+                    });
+                    updated = true;
+                }
+                ZedisFormFieldState::RadioGroup(state) => {
+                    if let Ok(selected) = value.parse::<usize>() {
+                        state.update(cx, |state, _cx| {
+                            *state = selected;
+                        });
+                        updated = true;
+                    }
+                }
+                ZedisFormFieldState::Checkbox(state) => {
+                    state.update(cx, |state, _cx| {
+                        *state = value == "true";
+                    });
+                    updated = true;
+                }
+            }
+
+            break;
+        }
+
+        if updated {
+            self.errors.remove(name);
+            cx.notify();
+        }
+
+        updated
+    }
 }
 
 impl Render for ZedisForm {
@@ -890,6 +958,82 @@ impl Render for ZedisForm {
                     if field.field_type == ZedisFormFieldType::InputNumber {
                         form_container = form_container
                             .child(new_field(field).child(NumberInput::new(state).disabled(field_disabled)));
+                    } else if field.field_type == ZedisFormFieldType::FilePicker {
+                        let display_value = state.read(cx).value();
+                        let has_value = !display_value.is_empty();
+                        let prompt = field
+                            .file_prompt
+                            .clone()
+                            .filter(|prompt| !prompt.is_empty())
+                            .or_else(|| (!field.placeholder.is_empty()).then_some(field.placeholder.clone()))
+                            .unwrap_or_else(|| field.label.clone());
+                        let field_name = field.name.clone();
+
+                        let mut display_label = Label::new(if has_value {
+                            display_value
+                        } else {
+                            field.placeholder.clone()
+                        })
+                        .whitespace_nowrap()
+                        .text_ellipsis();
+                        if !has_value {
+                            display_label = display_label.text_color(cx.theme().muted_foreground);
+                        }
+
+                        form_container = form_container.child(
+                            new_field(field).child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .border_1()
+                                    .border_color(cx.theme().input)
+                                    .bg(cx.theme().input_background())
+                                    .rounded(cx.theme().radius)
+                                    .overflow_hidden()
+                                    .refine_style(&field.style)
+                                    .child(div().flex_1().min_w_0().px_3().py_2().child(display_label))
+                                    .child(
+                                        div().border_l_1().border_color(cx.theme().input).child(
+                                            Button::new(("form-file-picker", index))
+                                                .label("...")
+                                                .ghost()
+                                                .compact()
+                                                .disabled(field_disabled)
+                                                .on_click(cx.listener(move |_, _, window, cx| {
+                                                    let paths_receiver = cx.prompt_for_paths(PathPromptOptions {
+                                                        files: true,
+                                                        directories: false,
+                                                        multiple: false,
+                                                        prompt: Some(prompt.clone()),
+                                                    });
+                                                    let field_name = field_name.clone();
+                                                    cx.spawn_in(window, async move |form, cx| {
+                                                        let selected_path = match paths_receiver.await {
+                                                            Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                                                            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => None,
+                                                        };
+
+                                                        let Some(selected_path) = selected_path else {
+                                                            return;
+                                                        };
+                                                        let selected_path = selected_path.to_string_lossy().to_string();
+                                                        let _ = cx.update(|window, cx| {
+                                                            let _ = form.update(cx, |form, cx| {
+                                                                form.set_field_value(
+                                                                    field_name.as_ref(),
+                                                                    selected_path,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        });
+                                                    })
+                                                    .detach();
+                                                })),
+                                        ),
+                                    ),
+                            ),
+                        );
                     } else {
                         form_container = form_container.child(
                             new_field(field).child(
@@ -1029,7 +1173,7 @@ impl Render for ZedisForm {
             exists_buttons = true;
         }
         if let Some(builder) = &self.foot_actions {
-            let custom_elements = builder(window, cx);
+            let custom_elements = builder(self, window, cx);
             left_buttons = left_buttons.children(custom_elements);
             exists_buttons = true;
         }
