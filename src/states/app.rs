@@ -47,6 +47,7 @@ pub enum Route {
     MemoryAnalysis,
     Clients,
     Monitor,
+    Config,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

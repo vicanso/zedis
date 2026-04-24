@@ -184,6 +184,7 @@ toggle_slowlog_tooltip = "スローログパネルの切り替え"
 toggle_memory_analysis_tooltip = "メモリ分析の切り替え"
 toggle_clients_tooltip = "クライアント管理の切り替え"
 toggle_monitor_tooltip = "ライブモニターの切り替え"
+toggle_config_tooltip = "設定管理を切り替え"
 
 
 [list_editor]
@@ -447,3 +448,11 @@ col_first_entry_id = "先頭エントリ ID"
 col_last_entry_id = "末尾エントリ ID"
 col_radix_tree_keys = "基数木キー数"
 col_radix_tree_nodes = "基数木ノード数"
+
+[config_editor]
+title = "設定管理"
+filter_placeholder = "キーで絞り込み..."
+edit_tooltip = "この設定を編集"
+save_success = "設定を保存しました"
+save_failed = "保存に失敗しました"
+no_data = "設定が読み込まれていません。サーバーに接続して設定を表示してください。"

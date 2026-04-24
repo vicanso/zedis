@@ -126,3 +126,8 @@ pub fn i18n_stream_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("stream_editor.{key}"), locale = locale).into()
 }
+
+pub fn i18n_config_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("config_editor.{key}"), locale = locale).into()
+}

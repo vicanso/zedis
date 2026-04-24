@@ -184,6 +184,7 @@ toggle_slowlog_tooltip = "Langsame-Logs-Panel umschalten"
 toggle_memory_analysis_tooltip = "Speicheranalyse umschalten"
 toggle_clients_tooltip = "Client-Verwaltung umschalten"
 toggle_monitor_tooltip = "Live-Monitor umschalten"
+toggle_config_tooltip = "Konfigurationsverwaltung umschalten"
 
 
 [list_editor]
@@ -447,3 +448,11 @@ col_first_entry_id = "Erster Eintrag ID"
 col_last_entry_id = "Letzter Eintrag ID"
 col_radix_tree_keys = "Radix-Tree-Schlüssel"
 col_radix_tree_nodes = "Radix-Tree-Knoten"
+
+[config_editor]
+title = "Konfigurationsverwaltung"
+filter_placeholder = "Nach Schlüssel filtern..."
+edit_tooltip = "Diese Konfiguration bearbeiten"
+save_success = "Konfiguration gespeichert"
+save_failed = "Speichern fehlgeschlagen"
+no_data = "Keine Konfiguration geladen. Verbinden Sie sich mit einem Server."

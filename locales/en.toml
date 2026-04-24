@@ -184,6 +184,7 @@ toggle_slowlog_tooltip = "Toggle slowlog panel"
 toggle_memory_analysis_tooltip = "Toggle memory analysis"
 toggle_clients_tooltip = "Toggle client management"
 toggle_monitor_tooltip = "Toggle live monitor"
+toggle_config_tooltip = "Toggle config management"
 
 
 [list_editor]
@@ -447,3 +448,11 @@ col_first_entry_id = "First Entry ID"
 col_last_entry_id = "Last Entry ID"
 col_radix_tree_keys = "Radix Tree Keys"
 col_radix_tree_nodes = "Radix Tree Nodes"
+
+[config_editor]
+title = "Config Management"
+filter_placeholder = "Filter by key..."
+edit_tooltip = "Edit this config"
+save_success = "Config saved"
+save_failed = "Save failed"
+no_data = "No config loaded. Connect to a server to view configuration."

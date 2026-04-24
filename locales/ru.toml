@@ -184,6 +184,7 @@ toggle_slowlog_tooltip = "Переключить панель медленных
 toggle_memory_analysis_tooltip = "Переключить анализ памяти"
 toggle_clients_tooltip = "Переключить управление клиентами"
 toggle_monitor_tooltip = "Переключить живой монитор"
+toggle_config_tooltip = "Переключить управление конфигурацией"
 
 
 [list_editor]
@@ -447,3 +448,11 @@ col_first_entry_id = "ID первой записи"
 col_last_entry_id = "ID последней записи"
 col_radix_tree_keys = "Ключи дерева radix"
 col_radix_tree_nodes = "Узлы дерева radix"
+
+[config_editor]
+title = "Управление конфигурацией"
+filter_placeholder = "Фильтр по ключу..."
+edit_tooltip = "Редактировать конфигурацию"
+save_success = "Конфигурация сохранена"
+save_failed = "Ошибка сохранения"
+no_data = "Конфигурация не загружена. Подключитесь к серверу."

@@ -20,6 +20,7 @@ mod session;
 pub use app::*;
 pub use i18n::i18n_clients_manager;
 pub use i18n::i18n_common;
+pub use i18n::i18n_config_editor;
 pub use i18n::i18n_editor;
 pub use i18n::i18n_hash_editor;
 pub use i18n::i18n_key_tree;

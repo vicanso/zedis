@@ -123,7 +123,7 @@ impl ZedisSidebar {
         let current_server_id_clone = self.state.server_id.clone();
         let is_match_route = !matches!(
             cx.global::<ZedisGlobalStore>().read(cx).route(),
-            Route::Protos | Route::Scripts
+            Route::Protos | Route::Scripts | Route::Config
         );
 
         let home_label = i18n_sidebar(cx, "home");

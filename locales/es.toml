@@ -184,6 +184,7 @@ toggle_slowlog_tooltip = "Alternar panel de registros lentos"
 toggle_memory_analysis_tooltip = "Alternar análisis de memoria"
 toggle_clients_tooltip = "Alternar gestión de clientes"
 toggle_monitor_tooltip = "Alternar monitor en vivo"
+toggle_config_tooltip = "Alternar gestión de configuración"
 
 
 [list_editor]
@@ -447,3 +448,11 @@ col_first_entry_id = "Primer ID"
 col_last_entry_id = "Último ID"
 col_radix_tree_keys = "Claves árbol radix"
 col_radix_tree_nodes = "Nodos árbol radix"
+
+[config_editor]
+title = "Gestión de configuración"
+filter_placeholder = "Filtrar por clave..."
+edit_tooltip = "Editar esta configuración"
+save_success = "Configuración guardada"
+save_failed = "Error al guardar"
+no_data = "No hay configuración cargada. Conéctese a un servidor."

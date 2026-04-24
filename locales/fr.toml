@@ -184,6 +184,7 @@ toggle_slowlog_tooltip = "Basculer le panneau des journaux lents"
 toggle_memory_analysis_tooltip = "Basculer l'analyse de mémoire"
 toggle_clients_tooltip = "Basculer la gestion des clients"
 toggle_monitor_tooltip = "Basculer le moniteur en direct"
+toggle_config_tooltip = "Basculer la gestion de configuration"
 
 
 [list_editor]
@@ -448,3 +449,11 @@ col_first_entry_id = "Premier ID"
 col_last_entry_id = "Dernier ID"
 col_radix_tree_keys = "Clés arbre radix"
 col_radix_tree_nodes = "Nœuds arbre radix"
+
+[config_editor]
+title = "Gestion de configuration"
+filter_placeholder = "Filtrer par clé..."
+edit_tooltip = "Modifier cette configuration"
+save_success = "Configuration sauvegardée"
+save_failed = "Échec de la sauvegarde"
+no_data = "Aucune configuration chargée. Connectez-vous à un serveur."

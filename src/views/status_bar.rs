@@ -402,6 +402,18 @@ impl ZedisStatusBar {
                                     state.toggle_route((Route::Monitor, Route::Editor), cx);
                                 });
                             })),
+                    )
+                    .child(
+                        Button::new("zedis-status-bar-config")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Settings)
+                            .tooltip(i18n_status_bar(cx, "toggle_config_tooltip"))
+                            .on_click(cx.listener(|_this, _, _window, cx| {
+                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                    state.toggle_route((Route::Config, Route::Editor), cx);
+                                });
+                            })),
                     ),
             )
             .child(

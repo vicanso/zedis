@@ -183,6 +183,7 @@ toggle_slowlog_tooltip = "切换慢日志面板"
 toggle_memory_analysis_tooltip = "切换内存分析"
 toggle_clients_tooltip = "切换客户端管理"
 toggle_monitor_tooltip = "切换实时监控"
+toggle_config_tooltip = "切换配置管理"
 
 [list_editor]
 position = "位置"
@@ -446,3 +447,11 @@ col_first_entry_id = "首条 ID"
 col_last_entry_id = "末条 ID"
 col_radix_tree_keys = "基数树键数"
 col_radix_tree_nodes = "基数树节点数"
+
+[config_editor]
+title = "配置管理"
+filter_placeholder = "按键名过滤..."
+edit_tooltip = "编辑此配置"
+save_success = "配置已保存"
+save_failed = "保存失败"
+no_data = "未加载配置。连接到服务器后查看配置。"

@@ -41,6 +41,8 @@ Stop manually decoding your data. Zedis automatically detects (`ViewerMode::Auto
   - **Media & Hex**: Native preview for images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`) and an adaptive 8/16-byte Hex dump for raw binary.
 - **Custom Script Viewer**: Pipe any Redis value through an external shell command for fully custom decoding. Configure a shell command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`) and Zedis runs it via `sh -c` (Unix/macOS) or `cmd /c` (Windows), displaying stdout as the formatted value. Perfect for base64, custom binary protocols, or any tool in your `$PATH`. Key patterns are matched by exact, prefix, suffix, or regex rules per server.
 - **Hash Field-Level TTL** (Redis 7.4+): Set individual expiry times on specific hash fields using `HEXPIRE` / `HPERSIST` — no need to restructure your data model just to expire a subset of fields.
+- **Redis Streams**: Full support for Redis Streams — browse entries, inspect Consumer Groups and Pending Entries, and view stream metadata via `XINFO`, all without leaving the GUI.
+- **Pub/Sub**: Built-in subscribe/publish interface. Subscribe to channel patterns, receive live messages in real time, and publish directly from the GUI without switching to `redis-cli`.
 
 ### 📊 Real-Time Observability
 Transform how you monitor your Redis instances with a built-in, GPU-accelerated dashboard.
@@ -52,7 +54,10 @@ Transform how you monitor your Redis instances with a built-in, GPU-accelerated 
 - **Read-Only Mode**: Lock down connections to prevent accidental writes in production environments.
 - **Advanced Tunnels**: Full support for TLS/SSL (custom CA, client certs) and SSH Tunneling (Password, Private Key, SSH Agent).
 - **Integrated CLI**: A built-in terminal for `redis-cli` allows you to leverage your command-line muscle memory without leaving the app.
-- **Namespace Tree View**: Automatically groups keys separated by colons (`:`) into an easily manageable nested directory tree structure.
+- **Namespace Tree View**: Automatically groups keys separated by colons (`:`) into a nested directory tree. Right-click any folder to refresh its contents or delete all keys under that prefix in one action.
+- **Multi-Select & Batch Delete**: Toggle multi-select mode to mark and delete dozens of keys at once without writing a single command.
+- **Key Favorites & Search History**: Bookmark frequently used keys for instant access and revisit recent searches from a persistent history panel.
+- **Auto-Refresh**: Configure an automatic refresh interval for the key tree to keep your view in sync with a live, rapidly-changing Redis instance.
 
 ---
 
