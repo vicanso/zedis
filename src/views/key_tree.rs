@@ -94,6 +94,8 @@ struct KeyTreeState {
     expanded_items: AHashSet<SharedString>,
     /// Index path to scroll to when the tree is updated
     scroll_to_index: Option<IndexPath>,
+    /// Whether to clear the list selection on the next render (requires window)
+    clear_selection: bool,
     /// Refresh interval in seconds
     refresh_interval_sec: u32,
 }
@@ -728,13 +730,16 @@ impl ZedisKeyTree {
                 });
 
                 let result = task.await;
-                if result.is_empty() {
-                    let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
+                let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
+                    if result.is_empty() {
                         view.reset_expand(cx);
-                    });
-                }
+                    }
+                    view.state.clear_selection = true;
+                    cx.notify();
+                });
                 handle.update(cx, |this, cx| {
                     this.delegate_mut().selected_items.clear();
+                    this.delegate_mut().selected_index = None;
                     this.delegate_mut().items = result;
                     this.delegate_mut().readonly = readonly;
                     cx.notify();
@@ -1298,6 +1303,11 @@ impl Render for ZedisKeyTree {
         if let Some(scroll_to_index) = self.state.scroll_to_index.take() {
             self.key_tree_list_state.update(cx, |state, cx| {
                 state.scroll_to_item(scroll_to_index, ScrollStrategy::Top, window, cx);
+            });
+        }
+        if std::mem::take(&mut self.state.clear_selection) {
+            self.key_tree_list_state.update(cx, |state, cx| {
+                state.set_selected_index(None, window, cx);
             });
         }
         if let Some(true) = self.should_enter_add_key_mode.take() {
