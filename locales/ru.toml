@@ -122,6 +122,9 @@ field_errors_message = "Проверьте следующие поля и пов
 test_connection = "Тест"
 test_connection_success = "Подключение успешно"
 test_connection_failed = "Ошибка подключения: %{error}"
+fetch_master_names = "Получить мастера"
+fetch_master_names_success = "Найдены мастера: %{names}"
+fetch_master_names_empty = "Мастера в Sentinel не найдены"
 
 [editor]
 delete_key_prompt = "Вы уверены, что хотите удалить этот ключ: %{key}?"

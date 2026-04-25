@@ -245,8 +245,8 @@ impl TableDelegate for SlowlogTableDelegate {
                 _ => self.rows.sort_by(|a, b| b.client.cmp(&a.client)),
             },
             COLUMN_DURATION => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.duration_ms.cmp(&b.duration_ms)),
-                _ => self.rows.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms)),
+                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.duration_ms),
+                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.duration_ms)),
             },
             _ => {}
         }

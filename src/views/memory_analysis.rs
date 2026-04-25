@@ -578,7 +578,7 @@ fn build_prefix_rows(prefix_map: &HashMap<String, PrefixStats>, ratio: f32, key_
         .collect();
 
     // Sort descending by memory usage
-    rows.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.memory_bytes));
 
     // Truncate to keep the UI snappy
     rows.truncate(TOP_N);

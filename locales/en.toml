@@ -122,6 +122,9 @@ field_errors_message = "Please verify the following fields and try again:\n\n%{e
 test_connection = "Test"
 test_connection_success = "Connection successful"
 test_connection_failed = "Connection failed: %{error}"
+fetch_master_names = "Fetch Masters"
+fetch_master_names_success = "Masters found: %{names}"
+fetch_master_names_empty = "No masters found in Sentinel"
 
 [editor]
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"

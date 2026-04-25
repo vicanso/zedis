@@ -122,11 +122,9 @@ impl ZedisTerminal {
                 ServerEvent::ServerInfoUpdated => {
                     this.update_redis_commands(cx);
                 }
-                ServerEvent::TerminalToggled(toggled) => {
-                    if *toggled {
-                        this.should_focus_input = true;
-                        cx.notify();
-                    }
+                ServerEvent::TerminalToggled(toggled) if *toggled => {
+                    this.should_focus_input = true;
+                    cx.notify();
                 }
                 _ => {}
             }),

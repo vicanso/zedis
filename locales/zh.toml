@@ -122,6 +122,9 @@ field_errors_message = "请验证以下字段并重试:\n\n%{errors}"
 test_connection = "测试"
 test_connection_success = "连接成功"
 test_connection_failed = "连接失败: %{error}"
+fetch_master_names = "获取主节点"
+fetch_master_names_success = "找到主节点: %{names}"
+fetch_master_names_empty = "Sentinel 中未找到主节点"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"

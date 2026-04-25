@@ -122,6 +122,9 @@ field_errors_message = "以下のフィールドを確認して再試行して�
 test_connection = "テスト"
 test_connection_success = "接続成功"
 test_connection_failed = "接続失敗: %{error}"
+fetch_master_names = "マスター取得"
+fetch_master_names_success = "見つかったマスター: %{names}"
+fetch_master_names_empty = "Sentinelにマスターが見つかりません"
 
 [editor]
 delete_key_prompt = "このキーを削除しますか: %{key}?"

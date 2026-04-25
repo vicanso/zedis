@@ -499,11 +499,9 @@ impl ZedisKeyTree {
                         state.delegate_mut().readonly = readonly;
                     });
                 }
-                ServerEvent::EditionActionTriggered(action) => {
-                    if action == &EditorAction::Create {
-                        this.should_enter_add_key_mode = Some(true);
-                        cx.notify();
-                    }
+                ServerEvent::EditionActionTriggered(action) if action == &EditorAction::Create => {
+                    this.should_enter_add_key_mode = Some(true);
+                    cx.notify();
                 }
                 ServerEvent::KeySelected(key) => {
                     this.update_expand(key.clone(), cx);

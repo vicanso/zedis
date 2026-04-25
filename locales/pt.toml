@@ -122,6 +122,9 @@ field_errors_message = "Verifique os seguintes campos e tente novamente:\n\n%{er
 test_connection = "Testar"
 test_connection_success = "Conexão bem-sucedida"
 test_connection_failed = "Falha na conexão: %{error}"
+fetch_master_names = "Buscar Mestres"
+fetch_master_names_success = "Mestres encontrados: %{names}"
+fetch_master_names_empty = "Nenhum mestre encontrado no Sentinel"
 
 [editor]
 delete_key_prompt = "Tem certeza que deseja excluir esta chave: %{key}?"

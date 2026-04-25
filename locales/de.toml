@@ -122,6 +122,9 @@ field_errors_message = "Bitte überprüfen Sie die folgenden Felder und versuche
 test_connection = "Testen"
 test_connection_success = "Verbindung erfolgreich"
 test_connection_failed = "Verbindung fehlgeschlagen: %{error}"
+fetch_master_names = "Master abrufen"
+fetch_master_names_success = "Gefundene Master: %{names}"
+fetch_master_names_empty = "Keine Master in Sentinel gefunden"
 
 [editor]
 delete_key_prompt = "Möchten Sie diesen Schlüssel wirklich löschen: %{key}?"

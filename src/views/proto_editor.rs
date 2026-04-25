@@ -300,12 +300,10 @@ impl ZedisProtoEditor {
                     InputEvent::Blur => {
                         view.update_target_message_select_state("".to_string(), window, cx);
                     }
-                    InputEvent::Focus => {
-                        if view.field_errors.read(cx).get(&id).is_some() {
-                            view.field_errors.update(cx, |state, _cx| {
-                                state.remove(&id);
-                            });
-                        }
+                    InputEvent::Focus if view.field_errors.read(cx).get(&id).is_some() => {
+                        view.field_errors.update(cx, |state, _cx| {
+                            state.remove(&id);
+                        });
                     }
                     _ => {}
                 }

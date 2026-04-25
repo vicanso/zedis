@@ -310,24 +310,20 @@ impl TableDelegate for ClientsTableDelegate {
         let col = &self.columns[col_ix];
         match col.key.as_ref() {
             COLUMN_ID => match sort {
-                ColumnSort::Ascending => self
-                    .rows
-                    .sort_by(|a, b| a.id.parse::<u64>().unwrap_or(0).cmp(&b.id.parse::<u64>().unwrap_or(0))),
-                _ => self
-                    .rows
-                    .sort_by(|a, b| b.id.parse::<u64>().unwrap_or(0).cmp(&a.id.parse::<u64>().unwrap_or(0))),
+                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.id.parse::<u64>().unwrap_or(0)),
+                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.id.parse::<u64>().unwrap_or(0))),
             },
             COLUMN_ADDR => match sort {
                 ColumnSort::Ascending => self.rows.sort_by(|a, b| a.addr.cmp(&b.addr)),
                 _ => self.rows.sort_by(|a, b| b.addr.cmp(&a.addr)),
             },
             COLUMN_AGE => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.age.cmp(&b.age)),
-                _ => self.rows.sort_by(|a, b| b.age.cmp(&a.age)),
+                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.age),
+                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.age)),
             },
             COLUMN_IDLE => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.idle.cmp(&b.idle)),
-                _ => self.rows.sort_by(|a, b| b.idle.cmp(&a.idle)),
+                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.idle),
+                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.idle)),
             },
             COLUMN_DB => match sort {
                 ColumnSort::Ascending => self.rows.sort_by(|a, b| a.db.cmp(&b.db)),
@@ -603,7 +599,7 @@ impl ZedisClientsManager {
                 for (node, raw) in addrs.iter().zip(results.iter()) {
                     all_rows.extend(parse_client_list(raw, node));
                 }
-                all_rows.sort_by(|a, b| b.age.cmp(&a.age));
+                all_rows.sort_by_key(|b| std::cmp::Reverse(b.age));
                 Ok::<Vec<ClientRow>, Error>(all_rows)
             });
 

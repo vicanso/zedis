@@ -20,7 +20,7 @@ use crate::states::{
 };
 use gpui::{SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Colorize, Icon, IconName, WindowExt,
+    ActiveTheme, Colorize, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
 };
@@ -135,6 +135,13 @@ impl ZedisServers {
             Some("host is invalid".into())
         };
 
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        // Separate entity so suffix builder and foot_actions can safely read it
+        // during ZedisForm render without a re-entrant borrow.
+        let candidates: gpui::Entity<Vec<gpui::SharedString>> = cx.new(|_| Vec::new());
+        let candidates_for_suffix = candidates.clone();
+        let fetch_locale = locale.clone();
+
         let fields = vec![
             ZedisFormField::new("name", i18n_common(cx, "name"))
                 .default_value(redis_server.name.clone())
@@ -164,7 +171,93 @@ impl ZedisServers {
             ZedisFormField::new("master_name", i18n_servers(cx, "master_name"))
                 .default_value(redis_server.master_name.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "master_name_placeholder"))
-                .tab_index(0),
+                .tab_index(0)
+                .suffix({
+                    let candidates = candidates_for_suffix.clone();
+                    let locale = fetch_locale.clone();
+                    move |_window, cx: &mut gpui::Context<zedis_ui::ZedisForm>| {
+                        let candidates = candidates.clone();
+                        let locale = locale.clone();
+                        Button::new("fetch-master-names")
+                            .ghost()
+                            .icon(Icon::new(IconName::Search))
+                            .xsmall()
+                            .on_click(cx.listener(move |form, _, _, cx| {
+                                let host = form.get_field_value("host", cx).to_string();
+                                let port: u16 = form.get_field_value("port", cx).parse().unwrap_or(26379);
+                                let pw = form.get_field_value("password", cx).to_string();
+                                let password = if pw.is_empty() { None } else { Some(pw) };
+                                let uname = form.get_field_value("username", cx).to_string();
+                                let username = if uname.is_empty() { None } else { Some(uname) };
+                                let server = RedisServer {
+                                    host,
+                                    port,
+                                    password,
+                                    username,
+                                    ..Default::default()
+                                };
+                                let locale = locale.clone();
+                                let candidates = candidates.clone();
+                                cx.spawn(async move |form_entity, cx| {
+                                    let result: Result<Vec<String>, Error> = async {
+                                        let mut conn = match open_single_connection(&server, 0, false).await {
+                                            Ok(c) => c,
+                                            Err(e) => {
+                                                if !e.to_string().contains("AuthenticationFailed") {
+                                                    return Err(e);
+                                                }
+                                                let mut tmp = server.clone();
+                                                tmp.password = None;
+                                                open_single_connection(&tmp, 0, false).await?
+                                            }
+                                        };
+                                        let masters: Vec<std::collections::HashMap<String, String>> =
+                                            cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
+                                        Ok(masters.into_iter().filter_map(|m| m.get("name").cloned()).collect())
+                                    }
+                                    .await;
+                                    let _ = form_entity.update(cx, |form, cx| match result {
+                                        Ok(names) if names.len() == 1 => {
+                                            form.schedule_field_update("master_name".into(), names[0].clone().into());
+                                            candidates.update(cx, |v, _| v.clear());
+                                            cx.notify();
+                                        }
+                                        Ok(names) if names.len() > 1 => {
+                                            candidates.update(cx, |v, _| {
+                                                *v = names.into_iter().map(Into::into).collect();
+                                            });
+                                            cx.notify();
+                                        }
+                                        Ok(_) => {
+                                            let msg = t!("servers.fetch_master_names_empty", locale = &locale);
+                                            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                store.update(cx, |_state, cx| {
+                                                    cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                                                        msg.into(),
+                                                    )));
+                                                });
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let msg = t!(
+                                                "servers.test_connection_failed",
+                                                error = e.to_string(),
+                                                locale = &locale
+                                            );
+                                            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                store.update(cx, |_state, cx| {
+                                                    cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                                                        msg.into(),
+                                                    )));
+                                                });
+                                            });
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }))
+                    }
+                }),
             ZedisFormField::new("description", i18n_common(cx, "description"))
                 .default_value(redis_server.description.clone().unwrap_or_default())
                 .placeholder(i18n_common(cx, "description_placeholder"))
@@ -245,7 +338,6 @@ impl ZedisServers {
         let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
 
         let test_label = i18n_servers(cx, "test_connection");
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
 
         ZedisFormOptions::new(fields)
             .title(title)
@@ -261,70 +353,117 @@ impl ZedisServers {
             .foot_actions(move |_window, cx: &mut Context<zedis_ui::ZedisForm>| {
                 let locale = locale.clone();
                 let test_label = test_label.clone();
-                vec![Button::new("test-connection").label(test_label).on_click(cx.listener(
-                    move |form, _, _window, cx| {
-                        if form.is_processing {
-                            return;
-                        }
-                        let Some(values) = form.try_get_values(cx) else {
-                            return;
-                        };
-                        let server = RedisServer::from_form_data("", &values);
-                        let locale = locale.clone();
-                        form.is_processing = true;
-                        cx.notify();
-                        cx.spawn(async move |handle, cx| {
-                            let result = async {
-                                let with_pass = server.password.is_some();
-                                let mut conn = match open_single_connection(&server, 0, false).await {
-                                    Ok(conn) => conn,
-                                    Err(e) => {
-                                        if with_pass && e.to_string().contains("authentication failed") {
-                                            let mut new_server = server.clone();
-                                            new_server.password = None;
-                                            if open_single_connection(&new_server, 0, false).await.is_ok() {
-                                                return Err(Error::Invalid {
-                                                    message: "Client sent AUTH, but no password is set".to_string(),
-                                                });
-                                            }
-                                        }
 
-                                        return Err(e);
-                                    }
-                                };
-                                let _: () = cmd("PING").query_async(&mut conn).await?;
-                                Ok::<(), Error>(())
+                // Candidate master names populated by the suffix fetch button.
+                let current_candidates = candidates.read(cx).clone();
+                let candidates_for_foot = candidates.clone();
+
+                let mut items: Vec<gpui::AnyElement> = vec![];
+                for name in &current_candidates {
+                    let n = name.clone();
+                    let c = candidates_for_foot.clone();
+                    items.push(
+                        Button::new(format!("mc-{n}"))
+                            .xsmall()
+                            .ghost()
+                            .label(n.clone())
+                            .on_click(cx.listener(move |form, _, _, cx| {
+                                form.schedule_field_update("master_name".into(), n.clone());
+                                c.update(cx, |v, _| v.clear());
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                    );
+                }
+                items.push(
+                    Button::new("test-connection")
+                        .label(test_label)
+                        .on_click(cx.listener(move |form, _, _window, cx| {
+                            if form.is_processing {
+                                return;
                             }
-                            .await;
-                            handle
-                                .update(cx, |form, cx| {
-                                    form.is_processing = false;
-                                    let notification = match result {
-                                        Ok(()) => {
-                                            let msg = t!("servers.test_connection_success", locale = &locale);
-                                            NotificationAction::new_success(msg.into())
-                                        }
+                            let Some(values) = form.try_get_values(cx) else {
+                                return;
+                            };
+                            let server = RedisServer::from_form_data("", &values);
+                            let locale = locale.clone();
+                            form.is_processing = true;
+                            cx.notify();
+                            cx.spawn(async move |handle, cx| {
+                                let result = async {
+                                    let mut conn = match open_single_connection(&server, 0, false).await {
+                                        Ok(conn) => conn,
                                         Err(e) => {
-                                            let msg = t!(
-                                                "servers.test_connection_failed",
-                                                error = e.to_string(),
-                                                locale = &locale
-                                            );
-                                            NotificationAction::new_error(msg.into())
+                                            if !e.to_string().contains("AuthenticationFailed") {
+                                                return Err(e);
+                                            }
+                                            // sentinel nodes typically don't require auth
+                                            let mut tmp = server.clone();
+                                            tmp.password = None;
+                                            open_single_connection(&tmp, 0, false).await?
                                         }
                                     };
-                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                        store.update(cx, |_state, cx| {
-                                            cx.emit(GlobalEvent::Notification(notification));
+                                    if server.server_type == Some(2) {
+                                        // sentinel: verify by connecting to the actual master
+                                        let masters: Vec<std::collections::HashMap<String, String>> =
+                                            cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
+                                        let master = masters.into_iter().next().ok_or_else(|| Error::Invalid {
+                                            message: "no master found in sentinel".to_string(),
+                                        })?;
+                                        let ip = master.get("ip").ok_or_else(|| Error::Invalid {
+                                            message: "master ip not found".to_string(),
+                                        })?;
+                                        let port: u16 = master
+                                            .get("port")
+                                            .ok_or_else(|| Error::Invalid {
+                                                message: "master port not found".to_string(),
+                                            })?
+                                            .parse()
+                                            .map_err(|e| Error::Invalid {
+                                                message: format!("invalid master port: {e}"),
+                                            })?;
+                                        let mut master_server = server.clone();
+                                        master_server.host = ip.clone();
+                                        master_server.port = port;
+                                        let mut master_conn = open_single_connection(&master_server, 0, false).await?;
+                                        let _: () = cmd("PING").query_async(&mut master_conn).await?;
+                                    } else {
+                                        let _: () = cmd("PING").query_async(&mut conn).await?;
+                                    }
+                                    Ok::<(), Error>(())
+                                }
+                                .await;
+                                handle
+                                    .update(cx, |form, cx| {
+                                        form.is_processing = false;
+                                        let notification = match result {
+                                            Ok(()) => {
+                                                let msg = t!("servers.test_connection_success", locale = &locale);
+                                                NotificationAction::new_success(msg.into())
+                                            }
+                                            Err(e) => {
+                                                let msg = t!(
+                                                    "servers.test_connection_failed",
+                                                    error = e.to_string(),
+                                                    locale = &locale
+                                                );
+                                                NotificationAction::new_error(msg.into())
+                                            }
+                                        };
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |_state, cx| {
+                                                cx.emit(GlobalEvent::Notification(notification));
+                                            });
                                         });
-                                    });
-                                    cx.notify();
-                                })
-                                .ok();
-                        })
-                        .detach();
-                    },
-                ))]
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            })
+                            .detach();
+                        }))
+                        .into_any_element(),
+                );
+                items
             })
             .on_dialog_submit(move |values, _window, cx| {
                 let redis_server = RedisServer::from_form_data(&server_id, &values);

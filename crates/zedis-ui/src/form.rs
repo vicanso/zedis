@@ -60,6 +60,9 @@ type ZedisFormCancelHandler = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) ->
 /// Callback invoked to build the action buttons for the footer.
 pub type ZedisFormActionsBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> Vec<AnyElement>>;
 
+/// Callback invoked to build the suffix element for an input field.
+type ZedisFormFieldSuffixBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> AnyElement>;
+
 /// Supported field widget types for the form builder.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub enum ZedisFormFieldType {
@@ -99,6 +102,7 @@ pub struct ZedisFormField {
     /// Unlike `tab_index`, when the condition is **not** met the field is both
     /// hidden from the UI **and** excluded from the submitted values.
     visible_on: Option<(SharedString, Vec<usize>)>,
+    suffix_builder: Option<ZedisFormFieldSuffixBuilder>,
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
@@ -126,6 +130,7 @@ impl ZedisFormField {
             readonly: false,
             visible_on: None,
             style: StyleRefinement::default(),
+            suffix_builder: None,
         }
     }
 
@@ -193,6 +198,18 @@ impl ZedisFormField {
     /// has its selected index in `indices`.
     pub fn visible_on(mut self, name: impl Into<SharedString>, indices: &[usize]) -> Self {
         self.visible_on = Some((name.into(), indices.to_vec()));
+        self
+    }
+
+    /// Attach a suffix element to the input (e.g. an icon action button).
+    /// The builder receives `Context<ZedisForm>` so it can create listeners.
+    /// Only applies to `Input`-type fields.
+    pub fn suffix<F, E>(mut self, builder: F) -> Self
+    where
+        F: Fn(&mut Window, &mut Context<ZedisForm>) -> E + 'static,
+        E: IntoElement,
+    {
+        self.suffix_builder = Some(Rc::new(move |window, cx| builder(window, cx).into_any_element()));
         self
     }
 }
@@ -504,6 +521,7 @@ pub struct ZedisForm {
     pub is_processing: bool,
     disabled: bool,
     in_dialog: bool,
+    pending_field_updates: Vec<(SharedString, SharedString)>,
 }
 
 impl ZedisForm {
@@ -635,6 +653,7 @@ impl ZedisForm {
             is_processing: false,
             disabled: false,
             in_dialog: false,
+            pending_field_updates: Vec::new(),
             _subscriptions: subscriptions,
         };
         if this.support_add_fields {
@@ -816,10 +835,44 @@ impl ZedisForm {
         }
         self.should_focus = true;
     }
+
+    /// Read the current value of a field by name without triggering validation.
+    pub fn get_field_value(&self, name: &str, cx: &App) -> SharedString {
+        self.field_states
+            .iter()
+            .find_map(|(f, s)| {
+                if f.name.as_ref() != name {
+                    return None;
+                }
+                Some(match s {
+                    ZedisFormFieldState::Input(state) => state.read(cx).value(),
+                    ZedisFormFieldState::RadioGroup(state) => state.read(cx).to_string().into(),
+                    ZedisFormFieldState::Checkbox(state) => state.read(cx).to_string().into(),
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// Queue a field value update to be applied on the next render (when `Window` is available).
+    pub fn schedule_field_update(&mut self, name: SharedString, value: SharedString) {
+        self.pending_field_updates.push((name, value));
+    }
 }
 
 impl Render for ZedisForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Apply any deferred field updates now that we have access to `Window`.
+        for (name, value) in std::mem::take(&mut self.pending_field_updates) {
+            for (field, state) in &self.field_states {
+                if field.name == name {
+                    if let ZedisFormFieldState::Input(state) = state {
+                        state.update(cx, |s, cx| s.set_value(value.clone(), window, cx));
+                    }
+                    break;
+                }
+            }
+        }
+
         // Auto-focus the designated field on the first render, then clear the flag.
         if take(&mut self.should_focus) {
             for (field, state) in &self.field_states {
@@ -891,14 +944,14 @@ impl Render for ZedisForm {
                         form_container = form_container
                             .child(new_field(field).child(NumberInput::new(state).disabled(field_disabled)));
                     } else {
-                        form_container = form_container.child(
-                            new_field(field).child(
-                                Input::new(state)
-                                    .disabled(field_disabled)
-                                    .when(field.mask, |this| this.mask_toggle())
-                                    .refine_style(&field.style),
-                            ),
-                        );
+                        let mut input = Input::new(state)
+                            .disabled(field_disabled)
+                            .when(field.mask, |this| this.mask_toggle())
+                            .refine_style(&field.style);
+                        if let Some(builder) = &field.suffix_builder {
+                            input = input.suffix(builder(window, cx));
+                        }
+                        form_container = form_container.child(new_field(field).child(input));
                     }
                 }
                 ZedisFormFieldState::Checkbox(state) => {

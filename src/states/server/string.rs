@@ -29,15 +29,13 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 fn truncate_long_strings(max_truncate_length: usize, v: &mut Value, truncated: &mut bool) {
     match v {
-        Value::String(s) => {
-            if s.len() > max_truncate_length {
-                let char_count = s.chars().count();
-                if char_count > max_truncate_length {
-                    let mut new_s: String = s.chars().take(max_truncate_length).collect();
-                    new_s.push_str(&format!("...(Total {} chars, content hidden)", char_count));
-                    *s = new_s;
-                    *truncated = true;
-                }
+        Value::String(s) if s.len() > max_truncate_length => {
+            let char_count = s.chars().count();
+            if char_count > max_truncate_length {
+                let mut new_s: String = s.chars().take(max_truncate_length).collect();
+                new_s.push_str(&format!("...(Total {} chars, content hidden)", char_count));
+                *s = new_s;
+                *truncated = true;
             }
         }
         Value::Array(arr) => {
