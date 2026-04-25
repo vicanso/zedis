@@ -61,10 +61,22 @@ impl Zedis {
             if let GlobalEvent::Notification(e) = event {
                 let message = e.message.clone();
                 let mut notification = match e.category {
-                    NotificationCategory::Info => Notification::info(message),
-                    NotificationCategory::Success => Notification::success(message),
-                    NotificationCategory::Warning => Notification::warning(message),
-                    _ => Notification::error(message),
+                    NotificationCategory::Info => {
+                        info!(message = %message, "info notification");
+                        Notification::info(message)
+                    }
+                    NotificationCategory::Success => {
+                        info!(message = %message, "success notification");
+                        Notification::success(message)
+                    }
+                    NotificationCategory::Warning => {
+                        info!(message = %message, "warning notification");
+                        Notification::warning(message)
+                    }
+                    NotificationCategory::Error => {
+                        error!(message = %message, "error notification");
+                        Notification::error(message)
+                    }
                 };
                 if let Some(title) = e.title.as_ref() {
                     notification = notification.title(title);
