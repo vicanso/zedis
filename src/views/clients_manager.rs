@@ -311,7 +311,9 @@ impl TableDelegate for ClientsTableDelegate {
         match col.key.as_ref() {
             COLUMN_ID => match sort {
                 ColumnSort::Ascending => self.rows.sort_by_key(|a| a.id.parse::<u64>().unwrap_or(0)),
-                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.id.parse::<u64>().unwrap_or(0))),
+                _ => self
+                    .rows
+                    .sort_by_key(|b| std::cmp::Reverse(b.id.parse::<u64>().unwrap_or(0))),
             },
             COLUMN_ADDR => match sort {
                 ColumnSort::Ascending => self.rows.sort_by(|a, b| a.addr.cmp(&b.addr)),
