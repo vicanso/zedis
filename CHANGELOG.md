@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.4](https://github.com/vicanso/zedis/compare/v0.3.3..v0.3.4) - 2026-04-26
+
+### ⛰️  Features
+
+- *(keytree)* Add reload support for directory ([#67](https://github.com/orhun/git-cliff/issues/67)) - ([3e8a7ba](https://github.com/vicanso/zedis/commit/3e8a7baa27c7c561d3a0e5b6334d7de6978a9bbb))
+
+### 🐛 Bug Fixes
+
+- Fix cargo fmt - ([9967a91](https://github.com/vicanso/zedis/commit/9967a911c8aa5ec21da184cf86937cd0aa0950f0))
+- Fix rustls-webpki ([#70](https://github.com/orhun/git-cliff/issues/70)) - ([44f533b](https://github.com/vicanso/zedis/commit/44f533bdc9dcca1a73681f746d649c75f1a34eda))
+
+### 🚜 Refactor
+
+- Pipe notifications to application logs - ([626ce37](https://github.com/vicanso/zedis/commit/626ce3724b67e068b1b8da6dafeb56ed0f37ff70))
+- Optimize master name retrieval logic for redis sentinel - ([b57fbec](https://github.com/vicanso/zedis/commit/b57fbecca6e4eb2869b6e10967a51a0aa114e0f3))
+- Clear list selection when performing a new search - ([e7fd7da](https://github.com/vicanso/zedis/commit/e7fd7da8431e821ea22efca7d6e1b0a3ccd4c487))
+- Support config editor - ([06fffb7](https://github.com/vicanso/zedis/commit/06fffb720759f227482298b99ed3ffff38ef0ade))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update github workflow - ([5de6440](https://github.com/vicanso/zedis/commit/5de6440dad0722f719b7e91fb4b03b6f930d96db))
+
 ## [0.3.2](https://github.com/vicanso/zedis/compare/v0.3.1..v0.3.2) - 2026-04-12
 
 ### ⛰️  Features
