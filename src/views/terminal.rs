@@ -13,11 +13,15 @@
 // limitations under the License.
 
 use crate::{
-    connection::{get_command_description, get_connection_manager, list_commands},
+    connection::{
+        DangerKind, classify_dangerous_line, get_command_description, get_connection_manager, get_server,
+        is_write_command, list_commands, requires_write_confirm,
+    },
     db::get_cmd_history_manager,
     error::Error,
     helpers::{get_font_family, redis_value_to_string, starts_with_ignore_ascii_case},
     states::{ServerEvent, ZedisServerState},
+    views::confirm_dangerous_command,
 };
 use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*};
 use gpui_component::{
@@ -90,7 +94,7 @@ impl ZedisTerminal {
                     });
                     this.cmd_suggestions.clear();
                     this.cmd_suggestion_index = None;
-                    this.execute_command(cmd, cx);
+                    this.execute_command(cmd, window, cx);
                 }
                 InputEvent::Change => {
                     if this.cmd_history_index.is_some() {
@@ -237,7 +241,7 @@ impl ZedisTerminal {
         }
     }
 
-    fn execute_command(&mut self, command: SharedString, cx: &mut Context<Self>) {
+    fn execute_command(&mut self, command: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         if command.is_empty() {
             return;
         }
@@ -246,6 +250,46 @@ impl ZedisTerminal {
             cx.notify();
             return;
         }
+        let server_id = self.server_state.read(cx).server_id().to_string();
+
+        // Look for the first line that needs a confirm. If any line trips the
+        // classifier (or the server requires confirm-on-write and the line is
+        // a write), gate the whole multi-line input behind one dialog.
+        if let Ok(server) = get_server(&server_id) {
+            let confirm_writes = requires_write_confirm(&server);
+            let mut blocking: Option<(String, DangerKind)> = None;
+            for raw_line in command.lines() {
+                let line = raw_line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(kind) = classify_dangerous_line(line) {
+                    blocking = Some((line.to_string(), kind));
+                    break;
+                }
+                if confirm_writes
+                    && let Some(parts) = shlex::split(line)
+                    && let Some(cmd_name) = parts.first()
+                    && is_write_command(cmd_name)
+                {
+                    blocking = Some((line.to_string(), DangerKind::GenericWrite));
+                    break;
+                }
+            }
+            if let Some((line, kind)) = blocking {
+                let entity = cx.entity().downgrade();
+                let command_for_run = command.clone();
+                confirm_dangerous_command(&server, &kind, Some(&line), window, cx, move |_, cx| {
+                    let Some(this) = entity.upgrade() else { return };
+                    this.update(cx, |this, cx| this.run_command_lines(command_for_run.clone(), cx));
+                });
+                return;
+            }
+        }
+        self.run_command_lines(command, cx);
+    }
+
+    fn run_command_lines(&mut self, command: SharedString, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();

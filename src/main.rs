@@ -6,8 +6,8 @@ use crate::helpers::{
     MemuAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys,
 };
 use crate::states::{
-    FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, SettingsAction, ThemeAction,
-    ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
+    FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, ServerToolsAction,
+    SettingsAction, ThemeAction, ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
 };
 use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window, open_settings_window};
 use gpui::{
@@ -256,6 +256,18 @@ impl Render for Zedis {
                         });
                     });
                 }
+            }))
+            .on_action(cx.listener(move |_this, e: &ServerToolsAction, _window, cx| {
+                let target = match e {
+                    ServerToolsAction::Monitor => Route::Monitor,
+                    ServerToolsAction::Config => Route::Config,
+                    ServerToolsAction::Acl => Route::Acl,
+                };
+                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                    store.update(cx, |state, cx| {
+                        state.toggle_route((target, Route::Editor), cx);
+                    });
+                });
             }))
     }
 }

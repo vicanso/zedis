@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{RedisServer, get_servers, open_single_connection};
+use crate::connection::{RedisServer, get_servers, open_single_connection, tag_color_index};
 use crate::error::Error;
 use crate::states::{
     GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props, i18n_common, i18n_servers,
@@ -329,6 +329,26 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "readonly_check_label"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::Checkbox),
+            ZedisFormField::new("require_confirm_writes", i18n_servers(cx, "require_confirm_writes"))
+                .default_value(redis_server.require_confirm_writes.unwrap_or(false).to_string())
+                .placeholder(i18n_servers(cx, "require_confirm_writes_check_label"))
+                .tab_index(3)
+                .field_type(ZedisFormFieldType::Checkbox),
+            ZedisFormField::new("tag", i18n_servers(cx, "tag"))
+                .default_value(redis_server.tag.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "tag_placeholder"))
+                .tab_index(3),
+            ZedisFormField::new("tag_color", i18n_servers(cx, "tag_color"))
+                .default_value(tag_color_index(redis_server.tag_color.as_deref()).to_string())
+                .options(
+                    i18n_servers(cx, "tag_color_list")
+                        .split(' ')
+                        .map(|s| s.to_string().into())
+                        .collect::<Vec<SharedString>>(),
+                )
+                .placeholder(i18n_servers(cx, "tag_color_placeholder"))
+                .tab_index(3)
+                .field_type(ZedisFormFieldType::RadioGroup),
         ];
         let title = if is_new {
             i18n_servers(cx, "add_server_title")

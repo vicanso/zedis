@@ -14,20 +14,27 @@
 
 use tracing::info;
 
+mod acl;
 mod async_connection;
 mod command;
 mod config;
+mod danger;
 mod dump_restore;
 mod manager;
 mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
 
+pub use acl::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami};
 pub use async_connection::{
     RedisAsyncConn, open_monitor_connection, open_single_connection, set_redis_connection_timeout,
     set_redis_response_timeout,
 };
-pub use config::{RedisServer, get_server, get_servers, save_servers};
+pub use config::{RedisServer, get_server, get_servers, save_servers, tag_color_index};
+pub use danger::{
+    ConfirmStrictness, DangerKind, classify_dangerous_line, confirm_strictness, is_write_command,
+    requires_write_confirm,
+};
 pub use dump_restore::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, dump_keys_chunk, restore_keys_chunk,
 };

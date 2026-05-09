@@ -14,12 +14,13 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::get_connection_manager,
+    connection::{DangerKind, get_connection_manager, get_server},
     error::Error,
     helpers::get_font_family,
     states::{ServerEvent, ZedisServerState, i18n_common, i18n_config_editor},
+    views::confirm_dangerous_command,
 };
-use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Icon, Sizable, WindowExt,
     button::{Button, ButtonVariants},
@@ -205,9 +206,32 @@ impl Render for ZedisConfigEditor {
                             .small()
                             .primary()
                             .label(i18n_common(cx, "save"))
-                            .on_click(cx.listener(move |this, _, _window, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 let v = edit_state_save.read(cx).value();
-                                this.save_config(save_key.clone(), v, cx);
+                                let key = save_key.clone();
+                                let server_id = this.server_state.read(cx).server_id().to_string();
+                                let line = format!("CONFIG SET {} {}", key, v);
+                                let entity = cx.entity().downgrade();
+                                let value_for_run = v.clone();
+                                let key_for_run = key.clone();
+                                let run = move |_: &mut Window, cx: &mut App| {
+                                    let Some(this) = entity.upgrade() else { return };
+                                    let key = key_for_run.clone();
+                                    let value = value_for_run.clone();
+                                    this.update(cx, |this, cx| this.save_config(key, value, cx));
+                                };
+                                if let Ok(server) = get_server(&server_id) {
+                                    confirm_dangerous_command(
+                                        &server,
+                                        &DangerKind::ConfigSet,
+                                        Some(&line),
+                                        window,
+                                        cx,
+                                        run,
+                                    );
+                                } else {
+                                    this.save_config(key, v, cx);
+                                }
                             })),
                     )
                     .child(

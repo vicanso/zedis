@@ -48,6 +48,7 @@ pub enum Route {
     Clients,
     Monitor,
     Config,
+    Acl,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -110,6 +111,15 @@ pub enum SettingsAction {
     Editor,
     Protos,
     Scripts,
+}
+
+/// Server-scoped tools that open a sub-route. Triggered from the status bar
+/// "Tools" dropdown so the bar itself does not need a button per route.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ServerToolsAction {
+    Monitor,
+    Config,
+    Acl,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

@@ -13,10 +13,12 @@
 // limitations under the License.
 
 mod about;
+mod acl_manager;
 mod bytes_editor;
 mod clients_manager;
 mod config_editor;
 mod content;
+mod danger_confirm;
 mod editor;
 mod hash_editor;
 mod key_tree;
@@ -42,10 +44,12 @@ mod title_bar;
 mod zset_editor;
 
 pub use about::open_about_window;
+pub use acl_manager::ZedisAclManager;
 pub use bytes_editor::ZedisBytesEditor;
 pub use clients_manager::ZedisClientsManager;
 pub use config_editor::ZedisConfigEditor;
 pub use content::ZedisContent;
+pub use danger_confirm::confirm_dangerous_command;
 pub use editor::ZedisEditor;
 pub use hash_editor::ZedisHashEditor;
 pub use key_tree::ZedisKeyTree;

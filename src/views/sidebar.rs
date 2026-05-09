@@ -14,9 +14,11 @@
 
 use crate::{
     connection::get_servers,
+    helpers::resolve_tag_color,
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_sidebar},
 };
-use gpui::{Context, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
+use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon, IconName, label::Label, list::ListItem, v_flex};
 use tracing::info;
 
@@ -28,12 +30,20 @@ const SERVER_LIST_ITEM_BORDER_WIDTH: f32 = 3.0;
 /// Caches server list to avoid repeated queries and tracks current selection.
 #[derive(Default)]
 struct SidebarState {
-    /// List of (server_id, server_name) tuples for display
-    /// First entry is always (empty, empty) representing the home page
-    server_names: Vec<(SharedString, SharedString)>,
+    /// Cached server entries shown in the list. First entry is the synthetic
+    /// home item (id+name empty, no tag color).
+    server_entries: Vec<SidebarEntry>,
 
     /// Currently selected server ID (empty string means home page)
     server_id: SharedString,
+}
+
+#[derive(Clone, Default)]
+struct SidebarEntry {
+    id: SharedString,
+    name: SharedString,
+    tag: SharedString,
+    color: Option<Hsla>,
 }
 
 /// Sidebar navigation component
@@ -98,15 +108,16 @@ impl ZedisSidebar {
     /// - Remaining entries: (server_id, server_name) for each configured server
     fn update_server_names(&mut self, _cx: &mut Context<Self>) {
         // Start with home page entry
-        let mut server_names = vec![(SharedString::default(), SharedString::default())];
+        let mut entries = vec![SidebarEntry::default()];
 
         if let Ok(servers) = get_servers() {
-            server_names.extend(
-                servers
-                    .iter()
-                    .map(|server| (server.id.clone().into(), server.name.clone().into())),
-            );
-            self.state.server_names = server_names;
+            entries.extend(servers.iter().map(|server| SidebarEntry {
+                id: server.id.clone().into(),
+                name: server.name.clone().into(),
+                tag: server.tag_label().unwrap_or_default().to_string().into(),
+                color: resolve_tag_color(server.tag_color.as_deref()),
+            }));
+            self.state.server_entries = entries;
         }
     }
 
@@ -119,7 +130,7 @@ impl ZedisSidebar {
     /// Current selection is highlighted with background color and border.
     /// Clicking an item navigates to that server or home page.
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let servers = self.state.server_names.clone();
+        let entries = self.state.server_entries.clone();
         let current_server_id_clone = self.state.server_id.clone();
         let is_match_route = !matches!(
             cx.global::<ZedisGlobalStore>().read(cx).route(),
@@ -129,59 +140,96 @@ impl ZedisSidebar {
         let home_label = i18n_sidebar(cx, "home");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
+        let chip_text_color = cx.theme().background;
 
-        uniform_list("sidebar-redis-servers", servers.len(), move |range, _window, _cx| {
-            range
-                .map(|index| {
-                    let (server_id, server_name) = servers.get(index).cloned().unwrap_or_default();
+        // Build all rows up front. We deliberately do not virtualise via
+        // `uniform_list` here: tagged rows render an extra chip and we want
+        // each row to size to its own content (no padding gap on untagged
+        // rows). Server counts are bounded (typically < 50), so this is fine.
+        let rows: Vec<gpui::AnyElement> = entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let is_home = entry.id.is_empty();
+                let is_current = is_match_route && entry.id == current_server_id_clone;
 
-                    let is_home = server_id.is_empty();
-                    let is_current = is_match_route && server_id == current_server_id_clone;
+                let name = if entry.name.is_empty() {
+                    home_label.clone()
+                } else {
+                    entry.name.clone()
+                };
 
-                    // Display "Home" for empty server_name, otherwise use server name
-                    let name = if server_name.is_empty() {
-                        home_label.clone()
-                    } else {
-                        server_name.clone()
-                    };
+                let server_id = entry.id.clone();
+                let tag_color = entry.color;
+                let tag_text = entry.tag.clone();
+                let has_chip = !tag_text.is_empty() && tag_color.is_some();
+                let chip_color = tag_color.unwrap_or_else(gpui::black);
 
-                    ListItem::new(("sidebar-redis-server", index))
-                        .w_full()
-                        .when(is_current, |this| this.bg(list_active_color))
-                        .py_4()
-                        .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
-                        .when(is_current, |this| this.border_color(list_active_border_color))
-                        .child(
-                            v_flex()
-                                .items_center()
-                                .child(Icon::new(IconName::LayoutDashboard))
-                                .child(Label::new(name).text_ellipsis().text_xs()),
-                        )
-                        .on_click(move |_, _window, cx| {
-                            // Don't do anything if already selected
-                            if is_current {
-                                return;
-                            }
-
-                            // Determine target route based on home/server
-                            let route = if is_home { Route::Home } else { Route::Editor };
-
-                            // Update global route
-                            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                store.update(cx, |state, cx| {
-                                    state.go_to(route, cx);
-                                    if server_id.is_empty() {
-                                        state.clear_selected_server(cx);
-                                    } else {
-                                        state.set_selected_server((server_id.to_string(), 0), cx);
-                                    }
-                                });
+                let item = ListItem::new(("sidebar-redis-server", index))
+                    .w_full()
+                    .when(is_current, |this| this.bg(list_active_color))
+                    .py_3()
+                    .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
+                    .when(is_current, |this| this.border_color(list_active_border_color))
+                    .child(
+                        v_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(Icon::new(IconName::LayoutDashboard))
+                            .child(Label::new(name).text_ellipsis().text_xs())
+                            .when(has_chip, |this| {
+                                this.child(
+                                    div()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .bg(chip_color)
+                                        .child(Label::new(tag_text.clone()).text_xs().text_color(chip_text_color)),
+                                )
+                            }),
+                    )
+                    .on_click(move |_, _window, cx| {
+                        if is_current {
+                            return;
+                        }
+                        let route = if is_home { Route::Home } else { Route::Editor };
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, cx| {
+                                state.go_to(route, cx);
+                                if server_id.is_empty() {
+                                    state.clear_selected_server(cx);
+                                } else {
+                                    state.set_selected_server((server_id.to_string(), 0), cx);
+                                }
                             });
-                        })
-                })
-                .collect()
-        })
-        .size_full()
+                        });
+                    });
+
+                // Strip rendered as a sibling of ListItem so it hugs the sidebar's
+                // left edge instead of being inset by ListItem internal padding.
+                div()
+                    .relative()
+                    .w_full()
+                    .child(item)
+                    .when_some(tag_color, |this, color| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(SERVER_LIST_ITEM_BORDER_WIDTH))
+                                .bg(color),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+
+        v_flex()
+            .id("sidebar-redis-servers")
+            .size_full()
+            .overflow_y_scrollbar()
+            .children(rows)
     }
 }
 

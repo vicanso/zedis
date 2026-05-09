@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{AnyElement, App, ClickEvent, IntoElement, ParentElement, SharedString, Styled, Window};
+use gpui::{AnyElement, App, ClickEvent, IntoElement, ParentElement, Pixels, SharedString, Styled, Window};
 use gpui_component::{Icon, IconName, WindowExt, dialog::DialogButtonProps, h_flex};
 use std::rc::Rc;
 
@@ -46,6 +46,7 @@ pub struct ZedisDialog {
     on_close: Option<ZedisDialogOnClose>,
     button_props: Option<DialogButtonProps>,
     overlay_closable: Option<bool>,
+    width: Option<Pixels>,
     alert: bool,
 }
 
@@ -114,6 +115,13 @@ impl ZedisDialog {
         self
     }
 
+    /// Override the dialog width. The underlying gpui_component dialog
+    /// defaults to 448px, which is too narrow for chip-row layouts.
+    pub fn w(mut self, width: impl Into<Pixels>) -> Self {
+        self.width = Some(width.into());
+        self
+    }
+
     /// Switches to `AlertDialog` mode (centered footer, no close button).
     pub fn alert(mut self) -> Self {
         self.alert = true;
@@ -130,6 +138,7 @@ impl ZedisDialog {
         let on_close = self.on_close;
         let button_props = self.button_props;
         let overlay_closable = self.overlay_closable;
+        let width = self.width;
 
         /// Applies common configuration to a dialog.
         /// Works with both `Dialog` and `AlertDialog` since they share the same builder API.
@@ -145,6 +154,9 @@ impl ZedisDialog {
 
                 if let Some(oc) = overlay_closable {
                     d = d.overlay_closable(oc);
+                }
+                if let Some(w) = width {
+                    d = d.w(w);
                 }
                 if let Some(ref bp) = button_props {
                     d = d.button_props(bp.clone());

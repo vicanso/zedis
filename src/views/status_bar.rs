@@ -14,12 +14,12 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::RedisClientDescription,
+    connection::{RedisClientDescription, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::humanize_keystroke,
+    helpers::{humanize_keystroke, resolve_tag_color},
     states::{
-        ErrorMessage, Route, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option,
-        i18n_sidebar, i18n_status_bar, save_session_option,
+        ErrorMessage, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore, ZedisServerState,
+        get_session_option, i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -29,6 +29,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
+    menu::{DropdownMenu, PopupMenu},
     tooltip::Tooltip,
 };
 use std::{sync::Arc, time::Duration};
@@ -108,6 +109,8 @@ struct StatusBarServerState {
     soft_wrap: bool,
     nodes_description: SharedString,
     slow_log_tips: SharedString,
+    tag: SharedString,
+    tag_color: Option<Hsla>,
 }
 
 #[derive(Debug, Clone)]
@@ -290,9 +293,19 @@ impl ZedisStatusBar {
     fn reset(&mut self, server_id: SharedString) {
         if self.state.server_state.server_id != server_id {
             self.state.server_state = StatusBarServerState::default();
-            self.state.server_state.server_id = server_id;
+            self.state.server_state.server_id = server_id.clone();
         } else {
             self.state.server_state.size = SharedString::default();
+        }
+        // Refresh the cached tag chip whenever the selection changes.
+        if !server_id.is_empty()
+            && let Ok(server) = get_server(server_id.as_ref())
+        {
+            self.state.server_state.tag = server.tag_label().unwrap_or_default().to_string().into();
+            self.state.server_state.tag_color = resolve_tag_color(server.tag_color.as_deref());
+        } else {
+            self.state.server_state.tag = SharedString::default();
+            self.state.server_state.tag_color = None;
         }
         self.should_reset_db = Some(true);
         self.state.data_format = None;
@@ -321,6 +334,8 @@ impl ZedisStatusBar {
         };
 
         let slow_log_tips = format!("{} / {}", state.last_slow_log_count(), state.slow_logs().len()).into();
+        let tag = self.state.server_state.tag.clone();
+        let tag_color = self.state.server_state.tag_color;
         self.state.server_state = StatusBarServerState {
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
@@ -332,6 +347,8 @@ impl ZedisStatusBar {
             slow_log_tips,
             soft_wrap: state.soft_wrap(),
             nodes_description: format_nodes_description(state.nodes_description().clone(), cx),
+            tag,
+            tag_color,
         };
     }
     /// Start the heartbeat task
@@ -346,6 +363,28 @@ impl ZedisStatusBar {
             }
         }));
     }
+    /// Build the "Tools" dropdown that gathers server-scoped navigation
+    /// actions (Monitor / Config / ACL). Items dispatch [`ServerToolsAction`]
+    /// which is handled centrally in `main.rs`, so the dropdown does not need
+    /// per-item `on_click` listeners.
+    fn render_tools_menu(this: PopupMenu, cx: &gpui::App) -> PopupMenu {
+        let _ = cx; // silence the unused arg if i18n call inlining ever changes.
+        this.menu_element_with_icon(
+            Icon::new(CustomIconName::Radar),
+            Box::new(ServerToolsAction::Monitor),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_monitor_tooltip")),
+        )
+        .menu_element_with_icon(
+            Icon::new(IconName::Settings),
+            Box::new(ServerToolsAction::Config),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
+        )
+        .menu_element_with_icon(
+            Icon::new(IconName::CircleUser),
+            Box::new(ServerToolsAction::Acl),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_acl_tooltip")),
+        )
+    }
     /// Render the server status
     fn render_server_status(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
@@ -357,12 +396,25 @@ impl ZedisStatusBar {
             humanize_keystroke("cmd-j")
         );
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
+        let tag_text = server_state.tag.clone();
+        let tag_color = server_state.tag_color;
+        let chip_text_color = cx.theme().background;
 
         ZedisDivider::new()
             .child(
                 h_flex()
                     .items_center()
                     .gap_2()
+                    .when(!tag_text.is_empty() && tag_color.is_some(), |this| {
+                        let color = tag_color.unwrap_or_else(gpui::black);
+                        this.child(
+                            div()
+                                .px_1p5()
+                                .rounded_sm()
+                                .bg(color)
+                                .child(Label::new(tag_text).text_xs().text_color(chip_text_color)),
+                        )
+                    })
                     .child(
                         Button::new("zedis-status-bar-server-terminal")
                             .ghost()
@@ -392,28 +444,12 @@ impl ZedisStatusBar {
                             })),
                     )
                     .child(
-                        Button::new("zedis-status-bar-server-monitor")
+                        Button::new("zedis-status-bar-tools")
                             .ghost()
                             .small()
-                            .icon(CustomIconName::Radar)
-                            .tooltip(i18n_status_bar(cx, "toggle_monitor_tooltip"))
-                            .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                    state.toggle_route((Route::Monitor, Route::Editor), cx);
-                                });
-                            })),
-                    )
-                    .child(
-                        Button::new("zedis-status-bar-config")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Settings)
-                            .tooltip(i18n_status_bar(cx, "toggle_config_tooltip"))
-                            .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                    state.toggle_route((Route::Config, Route::Editor), cx);
-                                });
-                            })),
+                            .icon(IconName::Menu)
+                            .tooltip(i18n_status_bar(cx, "tools_tooltip"))
+                            .dropdown_menu(move |this, _, cx| Self::render_tools_menu(this, cx)),
                     ),
             )
             .child(

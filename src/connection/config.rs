@@ -33,6 +33,34 @@ use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Preset tag color keys, ordered to match the RadioGroup option list.
+/// Index 0 = "none" (no chip rendered).
+pub const TAG_COLOR_PRESETS: &[&str] = &["none", "gray", "blue", "green", "amber", "red"];
+
+fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
+    let raw = form_value?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Form may pass either the index (RadioGroup) or the preset key (existing config).
+    if let Ok(idx) = raw.parse::<usize>() {
+        let key = *TAG_COLOR_PRESETS.get(idx)?;
+        if key == "none" {
+            return None;
+        }
+        return Some(key.to_string());
+    }
+    if raw == "none" {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+pub fn tag_color_index(value: Option<&str>) -> usize {
+    let Some(v) = value else { return 0 };
+    TAG_COLOR_PRESETS.iter().position(|k| *k == v).unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Default)]
 struct RedisUrl {
     host: String,
@@ -89,6 +117,9 @@ pub struct RedisServer {
     pub ssh_username: Option<String>,
     pub ssh_password: Option<String>,
     pub ssh_key: Option<String>,
+    pub tag: Option<String>,
+    pub tag_color: Option<String>,
+    pub require_confirm_writes: Option<bool>,
 }
 impl RedisServer {
     pub fn from_form_data(id: &str, data: &IndexMap<SharedString, SharedString>) -> Self {
@@ -139,6 +170,9 @@ impl RedisServer {
             insecure: get_bool("insecure"),
             ssh_tunnel: get_bool("ssh_tunnel"),
             readonly: get_bool("readonly"),
+            tag: get_str("tag"),
+            tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
+            require_confirm_writes: get_bool("require_confirm_writes"),
         }
     }
     pub fn get_hash(&self, db: usize) -> u64 {
@@ -149,6 +183,14 @@ impl RedisServer {
     }
     pub fn is_ssh_tunnel(&self) -> bool {
         self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
+    }
+    pub fn tag_label(&self) -> Option<&str> {
+        self.tag.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
+    }
+    /// Returns true when the tag implies production-grade caution: typed-name confirm,
+    /// no "remember choice" shortcut. Driven by tag_color preset key, not by tag text.
+    pub fn is_high_risk_tag(&self) -> bool {
+        matches!(self.tag_color.as_deref(), Some("red"))
     }
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
