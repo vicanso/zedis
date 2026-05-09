@@ -15,6 +15,7 @@
 use crate::connection::get_connection_manager;
 use crate::helpers::{unix_ts, unix_ts_millis};
 use crate::states::{ServerEvent, ServerTask, ZedisServerState};
+use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
 use redis::cmd;
@@ -114,6 +115,19 @@ pub fn get_metrics_cache() -> &'static MetricsCache {
     &METRICS_CACHE
 }
 
+/// One replica's live state as reported by a master's `INFO replication`.
+/// `lag_bytes` is computed against that master's `master_repl_offset` —
+/// negative values can occur very briefly during failover and are clamped to 0
+/// at render time.
+#[derive(Debug, Default, Clone)]
+pub struct ReplicaInfo {
+    pub addr: SharedString,
+    pub state: SharedString,
+    pub offset: i64,
+    pub lag_seconds: i64,
+    pub lag_bytes: i64,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RedisInfo {
     pub meta: RedisServerMeta,
@@ -121,6 +135,10 @@ pub struct RedisInfo {
     pub metrics: RedisMetrics,
     // --- Keyspace (db0, db1...) ---
     pub keyspace: HashMap<String, RedisKeySpaceStats>,
+    /// Per-replica live state from any master we polled. Populated from
+    /// `INFO replication` `slave_n` lines; empty when the connection has no
+    /// replicas (or when the user is connected to a replica directly).
+    pub replicas: Vec<ReplicaInfo>,
 }
 
 /// Aggregates metrics from multiple Redis Cluster nodes into a single global view.
@@ -138,6 +156,12 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
     let mut total = infos[0].clone();
     if infos.len() == 1 {
         return total;
+    }
+
+    // Concat replicas from later masters. The first master's replicas are
+    // already in `total` (via the clone above) so we only walk infos[1..].
+    for info in infos.iter().skip(1) {
+        total.replicas.extend(info.replicas.iter().cloned());
     }
 
     // Temporary map to calculate weighted average for avg_ttl: DbName -> (TotalTTLProduct, TotalExpires)
@@ -210,6 +234,11 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
 impl RedisInfo {
     pub fn parse(info_str: &str) -> Self {
         let mut info = RedisInfo::default();
+        // `slave_n` lines and `master_repl_offset` may appear in either order
+        // within `INFO replication`, so collect them first then compute byte
+        // lag once both are known.
+        let mut master_repl_offset: i64 = 0;
+        let mut pending_replicas: Vec<ReplicaInfo> = Vec::new();
 
         for line in info_str.lines() {
             let line = line.trim();
@@ -222,6 +251,12 @@ impl RedisInfo {
                 if key.starts_with("db") && value.contains("keys=") {
                     if let Ok(stats) = parse_keyspace_value(value) {
                         info.keyspace.insert(key.to_string(), stats);
+                    }
+                    continue;
+                }
+                if key.starts_with("slave") && key[5..].chars().all(|c| c.is_ascii_digit()) {
+                    if let Some(replica) = parse_replica_value(value) {
+                        pending_replicas.push(replica);
                     }
                     continue;
                 }
@@ -256,9 +291,16 @@ impl RedisInfo {
                     "used_cpu_sys" => info.metrics.used_cpu_sys = parse_f64(value),
                     "used_cpu_user" => info.metrics.used_cpu_user = parse_f64(value),
 
+                    "master_repl_offset" => master_repl_offset = parse_i64(value),
+
                     _ => {}
                 }
             }
+        }
+
+        for mut replica in pending_replicas.drain(..) {
+            replica.lag_bytes = (master_repl_offset - replica.offset).max(0);
+            info.replicas.push(replica);
         }
 
         info
@@ -271,8 +313,44 @@ fn parse_u64(v: &str) -> u64 {
     v.parse().unwrap_or(0)
 }
 
+fn parse_i64(v: &str) -> i64 {
+    v.parse().unwrap_or(0)
+}
+
 fn parse_f64(v: &str) -> f64 {
     v.parse().unwrap_or(0.0)
+}
+
+/// Parse one `slave_n` value of the form `ip=...,port=...,state=...,offset=...,lag=...`.
+/// Required: `ip`, `port`. Missing optional fields default to 0/empty.
+fn parse_replica_value(v: &str) -> Option<ReplicaInfo> {
+    let mut ip = String::new();
+    let mut port = String::new();
+    let mut state = String::new();
+    let mut offset: i64 = 0;
+    let mut lag_seconds: i64 = 0;
+    for part in v.split(',') {
+        if let Some((k, val)) = part.split_once('=') {
+            match k {
+                "ip" => ip = val.to_string(),
+                "port" => port = val.to_string(),
+                "state" => state = val.to_string(),
+                "offset" => offset = parse_i64(val),
+                "lag" => lag_seconds = parse_i64(val),
+                _ => {}
+            }
+        }
+    }
+    if ip.is_empty() || port.is_empty() {
+        return None;
+    }
+    Some(ReplicaInfo {
+        addr: format!("{ip}:{port}").into(),
+        state: state.into(),
+        offset,
+        lag_seconds,
+        lag_bytes: 0, // computed by caller against master_repl_offset
+    })
 }
 
 /// Parse the keyspace value: keys=10,expires=0,avg_ttl=0
@@ -353,5 +431,55 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_replicas_and_computes_lag_bytes() {
+        let raw = "# Replication\n\
+                   role:master\n\
+                   connected_slaves:2\n\
+                   master_repl_offset:1000\n\
+                   slave0:ip=10.0.0.4,port=6379,state=online,offset=900,lag=0\n\
+                   slave1:ip=10.0.0.5,port=6379,state=wait_bgsave,offset=600,lag=2\n";
+        let info = RedisInfo::parse(raw);
+        assert_eq!(info.replicas.len(), 2);
+
+        let r0 = &info.replicas[0];
+        assert_eq!(r0.addr.as_ref(), "10.0.0.4:6379");
+        assert_eq!(r0.state.as_ref(), "online");
+        assert_eq!(r0.offset, 900);
+        assert_eq!(r0.lag_bytes, 100);
+        assert_eq!(r0.lag_seconds, 0);
+
+        let r1 = &info.replicas[1];
+        assert_eq!(r1.state.as_ref(), "wait_bgsave");
+        assert_eq!(r1.lag_bytes, 400);
+        assert_eq!(r1.lag_seconds, 2);
+    }
+
+    #[test]
+    fn replica_lag_works_when_master_offset_appears_after_slaves() {
+        // Some Redis versions/sections emit `master_repl_offset` after the
+        // slave_n entries. We have to defer lag_bytes computation until both
+        // are seen — the test fails if we compute eagerly inline.
+        let raw = "slave0:ip=1.1.1.1,port=6379,state=online,offset=400,lag=1\n\
+                   master_repl_offset:500\n";
+        let info = RedisInfo::parse(raw);
+        assert_eq!(info.replicas.len(), 1);
+        assert_eq!(info.replicas[0].lag_bytes, 100);
+    }
+
+    #[test]
+    fn negative_lag_clamped_to_zero() {
+        // During failover the slave offset can briefly exceed master_repl_offset.
+        let raw = "master_repl_offset:100\n\
+                   slave0:ip=1.1.1.1,port=6379,state=online,offset=200,lag=0\n";
+        let info = RedisInfo::parse(raw);
+        assert_eq!(info.replicas[0].lag_bytes, 0);
     }
 }

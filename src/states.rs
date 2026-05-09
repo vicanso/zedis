@@ -49,7 +49,7 @@ pub use server::ErrorMessage;
 pub use server::ZedisServerState;
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;
-pub use server::stat::{RedisMetrics, get_metrics_cache};
+pub use server::stat::{RedisMetrics, ReplicaInfo, get_metrics_cache};
 pub use server::string::detect_and_decode;
 pub use server::value::*;
 pub use session::*;

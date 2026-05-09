@@ -116,6 +116,12 @@ struct RedisNode {
     // connection_url: String,
     role: NodeRole,
     master_name: Option<String>,
+    /// Cluster node id (column 0 of `CLUSTER NODES`). `None` outside cluster mode.
+    cluster_id: Option<String>,
+    /// For replicas in cluster mode: the cluster id of the master they replicate.
+    master_cluster_id: Option<String>,
+    /// Slot ranges owned by this master node (cluster mode only).
+    slots: Vec<(u16, u16)>,
 }
 
 impl RedisNode {
@@ -127,9 +133,14 @@ impl RedisNode {
 // Information parsed from `CLUSTER NODES` command
 #[derive(Debug, Clone)]
 pub struct ClusterNodeInfo {
+    pub id: String,
     pub ip: String,
     pub port: u16,
     pub role: NodeRole,
+    /// For slaves: id of the master they replicate. `None` for masters.
+    pub master_id: Option<String>,
+    /// Slot ranges owned by this node (only set on masters).
+    pub slots: Vec<(u16, u16)>,
 }
 
 /// Parses a Redis address string like "ip:port@cport" or just "ip:port".
@@ -162,6 +173,15 @@ fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
 }
 
 /// Parses the output of the `CLUSTER NODES` command.
+///
+/// Columns (whitespace-separated):
+///  0: node id
+///  1: addr (`ip:port@cport[,hostname]`)
+///  2: flags (comma-list, e.g. `master,myself`)
+///  3: master id (`-` for masters)
+///  4..7: ping-sent / pong-recv / config-epoch / link-state
+///  8..: slot ranges, each either `N` (single) or `N-M`. Migration markers
+///        like `[N->-id]` / `[N-<-id]` are skipped.
 fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     let mut nodes = Vec::new();
 
@@ -174,6 +194,7 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             continue;
         }
 
+        let id = parts[0].to_string();
         let (ip, port, _) = parse_address(parts[1])?;
 
         // Parse flags to determine role
@@ -188,7 +209,37 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             NodeRole::Unknown
         };
 
-        nodes.push(ClusterNodeInfo { ip, port, role });
+        let master_id = if parts[3] != "-" {
+            Some(parts[3].to_string())
+        } else {
+            None
+        };
+
+        let mut slots = Vec::new();
+        for raw in parts.iter().skip(8) {
+            // Skip migration markers like `[5461->-target_id]` / `[5461-<-source_id]`.
+            if raw.starts_with('[') {
+                continue;
+            }
+            if let Some((lo, hi)) = raw.split_once('-')
+                && let (Ok(lo), Ok(hi)) = (lo.parse::<u16>(), hi.parse::<u16>())
+            {
+                slots.push((lo, hi));
+                continue;
+            }
+            if let Ok(single) = raw.parse::<u16>() {
+                slots.push((single, single));
+            }
+        }
+
+        nodes.push(ClusterNodeInfo {
+            id,
+            ip,
+            port,
+            role,
+            master_id,
+            slots,
+        });
     }
 
     Ok(nodes)
@@ -313,6 +364,23 @@ pub struct RedisClient {
     is_valkey: bool,
     connection: RedisAsyncConn,
 }
+/// One node in the structured topology: address, role marker glyph, and an
+/// optional annotation (e.g. `slots 0-5460`, `(mymaster)`).
+#[derive(Debug, Clone, Default)]
+pub struct TopologyEntry {
+    pub addr: SharedString,
+    pub role_marker: SharedString,
+    pub annotation: SharedString,
+}
+
+/// One master plus the replicas it owns. Replicas already filtered to those
+/// that actually replicate this master.
+#[derive(Debug, Clone, Default)]
+pub struct TopologyMaster {
+    pub master: TopologyEntry,
+    pub replicas: Vec<TopologyEntry>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RedisClientDescription {
     pub is_valkey: bool,
@@ -320,6 +388,10 @@ pub struct RedisClientDescription {
     pub master_nodes: SharedString,
     pub slave_nodes: SharedString,
     pub modules: SharedString,
+    /// Structured topology — each master with its replicas. Empty for
+    /// standalone connections without grouped data; the consumer should fall
+    /// back to `master_nodes` / `slave_nodes` flat strings then.
+    pub topology: Vec<TopologyMaster>,
 }
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -354,13 +426,111 @@ impl RedisClient {
             .map(|(name, ver)| format!("{name}@{ver}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let topology = self.build_topology();
         RedisClientDescription {
             is_valkey: self.is_valkey,
             server_type: format!("{:?}", self.server_type).into(),
             master_nodes: master_nodes.join(",").into(),
             slave_nodes: slave_nodes.join(",").into(),
             modules: modules.into(),
+            topology,
         }
+    }
+
+    /// Build the structured topology consumed by the status-bar tooltip.
+    ///
+    /// Cluster mode groups replicas under their master via `master_cluster_id`
+    /// and annotates the master with its slot ranges. Sentinel groups by
+    /// `master_name`. Standalone returns an empty list so the caller falls
+    /// back to its existing flat summary.
+    fn build_topology(&self) -> Vec<TopologyMaster> {
+        let role_marker = |role: &NodeRole| -> SharedString {
+            match role {
+                NodeRole::Master => "●",
+                NodeRole::Slave => "↳",
+                NodeRole::Fail => "✗",
+                NodeRole::Unknown => "?",
+            }
+            .into()
+        };
+        let format_slots = |slots: &[(u16, u16)]| -> String {
+            if slots.is_empty() {
+                return String::new();
+            }
+            let parts: Vec<String> = slots
+                .iter()
+                .map(|(lo, hi)| if lo == hi { lo.to_string() } else { format!("{lo}-{hi}") })
+                .collect();
+            format!("slots {}", parts.join(","))
+        };
+
+        let mut out: Vec<TopologyMaster> = Vec::new();
+
+        match self.server_type {
+            ServerType::Cluster => {
+                for master in self.master_nodes.iter() {
+                    let entry = TopologyEntry {
+                        addr: master.host_port().into(),
+                        role_marker: role_marker(&master.role),
+                        annotation: format_slots(&master.slots).into(),
+                    };
+                    let replicas: Vec<TopologyEntry> = if let Some(master_id) = master.cluster_id.as_ref() {
+                        self.nodes
+                            .iter()
+                            .filter(|n| {
+                                n.master_cluster_id.as_ref() == Some(master_id)
+                                    && (n.role == NodeRole::Slave || n.role == NodeRole::Fail)
+                            })
+                            .map(|replica| TopologyEntry {
+                                addr: replica.host_port().into(),
+                                role_marker: role_marker(&replica.role),
+                                annotation: SharedString::default(),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    out.push(TopologyMaster {
+                        master: entry,
+                        replicas,
+                    });
+                }
+            }
+            ServerType::Sentinel => {
+                for master in self.master_nodes.iter() {
+                    let label = master.master_name.as_deref().unwrap_or("");
+                    let entry = TopologyEntry {
+                        addr: master.host_port().into(),
+                        role_marker: role_marker(&master.role),
+                        annotation: if label.is_empty() {
+                            SharedString::default()
+                        } else {
+                            format!("({label})").into()
+                        },
+                    };
+                    let replicas: Vec<TopologyEntry> = self
+                        .nodes
+                        .iter()
+                        .filter(|n| n.role == NodeRole::Slave && n.master_name.as_deref() == Some(label))
+                        .map(|replica| TopologyEntry {
+                            addr: replica.host_port().into(),
+                            role_marker: role_marker(&replica.role),
+                            annotation: SharedString::default(),
+                        })
+                        .collect();
+                    out.push(TopologyMaster {
+                        master: entry,
+                        replicas,
+                    });
+                }
+            }
+            ServerType::Standalone => {
+                // No replicas surfaced from a single Standalone connection — let
+                // the caller fall back to its existing summary.
+            }
+        }
+
+        out
     }
     /// Returns the connection to the Redis server.
     /// # Returns
@@ -996,6 +1166,9 @@ impl ConnectionManager {
                         RedisNode {
                             server: tmp_config,
                             role: item.role.clone(),
+                            cluster_id: Some(item.id.clone()),
+                            master_cluster_id: item.master_id.clone(),
+                            slots: item.slots.clone(),
                             ..Default::default()
                         }
                     })
@@ -1039,6 +1212,7 @@ impl ConnectionManager {
                         server: tmp_config,
                         role: NodeRole::Master,
                         master_name: Some(name.clone()),
+                        ..Default::default()
                     });
                 }
                 // Check for ambiguous master configuration
@@ -1208,4 +1382,37 @@ pub fn get_connection_manager() -> &'static ConnectionManager {
 /// Clears expired clients from the connection manager.
 pub fn clear_expired_clients() -> (usize, usize) {
     CONNECTION_MANAGER.clients.clear_expired()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_cluster_nodes_extracts_id_master_and_slots() {
+        let raw = "07c37dfeb235213a872192d90877d0cd55635b91 127.0.0.1:30004@31004 slave e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 0 0 4 connected\n\
+                   67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 0 2 connected 5461-10922\n\
+                   e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected 0-5460 [12345->-67ed]";
+        let parsed = parse_cluster_nodes(raw).expect("parse must succeed");
+        assert_eq!(parsed.len(), 3);
+
+        let slave = &parsed[0];
+        assert_eq!(slave.role, NodeRole::Slave);
+        assert_eq!(
+            slave.master_id.as_deref(),
+            Some("e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca")
+        );
+        assert!(slave.slots.is_empty());
+
+        let m1 = &parsed[1];
+        assert_eq!(m1.role, NodeRole::Master);
+        assert!(m1.master_id.is_none());
+        assert_eq!(m1.slots, vec![(5461, 10922)]);
+
+        // Migration markers in `[12345->-...]` form must be ignored — only
+        // 0-5460 should be picked up here.
+        let m2 = &parsed[2];
+        assert_eq!(m2.slots, vec![(0, 5460)]);
+        assert_eq!(m2.id, "e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca");
+    }
 }

@@ -18,8 +18,8 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::{humanize_keystroke, resolve_tag_color},
     states::{
-        ErrorMessage, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore, ZedisServerState,
-        get_session_option, i18n_sidebar, i18n_status_bar, save_session_option,
+        ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore,
+        ZedisServerState, get_session_option, i18n_sidebar, i18n_status_bar, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -73,21 +73,70 @@ fn format_nodes(nodes: (usize, usize), version: &str) -> SharedString {
     format!("{} / {} (v{})", nodes.0, nodes.1, version).into()
 }
 
+/// Compact human form for replication lag in bytes.
+/// Drops the unit when zero so healthy replicas don't carry "0 B" noise.
+fn format_lag_bytes(bytes: i64) -> String {
+    if bytes <= 0 {
+        return "0".into();
+    }
+    humansize::format_size(bytes as u64, humansize::FormatSizeOptions::default().decimal_places(1))
+}
+
+/// Build the multi-line tooltip body. `replicas` is the dynamic per-replica
+/// state from the most recent `INFO replication` heartbeat — used to splice
+/// `lag X / Ys` onto the matching topology line. Falls back gracefully when
+/// the lag map has nothing for a given replica address (e.g. a fail node).
 #[inline]
-fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Context<ZedisStatusBar>) -> SharedString {
+fn format_nodes_description(
+    description: Arc<RedisClientDescription>,
+    replicas: &[ReplicaInfo],
+    cx: &Context<ZedisStatusBar>,
+) -> SharedString {
     let t = i18n_sidebar(cx, "server_type");
     let master_nodes = i18n_sidebar(cx, "master_nodes");
     let slave_nodes = i18n_sidebar(cx, "slave_nodes");
     let modules_label = i18n_sidebar(cx, "modules");
+    let topology_label = i18n_sidebar(cx, "topology");
     let mut messages = Vec::with_capacity(5);
 
     if description.is_valkey {
         messages.push(format!("Valkey: {}", i18n_sidebar(cx, "yes")));
     }
     messages.push(format!("{t}: {}", description.server_type.as_str()));
-    messages.push(format!("{master_nodes}: {}", description.master_nodes));
-    if !description.slave_nodes.is_empty() {
-        messages.push(format!("{slave_nodes}: {}", description.slave_nodes));
+    if description.topology.is_empty() {
+        // Fallback for standalone or any client without grouped topology data.
+        messages.push(format!("{master_nodes}: {}", description.master_nodes));
+        if !description.slave_nodes.is_empty() {
+            messages.push(format!("{slave_nodes}: {}", description.slave_nodes));
+        }
+    } else {
+        let mut lines: Vec<String> = vec![format!("{topology_label}:")];
+        for tm in description.topology.iter() {
+            let mut header = format!("{} {} master", tm.master.role_marker, tm.master.addr);
+            if !tm.master.annotation.is_empty() {
+                header.push_str("  ");
+                header.push_str(tm.master.annotation.as_ref());
+            }
+            lines.push(header);
+            for r in &tm.replicas {
+                let mut line = format!("  {} {} replica", r.role_marker, r.addr);
+                if let Some(lag) = replicas.iter().find(|i| i.addr == r.addr) {
+                    line.push_str(&format!(
+                        "  lag {} / {}s",
+                        format_lag_bytes(lag.lag_bytes),
+                        lag.lag_seconds
+                    ));
+                    // Surface non-steady states (wait_bgsave / send_bulk / etc.).
+                    // "online" is the silent default and would just be noise.
+                    if !lag.state.is_empty() && lag.state.as_ref() != "online" {
+                        line.push_str("  ");
+                        line.push_str(lag.state.as_ref());
+                    }
+                }
+                lines.push(line);
+            }
+        }
+        messages.push(lines.join("\n"));
     }
     if !description.modules.is_empty() {
         messages.push(format!("{modules_label}: {}", description.modules));
@@ -346,7 +395,11 @@ impl ZedisStatusBar {
             scan_finished: state.scan_completed(),
             slow_log_tips,
             soft_wrap: state.soft_wrap(),
-            nodes_description: format_nodes_description(state.nodes_description().clone(), cx),
+            nodes_description: format_nodes_description(
+                state.nodes_description().clone(),
+                redis_info.replicas.as_slice(),
+                cx,
+            ),
             tag,
             tag_color,
         };
