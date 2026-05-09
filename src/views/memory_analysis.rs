@@ -16,9 +16,9 @@
 ///
 /// Samples keys from the database, groups by prefix and displays two tables:
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
-/// 2. Top 20 single keys by memory (keys without the separator)
+/// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
 use crate::assets::CustomIconName;
-use crate::connection::{KeyMemoryUsage, get_connection_manager};
+use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::format_duration;
@@ -95,6 +95,47 @@ struct SingleKeyRow {
     ttl: SharedString,
     /// TTL in seconds for sorting (-1 = no expiry, -2 = not exists)
     ttl_secs: i64,
+    /// Heat metric (FREQ counter / IDLETIME seconds / unknown).
+    heat: HeatMetric,
+    /// Pre-formatted heat cell (e.g. "12 hits", "3m idle", "—").
+    heat_display: SharedString,
+}
+
+/// Comparable signed key for the heat metric — higher = hotter so the
+/// default descending sort puts hot keys at the top regardless of which
+/// metric is in play.
+fn heat_sort_key(heat: HeatMetric) -> i64 {
+    match heat {
+        HeatMetric::Freq(v) => v as i64,
+        HeatMetric::IdleTime(v) => -(v as i64),
+        HeatMetric::None => i64::MIN,
+    }
+}
+
+fn format_heat(heat: HeatMetric) -> SharedString {
+    match heat {
+        HeatMetric::None => "—".into(),
+        HeatMetric::Freq(v) => format!("{v} hits").into(),
+        HeatMetric::IdleTime(secs) => {
+            if secs == 0 {
+                "0s idle".into()
+            } else {
+                format!("{} idle", format_duration(Duration::from_secs(secs))).into()
+            }
+        }
+    }
+}
+
+/// What to sort the TopN single-key list by. Hot/Cold only meaningful when
+/// the heat metric is available; the toggle hides those when it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum SortMode {
+    #[default]
+    Size,
+    /// FREQ desc (LFU) or IDLETIME asc (LRU) — most-active first.
+    Hot,
+    /// Inverse of Hot. Cold keys = eviction candidates.
+    Cold,
 }
 
 // ─── Column constants ────────────────────────────────────────────────────────
@@ -107,6 +148,7 @@ const COL_AVG_TTL: &str = "avg_ttl";
 const COL_KEY: &str = "key";
 const COL_KEY_TYPE: &str = "key_type";
 const COL_TTL: &str = "ttl";
+const COL_HEAT: &str = "heat";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -195,6 +237,7 @@ const TYPE_KEY_WIDTH: f32 = 140.;
 const MEMORY_KEY_WIDTH: f32 = 200.;
 const COUNT_KEY_WIDTH: f32 = 150.;
 const TTL_KEY_WIDTH: f32 = 120.;
+const HEAT_KEY_WIDTH: f32 = 130.;
 
 // ─── Prefix table delegate ───────────────────────────────────────────────────
 
@@ -359,11 +402,16 @@ impl SingleKeyTableDelegate {
 
         let padding_offset = 16.0;
         let scrollbar_offset = 10.0;
-        let key_w =
-            content_width - MEMORY_KEY_WIDTH - TTL_KEY_WIDTH - TYPE_KEY_WIDTH - padding_offset - scrollbar_offset;
+        let key_w = content_width
+            - MEMORY_KEY_WIDTH
+            - TTL_KEY_WIDTH
+            - TYPE_KEY_WIDTH
+            - HEAT_KEY_WIDTH
+            - padding_offset
+            - scrollbar_offset;
 
-        let column_keys = vec![COL_KEY, COL_MEMORY, COL_TTL, COL_KEY_TYPE];
-        let widths = [key_w, MEMORY_KEY_WIDTH, TTL_KEY_WIDTH, TYPE_KEY_WIDTH];
+        let column_keys = vec![COL_KEY, COL_MEMORY, COL_TTL, COL_KEY_TYPE, COL_HEAT];
+        let widths = [key_w, MEMORY_KEY_WIDTH, TTL_KEY_WIDTH, TYPE_KEY_WIDTH, HEAT_KEY_WIDTH];
 
         let columns = column_keys
             .clone()
@@ -410,6 +458,7 @@ impl TableDelegate for SingleKeyTableDelegate {
                 COL_MEMORY => a.memory_bytes.cmp(&b.memory_bytes),
                 COL_TTL => a.ttl_secs.cmp(&b.ttl_secs),
                 COL_KEY_TYPE => a.key_type.cmp(&b.key_type),
+                COL_HEAT => heat_sort_key(a.heat).cmp(&heat_sort_key(b.heat)),
                 _ => std::cmp::Ordering::Equal,
             };
             if matches!(sort, ColumnSort::Ascending) {
@@ -454,6 +503,7 @@ impl TableDelegate for SingleKeyTableDelegate {
                 1 => r.memory.clone(),
                 2 => r.ttl.clone(),
                 3 => r.key_type.clone(),
+                4 => r.heat_display.clone(),
                 _ => "--".into(),
             })
             .unwrap_or_else(|| "--".into());
@@ -491,12 +541,14 @@ struct PrefixStats {
     perm_count: u64,
 }
 
-/// Keeps a capped top-N collection sorted by memory descending.
+/// Keeps a capped top-N collection sorted by an i64 ranking descending.
+/// Generic over both the row type and the ranking metric so we can run
+/// parallel pickers for "biggest", "hottest", "coldest" off the same scan.
 struct TopN<T> {
     items: Vec<T>,
     limit: usize,
-    /// Minimum memory_bytes in the current list (for fast rejection).
-    min_memory: u64,
+    /// Minimum ranking score in the current list (for fast rejection).
+    min_score: i64,
 }
 
 impl<T> TopN<T> {
@@ -504,20 +556,22 @@ impl<T> TopN<T> {
         Self {
             items: Vec::with_capacity(limit + 1),
             limit,
-            min_memory: 0,
+            min_score: i64::MIN,
         }
     }
 
-    fn should_insert(&self, memory_bytes: u64) -> bool {
-        self.items.len() < self.limit || memory_bytes > self.min_memory
+    /// Cheap pre-check before constructing a row. Avoids building keys we
+    /// know would be evicted immediately.
+    fn should_insert(&self, score: i64) -> bool {
+        self.items.len() < self.limit || score > self.min_score
     }
 
-    fn insert(&mut self, item: T, get_mem: impl Fn(&T) -> u64) {
-        let val = get_mem(&item);
-        if self.items.len() < self.limit || val > self.min_memory {
+    fn insert(&mut self, item: T, get_score: impl Fn(&T) -> i64) {
+        let val = get_score(&item);
+        if self.items.len() < self.limit || val > self.min_score {
             let pos = self
                 .items
-                .binary_search_by_key(&std::cmp::Reverse(val), |b| std::cmp::Reverse(get_mem(b)))
+                .binary_search_by_key(&std::cmp::Reverse(val), |b| std::cmp::Reverse(get_score(b)))
                 .unwrap_or_else(|e| e);
 
             if pos < self.limit {
@@ -525,7 +579,7 @@ impl<T> TopN<T> {
                 if self.items.len() > self.limit {
                     self.items.truncate(self.limit);
                 }
-                self.min_memory = self.items.last().map(&get_mem).unwrap_or(0);
+                self.min_score = self.items.last().map(&get_score).unwrap_or(i64::MIN);
             }
         }
     }
@@ -585,8 +639,31 @@ fn build_prefix_rows(prefix_map: &HashMap<String, PrefixStats>, ratio: f32, key_
 
     rows
 }
-fn build_single_rows(top: &TopN<SingleKeyRow>) -> Vec<SingleKeyRow> {
-    top.items.clone()
+/// Three parallel top-N pickers fed by one scan: biggest by memory, hottest
+/// (FREQ desc / IDLETIME asc), coldest (inverse of hottest). Hot/Cold are
+/// only fed when the heat metric is available; otherwise they stay empty.
+struct SingleKeyTopGroups {
+    by_size: TopN<SingleKeyRow>,
+    hottest: TopN<SingleKeyRow>,
+    coldest: TopN<SingleKeyRow>,
+}
+
+impl SingleKeyTopGroups {
+    fn new(limit: usize) -> Self {
+        Self {
+            by_size: TopN::new(limit),
+            hottest: TopN::new(limit),
+            coldest: TopN::new(limit),
+        }
+    }
+
+    fn rows_for(&self, mode: SortMode) -> Vec<SingleKeyRow> {
+        match mode {
+            SortMode::Size => self.by_size.items.clone(),
+            SortMode::Hot => self.hottest.items.clone(),
+            SortMode::Cold => self.coldest.items.clone(),
+        }
+    }
 }
 
 // ─── Analysis status ─────────────────────────────────────────────────────────
@@ -622,6 +699,16 @@ pub struct ZedisMemoryAnalysis {
     scan_count_input_state: Entity<InputState>,
     /// Estimated Redis commands.
     est_commands: u64,
+    /// `maxmemory-policy` reported by the server (`allkeys-lfu`, `allkeys-lru`,
+    /// `noeviction`, ...). Empty when not detected.
+    policy: SharedString,
+    /// Heat probe to use for the next analysis run, derived from `policy`.
+    heat: HeatProbe,
+    /// User-selected ranking mode for the single-key table.
+    sort_mode: SortMode,
+    /// Cached group of top-N selectors so toggling Size/Hot/Cold doesn't
+    /// re-run the scan.
+    single_groups: SingleKeyTopGroups,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -670,6 +757,10 @@ impl ZedisMemoryAnalysis {
         );
 
         let mut this = Self {
+            policy: SharedString::default(),
+            heat: HeatProbe::None,
+            sort_mode: SortMode::Size,
+            single_groups: SingleKeyTopGroups::new(TOP_N),
             server_state,
             prefix_table,
             single_table,
@@ -716,6 +807,7 @@ impl ZedisMemoryAnalysis {
         self.progress = "0%".into();
         self.prefix_count = 0;
         self.single_count = 0;
+        self.single_groups = SingleKeyTopGroups::new(TOP_N);
 
         self.prefix_table.update(cx, |s, _| s.delegate_mut().rows.clear());
         self.single_table.update(cx, |s, _| s.delegate_mut().rows.clear());
@@ -733,8 +825,41 @@ impl ZedisMemoryAnalysis {
         self.analysis_task = Some(cx.spawn(async move |handle, cx| {
             debug!(dbsize, ratio, "Memory analysis: using sample ratio");
 
+            // Detect maxmemory-policy once at the start of the run. If the
+            // server changes policy mid-scan we'd see mixed FREQ/IDLETIME
+            // results — accept that as a one-frame visual glitch rather than
+            // re-fetching every round.
+            let (policy, heat) = match cx
+                .background_spawn({
+                    let server_id = server_id.clone();
+                    async move {
+                        let client = get_connection_manager().get_client(&server_id, db).await?;
+                        let p = client.maxmemory_policy().await?;
+                        Ok::<String, Error>(p)
+                    }
+                })
+                .await
+            {
+                Ok(p) => {
+                    let h = HeatProbe::from_policy(&p);
+                    (p, h)
+                }
+                Err(_) => (String::new(), HeatProbe::None),
+            };
+            let policy_shared: SharedString = policy.clone().into();
+            let _ = handle.update(cx, |this, _| {
+                this.policy = policy_shared.clone();
+                this.heat = heat;
+                // Hot/Cold modes only meaningful with a heat probe — fall back
+                // to Size if the user previously selected a hot/cold view on
+                // a server that doesn't expose either metric.
+                if heat == HeatProbe::None && this.sort_mode != SortMode::Size {
+                    this.sort_mode = SortMode::Size;
+                }
+            });
+
             let mut prefix_map: HashMap<String, PrefixStats> = HashMap::new();
-            let mut single_top: TopN<SingleKeyRow> = TopN::new(TOP_N);
+            let mut single_groups: SingleKeyTopGroups = SingleKeyTopGroups::new(TOP_N);
             let mut cursors: Option<Vec<u64>> = None;
             let mut analysis_count: u64 = 0;
             let redis_process_ratio = 0.5;
@@ -749,7 +874,7 @@ impl ZedisMemoryAnalysis {
                         let start = Instant::now();
                         let client = get_connection_manager().get_client(&server_id, db).await?;
                         let (count, new_cursors, keys_memory_usage) = client
-                            .sample_scan_memory_usage(ratio, scan_count, cursors_clone)
+                            .sample_scan_memory_usage(ratio, scan_count, cursors_clone, heat)
                             .await?;
                         let base_sleep = start.elapsed().mul_f64(redis_process_ratio);
                         let sleep_duration = base_sleep.clamp(min_sleep, max_sleep);
@@ -793,16 +918,32 @@ impl ZedisMemoryAnalysis {
                             stats.types.insert(key_type.clone());
                         }
                     }
-                    if single_top.should_insert(memory) {
-                        let row = SingleKeyRow {
-                            key: key.clone(),
-                            memory_bytes: memory,
-                            memory: format_memory(memory).into(),
-                            key_type: SharedString::from(key_type.clone()),
-                            ttl: format_ttl(ttl as f64).into(),
-                            ttl_secs: ttl,
-                        };
-                        single_top.insert(row, |r| r.memory_bytes);
+
+                    let memory_score = memory as i64;
+                    let heat_score = heat_sort_key(item.heat);
+                    let row_template = || SingleKeyRow {
+                        key: key.clone(),
+                        memory_bytes: memory,
+                        memory: format_memory(memory).into(),
+                        key_type: SharedString::from(key_type.clone()),
+                        ttl: format_ttl(ttl as f64).into(),
+                        ttl_secs: ttl,
+                        heat: item.heat,
+                        heat_display: format_heat(item.heat),
+                    };
+                    if single_groups.by_size.should_insert(memory_score) {
+                        single_groups.by_size.insert(row_template(), |r| r.memory_bytes as i64);
+                    }
+                    if heat != HeatProbe::None && item.heat != HeatMetric::None {
+                        if single_groups.hottest.should_insert(heat_score) {
+                            single_groups.hottest.insert(row_template(), |r| heat_sort_key(r.heat));
+                        }
+                        // Coldest = inverse score — flip the sign so the same
+                        // descending TopN logic gives us the bottom-N hot list.
+                        let cold_score = -heat_score;
+                        if single_groups.coldest.should_insert(cold_score) {
+                            single_groups.coldest.insert(row_template(), |r| -heat_sort_key(r.heat));
+                        }
                     }
                 }
 
@@ -814,13 +955,31 @@ impl ZedisMemoryAnalysis {
                 };
                 let progress_text: SharedString = format!("{}%", pct).into();
                 let prefix_rows = build_prefix_rows(&prefix_map, ratio, &key_separator);
-                let single_rows = build_single_rows(&single_top);
                 let pc = prefix_rows.len();
-                let sc = single_rows.len();
+                let groups_snapshot = SingleKeyTopGroups {
+                    by_size: TopN {
+                        items: single_groups.by_size.items.clone(),
+                        limit: single_groups.by_size.limit,
+                        min_score: single_groups.by_size.min_score,
+                    },
+                    hottest: TopN {
+                        items: single_groups.hottest.items.clone(),
+                        limit: single_groups.hottest.limit,
+                        min_score: single_groups.hottest.min_score,
+                    },
+                    coldest: TopN {
+                        items: single_groups.coldest.items.clone(),
+                        limit: single_groups.coldest.limit,
+                        min_score: single_groups.coldest.min_score,
+                    },
+                };
                 let _ = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.prefix_count = pc;
-                    this.single_count = sc;
+                    this.single_groups = groups_snapshot;
+                    let mode = this.sort_mode;
+                    let single_rows = this.single_groups.rows_for(mode);
+                    this.single_count = single_rows.len();
                     prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
                     single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
                     cx.notify();
@@ -835,20 +994,33 @@ impl ZedisMemoryAnalysis {
 
             // Final update
             let prefix_rows = build_prefix_rows(&prefix_map, ratio, &key_separator);
-            let single_rows = build_single_rows(&single_top);
             let pc = prefix_rows.len();
-            let sc = single_rows.len();
+            let final_groups = single_groups;
             let _ = handle.update(cx, |this, cx| {
                 this.status = AnalysisStatus::Finished;
                 this.progress = "100%".into();
                 this.prefix_count = pc;
-                this.single_count = sc;
+                this.single_groups = final_groups;
+                let mode = this.sort_mode;
+                let single_rows = this.single_groups.rows_for(mode);
+                this.single_count = single_rows.len();
                 prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
                 single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
                 cx.notify();
             });
         }));
 
+        cx.notify();
+    }
+
+    fn set_sort_mode(&mut self, mode: SortMode, cx: &mut gpui::Context<Self>) {
+        if self.sort_mode == mode {
+            return;
+        }
+        self.sort_mode = mode;
+        let rows = self.single_groups.rows_for(mode);
+        self.single_count = rows.len();
+        self.single_table.update(cx, |s, _| s.delegate_mut().rows = rows);
         cx.notify();
     }
 
@@ -885,11 +1057,44 @@ impl ZedisMemoryAnalysis {
                             format!("~{}", format_thousands(self.est_commands)).into(),
                         ))
                     })
+                    // Active maxmemory-policy chip — explains which heat
+                    // metric the Heat column is showing.
+                    .when(!self.policy.is_empty(), |this| {
+                        this.child(stat_item(cx, "policy", self.policy.clone()))
+                    })
                     // Progress
                     .when(!is_idle, |this| {
                         this.child(stat_item(cx, "progress", self.progress.clone()))
                     }),
             )
+            // Sort-mode toggle for the single-key TopN table.
+            .child({
+                let heat_available = self.heat != HeatProbe::None;
+                let mode = self.sort_mode;
+                let make = |id: &'static str, key: &'static str, target: SortMode, enabled: bool| {
+                    let active = mode == target;
+                    Button::new(id)
+                        .small()
+                        .when(active, |b| b.primary())
+                        .when(!active, |b| b.outline())
+                        .disabled(!enabled)
+                        .label(i18n_memory_analysis(cx, key))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.set_sort_mode(target, cx);
+                        }))
+                };
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Label::new(i18n_memory_analysis(cx, "rank_by"))
+                            .text_color(cx.theme().muted_foreground)
+                            .text_sm(),
+                    )
+                    .child(make("sort-mode-size", "rank_size", SortMode::Size, true))
+                    .child(make("sort-mode-hot", "rank_hot", SortMode::Hot, heat_available))
+                    .child(make("sort-mode-cold", "rank_cold", SortMode::Cold, heat_available))
+            })
             // ─── User interaction operation area ───
             .child(
                 h_flex()

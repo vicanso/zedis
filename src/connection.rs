@@ -38,7 +38,9 @@ pub use danger::{
 pub use dump_restore::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, dump_keys_chunk, restore_keys_chunk,
 };
-pub use manager::{AccessMode, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager};
+pub use manager::{
+    AccessMode, HeatMetric, HeatProbe, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager,
+};
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
     if removed_count > 0 {

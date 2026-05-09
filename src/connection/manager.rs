@@ -80,6 +80,54 @@ impl From<usize> for ServerType {
     }
 }
 
+/// Per-key heat metric. Only one of FREQ / IDLETIME is meaningful for a
+/// given Redis instance because the two are mutually exclusive: LFU policies
+/// (`*-lfu`) populate FREQ; everything else populates IDLETIME via the LRU
+/// clock. `None` means the policy is unknown or the OBJECT command failed
+/// (e.g. NOPERM, key gone).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HeatMetric {
+    #[default]
+    None,
+    /// LFU access frequency counter. Higher = hotter.
+    Freq(u64),
+    /// LRU idle time in seconds. Higher = colder.
+    IdleTime(u64),
+}
+
+/// What heat command to issue per key during a memory scan, decided once
+/// per scan from `maxmemory-policy`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HeatProbe {
+    #[default]
+    None,
+    Freq,
+    IdleTime,
+}
+
+impl HeatProbe {
+    /// Map `maxmemory-policy` config string to the right OBJECT subcommand.
+    /// Returns `None` only when the policy can't be detected — Redis defaults
+    /// to LRU clock tracking even under `noeviction`, so OBJECT IDLETIME is
+    /// the safe fallback for non-LFU servers.
+    pub fn from_policy(policy: &str) -> Self {
+        if policy.contains("lfu") {
+            HeatProbe::Freq
+        } else if policy.is_empty() {
+            HeatProbe::None
+        } else {
+            HeatProbe::IdleTime
+        }
+    }
+    pub fn redis_subcommand(self) -> Option<&'static str> {
+        match self {
+            HeatProbe::None => None,
+            HeatProbe::Freq => Some("FREQ"),
+            HeatProbe::IdleTime => Some("IDLETIME"),
+        }
+    }
+}
+
 pub struct KeyMemoryUsage {
     // key name
     pub key: SharedString,
@@ -89,6 +137,8 @@ pub struct KeyMemoryUsage {
     pub key_type: String,
     // ttl in seconds
     pub ttl: i64,
+    // heat metric (FREQ or IDLETIME or unknown)
+    pub heat: HeatMetric,
 }
 
 // Wrapper for the underlying Redis client
@@ -787,6 +837,7 @@ impl RedisClient {
         ratio: f32,
         count: u64,
         cursors: Option<Vec<u64>>,
+        heat: HeatProbe,
     ) -> Result<(u64, Vec<u64>, Vec<KeyMemoryUsage>)> {
         let pattern = "*";
         let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
@@ -802,6 +853,8 @@ impl RedisClient {
         let capacity = keys_per_node.iter().map(|keys| keys.len()).sum();
         let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
         let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        let heat_subcommand = heat.redis_subcommand();
+        let cmds_per_key: usize = if heat_subcommand.is_some() { 4 } else { 3 };
         for (index, keys) in keys_per_node.iter().enumerate() {
             if keys.is_empty() {
                 continue;
@@ -817,6 +870,10 @@ impl RedisClient {
                     .arg("5")
                     .cmd("TTL")
                     .arg(key.as_str());
+                if let Some(sub) = heat_subcommand {
+                    // OBJECT FREQ / OBJECT IDLETIME — both O(1).
+                    pipe.cmd("OBJECT").arg(sub).arg(key.as_str());
+                }
             }
             pipes[index] = Some(pipe);
         }
@@ -829,7 +886,7 @@ impl RedisClient {
                 continue;
             };
             let keys = &keys_per_node[index];
-            for (i, chunk) in results.chunks_exact(3).enumerate() {
+            for (i, chunk) in results.chunks_exact(cmds_per_key).enumerate() {
                 if i >= keys.len() {
                     break;
                 }
@@ -853,17 +910,46 @@ impl RedisClient {
                 if ttl == -2 {
                     continue;
                 }
+
+                // OBJECT FREQ/IDLETIME may legitimately error per-key
+                // (key vanished between SCAN and pipeline execution, or
+                // policy mismatch on an older Redis). Treat any non-Int
+                // result as "unknown heat" rather than failing the batch.
+                let heat = match (heat, chunk.get(3)) {
+                    (HeatProbe::Freq, Some(Value::Int(v))) => HeatMetric::Freq((*v).max(0) as u64),
+                    (HeatProbe::IdleTime, Some(Value::Int(v))) => HeatMetric::IdleTime((*v).max(0) as u64),
+                    _ => HeatMetric::None,
+                };
+
                 keys_memory_usage.push(KeyMemoryUsage {
                     key: key.clone(),
                     memory_usage: memory,
                     key_type,
                     ttl,
+                    heat,
                 });
             }
         }
 
         Ok((total_count as u64, cursors, keys_memory_usage))
     }
+
+    /// Returns the active `maxmemory-policy` setting, or an empty string if
+    /// the command fails (NOPERM, restricted environment). The caller should
+    /// treat empty as "unknown" and skip heat probing.
+    pub async fn maxmemory_policy(&self) -> Result<String> {
+        let mut conn = self.connection.clone();
+        let res: redis::RedisResult<HashMap<String, String>> = cmd("CONFIG")
+            .arg("GET")
+            .arg("maxmemory-policy")
+            .query_async(&mut conn)
+            .await;
+        match res {
+            Ok(map) => Ok(map.get("maxmemory-policy").cloned().unwrap_or_default()),
+            Err(_) => Ok(String::new()),
+        }
+    }
+
     /// Initiates a SCAN operation across all masters.
     /// # Arguments
     /// * `pattern` - The pattern to match keys.
