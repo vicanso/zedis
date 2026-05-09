@@ -71,6 +71,10 @@ enum KeyTreeAction {
     AutoRefresh(u32),
     SelectFavoriteKey(SharedString),
     ClearFavorites,
+    ExportSelectedKeys,
+    ExportFolder(SharedString),
+    ExportKey(SharedString),
+    ImportFromFile,
 }
 
 #[derive(Default)]
@@ -347,41 +351,75 @@ impl ListDelegate for KeyTreeDelegate {
                 .child(
                     div()
                         .context_menu(move |mut menu, _window, cx| {
-                            if readonly {
-                                return menu;
-                            }
                             let id = id.clone();
-                            if selected && selected_items_count > 1 {
+                            let multi_selection_count = if selected { selected_items_count } else { 0 };
+                            if !readonly {
+                                if selected && selected_items_count > 1 {
+                                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                                    let text = t!(
+                                        "key_tree.delete_keys_tooltip",
+                                        count = selected_items_count,
+                                        locale = locale
+                                    );
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::ListX,
+                                        Box::new(KeyTreeAction::DeleteMultipleKeys),
+                                        move |_, _cx| Label::new(text.clone()),
+                                    );
+                                } else {
+                                    menu = if is_folder {
+                                        menu.menu_element_with_icon(
+                                            CustomIconName::RotateCw,
+                                            Box::new(KeyTreeAction::RefreshFolder(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
+                                        )
+                                        .menu_element_with_icon(
+                                            CustomIconName::X,
+                                            Box::new(KeyTreeAction::DeleteFolder(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
+                                        )
+                                    } else {
+                                        menu.menu_element_with_icon(
+                                            CustomIconName::X,
+                                            Box::new(KeyTreeAction::DeleteKey(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
+                                        )
+                                    };
+                                }
+                            }
+                            if multi_selection_count > 0 {
                                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                                 let text = t!(
-                                    "key_tree.delete_keys_tooltip",
-                                    count = selected_items_count,
+                                    "key_tree.export_selected_tooltip",
+                                    count = multi_selection_count,
                                     locale = locale
                                 );
                                 menu = menu.menu_element_with_icon(
-                                    CustomIconName::ListX,
-                                    Box::new(KeyTreeAction::DeleteMultipleKeys),
+                                    CustomIconName::Save,
+                                    Box::new(KeyTreeAction::ExportSelectedKeys),
                                     move |_, _cx| Label::new(text.clone()),
                                 );
+                            } else if is_folder {
+                                let folder_id = id.clone();
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::Save,
+                                    Box::new(KeyTreeAction::ExportFolder(folder_id)),
+                                    move |_, cx| Label::new(i18n_key_tree(cx, "export_folder_tooltip")),
+                                );
                             } else {
-                                menu = if is_folder {
-                                    menu.menu_element_with_icon(
-                                        CustomIconName::RotateCw,
-                                        Box::new(KeyTreeAction::RefreshFolder(id.clone())),
-                                        move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
-                                    )
-                                    .menu_element_with_icon(
-                                        CustomIconName::X,
-                                        Box::new(KeyTreeAction::DeleteFolder(id)),
-                                        move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
-                                    )
-                                } else {
-                                    menu.menu_element_with_icon(
-                                        CustomIconName::X,
-                                        Box::new(KeyTreeAction::DeleteKey(id)),
-                                        move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
-                                    )
-                                };
+                                let key_id = id.clone();
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::Save,
+                                    Box::new(KeyTreeAction::ExportKey(key_id)),
+                                    move |_, cx| Label::new(i18n_key_tree(cx, "export_key_tooltip")),
+                                );
+                            }
+                            if !readonly {
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::HardDrive,
+                                    Box::new(KeyTreeAction::ImportFromFile),
+                                    move |_, cx| Label::new(i18n_key_tree(cx, "import_from_file_tooltip")),
+                                );
                             }
                             menu
                         })
@@ -1443,6 +1481,65 @@ impl Render for ZedisKeyTree {
                             true
                         })
                         .open(window, cx);
+                }
+                KeyTreeAction::ExportSelectedKeys => {
+                    let keys = this.key_tree_list_state.update(cx, |state, _cx| {
+                        state
+                            .delegate()
+                            .selected_items
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<SharedString>>()
+                    });
+                    if keys.is_empty() {
+                        return;
+                    }
+                    let server_state = this.server_state.read(cx);
+                    let server_id: SharedString = server_state.server_id().to_string().into();
+                    let db = server_state.db();
+                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                        .map(|s| s.name.into())
+                        .unwrap_or_else(|_| server_id.clone());
+                    crate::views::open_migration_export_window(server_id, server_name, db, keys, cx);
+                }
+                KeyTreeAction::ExportFolder(folder) => {
+                    let folder = folder.clone();
+                    let prefix = format!("{folder}:");
+                    let server_state = this.server_state.read(cx);
+                    let keys: Vec<SharedString> = server_state
+                        .keys()
+                        .keys()
+                        .filter(|k| k.as_str() == folder.as_str() || k.as_str().starts_with(&prefix))
+                        .cloned()
+                        .collect();
+                    if keys.is_empty() {
+                        return;
+                    }
+                    let server_id: SharedString = server_state.server_id().to_string().into();
+                    let db = server_state.db();
+                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                        .map(|s| s.name.into())
+                        .unwrap_or_else(|_| server_id.clone());
+                    crate::views::open_migration_export_window(server_id, server_name, db, keys, cx);
+                }
+                KeyTreeAction::ExportKey(id) => {
+                    let id = id.clone();
+                    let server_state = this.server_state.read(cx);
+                    let server_id: SharedString = server_state.server_id().to_string().into();
+                    let db = server_state.db();
+                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                        .map(|s| s.name.into())
+                        .unwrap_or_else(|_| server_id.clone());
+                    crate::views::open_migration_export_window(server_id, server_name, db, vec![id], cx);
+                }
+                KeyTreeAction::ImportFromFile => {
+                    let server_state = this.server_state.read(cx);
+                    let server_id: SharedString = server_state.server_id().to_string().into();
+                    let db = server_state.db();
+                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                        .map(|s| s.name.into())
+                        .unwrap_or_else(|_| server_id.clone());
+                    crate::views::open_migration_import_window(server_id, server_name, db, cx);
                 }
             }))
             .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {

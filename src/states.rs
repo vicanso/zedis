@@ -14,6 +14,7 @@
 
 mod app;
 mod i18n;
+mod migration;
 mod server;
 mod session;
 
@@ -28,6 +29,7 @@ pub use i18n::i18n_kv_table;
 pub use i18n::i18n_list_editor;
 pub use i18n::i18n_memory_analysis;
 pub use i18n::i18n_metrics;
+pub use i18n::i18n_migration;
 pub use i18n::i18n_monitor;
 pub use i18n::i18n_proto_editor;
 pub use i18n::i18n_pubsub_editor;
@@ -41,6 +43,7 @@ pub use i18n::i18n_status_bar;
 pub use i18n::i18n_stream_editor;
 pub use i18n::i18n_tray;
 pub use i18n::i18n_zset_editor;
+pub use migration::{LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState};
 pub use server::ErrorMessage;
 pub use server::ZedisServerState;
 pub use server::event::ServerEvent;
