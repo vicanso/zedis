@@ -956,8 +956,13 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<SharedString>)` - A tuple containing the new cursors and the keys.
-    pub async fn first_scan(&self, pattern: &str, count: u64) -> Result<(Vec<u64>, Vec<(SharedString, SharedString)>)> {
-        let (cursors, keys) = self.scan(None, pattern, count).await?;
+    pub async fn first_scan(
+        &self,
+        pattern: &str,
+        count: u64,
+        with_ttl: bool,
+    ) -> Result<(Vec<u64>, Vec<(SharedString, SharedString, i64)>)> {
+        let (cursors, keys) = self.scan(None, pattern, count, with_ttl).await?;
         Ok((cursors, keys))
     }
     pub async fn scan_nodes(
@@ -1030,38 +1035,55 @@ impl RedisClient {
         cursors: Option<Vec<u64>>,
         pattern: &str,
         count: u64,
-    ) -> Result<(Vec<u64>, Vec<(SharedString, SharedString)>)> {
+        with_ttl: bool,
+    ) -> Result<(Vec<u64>, Vec<(SharedString, SharedString, i64)>)> {
         let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
 
-        // Build TYPE pipelines per node
+        // Pipeline TYPE (+ optional TTL) per key in one RTT per master.
+        // TTL is skipped entirely when the caller doesn't need it — saves
+        // one command per key on large dbs where the chip is disabled.
+        let cmds_per_key = if with_ttl { 2 } else { 1 };
         let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
-        let mut type_pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
         for (idx, keys) in keys_per_node.iter().enumerate() {
             if !keys.is_empty() {
                 let mut pipe = redis::pipe();
                 for key in keys {
                     pipe.cmd("TYPE").arg(key.as_str());
+                    if with_ttl {
+                        pipe.cmd("TTL").arg(key.as_str());
+                    }
                 }
-                type_pipes[idx] = Some(pipe);
+                pipes[idx] = Some(pipe);
             }
         }
 
-        let type_results = query_async_masters_pipeline(master_addrs, self.db, type_pipes).await?;
+        let pipe_results = query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
 
         let capacity: usize = keys_per_node.iter().map(|ks| ks.len()).sum();
         let mut all_keys = Vec::with_capacity(capacity);
         for (idx, keys) in keys_per_node.into_iter().enumerate() {
-            let types = type_results.get(idx).and_then(|r| r.as_ref());
+            let results = pipe_results.get(idx).and_then(|r| r.as_ref());
             for (i, key) in keys.into_iter().enumerate() {
-                let key_type = types
-                    .and_then(|vals| vals.get(i))
+                let type_val = results.and_then(|vals| vals.get(i * cmds_per_key));
+                let key_type = type_val
                     .map(|val| match val {
                         Value::SimpleString(s) => SharedString::from(s.clone()),
                         Value::BulkString(d) => SharedString::from(String::from_utf8_lossy(d).into_owned()),
                         _ => SharedString::default(),
                     })
                     .unwrap_or_default();
-                all_keys.push((key, key_type));
+                let ttl_secs: i64 = if with_ttl {
+                    match results.and_then(|vals| vals.get(i * cmds_per_key + 1)) {
+                        Some(Value::Int(t)) => *t,
+                        _ => -2,
+                    }
+                } else {
+                    // Sentinel: TTL was not fetched. Renderer treats -2 as
+                    // "no chip" so it's safe to use it here too.
+                    -2
+                };
+                all_keys.push((key, key_type, ttl_secs));
             }
         }
         Ok((new_cursors, all_keys))

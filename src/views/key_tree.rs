@@ -16,7 +16,10 @@ use crate::{
     assets::CustomIconName,
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{get_favorites_manager, get_search_history_manager},
-    helpers::{EditorAction, get_font_family, humanize_keystroke, validate_long_string, validate_ttl},
+    helpers::{
+        EditorAction, TtlChipKind, format_ttl_chip, get_font_family, humanize_keystroke, ttl_chip_kind,
+        validate_long_string, validate_ttl,
+    },
     states::{
         KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
         i18n_common, i18n_key_tree, save_session_option,
@@ -54,6 +57,9 @@ const TREE_INDENT_OFFSET: f32 = 8.0; // Additional offset for all items
 const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
 const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges
 const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
+/// Fixed width of the TTL chip, in pixels. Sized to fit the two-digit cap
+/// of `format_ttl_chip` (`59s` / `59m`) at 10px font with 1px borders.
+const TTL_CHIP_WIDTH: f32 = 34.0;
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
 const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
 
@@ -84,10 +90,14 @@ struct KeyTreeState {
     server_id: SharedString,
     /// Unique ID for the current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
-    /// Cached key tree ID — tracks which key_tree_id the cached_keys correspond to
+    /// Cached key tree ID — tracks which key_tree_id the cached_keys and
+    /// cached_key_ttls correspond to.
     cached_key_tree_id: SharedString,
     /// Cached sorted keys snapshot to avoid re-cloning from server state on every rebuild
     cached_keys: Arc<Vec<(SharedString, KeyType)>>,
+    /// Snapshot of `ZedisServerState::key_ttls`, refreshed in lockstep with
+    /// `cached_keys`. Used to color leaf rows in the tree.
+    cached_key_ttls: Arc<AHashMap<SharedString, i64>>,
     /// Whether the tree is empty (no keys found)
     is_empty: bool,
     /// Current query mode (All/Prefix/Exact)
@@ -113,6 +123,10 @@ struct KeyTreeItem {
     expanded: bool,
     children_count: usize,
     is_folder: bool,
+    /// Remaining TTL in seconds for leaf items (`-1` = no expiry, `-2`
+    /// = unknown/missing). `None` for folder nodes — folders don't have
+    /// a meaningful aggregate TTL at the tree level.
+    ttl_secs: Option<i64>,
 }
 
 fn new_key_tree_items(
@@ -121,6 +135,7 @@ fn new_key_tree_items(
     expanded_items: AHashSet<SharedString>,
     separator: &str,
     max_key_tree_depth: usize,
+    key_ttls: &AHashMap<SharedString, i64>,
 ) -> Vec<KeyTreeItem> {
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
@@ -135,6 +150,7 @@ fn new_key_tree_items(
         if !keyword.is_empty() && !key.contains(keyword.as_str()) {
             continue;
         }
+        let ttl_for_leaf = key_ttls.get(&key).copied();
         if !key.contains(separator) {
             items.insert(
                 key.clone(),
@@ -142,6 +158,7 @@ fn new_key_tree_items(
                     id: key.clone(),
                     label: key.clone(),
                     key_type,
+                    ttl_secs: ttl_for_leaf,
                     ..Default::default()
                 },
             );
@@ -196,7 +213,10 @@ fn new_key_tree_items(
                 ..Default::default()
             });
         }
-        if let Some(key_tree_item) = key_tree_item.take() {
+        if let Some(mut key_tree_item) = key_tree_item.take() {
+            // This is the deepest level for this key — guaranteed a leaf
+            // since no further segment was promoted. Stamp the live TTL.
+            key_tree_item.ttl_secs = ttl_for_leaf;
             items.insert(key_tree_item.id.clone(), key_tree_item);
         }
     }
@@ -212,6 +232,7 @@ fn new_key_tree_items(
     for (key_id, key_type, label, depth) in promoted_leaves {
         let size = key_id.len() - label.len();
         let parent_id = if size == 0 { "" } else { &key_id[..(size - 1)] };
+        let ttl_secs = key_ttls.get(&key_id).copied();
         children_map
             .entry(parent_id.to_string())
             .or_default()
@@ -220,6 +241,7 @@ fn new_key_tree_items(
                 label,
                 depth,
                 key_type,
+                ttl_secs,
                 ..Default::default()
             });
     }
@@ -326,6 +348,26 @@ impl ListDelegate for KeyTreeDelegate {
             cx.theme().foreground.alpha(0.85)
         } else {
             cx.theme().foreground
+        };
+        // TTL chip — rendered on every leaf row that has a known TTL value.
+        // Perm (`-1`) ⇒ muted gray ∞, any live TTL ⇒ theme green. Missing
+        // (`-2`, race between SCAN and TTL) renders nothing. Gated by the
+        // user setting; when off the SCAN loop also skipped the TTL command
+        // (see `RedisClient::scan`).
+        let show_ttl = cx.global::<ZedisGlobalStore>().read(cx).show_key_tree_ttl();
+        let ttl_chip: Option<(SharedString, Hsla)> = if is_folder || !show_ttl {
+            None
+        } else {
+            entry.ttl_secs.and_then(|secs| {
+                let kind = ttl_chip_kind(secs)?;
+                let label = format_ttl_chip(secs)?;
+                let color = match kind {
+                    TtlChipKind::Perm => cx.theme().muted_foreground,
+                    TtlChipKind::Expiring => cx.theme().red,
+                    TtlChipKind::Live => cx.theme().green,
+                };
+                Some((label, color))
+            })
         };
 
         let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
@@ -443,6 +485,29 @@ impl ListDelegate for KeyTreeDelegate {
                                         CustomIconName::Square
                                     };
                                     this.child(Icon::new(check_icon))
+                                })
+                                .when_some(ttl_chip, |this, (chip_label, chip_color)| {
+                                    // Soft-tinted chip: low-alpha fill + opaque text
+                                    // (matches the visual weight of the type badge
+                                    // without competing with it). Fixed width so
+                                    // chips align across rows — the formatter caps
+                                    // at two digits + a unit suffix.
+                                    let mut bg = chip_color;
+                                    bg.fade_out(0.85);
+                                    let mut border = chip_color;
+                                    border.fade_out(0.65);
+                                    this.child(
+                                        Label::new(chip_label)
+                                            .text_size(px(10.))
+                                            .w(px(TTL_CHIP_WIDTH))
+                                            .text_center()
+                                            .text_color(chip_color)
+                                            .bg(bg)
+                                            .border_1()
+                                            .border_color(border)
+                                            .rounded_sm()
+                                            .flex_none(),
+                                    )
                                 })
                                 .when(entry.is_folder, |this| {
                                     this.child(
@@ -737,10 +802,12 @@ impl ZedisKeyTree {
             let keys_snapshot: Vec<(SharedString, KeyType)> =
                 server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
             self.state.cached_keys = Arc::new(keys_snapshot);
+            self.state.cached_key_ttls = Arc::new(server_state.key_ttls().clone());
             self.state.cached_key_tree_id = key_tree_id.to_string().into();
         }
 
         let keys_snapshot = self.state.cached_keys.clone();
+        let key_ttls_snapshot = self.state.cached_key_ttls.clone();
         let readonly = server_state.readonly();
         let expanded_items = self.state.expanded_items.clone();
 
@@ -760,6 +827,7 @@ impl ZedisKeyTree {
                         expanded_items,
                         &separator,
                         max_key_tree_depth,
+                        &key_ttls_snapshot,
                     );
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items

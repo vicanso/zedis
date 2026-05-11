@@ -226,6 +226,11 @@ pub struct ZedisAppState {
     redis_response_timeout: Option<Duration>,
     selected_server: Option<(String, usize)>,
     tray_enabled: Option<bool>,
+    /// When `true`, the key tree fetches TTL per key during SCAN and shows
+    /// a TTL chip next to each leaf. When `false` the TTL pipeline command
+    /// is skipped (cheaper scans on large dbs) and no chip is rendered.
+    /// Defaults to `true`.
+    show_key_tree_ttl: Option<bool>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -451,6 +456,12 @@ impl ZedisAppState {
     }
     pub fn set_tray_enabled(&mut self, enabled: bool) {
         self.tray_enabled = Some(enabled);
+    }
+    pub fn show_key_tree_ttl(&self) -> bool {
+        self.show_key_tree_ttl.unwrap_or(true)
+    }
+    pub fn set_show_key_tree_ttl(&mut self, enabled: bool) {
+        self.show_key_tree_ttl = Some(enabled);
     }
     pub fn selected_server(&self) -> Option<&(String, usize)> {
         self.selected_server.as_ref()

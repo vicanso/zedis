@@ -61,6 +61,7 @@ pub struct ZedisSettingEditor {
     redis_connection_timeout_state: Entity<InputState>,
     redis_response_timeout_state: Entity<InputState>,
     tray_enabled: bool,
+    show_key_tree_ttl: bool,
     font_size_select: Entity<ZedisSelect>,
     locale_select: Entity<ZedisSelect>,
     _subscriptions: Vec<Subscription>,
@@ -113,6 +114,7 @@ impl ZedisSettingEditor {
         let redis_response_timeout = store.redis_response_timeout();
         let key_scan_count = store.key_scan_count();
         let tray_enabled = store.tray_enabled();
+        let show_key_tree_ttl = store.show_key_tree_ttl();
         let font_size = store.font_size();
         let locale = store.locale().to_string();
 
@@ -327,6 +329,7 @@ impl ZedisSettingEditor {
             redis_response_timeout_state,
             redis_connection_timeout_state,
             tray_enabled,
+            show_key_tree_ttl,
             font_size_select,
             locale_select,
         }
@@ -410,6 +413,19 @@ impl Render for ZedisSettingEditor {
                     cx,
                     "auto_expand_threshold",
                     Input::new(&self.auto_expand_threshold_state),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "show_key_tree_ttl",
+                    Switch::new("show-key-tree-ttl")
+                        .checked(self.show_key_tree_ttl)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.show_key_tree_ttl = *checked;
+                            let enabled = *checked;
+                            update_app_state_and_save(cx, "save_show_key_tree_ttl", move |state, _| {
+                                state.set_show_key_tree_ttl(enabled);
+                            });
+                        })),
                 ))
                 .child(Self::render_setting_row(
                     cx,

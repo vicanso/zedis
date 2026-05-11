@@ -157,6 +157,12 @@ pub struct ZedisServerState {
     /// Map of all loaded keys and their types
     keys: AHashMap<SharedString, KeyType>,
 
+    /// Parallel map of per-key TTL in seconds, populated alongside `keys`
+    /// during SCAN. `-1` = no expiry, `-2` = missing (key vanished between
+    /// SCAN and the TTL pipeline). Kept separate from `keys` so older code
+    /// paths that read `&AHashMap<SharedString, KeyType>` keep compiling.
+    key_ttls: AHashMap<SharedString, i64>,
+
     // ===== Error tracking =====
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
@@ -175,6 +181,7 @@ impl ZedisServerState {
         self.keyword = SharedString::default();
         self.cursors = None;
         self.keys.clear();
+        self.key_ttls.clear();
         self.key_tree_id = Uuid::now_v7().to_string().into();
         self.scanning = false;
         self.scan_completed = false;
@@ -190,6 +197,7 @@ impl ZedisServerState {
         self.version = SharedString::default();
         self.nodes = (0, 0);
         self.keys.clear();
+        self.key_ttls.clear();
         self.key_tree_id = SharedString::default();
         self.nodes_description = Arc::new(RedisClientDescription::default());
         self.dbsize = None;
@@ -206,14 +214,15 @@ impl ZedisServerState {
     /// Add new keys with their types to the key map (deduplicating automatically)
     ///
     /// If any new keys were added, generates a new tree ID to trigger UI refresh
-    fn extend_keys(&mut self, keys: Vec<(SharedString, SharedString)>) {
+    fn extend_keys(&mut self, keys: Vec<(SharedString, SharedString, i64)>) {
         self.keys.reserve(keys.len());
+        self.key_ttls.reserve(keys.len());
         let mut insert_count = 0;
 
-        for (key, key_type) in keys {
+        for (key, key_type, ttl_secs) in keys {
             let kt = KeyType::from(key_type.as_ref());
             self.keys
-                .entry(key)
+                .entry(key.clone())
                 .and_modify(|existing| {
                     if *existing == KeyType::Unknown && kt != KeyType::Unknown {
                         *existing = kt;
@@ -223,6 +232,9 @@ impl ZedisServerState {
                     insert_count += 1;
                     kt
                 });
+            // Always update the freshest TTL (it counts down) — replace
+            // existing rather than insert_with.
+            self.key_ttls.insert(key, ttl_secs);
         }
 
         // Update tree ID only if new keys were added
@@ -485,6 +497,9 @@ impl ZedisServerState {
         self.key.clone()
     }
     /// Get the map of all loaded keys and their types
+    pub fn key_ttls(&self) -> &AHashMap<SharedString, i64> {
+        &self.key_ttls
+    }
     pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
         &self.keys
     }
