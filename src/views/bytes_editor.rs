@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::get_font_family;
-use crate::states::{DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState};
+use crate::helpers::{JsonPathOutcome, get_font_family, is_json, run_jsonpath};
+use crate::states::{
+    DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
+};
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
 use gpui::{div, hsla, prelude::*};
+use gpui_component::button::Button;
 use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, TabSize};
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_component::{ActiveTheme, IndexPath, h_flex};
+use gpui_component::{ActiveTheme, IndexPath, Sizable, h_flex, v_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
 use std::sync::Arc;
@@ -71,6 +74,22 @@ pub struct ZedisBytesEditor {
 
     /// The data to display in the editor
     data: ByteEditorData,
+
+    /// JSONPath query input (only relevant when `is_json_value` is true).
+    jsonpath_input: Entity<InputState>,
+
+    /// Last JSONPath outcome, populated after the user hits Enter / Run.
+    /// `None` ⇒ no query has been issued yet on the current value.
+    jsonpath_result: Option<JsonPathOutcome>,
+
+    /// Read-only JSON viewer for the JSONPath result. Reused across queries
+    /// so syntax highlighting / scroll position / search work like the main
+    /// editor. Hidden until a query produces a non-trivial value.
+    jsonpath_result_editor: Entity<InputState>,
+
+    /// True when the current value is detected as parseable JSON. Controls
+    /// whether the JSONPath query bar is rendered above the editor.
+    is_json_value: bool,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -287,6 +306,31 @@ impl ZedisBytesEditor {
         let readonly = server_state.read(cx).readonly();
         info!("Creating new string editor view");
 
+        // JSONPath query bar — single-line input that re-evaluates on Enter.
+        // We keep it as a separate InputState so it doesn't compete with the
+        // main editor's focus or undo stack.
+        let jsonpath_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_editor(cx, "jsonpath_placeholder")));
+        subscriptions.push(cx.subscribe_in(&jsonpath_input, window, |this, _, event, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.run_jsonpath_query(window, cx);
+            }
+        }));
+
+        // Read-only JSON editor for displaying query results. Lazily filled
+        // by `run_jsonpath_query`. Same code-editor configuration as the main
+        // editor so the result is syntax-highlighted, scrollable, and searchable.
+        // `auto_grow(2, 13)` lets the editor size to its content up to ~220px,
+        // then internal scrolling takes over — short results don't waste space.
+        let jsonpath_result_editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor(default_language.name())
+                .line_number(true)
+                .searchable(true)
+                .soft_wrap(true)
+                .auto_grow(2, 13)
+        });
+
         let mut this = Self {
             value_modified: false,
             soft_wrap,
@@ -297,10 +341,42 @@ impl ZedisBytesEditor {
             should_update_editor: true,
             server_state,
             readonly,
+            jsonpath_input,
+            jsonpath_result: None,
+            jsonpath_result_editor,
+            is_json_value: false,
             _subscriptions: subscriptions,
         };
         this.update_editor_data(cx);
         this
+    }
+
+    /// Evaluate the current JSONPath input against the current editor value.
+    /// Results are stashed in `self.jsonpath_result` and re-rendered next
+    /// frame. Empty paths reset the result instead of erroring.
+    fn run_jsonpath_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let path = self.jsonpath_input.read(cx).value().to_string();
+        if path.trim().is_empty() {
+            self.jsonpath_result = None;
+            cx.notify();
+            return;
+        }
+        let raw = self.data.to_string().unwrap_or_default();
+        let outcome = run_jsonpath(raw.as_str(), path.trim());
+        // Push the matched payload into the read-only result editor when
+        // there's something multi-line to scroll through. Status outcomes
+        // (NoMatch / errors) render as a single label, not the editor.
+        let editor_text = match &outcome {
+            JsonPathOutcome::Single(s) | JsonPathOutcome::Multiple(s) => Some(SharedString::from(s.clone())),
+            _ => None,
+        };
+        if let Some(text) = editor_text {
+            self.jsonpath_result_editor.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+            });
+        }
+        self.jsonpath_result = Some(outcome);
+        cx.notify();
     }
 
     /// Update editor data when server state changes
@@ -331,6 +407,20 @@ impl ZedisBytesEditor {
         if !matches!(self.data, ByteEditorData::Hex(_)) {
             self.hex_viewer_state = None;
         }
+
+        // Re-evaluate JSON detection on each value change. Format alone is a
+        // strong hint (`DataFormat::Json` is set by the auto-decoder) but we
+        // also probe the actual text in case auto-detect missed it (e.g.
+        // user toggled Plain mode on a JSON string).
+        self.is_json_value = match &redis_bytes_value {
+            Some(v) if v.format == DataFormat::Json => true,
+            _ => match &self.data {
+                ByteEditorData::Text(t) => is_json(t.as_ref()),
+                _ => false,
+            },
+        };
+        // Clear stale results when switching to a different value.
+        self.jsonpath_result = None;
     }
 
     /// Check if the current editor value differs from the original Redis value
@@ -387,16 +477,104 @@ impl Render for ZedisBytesEditor {
                         this.set_value(value, window, cx);
                     });
                 }
-                Input::new(&self.editor)
+                let editor = Input::new(&self.editor)
                     .flex_1()
                     .bordered(false)
                     .disabled(self.readonly)
                     .appearance(false)
                     .p_0()
                     .w_full()
-                    .h_full()
                     .font_family(get_font_family())
-                    .focus_bordered(false)
+                    .focus_bordered(false);
+                if !self.is_json_value {
+                    return editor.h_full().into_any_element();
+                }
+                v_flex()
+                    .size_full()
+                    .child(self.render_jsonpath_bar(cx))
+                    .when_some(self.jsonpath_result.clone(), |this, outcome| {
+                        this.child(self.render_jsonpath_result(outcome, cx))
+                    })
+                    .child(editor)
+                    .into_any_element()
+            }
+        }
+    }
+}
+
+impl ZedisBytesEditor {
+    fn render_jsonpath_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .items_center()
+            .child(
+                Label::new(i18n_editor(cx, "jsonpath_label"))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Input::new(&self.jsonpath_input)
+                    .small()
+                    .flex_1()
+                    .font_family(get_font_family()),
+            )
+            .child(
+                Button::new("jsonpath-run")
+                    .small()
+                    .outline()
+                    .label(i18n_editor(cx, "jsonpath_run"))
+                    .on_click(cx.listener(|this, _, window, cx| this.run_jsonpath_query(window, cx))),
+            )
+    }
+
+    /// Render the JSONPath result. Two shapes:
+    ///  * For Single/Multiple ⇒ embed the read-only code editor so the user
+    ///    can scroll, search and copy from large JSON payloads.
+    ///  * For status outcomes (NoMatch / errors) ⇒ a single-line label is
+    ///    plenty.
+    fn render_jsonpath_result(&self, outcome: JsonPathOutcome, cx: &Context<Self>) -> gpui::AnyElement {
+        let container = div()
+            .w_full()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border);
+
+        match outcome {
+            JsonPathOutcome::Single(_) | JsonPathOutcome::Multiple(_) => container
+                .child(
+                    Input::new(&self.jsonpath_result_editor)
+                        .bordered(false)
+                        .appearance(false)
+                        .focus_bordered(false)
+                        .p_0()
+                        .w_full()
+                        .font_family(get_font_family()),
+                )
+                .into_any_element(),
+            other => {
+                let (text, color) = match other {
+                    JsonPathOutcome::NotJson => (i18n_editor(cx, "jsonpath_not_json"), cx.theme().red),
+                    JsonPathOutcome::InvalidPath(msg) => {
+                        (SharedString::from(format!("Path error: {msg}")), cx.theme().red)
+                    }
+                    JsonPathOutcome::NoMatch => (i18n_editor(cx, "jsonpath_no_match"), cx.theme().muted_foreground),
+                    _ => unreachable!("Single/Multiple handled in the matching arm above"),
+                };
+                container
+                    .bg(cx.theme().muted.opacity(0.4))
+                    .child(
+                        Label::new(text)
+                            .font_family(get_font_family())
+                            .text_xs()
+                            .text_color(color)
+                            .whitespace_normal(),
+                    )
                     .into_any_element()
             }
         }

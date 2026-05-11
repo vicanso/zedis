@@ -147,6 +147,11 @@ can_not_edit_value = "无法编辑此格式的值"
 disable_auto_refresh = "关闭"
 add_favorite_tooltip = "添加到收藏"
 remove_favorite_tooltip = "取消收藏"
+jsonpath_label = "JSONPath："
+jsonpath_placeholder = "$.user.email 或 $.items[?(@.price > 100)]"
+jsonpath_run = "运行"
+jsonpath_no_match = "无匹配项"
+jsonpath_not_json = "当前值不是有效 JSON"
 
 [key_tree]
 no_keys_found = "未找到任何键"

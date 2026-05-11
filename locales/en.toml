@@ -147,6 +147,11 @@ can_not_edit_value = "Value cannot be edited in this format"
 disable_auto_refresh = "Off"
 add_favorite_tooltip = "Add to favorites"
 remove_favorite_tooltip = "Remove from favorites"
+jsonpath_label = "JSONPath:"
+jsonpath_placeholder = "$.user.email or $.items[?(@.price > 100)]"
+jsonpath_run = "Run"
+jsonpath_no_match = "No match"
+jsonpath_not_json = "Value is not valid JSON"
 
 [key_tree]
 no_keys_found = "No keys found"
