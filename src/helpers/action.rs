@@ -32,6 +32,9 @@ pub enum EditorAction {
     Cmd,
     Search,
     AutoRefresh(u32),
+    /// Restore the value at the given history index (0 = most recent)
+    /// into the bytes editor. The user still has to Save to push to Redis.
+    LoadHistory(u32),
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {

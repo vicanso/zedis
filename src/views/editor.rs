@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
-    helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
+    helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{
         ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor,
@@ -30,6 +30,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    menu::DropdownMenu,
     notification::Notification,
     v_flex,
 };
@@ -255,6 +256,27 @@ impl ZedisEditor {
             state.reload_value(key, cx);
         });
     }
+
+    /// Pull entry `idx` out of the current key's history and push its bytes
+    /// into the bytes editor. The user then reviews and Saves as usual —
+    /// we don't auto-SET so binary or sensitive rollbacks stay deliberate.
+    fn load_history_entry(&mut self, idx: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bytes_editor) = self.bytes_editor.clone() else {
+            return;
+        };
+        let bytes = {
+            let server_state = self.server_state.read(cx);
+            let Some(key) = server_state.key() else { return };
+            server_state
+                .value_history_for(&key)
+                .and_then(|history| history.get(idx as usize))
+                .map(|entry| entry.bytes.clone())
+        };
+        let Some(bytes) = bytes else { return };
+        bytes_editor.update(cx, |state, cx| {
+            state.load_bytes_into_editor(bytes, window, cx);
+        });
+    }
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let is_busy = server_state.value().map(|v| v.is_busy()).unwrap_or(false);
@@ -389,6 +411,53 @@ impl ZedisEditor {
                     }))
                     .into_any_element(),
             );
+
+            // History dropdown: only meaningful for editable string values.
+            // Snapshot `(timestamp, size)` tuples here so the menu builder
+            // (which is `Fn`, not `FnMut`) can render without re-borrowing
+            // server state on each menu open.
+            if !readonly && !self.readonly {
+                let history_snapshot: Vec<(i64, usize)> = server_state
+                    .value_history_for(&key)
+                    .map(|deque| deque.iter().map(|e| (e.at, e.size())).collect())
+                    .unwrap_or_default();
+                let count = history_snapshot.len();
+                let label = i18n_editor(cx, "history_label");
+                let empty_label = i18n_editor(cx, "history_empty");
+                let tooltip = if count == 0 {
+                    empty_label.clone()
+                } else {
+                    format!("{label} ({count})").into()
+                };
+
+                btns.push(
+                    Button::new("zedis-editor-history")
+                        .outline()
+                        .disabled(count == 0 || should_show_loading)
+                        .icon(IconName::Undo)
+                        .tooltip(tooltip)
+                        .dropdown_menu(move |menu, _window, _cx| {
+                            let mut menu = menu;
+                            if history_snapshot.is_empty() {
+                                return menu;
+                            }
+                            let now = unix_ts();
+                            for (idx, (at, size)) in history_snapshot.iter().enumerate() {
+                                let secs_ago = (now - at).max(0) as u64;
+                                let rel = format_duration(Duration::from_secs(secs_ago));
+                                let size_str = format_size(*size as u64, DECIMAL);
+                                let label = format!("{rel} • {size_str}");
+                                let idx_u32 = idx as u32;
+                                menu = menu
+                                    .menu_element(Box::new(EditorAction::LoadHistory(idx_u32)), move |_w, _cx| {
+                                        Label::new(label.clone())
+                                    });
+                            }
+                            menu
+                        })
+                        .into_any_element(),
+                );
+            }
         }
 
         // Add TTL button (or input field when in edit mode)
@@ -692,6 +761,9 @@ impl Render for ZedisEditor {
                 }
                 EditorAction::AutoRefresh(interval) => {
                     this.start_auto_refresh(Some(*interval as u64), cx);
+                }
+                EditorAction::LoadHistory(idx) => {
+                    this.load_history_entry(*idx, window, cx);
                 }
                 _ => {
                     cx.propagate();

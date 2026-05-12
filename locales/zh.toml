@@ -152,6 +152,8 @@ jsonpath_placeholder = "$.user.email 或 $.items[?(@.price > 100)]"
 jsonpath_run = "运行"
 jsonpath_no_match = "无匹配项"
 jsonpath_not_json = "当前值不是有效 JSON"
+history_label = "历史版本"
+history_empty = "暂无写入历史 — 保存一次后开始记录"
 
 [key_tree]
 no_keys_found = "未找到任何键"

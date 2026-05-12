@@ -152,6 +152,8 @@ jsonpath_placeholder = "$.user.email or $.items[?(@.price > 100)]"
 jsonpath_run = "Run"
 jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
+history_label = "Verlauf"
+history_empty = "Noch kein Schreibverlauf — speichern Sie eine Änderung, um zu beginnen"
 
 [key_tree]
 no_keys_found = "Keine Schlüssel gefunden"

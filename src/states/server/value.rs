@@ -659,16 +659,23 @@ impl ZedisServerState {
     pub fn update_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
-        let Some(value) = self.value.as_mut() else {
-            return;
+
+        // Inspection phase: pull everything we need out of `self.value`
+        // before mutating any state, so we can also call
+        // `push_value_history` (which needs &mut self) without
+        // overlapping borrows.
+        let (format, original_size, original_bytes_value, is_redis_json, ttl) = {
+            let Some(value) = self.value.as_ref() else { return };
+            let Some(bv) = value.bytes_value() else { return };
+            let ttl = value.ttl().map(|t| t.num_milliseconds()).unwrap_or_default();
+            (bv.format, value.size, bv, value.is_redis_json(), ttl)
         };
 
-        let Some(original_bytes_value) = value.bytes_value() else {
-            return;
-        };
-        let format = original_bytes_value.format;
-        let original_size = value.size;
-        let is_redis_json = value.is_redis_json();
+        // Snapshot the pre-overwrite bytes for the rollback history.
+        // Captured optimistically — if the SET later fails we leave the
+        // entry in place (it still reflects what the user saw on
+        // screen), and `push_history` collapses identical retries.
+        self.push_value_history(key.clone(), original_bytes_value.bytes.clone());
 
         // For JSON type, compute a merge patch (RFC 7396) between old and new values.
         // Three possible outcomes:
@@ -686,6 +693,7 @@ impl ZedisServerState {
             None
         };
 
+        let Some(value) = self.value.as_mut() else { return };
         value.status = RedisValueStatus::Updating;
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
             bytes: Bytes::from(new_value.clone().to_string().into_bytes()),
@@ -693,7 +701,6 @@ impl ZedisServerState {
             format,
             ..Default::default()
         })));
-        let ttl = value.ttl().map(|ttl| ttl.num_milliseconds()).unwrap_or_default();
 
         cx.notify();
         self.spawn(
@@ -778,18 +785,20 @@ impl ZedisServerState {
     pub fn update_value_bytes(&mut self, key: SharedString, new_bytes: Vec<u8>, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
-        let Some(value) = self.value.as_mut() else {
-            return;
+
+        // See update_value for the borrow-split rationale.
+        let (format, original_size, original_bytes_value, ttl) = {
+            let Some(value) = self.value.as_ref() else { return };
+            let Some(bv) = value.bytes_value() else { return };
+            let ttl = value.ttl().map(|t| t.num_milliseconds()).unwrap_or_default();
+            (bv.format, value.size, bv, ttl)
         };
-        let Some(original_bytes_value) = value.bytes_value() else {
-            return;
-        };
-        let original_size = value.size;
-        // Preserve the format/text fields so the renderer can recover them
-        // if the save round-trips successfully (we re-decode on next load).
-        let format = original_bytes_value.format;
+
+        self.push_value_history(key.clone(), original_bytes_value.bytes.clone());
+
         let new_bytes_arc = Bytes::from(new_bytes.clone());
 
+        let Some(value) = self.value.as_mut() else { return };
         value.status = RedisValueStatus::Updating;
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
             bytes: new_bytes_arc.clone(),
@@ -801,7 +810,6 @@ impl ZedisServerState {
             format,
             ..Default::default()
         })));
-        let ttl = value.ttl().map(|ttl| ttl.num_milliseconds()).unwrap_or_default();
 
         cx.notify();
         self.spawn(

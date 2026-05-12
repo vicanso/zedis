@@ -16,6 +16,7 @@ use crate::helpers::{JsonPathOutcome, bytes_to_hex_text, get_font_family, is_jso
 use crate::states::{
     DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
 };
+use bytes::Bytes;
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
 use gpui::{div, hsla, prelude::*};
 use gpui_component::button::Button;
@@ -126,31 +127,32 @@ impl ByteEditorData {
 ///
 /// # Returns
 /// String representation (either original string or hex dump)
+/// Pick a bytes-per-row that fits the current viewport. Narrow windows
+/// wrap at 16 bytes (the `xxd` default), wider ones go up to 32 so the
+/// user doesn't waste horizontal space. Shared by hex-dump rendering
+/// and history-load injection so both use the same layout decision.
+fn hex_bytes_per_row(cx: &App) -> usize {
+    let width = cx
+        .global::<ZedisGlobalStore>()
+        .read(cx)
+        .content_width()
+        .unwrap_or_default();
+    match width {
+        w if w < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
+        w if w < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
+        _ => HEX_WIDTH_WIDE,
+    }
+}
+
 fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditorData {
     if value.bytes.is_empty() {
         return ByteEditorData::Text(value.text.clone().unwrap_or_default());
     }
 
-    // Pick a bytes-per-row that fits the current viewport. Narrow windows
-    // wrap at 16 bytes (the `xxd` default), wider ones go up to 32 so the
-    // user doesn't waste horizontal space.
-    let hex_bytes_per_row = || {
-        let width = cx
-            .global::<ZedisGlobalStore>()
-            .read(cx)
-            .content_width()
-            .unwrap_or_default();
-        match width {
-            w if w < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
-            w if w < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
-            _ => HEX_WIDTH_WIDE,
-        }
-    };
-
     let create_hex_view = || {
         let cfg = HexConfig {
             title: false,
-            width: hex_bytes_per_row(),
+            width: hex_bytes_per_row(cx),
             group: 0,
             ..Default::default()
         };
@@ -160,7 +162,7 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditor
     };
 
     match value.view_mode {
-        ViewMode::Hex => ByteEditorData::Text(bytes_to_hex_text(&value.bytes, hex_bytes_per_row()).into()),
+        ViewMode::Hex => ByteEditorData::Text(bytes_to_hex_text(&value.bytes, hex_bytes_per_row(cx)).into()),
 
         ViewMode::Plain => {
             let text = SharedString::new(String::from_utf8_lossy(&value.bytes));
@@ -472,6 +474,34 @@ impl ZedisBytesEditor {
     /// Get the current editor value
     pub fn value(&self, cx: &mut Context<Self>) -> SharedString {
         self.editor.read(cx).value()
+    }
+
+    /// Replace the editor's current text with `bytes`, rendered according to
+    /// the active view mode. Used by the value-history rollback UI: the user
+    /// picks an old version, we surface it in the editor, and the existing
+    /// Save flow takes over from there.
+    ///
+    /// In hex mode we round-trip through `bytes_to_hex_text` so non-UTF8
+    /// payloads stay losslessly editable. In plain/auto modes we use
+    /// `String::from_utf8_lossy` — this is safe because the history button
+    /// is only offered when the editor is writable, which already excludes
+    /// the binary-and-not-hex case (see `update_editor_data`).
+    ///
+    /// Marks the editor as modified so the Save button enables itself.
+    pub fn load_bytes_into_editor(&mut self, bytes: Bytes, window: &mut Window, cx: &mut Context<Self>) {
+        if self.readonly {
+            return;
+        }
+        let text: SharedString = if self.is_hex_text {
+            bytes_to_hex_text(&bytes, hex_bytes_per_row(cx)).into()
+        } else {
+            String::from_utf8_lossy(&bytes).to_string().into()
+        };
+        self.editor.update(cx, |state, cx| {
+            state.set_value(text, window, cx);
+        });
+        self.value_modified = true;
+        cx.notify();
     }
 }
 

@@ -608,6 +608,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.remove(&remove_key);
+                    this.clear_value_history_for(&remove_key);
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     // Deselect if the deleted key was selected
@@ -650,6 +651,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
+                    this.value_history.retain(|key, _| !key.starts_with(prefix.as_str()));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
@@ -673,6 +675,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.retain(|key, _| !remove_keys.contains(key));
+                    this.value_history.retain(|key, _| !remove_keys.contains(key));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }

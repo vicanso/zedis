@@ -152,6 +152,8 @@ jsonpath_placeholder = "$.user.email or $.items[?(@.price > 100)]"
 jsonpath_run = "Run"
 jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
+history_label = "履歴"
+history_empty = "書き込み履歴はまだありません — 変更を保存すると記録が開始されます"
 
 [key_tree]
 no_keys_found = "キーが見つかりません"
