@@ -268,10 +268,27 @@ impl ZedisEditor {
             return;
         };
         editor.clone().update(cx, move |state, cx| {
-            let value = state.value(cx);
-            self.server_state.update(cx, move |state, cx| {
-                state.update_value(key, value, cx);
-            });
+            // Hex view mode round-trips through hex text — decode back to
+            // raw bytes here and use the bytes save path so we can write
+            // arbitrary binary data, not just UTF-8 strings.
+            match state.value_bytes_for_save(cx) {
+                Some(Ok(bytes)) => {
+                    self.server_state.update(cx, move |state, cx| {
+                        state.update_value_bytes(key, bytes, cx);
+                    });
+                }
+                Some(Err(msg)) => {
+                    self.server_state.update(cx, |state, cx| {
+                        state.emit_error_notification(format!("Hex parse error: {msg}").into(), cx);
+                    });
+                }
+                None => {
+                    let value = state.value(cx);
+                    self.server_state.update(cx, move |state, cx| {
+                        state.update_value(key, value, cx);
+                    });
+                }
+            }
         });
     }
     fn enter_ttl_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {

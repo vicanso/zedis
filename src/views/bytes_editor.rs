@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::{JsonPathOutcome, get_font_family, is_json, run_jsonpath};
+use crate::helpers::{JsonPathOutcome, bytes_to_hex_text, get_font_family, is_json, parse_hex_text, run_jsonpath};
 use crate::states::{
     DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
 };
@@ -91,6 +91,11 @@ pub struct ZedisBytesEditor {
     /// whether the JSONPath query bar is rendered above the editor.
     is_json_value: bool,
 
+    /// True when the editor is showing the value as an editable hex dump.
+    /// Save path then decodes the text back to raw bytes (see
+    /// `value_bytes_for_save`).
+    is_hex_text: bool,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -126,22 +131,26 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditor
         return ByteEditorData::Text(value.text.clone().unwrap_or_default());
     }
 
-    let create_hex_view = || {
+    // Pick a bytes-per-row that fits the current viewport. Narrow windows
+    // wrap at 16 bytes (the `xxd` default), wider ones go up to 32 so the
+    // user doesn't waste horizontal space.
+    let hex_bytes_per_row = || {
         let width = cx
             .global::<ZedisGlobalStore>()
             .read(cx)
             .content_width()
             .unwrap_or_default();
-
-        let hex_width = match width {
+        match width {
             w if w < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
             w if w < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
             _ => HEX_WIDTH_WIDE,
-        };
+        }
+    };
 
+    let create_hex_view = || {
         let cfg = HexConfig {
             title: false,
-            width: hex_width,
+            width: hex_bytes_per_row(),
             group: 0,
             ..Default::default()
         };
@@ -151,7 +160,7 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditor
     };
 
     match value.view_mode {
-        ViewMode::Hex => create_hex_view(),
+        ViewMode::Hex => ByteEditorData::Text(bytes_to_hex_text(&value.bytes, hex_bytes_per_row()).into()),
 
         ViewMode::Plain => {
             let text = SharedString::new(String::from_utf8_lossy(&value.bytes));
@@ -345,6 +354,7 @@ impl ZedisBytesEditor {
             jsonpath_result: None,
             jsonpath_result_editor,
             is_json_value: false,
+            is_hex_text: false,
             _subscriptions: subscriptions,
         };
         this.update_editor_data(cx);
@@ -397,8 +407,18 @@ impl ZedisBytesEditor {
 
         let redis_bytes_value = value.and_then(|v| v.bytes_value());
 
+        // Hex text mode is determined by the *requested* view mode, not the
+        // resulting `ByteEditorData` (which is `Text` in both Plain and Hex
+        // modes after the recent refactor). Capture it before formatting.
+        let hex_mode = redis_bytes_value
+            .as_ref()
+            .map(|v| matches!(v.view_mode, ViewMode::Hex))
+            .unwrap_or(false);
+
         if let Some(redis_bytes_value) = &redis_bytes_value {
-            self.readonly = readonly || !redis_bytes_value.is_utf8_text();
+            // Hex mode is always editable — even for binary keys — because
+            // we round-trip through hex text on save.
+            self.readonly = readonly || (!hex_mode && !redis_bytes_value.is_utf8_text());
             self.data = format_byte_editor_data(redis_bytes_value, cx);
         } else {
             self.data = ByteEditorData::Text(SharedString::default());
@@ -408,19 +428,35 @@ impl ZedisBytesEditor {
             self.hex_viewer_state = None;
         }
 
-        // Re-evaluate JSON detection on each value change. Format alone is a
-        // strong hint (`DataFormat::Json` is set by the auto-decoder) but we
-        // also probe the actual text in case auto-detect missed it (e.g.
-        // user toggled Plain mode on a JSON string).
-        self.is_json_value = match &redis_bytes_value {
-            Some(v) if v.format == DataFormat::Json => true,
-            _ => match &self.data {
-                ByteEditorData::Text(t) => is_json(t.as_ref()),
-                _ => false,
-            },
+        self.is_hex_text = hex_mode;
+
+        // JSON detection is meaningless on hex-encoded text — skip it.
+        self.is_json_value = if hex_mode {
+            false
+        } else {
+            match &redis_bytes_value {
+                Some(v) if v.format == DataFormat::Json => true,
+                _ => match &self.data {
+                    ByteEditorData::Text(t) => is_json(t.as_ref()),
+                    _ => false,
+                },
+            }
         };
         // Clear stale results when switching to a different value.
         self.jsonpath_result = None;
+    }
+
+    /// When the editor is in hex-text mode, decode the user's input back to
+    /// raw bytes for the save path. Returns:
+    ///   * `None` ⇒ not in hex mode, caller should use the text save path.
+    ///   * `Some(Ok(bytes))` ⇒ parsed successfully, send via `update_value_bytes`.
+    ///   * `Some(Err(msg))` ⇒ invalid hex, caller should surface the error.
+    pub fn value_bytes_for_save(&self, cx: &mut Context<Self>) -> Option<Result<Vec<u8>, String>> {
+        if !self.is_hex_text {
+            return None;
+        }
+        let text = self.editor.read(cx).value();
+        Some(parse_hex_text(text.as_ref()))
     }
 
     /// Check if the current editor value differs from the original Redis value

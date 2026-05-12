@@ -36,7 +36,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 Stop manually decoding your data. Zedis automatically detects (`ViewerMode::Auto`) and formats your payloads on the fly:
 - **Auto-Decompression**: Transparently unpacks `LZ4`, `SNAPPY`, `GZIP`, and `ZSTD` data.
 - **Rich Content Decoding**:
-  - **JSON & RedisJSON**: Full read/write support with pretty-printing and syntax highlighting. Smartly computes RFC 7396 Merge Patch diffs to send minimal `JSON.MERGE` commands instead of heavy document overwrites.
+  - **JSON & RedisJSON**: Full read/write support with pretty-printing and syntax highlighting. Smartly computes RFC 7396 Merge Patch diffs to send minimal `JSON.MERGE` commands instead of heavy document overwrites. **JSONPath filtering** works on plain string keys too — query nested fields with `$.user.email` or `$.items[?(@.price > 100)]` without needing the RedisJSON module.
   - **Protobuf & MessagePack**: Zero-config binary deserialization into readable JSON-like formats.
   - **Media & Hex**: Native preview for images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`) and an adaptive 8/16-byte Hex dump for raw binary.
 - **Custom Script Viewer**: Pipe any Redis value through an external shell command for fully custom decoding. Configure a shell command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`) and Zedis runs it via `sh -c` (Unix/macOS) or `cmd /c` (Windows), displaying stdout as the formatted value. Perfect for base64, custom binary protocols, or any tool in your `$PATH`. Key patterns are matched by exact, prefix, suffix, or regex rules per server.
@@ -47,14 +47,18 @@ Stop manually decoding your data. Zedis automatically detects (`ViewerMode::Auto
 ### 📊 Real-Time Observability
 Transform how you monitor your Redis instances with a built-in, GPU-accelerated dashboard.
 - **Live Metrics**: Beautifully rendered, real-time charts for CPU, Memory, and Network I/O.
-- **Memory Analyzer**: Visually hunt down **BigKeys** and optimize storage efficiency to prevent OOMs.
+- **Memory Analyzer**: Visually hunt down **BigKeys** and optimize storage efficiency to prevent OOMs. Sort the Top-N table by **Size / Hottest / Coldest** — `OBJECT FREQ` or `OBJECT IDLETIME` is auto-selected based on the server's `maxmemory-policy`, so you can find the keys actually worth caching (or evicting) in a single click.
+- **Cluster Health**: Hover the node indicator to inspect cluster topology as a tree — masters with their slot ranges, replicas grouped beneath, plus per-replica replication lag (bytes + seconds + link state) parsed from `INFO replication`. Works for Cluster and Sentinel deployments.
 - **Deep Diagnostics**: Track Slowlogs, monitor live `MONITOR` streams with powerful keyword filtering, and manage active clients (`CLIENT LIST/KILL`) via an intuitive GUI.
 
 ### 🛡️ Enterprise-Grade Security & Productivity
 - **Read-Only Mode**: Lock down connections to prevent accidental writes in production environments.
+- **ACL Management** (Redis 6+): GUI for the full `ACL` lifecycle — list users, view flags / commands / key patterns / channel rules, and edit via a quick-preset toolbar (Full access / Read-only / Disabled) plus toggleable chips for command categories (`+@read`, `-@dangerous`, ...) and key/channel wildcards.
+- **Connection Safety**: Tag each server (PROD / DEV / STAGING) with a colored chip surfaced in the sidebar and status bar. Dangerous commands (`FLUSHALL`, `FLUSHDB`, `CONFIG SET`, `SHUTDOWN`, `DEBUG`, `SCRIPT FLUSH`, `KEYS *`, batch `DEL`...) are intercepted with a confirm dialog that escalates wording on PROD-tagged servers.
+- **Data Import / Export**: Dump any selection of keys (multi-select, single key, or whole folder prefix) to a framed binary file with magic header + CRC32, then restore on another instance — built on `DUMP` / `RESTORE` so binary-safe across all key types.
 - **Advanced Tunnels**: Full support for TLS/SSL (custom CA, client certs) and SSH Tunneling (Password, Private Key, SSH Agent).
 - **Integrated CLI**: A built-in terminal for `redis-cli` allows you to leverage your command-line muscle memory without leaving the app.
-- **Namespace Tree View**: Automatically groups keys separated by colons (`:`) into a nested directory tree. Right-click any folder to refresh its contents or delete all keys under that prefix in one action.
+- **Namespace Tree View**: Automatically groups keys separated by colons (`:`) into a nested directory tree. Right-click any folder to refresh its contents or delete all keys under that prefix in one action. Each leaf key carries a compact TTL chip — green for live TTL, red when expiring within 2 minutes, gray for permanent keys.
 - **Multi-Select & Batch Delete**: Toggle multi-select mode to mark and delete dozens of keys at once without writing a single command.
 - **Key Favorites & Search History**: Bookmark frequently used keys for instant access and revisit recent searches from a persistent history panel.
 - **Auto-Refresh**: Configure an automatic refresh interval for the key tree to keep your view in sync with a live, rapidly-changing Redis instance.

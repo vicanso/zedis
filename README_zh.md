@@ -47,7 +47,7 @@
 告别手动解码。Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据：
 - **自动解压缩**：透明解包 `LZ4`、`SNAPPY`、`GZIP` 和 `ZSTD` 压缩数据。
 - **丰富内容解码**：
-  - **JSON & RedisJSON**：完整读写支持，内置美化输出与语法高亮。智能计算 RFC 7396 Merge Patch 差异，发送最小化的 `JSON.MERGE` 命令，而非全量覆盖写入。
+  - **JSON & RedisJSON**：完整读写支持，内置美化输出与语法高亮。智能计算 RFC 7396 Merge Patch 差异，发送最小化的 `JSON.MERGE` 命令，而非全量覆盖写入。**JSONPath 过滤同样适用于普通 string 类型的 JSON**——用 `$.user.email` 或 `$.items[?(@.price > 100)]` 直接查询嵌套字段，无需 RedisJSON 模块。
   - **Protobuf & MessagePack**：零配置二进制反序列化，输出为可读的类 JSON 格式。
   - **媒体 & 十六进制**：原生预览图片（`PNG`、`JPG`、`WEBP`、`SVG`、`GIF`），以及自适应 8/16 字节十六进制转储，用于查看原始二进制数据。
 - **自定义脚本查看器**：通过外部 Shell 命令对任意 Redis 值进行自定义解码。配置包含占位符（`{KEY}`、`{VALUE}`、`{HEX}`、`{RAW_FILE}`）的命令模板，Zedis 将在 Unix/macOS 上通过 `sh -c`、在 Windows 上通过 `cmd /c` 执行该命令，并将标准输出作为格式化结果显示。适用于 base64、自定义二进制协议或 `$PATH` 中的任意工具，支持按服务器配置精确匹配、前缀、后缀或正则表达式的键名匹配规则。
@@ -58,14 +58,18 @@
 ### 📊 实时可观测性
 内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。
 - **实时指标**：精美渲染的 CPU、内存和网络 I/O 实时图表。
-- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。
+- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。Top-N 表支持按 **大小 / 最热 / 最冷** 排序——根据服务端 `maxmemory-policy` 自动选用 `OBJECT FREQ`（LFU）或 `OBJECT IDLETIME`（LRU），一键定位真正值得缓存（或淘汰）的 key。
+- **集群健康度**：状态栏节点指示器悬浮即可查看树状拓扑——各 master 及其 slot 范围、replica 按 master 分组展示，并附带每个 replica 的复制延迟（字节 + 秒 + 连接状态），数据源于 `INFO replication`。Cluster 与 Sentinel 部署均支持。
 - **深度诊断**：追踪慢日志，通过关键字过滤实时监控 `MONITOR` 流，并通过直观的 GUI 管理活跃客户端（`CLIENT LIST/KILL`）。
 
 ### 🛡️ 企业级安全与效率
 - **只读模式**：锁定连接，防止在生产环境中误操作写入数据。
+- **ACL 用户管理**（Redis 6+）：完整覆盖 `ACL` 生命周期——列出用户、查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设工具栏（Full access / Read-only / Disabled）以及可切换的 chip（`+@read`、`-@dangerous` 等命令类别 + key/频道通配符）进行编辑。
+- **连接安全**：每个服务器可配置 tag（PROD / DEV / STAGING）与颜色，标识同步显示在侧栏与状态栏。危险命令（`FLUSHALL`、`FLUSHDB`、`CONFIG SET`、`SHUTDOWN`、`DEBUG`、`SCRIPT FLUSH`、`KEYS *`、批量 `DEL`…）在执行前会被拦截，对 PROD 标签的服务器使用更严肃的确认文案。
+- **数据导入 / 导出**：对任意 key 选择（多选 / 单 key / 整个文件夹前缀）导出为带 magic header + CRC32 的 framed 二进制文件，可在另一实例上 restore——基于 `DUMP` / `RESTORE`，所有 key 类型二进制安全。
 - **高级隧道**：完整支持 TLS/SSL（自定义 CA、客户端证书）和 SSH 隧道（密码、私钥、SSH Agent）。
 - **集成 CLI**：内置 `redis-cli` 终端，无需离开应用即可使用命令行。
-- **命名空间树视图**：自动将以冒号（`:`）分隔的键整理为嵌套目录树，右键菜单支持刷新指定文件夹或一键删除该前缀下的所有键。
+- **命名空间树视图**：自动将以冒号（`:`）分隔的键整理为嵌套目录树，右键菜单支持刷新指定文件夹或一键删除该前缀下的所有键。每个 leaf key 旁附带紧凑的 TTL chip——绿色表示存活 TTL，红色表示 2 分钟内即将过期，灰色表示永久 key。
 - **多选批量删除**：切换多选模式，一次性标记并删除多个键，无需编写任何命令。
 - **键收藏与搜索历史**：收藏常用键以便随时快速访问，并可从持久化历史面板中回溯近期搜索记录。
 - **自动刷新**：为键目录配置自动刷新间隔，实时同步高频变更的 Redis 实例数据。

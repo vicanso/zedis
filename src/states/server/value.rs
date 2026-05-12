@@ -771,6 +771,85 @@ impl ZedisServerState {
         );
     }
 
+    /// Save arbitrary bytes back to a string key. Unlike `update_value`, this
+    /// path doesn't try the JSON merge-patch optimization — it always
+    /// performs a full `SET` with the raw byte payload. Used by the bytes
+    /// editor's hex write mode where the value isn't guaranteed UTF-8.
+    pub fn update_value_bytes(&mut self, key: SharedString, new_bytes: Vec<u8>, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        let Some(original_bytes_value) = value.bytes_value() else {
+            return;
+        };
+        let original_size = value.size;
+        // Preserve the format/text fields so the renderer can recover them
+        // if the save round-trips successfully (we re-decode on next load).
+        let format = original_bytes_value.format;
+        let new_bytes_arc = Bytes::from(new_bytes.clone());
+
+        value.status = RedisValueStatus::Updating;
+        value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+            bytes: new_bytes_arc.clone(),
+            // Best-effort UTF-8 decode for in-app preview; non-utf8 bytes
+            // fall through and the renderer treats it as binary.
+            text: std::str::from_utf8(&new_bytes_arc)
+                .ok()
+                .map(|s| SharedString::from(s.to_string())),
+            format,
+            ..Default::default()
+        })));
+        let ttl = value.ttl().map(|ttl| ttl.num_milliseconds()).unwrap_or_default();
+
+        cx.notify();
+        self.spawn(
+            ServerTask::SaveValue,
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let mut conn = client.connection();
+                let mut binding = cmd("SET");
+                let mut new_cmd = binding.arg(key.as_str()).arg(new_bytes.as_slice());
+                new_cmd = if client.is_at_least_version("6.0.0") {
+                    new_cmd.arg("KEEPTTL")
+                } else if ttl > 0 {
+                    new_cmd.arg("PX").arg(ttl)
+                } else {
+                    new_cmd
+                };
+                let _: () = new_cmd.query_async(&mut conn).await?;
+
+                let mut size = None;
+                if let Ok(memory_usage) = cmd("MEMORY")
+                    .arg("USAGE")
+                    .arg(key.as_str())
+                    .query_async::<u64>(&mut conn)
+                    .await
+                {
+                    size = Some(memory_usage);
+                }
+                Ok(size)
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                    if let Ok(result_size) = result {
+                        if let Some(size) = result_size {
+                            value.size = size;
+                        }
+                    } else {
+                        value.size = original_size;
+                        value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
+                    }
+                    cx.emit(ServerEvent::ValueUpdated);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     pub fn update_bytes_value_view_mode(&mut self, view_mode: SharedString, cx: &mut Context<Self>) {
         let Some(value) = self.value.as_mut() else {
             return;
