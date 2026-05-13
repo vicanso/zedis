@@ -607,6 +607,14 @@ impl RedisClient {
         self.modules.iter().any(|(name, _)| name == "ReJSON")
     }
 
+    /// Whether the RediSearch module is loaded on this server. The
+    /// module name reported by `MODULE LIST` is the lowercase string
+    /// `"search"` (true across all RediSearch versions 1.x → 2.x).
+    /// Drives the visibility of the Search entry in the Tools menu.
+    pub fn supports_search(&self) -> bool {
+        self.modules.iter().any(|(name, _)| name == "search")
+    }
+
     /// Unlinks keys on all master nodes concurrently.
     /// # Arguments
     /// * `keys_per_node` - A vector of vectors of keys, one for each master node.

@@ -262,6 +262,7 @@ impl Render for Zedis {
                     ServerToolsAction::Monitor => Route::Monitor,
                     ServerToolsAction::Config => Route::Config,
                     ServerToolsAction::Acl => Route::Acl,
+                    ServerToolsAction::Search => Route::Search,
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {

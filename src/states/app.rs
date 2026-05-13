@@ -49,6 +49,7 @@ pub enum Route {
     Monitor,
     Config,
     Acl,
+    Search,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -120,6 +121,7 @@ pub enum ServerToolsAction {
     Monitor,
     Config,
     Acl,
+    Search,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

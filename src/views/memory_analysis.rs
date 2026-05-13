@@ -22,7 +22,7 @@ use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_ma
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::format_duration;
-use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_memory_analysis};
+use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_memory_analysis};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -1221,6 +1221,19 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .child(
                         h_flex()
                             .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("memory-analysis-back")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip(i18n_common(cx, "back_to_editor"))
+                                    .on_click(|_, _w, cx| {
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                        });
+                                    }),
+                            )
                             .child(Icon::new(CustomIconName::MemoryStick))
                             .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground)),
                     )

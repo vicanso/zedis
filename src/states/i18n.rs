@@ -141,3 +141,8 @@ pub fn i18n_acl<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("acl.{key}"), locale = locale).into()
 }
+
+pub fn i18n_search<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("search.{key}"), locale = locale).into()
+}

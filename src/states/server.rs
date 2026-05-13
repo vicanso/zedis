@@ -108,6 +108,11 @@ pub struct ZedisServerState {
     /// Whether the server supports ReJSON module
     supports_rejson: bool,
 
+    /// Whether the server has the RediSearch module loaded. Gates the
+    /// "Search" entry in the Tools dropdown so unrelated servers don't
+    /// surface a useless menu item.
+    supports_search: bool,
+
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
 
@@ -396,6 +401,11 @@ impl ZedisServerState {
         self.supports_rejson
     }
 
+    /// Whether the server has the RediSearch module loaded.
+    pub fn supports_search(&self) -> bool {
+        self.supports_search
+    }
+
     /// Get whether the server is readonly
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
@@ -485,6 +495,17 @@ impl ZedisServerState {
         use semver::Version;
         Version::parse(self.version.as_ref())
             .map(|v| v >= Version::new(7, 4, 0))
+            .unwrap_or(false)
+    }
+
+    /// Returns true when the server is at least Redis 6.0, where ACL
+    /// (the `ACL USERS / GETUSER / SETUSER / WHOAMI` family) was
+    /// introduced. Drives Tools-menu visibility so users on older
+    /// servers don't see a non-functional entry.
+    pub fn supports_acl(&self) -> bool {
+        use semver::Version;
+        Version::parse(self.version.as_ref())
+            .map(|v| v >= Version::new(6, 0, 0))
             .unwrap_or(false)
     }
 
@@ -619,6 +640,7 @@ impl ZedisServerState {
                     let databases = client.databases();
                     let access_mode = client.access_mode();
                     let supports_rejson = client.supports_rejson();
+                    let supports_search = client.supports_search();
                     Ok((
                         dbsize,
                         nodes,
@@ -627,6 +649,7 @@ impl ZedisServerState {
                         databases,
                         access_mode,
                         supports_rejson,
+                        supports_search,
                     ))
                 },
                 move |this, result, cx| {
@@ -636,8 +659,16 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, nodes, nodes_description, version, databases, access_mode, supports_rejson)) =
-                        result
+                    if let Ok((
+                        dbsize,
+                        nodes,
+                        nodes_description,
+                        version,
+                        databases,
+                        access_mode,
+                        supports_rejson,
+                        supports_search,
+                    )) = result
                     {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
@@ -646,6 +677,7 @@ impl ZedisServerState {
                         this.databases = databases;
                         this.access_mode = access_mode;
                         this.supports_rejson = supports_rejson;
+                        this.supports_search = supports_search;
                     };
 
                     let server_id = this.server_id.clone();

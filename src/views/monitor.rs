@@ -22,7 +22,7 @@ use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_connection_manager, open_monitor_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::states::{ServerEvent, ZedisServerState, i18n_common, i18n_monitor};
+use crate::states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_monitor};
 use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, ClipboardItem, Edges, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -604,6 +604,18 @@ impl Render for ZedisMonitor {
                     .child(
                         h_flex()
                             .gap_2()
+                            .child(
+                                Button::new("monitor-back")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip(i18n_common(cx, "back_to_editor"))
+                                    .on_click(|_, _w, cx| {
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                        });
+                                    }),
+                            )
                             .child(Icon::new(CustomIconName::Activity))
                             .child(Label::new(i18n_monitor(cx, "title")).text_color(cx.theme().foreground))
                             .child(

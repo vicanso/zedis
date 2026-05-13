@@ -23,7 +23,7 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::format_duration;
 use crate::states::{
-    ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_clients_manager, i18n_common,
+    Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_clients_manager, i18n_common,
 };
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
@@ -709,6 +709,19 @@ impl gpui::Render for ZedisClientsManager {
                     .child(
                         h_flex()
                             .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("clients-back")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip(i18n_common(cx, "back_to_editor"))
+                                    .on_click(|_, _w, cx| {
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                        });
+                                    }),
+                            )
                             .child(Icon::new(CustomIconName::AudioWaveform))
                             .child(Label::new(i18n_clients_manager(cx, "title")).text_color(cx.theme().foreground))
                             .child(

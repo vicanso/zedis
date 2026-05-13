@@ -18,7 +18,7 @@
 /// periodic `SLOWLOG GET` refresh cycle. Columns: Timestamp, Duration,
 /// Command, Client. Rows are sortable by arrival order (newest first).
 use crate::connection::{SlowLogEntry, list_commands};
-use crate::states::{ServerEvent, ZedisServerState, i18n_common, i18n_slowlog_editor};
+use crate::states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_slowlog_editor};
 use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
 use chrono::TimeZone;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Window, div, prelude::*, px};
@@ -551,6 +551,19 @@ impl gpui::Render for ZedisSlowlogEditor {
                     .child(
                         h_flex()
                             .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("slowlog-back")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip(i18n_common(cx, "back_to_editor"))
+                                    .on_click(|_, _w, cx| {
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                        });
+                                    }),
+                            )
                             .child(Icon::new(CustomIconName::Snail))
                             .child(Label::new(i18n_common(cx, "slow_logs")).text_color(cx.theme().foreground))
                             .child(

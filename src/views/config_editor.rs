@@ -17,12 +17,12 @@ use crate::{
     connection::{DangerKind, get_connection_manager, get_server},
     error::Error,
     helpers::get_font_family,
-    states::{ServerEvent, ZedisServerState, i18n_common, i18n_config_editor},
+    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_config_editor},
     views::confirm_dangerous_command,
 };
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, WindowExt,
+    ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -299,6 +299,19 @@ impl Render for ZedisConfigEditor {
                     .gap_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .items_center()
+                    .child(
+                        Button::new("config-back")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip(i18n_common(cx, "back_to_editor"))
+                            .on_click(|_, _w, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                });
+                            }),
+                    )
                     .child(
                         Label::new(i18n_config_editor(cx, "title"))
                             .text_sm()

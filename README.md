@@ -38,11 +38,12 @@ Stop manually decoding your data. Zedis automatically detects (`ViewerMode::Auto
 - **Rich Content Decoding**:
   - **JSON & RedisJSON**: Full read/write support with pretty-printing and syntax highlighting. Smartly computes RFC 7396 Merge Patch diffs to send minimal `JSON.MERGE` commands instead of heavy document overwrites. **JSONPath filtering** works on plain string keys too — query nested fields with `$.user.email` or `$.items[?(@.price > 100)]` without needing the RedisJSON module.
   - **Protobuf & MessagePack**: Zero-config binary deserialization into readable JSON-like formats.
-  - **Media & Hex**: Native preview for images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`) and an adaptive 8/16-byte Hex dump for raw binary.
+  - **Media & Hex**: Native preview for images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`) and a fully **editable** hex view for raw binary — paste in hex (whitespace, commas, and `0x` prefixes are tolerated) and Zedis decodes it back into bytes on save. Bytes-per-row auto-adapts (16 / 24 / 32) to viewport width.
 - **Custom Script Viewer**: Pipe any Redis value through an external shell command for fully custom decoding. Configure a shell command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`) and Zedis runs it via `sh -c` (Unix/macOS) or `cmd /c` (Windows), displaying stdout as the formatted value. Perfect for base64, custom binary protocols, or any tool in your `$PATH`. Key patterns are matched by exact, prefix, suffix, or regex rules per server.
 - **Hash Field-Level TTL** (Redis 7.4+): Set individual expiry times on specific hash fields using `HEXPIRE` / `HPERSIST` — no need to restructure your data model just to expire a subset of fields.
 - **Redis Streams**: Full support for Redis Streams — browse entries, inspect Consumer Groups and Pending Entries, and view stream metadata via `XINFO`, all without leaving the GUI.
 - **Pub/Sub**: Built-in subscribe/publish interface. Subscribe to channel patterns, receive live messages in real time, and publish directly from the GUI without switching to `redis-cli`.
+- **Local Write History**: The last 10 versions of every string value you save are kept in memory per key — one click rolls a previous version back into the editor for review or restore. Purely client-side (no Redis storage cost), scoped to the session, and cleared automatically on key delete or server switch.
 
 ### 📊 Real-Time Observability
 Transform how you monitor your Redis instances with a built-in, GPU-accelerated dashboard.

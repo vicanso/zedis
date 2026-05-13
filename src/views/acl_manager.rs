@@ -22,7 +22,7 @@ use crate::{
     assets::CustomIconName,
     connection::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, get_connection_manager},
     error::Error,
-    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_acl, i18n_common},
+    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_acl, i18n_common},
 };
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::notification::Notification;
@@ -390,6 +390,18 @@ impl gpui::Render for ZedisAclManager {
                 h_flex()
                     .gap_2()
                     .items_center()
+                    .child(
+                        Button::new("acl-back")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip(i18n_common(cx, "back_to_editor"))
+                            .on_click(|_, _w, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                });
+                            }),
+                    )
                     .child(Icon::new(IconName::CircleUser))
                     .child(Label::new(title).text_color(cx.theme().foreground))
                     .child(Label::new(count_label).text_color(muted).text_sm())

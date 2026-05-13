@@ -21,6 +21,7 @@ mod config;
 mod danger;
 mod dump_restore;
 mod manager;
+mod search;
 mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
@@ -40,6 +41,11 @@ pub use dump_restore::{
 };
 pub use manager::{
     AccessMode, HeatMetric, HeatProbe, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager,
+};
+pub use search::{
+    AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
+    ReducerFn, ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex, ft_info,
+    ft_list, ft_search,
 };
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();

@@ -14,7 +14,7 @@
 
 use crate::connection::get_server;
 use crate::states::{RedisMetrics, get_metrics_cache};
-use crate::states::{ZedisServerState, i18n_common, i18n_metrics};
+use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_metrics};
 use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{
@@ -27,7 +27,13 @@ use gpui_component::plot::{
     scale::{Scale, ScaleBand, ScaleLinear, ScalePoint},
     shape::{Area, Bar, Line},
 };
-use gpui_component::{ActiveTheme, StyledExt, label::Label, scroll::ScrollableElement, v_flex};
+use gpui_component::{
+    ActiveTheme, IconName, Sizable, StyledExt,
+    button::{Button, ButtonVariants},
+    label::Label,
+    scroll::ScrollableElement,
+    v_flex,
+};
 use std::time::Duration;
 use zedis_ui::ZedisSkeletonLoading;
 
@@ -965,7 +971,24 @@ impl Render for ZedisMetrics {
                             .col_span_full()
                             .justify_between()
                             .px_2()
-                            .child(Label::new(self.title.clone()))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("metrics-back")
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::ArrowLeft)
+                                            .tooltip(i18n_common(cx, "back_to_editor"))
+                                            .on_click(|_, _w, cx| {
+                                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                                });
+                                            }),
+                                    )
+                                    .child(Label::new(self.title.clone())),
+                            )
                             .child(Label::new(time_range)),
                     )
                     .child(self.render_stat_cards(columns, cx))
