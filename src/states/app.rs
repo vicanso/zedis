@@ -50,6 +50,7 @@ pub enum Route {
     Config,
     Acl,
     Search,
+    Functions,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -122,6 +123,7 @@ pub enum ServerToolsAction {
     Config,
     Acl,
     Search,
+    Functions,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

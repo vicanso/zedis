@@ -509,6 +509,16 @@ impl ZedisServerState {
             .unwrap_or(false)
     }
 
+    /// Returns true when the server is at least Redis 7.0, where
+    /// Functions (the `FUNCTION LIST / LOAD / DELETE / FCALL` family)
+    /// were introduced as the successor to EVAL scripts.
+    pub fn supports_functions(&self) -> bool {
+        use semver::Version;
+        Version::parse(self.version.as_ref())
+            .map(|v| v >= Version::new(7, 0, 0))
+            .unwrap_or(false)
+    }
+
     /// Get the currently selected server id
     pub fn server_id(&self) -> &str {
         &self.server_id

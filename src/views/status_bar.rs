@@ -168,6 +168,9 @@ struct StatusBarServerState {
     /// earlier don't expose the `ACL` command family, so hide the
     /// menu item entirely there.
     supports_acl: bool,
+    /// Mirrors `ZedisServerState::supports_functions()` — `FUNCTION`
+    /// commands are Redis 7+.
+    supports_functions: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -395,6 +398,7 @@ impl ZedisStatusBar {
         let tag_color = self.state.server_state.tag_color;
         let supports_search = state.supports_search();
         let supports_acl = state.supports_acl();
+        let supports_functions = state.supports_functions();
         self.state.server_state = StatusBarServerState {
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
@@ -414,6 +418,7 @@ impl ZedisStatusBar {
             tag_color,
             supports_search,
             supports_acl,
+            supports_functions,
         };
     }
     /// Start the heartbeat task
@@ -433,12 +438,19 @@ impl ZedisStatusBar {
     /// [`ServerToolsAction`] which is handled centrally in `main.rs`,
     /// so the dropdown does not need per-item `on_click` listeners.
     ///
-    /// `supports_search` / `supports_acl` gate per-server-capability
-    /// menu entries. Monitor and Config work on all Redis versions so
-    /// they stay unconditional. We hide rather than disable so users
-    /// don't see an entry that visibly does nothing.
-    fn render_tools_menu(this: PopupMenu, supports_search: bool, supports_acl: bool, cx: &gpui::App) -> PopupMenu {
-        let _ = cx; // silence the unused arg if i18n call inlining ever changes.
+    /// `supports_search` / `supports_acl` / `supports_functions` gate
+    /// per-server-capability menu entries. Monitor and Config work on
+    /// all Redis versions so they stay unconditional. We hide rather
+    /// than disable so users don't see an entry that visibly does
+    /// nothing.
+    fn render_tools_menu(
+        this: PopupMenu,
+        supports_search: bool,
+        supports_acl: bool,
+        supports_functions: bool,
+        cx: &gpui::App,
+    ) -> PopupMenu {
+        let _ = cx;
         let mut menu = this
             .menu_element_with_icon(
                 Icon::new(CustomIconName::Radar),
@@ -464,6 +476,13 @@ impl ZedisStatusBar {
                 move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_search_tooltip")),
             );
         }
+        if supports_functions {
+            menu = menu.menu_element_with_icon(
+                Icon::new(IconName::Asterisk),
+                Box::new(ServerToolsAction::Functions),
+                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_functions_tooltip")),
+            );
+        }
         menu
     }
     /// Render the server status
@@ -481,6 +500,7 @@ impl ZedisStatusBar {
         let tag_color = server_state.tag_color;
         let supports_search = server_state.supports_search;
         let supports_acl = server_state.supports_acl;
+        let supports_functions = server_state.supports_functions;
         let chip_text_color = cx.theme().background;
 
         ZedisDivider::new()
@@ -533,7 +553,7 @@ impl ZedisStatusBar {
                             .icon(IconName::Menu)
                             .tooltip(i18n_status_bar(cx, "tools_tooltip"))
                             .dropdown_menu(move |this, _, cx| {
-                                Self::render_tools_menu(this, supports_search, supports_acl, cx)
+                                Self::render_tools_menu(this, supports_search, supports_acl, supports_functions, cx)
                             }),
                     ),
             )

@@ -16,9 +16,9 @@ use crate::{
     helpers::{EditorAction, get_key_tree_widths},
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
-        ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisKeyTree, ZedisMemoryAnalysis,
-        ZedisMetrics, ZedisMonitor, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServers,
-        ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal,
+        ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
+        ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager,
+        ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
@@ -59,6 +59,7 @@ pub struct ZedisContent {
     config_editor: Option<Entity<ZedisConfigEditor>>,
     acl_manager: Option<Entity<ZedisAclManager>>,
     search_manager: Option<Entity<ZedisSearchManager>>,
+    function_editor: Option<Entity<ZedisFunctionEditor>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
 
@@ -114,6 +115,9 @@ impl ZedisContent {
         }
         if route != Route::Search {
             self.search_manager.take();
+        }
+        if route != Route::Functions {
+            self.function_editor.take();
         }
     }
     /// Create a new content view with route-aware view management
@@ -175,6 +179,7 @@ impl ZedisContent {
             config_editor: None,
             acl_manager: None,
             search_manager: None,
+            function_editor: None,
             key_tree: None,
             key_tree_width,
             should_focus: false,
@@ -307,6 +312,17 @@ impl ZedisContent {
         div().size_full().child(search_manager)
     }
 
+    fn render_function_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let function_editor = self
+            .function_editor
+            .get_or_insert_with(|| {
+                debug!("Creating new function editor view");
+                cx.new(|cx| ZedisFunctionEditor::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(function_editor)
+    }
+
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().w_full().h_full().items_center().justify_center().child(
             div()
@@ -412,6 +428,7 @@ impl Render for ZedisContent {
                 let is_config = route == Route::Config;
                 let is_acl = route == Route::Acl;
                 let is_search = route == Route::Search;
+                let is_functions = route == Route::Functions;
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {
@@ -432,6 +449,7 @@ impl Render for ZedisContent {
                                     .when(is_config, |this| this.child(self.render_config_editor(window, cx)))
                                     .when(is_acl, |this| this.child(self.render_acl_manager(window, cx)))
                                     .when(is_search, |this| this.child(self.render_search_manager(window, cx)))
+                                    .when(is_functions, |this| this.child(self.render_function_editor(window, cx)))
                                     .when(
                                         !is_metrics
                                             && !is_slowlog
@@ -440,7 +458,8 @@ impl Render for ZedisContent {
                                             && !is_monitor
                                             && !is_config
                                             && !is_acl
-                                            && !is_search,
+                                            && !is_search
+                                            && !is_functions,
                                         |this| this.child(self.render_editor(window, cx)),
                                     ),
                             ),

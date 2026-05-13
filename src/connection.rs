@@ -20,6 +20,7 @@ mod command;
 mod config;
 mod danger;
 mod dump_restore;
+mod functions;
 mod manager;
 mod search;
 mod ssh_cluster_connection;
@@ -39,6 +40,7 @@ pub use danger::{
 pub use dump_restore::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, dump_keys_chunk, restore_keys_chunk,
 };
+pub use functions::{FunctionLibrary, function_delete, function_list, function_load};
 pub use manager::{
     AccessMode, HeatMetric, HeatProbe, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager,
 };

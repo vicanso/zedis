@@ -4,6 +4,7 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
     MemuAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys,
+    register_extra_languages,
 };
 use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, ServerToolsAction,
@@ -263,6 +264,7 @@ impl Render for Zedis {
                     ServerToolsAction::Config => Route::Config,
                     ServerToolsAction::Acl => Route::Acl,
                     ServerToolsAction::Search => Route::Search,
+                    ServerToolsAction::Functions => Route::Functions,
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
@@ -301,6 +303,10 @@ const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logger()?;
+    // Register tree-sitter languages we want the code editor to
+    // highlight beyond the JSON-only default. Today this is just Lua
+    // (Functions / EVAL editors); add others by extending the helper.
+    register_extra_languages();
     let app = gpui_platform::application().with_assets(assets::Assets);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
     if let Err(e) = get_servers() {

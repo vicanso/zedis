@@ -104,6 +104,13 @@ substring = "1.4.5"
 sys-locale = "0.3.2"
 tempfile = "3.27.0"
 time = "0.3.47"
+# Single-language tree-sitter wiring for the Functions / EVAL editor.
+# We deliberately avoid gpui-component's `tree-sitter-languages` feature
+# (which pulls 30+ parsers) and instead register Lua at startup via the
+# public `LanguageRegistry::register` API. Total cost ≈ one ~500KB
+# parser instead of the bundle's 8-15MB.
+tree-sitter = "0.25.4"
+tree-sitter-lua = "0.4.1"
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "net", "macros"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [
     "ring",
