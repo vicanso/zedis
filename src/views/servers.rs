@@ -16,16 +16,21 @@ use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_servers, open_single_connection, tag_color_index};
 use crate::error::Error;
 use crate::states::{
-    GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props, i18n_common, i18n_servers,
+    GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props, i18n_common,
+    i18n_servers,
 };
-use gpui::{SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui_component::input::{Input, InputState};
+use gpui_component::notification::Notification;
 use gpui_component::{
-    ActiveTheme, Colorize, Icon, IconName, Sizable, WindowExt,
+    ActiveTheme, Colorize, Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
 };
 use redis::cmd;
 use rust_i18n::t;
+use std::cell::Cell;
+use std::rc::Rc;
 use substring::Substring;
 use tracing::info;
 use zedis_ui::ZedisCard;
@@ -334,6 +339,21 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "require_confirm_writes_check_label"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::Checkbox),
+            ZedisFormField::new("group", i18n_servers(cx, "group"))
+                .default_value(redis_server.group.clone().unwrap_or_default())
+                .placeholder({
+                    // Show the list of existing groups as a placeholder hint
+                    // so users naturally reuse labels instead of creating
+                    // near-duplicates ("Team A" vs "team a"). Falls back
+                    // to a static prompt when no groups exist yet.
+                    let existing = crate::connection::get_server_groups();
+                    if existing.is_empty() {
+                        i18n_servers(cx, "group_placeholder")
+                    } else {
+                        format!("{}: {}", i18n_servers(cx, "group_existing_hint"), existing.join(" / ")).into()
+                    }
+                })
+                .tab_index(3),
             ZedisFormField::new("tag", i18n_servers(cx, "tag"))
                 .default_value(redis_server.tag.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "tag_placeholder"))
@@ -496,6 +516,136 @@ impl ZedisServers {
             })
             .open_dialog(window, cx);
     }
+
+    /// Show the JSON export for a single server config. Defaults to
+    /// "stripped" mode where credential fields (passwords, SSH key,
+    /// TLS materials) are blanked — that's the safe state for
+    /// pasting into chat / wiki / git. A toggle reveals the
+    /// with-secrets variant for users doing personal backups.
+    fn export_server_dialog(&mut self, server: &RedisServer, window: &mut Window, cx: &mut Context<Self>) {
+        let include_secrets = Rc::new(Cell::new(false));
+        let initial_json = server.to_export_json(false).unwrap_or_default();
+        let json_state = cx.new(|cx| InputState::new(window, cx).auto_grow(6, 16).default_value(initial_json));
+        let server_clone = server.clone();
+
+        // Strings captured into the dialog body closure — i18n calls
+        // can't happen inside (no cx parameter there).
+        let hint = i18n_servers(cx, "export_hint");
+        let include_label = i18n_servers(cx, "export_include_secrets");
+        let warning_label = i18n_servers(cx, "export_secrets_warning");
+        let warning_color = cx.theme().yellow;
+        let copied_label = i18n_servers(cx, "export_copied");
+
+        let body_json = json_state.clone();
+        let body_flag = include_secrets.clone();
+        let body_server = server_clone.clone();
+        let submit_json = json_state.clone();
+
+        ZedisDialog::new(i18n_servers(cx, "export_title"))
+            .w(px(620.))
+            .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                let include_on = body_flag.get();
+                let json_input = body_json.clone();
+                let server = body_server.clone();
+                let flag = body_flag.clone();
+
+                let mut toggle_btn = Button::new("export-toggle-secrets")
+                    .small()
+                    .label(include_label.clone());
+                toggle_btn = if include_on {
+                    toggle_btn.primary()
+                } else {
+                    toggle_btn.outline()
+                };
+                let toggle_btn = toggle_btn.on_click(move |_, window, cx| {
+                    let new_state = !flag.get();
+                    flag.set(new_state);
+                    let new_json = server.to_export_json(new_state).unwrap_or_default();
+                    json_input.update(cx, |state, cx| {
+                        state.set_value(SharedString::from(new_json), window, cx);
+                    });
+                });
+
+                gpui_component::v_flex()
+                    .gap_3()
+                    .w_full()
+                    .child(Label::new(hint.clone()).text_xs())
+                    .child(toggle_btn)
+                    .when(include_on, |this| {
+                        this.child(Label::new(warning_label.clone()).text_xs().text_color(warning_color))
+                    })
+                    .child(Input::new(&body_json).appearance(true))
+            })
+            .on_ok(move |_, window, cx| {
+                let value = submit_json.read(cx).value().to_string();
+                cx.write_to_clipboard(ClipboardItem::new_string(value));
+                window.push_notification(Notification::success(copied_label.clone()), cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Show the import-from-JSON dialog. Paste any JSON produced by
+    /// `to_export_json` (or hand-edited equivalent); on submit a new
+    /// server entry is created with a freshly-allocated UUID — never
+    /// overwrites an existing config.
+    fn import_server_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let json_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(6, 16)
+                .placeholder(i18n_servers(cx, "import_placeholder"))
+        });
+        let hint = i18n_servers(cx, "import_hint");
+        let bad_json_label = i18n_servers(cx, "import_error_prefix");
+        let body_json = json_state.clone();
+        let submit_json = json_state.clone();
+
+        ZedisDialog::new(i18n_servers(cx, "import_title"))
+            .w(px(620.))
+            .ok_text(i18n_servers(cx, "import_submit"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_servers(cx, "import_submit"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Label::new(hint.clone()).text_xs())
+                    .child(Input::new(&body_json).appearance(true))
+            })
+            .on_ok(move |_, window, cx| {
+                let value = submit_json.read(cx).value().to_string();
+                match RedisServer::from_import_json(&value) {
+                    Ok(server) => {
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, cx| state.upsert_server(server, cx));
+                        });
+                        true
+                    }
+                    Err(e) => {
+                        // Surface the parse error as a notification so
+                        // the user can fix the JSON; keep the dialog
+                        // open by returning false.
+                        window.push_notification(
+                            Notification::error(SharedString::from(format!("{bad_json_label}: {e}"))),
+                            cx,
+                        );
+                        false
+                    }
+                }
+            })
+            .open(window, cx);
+    }
 }
 
 impl Render for ZedisServers {
@@ -535,94 +685,200 @@ impl Render for ZedisServers {
 
         let update_tooltip = i18n_servers(cx, "update_tooltip");
         let remove_tooltip = i18n_servers(cx, "remove_tooltip");
+        let export_tooltip = i18n_servers(cx, "export_tooltip");
+        let move_up_tooltip = i18n_servers(cx, "move_up_tooltip");
+        let move_down_tooltip = i18n_servers(cx, "move_down_tooltip");
+        let ungrouped_label = i18n_servers(cx, "ungrouped_label");
 
-        // Build card for each configured server
-        let children: Vec<_> = get_servers()
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-            .map(|(index, server)| {
-                // Clone values for use in closures
-                let select_server_id = server.id.clone();
-                let update_server = server.clone();
-                let remove_server_id = server.id.clone();
+        // Partition servers into ordered (group_label, servers) buckets.
+        // `get_servers()` already returns them in canonical sort order
+        // (group A→Z, then sort_order ASC, ungrouped last). We just
+        // need to find the boundaries.
+        let all_servers = get_servers().unwrap_or_default();
+        let mut groups: Vec<(Option<String>, Vec<RedisServer>)> = Vec::new();
+        for server in &all_servers {
+            let g = server
+                .group
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            match groups.last_mut() {
+                Some((existing, list)) if *existing == g => list.push(server.clone()),
+                _ => groups.push((g, vec![server.clone()])),
+            }
+        }
 
-                let description = server.description.as_deref().unwrap_or_default();
+        // Build one section per group: header + grid of cards. Each
+        // card gets ↑/↓ reorder buttons gated by group-edge position.
+        let mut sections: Vec<gpui::AnyElement> = Vec::new();
+        let mut card_index_counter: usize = 0;
+        for (group_label, group_servers) in &groups {
+            let header_text = match group_label {
+                Some(g) => SharedString::from(format!("{g}  ·  {}", group_servers.len())),
+                None => SharedString::from(format!("{}  ·  {}", ungrouped_label, group_servers.len())),
+            };
+            let section_id = SharedString::from(format!(
+                "servers-group-{}",
+                group_label.as_deref().unwrap_or("__none__")
+            ));
+            let cards: Vec<gpui::AnyElement> = group_servers
+                .iter()
+                .enumerate()
+                .map(|(in_group_index, server)| {
+                    let index = card_index_counter + in_group_index;
+                    let is_first = in_group_index == 0;
+                    let is_last = in_group_index + 1 == group_servers.len();
+                    let single_in_group = group_servers.len() == 1;
 
-                // Extract and format update timestamp (show only date part)
-                let updated_at = if let Some(updated_at) = &server.updated_at {
-                    updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string()
-                } else {
-                    String::new()
-                };
+                    let select_server_id = server.id.clone();
+                    let update_server = server.clone();
+                    let export_server = server.clone();
+                    let remove_server_id = server.id.clone();
+                    let move_up_id = server.id.clone();
+                    let move_down_id = server.id.clone();
 
-                let title = format!("{} ({}:{})", server.name, server.host, server.port);
+                    let description = server.description.as_deref().unwrap_or_default();
+                    let updated_at = if let Some(updated_at) = &server.updated_at {
+                        updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string()
+                    } else {
+                        String::new()
+                    };
+                    let title = format!("{} ({}:{})", server.name, server.host, server.port);
 
-                // Action buttons for each server card
-                let actions = vec![
-                    // Edit button - opens dialog to modify server configuration
-                    Button::new(("servers-card-action-select", index))
-                        .ghost()
-                        .tooltip(update_tooltip.clone())
-                        .icon(CustomIconName::FilePenLine)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation(); // Don't trigger card click
-                            this.add_or_update_server_dialog(&update_server, window, cx);
-                        })),
-                    // Delete button - shows confirmation before removing
-                    Button::new(("servers-card-action-delete", index))
-                        .ghost()
-                        .tooltip(remove_tooltip.clone())
-                        .icon(CustomIconName::FileXCorner)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation(); // Don't trigger card click
-                            this.remove_server(window, cx, &remove_server_id);
-                        })),
-                ];
+                    // ↑/↓ live in hover_only_actions so they don't add
+                    // visual weight at rest. Skip rendering them when
+                    // the group has only one member — nothing to swap with.
+                    let mut hover_actions: Vec<Button> = Vec::new();
+                    if !single_in_group {
+                        hover_actions.push(
+                            Button::new(("servers-card-action-up", index))
+                                .ghost()
+                                .tooltip(move_up_tooltip.clone())
+                                .icon(IconName::ChevronUp)
+                                .disabled(is_first)
+                                .on_click(cx.listener(move |_this, _, _window, cx| {
+                                    cx.stop_propagation();
+                                    let id = move_up_id.clone();
+                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                        store.update(cx, |state, cx| {
+                                            state.reorder_server(&id, ReorderDirection::Up, cx);
+                                        });
+                                    });
+                                })),
+                        );
+                        hover_actions.push(
+                            Button::new(("servers-card-action-down", index))
+                                .ghost()
+                                .tooltip(move_down_tooltip.clone())
+                                .icon(IconName::ChevronDown)
+                                .disabled(is_last)
+                                .on_click(cx.listener(move |_this, _, _window, cx| {
+                                    cx.stop_propagation();
+                                    let id = move_down_id.clone();
+                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                        store.update(cx, |state, cx| {
+                                            state.reorder_server(&id, ReorderDirection::Down, cx);
+                                        });
+                                    });
+                                })),
+                        );
+                    }
+                    // Export sits with the hover-only block — it's a
+                    // share/copy operation that's used much less
+                    // often than Edit/Delete, so giving it visual
+                    // weight at rest competes with the more common
+                    // actions for attention.
+                    hover_actions.push(
+                        Button::new(("servers-card-action-export", index))
+                            .ghost()
+                            .tooltip(export_tooltip.clone())
+                            .icon(IconName::ExternalLink)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.export_server_dialog(&export_server, window, cx);
+                            })),
+                    );
+                    let mut actions: Vec<Button> = Vec::new();
+                    actions.push(
+                        Button::new(("servers-card-action-select", index))
+                            .ghost()
+                            .tooltip(update_tooltip.clone())
+                            .icon(CustomIconName::FilePenLine)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.add_or_update_server_dialog(&update_server, window, cx);
+                            })),
+                    );
+                    actions.push(
+                        Button::new(("servers-card-action-delete", index))
+                            .ghost()
+                            .tooltip(remove_tooltip.clone())
+                            .icon(CustomIconName::FileXCorner)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.remove_server(window, cx, &remove_server_id);
+                            })),
+                    );
 
-                // Card click handler - connect to server and navigate to editor
-                let handle_select_server = cx.listener(move |_this, _, _, cx| {
-                    let select_server_id = select_server_id.clone();
-
-                    // Navigate to editor view
-                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                        store.update(cx, |state, cx| {
-                            state.go_to(Route::Editor, cx);
-                            state.set_selected_server((select_server_id.clone(), 0), cx);
+                    let handle_select_server = cx.listener(move |_this, _, _, cx| {
+                        let select_server_id = select_server_id.clone();
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, cx| {
+                                state.go_to(Route::Editor, cx);
+                                state.set_selected_server((select_server_id.clone(), 0), cx);
+                            });
                         });
                     });
-                });
 
-                // Build server card with conditional footer
-                ZedisCard::new(("servers-card", index))
-                    .icon(Icon::new(CustomIconName::DatabaseZap))
-                    .title(title)
-                    .bg(bg)
-                    .when(!description.is_empty(), |this| {
-                        this.description(description.to_string())
-                    })
-                    .when(!updated_at.is_empty(), |this| {
-                        this.footer(
-                            Label::new(updated_at)
+                    ZedisCard::new(("servers-card", index))
+                        .icon(Icon::new(CustomIconName::DatabaseZap))
+                        .title(title)
+                        .bg(bg)
+                        .when(!description.is_empty(), |this| {
+                            this.description(description.to_string())
+                        })
+                        .when(!updated_at.is_empty(), |this| {
+                            this.footer(
+                                Label::new(updated_at)
+                                    .text_sm()
+                                    .text_right()
+                                    .whitespace_normal()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                        })
+                        .when(!hover_actions.is_empty(), |this| this.hover_only_actions(hover_actions))
+                        .actions(actions)
+                        .on_click(Box::new(handle_select_server))
+                        .into_any_element()
+                })
+                .collect();
+            card_index_counter += group_servers.len();
+            sections.push(
+                gpui_component::v_flex()
+                    .id(section_id)
+                    .gap_2()
+                    .w_full()
+                    .child(
+                        gpui_component::h_flex().items_center().gap_2().pt_2().child(
+                            Label::new(header_text)
                                 .text_sm()
-                                .text_right()
-                                .whitespace_normal()
                                 .text_color(cx.theme().muted_foreground),
-                        )
-                    })
-                    .actions(actions)
-                    .on_click(Box::new(handle_select_server))
-            })
-            .collect();
-        // Render responsive grid with server cards + add new server card
-        div()
+                        ),
+                    )
+                    .child(div().grid().grid_cols(cols).gap_1().w_full().children(cards))
+                    .into_any_element(),
+            );
+        }
+
+        // Tail row: Add + Import cards. Live below the last group so
+        // they're never visually nested under one team's section.
+        let tail = div()
             .grid()
             .grid_cols(cols)
             .gap_1()
             .w_full()
-            .children(children)
             .child(
-                // "Add New Server" card at the end
                 ZedisCard::new("servers-card-add")
                     .icon(IconName::Plus)
                     .title(i18n_servers(cx, "add_server_title"))
@@ -630,7 +886,6 @@ impl Render for ZedisServers {
                     .description(i18n_servers(cx, "add_server_description"))
                     .actions(vec![Button::new("add").ghost().icon(CustomIconName::FilePlusCorner)])
                     .on_click(Box::new(cx.listener(move |this, _, window, cx| {
-                        // Fill with empty server data for new entry
                         this.add_or_update_server_dialog(
                             &RedisServer {
                                 port: DEFAULT_REDIS_PORT,
@@ -641,6 +896,23 @@ impl Render for ZedisServers {
                         );
                     }))),
             )
+            .child(
+                ZedisCard::new("servers-card-import")
+                    .icon(IconName::Asterisk)
+                    .title(i18n_servers(cx, "import_card_title"))
+                    .bg(bg)
+                    .description(i18n_servers(cx, "import_card_description"))
+                    .actions(vec![Button::new("import").ghost().icon(IconName::Asterisk)])
+                    .on_click(Box::new(cx.listener(move |this, _, window, cx| {
+                        this.import_server_dialog(window, cx);
+                    }))),
+            );
+
+        gpui_component::v_flex()
+            .gap_4()
+            .w_full()
+            .children(sections)
+            .child(tail)
             .into_any_element()
     }
 }

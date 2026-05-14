@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server};
+use crate::connection::{
+    AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server, get_servers,
+};
 use crate::db::get_search_history_manager;
 use crate::error::Error;
 use crate::helpers::unix_ts;
@@ -205,6 +207,26 @@ impl ZedisServerState {
         self.loaded_prefixes.clear();
         cx.emit(ServerEvent::KeyScanReset);
         cx.emit(ServerEvent::KeyTreeUpdated);
+    }
+
+    /// If the currently-tracked server has been removed from the
+    /// configured server list, drop our reference to it and clean up
+    /// the cached client / metrics. Without this the heartbeat keeps
+    /// firing against a phantom id and logs `Redis config not found`
+    /// once per tick.
+    pub fn clear_if_removed(&mut self, cx: &mut Context<Self>) {
+        if self.server_id.is_empty() {
+            return;
+        }
+        let still_exists = get_servers()
+            .map(|servers| servers.iter().any(|s| s.id == self.server_id.as_ref()))
+            .unwrap_or(true);
+        if still_exists {
+            return;
+        }
+        get_connection_manager().remove_client(&self.server_id, self.db);
+        get_metrics_cache().remove_server(self.server_id.as_str());
+        self.reset(cx);
     }
 
     /// Reset all state when switching to a different server

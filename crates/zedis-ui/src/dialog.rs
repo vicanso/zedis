@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use gpui::{AnyElement, App, ClickEvent, IntoElement, ParentElement, Pixels, SharedString, Styled, Window};
-use gpui_component::{Icon, IconName, WindowExt, dialog::DialogButtonProps, h_flex};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter};
+use gpui_component::{Icon, IconName, WindowExt, h_flex};
 use std::rc::Rc;
 
 type ZedisDialogOnOk = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static>;
@@ -48,6 +50,8 @@ pub struct ZedisDialog {
     overlay_closable: Option<bool>,
     width: Option<Pixels>,
     alert: bool,
+    ok_text: Option<SharedString>,
+    cancel_text: Option<SharedString>,
 }
 
 impl gpui::prelude::FluentBuilder for ZedisDialog {}
@@ -109,6 +113,21 @@ impl ZedisDialog {
         self
     }
 
+    /// Sets the OK button label. Required for the default footer to render
+    /// in non-alert mode (alert mode reads the label from `button_props`
+    /// itself, which is render-only and not visible from here).
+    pub fn ok_text(mut self, text: impl Into<SharedString>) -> Self {
+        self.ok_text = Some(text.into());
+        self
+    }
+
+    /// Sets the Cancel button label. When unset, no cancel button renders
+    /// in the default non-alert footer.
+    pub fn cancel_text(mut self, text: impl Into<SharedString>) -> Self {
+        self.cancel_text = Some(text.into());
+        self
+    }
+
     /// Sets whether clicking the overlay closes the dialog.
     pub fn overlay_closable(mut self, overlay_closable: bool) -> Self {
         self.overlay_closable = Some(overlay_closable);
@@ -139,6 +158,13 @@ impl ZedisDialog {
         let button_props = self.button_props;
         let overlay_closable = self.overlay_closable;
         let width = self.width;
+        let ok_text = self.ok_text;
+        let cancel_text = self.cancel_text;
+        let non_alert_footer = if !self.alert && ok_text.is_some() {
+            Some((ok_text.clone(), cancel_text.clone()))
+        } else {
+            None
+        };
 
         /// Applies common configuration to a dialog.
         /// Works with both `Dialog` and `AlertDialog` since they share the same builder API.
@@ -173,6 +199,19 @@ impl ZedisDialog {
                 if let Some(ref cb) = on_close {
                     let cb = cb.clone();
                     d = d.on_close(move |e, w, cx| cb(e, w, cx));
+                }
+                if let Some((ok_label, cancel_label)) = non_alert_footer.clone() {
+                    let mut footer = DialogFooter::new();
+                    if let Some(cancel) = cancel_label {
+                        footer = footer.child(
+                            DialogClose::new().child(Button::new("zedis-dialog-cancel").label(cancel).outline()),
+                        );
+                    }
+                    if let Some(ok) = ok_label {
+                        footer =
+                            footer.child(DialogAction::new().child(Button::new("zedis-dialog-ok").label(ok).primary()));
+                    }
+                    d = d.footer(footer);
                 }
                 d
             }};

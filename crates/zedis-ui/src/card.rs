@@ -35,6 +35,11 @@ pub struct ZedisCard {
     description: Option<SharedString>,
     /// List of action buttons to display in the header.
     actions: Option<Vec<Button>>,
+    /// Action buttons that are only visible while the card is hovered.
+    /// Rendered in the same action row as `actions`, just to the left.
+    /// Useful for low-priority/cluttery controls (reorder arrows,
+    /// pinning) that shouldn't take visual weight at rest.
+    hover_only_actions: Option<Vec<Button>>,
     /// Handler for click events.
     on_click: Option<ZedisCardOnClick>,
     /// Optional footer element.
@@ -51,6 +56,7 @@ impl ZedisCard {
             title: None,
             description: None,
             actions: None,
+            hover_only_actions: None,
             on_click: None,
             footer: None,
             bg: None,
@@ -82,6 +88,14 @@ impl ZedisCard {
         self
     }
 
+    /// Sets action buttons that only appear while the card is hovered.
+    /// Rendered to the left of the always-visible `actions` in the
+    /// header row.
+    pub fn hover_only_actions(mut self, actions: impl Into<Vec<Button>>) -> Self {
+        self.hover_only_actions = Some(actions.into());
+        self
+    }
+
     /// Sets the click event handler for the card.
     pub fn on_click(mut self, handler: ZedisCardOnClick) -> Self {
         self.on_click = Some(handler);
@@ -103,6 +117,13 @@ impl ZedisCard {
 
 impl RenderOnce for ZedisCard {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Shared name across every card. Hover detection finds the
+        // nearest matching ancestor, which is always the containing
+        // card's outer ListItem (cards never nest), so cards do not
+        // bleed into each other's hover state.
+        const CARD_GROUP: &str = "zedis-card";
+
+        let hover_only_actions = self.hover_only_actions;
         // Construct the header row: Icon + Title + Spacer + Actions
         let header = h_flex()
             .when_some(self.icon, |this, icon| this.child(icon))
@@ -114,13 +135,31 @@ impl RenderOnce for ZedisCard {
                         .child(Label::new(title).ml_2().text_base().whitespace_nowrap().text_ellipsis()),
                 )
             })
+            // Hover-only actions render in their own wrapper so the
+            // invisibility toggle does not collapse layout — the
+            // wrapper keeps its width.
+            .when_some(hover_only_actions, |this, actions| {
+                this.child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .justify_end()
+                        .invisible()
+                        .group_hover(CARD_GROUP, |s| s.visible())
+                        .children(actions),
+                )
+            })
             // Use flex_1 to push actions to the right
             .when_some(self.actions, |this, actions| {
                 this.child(h_flex().flex_shrink_0().justify_end().children(actions))
             });
 
-        // Construct the main card container using a declarative style
-        ListItem::new(self.id)
+        // Wrap the ListItem in a thin div that owns the hover group.
+        // ListItem itself does not impl InteractiveElement, so we
+        // attach `.group(...)` to an outer wrapper. The hover-only
+        // actions above resolve their nearest ancestor with that
+        // group name — which is always this card's wrapper, never a
+        // sibling card.
+        let card = ListItem::new(self.id)
             .m_2()
             .border(px(1.))
             .border_color(cx.theme().border)
@@ -134,11 +173,19 @@ impl RenderOnce for ZedisCard {
             })
             // Add Header
             .child(header)
-            // Add Description
-            .when_some(self.description, |this, description| {
-                this.child(Label::new(description).text_sm().whitespace_normal())
-            })
+            // Always render the description slot — fall back to a
+            // non-breaking space so cards without a description still
+            // reserve one line of height. Keeps grid rows visually
+            // aligned across mixed has-description / no-description
+            // entries.
+            .child(
+                Label::new(self.description.unwrap_or_else(|| SharedString::from("\u{00A0}")))
+                    .text_sm()
+                    .whitespace_normal(),
+            )
             // Add Footer
-            .when_some(self.footer, |this, footer| this.child(footer))
+            .when_some(self.footer, |this, footer| this.child(footer));
+
+        div().group(CARD_GROUP).child(card)
     }
 }

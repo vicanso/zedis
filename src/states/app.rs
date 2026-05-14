@@ -214,6 +214,13 @@ pub enum GlobalEvent {
     RouteChanged(Route),
 }
 
+/// Direction passed to [`ZedisGlobalStore::reorder_server`].
+#[derive(Debug, Clone, Copy)]
+pub enum ReorderDirection {
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
@@ -501,6 +508,84 @@ impl ZedisAppState {
         })
         .detach();
     }
+    /// Swap the `sort_order` of `server_id` with the adjacent neighbor
+    /// in the same `group`, in the requested direction. No-op at the
+    /// edge of the group. Persists and broadcasts `ServerListUpdated`
+    /// so the grid re-renders in the new order.
+    ///
+    /// Implementation note: instead of swapping just two sort_order
+    /// values, we (a) collect the in-group entries in their current
+    /// sorted-on-display order, (b) renumber the entire group as
+    /// `0..n` so legacy entries with `sort_order: None` get real
+    /// values, then (c) perform the index swap. This guarantees the
+    /// operation is observable even on data saved before this field
+    /// existed (everyone tied at `None` would otherwise no-op).
+    pub fn reorder_server(&mut self, server_id: &str, direction: ReorderDirection, cx: &mut Context<Self>) {
+        let server_id = server_id.to_string();
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut servers = get_servers()?;
+                let Some(target_idx) = servers.iter().position(|s| s.id == server_id) else {
+                    return Ok::<(), Error>(());
+                };
+                let group_key = servers[target_idx]
+                    .group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let in_same_group = |s: &RedisServer| {
+                    s.group
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|g| !g.is_empty())
+                        .map(String::from)
+                        == group_key
+                };
+
+                // (a) Collect indices belonging to the target's group,
+                // in current display order. `get_servers()` already
+                // returns canonical sort order, so this list is
+                // monotonic.
+                let group_indices: Vec<usize> = servers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| in_same_group(s))
+                    .map(|(i, _)| i)
+                    .collect();
+                let Some(pos_in_group) = group_indices.iter().position(|&i| i == target_idx) else {
+                    return Ok(());
+                };
+
+                // (c) Determine the swap partner's position in-group.
+                let swap_pos = match direction {
+                    ReorderDirection::Up if pos_in_group > 0 => pos_in_group - 1,
+                    ReorderDirection::Down if pos_in_group + 1 < group_indices.len() => pos_in_group + 1,
+                    _ => return Ok(()), // at edge — nothing to do
+                };
+
+                // (b) Renumber 0..n in current order, then write the
+                // swapped positions back. This means even legacy data
+                // (`sort_order: None`) ends up with a stable, distinct
+                // sort_order after the first reorder click.
+                let mut new_order: Vec<i64> = (0..group_indices.len() as i64).collect();
+                new_order.swap(pos_in_group, swap_pos);
+                for (slot, &server_idx) in group_indices.iter().enumerate() {
+                    servers[server_idx].sort_order = Some(new_order[slot]);
+                }
+
+                save_servers(servers).await?;
+                Ok(())
+            });
+            let _: Result<()> = task.await;
+            handle.update(cx, |_this, cx| {
+                cx.emit(GlobalEvent::ServerListUpdated);
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
     pub fn upsert_server(&mut self, mut server: RedisServer, cx: &mut Context<Self>) {
         if server.id.is_empty() {
             server.id = Uuid::now_v7().to_string();
@@ -515,8 +600,27 @@ impl ZedisAppState {
                 }
                 let mut servers = get_servers()?;
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.id == server.id) {
+                    // Preserve the existing sort_order on update unless
+                    // the caller explicitly supplied one (reorder
+                    // buttons set it; the edit form leaves it None).
+                    if server.sort_order.is_none() {
+                        server.sort_order = existing_server.sort_order;
+                    }
                     *existing_server = server;
                 } else {
+                    // New server: append to the tail of its group by
+                    // assigning max(sort_order)+1 within that group.
+                    if server.sort_order.is_none() {
+                        let new_group = server.group.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                        let next = servers
+                            .iter()
+                            .filter(|s| s.group.as_deref().map(str::trim).filter(|g| !g.is_empty()) == new_group)
+                            .filter_map(|s| s.sort_order)
+                            .max()
+                            .map(|m| m + 1)
+                            .unwrap_or(0);
+                        server.sort_order = Some(next);
+                    }
                     servers.push(server);
                 }
                 save_servers(servers.clone()).await?;

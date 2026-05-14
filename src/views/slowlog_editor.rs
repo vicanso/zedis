@@ -17,14 +17,20 @@
 /// Displays a table of slow-query log entries fetched from the server's
 /// periodic `SLOWLOG GET` refresh cycle. Columns: Timestamp, Duration,
 /// Command, Client. Rows are sortable by arrival order (newest first).
-use crate::connection::{SlowLogEntry, list_commands};
+use crate::connection::{
+    LatencyEvent, LatencySample, SlowLogEntry, get_connection_manager, latency_graph, latency_history, latency_latest,
+    latency_monitor_threshold, latency_reset, list_commands,
+};
+use crate::helpers::get_font_family;
 use crate::states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_slowlog_editor};
 use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
+use ahash::AHashMap;
 use chrono::TimeZone;
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::Button,
@@ -37,6 +43,15 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Duration;
 use zedis_ui::ZedisDivider;
+
+/// Which sub-panel the performance view is showing. Slow Log is the
+/// default — historically this view was slow-log only, so keeping it
+/// as the landing tab avoids surprising users on upgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PerformanceTab {
+    SlowLog,
+    Latency,
+}
 
 /// Set of two-word Redis command names in uppercase (e.g. "CONFIG GET", "SLOWLOG GET").
 /// Built once from the full command list so we can correctly split slowlog args into
@@ -368,6 +383,29 @@ pub struct ZedisSlowlogEditor {
     /// Minimum duration filter in milliseconds. 0 means no filter.
     min_duration_ms: u64,
     duration_input_state: Entity<InputState>,
+
+    // --- Latency tab state (LATENCY LATEST / HISTORY / GRAPH / RESET) ---
+    current_tab: PerformanceTab,
+    /// Rows from `LATENCY LATEST` for the currently active server.
+    latency_events: Vec<LatencyEvent>,
+    /// Current `latency-monitor-threshold` (ms). 0 ⇒ latency tracking
+    /// disabled; UI surfaces an explainer instead of an empty table.
+    latency_threshold_ms: u64,
+    /// `true` when LATENCY came back as `ERR unknown` — pre-2.8.13
+    /// servers, or a build with the command stripped.
+    latency_unsupported: bool,
+    latency_loading: bool,
+    /// Event whose drill-down (GRAPH + recent samples) is expanded
+    /// below the row. At most one expanded at a time to keep the panel
+    /// readable.
+    expanded_event: Option<SharedString>,
+    /// Cached `LATENCY GRAPH <event>` ASCII output, keyed by event name.
+    event_graphs: AHashMap<SharedString, SharedString>,
+    /// Cached `LATENCY HISTORY <event>` samples.
+    event_histories: AHashMap<SharedString, Vec<LatencySample>>,
+    _latency_task: Option<Task<()>>,
+    _event_detail_task: Option<Task<()>>,
+
     _subscriptions: Vec<Subscription>,
 }
 
@@ -438,8 +476,132 @@ impl ZedisSlowlogEditor {
             selected_commands: HashSet::new(),
             min_duration_ms: 0,
             duration_input_state,
+            current_tab: PerformanceTab::SlowLog,
+            latency_events: Vec::new(),
+            latency_threshold_ms: 0,
+            latency_unsupported: false,
+            latency_loading: false,
+            expanded_event: None,
+            event_graphs: AHashMap::new(),
+            event_histories: AHashMap::new(),
+            _latency_task: None,
+            _event_detail_task: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Fetch `LATENCY LATEST` and the `latency-monitor-threshold`
+    /// config in one task. Threshold tells the user why LATEST might
+    /// be empty (tracking disabled).
+    fn fetch_latency(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.latency_loading {
+            return;
+        }
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let db = self.server_state.read(cx).db();
+        self.latency_loading = true;
+        self._latency_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let listing = latency_latest(&mut conn).await?;
+                let threshold = if listing.unsupported {
+                    0
+                } else {
+                    // Best-effort — CONFIG GET may be ACL-restricted;
+                    // we treat any failure as "unknown" = 0.
+                    latency_monitor_threshold(&mut conn).await.unwrap_or(0)
+                };
+                Ok::<_, crate::error::Error>((listing, threshold))
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                this.latency_loading = false;
+                match result {
+                    Ok((listing, threshold)) => {
+                        this.latency_unsupported = listing.unsupported;
+                        this.latency_events = listing.events;
+                        this.latency_threshold_ms = threshold;
+                        // Drop stale caches so a refresh always reflects
+                        // the freshly fetched events.
+                        this.event_graphs.clear();
+                        this.event_histories.clear();
+                        this.expanded_event = None;
+                    }
+                    Err(_) => {
+                        // Errors fall through silently — they'll be
+                        // logged by the spawn helper. UI shows previous
+                        // data rather than blanking.
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Drill into a single event — fetch its GRAPH (ASCII histogram)
+    /// and recent HISTORY samples. Caches per event so re-expanding
+    /// the same row is instant.
+    fn expand_event(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
+        if self.expanded_event.as_ref() == Some(&event) {
+            // Toggle off.
+            self.expanded_event = None;
+            cx.notify();
+            return;
+        }
+        self.expanded_event = Some(event.clone());
+        if self.event_graphs.contains_key(&event) {
+            cx.notify();
+            return;
+        }
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        let event_for_task = event.clone();
+        self._event_detail_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let graph = latency_graph(&mut conn, event_for_task.as_ref()).await?;
+                let history = latency_history(&mut conn, event_for_task.as_ref()).await?;
+                Ok::<_, crate::error::Error>((graph, history))
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                if let Ok((graph, history)) = result {
+                    this.event_graphs.insert(event.clone(), SharedString::from(graph));
+                    this.event_histories.insert(event, history);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// `LATENCY RESET` without args — wipes every event. After reset
+    /// we re-fetch so the UI reflects the now-empty state.
+    fn reset_latency(&mut self, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        self._latency_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                latency_reset(&mut conn, &[]).await
+            });
+            let _ = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                this.latency_events.clear();
+                this.event_graphs.clear();
+                this.event_histories.clear();
+                this.expanded_event = None;
+                this.fetch_latency(cx);
+            });
+        }));
     }
 
     /// Reads the current slow-log entries from the server state and converts them
@@ -565,52 +727,384 @@ impl gpui::Render for ZedisSlowlogEditor {
                                     }),
                             )
                             .child(Icon::new(CustomIconName::Snail))
-                            .child(Label::new(i18n_common(cx, "slow_logs")).text_color(cx.theme().foreground))
+                            .child(Label::new(i18n_slowlog_editor(cx, "panel_title")).text_color(cx.theme().foreground))
+                            // Tab switcher: SlowLog ↔ Latency. Two small
+                            // buttons act as a segmented control —
+                            // primary variant marks the active tab so
+                            // there's no doubt which dataset is shown.
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child({
+                                        let active = self.current_tab == PerformanceTab::SlowLog;
+                                        let mut btn = Button::new("perf-tab-slowlog")
+                                            .xsmall()
+                                            .label(i18n_slowlog_editor(cx, "tab_slowlog"));
+                                        btn = if active { btn.primary() } else { btn.outline() };
+                                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                                            this.current_tab = PerformanceTab::SlowLog;
+                                            cx.notify();
+                                        }))
+                                    })
+                                    .child({
+                                        let active = self.current_tab == PerformanceTab::Latency;
+                                        let mut btn = Button::new("perf-tab-latency")
+                                            .xsmall()
+                                            .label(i18n_slowlog_editor(cx, "tab_latency"));
+                                        btn = if active { btn.primary() } else { btn.outline() };
+                                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                                            this.current_tab = PerformanceTab::Latency;
+                                            if this.latency_events.is_empty() && !this.latency_loading {
+                                                this.fetch_latency(cx);
+                                            }
+                                            cx.notify();
+                                        }))
+                                    }),
+                            )
                             .child(
                                 Label::new(count_label)
                                     .text_color(cx.theme().muted_foreground)
                                     .text_sm(),
                             ),
                     )
-                    .child(
-                        ZedisDivider::new()
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Label::new(i18n_slowlog_editor(cx, "min_duration"))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_sm(),
-                                    )
-                                    .child(Input::new(&self.duration_input_state).xsmall().w(px(60.)))
-                                    .child(Label::new("ms").text_color(cx.theme().muted_foreground).text_sm()),
-                            )
-                            .when(!command_buttons.is_empty(), |this| {
-                                this.child(h_flex().gap_2().children(command_buttons))
-                            }),
-                    ),
+                    .child(self.render_toolbar_actions(command_buttons, cx)),
             )
-            // Table body
+            // Body — slowlog table or latency panel depending on active tab.
             .child(
                 div()
                     .flex_1()
                     .w_full()
                     .min_h_0()
-                    .when(is_empty, |this| {
-                        this.child(div().size_full().flex().items_center().justify_center().child(
-                            Label::new(i18n_slowlog_editor(cx, "no_slowlogs")).text_color(cx.theme().muted_foreground),
-                        ))
+                    .when(self.current_tab == PerformanceTab::SlowLog, |this| {
+                        this.when(is_empty, |this| {
+                            this.child(
+                                div().size_full().flex().items_center().justify_center().child(
+                                    Label::new(i18n_slowlog_editor(cx, "no_slowlogs"))
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                            )
+                        })
+                        .when(!is_empty, |this| {
+                            this.child(
+                                DataTable::new(&self.table_state)
+                                    .stripe(true)
+                                    .bordered(false)
+                                    .scrollbar_visible(true, true),
+                            )
+                        })
                     })
-                    .when(!is_empty, |this| {
-                        this.child(
-                            DataTable::new(&self.table_state)
-                                .stripe(true)
-                                .bordered(false)
-                                .scrollbar_visible(true, true),
-                        )
+                    .when(self.current_tab == PerformanceTab::Latency, |this| {
+                        this.child(self.render_latency_body(cx))
                     }),
             )
             .into_any_element()
     }
+}
+
+impl ZedisSlowlogEditor {
+    /// Tab-aware right-side toolbar. SlowLog tab keeps the existing
+    /// min-duration / command-filter chips; Latency tab swaps in
+    /// Refresh + Reset actions.
+    fn render_toolbar_actions(&self, command_buttons: Vec<Button>, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        match self.current_tab {
+            PerformanceTab::SlowLog => ZedisDivider::new()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(
+                            Label::new(i18n_slowlog_editor(cx, "min_duration"))
+                                .text_color(cx.theme().muted_foreground)
+                                .text_sm(),
+                        )
+                        .child(Input::new(&self.duration_input_state).xsmall().w(px(60.)))
+                        .child(Label::new("ms").text_color(cx.theme().muted_foreground).text_sm()),
+                )
+                .when(!command_buttons.is_empty(), |this| {
+                    this.child(h_flex().gap_2().children(command_buttons))
+                })
+                .into_any_element(),
+            PerformanceTab::Latency => h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    Button::new("latency-refresh")
+                        .outline()
+                        .small()
+                        .icon(Icon::new(CustomIconName::RotateCw))
+                        .tooltip(i18n_slowlog_editor(cx, "latency_refresh_tooltip"))
+                        .on_click(cx.listener(|this, _, _w, cx| this.fetch_latency(cx))),
+                )
+                .child(
+                    Button::new("latency-reset")
+                        .outline()
+                        .small()
+                        .icon(IconName::CircleX)
+                        .label(i18n_slowlog_editor(cx, "latency_reset"))
+                        .tooltip(i18n_slowlog_editor(cx, "latency_reset_tooltip"))
+                        .on_click(cx.listener(|this, _, _w, cx| this.reset_latency(cx))),
+                )
+                .into_any_element(),
+        }
+    }
+
+    /// The Latency tab body. Shows threshold context, the LATEST
+    /// event table, and inline drill-down (LATENCY GRAPH + recent
+    /// HISTORY samples) for the expanded row.
+    fn render_latency_body(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let theme_yellow = cx.theme().yellow;
+
+        // Unsupported / disabled / loading empty states first.
+        if self.latency_unsupported {
+            return centered_message(i18n_slowlog_editor(cx, "latency_unsupported"), muted).into_any_element();
+        }
+        if self.latency_loading && self.latency_events.is_empty() {
+            return centered_message(i18n_common(cx, "loading"), muted).into_any_element();
+        }
+
+        // Banner: explains threshold state. Yellow when 0 (disabled),
+        // muted otherwise.
+        let threshold_label: SharedString = if self.latency_threshold_ms == 0 {
+            i18n_slowlog_editor(cx, "latency_threshold_disabled")
+        } else {
+            SharedString::from(format!(
+                "{}: {} ms",
+                i18n_slowlog_editor(cx, "latency_threshold_label"),
+                self.latency_threshold_ms
+            ))
+        };
+        let banner_color = if self.latency_threshold_ms == 0 {
+            theme_yellow
+        } else {
+            muted
+        };
+
+        let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(self.latency_events.len());
+        for ev in &self.latency_events {
+            rows.push(self.render_latency_row(ev.clone(), cx).into_any_element());
+        }
+
+        let event_label = i18n_slowlog_editor(cx, "latency_event");
+        let latest_label = i18n_slowlog_editor(cx, "latency_latest_ms");
+        let max_label = i18n_slowlog_editor(cx, "latency_max_ms");
+        let when_label = i18n_slowlog_editor(cx, "latency_when");
+
+        // Column header. Widths chosen to roughly match data column
+        // contents below; not a real DataTable to keep the inline
+        // drill-down cheap to render.
+        let header = h_flex()
+            .px_3()
+            .py_2()
+            .gap_4()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .w(px(220.0))
+                    .child(Label::new(event_label).text_xs().text_color(muted)),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .child(Label::new(latest_label).text_xs().text_color(muted)),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .child(Label::new(max_label).text_xs().text_color(muted)),
+            )
+            .child(div().flex_1().child(Label::new(when_label).text_xs().text_color(muted)));
+
+        v_flex()
+            .size_full()
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .child(Label::new(threshold_label).text_xs().text_color(banner_color)),
+            )
+            .child(header)
+            .when(self.latency_events.is_empty(), |this| {
+                this.child(centered_message(i18n_slowlog_editor(cx, "latency_no_events"), muted))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(v_flex().children(rows)),
+            )
+            .text_color(foreground)
+            .into_any_element()
+    }
+
+    fn render_latency_row(&self, ev: LatencyEvent, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let event = ev.event.clone();
+        let event_for_toggle = event.clone();
+        let is_expanded = self.expanded_event.as_ref() == Some(&event);
+        let when_str = format_unix_seconds(ev.timestamp);
+        let id_hash: u32 = djb2_hash(event.as_ref());
+
+        // Color the latest/max numbers — yellow at > 100ms, red at > 1s.
+        let latest_color = severity_color(ev.latest_ms, cx);
+        let max_color = severity_color(ev.max_ms, cx);
+
+        let graph = self.event_graphs.get(&event).cloned();
+        let history = self.event_histories.get(&event).cloned();
+
+        let row = h_flex()
+            .px_3()
+            .py_2()
+            .gap_4()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(div().w(px(220.0)).child(Label::new(event.clone()).text_sm()))
+            .child(
+                div().w(px(110.0)).child(
+                    Label::new(format!("{} ms", ev.latest_ms))
+                        .text_sm()
+                        .text_color(latest_color),
+                ),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .child(Label::new(format!("{} ms", ev.max_ms)).text_sm().text_color(max_color)),
+            )
+            .child(div().flex_1().child(Label::new(when_str).text_xs().text_color(muted)))
+            .child(
+                Button::new(("latency-toggle", id_hash))
+                    .ghost()
+                    .xsmall()
+                    .label(if is_expanded {
+                        i18n_slowlog_editor(cx, "latency_hide_graph")
+                    } else {
+                        i18n_slowlog_editor(cx, "latency_show_graph")
+                    })
+                    .on_click(cx.listener(move |this, _, _w, cx| this.expand_event(event_for_toggle.clone(), cx))),
+            );
+
+        // Inline drill-down block: ASCII GRAPH (monospace) +
+        // tail of HISTORY samples.
+        let detail: Option<gpui::AnyElement> = if is_expanded {
+            Some(self.render_latency_detail(graph, history, cx).into_any_element())
+        } else {
+            None
+        };
+
+        v_flex().child(row).when_some(detail, |this, d| this.child(d))
+    }
+
+    fn render_latency_detail(
+        &self,
+        graph: Option<SharedString>,
+        history: Option<Vec<LatencySample>>,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let graph_block: gpui::AnyElement = match graph {
+            Some(g) if !g.trim().is_empty() => div()
+                .px_3()
+                .py_2()
+                .bg(cx.theme().muted.opacity(0.4))
+                .rounded_sm()
+                .child(
+                    Label::new(g)
+                        .font_family(get_font_family())
+                        .text_xs()
+                        .whitespace_normal()
+                        .text_color(foreground),
+                )
+                .into_any_element(),
+            _ => div()
+                .px_3()
+                .py_2()
+                .child(Label::new(i18n_common(cx, "loading")).text_xs().text_color(muted))
+                .into_any_element(),
+        };
+
+        // Show only the last few samples — full history can be 160+
+        // points, the ASCII GRAPH already summarizes the trend.
+        const HISTORY_PREVIEW: usize = 12;
+        let samples: Vec<gpui::AnyElement> = history
+            .map(|h| {
+                h.iter()
+                    .rev()
+                    .take(HISTORY_PREVIEW)
+                    .map(|s| {
+                        h_flex()
+                            .gap_2()
+                            .child(Label::new(format_unix_seconds(s.timestamp)).text_xs().text_color(muted))
+                            .child(
+                                Label::new(format!("{} ms", s.latency_ms))
+                                    .text_xs()
+                                    .text_color(severity_color(s.latency_ms, cx)),
+                            )
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        v_flex()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .bg(cx.theme().muted.opacity(0.15))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(graph_block)
+            .when(!samples.is_empty(), |this| {
+                this.child(
+                    Label::new(i18n_slowlog_editor(cx, "latency_history_label"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(v_flex().gap_1().children(samples))
+            })
+    }
+}
+
+fn centered_message(text: SharedString, color: gpui::Hsla) -> impl IntoElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(Label::new(text).text_color(color))
+}
+
+fn severity_color(ms: i64, cx: &gpui::App) -> gpui::Hsla {
+    let theme = cx.theme();
+    match ms {
+        i64::MIN..0 => theme.muted_foreground,
+        0..=100 => theme.green,
+        101..=1000 => theme.yellow,
+        _ => theme.red,
+    }
+}
+
+fn format_unix_seconds(ts: i64) -> String {
+    if ts <= 0 {
+        return "--".to_string();
+    }
+    match chrono::Local.timestamp_opt(ts, 0).single() {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => ts.to_string(),
+    }
+}
+
+/// Stable DJB2 hash so `(static_id, u32)` element keys derived from
+/// event names compile (ElementId only accepts primitive tuples).
+fn djb2_hash(s: &str) -> u32 {
+    let mut h: u32 = 5381;
+    for b in s.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u32);
+    }
+    h
 }

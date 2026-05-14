@@ -61,7 +61,11 @@ pub use kv_table::ZedisKvTable;
 pub use list_editor::ZedisListEditor;
 pub use lua_script_library::ZedisLuaScriptLibrary;
 pub use memory_analysis::ZedisMemoryAnalysis;
+// Chart helpers re-exported so other diagnostic panels (e.g.
+// memory_analysis) can reuse the metrics view's canvas primitives
+// without each one re-implementing axis / tick rendering.
 pub use metrics::ZedisMetrics;
+pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 pub use migration_window::{open_migration_export_window, open_migration_import_window};
 pub use monitor::ZedisMonitor;
 pub use proto_editor::ZedisProtoEditor;

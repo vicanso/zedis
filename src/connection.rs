@@ -21,6 +21,7 @@ mod config;
 mod danger;
 mod dump_restore;
 mod functions;
+mod latency;
 mod lua_script;
 mod manager;
 mod search;
@@ -33,7 +34,7 @@ pub use async_connection::{
     RedisAsyncConn, open_monitor_connection, open_single_connection, set_redis_connection_timeout,
     set_redis_response_timeout,
 };
-pub use config::{RedisServer, get_server, get_servers, save_servers, tag_color_index};
+pub use config::{RedisServer, get_server, get_server_groups, get_servers, save_servers, tag_color_index};
 pub use danger::{
     ConfirmStrictness, DangerKind, classify_dangerous_line, confirm_strictness, is_write_command,
     requires_write_confirm,
@@ -42,6 +43,10 @@ pub use dump_restore::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, dump_keys_chunk, restore_keys_chunk,
 };
 pub use functions::{FunctionLibrary, function_delete, function_list, function_load};
+pub use latency::{
+    LatencyEvent, LatencySample, latency_graph, latency_history, latency_latest, latency_monitor_threshold,
+    latency_reset,
+};
 pub use lua_script::{ScriptRunOutcome, run_script};
 pub use manager::{
     AccessMode, HeatMetric, HeatProbe, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager,

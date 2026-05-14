@@ -151,6 +151,14 @@ impl ZedisContent {
                         state.select(server_id.clone(), *db, cx);
                     });
                 }
+                GlobalEvent::ServerListUpdated => {
+                    // If the currently-tracked server was just deleted,
+                    // stop the heartbeat from logging "config not found"
+                    // every tick by clearing our reference to it.
+                    this.server_state.update(cx, |state, cx| {
+                        state.clear_if_removed(cx);
+                    });
+                }
                 _ => {}
             }),
         );

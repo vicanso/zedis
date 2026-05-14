@@ -22,7 +22,8 @@ use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_ma
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::format_duration;
-use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_memory_analysis};
+use crate::states::{Route, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis};
+use crate::views::{ChartParams, format_timestamp_ms, make_line_canvas};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -1157,6 +1158,129 @@ impl ZedisMemoryAnalysis {
                     }),
             )
     }
+    /// Pull the metrics history kept by the status bar heartbeat and
+    /// render a fragmentation-ratio line chart. Returns `None` when
+    /// there are fewer than two data points — a single sample isn't
+    /// a "trend" yet, so don't waste vertical space.
+    ///
+    /// Color encodes severity using BOTH the ratio and the absolute
+    /// wasted bytes (RSS - used). At very small dataset sizes the
+    /// ratio is noisy (jemalloc fixed overhead is ~100MB regardless
+    /// of `used_memory`) so a 6× ratio on a 20MB DB is normal, not
+    /// a fire — we keep it green until the absolute waste is big
+    /// enough to be a real cost.
+    ///
+    /// - `< FRAG_FLOOR_BYTES` waste → always green (noise floor)
+    /// - waste ≥ floor AND ratio ≥ 2.0 → red
+    /// - waste ≥ floor AND ratio ≥ 1.5 → yellow
+    /// - otherwise → green
+    fn render_fragmentation_chart(&self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
+        // 200MB. Below this much absolute overhead, jemalloc's fixed
+        // costs dominate and the ratio carries no signal. Any modern
+        // server can absorb a few hundred MB of allocator slack.
+        const FRAG_FLOOR_BYTES: i64 = 200 * 1024 * 1024;
+
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return None;
+        }
+        let history = get_metrics_cache().list_metrics(&server_id);
+        // Filter out zero ratios — INFO emits 0 before sampling finishes.
+        let samples: Vec<(i64, f64, i64)> = history
+            .iter()
+            .filter(|m| m.mem_fragmentation_ratio > 0.0)
+            .map(|m| {
+                // fragmentation_bytes = RSS - used; saturating sub
+                // because in rare cases RSS can momentarily be
+                // smaller than used (RSS lags by one sampling tick).
+                let frag_bytes = (m.used_memory_rss as i64).saturating_sub(m.used_memory as i64);
+                (m.timestamp_ms, m.mem_fragmentation_ratio, frag_bytes)
+            })
+            .collect();
+        if samples.len() < 2 {
+            return None;
+        }
+        let dates: Vec<SharedString> = samples.iter().map(|(ts, _, _)| format_timestamp_ms(*ts)).collect();
+        let values: Vec<f64> = samples.iter().map(|(_, v, _)| *v).collect();
+        let latest_ratio = *values.last().unwrap_or(&1.0);
+        let latest_frag_bytes = samples.last().map(|(_, _, b)| *b).unwrap_or(0);
+        // Pad y_max slightly above the peak so the line doesn't touch
+        // the top edge; clamp the floor at 2.0 so a flat-healthy chart
+        // still has room for a future spike.
+        let raw_max = values.iter().cloned().fold(f64::MIN, f64::max);
+        let y_max = (raw_max * 1.1).max(2.0);
+
+        let theme = cx.theme();
+        // Severity needs BOTH a bad ratio AND a meaningful absolute
+        // waste — see the constant doc above for why.
+        let stroke = if latest_frag_bytes < FRAG_FLOOR_BYTES {
+            theme.green
+        } else if latest_ratio >= 2.0 {
+            theme.red
+        } else if latest_ratio >= 1.5 {
+            theme.yellow
+        } else {
+            theme.green
+        };
+        // Format the absolute waste so users can sanity-check the
+        // ratio. "6× ratio · 100MB waste" is much less scary than
+        // just "6× ratio" alone.
+        let waste_str = if latest_frag_bytes > 0 {
+            humansize::format_size(
+                latest_frag_bytes as u64,
+                humansize::FormatSizeOptions::default().decimal_places(0),
+            )
+        } else {
+            "0 B".to_string()
+        };
+        let label_text = format!(
+            "{} · {}: {:.2}× ({} {})",
+            i18n_memory_analysis(cx, "fragmentation_chart_title"),
+            i18n_memory_analysis(cx, "fragmentation_chart_latest"),
+            latest_ratio,
+            waste_str,
+            i18n_memory_analysis(cx, "fragmentation_chart_waste"),
+        );
+
+        // Aim for at most ~5 X-axis labels. Lower than the metrics
+        // view's ~10 because this chart sits in a body that's the
+        // user's full content width *but* can shrink with the window.
+        // On a 600px-wide window with 100+ samples, 8 labels still
+        // produced <5px gaps between adjacent HH:MM:SS strings — the
+        // first label's right edge overlapped the second's left edge.
+        // 5 labels gives comfortable spacing even at narrow widths.
+        const TARGET_X_LABELS: usize = 5;
+        let tick_margin = samples.len().div_ceil(TARGET_X_LABELS).max(1);
+        let params = ChartParams {
+            dates,
+            y_max,
+            y_format: Box::new(|v| format!("{v:.2}")),
+            tick_margin,
+            border: theme.border,
+            muted_fg: theme.muted_foreground,
+        };
+        let chart = make_line_canvas(params, values, stroke, false);
+
+        Some(
+            v_flex()
+                // `w_full` is critical — without it the card collapses
+                // to the label's natural width (~200px) and the canvas
+                // inherits that, jamming HH:MM:SS x-axis labels on top
+                // of each other. `flex_none` prevents vertical squeeze
+                // when the body has many siblings.
+                .w_full()
+                .flex_none()
+                .h(px(180.0))
+                .border_1()
+                .border_color(theme.border)
+                .rounded(theme.radius_lg)
+                .p_3()
+                .child(div().font_semibold().child(label_text).mb_2())
+                .child(chart)
+                .into_any_element(),
+        )
+    }
+
     fn render_table_section(
         &mut self,
         title_key: &'static str,
@@ -1249,6 +1373,15 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .gap_2()
                     .id("memory-analysis-body")
                     .overflow_y_scroll();
+
+                // Fragmentation trend chart (pulls from METRICS_CACHE
+                // populated by the status_bar heartbeat). Always
+                // attempted — even before the user clicks "Analyse",
+                // the chart shows the running mem_fragmentation_ratio
+                // so it doubles as ambient diagnostic.
+                if let Some(chart) = self.render_fragmentation_chart(cx) {
+                    body = body.child(chart);
+                }
 
                 if !has_data && !is_running {
                     body = body.child(div().size_full().flex().items_center().justify_center().child(

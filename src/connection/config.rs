@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::{fs::read_to_string, path::PathBuf, sync::LazyLock};
 use tracing::{debug, info};
 use url::Url;
+use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -120,6 +121,17 @@ pub struct RedisServer {
     pub tag: Option<String>,
     pub tag_color: Option<String>,
     pub require_confirm_writes: Option<bool>,
+    /// Optional grouping label. Servers with the same `group` string
+    /// render under one section header on the servers page. Distinct
+    /// from `tag` — tag describes risk/role (PROD/DEV), group
+    /// describes ownership/team (Team A / Team B / Personal).
+    /// `None` or empty → "Ungrouped" section.
+    pub group: Option<String>,
+    /// Stable sort key within `(group)`. Lower values render first.
+    /// Assigned automatically on save when not present (max+1 across
+    /// all servers in the same group). Hand-editing the TOML to
+    /// renumber is supported.
+    pub sort_order: Option<i64>,
 }
 impl RedisServer {
     pub fn from_form_data(id: &str, data: &IndexMap<SharedString, SharedString>) -> Self {
@@ -173,6 +185,11 @@ impl RedisServer {
             tag: get_str("tag"),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
             require_confirm_writes: get_bool("require_confirm_writes"),
+            group: get_str("group"),
+            // sort_order is owned by reorder buttons / drag-drop, not
+            // the edit form. Preserve the existing value (the caller
+            // fills it in via `upsert_server`).
+            sort_order: None,
         }
     }
     pub fn get_hash(&self, db: usize) -> u64 {
@@ -183,6 +200,75 @@ impl RedisServer {
     }
     pub fn is_ssh_tunnel(&self) -> bool {
         self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
+    }
+
+    /// Serialize this server config to JSON for team sharing.
+    ///
+    /// `include_secrets=false` (the default for the share UI) blanks
+    /// out every credential field — password, SSH password, SSH
+    /// private key, and the three TLS materials. The receiving user
+    /// then fills those in locally. This is the safe default because
+    /// the JSON is destined for a chat / wiki / repo where any
+    /// plaintext secret would be a leak.
+    ///
+    /// `include_secrets=true` keeps everything verbatim — useful for
+    /// personal backups (e.g. moving to a new machine) but should
+    /// never be shared.
+    pub fn to_export_json(&self, include_secrets: bool) -> serde_json::Result<String> {
+        let mut clone = self.clone();
+        // Strip transient identity bits so the importer treats this
+        // as a fresh entry (avoids overwriting an existing config
+        // with the same id) and so the export survives across redb
+        // versions even if id semantics change.
+        clone.id = String::new();
+        clone.updated_at = None;
+        // sort_order is install-local — the receiver will be assigned
+        // a fresh index by upsert_server. Group label is kept since
+        // it's a meaningful organizational hint that often carries
+        // across teammates.
+        clone.sort_order = None;
+        if !include_secrets {
+            clone.password = None;
+            clone.ssh_password = None;
+            clone.ssh_key = None;
+            clone.client_cert = None;
+            clone.client_key = None;
+            clone.root_cert = None;
+        }
+        serde_json::to_string_pretty(&clone)
+    }
+
+    /// Parse a JSON blob produced by [`Self::to_export_json`] (or
+    /// hand-edited) into a `RedisServer`. The result always gets a
+    /// fresh `id` so importing the same JSON twice yields two
+    /// distinct entries, and never silently overwrites whatever the
+    /// user currently has under that id.
+    ///
+    /// Returns `Err` for malformed JSON, missing required fields
+    /// (name / host / port), or extreme port values. Empty optional
+    /// fields are preserved as `None`.
+    pub fn from_import_json(json: &str) -> Result<Self, String> {
+        let mut server: RedisServer = serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
+        // Validate the bare minimum so a typo doesn't ship a broken
+        // entry to the list view (which would crash on connect).
+        if server.name.trim().is_empty() {
+            return Err("missing required field: name".into());
+        }
+        if server.host.trim().is_empty() {
+            return Err("missing required field: host".into());
+        }
+        if server.port == 0 {
+            return Err("port must be a positive number".into());
+        }
+        // Always allocate a fresh id so import is idempotent and
+        // never clobbers an existing entry.
+        server.id = Uuid::now_v7().to_string();
+        server.updated_at = None;
+        // sort_order is install-local — drop the sender's index so
+        // the importer appends to the tail of whatever group it
+        // lands in (max+1 assigned by upsert_server).
+        server.sort_order = None;
+        Ok(server)
     }
     pub fn tag_label(&self) -> Option<&str> {
         self.tag.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
@@ -263,10 +349,25 @@ fn get_or_create_server_config() -> Result<PathBuf> {
 static SERVER_CONFIG_MAP: LazyLock<ArcSwap<HashMap<String, RedisServer>>> =
     LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
+/// Returns the canonical sort order: group label A→Z (case-insensitive,
+/// empty/None group sorts last under the "Ungrouped" header), then
+/// within each group by `sort_order` ascending, then by `name`
+/// case-insensitive as a stable tiebreaker. A `sort_order` of `None`
+/// is treated as `i64::MAX` so brand-new servers (not yet renumbered)
+/// land at the tail rather than at the head.
+fn server_sort_key(server: &RedisServer) -> (u8, String, i64, String) {
+    let group = server.group.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let bucket = if group.is_some() { 0 } else { 1 };
+    let group_key = group.map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+    let order = server.sort_order.unwrap_or(i64::MAX);
+    let name_key = server.name.to_ascii_lowercase();
+    (bucket, group_key, order, name_key)
+}
+
 pub fn get_servers() -> Result<Vec<RedisServer>> {
     if !SERVER_CONFIG_MAP.load().is_empty() {
         let mut servers: Vec<RedisServer> = SERVER_CONFIG_MAP.load().values().cloned().collect();
-        servers.sort_by(|a, b| a.id.cmp(&b.id));
+        servers.sort_by_key(server_sort_key);
         return Ok(servers);
     }
     let path = get_or_create_server_config()?;
@@ -290,7 +391,29 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         configs.insert(server.id.clone(), server.clone());
     }
     SERVER_CONFIG_MAP.store(Arc::new(configs));
+    servers.sort_by_key(server_sort_key);
     Ok(servers)
+}
+
+/// Returns the distinct, trimmed, non-empty group labels currently in
+/// use across all configured servers, sorted case-insensitively. The
+/// servers form uses this to surface an autocomplete-style hint list
+/// so teammates don't end up with "Team A" / "team a" duplicates.
+pub fn get_server_groups() -> Vec<String> {
+    let map = SERVER_CONFIG_MAP.load();
+    let mut groups: Vec<String> = map
+        .values()
+        .filter_map(|s| {
+            s.group
+                .as_deref()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .map(String::from)
+        })
+        .collect();
+    groups.sort_by_key(|g| g.to_ascii_lowercase());
+    groups.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    groups
 }
 
 /// Saves the server configuration to the file.
@@ -347,4 +470,115 @@ pub fn get_server(id: &str) -> Result<RedisServer> {
         message: format!("Redis config not found: {id}"),
     })?;
     Ok(config.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_server() -> RedisServer {
+        RedisServer {
+            id: "src-id".into(),
+            name: "prod-cache".into(),
+            host: "10.0.0.5".into(),
+            port: 6379,
+            username: Some("admin".into()),
+            password: Some("supersecret".into()),
+            ssh_tunnel: Some(true),
+            ssh_addr: Some("bastion:22".into()),
+            ssh_username: Some("ops".into()),
+            ssh_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----\n...".into()),
+            updated_at: Some("2026-05-14T08:00:00".into()),
+            tag: Some("PROD".into()),
+            tag_color: Some("red".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn export_strips_secrets_by_default() {
+        let json = sample_server().to_export_json(false).expect("serialize");
+        // Plain identifiers should be there.
+        assert!(json.contains("\"prod-cache\""));
+        assert!(json.contains("10.0.0.5"));
+        // Secrets must be absent.
+        assert!(!json.contains("supersecret"));
+        assert!(!json.contains("PRIVATE KEY"));
+        // Source id should be blanked so import allocates fresh.
+        assert!(json.contains("\"id\": \"\""));
+    }
+
+    #[test]
+    fn export_with_secrets_keeps_credentials() {
+        let json = sample_server().to_export_json(true).expect("serialize");
+        assert!(json.contains("supersecret"));
+        assert!(json.contains("PRIVATE KEY"));
+    }
+
+    #[test]
+    fn import_assigns_fresh_id() {
+        let exported = sample_server().to_export_json(false).expect("serialize");
+        let imported = RedisServer::from_import_json(&exported).expect("import");
+        assert_ne!(imported.id, "src-id");
+        assert!(!imported.id.is_empty());
+        assert_eq!(imported.name, "prod-cache");
+        // Stripped secrets remain None.
+        assert!(imported.password.is_none());
+        assert!(imported.ssh_key.is_none());
+    }
+
+    #[test]
+    fn import_rejects_missing_required_fields() {
+        let bad = r#"{"id":"","name":"","host":"h","port":1}"#;
+        assert!(RedisServer::from_import_json(bad).is_err());
+        let bad2 = r#"{"id":"","name":"n","host":"","port":1}"#;
+        assert!(RedisServer::from_import_json(bad2).is_err());
+        let bad3 = r#"{"id":"","name":"n","host":"h","port":0}"#;
+        assert!(RedisServer::from_import_json(bad3).is_err());
+    }
+
+    #[test]
+    fn import_rejects_malformed_json() {
+        assert!(RedisServer::from_import_json("not json").is_err());
+    }
+
+    #[test]
+    fn export_strips_install_local_sort_order_but_keeps_group() {
+        let mut s = sample_server();
+        s.group = Some("Team A".into());
+        s.sort_order = Some(42);
+        let json = s.to_export_json(false).expect("serialize");
+        assert!(json.contains("\"Team A\""));
+        // sort_order should be `null` (Option::None) in the exported
+        // JSON — the receiver's upsert assigns its own.
+        assert!(json.contains("\"sort_order\": null"));
+        let imported = RedisServer::from_import_json(&json).expect("import");
+        assert_eq!(imported.group.as_deref(), Some("Team A"));
+        assert!(imported.sort_order.is_none());
+    }
+
+    #[test]
+    fn server_sort_key_orders_groups_then_sort_order_then_name() {
+        let mk = |group: Option<&str>, order: Option<i64>, name: &str| RedisServer {
+            id: name.into(),
+            name: name.into(),
+            host: "h".into(),
+            port: 1,
+            group: group.map(String::from),
+            sort_order: order,
+            ..Default::default()
+        };
+        let mut servers = [
+            mk(None, None, "zeta"),
+            mk(Some("B"), Some(0), "b0"),
+            mk(Some("A"), Some(1), "a1"),
+            mk(Some("A"), Some(0), "a0"),
+            mk(None, Some(0), "alpha-ungrouped"),
+        ];
+        servers.sort_by_key(server_sort_key);
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        // Grouped first (alphabetical group, then sort_order), then
+        // ungrouped (sort_order then name).
+        assert_eq!(names, vec!["a0", "a1", "b0", "alpha-ungrouped", "zeta"]);
+    }
 }

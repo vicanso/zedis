@@ -44,13 +44,16 @@ const BYTES_TO_MB: f64 = 1_000_000.;
 const Y_LABEL_WIDTH: f32 = 45.;
 const Y_TICK_COUNT: usize = 4;
 
-struct ChartParams {
-    dates: Vec<SharedString>,
-    y_max: f64,
-    y_format: Box<dyn Fn(f64) -> String>,
-    tick_margin: usize,
-    border: Hsla,
-    muted_fg: Hsla,
+/// Shared chart layout parameters. `pub(crate)` so other diagnostic
+/// views (e.g. memory_analysis) can reuse the same axis-rendering
+/// primitives without duplicating the y-tick / x-label logic.
+pub(crate) struct ChartParams {
+    pub dates: Vec<SharedString>,
+    pub y_max: f64,
+    pub y_format: Box<dyn Fn(f64) -> String>,
+    pub tick_margin: usize,
+    pub border: Hsla,
+    pub muted_fg: Hsla,
 }
 
 struct ChartFrame {
@@ -164,7 +167,7 @@ pub struct ZedisMetrics {
     _subscriptions: Vec<Subscription>,
 }
 
-fn format_timestamp_ms(ts_ms: i64) -> SharedString {
+pub(crate) fn format_timestamp_ms(ts_ms: i64) -> SharedString {
     match Local.timestamp_millis_opt(ts_ms) {
         LocalResult::Single(dt) => dt.format(TIME_FORMAT).to_string().into(),
         _ => "--".into(),
@@ -364,23 +367,46 @@ fn make_x_labels_point(
     muted_fg: Hsla,
 ) -> Vec<AxisText> {
     let n = dates.len();
-    dates
+    // Pre-scan to know which indices will actually be drawn — we need
+    // first/last to pick the right alignment. Avoids two pitfalls
+    // from earlier iterations:
+    //   1. Original code skipped i=0 when tick_margin > 1 and the
+    //      next drawn label was Center-aligned near the left edge,
+    //      bleeding into the Y-axis gutter.
+    //   2. Naively forcing i=0 placed two labels (i=0 + i=tick_margin-1)
+    //      right next to each other on the left, which collided.
+    // Now: keep the original modulo selection, but give whichever
+    // index is *first drawn* the Left alignment, and *last drawn* the
+    // Right alignment.
+    let drawn: Vec<usize> = dates
         .iter()
         .enumerate()
-        .filter_map(|(i, date)| {
-            if (i + 1) % tick_margin == 0 {
-                x.tick(date).map(|x_tick| {
-                    let align = match i {
-                        0 if n == 1 => TextAlign::Center,
-                        0 => TextAlign::Left,
-                        i if i == n - 1 => TextAlign::Right,
-                        _ => TextAlign::Center,
-                    };
-                    AxisText::new(date.clone(), x_tick + Y_LABEL_WIDTH, muted_fg).align(align)
-                })
+        .filter_map(|(i, _)| {
+            if (i + 1).is_multiple_of(tick_margin) {
+                Some(i)
             } else {
                 None
             }
+        })
+        .collect();
+    let first_drawn = drawn.first().copied();
+    let last_drawn = drawn.last().copied();
+
+    drawn
+        .into_iter()
+        .filter_map(|i| {
+            x.tick(&dates[i]).map(|x_tick| {
+                let align = if n == 1 {
+                    TextAlign::Center
+                } else if Some(i) == first_drawn {
+                    TextAlign::Left
+                } else if Some(i) == last_drawn {
+                    TextAlign::Right
+                } else {
+                    TextAlign::Center
+                };
+                AxisText::new(dates[i].clone(), x_tick + Y_LABEL_WIDTH, muted_fg).align(align)
+            })
         })
         .collect()
 }
@@ -459,7 +485,12 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Vec<f64>, Hsla, Background
     .size_full()
 }
 
-fn make_line_canvas(params: ChartParams, values: Vec<f64>, stroke: Hsla, step_after: bool) -> impl IntoElement {
+pub(crate) fn make_line_canvas(
+    params: ChartParams,
+    values: Vec<f64>,
+    stroke: Hsla,
+    step_after: bool,
+) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
