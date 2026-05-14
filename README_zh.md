@@ -55,6 +55,8 @@
 - **Redis Streams**：完整支持 Redis Streams——浏览流条目、查看消费者组与待处理消息（Pending Entries），并通过 `XINFO` 查看流元数据，全程无需离开 GUI。
 - **Pub/Sub**：内置订阅/发布界面，支持订阅频道模式、实时接收消息，并可直接在 GUI 中发布消息，无需切换到 `redis-cli`。
 - **本地写入历史**：string 类型每次保存时自动在内存中保留最近 10 个历史版本（按 key 隔离），一键即可将旧版本载入编辑器，预览或回滚后再保存。纯客户端记录（不占用 Redis 存储），仅会话内有效，key 被删除或切换服务器时自动清理。
+- **RediSearch 浏览器**（模块）：专用面板覆盖 `FT.*` 命令族——`FT._LIST` 列出索引、`FT.INFO` 查看 schema 与统计（含 indexing 进度与 `type mismatch` 失败计数，直接解释"明明有数据却 0 docs"的原因）、原始 `FT.SEARCH` 配合 `HIGHLIGHT` / `RETURN` / `LIMIT` chip，或切换到 `FT.AGGREGATE` 跑单层 `GROUPBY` + `REDUCE`（`COUNT` / `SUM` / `AVG` / `QUANTILE` / `TOLIST` 等）。索引创建走结构化表单（HASH / JSON、prefix、每字段 SORTABLE / NOSTEM / NOINDEX 切换），同时支持 alter / drop，全部不需离开 app。未加载 RediSearch 模块的服务器自动隐藏入口。
+- **Functions 编辑器**（Redis 7+）：通过 `FUNCTION LIST / LOAD / DELETE` 管理服务端 Lua library。卡片一眼看到每个 library 的 engine、注册的函数和 flags（`no-writes`、`allow-oom` 等）；点击展开内联只读 Lua 预览，带完整 tree-sitter 语法高亮。Edit 与"新建 library"共用同一个 Lua 编辑器，带行号、缩进引导线、`REPLACE` 开关，确保迭代安全。Redis 6.x 及更早版本自动隐藏入口。
 
 ### 📊 实时可观测性
 内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。

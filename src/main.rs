@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
-use crate::db::{ProtoManager, ScriptManager, init_database};
+use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
     MemuAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys,
     register_extra_languages,
@@ -265,6 +265,7 @@ impl Render for Zedis {
                     ServerToolsAction::Acl => Route::Acl,
                     ServerToolsAction::Search => Route::Search,
                     ServerToolsAction::Functions => Route::Functions,
+                    ServerToolsAction::LuaScripts => Route::LuaScripts,
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
@@ -416,6 +417,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Err(e) = ScriptManager::init() {
                     error!(error = %e, "init script viewers fail",);
+                }
+                if let Err(e) = LuaScriptManager::init() {
+                    error!(error = %e, "init lua scripts fail",);
                 }
             })
             .await;

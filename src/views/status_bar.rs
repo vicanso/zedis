@@ -258,10 +258,15 @@ impl ZedisStatusBar {
                     this.state.error = Some(error.clone());
                 }
                 ServerEvent::TaskStarted(task) => {
-                    // Clear error when a new task starts (except background ping)
-                    if *task != ServerTask::RefreshRedisInfo {
-                        this.state.error = None;
+                    // Background heartbeat (RefreshRedisInfo) fires once
+                    // per 5s and never changes anything visible from
+                    // this handler — return early so it doesn't trigger
+                    // an empty re-render. Other tasks clear any stale
+                    // error chip.
+                    if *task == ServerTask::RefreshRedisInfo {
+                        return;
                     }
+                    this.state.error = None;
                 }
                 ServerEvent::ValueLoaded => {
                     let state = server_state.read(cx);
@@ -421,9 +426,12 @@ impl ZedisStatusBar {
             supports_functions,
         };
     }
-    /// Start the heartbeat task
+    /// Start the heartbeat task. 2-second cadence keeps the chips
+    /// (latency, used memory, connected clients, replication lag)
+    /// snappy — matches the Metrics panel heartbeat for consistency.
+    /// The CPU baseline is dominated by other render paths anyway,
+    /// so this interval doesn't move the needle either direction.
     fn start_heartbeat(&mut self, server_state: Entity<ZedisServerState>, cx: &mut Context<Self>) {
-        // start task
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
@@ -483,6 +491,14 @@ impl ZedisStatusBar {
                 move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_functions_tooltip")),
             );
         }
+        // Lua script library is local-storage backed and uses
+        // EVAL/EVALSHA which work on every Redis version since 2.6,
+        // so no capability gating needed.
+        menu = menu.menu_element_with_icon(
+            Icon::new(IconName::SquareTerminal),
+            Box::new(ServerToolsAction::LuaScripts),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_lua_scripts_tooltip")),
+        );
         menu
     }
     /// Render the server status
@@ -730,6 +746,7 @@ impl ZedisStatusBar {
 
 impl Render for ZedisStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        debug!("render status bar view");
         if self.state.server_state.server_id.is_empty() {
             return h_flex();
         }

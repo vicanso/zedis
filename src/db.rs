@@ -22,12 +22,14 @@ use tracing::debug;
 mod cmd_history_manager;
 mod favorites_manager;
 mod history_manager;
+mod lua_scripts;
 mod protos;
 mod scripts;
 mod search_history_manager;
 
 pub use cmd_history_manager::*;
 pub use favorites_manager::*;
+pub use lua_scripts::*;
 pub use protos::*;
 pub use scripts::*;
 pub use search_history_manager::*;
@@ -37,6 +39,8 @@ const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
 const SCRIPT_VIEWER_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("script_viewer");
 const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd_history");
 const FAVORITY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
+// Saved Lua scripts: globally shared across servers, persisted to disk.
+const LUA_SCRIPT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("lua_script");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -63,6 +67,7 @@ pub fn init_database() -> Result<()> {
         write_txn.open_table(PROTO_TABLE)?;
         write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
         write_txn.open_table(FAVORITY_TABLE)?;
+        write_txn.open_table(LUA_SCRIPT_TABLE)?;
     }
     write_txn.commit()?;
     debug!(path = db_path.display().to_string(), "database initialized success");

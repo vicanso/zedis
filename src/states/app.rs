@@ -51,6 +51,7 @@ pub enum Route {
     Acl,
     Search,
     Functions,
+    LuaScripts,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -124,6 +125,7 @@ pub enum ServerToolsAction {
     Acl,
     Search,
     Functions,
+    LuaScripts,
 }
 
 const LIGHT_THEME_MODE: &str = "light";
