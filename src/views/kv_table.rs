@@ -26,6 +26,7 @@ use crate::{
 use gpui::{App, Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::TITLE_BAR_HEIGHT;
 use gpui_component::highlighter::Language;
+use gpui_component::notification::Notification;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
@@ -44,6 +45,45 @@ use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, Zedis
 pub const FOOTER_HEIGHT: f32 = 50.0;
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
+
+/// Parse pasted text into rows of values for bulk insertion.
+///
+/// - Lines are split on `\n` (also handles `\r\n` because `lines()`
+///   trims `\r`). Trimmed-empty lines are skipped.
+/// - For `expected_columns <= 1` the entire trimmed line is one
+///   value (commas/tabs are preserved verbatim).
+/// - For `expected_columns >= 2` the line is split into at most that
+///   many parts. Separator is auto-detected per-line: tab takes
+///   precedence over comma so users can paste Redis values that
+///   themselves contain commas as long as their rows use tabs.
+///   Use `splitn(N, ...)` so the trailing column absorbs any extra
+///   separator runs — handy when a hash value happens to contain a
+///   comma. Missing trailing columns are padded with empty strings
+///   so the row always has exactly `expected_columns` slots.
+/// - Per-cell trimming strips leading/trailing whitespace.
+pub(crate) fn parse_bulk_rows(text: &str, expected_columns: usize) -> Vec<Vec<SharedString>> {
+    let mut rows = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if expected_columns <= 1 {
+            rows.push(vec![SharedString::from(line.to_string())]);
+            continue;
+        }
+        let sep: char = if line.contains('\t') { '\t' } else { ',' };
+        let mut row: Vec<SharedString> = line
+            .splitn(expected_columns, sep)
+            .map(|part| SharedString::from(part.trim().to_string()))
+            .collect();
+        while row.len() < expected_columns {
+            row.push(SharedString::default());
+        }
+        rows.push(row);
+    }
+    rows
+}
 
 type ZedisKvTableActionButtonFactory = Box<dyn Fn(&mut Window, &mut App) -> Vec<Button>>;
 
@@ -401,6 +441,89 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.editor_form = None;
         self.values_modified = false;
     }
+    /// Open a dialog to paste many rows at once. The pasted text is
+    /// parsed into rows (one per line, tab-separated preferred,
+    /// comma fallback) and each row is dispatched through the same
+    /// `handle_add_value` path as the single-row form, so backend
+    /// semantics (HSET, LPUSH/RPUSH, SADD, ZADD) stay identical.
+    ///
+    /// Per key type the dialog adapts:
+    /// - Hash: 2 cols → "field<sep>value"
+    /// - ZSet: 2 cols → "member<sep>score"  (score must parse as f64
+    ///   downstream — invalid scores fall back to 0.0 like the
+    ///   single-row form does)
+    /// - List: 1 col → "value" per line, always pushed as RPUSH for
+    ///   bulk paste so the visual top-to-bottom order in the textarea
+    ///   matches the resulting list order
+    /// - Set:  1 col → "member" per line
+    ///
+    /// Stream/other key types fall through (no-op).
+    fn handle_bulk_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.mode.contains(KvTableMode::ADD) {
+            return;
+        }
+        let key_type = self.fetcher.key_type();
+        let column_count: usize = match key_type {
+            KeyType::Hash | KeyType::Zset => 2,
+            KeyType::List | KeyType::Set => 1,
+            _ => return,
+        };
+
+        let placeholder = match key_type {
+            KeyType::Hash => i18n_kv_table(cx, "bulk_add_placeholder_hash"),
+            KeyType::Zset => i18n_kv_table(cx, "bulk_add_placeholder_zset"),
+            KeyType::List => i18n_kv_table(cx, "bulk_add_placeholder_list"),
+            KeyType::Set => i18n_kv_table(cx, "bulk_add_placeholder_set"),
+            _ => SharedString::default(),
+        };
+        let hint = i18n_kv_table(cx, "bulk_add_hint");
+        let success_template = i18n_kv_table(cx, "bulk_add_success");
+        let empty_label = i18n_kv_table(cx, "bulk_add_empty");
+
+        let textarea = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(8, 20)
+                .placeholder(placeholder.clone())
+        });
+        let body_state = textarea.clone();
+        let submit_state = textarea.clone();
+        let fetcher = self.fetcher.clone();
+
+        ZedisDialog::new(i18n_kv_table(cx, "bulk_add_title"))
+            .w(px(680.))
+            .ok_text(i18n_common(cx, "save"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .child(move || {
+                v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Label::new(hint.clone()).text_xs())
+                    .child(Input::new(&body_state).appearance(true))
+            })
+            .on_ok(move |_, window, cx| {
+                let text = submit_state.read(cx).value().to_string();
+                let rows = parse_bulk_rows(&text, column_count);
+                if rows.is_empty() {
+                    window.push_notification(Notification::warning(empty_label.clone()), cx);
+                    return false;
+                }
+                let imported = rows.len();
+                for mut row in rows {
+                    if key_type == KeyType::List {
+                        // Prepend the position selector; matches the
+                        // [position, value] shape the list fetcher
+                        // expects.
+                        row.insert(0, SharedString::from("RPUSH"));
+                    }
+                    fetcher.handle_add_value(row, window, cx);
+                }
+                let msg = success_template.replace("%{count}", &imported.to_string());
+                window.push_notification(Notification::success(SharedString::from(msg)), cx);
+                true
+            })
+            .open(window, cx);
+    }
+
     fn handle_add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Only allow adding if ADD mode is enabled
         if !self.mode.contains(KvTableMode::ADD) {
@@ -762,6 +885,29 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                                 })),
                                         )
                                     })
+                                    // Bulk paste only makes sense for the
+                                    // four flat-table types — Stream rows
+                                    // require structured fields (ID + N
+                                    // entries) that don't map cleanly to
+                                    // TSV/CSV, so we hide the button
+                                    // there.
+                                    .when(
+                                        can_add
+                                            && matches!(
+                                                self.fetcher.key_type(),
+                                                KeyType::Hash | KeyType::List | KeyType::Set | KeyType::Zset
+                                            ),
+                                        |this| {
+                                            this.child(
+                                                Button::new("bulk-add-value-btn")
+                                                    .icon(IconName::Asterisk)
+                                                    .tooltip(i18n_kv_table(cx, "bulk_add_tooltip"))
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.handle_bulk_add(window, cx);
+                                                    })),
+                                            )
+                                        },
+                                    )
                                     .when(can_filter, |this| {
                                         this.child(
                                             Input::new(&self.keyword_state)
@@ -853,3 +999,74 @@ macro_rules! define_kv_editor {
 }
 
 pub(crate) use define_kv_editor;
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bulk_rows;
+
+    #[test]
+    fn parse_single_column_preserves_commas() {
+        // For 1-col types (Set/List) we never split — the line is
+        // the value, commas inside are part of the data.
+        let rows = parse_bulk_rows("a,b,c\nplain\n", 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].as_ref(), "a,b,c");
+        assert_eq!(rows[1][0].as_ref(), "plain");
+    }
+
+    #[test]
+    fn parse_two_columns_prefers_tab_over_comma() {
+        // Tab present → tab wins; commas inside the value column stay.
+        let rows = parse_bulk_rows("field1\tvalue,with,commas\nfield2\tplain\n", 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].as_ref(), "field1");
+        assert_eq!(rows[0][1].as_ref(), "value,with,commas");
+        assert_eq!(rows[1][0].as_ref(), "field2");
+        assert_eq!(rows[1][1].as_ref(), "plain");
+    }
+
+    #[test]
+    fn parse_two_columns_falls_back_to_comma() {
+        let rows = parse_bulk_rows("a,1\nb,2\n", 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].as_ref(), "a");
+        assert_eq!(rows[0][1].as_ref(), "1");
+    }
+
+    #[test]
+    fn parse_pads_missing_columns_with_empty() {
+        // A single-cell line under a 2-column expectation pads the
+        // second slot — the downstream `handle_add_value` for the
+        // editor decides whether that empty cell is acceptable.
+        let rows = parse_bulk_rows("lonely\n", 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].as_ref(), "lonely");
+        assert_eq!(rows[0][1].as_ref(), "");
+    }
+
+    #[test]
+    fn parse_skips_blank_lines_and_handles_crlf() {
+        let rows = parse_bulk_rows("a\tb\r\n\r\nc\td\n", 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].as_ref(), "a");
+        assert_eq!(rows[0][1].as_ref(), "b");
+        assert_eq!(rows[1][0].as_ref(), "c");
+        assert_eq!(rows[1][1].as_ref(), "d");
+    }
+
+    #[test]
+    fn parse_trims_each_cell() {
+        let rows = parse_bulk_rows("  member  ,  9.5  \n", 2);
+        assert_eq!(rows[0][0].as_ref(), "member");
+        assert_eq!(rows[0][1].as_ref(), "9.5");
+    }
+
+    #[test]
+    fn parse_extra_separators_absorbed_into_last_column() {
+        // splitn(2, ',') leaves "v,with,more,commas" in slot 1.
+        let rows = parse_bulk_rows("k,v,with,more,commas\n", 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].as_ref(), "k");
+        assert_eq!(rows[0][1].as_ref(), "v,with,more,commas");
+    }
+}

@@ -204,24 +204,11 @@ impl ZedisSidebar {
                         });
                     });
 
-                // Strip rendered as a sibling of ListItem so it hugs the sidebar's
-                // left edge instead of being inset by ListItem internal padding.
-                div()
-                    .relative()
-                    .w_full()
-                    .child(item)
-                    .when_some(tag_color, |this, color| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .bottom_0()
-                                .w(px(SERVER_LIST_ITEM_BORDER_WIDTH))
-                                .bg(color),
-                        )
-                    })
-                    .into_any_element()
+                // Tag color is conveyed solely by the chip (which
+                // requires non-empty tag text). A color without text
+                // is treated as not configured, so there's no
+                // separate edge strip.
+                item.into_any_element()
             })
             .collect();
 

@@ -273,6 +273,15 @@ info_tooltip = "Показать информацию о потоке (XINFO GRO
 data_tooltip = "Вернуться к просмотру данных"
 cancel = "Отмена"
 save = "Сохранить"
+bulk_add_tooltip = "Массовое добавление — вставить TSV / CSV"
+bulk_add_title = "Массовое добавление"
+bulk_add_hint = "Вставьте строки ниже. По одной строке на запись. Предпочтительный разделитель — табуляция; запятая используется при её отсутствии. Пробелы по краям ячеек обрезаются."
+bulk_add_placeholder_hash = "поле<TAB>значение, по одной строке"
+bulk_add_placeholder_zset = "элемент<TAB>оценка, по одной строке"
+bulk_add_placeholder_list = "одно значение в строке"
+bulk_add_placeholder_set = "один элемент в строке"
+bulk_add_success = "Добавлено строк: %{count}"
+bulk_add_empty = "Нечего добавлять — вставьте хотя бы одну строку."
 
 [settings]
 title = "Настройки"
