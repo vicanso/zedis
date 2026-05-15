@@ -19,6 +19,7 @@ use crate::{
 };
 use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, label::Label, list::ListItem, v_flex};
 use tracing::info;
 
@@ -141,6 +142,10 @@ impl ZedisSidebar {
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
         let chip_text_color = cx.theme().background;
+        // Every row shows the same dashboard glyph; at full foreground
+        // weight it's pure repetition competing with the name. Mute it
+        // so the server name reads as primary.
+        let muted_icon_color = cx.theme().muted_foreground;
 
         // Build all rows up front. We deliberately do not virtualise via
         // `uniform_list` here: tagged rows render an extra chip and we want
@@ -158,6 +163,11 @@ impl ZedisSidebar {
                 } else {
                     entry.name.clone()
                 };
+                // Full, untruncated name for the row tooltip — the
+                // visible label uses text_ellipsis in this narrow
+                // strip so long names ("aliyun-clu…") are unreadable
+                // without it.
+                let full_name = name.clone();
 
                 let server_id = entry.id.clone();
                 let tag_color = entry.color;
@@ -175,7 +185,7 @@ impl ZedisSidebar {
                         v_flex()
                             .items_center()
                             .gap_1()
-                            .child(Icon::new(IconName::LayoutDashboard))
+                            .child(Icon::new(IconName::LayoutDashboard).text_color(muted_icon_color))
                             .child(Label::new(name).text_ellipsis().text_xs())
                             .when(has_chip, |this| {
                                 this.child(
@@ -208,7 +218,18 @@ impl ZedisSidebar {
                 // requires non-empty tag text). A color without text
                 // is treated as not configured, so there's no
                 // separate edge strip.
-                item.into_any_element()
+                //
+                // ListItem doesn't impl InteractiveElement, so the
+                // full-name tooltip lives on a thin stateful wrapper.
+                // Home row is never truncated, so skip its tooltip.
+                div()
+                    .id(("sidebar-redis-server-row", index))
+                    .w_full()
+                    .child(item)
+                    .when(!is_home, |this| {
+                        this.tooltip(move |window, cx| Tooltip::new(full_name.clone()).build(window, cx))
+                    })
+                    .into_any_element()
             })
             .collect();
 

@@ -154,6 +154,7 @@ group_existing_hint = "已有"
 move_up_tooltip = "在分组中上移"
 move_down_tooltip = "在分组中下移"
 ungrouped_label = "未分组"
+updated_at_label = "更新于 %{date}"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"

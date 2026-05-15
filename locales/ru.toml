@@ -154,6 +154,7 @@ group_existing_hint = "Имеющиеся"
 move_up_tooltip = "Переместить вверх в группе"
 move_down_tooltip = "Переместить вниз в группе"
 ungrouped_label = "Без группы"
+updated_at_label = "Обновлено %{date}"
 
 [editor]
 delete_key_prompt = "Вы уверены, что хотите удалить этот ключ: %{key}?"

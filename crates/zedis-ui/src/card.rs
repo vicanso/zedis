@@ -13,10 +13,26 @@
 // limitations under the License.
 
 use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, SharedString, Window, div, prelude::*, px};
-use gpui_component::{ActiveTheme, Icon, button::Button, h_flex, label::Label, list::ListItem};
+use gpui_component::{ActiveTheme, Icon, StyledExt, button::Button, h_flex, label::Label, list::ListItem, v_flex};
 
 /// Type alias for the click handler closure.
 type ZedisCardOnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// Visual role of a card.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CardVariant {
+    /// A real data entity (a configured server). Solid border,
+    /// header-left layout, supports actions / hover-only actions /
+    /// footer.
+    #[default]
+    Entity,
+    /// An action entry point (e.g. "Add New", "Import"). Dashed
+    /// border + hover background change + center-aligned content so
+    /// it reads as a placeholder/affordance rather than data. In this
+    /// variant `actions`, `hover_only_actions` and `footer` are not
+    /// rendered — the whole card is the single click target.
+    Action,
+}
 
 /// A customizable Card component used to display grouped content.
 ///
@@ -29,8 +45,16 @@ pub struct ZedisCard {
     id: ElementId,
     /// Optional leading icon.
     icon: Option<Icon>,
-    /// Main title text.
+    /// Main title text (rendered bold/primary).
     title: Option<SharedString>,
+    /// Secondary line under the title — smaller, muted, optionally
+    /// monospace. Used for the host:port address so it visually
+    /// separates from the human-readable name.
+    subtitle: Option<SharedString>,
+    /// Font family for the subtitle (e.g. a monospace family). The
+    /// platform-correct family lives in the app crate, so the caller
+    /// passes it in rather than this crate hard-coding one.
+    subtitle_font: Option<SharedString>,
     /// Secondary description text.
     description: Option<SharedString>,
     /// List of action buttons to display in the header.
@@ -46,6 +70,8 @@ pub struct ZedisCard {
     footer: Option<AnyElement>,
     /// Custom background fill.
     bg: Option<Fill>,
+    /// Visual role (entity vs action). See [`CardVariant`].
+    variant: CardVariant,
 }
 impl ZedisCard {
     /// Creates a new `Card` with the given element ID.
@@ -54,12 +80,15 @@ impl ZedisCard {
             id: id.into(),
             icon: None,
             title: None,
+            subtitle: None,
+            subtitle_font: None,
             description: None,
             actions: None,
             hover_only_actions: None,
             on_click: None,
             footer: None,
             bg: None,
+            variant: CardVariant::default(),
         }
     }
 
@@ -73,6 +102,19 @@ impl ZedisCard {
     /// Accepts any type that can be converted into a `SharedString`.
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    /// Sets the subtitle (second title line — host:port, etc.).
+    pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// Sets the subtitle font family (pass a monospace family for
+    /// addresses). No-op unless `subtitle` is also set.
+    pub fn subtitle_font(mut self, family: impl Into<SharedString>) -> Self {
+        self.subtitle_font = Some(family.into());
         self
     }
 
@@ -113,6 +155,19 @@ impl ZedisCard {
         self.bg = Some(bg.into());
         self
     }
+
+    /// Sets the card's visual role. See [`CardVariant`].
+    pub fn variant(mut self, variant: CardVariant) -> Self {
+        self.variant = variant;
+        self
+    }
+
+    /// Shorthand for `.variant(CardVariant::Action)` — dashed border,
+    /// hover background, centered content.
+    pub fn action(mut self) -> Self {
+        self.variant = CardVariant::Action;
+        self
+    }
 }
 
 impl RenderOnce for ZedisCard {
@@ -123,16 +178,83 @@ impl RenderOnce for ZedisCard {
         // bleed into each other's hover state.
         const CARD_GROUP: &str = "zedis-card";
 
+        // Action cards read as an affordance, not data: dashed
+        // border, hover background, center-aligned content. Built as
+        // a plain stateful div (not ListItem) because ListItem does
+        // not impl InteractiveElement, so it can't take `.hover(..)`.
+        if self.variant == CardVariant::Action {
+            return div()
+                .id(self.id)
+                .m_2()
+                .p_4()
+                .border(px(1.))
+                .border_dashed()
+                // muted_foreground (secondary-text tone) instead of
+                // the near-invisible hairline `border` color so the
+                // dashes actually read as a placeholder outline.
+                .border_color(cx.theme().muted_foreground)
+                .rounded(cx.theme().radius)
+                .when_some(self.bg, |this, bg| this.bg(bg))
+                .hover(|s| s.bg(cx.theme().list_active))
+                .cursor_pointer()
+                .when_some(self.on_click, |this, handler| {
+                    this.on_click(move |event, window, cx| handler(event, window, cx))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .w_full()
+                        .when_some(self.icon, |this, icon| this.child(icon))
+                        .when_some(self.title, |this, title| {
+                            this.child(Label::new(title).text_base().text_center())
+                        })
+                        .when_some(self.description, |this, description| {
+                            this.child(
+                                Label::new(description)
+                                    .text_sm()
+                                    .text_center()
+                                    .whitespace_normal()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                        }),
+                )
+                .into_any_element();
+        }
+
         let hover_only_actions = self.hover_only_actions;
         // Construct the header row: Icon + Title + Spacer + Actions
         let header = h_flex()
             .when_some(self.icon, |this, icon| this.child(icon))
             .when_some(self.title, |this, title| {
+                let subtitle = self.subtitle.clone();
+                let subtitle_font = self.subtitle_font.clone();
                 this.child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .child(Label::new(title).ml_2().text_base().whitespace_nowrap().text_ellipsis()),
+                    div().flex_1().overflow_hidden().child(
+                        v_flex()
+                            .ml_2()
+                            .child(
+                                Label::new(title)
+                                    .text_base()
+                                    .font_semibold()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis(),
+                            )
+                            .when_some(subtitle, |col, sub| {
+                                let mut label = Label::new(sub)
+                                    .text_xs()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(cx.theme().muted_foreground);
+                                if let Some(family) = subtitle_font {
+                                    label = label.font_family(family);
+                                }
+                                col.child(label)
+                            }),
+                    ),
                 )
             })
             // Hover-only actions render in their own wrapper so the
@@ -159,19 +281,13 @@ impl RenderOnce for ZedisCard {
         // actions above resolve their nearest ancestor with that
         // group name — which is always this card's wrapper, never a
         // sibling card.
-        let card = ListItem::new(self.id)
-            .m_2()
-            .border(px(1.))
-            .border_color(cx.theme().border)
-            .p_4()
-            .rounded(cx.theme().radius)
-            // Apply custom background if provided
-            .when_some(self.bg, |this, bg| this.bg(bg))
-            // Attach click handler if provided
-            .when_some(self.on_click, |this, handler| {
-                this.on_click(move |event, window, cx| handler(event, window, cx))
-            })
-            // Add Header
+        // ListItem packs its children into a single gapless block, so
+        // compose header / description / footer into one v_flex with
+        // an explicit gap to get even vertical rhythm (otherwise the
+        // description ends up cramped against its neighbors).
+        let body = v_flex()
+            .w_full()
+            .gap_2()
             .child(header)
             // Always render the description slot — fall back to a
             // non-breaking space so cards without a description still
@@ -183,9 +299,32 @@ impl RenderOnce for ZedisCard {
                     .text_sm()
                     .whitespace_normal(),
             )
-            // Add Footer
-            .when_some(self.footer, |this, footer| this.child(footer));
+            // Footer behind a dim hairline divider so metadata reads
+            // as a distinct region. No top margin — the v_flex gap
+            // already provides separation from the description.
+            .when_some(self.footer, |this, footer| {
+                // pt_3 matches the card's `.py_3()` bottom inset so the
+                // date sits with equal whitespace above (divider→text)
+                // and below (text→card edge).
+                this.child(div().pt_3().border_t_1().border_color(cx.theme().border).child(footer))
+            });
 
-        div().group(CARD_GROUP).child(card)
+        let card = ListItem::new(self.id)
+            .m_2()
+            .border(px(1.))
+            .border_color(cx.theme().border)
+            // Slightly tighter vertical padding than horizontal so the
+            // space below the footer doesn't dwarf the internal gap_2
+            // rhythm (ListItem adds its own py_1 on top of this).
+            .px_4()
+            .py_3()
+            .rounded(cx.theme().radius)
+            .when_some(self.bg, |this, bg| this.bg(bg))
+            .when_some(self.on_click, |this, handler| {
+                this.on_click(move |event, window, cx| handler(event, window, cx))
+            })
+            .child(body);
+
+        div().group(CARD_GROUP).child(card).into_any_element()
     }
 }

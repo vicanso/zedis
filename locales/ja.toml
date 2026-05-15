@@ -154,6 +154,7 @@ group_existing_hint = "既存"
 move_up_tooltip = "グループ内で上に移動"
 move_down_tooltip = "グループ内で下に移動"
 ungrouped_label = "未分類"
+updated_at_label = "更新 %{date}"
 
 [editor]
 delete_key_prompt = "このキーを削除しますか: %{key}?"

@@ -27,6 +27,7 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, Disableable, Root,
     button::{Button, ButtonVariants},
+    h_flex,
     label::Label,
     scroll::ScrollableElement,
 };
@@ -270,13 +271,13 @@ impl Render for ZedisMigrationWindow {
             .px_6()
             .pt_4()
             .child(
-                gpui_component::h_flex()
+                h_flex()
                     .gap_4()
                     .child(Label::new(i18n_migration(cx, "status_label")).text_sm())
                     .child(Label::new(phase_label(&phase, cx)).text_sm().text_color(muted)),
             )
             .child(
-                gpui_component::h_flex()
+                h_flex()
                     .gap_4()
                     .pt_1()
                     .child(Label::new(i18n_migration(cx, "progress_label")).text_sm())

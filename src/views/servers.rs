@@ -15,13 +15,16 @@
 use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_servers, open_single_connection, tag_color_index};
 use crate::error::Error;
+use crate::helpers::get_font_family;
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props, i18n_common,
-    i18n_servers,
+    i18n_servers, update_app_state_and_save,
 };
 use gpui::{ClipboardItem, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui_component::h_flex;
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::Notification;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     ActiveTheme, Colorize, Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
@@ -683,6 +686,8 @@ impl Render for ZedisServers {
             cx.theme().background.darken(THEME_DARKEN_AMOUNT_LIGHT)
         };
 
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let subtitle_font = get_font_family();
         let update_tooltip = i18n_servers(cx, "update_tooltip");
         let remove_tooltip = i18n_servers(cx, "remove_tooltip");
         let export_tooltip = i18n_servers(cx, "export_tooltip");
@@ -714,159 +719,216 @@ impl Render for ZedisServers {
         let mut sections: Vec<gpui::AnyElement> = Vec::new();
         let mut card_index_counter: usize = 0;
         for (group_label, group_servers) in &groups {
-            let header_text = match group_label {
-                Some(g) => SharedString::from(format!("{g}  ·  {}", group_servers.len())),
-                None => SharedString::from(format!("{}  ·  {}", ungrouped_label, group_servers.len())),
+            let group_name = match group_label {
+                Some(g) => SharedString::from(g.clone()),
+                None => ungrouped_label.clone(),
             };
-            let section_id = SharedString::from(format!(
-                "servers-group-{}",
-                group_label.as_deref().unwrap_or("__none__")
-            ));
-            let cards: Vec<gpui::AnyElement> = group_servers
-                .iter()
-                .enumerate()
-                .map(|(in_group_index, server)| {
-                    let index = card_index_counter + in_group_index;
-                    let is_first = in_group_index == 0;
-                    let is_last = in_group_index + 1 == group_servers.len();
-                    let single_in_group = group_servers.len() == 1;
+            let group_count = SharedString::from(group_servers.len().to_string());
+            let group_key = group_label.as_deref().unwrap_or("__none__").to_string();
+            let is_collapsed = cx
+                .global::<ZedisGlobalStore>()
+                .read(cx)
+                .is_server_group_collapsed(&group_key);
+            let toggle_key = group_key.clone();
+            let section_id = SharedString::from(format!("servers-group-{group_key}"));
+            // Skip building the (listener-heavy) cards entirely when
+            // the group is collapsed — but still advance the index
+            // counter so element ids stay stable across toggles.
+            let cards: Vec<gpui::AnyElement> = if is_collapsed {
+                Vec::new()
+            } else {
+                group_servers
+                    .iter()
+                    .enumerate()
+                    .map(|(in_group_index, server)| {
+                        let index = card_index_counter + in_group_index;
+                        let is_first = in_group_index == 0;
+                        let is_last = in_group_index + 1 == group_servers.len();
+                        let single_in_group = group_servers.len() == 1;
 
-                    let select_server_id = server.id.clone();
-                    let update_server = server.clone();
-                    let export_server = server.clone();
-                    let remove_server_id = server.id.clone();
-                    let move_up_id = server.id.clone();
-                    let move_down_id = server.id.clone();
+                        let select_server_id = server.id.clone();
+                        let update_server = server.clone();
+                        let export_server = server.clone();
+                        let remove_server_id = server.id.clone();
+                        let move_up_id = server.id.clone();
+                        let move_down_id = server.id.clone();
 
-                    let description = server.description.as_deref().unwrap_or_default();
-                    let updated_at = if let Some(updated_at) = &server.updated_at {
-                        updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string()
-                    } else {
-                        String::new()
-                    };
-                    let title = format!("{} ({}:{})", server.name, server.host, server.port);
+                        let description = server.description.as_deref().unwrap_or_default();
+                        let updated_at = if let Some(updated_at) = &server.updated_at {
+                            updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string()
+                        } else {
+                            String::new()
+                        };
+                        let title = server.name.clone();
+                        let subtitle = format!("{}:{}", server.host, server.port);
+                        let updated_label = if updated_at.is_empty() {
+                            String::new()
+                        } else {
+                            t!("servers.updated_at_label", date = updated_at, locale = locale).to_string()
+                        };
 
-                    // ↑/↓ live in hover_only_actions so they don't add
-                    // visual weight at rest. Skip rendering them when
-                    // the group has only one member — nothing to swap with.
-                    let mut hover_actions: Vec<Button> = Vec::new();
-                    if !single_in_group {
-                        hover_actions.push(
-                            Button::new(("servers-card-action-up", index))
-                                .ghost()
-                                .tooltip(move_up_tooltip.clone())
-                                .icon(IconName::ChevronUp)
-                                .disabled(is_first)
-                                .on_click(cx.listener(move |_this, _, _window, cx| {
-                                    cx.stop_propagation();
-                                    let id = move_up_id.clone();
-                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                        store.update(cx, |state, cx| {
-                                            state.reorder_server(&id, ReorderDirection::Up, cx);
+                        // ↑/↓ live in hover_only_actions so they don't add
+                        // visual weight at rest. Skip rendering them when
+                        // the group has only one member — nothing to swap with.
+                        let mut hover_actions: Vec<Button> = Vec::new();
+                        if !single_in_group {
+                            hover_actions.push(
+                                Button::new(("servers-card-action-up", index))
+                                    .ghost()
+                                    .tooltip(move_up_tooltip.clone())
+                                    .icon(IconName::ChevronUp)
+                                    .disabled(is_first)
+                                    .on_click(cx.listener(move |_this, _, _window, cx| {
+                                        cx.stop_propagation();
+                                        let id = move_up_id.clone();
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| {
+                                                state.reorder_server(&id, ReorderDirection::Up, cx);
+                                            });
                                         });
-                                    });
+                                    })),
+                            );
+                            hover_actions.push(
+                                Button::new(("servers-card-action-down", index))
+                                    .ghost()
+                                    .tooltip(move_down_tooltip.clone())
+                                    .icon(IconName::ChevronDown)
+                                    .disabled(is_last)
+                                    .on_click(cx.listener(move |_this, _, _window, cx| {
+                                        cx.stop_propagation();
+                                        let id = move_down_id.clone();
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| {
+                                                state.reorder_server(&id, ReorderDirection::Down, cx);
+                                            });
+                                        });
+                                    })),
+                            );
+                        }
+                        // Export sits with the hover-only block — it's a
+                        // share/copy operation that's used much less
+                        // often than Edit/Delete, so giving it visual
+                        // weight at rest competes with the more common
+                        // actions for attention.
+                        hover_actions.push(
+                            Button::new(("servers-card-action-export", index))
+                                .ghost()
+                                .tooltip(export_tooltip.clone())
+                                .icon(IconName::ExternalLink)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.export_server_dialog(&export_server, window, cx);
                                 })),
                         );
-                        hover_actions.push(
-                            Button::new(("servers-card-action-down", index))
+                        let mut actions: Vec<Button> = Vec::new();
+                        actions.push(
+                            Button::new(("servers-card-action-select", index))
                                 .ghost()
-                                .tooltip(move_down_tooltip.clone())
-                                .icon(IconName::ChevronDown)
-                                .disabled(is_last)
-                                .on_click(cx.listener(move |_this, _, _window, cx| {
+                                .tooltip(update_tooltip.clone())
+                                .icon(CustomIconName::FilePenLine)
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
-                                    let id = move_down_id.clone();
-                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                        store.update(cx, |state, cx| {
-                                            state.reorder_server(&id, ReorderDirection::Down, cx);
-                                        });
-                                    });
+                                    this.add_or_update_server_dialog(&update_server, window, cx);
                                 })),
                         );
-                    }
-                    // Export sits with the hover-only block — it's a
-                    // share/copy operation that's used much less
-                    // often than Edit/Delete, so giving it visual
-                    // weight at rest competes with the more common
-                    // actions for attention.
-                    hover_actions.push(
-                        Button::new(("servers-card-action-export", index))
-                            .ghost()
-                            .tooltip(export_tooltip.clone())
-                            .icon(IconName::ExternalLink)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.export_server_dialog(&export_server, window, cx);
-                            })),
-                    );
-                    let mut actions: Vec<Button> = Vec::new();
-                    actions.push(
-                        Button::new(("servers-card-action-select", index))
-                            .ghost()
-                            .tooltip(update_tooltip.clone())
-                            .icon(CustomIconName::FilePenLine)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.add_or_update_server_dialog(&update_server, window, cx);
-                            })),
-                    );
-                    actions.push(
-                        Button::new(("servers-card-action-delete", index))
-                            .ghost()
-                            .tooltip(remove_tooltip.clone())
-                            .icon(CustomIconName::FileXCorner)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.remove_server(window, cx, &remove_server_id);
-                            })),
-                    );
+                        actions.push(
+                            Button::new(("servers-card-action-delete", index))
+                                .ghost()
+                                .tooltip(remove_tooltip.clone())
+                                .icon(CustomIconName::FileXCorner)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_server(window, cx, &remove_server_id);
+                                })),
+                        );
 
-                    let handle_select_server = cx.listener(move |_this, _, _, cx| {
-                        let select_server_id = select_server_id.clone();
-                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                            store.update(cx, |state, cx| {
-                                state.go_to(Route::Editor, cx);
-                                state.set_selected_server((select_server_id.clone(), 0), cx);
+                        let handle_select_server = cx.listener(move |_this, _, _, cx| {
+                            let select_server_id = select_server_id.clone();
+                            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                store.update(cx, |state, cx| {
+                                    state.go_to(Route::Editor, cx);
+                                    state.set_selected_server((select_server_id.clone(), 0), cx);
+                                });
                             });
                         });
-                    });
 
-                    ZedisCard::new(("servers-card", index))
-                        .icon(Icon::new(CustomIconName::DatabaseZap))
-                        .title(title)
-                        .bg(bg)
-                        .when(!description.is_empty(), |this| {
-                            this.description(description.to_string())
-                        })
-                        .when(!updated_at.is_empty(), |this| {
-                            this.footer(
-                                Label::new(updated_at)
-                                    .text_sm()
-                                    .text_right()
-                                    .whitespace_normal()
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                        })
-                        .when(!hover_actions.is_empty(), |this| this.hover_only_actions(hover_actions))
-                        .actions(actions)
-                        .on_click(Box::new(handle_select_server))
-                        .into_any_element()
-                })
-                .collect();
+                        ZedisCard::new(("servers-card", index))
+                            .icon(Icon::new(CustomIconName::DatabaseZap))
+                            .title(title)
+                            .subtitle(subtitle)
+                            .subtitle_font(subtitle_font.clone())
+                            .bg(bg)
+                            .when(!description.is_empty(), |this| {
+                                this.description(description.to_string())
+                            })
+                            .when(!updated_at.is_empty(), |this| {
+                                let muted = cx.theme().muted_foreground;
+                                let tip = updated_label.clone();
+                                this.footer(
+                                    h_flex()
+                                        .id(("card-updated", index))
+                                        .w_full()
+                                        .justify_end()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(Icon::new(CustomIconName::Clock3).xsmall().text_color(muted))
+                                        .child(Label::new(updated_at.clone()).text_xs().text_color(muted))
+                                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+                                )
+                            })
+                            .when(!hover_actions.is_empty(), |this| this.hover_only_actions(hover_actions))
+                            .actions(actions)
+                            .on_click(Box::new(handle_select_server))
+                            .into_any_element()
+                    })
+                    .collect()
+            };
             card_index_counter += group_servers.len();
+            let chevron = if is_collapsed {
+                IconName::ChevronRight
+            } else {
+                IconName::ChevronDown
+            };
             sections.push(
                 gpui_component::v_flex()
                     .id(section_id)
                     .gap_2()
                     .w_full()
                     .child(
-                        gpui_component::h_flex().items_center().gap_2().pt_2().child(
-                            Label::new(header_text)
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        ),
+                        // pl_2 matches the `.m_2()` left margin every
+                        // ZedisCard applies, so the group label lines
+                        // up with the cards' left edge. Whole header
+                        // row toggles collapse on click.
+                        h_flex()
+                            .id(SharedString::from(format!("group-header-{group_key}")))
+                            .items_center()
+                            .gap_2()
+                            .pt_2()
+                            .pl_2()
+                            .cursor_pointer()
+                            .child(Icon::new(chevron).text_color(cx.theme().muted_foreground))
+                            .child(Label::new(group_name).text_sm().text_color(cx.theme().muted_foreground))
+                            // Count as a theme-colored pill badge —
+                            // same chip language as the sidebar tag
+                            // chips, adapts to light/dark via theme
+                            // tokens.
+                            .child(
+                                div().px_1p5().rounded_full().bg(cx.theme().muted).child(
+                                    Label::new(group_count)
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                            )
+                            .on_click(cx.listener(move |_this, _, _window, cx| {
+                                let key = toggle_key.clone();
+                                update_app_state_and_save(cx, "toggle_server_group_collapsed", move |state, _| {
+                                    state.toggle_server_group_collapsed(&key);
+                                });
+                            })),
                     )
-                    .child(div().grid().grid_cols(cols).gap_1().w_full().children(cards))
+                    .when(!is_collapsed, |this| {
+                        this.child(div().grid().grid_cols(cols).gap_1().w_full().children(cards))
+                    })
                     .into_any_element(),
             );
         }
@@ -880,11 +942,11 @@ impl Render for ZedisServers {
             .w_full()
             .child(
                 ZedisCard::new("servers-card-add")
+                    .action()
                     .icon(IconName::Plus)
                     .title(i18n_servers(cx, "add_server_title"))
                     .bg(bg)
                     .description(i18n_servers(cx, "add_server_description"))
-                    .actions(vec![Button::new("add").ghost().icon(CustomIconName::FilePlusCorner)])
                     .on_click(Box::new(cx.listener(move |this, _, window, cx| {
                         this.add_or_update_server_dialog(
                             &RedisServer {
@@ -898,11 +960,11 @@ impl Render for ZedisServers {
             )
             .child(
                 ZedisCard::new("servers-card-import")
+                    .action()
                     .icon(IconName::Asterisk)
                     .title(i18n_servers(cx, "import_card_title"))
                     .bg(bg)
                     .description(i18n_servers(cx, "import_card_description"))
-                    .actions(vec![Button::new("import").ghost().icon(IconName::Asterisk)])
                     .on_click(Box::new(cx.listener(move |this, _, window, cx| {
                         this.import_server_dialog(window, cx);
                     }))),

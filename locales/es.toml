@@ -154,6 +154,7 @@ group_existing_hint = "Existentes"
 move_up_tooltip = "Mover arriba en el grupo"
 move_down_tooltip = "Mover abajo en el grupo"
 ungrouped_label = "Sin grupo"
+updated_at_label = "Actualizado %{date}"
 
 [editor]
 delete_key_prompt = "¿Está seguro de que desea eliminar esta clave: %{key}?"

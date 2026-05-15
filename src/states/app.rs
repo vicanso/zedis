@@ -244,6 +244,11 @@ pub struct ZedisAppState {
     /// is skipped (cheaper scans on large dbs) and no chip is rendered.
     /// Defaults to `true`.
     show_key_tree_ttl: Option<bool>,
+    /// Server-page group section keys whose card grid is collapsed.
+    /// Keyed by group label (or `"__none__"` for the ungrouped
+    /// bucket). A renamed/deleted group simply leaves a harmless
+    /// stale string here that no section ever matches.
+    collapsed_server_groups: Option<Vec<String>>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -475,6 +480,21 @@ impl ZedisAppState {
     }
     pub fn set_show_key_tree_ttl(&mut self, enabled: bool) {
         self.show_key_tree_ttl = Some(enabled);
+    }
+    /// Whether the given server-page group section is collapsed.
+    pub fn is_server_group_collapsed(&self, key: &str) -> bool {
+        self.collapsed_server_groups
+            .as_ref()
+            .is_some_and(|groups| groups.iter().any(|g| g == key))
+    }
+    /// Flip the collapsed state of a server-page group section.
+    pub fn toggle_server_group_collapsed(&mut self, key: &str) {
+        let groups = self.collapsed_server_groups.get_or_insert_with(Vec::new);
+        if let Some(pos) = groups.iter().position(|g| g == key) {
+            groups.swap_remove(pos);
+        } else {
+            groups.push(key.to_string());
+        }
     }
     pub fn selected_server(&self) -> Option<&(String, usize)> {
         self.selected_server.as_ref()
