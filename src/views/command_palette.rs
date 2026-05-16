@@ -47,6 +47,11 @@ pub struct ZedisCommandPalette {
     query: gpui::Entity<gpui_component::input::InputState>,
     selected: usize,
     focus_handle: FocusHandle,
+    /// Set when the palette is opened; `render` consumes it to reset
+    /// and focus the search input. `toggle` runs from a focus-
+    /// independent global action handler that has no `Window`, so the
+    /// actual input focus is deferred to the next render.
+    pending_focus: bool,
 }
 
 impl ZedisCommandPalette {
@@ -57,25 +62,32 @@ impl ZedisCommandPalette {
             query,
             selected: 0,
             focus_handle: cx.focus_handle(),
+            pending_focus: false,
         }
     }
 
-    /// Open the palette (or close it if already open). Resets the
-    /// query and selection and focuses the search field on open.
-    pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Open the palette (or close it if already open). `render`
+    /// performs the input reset+focus on open via `pending_focus`,
+    /// since this is invoked from a global action handler with no
+    /// `Window`.
+    pub fn toggle(&mut self, cx: &mut Context<Self>) {
         self.open = !self.open;
         if self.open {
             self.selected = 0;
-            self.query.update(cx, |state, cx| {
-                state.set_value(gpui::SharedString::default(), window, cx);
-                state.focus(window, cx);
-            });
+            self.pending_focus = true;
         }
         cx.notify();
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
+        // Critical: when open we focus the search input. The closed
+        // render drops that element, orphaning focus on a handle no
+        // longer in the tree — keyboard actions (incl. the ⌘K
+        // keybinding) then have no dispatch path to the root and stop
+        // working. Blurring returns focus to the window root so ⌘K
+        // can reopen the palette.
+        window.blur();
         cx.notify();
     }
 
@@ -140,7 +152,7 @@ impl ZedisCommandPalette {
         scored.into_iter().map(|(_, i)| i).collect()
     }
 
-    fn execute(&mut self, command: &PaletteCommand, cx: &mut Context<Self>) {
+    fn execute(&mut self, command: &PaletteCommand, window: &mut Window, cx: &mut Context<Self>) {
         let command = command.clone();
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
@@ -153,7 +165,7 @@ impl ZedisCommandPalette {
                 }
             });
         });
-        self.close(cx);
+        self.close(window, cx);
     }
 }
 
@@ -164,10 +176,20 @@ impl Focusable for ZedisCommandPalette {
 }
 
 impl Render for ZedisCommandPalette {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             // Zero-footprint when closed.
             return div().into_any_element();
+        }
+
+        // Deferred from `toggle` (global action handler has no Window):
+        // reset and focus the search input on the first render after open.
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.query.update(cx, |state, cx| {
+                state.set_value(gpui::SharedString::default(), window, cx);
+                state.focus(window, cx);
+            });
         }
 
         let items = self.build_items(cx);
@@ -229,15 +251,15 @@ impl Render for ZedisCommandPalette {
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _window, cx| {
+                cx.listener(|this, _, window, cx| {
                     // Click on the dim backdrop closes.
-                    this.close(cx);
+                    this.close(window, cx);
                 }),
             )
-            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
+            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => {
-                        this.close(cx);
+                        this.close(window, cx);
                         cx.stop_propagation();
                     }
                     "down" => {
@@ -254,7 +276,7 @@ impl Render for ZedisCommandPalette {
                     }
                     "enter" => {
                         if let Some(cmd) = &chosen {
-                            this.execute(cmd, cx);
+                            this.execute(cmd, window, cx);
                         }
                         cx.stop_propagation();
                     }

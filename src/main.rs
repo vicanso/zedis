@@ -149,6 +149,13 @@ impl Zedis {
         });
         self.save_task = Some(task);
     }
+    /// Toggle the command palette. Driven by a global (focus-
+    /// independent) `PaletteAction` handler so `⌘K` works even when
+    /// nothing is focused (e.g. right after the palette closed on ESC).
+    pub fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
+        self.command_palette.update(cx, |palette, cx| palette.toggle(cx));
+    }
+
     fn render_titlebar(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let Some(title_bar) = self.title_bar.as_ref() else {
             return h_flex().into_any_element();
@@ -191,11 +198,6 @@ impl Render for Zedis {
             // when open; zero-footprint when closed).
             .child(self.command_palette.clone());
         content
-            .on_action(cx.listener(|this, _e: &PaletteAction, window, cx| {
-                this.command_palette.update(cx, |palette, cx| {
-                    palette.toggle(window, cx);
-                });
-            }))
             .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let action = *e;
 
@@ -416,6 +418,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         false
                     });
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
+                    // Global (focus-independent) ⌘K handler — element
+                    // `.on_action` is focus-routed and dies when the
+                    // palette closes and orphans its focus handle.
+                    let weak_zedis = zedis_view.downgrade();
+                    cx.on_action(move |_: &PaletteAction, cx: &mut App| {
+                        if let Some(view) = weak_zedis.upgrade() {
+                            view.update(cx, |zedis, cx| zedis.toggle_command_palette(cx));
+                        }
+                    });
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;
