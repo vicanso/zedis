@@ -94,6 +94,12 @@ pub enum ServerTask {
     RemoveStreamEntry,
     /// Fetch XINFO / XPENDING stats for a stream
     FetchStreamInfo,
+    /// XGROUP CREATE — create a consumer group
+    CreateStreamGroup,
+    /// XGROUP SETID — reposition a group's last-delivered-id
+    SetStreamGroupId,
+    /// XGROUP DESTROY — drop a consumer group (and its PEL)
+    DestroyStreamGroup,
 
     /// Save edited value back to Redis
     SaveValue,
@@ -134,6 +140,9 @@ impl ServerTask {
             ServerTask::AddStreamEntry => "add_stream_entry",
             ServerTask::RemoveStreamEntry => "remove_stream_entry",
             ServerTask::FetchStreamInfo => "fetch_stream_info",
+            ServerTask::CreateStreamGroup => "create_stream_group",
+            ServerTask::SetStreamGroupId => "set_stream_group_id",
+            ServerTask::DestroyStreamGroup => "destroy_stream_group",
             ServerTask::PublishMessage => "publish_message",
         }
     }

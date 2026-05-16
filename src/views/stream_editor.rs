@@ -15,23 +15,29 @@
 use crate::{
     components::ZedisKvFetcher,
     components::{KvTableColumn, KvTableMode},
+    connection::{get_server, open_single_connection},
     helpers::{fast_contains_ignore_case, format_duration},
-    states::{KeyType, RedisValue, ServerEvent, StreamInfoData, ZedisServerState, i18n_kv_table, i18n_stream_editor},
+    states::{
+        KeyType, RedisStreamEntry, RedisValue, ServerEvent, StreamInfoData, ZedisGlobalStore, ZedisServerState,
+        dialog_button_props, i18n_common, i18n_kv_table, i18n_stream_editor, tail_read,
+    },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
-use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, IconName,
-    button::Button,
+    ActiveTheme, IconName, Sizable, WindowExt,
+    button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputState},
     label::Label,
     scroll::ScrollableElement,
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
+use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
-use zedis_ui::ZedisFormFieldType;
+use zedis_ui::{ZedisDialog, ZedisFormFieldType};
 
 /// Manages Redis Stream values and their display state.
 ///
@@ -353,8 +359,23 @@ pub struct ZedisStreamEditor {
     groups_consumers_table: Option<Entity<TableState<SimpleTableDelegate>>>,
     /// Pending-entries table (Group | Entry ID | Consumer | Idle | Deliveries)
     pending_table: Option<Entity<TableState<SimpleTableDelegate>>>,
+    /// Whether live tail (XREAD BLOCK loop) is running.
+    tailing: bool,
+    /// The cancellable tail loop. Dropping it (stop, key/server
+    /// switch, or view teardown) cancels the loop and its dedicated
+    /// connection.
+    tail_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Block timeout per `XREAD` round (ms). Short enough that a stop /
+/// key-switch is reflected promptly when the loop next wakes.
+const TAIL_BLOCK_MS: u64 = 2000;
+/// Max entries per `XREAD` round.
+const TAIL_COUNT: usize = 200;
+/// Ring-buffer cap — a hot stream trims oldest entries beyond this so
+/// a long-running tail can't grow memory unbounded.
+const TAIL_CAP: usize = 5000;
 
 impl ZedisStreamEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -400,7 +421,22 @@ impl ZedisStreamEditor {
                     IconName::Info
                 };
                 let tooltip: SharedString = i18n_kv_table(cx, if is_info { "data_tooltip" } else { "info_tooltip" });
+                let is_tailing = editor.read(cx).tailing;
+                let tail_icon = if is_tailing {
+                    IconName::Close
+                } else {
+                    IconName::Asterisk
+                };
+                let tail_tooltip: SharedString = i18n_stream_editor(
+                    cx,
+                    if is_tailing {
+                        "tail_stop_tooltip"
+                    } else {
+                        "tail_start_tooltip"
+                    },
+                );
                 let weak_click = weak.clone();
+                let weak_tail = weak.clone();
                 vec![
                     Button::new("info-view-btn")
                         .icon(icon)
@@ -414,6 +450,14 @@ impl ZedisStreamEditor {
                                     }
                                     cx.notify();
                                 });
+                            }
+                        }),
+                    Button::new("stream-tail-btn")
+                        .icon(tail_icon)
+                        .tooltip(tail_tooltip)
+                        .on_click(move |_, _, cx| {
+                            if let Some(editor) = weak_tail.upgrade() {
+                                editor.update(cx, |this, cx| this.toggle_tail(cx));
                             }
                         }),
                 ]
@@ -440,6 +484,10 @@ impl ZedisStreamEditor {
                     this.is_info_view = false;
                     this.groups_consumers_table = None;
                     this.pending_table = None;
+                    // Stop tailing — the loop targets the previous key;
+                    // dropping the task cancels it and its connection.
+                    this.tail_task = None;
+                    this.tailing = false;
                     cx.notify();
                 }
                 _ => {}
@@ -452,8 +500,91 @@ impl ZedisStreamEditor {
             is_info_view: false,
             groups_consumers_table: None,
             pending_table: None,
+            tailing: false,
+            tail_task: None,
             _subscriptions: vec![sub],
         }
+    }
+
+    /// Start/stop the live-tail loop. Stopping just drops the task
+    /// (which cancels the loop + its dedicated connection). Starting
+    /// spawns: a background `XREAD BLOCK` loop feeding a channel, and
+    /// a foreground drainer that ring-appends batches into the stream
+    /// value. Tails from `$` so only entries arriving after Start are
+    /// shown; existing loaded entries are kept.
+    fn toggle_tail(&mut self, cx: &mut Context<Self>) {
+        if self.tailing {
+            self.tail_task = None;
+            self.tailing = false;
+            cx.notify();
+            return;
+        }
+
+        let server_state = self.server_state.clone();
+        let server_id = server_state.read(cx).server_id().to_string();
+        let db = server_state.read(cx).db();
+        let Some(key) = server_state.read(cx).key() else {
+            return;
+        };
+        let key = key.to_string();
+        let entity = cx.entity().downgrade();
+        let (tx, rx) = smol::channel::unbounded::<Vec<RedisStreamEntry>>();
+
+        let task = cx.spawn(async move |_handle, cx| {
+            let Ok(server) = get_server(&server_id) else {
+                let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
+                    this.tailing = false;
+                    this.tail_task = None;
+                    cx.notify();
+                });
+                return;
+            };
+
+            let key_bg = key.clone();
+            let bg = cx.background_spawn(async move {
+                let mut conn = match open_single_connection(&server, db, false).await {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                // `$` = only entries that arrive after we subscribe.
+                // A read error ends the while-let (and the loop).
+                let mut last_id = "$".to_string();
+                while let Ok((new_last, entries)) =
+                    tail_read(&mut conn, &key_bg, &last_id, TAIL_BLOCK_MS, TAIL_COUNT).await
+                {
+                    if !entries.is_empty() {
+                        last_id = new_last;
+                        if tx.send(entries).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            while let Ok(batch) = rx.recv().await {
+                let key_cl = key.clone();
+                let r = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
+                    this.server_state.update(cx, |state, cx| {
+                        state.append_tail_entries(&key_cl, batch, TAIL_CAP, cx);
+                    });
+                });
+                if r.is_err() {
+                    break;
+                }
+            }
+
+            // Channel closed or server entity gone → tear down.
+            drop(bg);
+            let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
+                this.tailing = false;
+                this.tail_task = None;
+                cx.notify();
+            });
+        });
+
+        self.tail_task = Some(task);
+        self.tailing = true;
+        cx.notify();
     }
 
     /// Rebuilds the two info DataTables from freshly-fetched `StreamInfoData`.
@@ -531,6 +662,123 @@ impl ZedisStreamEditor {
     }
 
     /// Renders a single labelled metric: small muted label above a bold value.
+    /// XGROUP CREATE dialog: group name + start ID (defaults to `$`).
+    fn create_group_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "group_name_placeholder")));
+        let id_state = cx.new(|cx| InputState::new(window, cx).default_value("$"));
+        let name_label = i18n_stream_editor(cx, "group_name");
+        let id_label = i18n_stream_editor(cx, "start_id");
+        let id_hint = i18n_stream_editor(cx, "start_id_hint");
+        let body_name = name_state.clone();
+        let body_id = id_state.clone();
+        let submit_name = name_state.clone();
+        let submit_id = id_state.clone();
+        let server_state = self.server_state.clone();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "create_group_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Label::new(name_label.clone()).text_xs())
+                    .child(Input::new(&body_name))
+                    .child(Label::new(id_label.clone()).text_xs())
+                    .child(Input::new(&body_id))
+                    .child(Label::new(id_hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let name = submit_name.read(cx).value().to_string();
+                if name.trim().is_empty() {
+                    // Keep the dialog open until a group name is given.
+                    return false;
+                }
+                let raw_id = submit_id.read(cx).value().to_string();
+                let id = if raw_id.trim().is_empty() {
+                    "$".to_string()
+                } else {
+                    raw_id
+                };
+                server_state.update(cx, |state, cx| {
+                    state.create_stream_group(name.trim().to_string().into(), id.into(), cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// XGROUP SETID dialog for a specific group.
+    fn setid_group_dialog(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let id_state = cx.new(|cx| InputState::new(window, cx).default_value("$"));
+        let id_hint = i18n_stream_editor(cx, "setid_hint");
+        let body_id = id_state.clone();
+        let submit_id = id_state.clone();
+        let server_state = self.server_state.clone();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "setid_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Input::new(&body_id))
+                    .child(Label::new(id_hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let raw_id = submit_id.read(cx).value().to_string();
+                if raw_id.trim().is_empty() {
+                    return false;
+                }
+                let group = group.clone();
+                server_state.update(cx, |state, cx| {
+                    state.set_stream_group_id(group, raw_id.trim().to_string().into(), cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// XGROUP DESTROY confirmation. Destructive — drops the group and
+    /// its entire PEL, so it routes through the standard alert dialog.
+    fn confirm_destroy_group(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let message = t!(
+            "stream_editor.destroy_group_prompt",
+            group = group.as_ref(),
+            locale = locale
+        )
+        .to_string();
+        let server_state = self.server_state.clone();
+        let group_for_ok = group.clone();
+
+        ZedisDialog::new_alert(i18n_stream_editor(cx, "destroy_group_title"), message)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                let group = group_for_ok.clone();
+                server_state.update(cx, |state, cx| {
+                    state.destroy_stream_group(group, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
     fn render_metric(&self, label: SharedString, value: SharedString, muted: gpui::Hsla) -> impl gpui::IntoElement {
         v_flex()
             .gap_0p5()
@@ -616,6 +864,67 @@ impl ZedisStreamEditor {
             );
 
         let mut result = base.child(summary_card);
+
+        // ── Manage groups: header + create, then per-group actions ───────────
+        result = result.child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(
+                    Label::new(i18n_stream_editor(cx, "manage_groups_title"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(
+                    Button::new("stream-create-group")
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(i18n_stream_editor(cx, "create_group"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.create_group_dialog(window, cx);
+                        })),
+                ),
+        );
+
+        for (idx, g) in info.groups.iter().enumerate() {
+            let setid_group = g.name.clone();
+            let destroy_group = g.name.clone();
+            result = result.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded(cx.theme().radius)
+                    .child(Label::new(g.name.clone()).text_sm())
+                    .child(Label::new(g.last_delivered_id.clone()).text_xs().text_color(muted))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new(("stream-setid", idx))
+                            .small()
+                            .ghost()
+                            .icon(IconName::Asterisk)
+                            .tooltip(i18n_stream_editor(cx, "setid_tooltip"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.setid_group_dialog(setid_group.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("stream-destroy", idx))
+                            .small()
+                            .danger()
+                            .icon(IconName::Close)
+                            .tooltip(i18n_stream_editor(cx, "destroy_tooltip"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_destroy_group(destroy_group.clone(), window, cx);
+                            })),
+                    ),
+            );
+        }
 
         if info.groups.is_empty() {
             return result

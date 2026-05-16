@@ -24,6 +24,7 @@ use crate::{
     error::Error,
 };
 use gpui::{SharedString, prelude::*};
+use redis::aio::MultiplexedConnection;
 use redis::cmd;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -290,6 +291,67 @@ pub(crate) async fn first_load_stream_value(conn: &mut RedisAsyncConn, key: &str
     })
 }
 
+/// One `XREAD COUNT n BLOCK ms STREAMS key last_id` round on a
+/// dedicated connection. Returns `(new_last_id, entries)`. On block
+/// timeout the server replies nil → `(last_id unchanged, [])`.
+///
+/// Parsed by hand from `redis::Value` because the `redis` crate's
+/// `streams` feature is not enabled (keeps the dep surface lean).
+/// Reply shape: `[ [ stream_name, [ [id, [f, v, f, v, …]], … ] ], … ]`.
+pub(crate) async fn tail_read(
+    conn: &mut MultiplexedConnection,
+    key: &str,
+    last_id: &str,
+    block_ms: u64,
+    count: usize,
+) -> Result<(String, Vec<RedisStreamEntry>)> {
+    let reply: redis::Value = cmd("XREAD")
+        .arg("COUNT")
+        .arg(count)
+        .arg("BLOCK")
+        .arg(block_ms)
+        .arg("STREAMS")
+        .arg(key)
+        .arg(last_id)
+        .query_async(conn)
+        .await?;
+
+    let mut new_last = last_id.to_string();
+    let mut out: Vec<RedisStreamEntry> = Vec::new();
+
+    let redis::Value::Array(streams) = reply else {
+        // Nil (block timeout) or unexpected — nothing new.
+        return Ok((new_last, out));
+    };
+    for stream in streams {
+        let redis::Value::Array(name_and_entries) = stream else {
+            continue;
+        };
+        let Some(redis::Value::Array(entries)) = name_and_entries.get(1) else {
+            continue;
+        };
+        for entry in entries {
+            let redis::Value::Array(id_and_fields) = entry else {
+                continue;
+            };
+            let Some(id_val) = id_and_fields.first() else {
+                continue;
+            };
+            let id = redis_to_string(id_val);
+            let mut fields: Vec<(SharedString, SharedString)> = Vec::new();
+            if let Some(redis::Value::Array(flat)) = id_and_fields.get(1) {
+                let mut it = flat.iter();
+                while let (Some(f), Some(v)) = (it.next(), it.next()) {
+                    fields.push((redis_to_string(f), redis_to_string(v)));
+                }
+            }
+            new_last = id.to_string();
+            out.push((id, fields));
+        }
+    }
+    Ok((new_last, out))
+}
+
 impl ZedisServerState {
     fn exec_stream_op<F, Fut, R>(
         &mut self,
@@ -540,6 +602,112 @@ impl ZedisServerState {
                 }
                 cx.emit(ServerEvent::ValueUpdated);
             },
+        );
+    }
+
+    /// XGROUP CREATE key group id. `start_id` is `$` (only new
+    /// entries), `0` (from the beginning), or an explicit entry ID.
+    /// The stream already exists (we're editing it) so MKSTREAM is
+    /// unnecessary. Refreshes XINFO on success so the groups table
+    /// reflects the new group.
+    pub fn create_stream_group(&mut self, group: SharedString, start_id: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::CreateStreamGroup,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let _: () = cmd("XGROUP")
+                    .arg("CREATE")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(start_id.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// XGROUP SETID key group id — reposition the group's
+    /// last-delivered-id (e.g. `$` to skip backlog, `0` to replay).
+    pub fn set_stream_group_id(&mut self, group: SharedString, id: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::SetStreamGroupId,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let _: () = cmd("XGROUP")
+                    .arg("SETID")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(id.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// Append entries received from a live-tail `XREAD` into the
+    /// current stream value, ring-trimmed to `cap` so a hot stream
+    /// can't grow memory unbounded. Guarded by `key` — if the user
+    /// switched keys while the tail loop was in flight, the stale
+    /// batch is dropped instead of polluting the new key's view.
+    pub fn append_tail_entries(
+        &mut self,
+        key: &str,
+        entries: Vec<RedisStreamEntry>,
+        cap: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if entries.is_empty() {
+            return;
+        }
+        if self.key.as_ref().map(|k| k.as_str()) != Some(key) {
+            return;
+        }
+        if let Some(RedisValueData::Stream(stream_data)) = self.value.as_mut().and_then(|v| v.data.as_mut()) {
+            let stream = Arc::make_mut(stream_data);
+            let added = entries.len();
+            if stream.reverse {
+                // Newest-first display: newer entries go to the front,
+                // preserving received order among the batch.
+                for entry in entries.into_iter().rev() {
+                    stream.values.insert(0, entry);
+                }
+                stream.values.truncate(cap);
+            } else {
+                stream.values.extend(entries);
+                if stream.values.len() > cap {
+                    let overflow = stream.values.len() - cap;
+                    stream.values.drain(0..overflow);
+                }
+            }
+            stream.size += added;
+            cx.emit(ServerEvent::ValueUpdated);
+            cx.notify();
+        }
+    }
+
+    /// XGROUP DESTROY key group — drops the group and its entire
+    /// pending list. Destructive; the caller is expected to confirm.
+    pub fn destroy_stream_group(&mut self, group: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::DestroyStreamGroup,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let _: () = cmd("XGROUP")
+                    .arg("DESTROY")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| this.fetch_stream_info(cx),
         );
     }
 }
