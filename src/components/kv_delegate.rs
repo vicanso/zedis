@@ -50,9 +50,12 @@ pub trait ZedisKvFetcher: 'static {
     /// Returns the number of rows currently loaded.
     fn rows_count(&self) -> usize;
 
-    /// Returns true if all data has been loaded.
+    /// Returns true if all data has been loaded (end of the scan).
+    /// Equivalent to [`Self::is_done`]; `has_more` is its negation, so
+    /// this must NOT be inverted — doing so disables scroll pagination
+    /// (the table only calls `load_more` while `has_more` is true).
     fn is_eof(&self) -> bool {
-        !self.is_done()
+        self.is_done()
     }
 
     /// Returns the column index used as the primary identifier (e.g., for deletion).
