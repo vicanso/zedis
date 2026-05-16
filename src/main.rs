@@ -3,14 +3,16 @@ use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
-    MemuAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development, new_hot_keys,
-    register_extra_languages,
+    MemuAction, PaletteAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development,
+    new_hot_keys, register_extra_languages,
 };
 use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, ServerToolsAction,
     SettingsAction, ThemeAction, ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
 };
-use crate::views::{ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window, open_settings_window};
+use crate::views::{
+    ZedisCommandPalette, ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window, open_settings_window,
+};
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, prelude::*, px, size,
@@ -48,6 +50,7 @@ pub struct Zedis {
     // views
     sidebar: Entity<ZedisSidebar>,
     content: Entity<ZedisContent>,
+    command_palette: Entity<ZedisCommandPalette>,
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
     _clear_expired_cache: Option<Task<()>>,
@@ -57,6 +60,7 @@ impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
         let content = cx.new(|cx| ZedisContent::new(window, cx));
+        let command_palette = cx.new(|cx| ZedisCommandPalette::new(window, cx));
         let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
             if let GlobalEvent::Notification(e) = event {
@@ -110,6 +114,7 @@ impl Zedis {
             sidebar,
             save_task: None,
             content,
+            command_palette,
             pending_notification: None,
             title_bar,
             theme_update_task: None,
@@ -181,8 +186,16 @@ impl Render for Zedis {
                     .child(self.content.clone())
                     .children(dialog_layer)
                     .children(notification_layer),
-            );
+            )
+            // Command palette overlays everything (absolute, full-size
+            // when open; zero-footprint when closed).
+            .child(self.command_palette.clone());
         content
+            .on_action(cx.listener(|this, _e: &PaletteAction, window, cx| {
+                this.command_palette.update(cx, |palette, cx| {
+                    palette.toggle(window, cx);
+                });
+            }))
             .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let action = *e;
 

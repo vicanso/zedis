@@ -23,6 +23,12 @@ pub enum MemuAction {
     About,
 }
 
+/// Command palette (⌘K). `Toggle` opens it (or closes if already open).
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum PaletteAction {
+    Toggle,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum EditorAction {
     Create,
@@ -118,6 +124,7 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
+        KeyBinding::new("cmd-k", PaletteAction::Toggle, None),
         KeyBinding::new("cmd-s", EditorAction::Save, None),
         KeyBinding::new("cmd-r", EditorAction::Reload, None),
         KeyBinding::new("cmd-n", EditorAction::Create, None),

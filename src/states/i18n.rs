@@ -32,6 +32,11 @@ pub fn i18n_servers<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("servers.{key}"), locale = locale).into()
 }
 
+pub fn i18n_command_palette<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("command_palette.{key}"), locale = locale).into()
+}
+
 pub fn i18n_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("editor.{key}"), locale = locale).into()
