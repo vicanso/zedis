@@ -1,0 +1,57 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](https://www.gpui.rs/) (the Zed UI framework) and `gpui-component`.
+
+## Commands
+
+- Build / typecheck: `cargo check`
+- Lint (the gate to satisfy locally): `cargo clippy --tests -- -D warnings` — CI runs `make lint` (`typos` + `cargo clippy --all-targets --all -- --deny=warnings`).
+- Format: `cargo fmt` (`make fmt`)
+- Tests: `cargo test` — run a subset by substring filter, e.g. `cargo test fuzzy`, `cargo test config::`.
+- Run dev: `make dev` (`bacon run`); with logs: `make debug` (`RUST_LOG=DEBUG`).
+- Release: `make release` (`cargo build --release --features mimalloc`).
+- Toolchain: Rust **1.95.0**, edition 2024.
+
+Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.expect("…")` or proper matching in test code, never `.unwrap()`.
+
+## Build-time locale parity gate (bites immediately)
+
+`build.rs` enforces that **every** `locales/<lang>.toml` has the exact same key set as `locales/en.toml`. The 8 locales are `en, zh, de, es, fr, ja, pt, ru`. Adding or removing any UI string means editing **all 8 files** or `cargo check` panics. `build.rs` only re-runs when `locales/` changes — `touch locales/en.toml` to force the check. Translate natively where a section is already translated in that locale (most are); English fallback only where the surrounding section is itself untranslated.
+
+## Workspace layout
+
+Cargo workspace: root binary crate `zedis-gui` (bin name `zedis`) plus `members = ["crates/*", "zedis-cmd-builder"]`.
+
+- `crates/zedis-ui` — reusable widgets (`ZedisCard`, `ZedisDialog`, `ZedisForm`, ...). **Separate crate**: it cannot use `crate::helpers::*` from the app. Platform-specific values (e.g. monospace font family) must be passed in by the caller.
+- `zedis-cmd-builder` — offline helper tool (`make build-cmd`).
+
+## Architecture
+
+**State (`src/states/`)** — the source of truth, GPUI entities.
+- `ZedisGlobalStore` / `ZedisAppState` (`app.rs`): app-wide config + selected server + view prefs. Persisted to `zedis.toml` via `update_app_state_and_save(cx, "action", |state, _| …)` (async, debounced). Add a field + getter/setter here to persist a new preference.
+- `ZedisServerState` (`server.rs` + `server/*.rs`): per-connection state — loaded keys, selected value, and all type-specific ops (`string/hash/list/set/zset/stream/json`). One-shot Redis ops go through `self.spawn(ServerTask::…, op, on_done, cx)` or `exec_stream_op`. `reset()` clears it on server switch; `clear_if_removed()` drops it when the active server is deleted.
+- Events: `GlobalEvent` (notifications, `ServerSelected`, `ServerListUpdated`, `RouteChanged`) and `ServerEvent` (`ValueUpdated`, `KeySelected`, …) drive view updates via `cx.subscribe`. `ServerTask` is the async-task identity enum (add a variant + string mapping in `server/event.rs` for a new task).
+- i18n: `t!("section.key")` (rust-i18n). Use the `i18n_<section>(cx, key)` helpers in `states/i18n.rs`, each **individually** re-exported from `states.rs` (add both the fn and the `pub use` line for a new section).
+
+**Connection (`src/connection/`)** — `config.rs` holds `RedisServer` (server list persisted to `redis-servers.toml`, secrets encrypted; read through the in-memory `SERVER_CONFIG_MAP` ArcSwap cache via `get_servers()` / `get_server()`). The manager hands out pooled multiplexed connections. For **blocking commands** (`MONITOR`, `XREAD BLOCK`) use `open_single_connection(&server, db, /*use_cache=*/false)` — a dedicated connection so blocking never starves the shared pool.
+
+**Views (`src/views/`)** — one GPUI view per route/panel. `content.rs` is the route switcher and **drops/recreates views on route change** (`clear_views`), so in-view-only state does not survive navigation (persist via `ZedisAppState` if it must). `main.rs`'s `Zedis` root holds sidebar + content + title bar and registers global `.on_action` handlers.
+
+**Long-running background loops** (live tail, MONITOR): mirror the Monitor pattern — a cancellable `gpui::Task` stored on the *view*, a dedicated connection in a `cx.background_spawn` loop, a `smol::channel` ferrying batches to a foreground drainer that updates state. Dropping the `Task` (stop toggle / key or server switch / view teardown) cancels the loop and its connection. Always key-guard appends so a stale batch after a key switch is discarded.
+
+**Actions / keybindings**: gpui `#[derive(Action)]` enums in `helpers/action.rs` and `states/app.rs`; bound in `new_hot_keys()` (`helpers/action.rs`); dispatched via `.on_action(cx.listener(…))`, mostly on the `Zedis` root in `main.rs`.
+
+## GPUI gotchas (learned the hard way)
+
+- `gpui_component::list::ListItem` does **not** impl `InteractiveElement` — `.group()`, `.hover()`, `.tooltip()` won't compile on it. Wrap it in a stateful `div().id(...)`/`div().group(...)` and put the behavior there.
+- `InputState` placeholder / default-value strings must **not** contain `\n`. The single-line wrapped-lines cache sizes on the placeholder but renders the actual text, causing a byte-index panic. Put multi-line guidance in an adjacent `Label`, keep the input string single-line.
+- `IconName` (gpui-component) is a fixed enum — verify a variant exists before using it; custom SVGs live in `crate::assets::CustomIconName`. Theme-derived colors must be read before a `move` render closure (can't borrow `cx` inside).
+
+## Conventions
+
+- UI components: **prefer `gpui-component`'s built-in components first**. Only when `gpui-component` has no suitable component, use the shared widgets in `crates/zedis-ui` (`ZedisCard`, `ZedisDialog`, `ZedisForm`, ...). Hand-rolling a one-off widget is a last resort.
+- Maintain README parity: `README.md` and `README_zh.md` are both kept in sync when features change.
+- Destructive Redis ops (`FLUSHALL`, `XGROUP DESTROY`, key/server delete, …) route through a confirm dialog (`ZedisDialog::new_alert` + `dialog_button_props`); production-tagged servers escalate the wording.
+- Keep the dependency surface lean (e.g. fuzzy matching is hand-rolled, Lua highlighting registers tree-sitter manually) — prefer a small in-crate implementation over a new dependency for self-contained needs.

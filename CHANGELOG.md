@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.0](https://github.com/vicanso/zedis/compare/v0.3.4..v0.4.0) - 2026-05-16
+
+### ⛰️  Features
+
+- Support stream consumer group management and live tailing - ([10a9ae1](https://github.com/vicanso/zedis/commit/10a9ae1bb38c45f476322ad4403071afcf605412))
+- Implement command palette (cmd+k) with fuzzy search - ([58d3396](https://github.com/vicanso/zedis/commit/58d3396d5a6d39aaab6f872dbae945c881b873b6))
+- Support batch insertion via csv/tsv paste for collections - ([7c0c98f](https://github.com/vicanso/zedis/commit/7c0c98feedeab403f0f9ac82e1fe6ad211c62aeb))
+- Support grouping and sorting for server configurations - ([637b288](https://github.com/vicanso/zedis/commit/637b288486d3c7dd2e990489b1368b2a50b63923))
+- Add lua script editor - ([02ecf0b](https://github.com/vicanso/zedis/commit/02ecf0b68f7fbedc9cf357a33497ba50204389cd))
+- Add redis function editor - ([58faeb2](https://github.com/vicanso/zedis/commit/58faeb2742c66a1ff6ece942e849b7ac11a0adf7))
+- Add redis search editor and query builder - ([69cd7a0](https://github.com/vicanso/zedis/commit/69cd7a06a8ab99adc3ea29ca8ec0d355c5b43f00))
+- Record modification history in memory for data rollback - ([a7de736](https://github.com/vicanso/zedis/commit/a7de73621fa7ace7e27a25aeac0bb74733a2326c))
+- Support editing binary data via Hex editor - ([04c5c87](https://github.com/vicanso/zedis/commit/04c5c87c462141198753177eeed1085327fce4c3))
+- Add json path filtering support for json data - ([89b6398](https://github.com/vicanso/zedis/commit/89b6398004e755fb51041cbb5a4829bd42817d94))
+- Display ttl for keys in the keytree view - ([f5c4c82](https://github.com/vicanso/zedis/commit/f5c4c8234f753fec89f97274252d0926ba66a08f))
+- Add key heat score for memory analysis - ([c329457](https://github.com/vicanso/zedis/commit/c329457f25d141b54f416f8a06547150bb87f757))
+- Add cluster topology visualization and replication lag monitoring - ([571737b](https://github.com/vicanso/zedis/commit/571737bc316a08aeed565d23624741d17effdeae))
+- Add redis 6+ acl management and connection safety features - ([1d17fc4](https://github.com/vicanso/zedis/commit/1d17fc4ac3297ba902bd109e399b3ddf6c32b972))
+- Support data import and export functionality - ([d600c37](https://github.com/vicanso/zedis/commit/d600c37c6c9ce6408535c595f8b40c4f5e6ace4f))
+
+### 🐛 Bug Fixes
+
+- Resolve issue where table fails to load more data ([#82](https://github.com/orhun/git-cliff/issues/82)) - ([015930b](https://github.com/vicanso/zedis/commit/015930b0c90ccbaa34c805e4e12fee812d55ae15))
+
+### 🚜 Refactor
+
+- Optimize the display of server groups - ([3d588b9](https://github.com/vicanso/zedis/commit/3d588b9cc8c94aea2a6e1caafb9b014d536488d8))
+
 ## [0.3.4](https://github.com/vicanso/zedis/compare/v0.3.3..v0.3.4) - 2026-04-26
 
 ### ⛰️  Features

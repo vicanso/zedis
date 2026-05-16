@@ -52,7 +52,8 @@
   - **媒体 & 十六进制**：原生预览图片（`PNG`、`JPG`、`WEBP`、`SVG`、`GIF`），二进制数据支持完全**可编辑**的 Hex 视图——粘贴 hex 文本（自动忽略空白、逗号、`0x` 前缀）保存时自动解码回字节流。每行字节数根据视口宽度自适应（16 / 24 / 32）。
 - **自定义脚本查看器**：通过外部 Shell 命令对任意 Redis 值进行自定义解码。配置包含占位符（`{KEY}`、`{VALUE}`、`{HEX}`、`{RAW_FILE}`）的命令模板，Zedis 将在 Unix/macOS 上通过 `sh -c`、在 Windows 上通过 `cmd /c` 执行该命令，并将标准输出作为格式化结果显示。适用于 base64、自定义二进制协议或 `$PATH` 中的任意工具，支持按服务器配置精确匹配、前缀、后缀或正则表达式的键名匹配规则。
 - **Hash 字段级 TTL**（Redis 7.4+）：通过 `HEXPIRE` / `HPERSIST` 为 Hash 中的特定字段设置独立过期时间，无需为了让部分字段过期而重新设计数据模型。
-- **Redis Streams**：完整支持 Redis Streams——浏览流条目、查看消费者组与待处理消息（Pending Entries），并通过 `XINFO` 查看流元数据，全程无需离开 GUI。
+- **Redis Streams**：完整 Stream 支持——浏览流条目、**实时跟踪**新消息（`XREAD BLOCK`，环形缓冲，热流也不会撑爆内存）、通过 `XINFO` 查看消费者组与待处理消息（Pending Entries），并管理消费者组（`XGROUP CREATE` / `SETID` / `DESTROY`，销毁带确认保护）——全程无需离开 GUI。
+- **批量粘贴**：一次性向 Hash / List / Set / ZSet 添加大量条目——粘贴 TSV 或 CSV（优先 Tab，回退逗号，逐单元格 trim），Zedis 会按行走正常的 `HSET` / `RPUSH` / `SADD` / `ZADD` 路径写入。
 - **Pub/Sub**：内置订阅/发布界面，支持订阅频道模式、实时接收消息，并可直接在 GUI 中发布消息，无需切换到 `redis-cli`。
 - **本地写入历史**：string 类型每次保存时自动在内存中保留最近 10 个历史版本（按 key 隔离），一键即可将旧版本载入编辑器，预览或回滚后再保存。纯客户端记录（不占用 Redis 存储），仅会话内有效，key 被删除或切换服务器时自动清理。
 - **RediSearch 浏览器**（模块）：专用面板覆盖 `FT.*` 命令族——`FT._LIST` 列出索引、`FT.INFO` 查看 schema 与统计（含 indexing 进度与 `type mismatch` 失败计数，直接解释"明明有数据却 0 docs"的原因）、原始 `FT.SEARCH` 配合 `HIGHLIGHT` / `RETURN` / `LIMIT` chip，或切换到 `FT.AGGREGATE` 跑单层 `GROUPBY` + `REDUCE`（`COUNT` / `SUM` / `AVG` / `QUANTILE` / `TOLIST` 等）。索引创建走结构化表单（HASH / JSON、prefix、每字段 SORTABLE / NOSTEM / NOINDEX 切换），同时支持 alter / drop，全部不需离开 app。未加载 RediSearch 模块的服务器自动隐藏入口。
@@ -66,6 +67,8 @@
 - **深度诊断**：追踪慢日志，通过关键字过滤实时监控 `MONITOR` 流，并通过直观的 GUI 管理活跃客户端（`CLIENT LIST/KILL`）。
 
 ### 🛡️ 企业级安全与效率
+- **命令面板**（`⌘K`）：键盘优先的模糊搜索，覆盖服务器与导航命令——无需鼠标即可切换连接或跳转到任意面板（Metrics、性能、内存、Config、ACL、RediSearch、Functions、Lua 脚本、设置……）。方向键移动、Enter 执行、Esc 关闭。
+- **服务器分组与排序**：把连接整理进可折叠的命名分组，组内卡片可重排，单个连接可导出为 JSON 分享（默认剥离凭据，可选包含密钥用于个人备份）。折叠状态跨会话保留。
 - **只读模式**：锁定连接，防止在生产环境中误操作写入数据。
 - **ACL 用户管理**（Redis 6+）：完整覆盖 `ACL` 生命周期——列出用户、查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设工具栏（Full access / Read-only / Disabled）以及可切换的 chip（`+@read`、`-@dangerous` 等命令类别 + key/频道通配符）进行编辑。
 - **连接安全**：每个服务器可配置 tag（PROD / DEV / STAGING）与颜色，标识同步显示在侧栏与状态栏。危险命令（`FLUSHALL`、`FLUSHDB`、`CONFIG SET`、`SHUTDOWN`、`DEBUG`、`SCRIPT FLUSH`、`KEYS *`、批量 `DEL`…）在执行前会被拦截，对 PROD 标签的服务器使用更严肃的确认文案。
