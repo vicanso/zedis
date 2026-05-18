@@ -18,6 +18,7 @@
 //! returns a printable, pretty-formatted result. Designed to work for keys
 //! stored as plain strings — no ReJSON module required.
 
+use serde::de::IgnoredAny;
 use serde_json::Value;
 use serde_json_path::JsonPath;
 
@@ -62,10 +63,28 @@ pub fn run_jsonpath(raw: &str, path: &str) -> JsonPathOutcome {
     }
 }
 
-/// Cheap check: is this string parseable as JSON? Used to decide whether to
-/// show the JSONPath input above the value editor at all.
-pub fn is_json(raw: &str) -> bool {
-    serde_json::from_str::<Value>(raw).is_ok()
+/// Is this string a JSON *container* (object or array)? Used to decide
+/// whether to show the JSONPath input above the value editor.
+///
+/// Bare JSON scalars (`123`, `"abc"`, `true`, `null`) are valid JSON per
+/// RFC 8259 but have no structure to query — the only matching path is
+/// `$`, which just echoes the scalar back — so they deliberately return
+/// `false` and the JSONPath bar stays hidden for them.
+pub fn is_json_container(raw: &str) -> bool {
+    // Fast path: the only JSON values with queryable structure start
+    // with `{` or `[`. Scalars, plain text and binary-as-text (the
+    // common case) are rejected here in O(1) without invoking the
+    // parser at all.
+    if !matches!(raw.trim_start().as_bytes().first(), Some(b'{' | b'[')) {
+        return false;
+    }
+    // It looks like a container — confirm it's well-formed JSON, but
+    // validate with `IgnoredAny` so serde_json only scans/validates
+    // tokens instead of allocating a full `Value` DOM. The DOM is
+    // built once, later, only if the user actually runs a query
+    // (`run_jsonpath`), so a large value is never DOM-parsed just to
+    // decide whether to show the bar.
+    serde_json::from_str::<IgnoredAny>(raw).is_ok()
 }
 
 fn format_value(v: &Value) -> String {
@@ -93,8 +112,21 @@ mod tests {
     #[test]
     fn rejects_non_json() {
         assert!(matches!(run_jsonpath("not json", "$.foo"), JsonPathOutcome::NotJson));
-        assert!(!is_json("not json"));
-        assert!(is_json(r#"{"a":1}"#));
+        assert!(!is_json_container("not json"));
+        assert!(is_json_container(r#"{"a":1}"#));
+        assert!(is_json_container("[1,2,3]"));
+        // Bare JSON scalars are valid JSON but have nothing to query —
+        // the JSONPath bar must stay hidden for them.
+        assert!(!is_json_container("123"));
+        assert!(!is_json_container(r#""abc""#));
+        assert!(!is_json_container("true"));
+        assert!(!is_json_container("null"));
+        // Leading whitespace must not defeat the fast-path container
+        // check, and malformed "looks-like-JSON" still rejects.
+        assert!(is_json_container(" \n\t {\"a\":1}"));
+        assert!(is_json_container("  [1, 2]  "));
+        assert!(!is_json_container("{not valid"));
+        assert!(!is_json_container(""));
     }
 
     #[test]

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::{JsonPathOutcome, bytes_to_hex_text, get_font_family, is_json, parse_hex_text, run_jsonpath};
+use crate::helpers::{
+    JsonPathOutcome, bytes_to_hex_text, get_font_family, is_json_container, parse_hex_text, run_jsonpath,
+};
 use crate::states::{
     DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
 };
@@ -439,7 +441,7 @@ impl ZedisBytesEditor {
             match &redis_bytes_value {
                 Some(v) if v.format == DataFormat::Json => true,
                 _ => match &self.data {
-                    ByteEditorData::Text(t) => is_json(t.as_ref()),
+                    ByteEditorData::Text(t) => is_json_container(t.as_ref()),
                     _ => false,
                 },
             }

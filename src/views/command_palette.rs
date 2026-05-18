@@ -130,8 +130,7 @@ impl ZedisCommandPalette {
             let state = cx.global::<ZedisGlobalStore>().read(cx);
             (state.selected_server().is_some(), state.route())
         };
-        let in_server_context =
-            has_server && !matches!(current_route, Route::Home | Route::Settings);
+        let in_server_context = has_server && !matches!(current_route, Route::Home | Route::Settings);
 
         // (i18n key, route) — order defines empty-query display order.
         let commands: [(&str, Route); 13] = [
@@ -392,32 +391,26 @@ impl Render for ZedisCommandPalette {
                         // scrollbar overlays the list (not the window),
                         // and stays a sibling of the scroller so it
                         // doesn't scroll with the content.
-                        div()
-                            .relative()
-                            .child(list)
-                            .child(
-                                // `ScrollbarShow::Always`: the theme
-                                // default is `Scrolling`, which only
-                                // shows the bar for a brief fade after
-                                // the offset *changes* — and keyboard
-                                // nav only changes the offset once
-                                // selection is pushed past the viewport
-                                // (near the bottom), so the bar appeared
-                                // to show "only at the bottom". Always
-                                // keeps it visible the whole time the
-                                // list overflows; it still auto-hides
-                                // when the list fits (scrollbar.rs:574).
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .right_0()
-                                    .bottom_0()
-                                    .child(
-                                        Scrollbar::vertical(&self.scroll_handle)
-                                            .scrollbar_show(ScrollbarShow::Always),
-                                    ),
-                            ),
+                        div().relative().child(list).child(
+                            // `ScrollbarShow::Always`: the theme
+                            // default is `Scrolling`, which only
+                            // shows the bar for a brief fade after
+                            // the offset *changes* — and keyboard
+                            // nav only changes the offset once
+                            // selection is pushed past the viewport
+                            // (near the bottom), so the bar appeared
+                            // to show "only at the bottom". Always
+                            // keeps it visible the whole time the
+                            // list overflows; it still auto-hides
+                            // when the list fits (scrollbar.rs:574).
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                        ),
                     ),
             )
             .into_any_element()
