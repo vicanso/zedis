@@ -20,8 +20,8 @@
 use crate::connection::get_servers;
 use crate::helpers::fuzzy_score;
 use crate::states::{Route, ZedisGlobalStore, i18n_command_palette};
-use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, Window, div, prelude::*, px};
-use gpui_component::scroll::ScrollableElement;
+use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
+use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
 
 /// What activating a palette row does.
@@ -52,6 +52,12 @@ pub struct ZedisCommandPalette {
     /// independent global action handler that has no `Window`, so the
     /// actual input focus is deferred to the next render.
     pending_focus: bool,
+    /// Scroll handle for the results list. The list overflows the
+    /// fixed-height panel, so keyboard navigation calls
+    /// `scroll_to_item` to keep the selected row in view — otherwise
+    /// selection silently moves off-screen and looks like it ran past
+    /// the last element.
+    scroll_handle: ScrollHandle,
 }
 
 impl ZedisCommandPalette {
@@ -63,6 +69,7 @@ impl ZedisCommandPalette {
             selected: 0,
             focus_handle: cx.focus_handle(),
             pending_focus: false,
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -75,6 +82,10 @@ impl ZedisCommandPalette {
         if self.open {
             self.selected = 0;
             self.pending_focus = true;
+            // The ScrollHandle keeps its offset across open/close, so
+            // without this the list stays scrolled where it was last
+            // time while the selection is back at the top.
+            self.scroll_handle.set_offset(gpui::Point::default());
         }
         cx.notify();
     }
@@ -108,6 +119,20 @@ impl ZedisCommandPalette {
             });
         }
 
+        // Home/Settings are global; every other view operates on the
+        // selected connection (this mirrors the server-scoped status-bar
+        // "Tools" menu, which is only visible in a server context).
+        // `selected_server` can linger in state after navigating back to
+        // Home (only the sidebar Home button clears it), so a server is
+        // "in context" only when a connection is selected AND we're not
+        // on a global page — otherwise Home would still list everything.
+        let (has_server, current_route) = {
+            let state = cx.global::<ZedisGlobalStore>().read(cx);
+            (state.selected_server().is_some(), state.route())
+        };
+        let in_server_context =
+            has_server && !matches!(current_route, Route::Home | Route::Settings);
+
         // (i18n key, route) — order defines empty-query display order.
         let commands: [(&str, Route); 13] = [
             ("cmd_home", Route::Home),
@@ -125,6 +150,15 @@ impl ZedisCommandPalette {
             ("cmd_settings", Route::Settings),
         ];
         for (key, route) in commands {
+            // Don't offer to navigate to the page we're already on
+            // (e.g. no "go to Home" while on Home).
+            if route == current_route {
+                continue;
+            }
+            let needs_server = !matches!(route, Route::Home | Route::Settings);
+            if needs_server && !in_server_context {
+                continue;
+            }
             let label = i18n_command_palette(cx, key);
             items.push(PaletteItem {
                 label: label.clone(),
@@ -162,6 +196,13 @@ impl ZedisCommandPalette {
                 }
                 PaletteCommand::Route(route) => {
                     state.go_to(route, cx);
+                    // Mirror the sidebar Home button: returning to Home
+                    // leaves the server context, so clear the selected
+                    // connection — otherwise the sidebar keeps the old
+                    // server row highlighted instead of Home.
+                    if route == Route::Home {
+                        state.clear_selected_server(cx);
+                    }
                 }
             });
         });
@@ -206,7 +247,21 @@ impl Render for ZedisCommandPalette {
         let radius = theme.radius;
         let radius_lg = theme.radius_lg;
 
-        let mut list = v_flex().w_full().gap_0p5();
+        // Rows are direct children of this tracked, scrollable
+        // container so `scroll_handle.scroll_to_item(ix)` lines up with
+        // the row index. `max_h` caps the list and triggers scrolling;
+        // because the panel is no longer stretched (backdrop uses
+        // `items_start`), the list sizes to its content below the cap,
+        // so the popup is adaptive on Home. The sibling scrollbar
+        // (added on the wrapper) reads the same handle.
+        let mut list = v_flex()
+            .id("zedis-palette-list")
+            .w_full()
+            .gap_0p5()
+            .p_1()
+            .max_h(px(360.))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll_handle);
         if count == 0 {
             list = list.child(
                 Label::new(i18n_command_palette(cx, "empty"))
@@ -218,17 +273,31 @@ impl Render for ZedisCommandPalette {
             for (row, &item_idx) in order.iter().enumerate() {
                 let it = &items[item_idx];
                 let is_sel = row == selected;
+                let cmd = it.command.clone();
                 let mut r = gpui_component::h_flex()
+                    .id(("zedis-palette-row", row))
                     .w_full()
                     .items_center()
                     .gap_2()
                     .px_2()
                     .py_1p5()
                     .rounded(radius)
+                    .cursor_pointer()
+                    .hover(|this| this.bg(active))
                     .child(Label::new(it.label.clone()).text_sm())
                     .when(!it.hint.is_empty(), |this| {
                         this.child(Label::new(it.hint.clone()).text_xs().text_color(muted))
-                    });
+                    })
+                    // Rows are stateful interactive divs so a click runs
+                    // the command directly. stop_propagation keeps the
+                    // click from bubbling to the backdrop close handler.
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.execute(&cmd, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    );
                 if is_sel {
                     r = r.bg(active);
                 }
@@ -247,6 +316,11 @@ impl Render for ZedisCommandPalette {
             .size_full()
             .flex()
             .justify_center()
+            // The backdrop is a flex row; its default cross-axis
+            // align is `stretch`, which would stretch the panel to
+            // its `max_h` and leave Home looking half-empty. Align to
+            // the top so the panel stays content-sized (adaptive).
+            .items_start()
             .bg(gpui::hsla(0., 0., 0., 0.4))
             .track_focus(&self.focus_handle)
             .on_mouse_down(
@@ -265,12 +339,18 @@ impl Render for ZedisCommandPalette {
                     "down" => {
                         if count > 0 {
                             this.selected = (selected + 1).min(count - 1);
+                            // Keep the (clamped) selection on-screen;
+                            // without this the highlight scrolls out of
+                            // the fixed-height list and looks like it
+                            // ran past the last item.
+                            this.scroll_handle.scroll_to_item(this.selected);
                             cx.notify();
                         }
                         cx.stop_propagation();
                     }
                     "up" => {
                         this.selected = selected.saturating_sub(1);
+                        this.scroll_handle.scroll_to_item(this.selected);
                         cx.notify();
                         cx.stop_propagation();
                     }
@@ -307,7 +387,38 @@ impl Render for ZedisCommandPalette {
                             .border_color(border)
                             .child(gpui_component::input::Input::new(&self.query)),
                     )
-                    .child(div().p_1().overflow_y_scrollbar().child(list)),
+                    .child(
+                        // Relative wrapper so the absolutely-positioned
+                        // scrollbar overlays the list (not the window),
+                        // and stays a sibling of the scroller so it
+                        // doesn't scroll with the content.
+                        div()
+                            .relative()
+                            .child(list)
+                            .child(
+                                // `ScrollbarShow::Always`: the theme
+                                // default is `Scrolling`, which only
+                                // shows the bar for a brief fade after
+                                // the offset *changes* — and keyboard
+                                // nav only changes the offset once
+                                // selection is pushed past the viewport
+                                // (near the bottom), so the bar appeared
+                                // to show "only at the bottom". Always
+                                // keeps it visible the whole time the
+                                // list overflows; it still auto-hides
+                                // when the list fits (scrollbar.rs:574).
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .child(
+                                        Scrollbar::vertical(&self.scroll_handle)
+                                            .scrollbar_show(ScrollbarShow::Always),
+                                    ),
+                            ),
+                    ),
             )
             .into_any_element()
     }
