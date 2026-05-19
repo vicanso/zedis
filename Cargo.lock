@@ -11114,6 +11114,7 @@ dependencies = [
  "image",
  "indexmap",
  "infer",
+ "lsp-types",
  "lz4_flex",
  "mimalloc",
  "os_info",

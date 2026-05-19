@@ -35,7 +35,9 @@ pub use font::*;
 pub use fs::*;
 pub use fuzzy::fuzzy_score;
 pub use hex::{bytes_to_hex_text, parse_hex_text};
-pub use jsonpath::{JsonPathOutcome, is_json_container, run_jsonpath};
+pub use jsonpath::{
+    JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,
+};
 pub use string::*;
 pub use syntax::register_extra_languages;
 pub use tag::resolve_tag_color;

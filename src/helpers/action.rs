@@ -29,6 +29,17 @@ pub enum PaletteAction {
     Toggle,
 }
 
+/// JSONPath query bar. `AcceptCompletion` is bound to `tab` in the
+/// `JsonPathBar` key context: it accepts the highlighted completion
+/// when the menu is open, otherwise it propagates so `tab` keeps its
+/// normal focus-movement behaviour. Needed because gpui-component
+/// binds `tab` → focus-next as an *action* at the Root, which is
+/// dispatched before any key-down listener.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum JsonPathAction {
+    AcceptCompletion,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum EditorAction {
     Create,
@@ -131,5 +142,9 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
         KeyBinding::new("cmd-j", EditorAction::Cmd, None),
         KeyBinding::new("cmd-f", EditorAction::Search, None),
+        // Scoped to the JSONPath bar so it only overrides `tab` there;
+        // the handler propagates when no completion menu is open, so
+        // normal focus movement still works.
+        KeyBinding::new("tab", JsonPathAction::AcceptCompletion, Some("JsonPathBar")),
     ]
 }

@@ -23,6 +23,7 @@ mod danger_confirm;
 mod editor;
 mod function_editor;
 mod hash_editor;
+mod jsonpath_completion;
 mod key_tree;
 mod kv_table;
 mod list_editor;

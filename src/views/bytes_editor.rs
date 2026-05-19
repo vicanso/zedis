@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::helpers::{
-    JsonPathOutcome, bytes_to_hex_text, get_font_family, is_json_container, parse_hex_text, run_jsonpath,
+    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, get_font_family, is_json_container, parse_hex_text,
+    run_jsonpath,
 };
 use crate::states::{
     DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
@@ -23,13 +24,17 @@ use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, im
 use gpui::{div, hsla, prelude::*};
 use gpui_component::button::Button;
 use gpui_component::highlighter::Language;
-use gpui_component::input::{Input, InputEvent, InputState, TabSize};
+use gpui_component::input::{CompletionProvider, Enter, Input, InputEvent, InputState, TabSize};
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{ActiveTheme, IndexPath, Sizable, h_flex, v_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
+
+use super::jsonpath_completion::{JsonDoc, JsonPathCompletionProvider};
 use tracing::info;
 
 // Constants for editor configuration
@@ -80,6 +85,11 @@ pub struct ZedisBytesEditor {
 
     /// JSONPath query input (only relevant when `is_json_value` is true).
     jsonpath_input: Entity<InputState>,
+
+    /// Lazily-parsed JSON document shared with the JSONPath completion
+    /// provider. Fed (raw text only) by `update_editor_data`; the DOM
+    /// is built on first completion and cached.
+    jsonpath_doc: Rc<RefCell<JsonDoc>>,
 
     /// Last JSONPath outcome, populated after the user hits Enter / Run.
     /// `None` ⇒ no query has been issued yet on the current value.
@@ -269,8 +279,10 @@ impl ZedisBytesEditor {
         let mut subscriptions = Vec::new();
 
         // Subscribe to server state changes to update editor when value changes
-        subscriptions.push(
-            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+        subscriptions.push(cx.subscribe_in(
+            &server_state,
+            window,
+            |this, _server_state, event, window, cx| match event {
                 ServerEvent::ValueLoaded | ServerEvent::ValueModeViewUpdated => {
                     this.update_editor_data(cx);
                     this.should_update_editor = true;
@@ -278,13 +290,22 @@ impl ZedisBytesEditor {
                 ServerEvent::ValueUpdated => {
                     this.update_editor_data(cx);
                 }
+                ServerEvent::KeySelected(_) => {
+                    // A different key invalidates the current JSONPath
+                    // query — clear the input (and any stale result) so
+                    // it doesn't carry over to an unrelated value.
+                    this.jsonpath_result = None;
+                    this.jsonpath_input.update(cx, |state, cx| {
+                        state.set_value(SharedString::default(), window, cx);
+                    });
+                }
                 ServerEvent::SoftWrapToggled(soft_wrap) => {
                     this.soft_wrap_changed = true;
                     this.soft_wrap = *soft_wrap;
                 }
                 _ => {}
-            }),
-        );
+            },
+        ));
 
         let soft_wrap = server_state.read(cx).soft_wrap();
 
@@ -322,8 +343,24 @@ impl ZedisBytesEditor {
         // JSONPath query bar — single-line input that re-evaluates on Enter.
         // We keep it as a separate InputState so it doesn't compete with the
         // main editor's focus or undo stack.
-        let jsonpath_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_editor(cx, "jsonpath_placeholder")));
+        let jsonpath_doc: Rc<RefCell<JsonDoc>> = Rc::new(RefCell::new(JsonDoc::default()));
+        // `clean_on_escape`: when the completion menu is closed, Esc
+        // clears the query input. If the menu is open, `InputState`'s
+        // escape handler closes the menu first and returns, so Esc
+        // dismisses the menu before it ever clears the text.
+        let jsonpath_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_editor(cx, "jsonpath_placeholder"))
+                .clean_on_escape()
+        });
+        {
+            // Context-aware key autocomplete. The provider shares the
+            // lazily-parsed document with the editor via `jsonpath_doc`.
+            let provider: Rc<dyn CompletionProvider> = Rc::new(JsonPathCompletionProvider::new(jsonpath_doc.clone()));
+            jsonpath_input.update(cx, |state, _| {
+                state.lsp.completion_provider = Some(provider);
+            });
+        }
         subscriptions.push(cx.subscribe_in(&jsonpath_input, window, |this, _, event, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.run_jsonpath_query(window, cx);
@@ -355,6 +392,7 @@ impl ZedisBytesEditor {
             server_state,
             readonly,
             jsonpath_input,
+            jsonpath_doc,
             jsonpath_result: None,
             jsonpath_result_editor,
             is_json_value: false,
@@ -448,6 +486,20 @@ impl ZedisBytesEditor {
         };
         // Clear stale results when switching to a different value.
         self.jsonpath_result = None;
+
+        // Feed the autocomplete provider: only the raw text, and only
+        // when the value is JSON-shaped (or RedisJSON). Parsing the DOM
+        // stays lazy inside the provider, so this keeps the
+        // "no DOM at detection" cost profile.
+        let json_text = if self.is_json_value {
+            match &self.data {
+                ByteEditorData::Text(t) => Some(t.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        self.jsonpath_doc.borrow_mut().set_raw(json_text);
     }
 
     /// When the editor is in hex-text mode, decode the user's input back to
@@ -580,6 +632,24 @@ impl ZedisBytesEditor {
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()
+            // `tab` accepts the highlighted completion (the menu auto-
+            // selects the first item). gpui-component binds `tab` →
+            // focus-next as an *action* at the Root, dispatched before
+            // any key-down listener, so a capture handler can't win —
+            // we override it with a deeper context-scoped keybinding
+            // (`JsonPathBar`) routed here. We forward `Enter` to the
+            // input's context menu, which returns `true` only when a
+            // completion menu is actually open; if it isn't, we
+            // propagate so `tab` keeps its normal focus movement.
+            .key_context("JsonPathBar")
+            .on_action(cx.listener(|this, _: &JsonPathAction, window, cx| {
+                let accepted = this.jsonpath_input.update(cx, |state, cx| {
+                    state.handle_action_for_context_menu(Box::new(Enter { secondary: false }), window, cx)
+                });
+                if accepted {
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 Label::new(i18n_editor(cx, "jsonpath_label"))
                     .text_xs()
