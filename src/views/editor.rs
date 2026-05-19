@@ -504,7 +504,7 @@ impl ZedisEditor {
         let reload_tooltip: SharedString = format!(
             "{} ({})",
             i18n_editor(cx, "reload_key_tooltip"),
-            humanize_keystroke("cmd-r")
+            humanize_keystroke("cmd-shift-r")
         )
         .into();
         // reload

@@ -48,6 +48,9 @@ pub enum EditorAction {
     UpdateTtl,
     Cmd,
     Search,
+    /// Re-scan the key tree with the current keyword/query mode
+    /// (manual on-demand refresh; `cmd-r`).
+    ReloadKeyTree,
     AutoRefresh(u32),
     /// Restore the value at the given history index (0 = most recent)
     /// into the bytes editor. The user still has to Save to push to Redis.
@@ -137,11 +140,15 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
         KeyBinding::new("cmd-k", PaletteAction::Toggle, None),
         KeyBinding::new("cmd-s", EditorAction::Save, None),
-        KeyBinding::new("cmd-r", EditorAction::Reload, None),
+        KeyBinding::new("cmd-r", EditorAction::ReloadKeyTree, None),
         KeyBinding::new("cmd-n", EditorAction::Create, None),
         KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
         KeyBinding::new("cmd-j", EditorAction::Cmd, None),
         KeyBinding::new("cmd-f", EditorAction::Search, None),
+        // Key-tree refresh is the primary, high-frequency action so it
+        // owns plain `cmd-r` (above); value reload is the rarer one and
+        // takes `cmd-shift-r`.
+        KeyBinding::new("cmd-shift-r", EditorAction::Reload, None),
         // Scoped to the JSONPath bar so it only overrides `tab` there;
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.

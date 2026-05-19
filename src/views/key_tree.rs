@@ -81,6 +81,8 @@ enum KeyTreeAction {
     ExportFolder(SharedString),
     ExportKey(SharedString),
     ImportFromFile,
+    /// Manual full refresh: re-scan with the current keyword/mode.
+    RefreshAll,
 }
 
 #[derive(Default)]
@@ -112,6 +114,14 @@ struct KeyTreeState {
     clear_selection: bool,
     /// Refresh interval in seconds
     refresh_interval_sec: u32,
+    /// (keyword, query_mode) the displayed tree was last scanned for.
+    /// Used to tell a refresh (same target) apart from a new query.
+    last_scan: Option<(SharedString, QueryMode)>,
+    /// Set by `handle_filter` for the duration of a same-target
+    /// refresh. Read (not consumed) by both collapse paths — the
+    /// `KeyScanReset` guard and the transient-empty branch in
+    /// `update_key_tree` — and cleared on `KeyScanFinished`.
+    preserve_expand_on_scan: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -606,14 +616,31 @@ impl ZedisKeyTree {
                     this.should_enter_add_key_mode = Some(true);
                     cx.notify();
                 }
+                ServerEvent::EditionActionTriggered(action) if action == &EditorAction::ReloadKeyTree => {
+                    // Manual refresh (cmd-r / ⋯ menu): re-scan with the
+                    // current keyword + query mode.
+                    this.handle_filter(cx);
+                }
                 ServerEvent::KeySelected(key) => {
                     this.update_expand(key.clone(), cx);
                 }
-                ServerEvent::KeyScanReset => {
+                ServerEvent::KeyScanReset if !this.state.preserve_expand_on_scan => {
+                    // New query / server switch: collapse + scroll to
+                    // top. A same-target refresh keeps the flag set
+                    // (cleared on KeyScanFinished) so this arm is
+                    // skipped and the expanded folders survive.
                     this.reset_expand(cx);
                 }
                 ServerEvent::KeyScanFinished => {
                     this.check_and_expand_keys(cx);
+                    // Record what the freshly-built tree was scanned
+                    // for, so a later same-target refresh is recognised
+                    // — including the very first refresh after the
+                    // initial load (which never calls `handle_filter`).
+                    this.state.last_scan = Some((this.state.keyword.clone(), this.state.query_mode));
+                    // Refresh complete: drop the preserve flag so the
+                    // next genuinely-new query collapses as normal.
+                    this.state.preserve_expand_on_scan = false;
                     cx.notify();
                 }
                 _ => {}
@@ -835,7 +862,11 @@ impl ZedisKeyTree {
 
                 let result = task.await;
                 let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
-                    if result.is_empty() {
+                    // `reset_scan` clears keys then emits KeyTreeUpdated,
+                    // so a refresh transiently rebuilds an empty tree.
+                    // Don't collapse for that — only a real "no results"
+                    // (new query, flag not set) resets expansion.
+                    if result.is_empty() && !view.state.preserve_expand_on_scan {
                         view.reset_expand(cx);
                     }
                     view.state.clear_selection = true;
@@ -866,6 +897,15 @@ impl ZedisKeyTree {
         }
 
         let keyword = self.keyword_state.read(cx).value();
+        // Same keyword + query mode as the displayed tree ⇒ this is a
+        // refresh, not a new query: keep the folder-expanded state
+        // (the `KeyScanReset` handler consumes this flag).
+        // `last_scan` is owned by the `KeyScanFinished` handler (so the
+        // *initial* load — which never calls `handle_filter` — also
+        // seeds it). Here we only read it to tell a refresh apart from
+        // a new query.
+        let scan_sig = (keyword.clone(), self.state.query_mode);
+        self.state.preserve_expand_on_scan = self.state.last_scan.as_ref() == Some(&scan_sig);
         self.state.keyword = keyword.clone();
 
         let server_id_clone = server_state.server_id().to_string();
@@ -1325,6 +1365,17 @@ impl ZedisKeyTree {
             .icon(Icon::new(IconName::Ellipsis))
             .dropdown_menu_with_anchor(Corner::TopRight, move |menu, window, cx| {
                 menu.menu_element_with_icon(
+                    Icon::new(CustomIconName::RotateCw),
+                    Box::new(KeyTreeAction::RefreshAll),
+                    move |_, cx| {
+                        Label::new(format!(
+                            "{} ({})",
+                            i18n_key_tree(cx, "refresh_keys"),
+                            humanize_keystroke("cmd-r")
+                        ))
+                    },
+                )
+                .menu_element_with_icon(
                     Icon::new(CustomIconName::ListChecvronsDownUp),
                     Box::new(KeyTreeAction::CollapseAllKeys),
                     move |_, cx| Label::new(i18n_key_tree(cx, "collapse_keys")),
@@ -1455,6 +1506,9 @@ impl Render for ZedisKeyTree {
                         option.refresh_interval_sec = Some(*interval);
                         save_session_option(server_id, option, cx);
                     }
+                }
+                KeyTreeAction::RefreshAll => {
+                    this.handle_filter(cx);
                 }
                 KeyTreeAction::CollapseAllKeys => {
                     this.server_state.update(cx, |state, cx| {

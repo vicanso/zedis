@@ -496,7 +496,10 @@ impl Render for ZedisContent {
                     })
                     .child(self.status_bar.clone())
                     .on_action(cx.listener(move |this, event: &EditorAction, _window, cx| match event {
-                        EditorAction::UpdateTtl | EditorAction::Reload | EditorAction::Create => {
+                        EditorAction::UpdateTtl
+                        | EditorAction::Reload
+                        | EditorAction::Create
+                        | EditorAction::ReloadKeyTree => {
                             this.server_state.update(cx, move |state, cx| {
                                 state.emit_editor_action(*event, cx);
                             });
