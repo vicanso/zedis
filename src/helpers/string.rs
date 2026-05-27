@@ -176,25 +176,35 @@ const SECONDS_PER_DAY: u64 = 86400;
 const SECONDS_PER_HOUR: u64 = 3600;
 const SECONDS_PER_MINUTE: u64 = 60;
 
+/// Compact, human-readable duration with **floor** to one decimal place:
+/// `6.9d`, `23.4h`, `4.5m`, `12s`. We deliberately avoid `{:.1}` rounding
+/// because it can carry e.g. 6.99 days up to `7.0d`, contradicting the
+/// Key Tree's `format_ttl_chip` (which floors to `6d`). The integer part
+/// here always agrees with the chip's single-letter form.
 pub fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
 
     if seconds >= SECONDS_PER_DAY {
-        let days = seconds as f64 / SECONDS_PER_DAY as f64;
-        return format!("{:.1}d", days);
+        return format_floor_tenths(seconds, SECONDS_PER_DAY, 'd');
     }
 
     if seconds >= SECONDS_PER_HOUR {
-        let hours = seconds as f64 / SECONDS_PER_HOUR as f64;
-        return format!("{:.1}h", hours);
+        return format_floor_tenths(seconds, SECONDS_PER_HOUR, 'h');
     }
 
     if seconds >= SECONDS_PER_MINUTE {
-        let minutes = seconds as f64 / SECONDS_PER_MINUTE as f64;
-        return format!("{:.1}m", minutes);
+        return format_floor_tenths(seconds, SECONDS_PER_MINUTE, 'm');
     }
 
     format!("{}s", seconds)
+}
+
+/// Floor `seconds / unit_secs` to one decimal place, then format as
+/// `"{whole}.{tenth}{suffix}"`. Pure integer math — no float rounding,
+/// so 6.99d formats as `6.9d`, never `7.0d`.
+fn format_floor_tenths(seconds: u64, unit_secs: u64, suffix: char) -> String {
+    let tenths = seconds.saturating_mul(10) / unit_secs;
+    format!("{}.{}{}", tenths / 10, tenths % 10, suffix)
 }
 
 pub fn redis_value_to_string(v: &Value) -> String {
@@ -248,5 +258,26 @@ pub fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     match haystack.get(..needle.len()) {
         Some(sub) => sub.eq_ignore_ascii_case(needle),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_duration;
+    use std::time::Duration;
+
+    #[test]
+    fn format_duration_floors_to_one_decimal_and_never_rounds_up() {
+        // ~6.99 days would round up to "7.0d" with `{:.1}`; floor keeps the
+        // integer part agreeing with the Key Tree chip's "6d".
+        assert_eq!(format_duration(Duration::from_secs(604_000)), "6.9d");
+        assert_eq!(format_duration(Duration::from_secs(7 * 86_400)), "7.0d");
+        // Sub-day precision is preserved (we lose it only when below 1m).
+        assert_eq!(format_duration(Duration::from_secs(3600 + 1800)), "1.5h");
+        // Just under an hour falls into the minute branch and still floors.
+        assert_eq!(format_duration(Duration::from_secs(3599)), "59.9m");
+        assert_eq!(format_duration(Duration::from_secs(60)), "1.0m");
+        assert_eq!(format_duration(Duration::from_secs(59)), "59s");
+        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
     }
 }
