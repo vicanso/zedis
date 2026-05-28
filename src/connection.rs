@@ -44,8 +44,7 @@ pub use dump_restore::{
 };
 pub use functions::{FunctionLibrary, function_delete, function_list, function_load};
 pub use latency::{
-    LatencyEvent, LatencySample, latency_graph, latency_history, latency_latest, latency_monitor_threshold,
-    latency_reset,
+    LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
 pub use lua_script::{ScriptRunOutcome, run_script};
 pub use manager::{

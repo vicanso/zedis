@@ -17,8 +17,9 @@ use crate::{
     states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
     views::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
-        ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor, ZedisProtoEditor, ZedisScriptEditor,
-        ZedisSearchManager, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal,
+        ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
+        ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServers, ZedisSlowlogEditor,
+        ZedisStatusBar, ZedisTerminal,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
@@ -61,6 +62,8 @@ pub struct ZedisContent {
     search_manager: Option<Entity<ZedisSearchManager>>,
     function_editor: Option<Entity<ZedisFunctionEditor>>,
     lua_script_library: Option<Entity<ZedisLuaScriptLibrary>>,
+    persistence: Option<Entity<ZedisPersistence>>,
+    keyspace_notifications: Option<Entity<ZedisKeyspaceNotifications>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
 
@@ -122,6 +125,12 @@ impl ZedisContent {
         }
         if route != Route::LuaScripts {
             self.lua_script_library.take();
+        }
+        if route != Route::Persistence {
+            self.persistence.take();
+        }
+        if route != Route::KeyspaceNotifications {
+            self.keyspace_notifications.take();
         }
     }
     /// Create a new content view with route-aware view management
@@ -193,6 +202,8 @@ impl ZedisContent {
             search_manager: None,
             function_editor: None,
             lua_script_library: None,
+            persistence: None,
+            keyspace_notifications: None,
             key_tree: None,
             key_tree_width,
             should_focus: false,
@@ -347,6 +358,28 @@ impl ZedisContent {
         div().size_full().child(lib)
     }
 
+    fn render_persistence(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = self
+            .persistence
+            .get_or_insert_with(|| {
+                debug!("Creating new persistence view");
+                cx.new(|cx| ZedisPersistence::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(view)
+    }
+
+    fn render_keyspace_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = self
+            .keyspace_notifications
+            .get_or_insert_with(|| {
+                debug!("Creating new keyspace notifications view");
+                cx.new(|cx| ZedisKeyspaceNotifications::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(view)
+    }
+
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().w_full().h_full().items_center().justify_center().child(
             div()
@@ -454,6 +487,8 @@ impl Render for ZedisContent {
                 let is_search = route == Route::Search;
                 let is_functions = route == Route::Functions;
                 let is_lua_scripts = route == Route::LuaScripts;
+                let is_persistence = route == Route::Persistence;
+                let is_keyspace_notifications = route == Route::KeyspaceNotifications;
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {
@@ -478,6 +513,10 @@ impl Render for ZedisContent {
                                     .when(is_lua_scripts, |this| {
                                         this.child(self.render_lua_script_library(window, cx))
                                     })
+                                    .when(is_persistence, |this| this.child(self.render_persistence(window, cx)))
+                                    .when(is_keyspace_notifications, |this| {
+                                        this.child(self.render_keyspace_notifications(window, cx))
+                                    })
                                     .when(
                                         !is_metrics
                                             && !is_slowlog
@@ -488,7 +527,9 @@ impl Render for ZedisContent {
                                             && !is_acl
                                             && !is_search
                                             && !is_functions
-                                            && !is_lua_scripts,
+                                            && !is_lua_scripts
+                                            && !is_persistence
+                                            && !is_keyspace_notifications,
                                         |this| this.child(self.render_editor(window, cx)),
                                     ),
                             ),

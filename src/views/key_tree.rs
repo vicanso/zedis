@@ -15,14 +15,14 @@
 use crate::{
     assets::CustomIconName,
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
-    db::{get_favorites_manager, get_search_history_manager},
+    db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
-        EditorAction, TtlChipKind, format_ttl_chip, get_font_family, humanize_keystroke, ttl_chip_kind,
-        validate_long_string, validate_ttl,
+        EditorAction, TtlChipKind, format_ttl_chip, get_font_family, humanize_keystroke, theme_color_for_tag,
+        ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
         KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
-        i18n_common, i18n_key_tree, save_session_option,
+        i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -83,6 +83,19 @@ enum KeyTreeAction {
     ImportFromFile,
     /// Manual full refresh: re-scan with the current keyword/mode.
     RefreshAll,
+    /// Open the key tag & note dialog for the given key (carried in
+    /// the variant payload because the right-click site dispatches
+    /// against the row's key, not the currently-selected one in the
+    /// editor — they can differ when the user right-clicks a row
+    /// other than the active selection).
+    EditKeyTag(SharedString),
+    /// Set (or clear) the tag colour filter applied to the visible
+    /// tree. Empty string means "clear" — distinct from any TagColor
+    /// variant so the dispatch arm has a single match path. The
+    /// payload is a `SharedString` not a `TagColor` because gpui
+    /// actions need `JsonSchema` and the colour enum sits in the
+    /// `db` layer, so we keep the wire format string-based.
+    SetTagFilter(SharedString),
 }
 
 #[derive(Default)]
@@ -122,6 +135,11 @@ struct KeyTreeState {
     /// `KeyScanReset` guard and the transient-empty branch in
     /// `update_key_tree` — and cleared on `KeyScanFinished`.
     preserve_expand_on_scan: bool,
+    /// Single-colour tag filter applied to the visible tree. `None`
+    /// shows all rows; `Some(color)` keeps only leaves with that tag
+    /// (folders stay so the path remains navigable even when the
+    /// folder's own descendants are filtered out).
+    selected_tag_filter: Option<TagColor>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -137,8 +155,56 @@ struct KeyTreeItem {
     /// = unknown/missing). `None` for folder nodes — folders don't have
     /// a meaningful aggregate TTL at the tree level.
     ttl_secs: Option<i64>,
+    /// Client-side tag colour, pre-resolved from
+    /// `KeyMetadataManager::records` at tree-build time so render_item
+    /// stays O(1) per row. Folders never carry a tag (aggregate tags
+    /// would be a separate v2 feature).
+    tag: Option<TagColor>,
+    /// Free-form note. Empty when there's no annotation. Rendered as a
+    /// hover tooltip on the row label so it doesn't steal layout
+    /// space from the type badge / TTL chip.
+    note: SharedString,
 }
 
+/// When a tag-colour filter is active, derive the input key list
+/// **directly from local metadata** rather than from the SCAN snapshot.
+/// SCAN is paginated and bounded — until it completes, the snapshot is
+/// a strict subset of the server's keyspace, so filtering after the
+/// scan would silently hide tagged keys that haven't been scanned yet.
+///
+/// For each tagged key we try to recover its `KeyType` from the SCAN
+/// snapshot (constant-time lookup via a `name → type` index built
+/// here). Keys outside the snapshot fall back to `KeyType::Unknown` —
+/// the row still renders (with a neutral icon) and a click opens the
+/// editor, which resolves the type lazily. Keys that have been deleted
+/// on the server but still carry local metadata also show up this way;
+/// that's intentional, since the loud "this key is gone" feedback
+/// helps the user spot dangling annotations.
+fn build_tagged_keys_list(
+    color: TagColor,
+    snapshot_keys: &[(SharedString, KeyType)],
+    metadata: &std::collections::HashMap<String, KeyMetadata>,
+) -> Vec<(SharedString, KeyType)> {
+    // O(1) type lookup — `metadata` may contain hundreds of entries on
+    // a heavily-annotated server, so a linear scan per entry would be
+    // wasteful even if the snapshot is small.
+    let type_by_key: std::collections::HashMap<&str, KeyType> =
+        snapshot_keys.iter().map(|(k, t)| (k.as_ref(), *t)).collect();
+    metadata
+        .iter()
+        .filter(|(_, m)| m.tag == Some(color))
+        .map(|(key, _)| {
+            let key_type = type_by_key.get(key.as_str()).copied().unwrap_or(KeyType::Unknown);
+            (SharedString::from(key.clone()), key_type)
+        })
+        .collect()
+}
+
+// Eight distinct concerns: input keys, keyword filter, expansion state,
+// separator, depth cap, TTL map, metadata map, and tag filter. Bundling
+// them into a struct would add more boilerplate than clarity since each
+// caller already constructs them in different scopes.
+#[allow(clippy::too_many_arguments)]
 fn new_key_tree_items(
     mut keys: Vec<(SharedString, KeyType)>,
     keyword: SharedString,
@@ -146,6 +212,15 @@ fn new_key_tree_items(
     separator: &str,
     max_key_tree_depth: usize,
     key_ttls: &AHashMap<SharedString, i64>,
+    // Pre-loaded client-side annotations for the current server.
+    // Looked up by exact key name when building leaf items so each
+    // row carries its own tag/note copy and `render_item` doesn't
+    // have to touch the manager per frame. Empty map is fine — no
+    // metadata simply means no badges.
+    metadata: &std::collections::HashMap<String, KeyMetadata>,
+    // Optional single-colour filter — when set, keys not carrying
+    // that exact tag are excluded from the resulting tree.
+    tag_filter: Option<TagColor>,
 ) -> Vec<KeyTreeItem> {
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
@@ -161,6 +236,20 @@ fn new_key_tree_items(
             continue;
         }
         let ttl_for_leaf = key_ttls.get(&key).copied();
+        let (tag_for_leaf, note_for_leaf) = match metadata.get(key.as_ref()) {
+            Some(m) => (m.tag, SharedString::from(m.note.clone())),
+            None => (None, SharedString::default()),
+        };
+        // Single-color tag filter — drop the key entirely (along with
+        // any synthesised parent folders) when it doesn't carry the
+        // selected colour. Folders that end up empty just disappear
+        // along with their leaves, which is correct: no need to keep
+        // a heading with zero matching descendants.
+        if let Some(filter) = tag_filter
+            && tag_for_leaf != Some(filter)
+        {
+            continue;
+        }
         if !key.contains(separator) {
             items.insert(
                 key.clone(),
@@ -169,6 +258,8 @@ fn new_key_tree_items(
                     label: key.clone(),
                     key_type,
                     ttl_secs: ttl_for_leaf,
+                    tag: tag_for_leaf,
+                    note: note_for_leaf,
                     ..Default::default()
                 },
             );
@@ -225,8 +316,11 @@ fn new_key_tree_items(
         }
         if let Some(mut key_tree_item) = key_tree_item.take() {
             // This is the deepest level for this key — guaranteed a leaf
-            // since no further segment was promoted. Stamp the live TTL.
+            // since no further segment was promoted. Stamp the live TTL
+            // and the client-side annotation (if any).
             key_tree_item.ttl_secs = ttl_for_leaf;
+            key_tree_item.tag = tag_for_leaf;
+            key_tree_item.note = note_for_leaf.clone();
             items.insert(key_tree_item.id.clone(), key_tree_item);
         }
     }
@@ -243,6 +337,13 @@ fn new_key_tree_items(
         let size = key_id.len() - label.len();
         let parent_id = if size == 0 { "" } else { &key_id[..(size - 1)] };
         let ttl_secs = key_ttls.get(&key_id).copied();
+        // Same lookup as the main leaf path; promoted leaves are
+        // standalone keys displaced from their slot by a same-named
+        // folder, so they still want their own annotation.
+        let (tag, note) = match metadata.get(key_id.as_ref()) {
+            Some(m) => (m.tag, SharedString::from(m.note.clone())),
+            None => (None, SharedString::default()),
+        };
         children_map
             .entry(parent_id.to_string())
             .or_default()
@@ -252,6 +353,8 @@ fn new_key_tree_items(
                 depth,
                 key_type,
                 ttl_secs,
+                tag,
+                note,
                 ..Default::default()
             });
     }
@@ -391,6 +494,15 @@ impl ListDelegate for KeyTreeDelegate {
         let selected_items_count = self.selected_items.len();
         let id = entry.id.clone();
         let readonly = self.readonly;
+        // Pre-resolve client-side annotation visuals before the
+        // ListItem builder chain — we need both the colour (for the
+        // left-edge bar) and the note (for hover tooltip) below, and
+        // theming reads can't borrow `cx` across the chain.
+        let tag_color = entry.tag.map(|c| theme_color_for_tag(c, cx));
+        let row_border = tag_color.unwrap_or(gpui::transparent_black());
+        let note = entry.note.clone();
+        let has_note = !note.is_empty();
+        let edit_tag_id = entry.id.clone();
         Some(
             ListItem::new(ix)
                 .font_family(get_font_family())
@@ -399,6 +511,11 @@ impl ListDelegate for KeyTreeDelegate {
                 .py_2()
                 .px_2()
                 .mb_1()
+                // 4px left bar carries the tag colour; transparent when
+                // untagged keeps row height identical to non-tagged
+                // rows (no jitter when tagging/untagging).
+                .border_l_4()
+                .border_color(row_border)
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
                     div()
@@ -473,6 +590,20 @@ impl ListDelegate for KeyTreeDelegate {
                                     move |_, cx| Label::new(i18n_key_tree(cx, "import_from_file_tooltip")),
                                 );
                             }
+                            // Tag & note editor — only meaningful on a
+                            // single leaf key. Folders aggregate tags
+                            // as a v2 concern (currently no schema for
+                            // that), and bulk-tagging a multi-select
+                            // wants its own dialog UX, so we hide both
+                            // and present a single-key flow here.
+                            if !is_folder && multi_selection_count == 0 {
+                                let tag_key = edit_tag_id.clone();
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::FilePenLine,
+                                    Box::new(KeyTreeAction::EditKeyTag(tag_key)),
+                                    move |_, cx| Label::new(i18n_key_tag(cx, "edit_menu_label")),
+                                );
+                            }
                             menu
                         })
                         .child(
@@ -484,8 +615,20 @@ impl ListDelegate for KeyTreeDelegate {
                                 .child(icon)
                                 .child(
                                     div()
+                                        .id(("ktree-label", ix.row))
                                         .flex_1()
                                         .min_w_0()
+                                        // Note tooltip on hover — only attached when
+                                        // there's actually a note, otherwise we'd
+                                        // get a useless empty tooltip on every row.
+                                        // The lambda owns its `note` clone so the
+                                        // tooltip survives label re-layout.
+                                        .when(has_note, |this| {
+                                            let note = note.clone();
+                                            this.tooltip(move |window, cx| {
+                                                gpui_component::tooltip::Tooltip::new(note.clone()).build(window, cx)
+                                            })
+                                        })
                                         .child(Label::new(entry.label.clone()).text_color(label_color).text_ellipsis()),
                                 )
                                 .when(show_check_icon, |this| {
@@ -841,6 +984,21 @@ impl ZedisKeyTree {
         let view_handle = cx.entity().downgrade();
         let keyword = self.state.keyword.clone();
 
+        // Snapshot client-side annotations for this server up-front so
+        // the background tree-build task doesn't have to re-enter the
+        // manager (which would also pull the DashMap guard onto the
+        // worker thread). Empty map when the table is empty or load
+        // fails — the tree still renders, just without colour bars.
+        let metadata_snapshot = {
+            let sid: &str = self.state.server_id.as_ref();
+            if sid.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                get_key_metadata_manager().records(sid).unwrap_or_default()
+            }
+        };
+        let tag_filter_snapshot = self.state.selected_tag_filter;
+
         self.key_tree_list_state.update(cx, move |_state, cx| {
             let app_state = cx.global::<ZedisGlobalStore>().value(cx);
             let separator = app_state.key_separator().to_string();
@@ -848,13 +1006,29 @@ impl ZedisKeyTree {
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
+                    // Filter-source switch: when a colour filter is
+                    // active, the input key list comes from local
+                    // metadata (covers every tagged key regardless of
+                    // SCAN progress); otherwise the SCAN snapshot is
+                    // the source as usual.
+                    let raw_keys = (*keys_snapshot).clone();
+                    let keys_input = match tag_filter_snapshot {
+                        Some(color) => build_tagged_keys_list(color, &raw_keys, &metadata_snapshot),
+                        None => raw_keys,
+                    };
                     let items = new_key_tree_items(
-                        (*keys_snapshot).clone(),
+                        keys_input,
                         keyword,
                         expanded_items,
                         &separator,
                         max_key_tree_depth,
                         &key_ttls_snapshot,
+                        &metadata_snapshot,
+                        // The internal tag-filter check is a no-op in
+                        // the filtered branch (every input row already
+                        // matches), and stays as the source of truth
+                        // when no upstream filtering happened.
+                        tag_filter_snapshot,
                     );
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
@@ -886,6 +1060,36 @@ impl ZedisKeyTree {
 
     /// Handle filter/search action when user submits keyword
     ///
+    /// Patch one row's `tag` + `note` from the latest manager snapshot,
+    /// without rebuilding the whole tree. Falls back to a full rebuild
+    /// when a tag filter is active because the row's *visibility* now
+    /// depends on its tag — a colour change can require the row to
+    /// appear or disappear, which the linear patch can't model.
+    ///
+    /// O(items) linear scan — `items` caps at a few thousand and the
+    /// search is trivial, so we don't bother with an id→index map.
+    fn refresh_metadata_for_key(&mut self, key: &SharedString, cx: &mut Context<Self>) {
+        if self.state.selected_tag_filter.is_some() {
+            // Filter-aware path: visibility may flip → full rebuild.
+            self.handle_filter(cx);
+            return;
+        }
+        let server_id = self.state.server_id.clone();
+        let fresh = get_key_metadata_manager()
+            .get(server_id.as_ref(), key.as_ref())
+            .unwrap_or_default()
+            .unwrap_or_default();
+        let target = key.clone();
+        self.key_tree_list_state.update(cx, |state, cx| {
+            let items = &mut state.delegate_mut().items;
+            if let Some(item) = items.iter_mut().find(|i| i.id == target) {
+                item.tag = fresh.tag;
+                item.note = SharedString::from(fresh.note);
+            }
+            cx.notify();
+        });
+    }
+
     /// Delegates to server state to perform the actual filtering based on
     /// current query mode. Ignores if a scan is already in progress.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
@@ -1360,6 +1564,11 @@ impl ZedisKeyTree {
         let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
         let refresh_interval_sec = self.state.refresh_interval_sec;
 
+        // Capture the tag-filter state up-front so the `move` closure
+        // below sees a stable snapshot — the submenu builder runs each
+        // time the dropdown opens, not every render frame.
+        let tag_filter_has_records = get_key_metadata_manager().has_any_records(server_id.as_str());
+        let tag_filter_active = self.state.selected_tag_filter;
         let more_dropdown = Button::new("key-tree-more-dropdown")
             .outline()
             .icon(Icon::new(IconName::Ellipsis))
@@ -1413,6 +1622,42 @@ impl ZedisKeyTree {
                         submenu
                     },
                 )
+                // Tag colour filter — hidden until the user has at
+                // least one tagged key. Lives inside the "more" menu
+                // (not as a top-level toolbar button) so the search
+                // input doesn't lose width on narrow windows.
+                .when(tag_filter_has_records, |this| {
+                    this.submenu_with_icon(
+                        Some(Icon::new(CustomIconName::SwatchBook)),
+                        i18n_key_tag(cx, "filter_button_tooltip"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            let mut submenu = submenu.menu_element_with_check(
+                                tag_filter_active.is_none(),
+                                Box::new(KeyTreeAction::SetTagFilter(SharedString::default())),
+                                move |_, cx| Label::new(i18n_key_tag(cx, "filter_all")),
+                            );
+                            for color in TagColor::ALL {
+                                let label_key = match color {
+                                    TagColor::Red => "color_red",
+                                    TagColor::Orange => "color_orange",
+                                    TagColor::Yellow => "color_yellow",
+                                    TagColor::Green => "color_green",
+                                    TagColor::Blue => "color_blue",
+                                    TagColor::Purple => "color_purple",
+                                };
+                                let color_name: SharedString = color.as_str().into();
+                                submenu = submenu.menu_element_with_check(
+                                    tag_filter_active == Some(color),
+                                    Box::new(KeyTreeAction::SetTagFilter(color_name)),
+                                    move |_, cx| Label::new(i18n_key_tag(cx, label_key)),
+                                );
+                            }
+                            submenu
+                        },
+                    )
+                })
                 .menu_element_with_icon(
                     Icon::new(CustomIconName::Rss),
                     Box::new(KeyTreeAction::ChangeChannelMode),
@@ -1528,6 +1773,40 @@ impl Render for ZedisKeyTree {
                 }
                 KeyTreeAction::Clear => {
                     this.handle_clear_history(cx);
+                }
+                KeyTreeAction::EditKeyTag(key) => {
+                    // Right-click → "Edit tag & note…". Callback patches
+                    // just the affected row from the manager's fresh
+                    // snapshot — no full tree rebuild for the common
+                    // case (no active tag filter). `refresh_metadata_for_key`
+                    // delegates to `handle_filter` automatically when a
+                    // filter IS active, since row visibility then
+                    // depends on the new tag colour.
+                    let server_id: SharedString = this.server_state.read(cx).server_id().to_string().into();
+                    let key = key.clone();
+                    let key_for_callback = key.clone();
+                    let weak_tree = cx.entity().downgrade();
+                    let on_done: crate::views::OnTagDialogDone = std::sync::Arc::new(move |cx| {
+                        if let Some(tree) = weak_tree.upgrade() {
+                            let key = key_for_callback.clone();
+                            tree.update(cx, |this, cx| this.refresh_metadata_for_key(&key, cx));
+                        }
+                    });
+                    crate::views::open_key_tag_dialog(server_id, key, window, cx, Some(on_done));
+                }
+                KeyTreeAction::SetTagFilter(color_name) => {
+                    let new_filter = if color_name.is_empty() {
+                        None
+                    } else {
+                        TagColor::from_str(color_name.as_ref())
+                    };
+                    if this.state.selected_tag_filter != new_filter {
+                        this.state.selected_tag_filter = new_filter;
+                        // Re-run the filter pass to apply the new
+                        // colour selection. Cached keys are reused;
+                        // only the tree-rebuild step re-runs.
+                        this.handle_filter(cx);
+                    }
                 }
                 KeyTreeAction::SelectFavoriteKey(key) => {
                     this.select_item(key.clone(), false, false, cx);

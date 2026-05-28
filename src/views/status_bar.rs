@@ -499,6 +499,21 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::LuaScripts),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_lua_scripts_tooltip")),
         );
+        // Persistence works on every Redis version (BGSAVE / BGREWRITEAOF
+        // are pre-2.0) so no capability gating — always offered.
+        menu = menu.menu_element_with_icon(
+            Icon::new(CustomIconName::HardDrive),
+            Box::new(ServerToolsAction::Persistence),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_persistence_tooltip")),
+        );
+        // Keyspace Notifications relies on `notify-keyspace-events`
+        // which has been around since 2.8 — no capability gate needed.
+        // (If it's empty, the panel surfaces a one-click Enable banner.)
+        menu = menu.menu_element_with_icon(
+            Icon::new(CustomIconName::AudioWaveform),
+            Box::new(ServerToolsAction::KeyspaceNotifications),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
+        );
         menu
     }
     /// Render the server status

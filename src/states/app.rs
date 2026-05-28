@@ -52,6 +52,8 @@ pub enum Route {
     Search,
     Functions,
     LuaScripts,
+    Persistence,
+    KeyspaceNotifications,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -126,6 +128,8 @@ pub enum ServerToolsAction {
     Search,
     Functions,
     LuaScripts,
+    Persistence,
+    KeyspaceNotifications,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

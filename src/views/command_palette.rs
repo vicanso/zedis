@@ -133,7 +133,7 @@ impl ZedisCommandPalette {
         let in_server_context = has_server && !matches!(current_route, Route::Home | Route::Settings);
 
         // (i18n key, route) — order defines empty-query display order.
-        let commands: [(&str, Route); 13] = [
+        let commands: [(&str, Route); 15] = [
             ("cmd_home", Route::Home),
             ("cmd_editor", Route::Editor),
             ("cmd_metrics", Route::Metrics),
@@ -141,6 +141,8 @@ impl ZedisCommandPalette {
             ("cmd_memory", Route::MemoryAnalysis),
             ("cmd_clients", Route::Clients),
             ("cmd_monitor", Route::Monitor),
+            ("cmd_persistence", Route::Persistence),
+            ("cmd_keyspace_notifications", Route::KeyspaceNotifications),
             ("cmd_config", Route::Config),
             ("cmd_acl", Route::Acl),
             ("cmd_search", Route::Search),

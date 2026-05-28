@@ -86,6 +86,18 @@ pub fn i18n_metrics<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("metrics.{key}"), locale = locale).into()
 }
+pub fn i18n_persistence<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("persistence.{key}"), locale = locale).into()
+}
+pub fn i18n_keyspace_notifications<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("keyspace_notifications.{key}"), locale = locale).into()
+}
+pub fn i18n_key_tag<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("key_tag.{key}"), locale = locale).into()
+}
 
 pub fn i18n_proto_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();

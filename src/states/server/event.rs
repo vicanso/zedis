@@ -106,6 +106,11 @@ pub enum ServerTask {
 
     /// Publish a message to a channel
     PublishMessage,
+
+    /// `BGSAVE` — trigger an asynchronous RDB snapshot fork on all masters.
+    Bgsave,
+    /// `BGREWRITEAOF` — trigger an asynchronous AOF rewrite on all masters.
+    Bgrewriteaof,
 }
 
 impl ServerTask {
@@ -144,6 +149,8 @@ impl ServerTask {
             ServerTask::SetStreamGroupId => "set_stream_group_id",
             ServerTask::DestroyStreamGroup => "destroy_stream_group",
             ServerTask::PublishMessage => "publish_message",
+            ServerTask::Bgsave => "bgsave",
+            ServerTask::Bgrewriteaof => "bgrewriteaof",
         }
     }
 }

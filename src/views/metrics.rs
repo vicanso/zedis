@@ -540,7 +540,7 @@ pub(crate) fn make_line_canvas(
     .size_full()
 }
 
-fn make_bar_canvas(params: ChartParams, values: Vec<f64>, fill_color: Hsla) -> impl IntoElement {
+pub(crate) fn make_bar_canvas(params: ChartParams, values: Vec<f64>, fill_color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {

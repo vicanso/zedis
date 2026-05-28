@@ -23,7 +23,7 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::format_duration;
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis};
-use crate::views::{ChartParams, format_timestamp_ms, make_line_canvas};
+use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -667,6 +667,69 @@ impl SingleKeyTopGroups {
     }
 }
 
+// ─── TTL distribution ────────────────────────────────────────────────────────
+
+/// Sub-tab selector for the Memory Analyzer panel. Defaults to BigKey
+/// so existing users land on the historical view; the TTL histogram is
+/// a sibling — same SCAN run feeds both, no separate analysis trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum AnalyzerTab {
+    #[default]
+    BigKey,
+    TtlHistogram,
+}
+
+/// Histogram of how soon sampled keys are scheduled to expire. The
+/// boundaries (1m / 1h / 1d / 7d) match what most caching workloads
+/// care about — pinpointing "what's about to expire in this very
+/// minute" vs "comfortably long-lived". Tight enough to be readable
+/// in a 6-bar chart, loose enough that adjacent keys in the same
+/// cache-tier collapse into the same bucket.
+///
+/// `-1` (no TTL / PERSIST) gets its own bucket because it's a
+/// qualitatively different state — a memory-leak red flag on a cache
+/// that should be evicting things.
+///
+/// `-2` (key vanished mid-SCAN) is filtered upstream in
+/// `sample_scan_memory_usage`, so we never see it here.
+#[derive(Clone, Debug, Default)]
+struct TtlHistogram {
+    pub lt_1m: u64,
+    pub lt_1h: u64,
+    pub lt_1d: u64,
+    pub lt_7d: u64,
+    pub gte_7d: u64,
+    pub no_ttl: u64,
+}
+
+impl TtlHistogram {
+    /// Bucket a single key's TTL into the histogram. Caller has already
+    /// filtered `ttl == -2` so we only see live keys.
+    fn add(&mut self, ttl_secs: i64) {
+        const SEC_PER_MIN: i64 = 60;
+        const SEC_PER_HOUR: i64 = 60 * 60;
+        const SEC_PER_DAY: i64 = 24 * 60 * 60;
+        const SEC_PER_WEEK: i64 = 7 * SEC_PER_DAY;
+        match ttl_secs {
+            -1 => self.no_ttl += 1,
+            // Negative TTLs other than -1 shouldn't reach here, but
+            // treat them defensively as "imminent" rather than panic.
+            t if t < SEC_PER_MIN => self.lt_1m += 1,
+            t if t < SEC_PER_HOUR => self.lt_1h += 1,
+            t if t < SEC_PER_DAY => self.lt_1d += 1,
+            t if t < SEC_PER_WEEK => self.lt_7d += 1,
+            _ => self.gte_7d += 1,
+        }
+    }
+
+    /// Total number of keys recorded — sum of all buckets. Used both
+    /// as the divisor for percentage display and as the empty-state
+    /// signal ("no samples yet").
+    fn total(&self) -> u64 {
+        self.lt_1m + self.lt_1h + self.lt_1d + self.lt_7d + self.gte_7d + self.no_ttl
+    }
+}
+
 // ─── Analysis status ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -710,6 +773,13 @@ pub struct ZedisMemoryAnalysis {
     /// Cached group of top-N selectors so toggling Size/Hot/Cold doesn't
     /// re-run the scan.
     single_groups: SingleKeyTopGroups,
+    /// Active sub-tab — BigKey table vs TTL histogram. Defaults to
+    /// BigKey to match the panel's historical landing view.
+    current_tab: AnalyzerTab,
+    /// Sampled TTL distribution. Populated by the existing SCAN loop
+    /// (no extra Redis round-trip — `KeyMemoryUsage::ttl` is already
+    /// in the pipeline). Reset on each `start_analysis`.
+    ttl_histogram: TtlHistogram,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -777,6 +847,8 @@ impl ZedisMemoryAnalysis {
             scan_count: DEFAULT_SCAN_COUNT,
             scan_count_input_state,
             est_commands: 0,
+            current_tab: AnalyzerTab::default(),
+            ttl_histogram: TtlHistogram::default(),
             _subscriptions: subscriptions,
         };
         this.update_est_commands();
@@ -809,6 +881,11 @@ impl ZedisMemoryAnalysis {
         self.prefix_count = 0;
         self.single_count = 0;
         self.single_groups = SingleKeyTopGroups::new(TOP_N);
+        // Reset histogram so a re-run starts from zero. The TTL tab
+        // re-renders each round via the snapshot below, so leaving
+        // stale data here would briefly show the old bars on top of
+        // a partial new run.
+        self.ttl_histogram = TtlHistogram::default();
 
         self.prefix_table.update(cx, |s, _| s.delegate_mut().rows.clear());
         self.single_table.update(cx, |s, _| s.delegate_mut().rows.clear());
@@ -861,6 +938,10 @@ impl ZedisMemoryAnalysis {
 
             let mut prefix_map: HashMap<String, PrefixStats> = HashMap::new();
             let mut single_groups: SingleKeyTopGroups = SingleKeyTopGroups::new(TOP_N);
+            // Local TTL histogram populated alongside the existing
+            // accumulators. Snapshotted each round so the UI updates
+            // progressively — same pattern as `single_groups`.
+            let mut ttl_histogram: TtlHistogram = TtlHistogram::default();
             let mut cursors: Option<Vec<u64>> = None;
             let mut analysis_count: u64 = 0;
             let redis_process_ratio = 0.5;
@@ -903,6 +984,10 @@ impl ZedisMemoryAnalysis {
                     let memory = item.memory_usage;
                     let ttl = item.ttl;
                     let key_type = &item.key_type;
+
+                    // TTL distribution — uses the same `ttl` already
+                    // pulled by the SCAN pipeline. Cheap per-item op.
+                    ttl_histogram.add(ttl);
 
                     if let Some(pos) = key.find(&key_separator) {
                         let prefix = &key[..pos];
@@ -974,10 +1059,12 @@ impl ZedisMemoryAnalysis {
                         min_score: single_groups.coldest.min_score,
                     },
                 };
+                let ttl_snapshot = ttl_histogram.clone();
                 let _ = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.prefix_count = pc;
                     this.single_groups = groups_snapshot;
+                    this.ttl_histogram = ttl_snapshot;
                     let mode = this.sort_mode;
                     let single_rows = this.single_groups.rows_for(mode);
                     this.single_count = single_rows.len();
@@ -997,11 +1084,13 @@ impl ZedisMemoryAnalysis {
             let prefix_rows = build_prefix_rows(&prefix_map, ratio, &key_separator);
             let pc = prefix_rows.len();
             let final_groups = single_groups;
+            let final_histogram = ttl_histogram;
             let _ = handle.update(cx, |this, cx| {
                 this.status = AnalysisStatus::Finished;
                 this.progress = "100%".into();
                 this.prefix_count = pc;
                 this.single_groups = final_groups;
+                this.ttl_histogram = final_histogram;
                 let mode = this.sort_mode;
                 let single_rows = this.single_groups.rows_for(mode);
                 this.single_count = single_rows.len();
@@ -1281,6 +1370,141 @@ impl ZedisMemoryAnalysis {
         )
     }
 
+    /// Render the TTL distribution body — a 6-bar histogram plus a
+    /// summary line. Bars share the canvas helpers used by the Metrics
+    /// panel so visual styling stays consistent. `ratio` is folded into
+    /// the summary so users see both the sampled count and an estimated
+    /// total ("12,345 sampled → ~123,450 estimated") which matters when
+    /// they ran with `ratio < 1.0` and the absolute bar height alone
+    /// doesn't reveal cluster impact.
+    fn render_ttl_histogram_body(&self, cx: &mut gpui::Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let h = &self.ttl_histogram;
+        let total = h.total();
+
+        // Bucket order = visual left→right = expiry urgency: imminent
+        // first, "no TTL" last. Same i18n key naming pattern so the
+        // localised label sits next to its raw bucket name in the source.
+        let buckets: [(&'static str, u64); 6] = [
+            ("ttl_bucket_lt_1m", h.lt_1m),
+            ("ttl_bucket_lt_1h", h.lt_1h),
+            ("ttl_bucket_lt_1d", h.lt_1d),
+            ("ttl_bucket_lt_7d", h.lt_7d),
+            ("ttl_bucket_gte_7d", h.gte_7d),
+            ("ttl_bucket_no_ttl", h.no_ttl),
+        ];
+
+        let dates: Vec<SharedString> = buckets.iter().map(|(key, _)| i18n_memory_analysis(cx, key)).collect();
+        let values: Vec<f64> = buckets.iter().map(|(_, count)| *count as f64).collect();
+
+        // Pad y_max 10 % above the peak so the tallest bar doesn't
+        // touch the top edge. Floor at 1.0 because zero values would
+        // collapse the chart to a degenerate scale.
+        let raw_max = values.iter().cloned().fold(0.0_f64, f64::max);
+        let y_max = (raw_max * 1.1).max(1.0);
+
+        // 6 buckets and the chart is usually wide → label every bar.
+        let params = ChartParams {
+            dates,
+            y_max,
+            y_format: Box::new(|v| format!("{v:.0}")),
+            tick_margin: 1,
+            border: theme.border,
+            muted_fg: muted,
+        };
+
+        // Pick fill colour by aggregate urgency: if the leftmost two
+        // buckets (≤1h) dominate the histogram, paint amber to draw
+        // the eye to the eviction cliff. Otherwise the standard chart_2.
+        let imminent = h.lt_1m + h.lt_1h;
+        let fill_color = if total > 0 && imminent * 2 > total {
+            theme.yellow
+        } else {
+            theme.chart_2
+        };
+        let chart = make_bar_canvas(params, values, fill_color);
+
+        // Summary line: sampled total + (if ratio<1) estimated full
+        // population + no-TTL share (the "are we leaking?" signal).
+        let summary_text: SharedString = {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+            let estimated = if self.ratio > 0.0 && self.ratio < 1.0 {
+                ((total as f64) / self.ratio as f64) as u64
+            } else {
+                total
+            };
+            let no_ttl_pct = if total > 0 {
+                (h.no_ttl as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            rust_i18n::t!(
+                "memory_analysis.ttl_summary_label",
+                sampled = total.to_string(),
+                estimated = estimated.to_string(),
+                no_ttl_pct = format!("{no_ttl_pct:.1}"),
+                locale = locale
+            )
+            .to_string()
+            .into()
+        };
+
+        // Dominant-bucket callout: which bucket has the most keys? Helps
+        // users spot the "everyone expires in the same hour" landmine
+        // at a glance without parsing every bar.
+        let dominant_label: Option<SharedString> =
+            buckets
+                .iter()
+                .max_by_key(|(_, c)| *c)
+                .filter(|(_, c)| *c > 0)
+                .map(|(key, count)| {
+                    let bucket_name = i18n_memory_analysis(cx, key);
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                    rust_i18n::t!(
+                        "memory_analysis.ttl_dominant_label",
+                        bucket = bucket_name.as_ref(),
+                        count = count.to_string(),
+                        locale = locale
+                    )
+                    .to_string()
+                    .into()
+                });
+
+        v_flex()
+            .w_full()
+            .flex_none()
+            .gap_2()
+            .child(
+                v_flex()
+                    .w_full()
+                    .flex_none()
+                    .h(px(220.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+                    .p_3()
+                    .child(
+                        div()
+                            .font_semibold()
+                            .child(i18n_memory_analysis(cx, "ttl_histogram_title"))
+                            .mb_2(),
+                    )
+                    .child(chart),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .px_2()
+                    .child(Label::new(summary_text).text_sm().text_color(muted))
+                    .when_some(dominant_label, |this, d| {
+                        this.child(Label::new(d).text_xs().text_color(muted))
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn render_table_section(
         &mut self,
         title_key: &'static str,
@@ -1327,6 +1551,8 @@ impl gpui::Render for ZedisMemoryAnalysis {
         let has_prefix = self.prefix_count > 0;
         let has_single = self.single_count > 0;
         let has_data = has_prefix || has_single;
+        let has_ttl_data = self.ttl_histogram.total() > 0;
+        let active_tab = self.current_tab;
 
         v_flex()
             .size_full()
@@ -1359,7 +1585,38 @@ impl gpui::Render for ZedisMemoryAnalysis {
                                     }),
                             )
                             .child(Icon::new(CustomIconName::MemoryStick))
-                            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground)),
+                            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
+                            // Segmented Tab switcher — BigKey vs TTL
+                            // histogram. Same SCAN feeds both, so a
+                            // click just swaps the body region; no
+                            // re-analysis triggered.
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .ml_2()
+                                    .child({
+                                        let active = active_tab == AnalyzerTab::BigKey;
+                                        let mut btn = Button::new("memory-tab-bigkey")
+                                            .xsmall()
+                                            .label(i18n_memory_analysis(cx, "tab_bigkey"));
+                                        btn = if active { btn.primary() } else { btn.outline() };
+                                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                                            this.current_tab = AnalyzerTab::BigKey;
+                                            cx.notify();
+                                        }))
+                                    })
+                                    .child({
+                                        let active = active_tab == AnalyzerTab::TtlHistogram;
+                                        let mut btn = Button::new("memory-tab-ttl")
+                                            .xsmall()
+                                            .label(i18n_memory_analysis(cx, "tab_ttl_histogram"));
+                                        btn = if active { btn.primary() } else { btn.outline() };
+                                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                                            this.current_tab = AnalyzerTab::TtlHistogram;
+                                            cx.notify();
+                                        }))
+                                    }),
+                            ),
                     )
                     .child(self.render_toolbar_functions(cx)),
             )
@@ -1374,55 +1631,118 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .id("memory-analysis-body")
                     .overflow_y_scroll();
 
-                // Fragmentation trend chart (pulls from METRICS_CACHE
-                // populated by the status_bar heartbeat). Always
-                // attempted — even before the user clicks "Analyse",
-                // the chart shows the running mem_fragmentation_ratio
-                // so it doubles as ambient diagnostic.
-                if let Some(chart) = self.render_fragmentation_chart(cx) {
-                    body = body.child(chart);
-                }
+                match active_tab {
+                    AnalyzerTab::BigKey => {
+                        // Fragmentation trend chart (pulls from METRICS_CACHE
+                        // populated by the status_bar heartbeat). Always
+                        // attempted — even before the user clicks "Analyse",
+                        // the chart shows the running mem_fragmentation_ratio
+                        // so it doubles as ambient diagnostic.
+                        if let Some(chart) = self.render_fragmentation_chart(cx) {
+                            body = body.child(chart);
+                        }
 
-                if !has_data && !is_running {
-                    body = body.child(div().size_full().flex().items_center().justify_center().child(
-                        Label::new(i18n_memory_analysis(cx, "no_data")).text_color(cx.theme().muted_foreground),
-                    ));
-                }
+                        if !has_data && !is_running {
+                            body = body.child(div().size_full().flex().items_center().justify_center().child(
+                                Label::new(i18n_memory_analysis(cx, "no_data")).text_color(cx.theme().muted_foreground),
+                            ));
+                        }
 
-                // Apply the closure to render the prefix table
-                if has_prefix {
-                    let table = DataTable::new(&self.prefix_table)
-                        .stripe(true)
-                        .bordered(true)
-                        .scrollbar_visible(false, false);
+                        // Apply the closure to render the prefix table
+                        if has_prefix {
+                            let table = DataTable::new(&self.prefix_table)
+                                .stripe(true)
+                                .bordered(true)
+                                .scrollbar_visible(false, false);
 
-                    body = body.child(self.render_table_section(
-                        "prefix_table_title",
-                        self.prefix_count,
-                        table,
-                        window,
-                        cx,
-                    ));
-                }
+                            body = body.child(self.render_table_section(
+                                "prefix_table_title",
+                                self.prefix_count,
+                                table,
+                                window,
+                                cx,
+                            ));
+                        }
 
-                // Apply the closure to render the single key table
-                if has_single {
-                    let table = DataTable::new(&self.single_table)
-                        .stripe(true)
-                        .bordered(true)
-                        .scrollbar_visible(false, false);
+                        // Apply the closure to render the single key table
+                        if has_single {
+                            let table = DataTable::new(&self.single_table)
+                                .stripe(true)
+                                .bordered(true)
+                                .scrollbar_visible(false, false);
 
-                    body = body.child(self.render_table_section(
-                        "single_table_title",
-                        self.single_count,
-                        table,
-                        window,
-                        cx,
-                    ));
+                            body = body.child(self.render_table_section(
+                                "single_table_title",
+                                self.single_count,
+                                table,
+                                window,
+                                cx,
+                            ));
+                        }
+                    }
+                    AnalyzerTab::TtlHistogram => {
+                        if has_ttl_data {
+                            body = body.child(self.render_ttl_histogram_body(cx));
+                        } else if !is_running {
+                            // Same "click Analyse first" affordance the
+                            // BigKey tab uses, so empty-state messaging
+                            // stays consistent across tabs.
+                            body = body.child(
+                                div().size_full().flex().items_center().justify_center().child(
+                                    Label::new(i18n_memory_analysis(cx, "ttl_no_data"))
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                            );
+                        }
+                    }
                 }
 
                 body
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TtlHistogram;
+
+    #[test]
+    fn ttl_histogram_buckets_boundary_seconds() {
+        // Each boundary lives in the strictly-less-than bucket; one
+        // second past it tips into the next bucket up. This is the
+        // semantic the UI labels imply ("<1m") and easy to get wrong.
+        let mut h = TtlHistogram::default();
+        h.add(0); // expires "now" — <1m
+        h.add(59); // still <1m
+        h.add(60); // boundary — <1h, not <1m
+        h.add(3_599); // still <1h
+        h.add(3_600); // boundary — <1d
+        h.add(86_399); // still <1d
+        h.add(86_400); // boundary — <7d
+        h.add(7 * 86_400 - 1); // still <7d
+        h.add(7 * 86_400); // boundary — ≥7d
+        h.add(365 * 86_400); // ≥7d
+        h.add(-1); // PERSIST
+        h.add(-1);
+
+        assert_eq!(h.lt_1m, 2);
+        assert_eq!(h.lt_1h, 2);
+        assert_eq!(h.lt_1d, 2);
+        assert_eq!(h.lt_7d, 2);
+        assert_eq!(h.gte_7d, 2);
+        assert_eq!(h.no_ttl, 2);
+        assert_eq!(h.total(), 12);
+    }
+
+    #[test]
+    fn unexpected_negative_ttl_defaults_to_imminent() {
+        // -2 is filtered upstream so we never see it; any other
+        // unexpected negative falls into the <1m bucket rather than
+        // crashing — preserves UI on noisy data.
+        let mut h = TtlHistogram::default();
+        h.add(-99);
+        assert_eq!(h.lt_1m, 1);
+        assert_eq!(h.total(), 1);
     }
 }

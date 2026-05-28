@@ -42,6 +42,7 @@ pub mod history;
 pub mod json;
 pub mod key;
 pub mod list;
+pub mod persistence;
 pub mod set;
 pub mod stat;
 pub mod stream;

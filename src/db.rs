@@ -22,6 +22,7 @@ use tracing::debug;
 mod cmd_history_manager;
 mod favorites_manager;
 mod history_manager;
+mod key_metadata_manager;
 mod lua_scripts;
 mod protos;
 mod scripts;
@@ -29,6 +30,7 @@ mod search_history_manager;
 
 pub use cmd_history_manager::*;
 pub use favorites_manager::*;
+pub use key_metadata_manager::*;
 pub use lua_scripts::*;
 pub use protos::*;
 pub use scripts::*;
@@ -41,6 +43,13 @@ const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd
 const FAVORITY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
 // Saved Lua scripts: globally shared across servers, persisted to disk.
 const LUA_SCRIPT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("lua_script");
+// Per-server client-side key tags + free-form notes. Value is a JSON
+// document keyed by Redis key name:
+//   {"v": 1, "entries": {"<key>": {"tag": "<color>"|null, "note": "..."}}}
+// Versioned at the document level so future additions (multi-tag,
+// per-tag note, ...) can migrate the in-memory cache without breaking
+// disk compatibility.
+const KEY_METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("key_metadata");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -68,6 +77,7 @@ pub fn init_database() -> Result<()> {
         write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
         write_txn.open_table(FAVORITY_TABLE)?;
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
+        write_txn.open_table(KEY_METADATA_TABLE)?;
     }
     write_txn.commit()?;
     debug!(path = db_path.display().to_string(), "database initialized success");

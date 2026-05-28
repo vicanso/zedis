@@ -77,14 +77,6 @@ pub async fn latency_history(conn: &mut RedisAsyncConn, event: &str) -> Result<V
     Ok(parse_history(&v).unwrap_or_default())
 }
 
-/// Returns the raw ASCII art `LATENCY GRAPH` reply verbatim — the
-/// view renders it inside a monospace block so the histogram lines
-/// up the way Redis intends.
-pub async fn latency_graph(conn: &mut RedisAsyncConn, event: &str) -> Result<String> {
-    let s: String = cmd("LATENCY").arg("GRAPH").arg(event).query_async(conn).await?;
-    Ok(s)
-}
-
 /// `LATENCY RESET [event ...]`. Empty `events` clears everything;
 /// returns the count of events Redis actually reset.
 pub async fn latency_reset(conn: &mut RedisAsyncConn, events: &[String]) -> Result<u64> {

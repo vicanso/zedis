@@ -16,6 +16,7 @@ use std::env;
 
 mod action;
 mod common;
+mod diff;
 mod font;
 mod fs;
 mod fuzzy;
@@ -31,6 +32,7 @@ mod validate;
 
 pub use action::*;
 pub use common::*;
+pub use diff::*;
 pub use font::*;
 pub use fs::*;
 pub use fuzzy::fuzzy_score;
@@ -40,7 +42,7 @@ pub use jsonpath::{
 };
 pub use string::*;
 pub use syntax::register_extra_languages;
-pub use tag::resolve_tag_color;
+pub use tag::{resolve_tag_color, theme_color_for_tag};
 pub use time::{parse_duration, unix_ts, unix_ts_millis};
 pub use ttl::{TtlChipKind, format_ttl_chip, ttl_chip_kind};
 pub use ttl_cache::*;

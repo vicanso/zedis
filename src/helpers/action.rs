@@ -55,6 +55,11 @@ pub enum EditorAction {
     /// Restore the value at the given history index (0 = most recent)
     /// into the bytes editor. The user still has to Save to push to Redis.
     LoadHistory(u32),
+    /// Open the side-by-side diff view with the given history index
+    /// (0 = most recent) on the left and the current editor value on
+    /// the right. Both panes are read-only — user closes diff before
+    /// editing again.
+    DiffHistory(u32),
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {

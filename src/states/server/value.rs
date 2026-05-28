@@ -615,7 +615,11 @@ impl From<&str> for KeyType {
 /// - Changed/added fields appear with their new value.
 /// - Deleted fields appear as `null`.
 /// - Returns `None` when both values are identical (no patch needed).
-fn json_merge_diff(old: &JsonValue, new: &JsonValue) -> Option<JsonValue> {
+///
+/// Crate-visible so the value-diff view can render the same patch
+/// document the Save path sends to Redis as `JSON.MERGE`, giving users
+/// a one-to-one preview of what their change will do server-side.
+pub(crate) fn json_merge_diff(old: &JsonValue, new: &JsonValue) -> Option<JsonValue> {
     if old == new {
         return None;
     }

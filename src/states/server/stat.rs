@@ -70,6 +70,44 @@ pub struct RedisMetrics {
 
     pub rdb_last_bgsave_success: bool,
     pub aof_last_write_success: bool,
+
+    // --- Persistence (RDB) ---
+    /// Number of writes accumulated since the last successful RDB save.
+    pub rdb_changes_since_last_save: u64,
+    /// Unix timestamp (seconds) of the last successful RDB save.
+    /// `0` when the server has never persisted to disk in this session.
+    pub rdb_last_save_time: i64,
+    /// True while a `BGSAVE` fork is running. Used to disable the
+    /// "Save snapshot" button so users can't spam parallel forks.
+    pub rdb_bgsave_in_progress: bool,
+    /// Duration (seconds) of the most recent BGSAVE. `-1` if it has
+    /// never run in this session.
+    pub rdb_last_bgsave_time_sec: i64,
+    /// Elapsed seconds of the currently running BGSAVE, or `-1` when idle.
+    pub rdb_current_bgsave_time_sec: i64,
+
+    // --- Persistence (AOF) ---
+    /// Whether `appendonly` is enabled. When `false` we hide the
+    /// BGREWRITEAOF action entirely (see UI plan).
+    pub aof_enabled: bool,
+    /// True while an AOF rewrite fork is running.
+    pub aof_rewrite_in_progress: bool,
+    /// Current AOF file size in bytes.
+    pub aof_current_size: u64,
+    /// Size of the AOF file at the last rewrite — divisor of the
+    /// growth ratio chip rendered in the panel.
+    pub aof_base_size: u64,
+    /// Duration (seconds) of the last AOF rewrite. `-1` if never.
+    pub aof_last_rewrite_time_sec: i64,
+    /// Elapsed seconds of the currently running rewrite, or `-1` idle.
+    pub aof_current_rewrite_time_sec: i64,
+    /// `ok` ⇒ true; anything else ⇒ false. Drives the failure banner.
+    pub aof_last_bgrewrite_success: bool,
+
+    /// `loading:1` — Redis is busy loading RDB/AOF from disk at startup
+    /// or after a replica resync. Both persistence actions are blocked
+    /// in this state because the server is not serving traffic anyway.
+    pub loading: bool,
 }
 
 pub struct MetricsCache {
@@ -199,6 +237,47 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
         total.metrics.used_cpu_sys += info.metrics.used_cpu_sys;
         total.metrics.used_cpu_user += info.metrics.used_cpu_user;
 
+        // --- Persistence ---
+        // Sizes / changes: sum across masters (matches the SUM pattern
+        // used by used_memory above). AOF enabled flag is treated as
+        // homogeneous across the cluster — keep infos[0]'s value (the
+        // clone already set it), do not touch in the loop.
+        total.metrics.rdb_changes_since_last_save += info.metrics.rdb_changes_since_last_save;
+        total.metrics.aof_current_size += info.metrics.aof_current_size;
+        total.metrics.aof_base_size += info.metrics.aof_base_size;
+
+        // In-progress flags: OR — if ANY node is forking, treat the
+        // cluster as busy so the action button stays disabled.
+        total.metrics.rdb_bgsave_in_progress |= info.metrics.rdb_bgsave_in_progress;
+        total.metrics.aof_rewrite_in_progress |= info.metrics.aof_rewrite_in_progress;
+        total.metrics.loading |= info.metrics.loading;
+
+        // Success flags: AND — surface a failure banner if ANY node had
+        // its last save fail. Idempotent under repeated infos[0].
+        total.metrics.rdb_last_bgsave_success &= info.metrics.rdb_last_bgsave_success;
+        total.metrics.aof_last_write_success &= info.metrics.aof_last_write_success;
+        total.metrics.aof_last_bgrewrite_success &= info.metrics.aof_last_bgrewrite_success;
+
+        // Last save time: MIN (oldest snapshot wins — "0 = never" naturally
+        // dominates because nothing is smaller). Elapsed/duration counters
+        // are reported per-fork-event so MAX (the node still running, or
+        // the longest recent fork) is the most informative aggregate.
+        if info.metrics.rdb_last_save_time < total.metrics.rdb_last_save_time {
+            total.metrics.rdb_last_save_time = info.metrics.rdb_last_save_time;
+        }
+        if info.metrics.rdb_current_bgsave_time_sec > total.metrics.rdb_current_bgsave_time_sec {
+            total.metrics.rdb_current_bgsave_time_sec = info.metrics.rdb_current_bgsave_time_sec;
+        }
+        if info.metrics.aof_current_rewrite_time_sec > total.metrics.aof_current_rewrite_time_sec {
+            total.metrics.aof_current_rewrite_time_sec = info.metrics.aof_current_rewrite_time_sec;
+        }
+        if info.metrics.rdb_last_bgsave_time_sec > total.metrics.rdb_last_bgsave_time_sec {
+            total.metrics.rdb_last_bgsave_time_sec = info.metrics.rdb_last_bgsave_time_sec;
+        }
+        if info.metrics.aof_last_rewrite_time_sec > total.metrics.aof_last_rewrite_time_sec {
+            total.metrics.aof_last_rewrite_time_sec = info.metrics.aof_last_rewrite_time_sec;
+        }
+
         // --- Keyspace (Sum & Weighted Avg) ---
         for (db, stats) in &info.keyspace {
             let entry = total.keyspace.entry(db.clone()).or_default();
@@ -287,6 +366,23 @@ impl RedisInfo {
 
                     "rdb_last_bgsave_status" => info.metrics.rdb_last_bgsave_success = value == "ok",
                     "aof_last_write_status" => info.metrics.aof_last_write_success = value == "ok",
+
+                    // INFO persistence — RDB
+                    "rdb_changes_since_last_save" => info.metrics.rdb_changes_since_last_save = parse_u64(value),
+                    "rdb_last_save_time" => info.metrics.rdb_last_save_time = parse_i64(value),
+                    "rdb_bgsave_in_progress" => info.metrics.rdb_bgsave_in_progress = value == "1",
+                    "rdb_last_bgsave_time_sec" => info.metrics.rdb_last_bgsave_time_sec = parse_i64(value),
+                    "rdb_current_bgsave_time_sec" => info.metrics.rdb_current_bgsave_time_sec = parse_i64(value),
+
+                    // INFO persistence — AOF
+                    "aof_enabled" => info.metrics.aof_enabled = value == "1",
+                    "aof_rewrite_in_progress" => info.metrics.aof_rewrite_in_progress = value == "1",
+                    "aof_current_size" => info.metrics.aof_current_size = parse_u64(value),
+                    "aof_base_size" => info.metrics.aof_base_size = parse_u64(value),
+                    "aof_last_rewrite_time_sec" => info.metrics.aof_last_rewrite_time_sec = parse_i64(value),
+                    "aof_current_rewrite_time_sec" => info.metrics.aof_current_rewrite_time_sec = parse_i64(value),
+                    "aof_last_bgrewrite_status" => info.metrics.aof_last_bgrewrite_success = value == "ok",
+                    "loading" => info.metrics.loading = value == "1",
 
                     "used_cpu_sys" => info.metrics.used_cpu_sys = parse_f64(value),
                     "used_cpu_user" => info.metrics.used_cpu_user = parse_f64(value),
@@ -472,6 +568,46 @@ mod tests {
         let info = RedisInfo::parse(raw);
         assert_eq!(info.replicas.len(), 1);
         assert_eq!(info.replicas[0].lag_bytes, 100);
+    }
+
+    #[test]
+    fn parses_persistence_fields() {
+        // Synthetic `INFO persistence` excerpt — covers both the "idle"
+        // and "currently saving" shapes so we know `-1` is preserved as
+        // the sentinel instead of being clobbered to 0.
+        let raw = "# Persistence\n\
+                   loading:0\n\
+                   rdb_changes_since_last_save:42\n\
+                   rdb_bgsave_in_progress:1\n\
+                   rdb_last_save_time:1748000000\n\
+                   rdb_last_bgsave_status:ok\n\
+                   rdb_last_bgsave_time_sec:3\n\
+                   rdb_current_bgsave_time_sec:1\n\
+                   aof_enabled:1\n\
+                   aof_rewrite_in_progress:0\n\
+                   aof_current_size:131072\n\
+                   aof_base_size:65536\n\
+                   aof_last_rewrite_time_sec:-1\n\
+                   aof_current_rewrite_time_sec:-1\n\
+                   aof_last_bgrewrite_status:ok\n\
+                   aof_last_write_status:ok\n";
+        let info = RedisInfo::parse(raw);
+        assert!(!info.metrics.loading);
+        assert_eq!(info.metrics.rdb_changes_since_last_save, 42);
+        assert!(info.metrics.rdb_bgsave_in_progress);
+        assert_eq!(info.metrics.rdb_last_save_time, 1_748_000_000);
+        assert!(info.metrics.rdb_last_bgsave_success);
+        assert_eq!(info.metrics.rdb_last_bgsave_time_sec, 3);
+        assert_eq!(info.metrics.rdb_current_bgsave_time_sec, 1);
+        assert!(info.metrics.aof_enabled);
+        assert!(!info.metrics.aof_rewrite_in_progress);
+        assert_eq!(info.metrics.aof_current_size, 131_072);
+        assert_eq!(info.metrics.aof_base_size, 65_536);
+        // Sentinel `-1` must survive the parse — UI uses it to render "never".
+        assert_eq!(info.metrics.aof_last_rewrite_time_sec, -1);
+        assert_eq!(info.metrics.aof_current_rewrite_time_sec, -1);
+        assert!(info.metrics.aof_last_bgrewrite_success);
+        assert!(info.metrics.aof_last_write_success);
     }
 
     #[test]

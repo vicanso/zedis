@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::db::TagColor;
 use gpui::{Hsla, hsla};
+use gpui_component::ActiveTheme;
 
 /// Resolve a preset tag color key (`gray` / `blue` / `green` / `amber` / `red`)
 /// into an HSLA color suitable for chips and side bars.
@@ -31,4 +33,22 @@ pub fn resolve_tag_color(key: Option<&str>) -> Option<Hsla> {
         "blue" => hsla(0.58, 0.55, 0.50, 1.0),
         _ => hsla(0.0, 0.0, 0.45, 1.0),
     })
+}
+
+/// Resolve a key-tag `TagColor` to a concrete HSLA, preferring the
+/// active theme's primary palette so dark/light modes look intentional.
+/// Orange and purple don't have direct theme accessors, so they fall
+/// back to fixed mid-luminance HSLA tuned to read decently against
+/// both backgrounds — the swatches are small (~22 px) so a single
+/// shared value is fine without per-mode branching.
+pub fn theme_color_for_tag(color: TagColor, cx: &gpui::App) -> Hsla {
+    let theme = cx.theme();
+    match color {
+        TagColor::Red => theme.red,
+        TagColor::Orange => hsla(0.08, 0.85, 0.55, 1.0),
+        TagColor::Yellow => theme.yellow,
+        TagColor::Green => theme.green,
+        TagColor::Blue => theme.blue,
+        TagColor::Purple => hsla(0.78, 0.55, 0.55, 1.0),
+    }
 }

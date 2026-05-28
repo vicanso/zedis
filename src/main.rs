@@ -281,6 +281,8 @@ impl Render for Zedis {
                     ServerToolsAction::Search => Route::Search,
                     ServerToolsAction::Functions => Route::Functions,
                     ServerToolsAction::LuaScripts => Route::LuaScripts,
+                    ServerToolsAction::Persistence => Route::Persistence,
+                    ServerToolsAction::KeyspaceNotifications => Route::KeyspaceNotifications,
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {

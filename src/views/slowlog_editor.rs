@@ -12,21 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 /// Redis Slow Log viewer.
 ///
 /// Displays a table of slow-query log entries fetched from the server's
 /// periodic `SLOWLOG GET` refresh cycle. Columns: Timestamp, Duration,
 /// Command, Client. Rows are sortable by arrival order (newest first).
 use crate::connection::{
-    LatencyEvent, LatencySample, SlowLogEntry, get_connection_manager, latency_graph, latency_history, latency_latest,
+    LatencyEvent, LatencySample, SlowLogEntry, get_connection_manager, latency_history, latency_latest,
     latency_monitor_threshold, latency_reset, list_commands,
 };
-use crate::helpers::get_font_family;
 use crate::states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_slowlog_editor};
 use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
 use ahash::AHashMap;
 use chrono::TimeZone;
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
@@ -74,6 +74,10 @@ fn two_word_commands() -> &'static HashSet<String> {
 #[derive(Clone, Debug)]
 struct SlowLogRow {
     timestamp: SharedString,
+    /// Unix-seconds timestamp kept alongside the display string so the
+    /// correlation chip and time-window filter can compare against
+    /// `LatencyEvent::timestamp` without re-parsing the formatted text.
+    raw_timestamp: i64,
     duration: SharedString,
     /// Raw duration in milliseconds for filtering and sorting.
     duration_ms: u64,
@@ -82,6 +86,12 @@ struct SlowLogRow {
     /// The arguments following the command (args[1..]), space-joined.
     args: SharedString,
     client: SharedString,
+    /// Latency event whose timestamp falls within
+    /// [`CORRELATION_WINDOW_SECS`] of this slow-log entry, if any.
+    /// Populated by `build_all_rows` so the table delegate can render
+    /// the chip in O(1) per row without re-scanning the events list.
+    /// `Some((event_name, delta_seconds))`.
+    correlated_event: Option<(SharedString, i64)>,
 }
 
 impl SlowLogRow {
@@ -100,6 +110,7 @@ impl SlowLogRow {
             .single()
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_default();
+        let raw_timestamp = entry.timestamp;
 
         let duration_ms = entry.duration.as_millis() as u64;
         let duration = humantime::format_duration(Duration::from_millis(duration_ms)).to_string();
@@ -137,13 +148,65 @@ impl SlowLogRow {
 
         Self {
             timestamp: timestamp.into(),
+            raw_timestamp,
             duration: duration.into(),
             duration_ms,
             command: command.into(),
             args: args.into(),
             client: client.into(),
+            correlated_event: None,
         }
     }
+}
+
+/// Time window used to associate a slow-log entry with a Latency event,
+/// in **seconds**. Five seconds is wide enough to capture a fork that
+/// completes just before/after the slow command lands, but tight enough
+/// that unrelated background events on a busy server don't all match.
+const CORRELATION_WINDOW_SECS: i64 = 5;
+
+/// Pick the Latency event whose `timestamp` is closest to `slow_ts`,
+/// provided it falls within `±CORRELATION_WINDOW_SECS`. Returns
+/// `(event_name, signed_delta_seconds)` so the chip can show direction
+/// ("fork +1s" vs "fork -2s"). `None` when no event qualifies.
+///
+/// Events list is expected to be small (Redis caps LATENCY LATEST at a
+/// handful of event types), so a linear scan is fine — no need for a
+/// sorted index.
+fn correlated_event_for_slowlog(slow_ts: i64, events: &[LatencyEvent]) -> Option<(SharedString, i64)> {
+    if slow_ts <= 0 {
+        return None;
+    }
+    let mut best: Option<(SharedString, i64)> = None;
+    for ev in events {
+        if ev.timestamp <= 0 {
+            continue;
+        }
+        let delta = ev.timestamp - slow_ts;
+        if delta.abs() > CORRELATION_WINDOW_SECS {
+            continue;
+        }
+        match &best {
+            None => best = Some((ev.event.clone(), delta)),
+            Some((_, current_delta)) if delta.abs() < current_delta.abs() => {
+                best = Some((ev.event.clone(), delta));
+            }
+            _ => {}
+        }
+    }
+    best
+}
+
+/// Count slow-log rows whose `raw_timestamp` falls within
+/// `±CORRELATION_WINDOW_SECS` of `event_ts`. Drives the "N slow nearby"
+/// chip on the Latency tab.
+fn correlated_slowlog_count_for_event(event_ts: i64, rows: &[SlowLogRow]) -> usize {
+    if event_ts <= 0 {
+        return 0;
+    }
+    rows.iter()
+        .filter(|r| r.raw_timestamp > 0 && (r.raw_timestamp - event_ts).abs() <= CORRELATION_WINDOW_SECS)
+        .count()
 }
 
 const COLUMN_TIMESTAMP: &str = "timestamp";
@@ -151,6 +214,7 @@ const COLUMN_DURATION: &str = "duration";
 const COLUMN_COMMAND: &str = "command";
 const COLUMN_ARGS: &str = "args";
 const COLUMN_CLIENT: &str = "client";
+const COLUMN_CORRELATED: &str = "correlated";
 
 /// [`TableDelegate`] implementation that drives the slow-log data table.
 ///
@@ -162,22 +226,41 @@ struct SlowlogTableDelegate {
     columns: Vec<Column>,
     /// i18n keys corresponding to each column, used to re-translate headers on every render.
     column_keys: Vec<&'static str>,
+    /// Weak handle to the parent editor so the correlation chip's click
+    /// handler can jump the user to the Latency tab. WeakEntity avoids
+    /// the parent⇄child cycle (`ZedisSlowlogEditor` already owns the
+    /// `TableState` that contains this delegate).
+    editor: WeakEntity<ZedisSlowlogEditor>,
 }
 
 impl SlowlogTableDelegate {
     /// Creates the delegate with the given rows and computes column widths based on the
     /// current viewport. The "args" column takes all remaining space after the fixed-width
-    /// columns (timestamp, duration, command, client) are allocated.
-    fn new(rows: Vec<SlowLogRow>, window: &mut Window, _cx: &mut gpui::App) -> Self {
+    /// columns (timestamp, duration, command, client, correlated) are allocated.
+    fn new(
+        rows: Vec<SlowLogRow>,
+        editor: WeakEntity<ZedisSlowlogEditor>,
+        window: &mut Window,
+        _cx: &mut gpui::App,
+    ) -> Self {
         let window_width = window.viewport_size().width;
         let content_width = window_width - SIDEBAR_WIDTH;
         let timestamp_width = 200.;
         let duration_width = 130.;
         let command_width = 150.;
         let client_width = 200.;
+        // Wide enough for "<event> +Ns" — event names cap around 24 chars
+        // (e.g. "active-defrag-cycle"). Fixed instead of stretchy so the
+        // chip stays compact next to client info.
+        let correlated_width = 170.;
         // Subtract a small gutter (10 px) so the table doesn't overflow horizontally.
-        let remaining_width =
-            content_width.as_f32() - timestamp_width - duration_width - command_width - client_width - 10.;
+        let remaining_width = content_width.as_f32()
+            - timestamp_width
+            - duration_width
+            - command_width
+            - client_width
+            - correlated_width
+            - 10.;
 
         let make_paddings = || {
             Some(Edges {
@@ -194,6 +277,7 @@ impl SlowlogTableDelegate {
             COLUMN_COMMAND,
             COLUMN_ARGS,
             COLUMN_CLIENT,
+            COLUMN_CORRELATED,
         ];
         let widths = [
             timestamp_width,
@@ -201,6 +285,7 @@ impl SlowlogTableDelegate {
             command_width,
             remaining_width,
             client_width,
+            correlated_width,
         ];
         let columns = column_keys
             .iter()
@@ -223,6 +308,7 @@ impl SlowlogTableDelegate {
             rows,
             columns,
             column_keys,
+            editor,
         }
     }
 }
@@ -296,6 +382,12 @@ impl TableDelegate for SlowlogTableDelegate {
         _window: &mut Window,
         cx: &mut gpui::Context<TableState<Self>>,
     ) -> impl IntoElement {
+        // The correlation column is rendered as an interactive chip,
+        // not a plain text cell — short-circuit the generic path below.
+        if self.column_keys.get(col_ix).copied() == Some(COLUMN_CORRELATED) {
+            return self.render_correlation_chip_cell(row_ix, col_ix, cx).into_any_element();
+        }
+
         let column = &self.columns[col_ix];
         let value: SharedString = if let Some(row) = self.rows.get(row_ix) {
             match col_ix {
@@ -341,6 +433,7 @@ impl TableDelegate for SlowlogTableDelegate {
                             }),
                     ),
             )
+            .into_any_element()
     }
 
     /// Slow-log data is fetched in a single batch; there is no pagination.
@@ -354,6 +447,79 @@ impl TableDelegate for SlowlogTableDelegate {
 
     /// No-op: all rows are loaded upfront; incremental loading is not supported.
     fn load_more(&mut self, _window: &mut Window, _cx: &mut gpui::Context<TableState<Self>>) {}
+}
+
+impl SlowlogTableDelegate {
+    /// Render the chip-style cell for the "correlated event" column.
+    /// Empty cell when no Latency event lines up. Otherwise a small
+    /// outline button whose click hops the user to the Latency tab and
+    /// pre-expands the matching event. We render a button (not a
+    /// label) so the affordance is unmistakable — the row's `timestamp`
+    /// column already shows the time; the chip's job is *navigation*.
+    fn render_correlation_chip_cell(
+        &self,
+        row_ix: usize,
+        col_ix: usize,
+        cx: &mut gpui::Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let column = &self.columns[col_ix];
+        let paddings = column.paddings;
+
+        let Some(row) = self.rows.get(row_ix) else {
+            return h_flex()
+                .size_full()
+                .when_some(paddings, |this, p| this.paddings(p))
+                .into_any_element();
+        };
+        let Some((event, delta)) = row.correlated_event.clone() else {
+            return h_flex()
+                .size_full()
+                .when_some(paddings, |this, p| this.paddings(p))
+                .child(
+                    Label::new(i18n_slowlog_editor(cx, "no_correlation"))
+                        .text_color(cx.theme().muted_foreground)
+                        .text_xs(),
+                )
+                .into_any_element();
+        };
+
+        // Use the formatted "<event> +Ns" string from i18n so RTL/CJK
+        // wording isn't broken by hard-coded English concatenation.
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let label_text: SharedString = rust_i18n::t!(
+            "slowlog_editor.chip_near_event",
+            event = event.as_ref(),
+            // `delta` is signed seconds; render `+1` / `-2` directly.
+            delta = format!("{:+}", delta),
+            locale = locale
+        )
+        .to_string()
+        .into();
+
+        let editor = self.editor.clone();
+        let event_for_click = event.clone();
+        // djb2 is already used downstream for stable u32 ids derived
+        // from event names — reuse it here so ButtonId stays unique.
+        let id_hash: u32 = djb2_hash(event.as_ref()).wrapping_add(row_ix as u32);
+
+        h_flex()
+            .size_full()
+            .when_some(paddings, |this, p| this.paddings(p))
+            .child(
+                Button::new(("slowlog-correlated-chip", id_hash))
+                    .outline()
+                    .xsmall()
+                    .label(label_text)
+                    .on_click(move |_, _w, cx| {
+                        let Some(editor) = editor.upgrade() else { return };
+                        let event_name = event_for_click.clone();
+                        editor.update(cx, |this, cx| {
+                            this.jump_to_latency_event(event_name, cx);
+                        });
+                    }),
+            )
+            .into_any_element()
+    }
 }
 
 /// Main Slow Log viewer component.
@@ -399,12 +565,28 @@ pub struct ZedisSlowlogEditor {
     /// below the row. At most one expanded at a time to keep the panel
     /// readable.
     expanded_event: Option<SharedString>,
-    /// Cached `LATENCY GRAPH <event>` ASCII output, keyed by event name.
-    event_graphs: AHashMap<SharedString, SharedString>,
-    /// Cached `LATENCY HISTORY <event>` samples.
+    /// Cached `LATENCY HISTORY <event>` samples. Drives the GPU
+    /// sparkline (we render this rather than the server-side ASCII
+    /// `LATENCY GRAPH` so the chart scales with the panel and the
+    /// styling matches the Metrics view's line canvases).
     event_histories: AHashMap<SharedString, Vec<LatencySample>>,
     _latency_task: Option<Task<()>>,
     _event_detail_task: Option<Task<()>>,
+    /// 5-second auto-poll task for the Latency tab. Holds a Task whose
+    /// drop cancels the loop, so switching tabs (or destroying the view)
+    /// stops polling without explicit teardown.
+    _latency_poll_task: Option<Task<()>>,
+
+    /// Time window in unix seconds (inclusive). When set, the slow-log
+    /// table is filtered to rows whose `raw_timestamp` falls inside the
+    /// window — used by the "N slow nearby" chip on the Latency tab to
+    /// jump the user back with the relevant rows in view. `None` means
+    /// no window filter is active.
+    window_filter: Option<(i64, i64)>,
+    /// Label rendered inside the "filter active" pill so the user
+    /// remembers why the table is showing a subset (e.g. "near fork at
+    /// 2026-05-28 14:32:00"). Cleared together with `window_filter`.
+    window_filter_label: Option<SharedString>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -416,11 +598,16 @@ impl ZedisSlowlogEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
-        let all_rows = Self::build_all_rows(&server_state, cx);
+        // No latency events at construction time — they get populated
+        // by the first `fetch_latency` call when the user enters the
+        // Latency tab. Initial rows therefore have no correlation chips,
+        // which is correct (we have nothing to correlate against yet).
+        let all_rows = Self::build_all_rows(&server_state, &[], cx);
         let available_commands = Self::extract_commands(&all_rows);
         let filtered = all_rows.clone();
         let row_count = filtered.len();
-        let delegate = SlowlogTableDelegate::new(filtered, window, cx);
+        let editor_weak = cx.entity().downgrade();
+        let delegate = SlowlogTableDelegate::new(filtered, editor_weak, window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         let duration_input_state = cx.new(|cx| InputState::new(window, cx));
@@ -445,7 +632,10 @@ impl ZedisSlowlogEditor {
                     event,
                     ServerEvent::ServerRedisInfoUpdated | ServerEvent::ServerSelected(_)
                 ) {
-                    let new_rows = Self::build_all_rows(&this.server_state, cx);
+                    // Use the current latency_events snapshot so chips
+                    // appear immediately when slowlog refreshes after
+                    // latency was already populated.
+                    let new_rows = Self::build_all_rows(&this.server_state, &this.latency_events, cx);
                     let new_time_stamp = new_rows.first().map(|row| row.timestamp.clone()).unwrap_or_default();
                     // Skip re-render if the newest entry's timestamp hasn't changed.
                     if this.last_time_stamp == new_time_stamp {
@@ -482,10 +672,12 @@ impl ZedisSlowlogEditor {
             latency_unsupported: false,
             latency_loading: false,
             expanded_event: None,
-            event_graphs: AHashMap::new(),
             event_histories: AHashMap::new(),
             _latency_task: None,
             _event_detail_task: None,
+            _latency_poll_task: None,
+            window_filter: None,
+            window_filter_label: None,
             _subscriptions: subscriptions,
         }
     }
@@ -526,9 +718,15 @@ impl ZedisSlowlogEditor {
                         this.latency_threshold_ms = threshold;
                         // Drop stale caches so a refresh always reflects
                         // the freshly fetched events.
-                        this.event_graphs.clear();
                         this.event_histories.clear();
                         this.expanded_event = None;
+                        // Rebuild slow-log rows so their correlation
+                        // chips reflect the freshly fetched events.
+                        // We rebuild from `server_state.slow_logs()`
+                        // rather than re-decorating `all_rows` so that
+                        // a slowlog refresh between latency fetches
+                        // doesn't leave us with stale rows.
+                        this.rebuild_rows_with_correlations(cx);
                     }
                     Err(_) => {
                         // Errors fall through silently — they'll be
@@ -541,9 +739,233 @@ impl ZedisSlowlogEditor {
         }));
     }
 
-    /// Drill into a single event — fetch its GRAPH (ASCII histogram)
-    /// and recent HISTORY samples. Caches per event so re-expanding
-    /// the same row is instant.
+    /// Rebuild `all_rows` from the current server state, re-decorating
+    /// each row's `correlated_event` against the latest `latency_events`.
+    /// Then re-apply filters and push the result into the table state.
+    /// Single source of truth for "the inputs that drive the chip just
+    /// changed".
+    fn rebuild_rows_with_correlations(&mut self, cx: &mut gpui::Context<Self>) {
+        let new_rows = Self::build_all_rows(&self.server_state, &self.latency_events, cx);
+        self.all_rows = new_rows;
+        self.available_commands = Self::extract_commands(&self.all_rows);
+        self.selected_commands.retain(|c| self.available_commands.contains(c));
+        self.apply_filters(cx);
+    }
+
+    /// Switch to the Latency tab and pin the named event as expanded so
+    /// the user lands on its detail block. Called when the user clicks
+    /// the correlation chip on a slow-log row.
+    fn jump_to_latency_event(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
+        self.set_tab(PerformanceTab::Latency, cx);
+        // Different event from currently expanded one (or none) — set
+        // it and fetch detail. Same event already expanded → leave it
+        // alone (no toggle off, which the generic expand_event does).
+        if self.expanded_event.as_ref() != Some(&event) {
+            self.expanded_event = Some(event.clone());
+            self.fetch_event_detail(event, cx);
+        }
+        // If we never populated LATEST yet (user came here via a chip
+        // before opening the Latency tab manually) — kick a fetch.
+        if self.latency_events.is_empty() && !self.latency_loading {
+            self.fetch_latency(cx);
+        }
+        cx.notify();
+    }
+
+    /// Switch to the SlowLog tab and narrow the table to commands that
+    /// fired within `±CORRELATION_WINDOW_SECS` of `event_ts`. Records
+    /// `window_filter_label` so the user sees *why* the table is
+    /// suddenly short, with a one-click "Clear" pill to drop it.
+    fn jump_to_slowlog_window(&mut self, event_name: SharedString, event_ts: i64, cx: &mut gpui::Context<Self>) {
+        if event_ts <= 0 {
+            return;
+        }
+        self.set_tab(PerformanceTab::SlowLog, cx);
+        let lo = event_ts - CORRELATION_WINDOW_SECS;
+        let hi = event_ts + CORRELATION_WINDOW_SECS;
+        self.window_filter = Some((lo, hi));
+        let when = chrono::Local
+            .timestamp_opt(event_ts, 0)
+            .single()
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| event_ts.to_string());
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        self.window_filter_label = Some(
+            rust_i18n::t!(
+                "slowlog_editor.window_filter_label",
+                event = event_name.as_ref(),
+                when = when,
+                locale = locale
+            )
+            .to_string()
+            .into(),
+        );
+        self.apply_filters(cx);
+    }
+
+    /// Single entry point for switching the active sub-tab. Centralises
+    /// the side-effect of starting/stopping the Latency auto-poll loop
+    /// so we don't have to remember to start the timer at every site
+    /// that sets `current_tab`.
+    fn set_tab(&mut self, tab: PerformanceTab, cx: &mut gpui::Context<Self>) {
+        if self.current_tab == tab {
+            return;
+        }
+        self.current_tab = tab;
+        match tab {
+            PerformanceTab::Latency => self.start_latency_polling(cx),
+            PerformanceTab::SlowLog => self.stop_latency_polling(),
+        }
+    }
+
+    /// Kick a background loop that re-fetches LATENCY every 5 seconds
+    /// while the user is on the Latency tab. The Task handle lives in
+    /// `_latency_poll_task` — dropping it (via `stop_latency_polling`
+    /// or view teardown) cancels the loop.
+    fn start_latency_polling(&mut self, cx: &mut gpui::Context<Self>) {
+        // Already running — don't stack a second loop on top.
+        if self._latency_poll_task.is_some() {
+            return;
+        }
+        // Kick an immediate fetch so the panel doesn't sit empty for
+        // the first 5 seconds on entry.
+        if self.latency_events.is_empty() && !self.latency_loading {
+            self.fetch_latency(cx);
+        }
+        self._latency_poll_task = Some(cx.spawn(async move |handle, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                let still_active = handle
+                    .update(cx, |this, cx| {
+                        if this.current_tab == PerformanceTab::Latency {
+                            this.fetch_latency(cx);
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if !still_active {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn stop_latency_polling(&mut self) {
+        self._latency_poll_task = None;
+    }
+
+    /// Issue `CONFIG SET latency-monitor-threshold 100` to flip on
+    /// latency tracking with a sensible default (100ms — quiet enough
+    /// to skip routine commands, loud enough to catch fork/AOF stalls).
+    /// PROD-tagged servers route through the standard confirm dialog so
+    /// nobody flips runtime config on a live cluster by accident.
+    fn enable_latency_tracking(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let high_risk = crate::connection::get_server(&server_id)
+            .map(|s| s.is_high_risk_tag())
+            .unwrap_or(false);
+        if high_risk {
+            self.open_enable_confirm(window, cx);
+        } else {
+            self.run_enable_latency_tracking(cx);
+        }
+    }
+
+    fn open_enable_confirm(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let title = i18n_slowlog_editor(cx, "enable_tracking_confirm_title");
+        let body = i18n_slowlog_editor(cx, "enable_tracking_confirm_body");
+        let editor = cx.entity().downgrade();
+        zedis_ui::ZedisDialog::new_alert(title, body.to_string())
+            .button_props(crate::states::dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                if let Some(editor) = editor.upgrade() {
+                    editor.update(cx, |this, cx| this.run_enable_latency_tracking(cx));
+                }
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    fn run_enable_latency_tracking(&mut self, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        self._latency_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                // 100ms — the same default Redis docs suggest. Users
+                // can dial it down via CLI/Config panel later.
+                redis::cmd("CONFIG")
+                    .arg("SET")
+                    .arg("latency-monitor-threshold")
+                    .arg("100")
+                    .query_async::<()>(&mut conn)
+                    .await?;
+                Ok::<_, crate::error::Error>(())
+            });
+            let _ = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                // Immediate refetch so the threshold banner flips from
+                // "disabled" to "100 ms" without waiting for the next
+                // auto-poll tick.
+                this.fetch_latency(cx);
+            });
+        }));
+    }
+
+    /// Clear the time-window filter set by `jump_to_slowlog_window` so
+    /// the full slow-log table is visible again. Called by the "Clear"
+    /// pill above the table.
+    fn clear_window_filter(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.window_filter.is_none() {
+            return;
+        }
+        self.window_filter = None;
+        self.window_filter_label = None;
+        self.apply_filters(cx);
+    }
+
+    /// Pill banner shown above the SlowLog table when a time-window
+    /// filter is active (set via `jump_to_slowlog_window`). Spells out
+    /// *which* Latency event triggered the narrowing and offers a
+    /// one-click escape — without this, a user dropped into a 10-row
+    /// view from the Latency tab might not realise the table was
+    /// filtered at all.
+    fn render_window_pill(&self, label: SharedString, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        h_flex()
+            .mx_3()
+            .my_2()
+            .px_3()
+            .py_1p5()
+            .gap_2()
+            .items_center()
+            .border_1()
+            .border_color(theme.warning)
+            .bg(theme.warning.opacity(0.1))
+            .rounded(theme.radius)
+            .child(Icon::new(IconName::Info).text_color(theme.warning))
+            .child(Label::new(label).text_sm().text_color(theme.warning).flex_1())
+            .child(
+                Button::new("slowlog-clear-window")
+                    .ghost()
+                    .xsmall()
+                    .label(i18n_slowlog_editor(cx, "clear_window_filter"))
+                    .on_click(cx.listener(|this, _, _w, cx| this.clear_window_filter(cx))),
+            )
+    }
+
+    /// Drill into a single event — toggles expand on/off and fetches
+    /// detail (GPU sparkline source data) the first time an event is
+    /// expanded. Called from the chip on each Latency row.
     fn expand_event(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
         if self.expanded_event.as_ref() == Some(&event) {
             // Toggle off.
@@ -552,7 +974,15 @@ impl ZedisSlowlogEditor {
             return;
         }
         self.expanded_event = Some(event.clone());
-        if self.event_graphs.contains_key(&event) {
+        self.fetch_event_detail(event, cx);
+    }
+
+    /// Fetch `LATENCY HISTORY` for `event` if we don't have it cached
+    /// yet. Used by both `expand_event` (manual toggle) and
+    /// `jump_to_latency_event` (chip-driven navigation) so neither path
+    /// has to duplicate the spawn logic.
+    fn fetch_event_detail(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
+        if self.event_histories.contains_key(&event) {
             cx.notify();
             return;
         }
@@ -565,14 +995,12 @@ impl ZedisSlowlogEditor {
         self._event_detail_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let graph = latency_graph(&mut conn, event_for_task.as_ref()).await?;
                 let history = latency_history(&mut conn, event_for_task.as_ref()).await?;
-                Ok::<_, crate::error::Error>((graph, history))
+                Ok::<_, crate::error::Error>(history)
             });
             let result = task.await;
             let _ = handle.update(cx, |this, cx| {
-                if let Ok((graph, history)) = result {
-                    this.event_graphs.insert(event.clone(), SharedString::from(graph));
+                if let Ok(history) = result {
                     this.event_histories.insert(event, history);
                 }
                 cx.notify();
@@ -596,7 +1024,6 @@ impl ZedisSlowlogEditor {
             let _ = task.await;
             let _ = handle.update(cx, |this, cx| {
                 this.latency_events.clear();
-                this.event_graphs.clear();
                 this.event_histories.clear();
                 this.expanded_event = None;
                 this.fetch_latency(cx);
@@ -605,10 +1032,22 @@ impl ZedisSlowlogEditor {
     }
 
     /// Reads the current slow-log entries from the server state and converts them
-    /// into display rows.
-    fn build_all_rows(server_state: &Entity<ZedisServerState>, cx: &gpui::App) -> Vec<SlowLogRow> {
+    /// into display rows, decorating each row with the closest Latency event in
+    /// `±CORRELATION_WINDOW_SECS` (if any) so the chip column has data to render.
+    fn build_all_rows(
+        server_state: &Entity<ZedisServerState>,
+        latency_events: &[LatencyEvent],
+        cx: &gpui::App,
+    ) -> Vec<SlowLogRow> {
         let entries = server_state.read(cx).slow_logs();
-        entries.iter().map(SlowLogRow::from_entry).collect()
+        entries
+            .iter()
+            .map(|entry| {
+                let mut row = SlowLogRow::from_entry(entry);
+                row.correlated_event = correlated_event_for_slowlog(row.raw_timestamp, latency_events);
+                row
+            })
+            .collect()
     }
 
     /// Extracts unique command names from rows, sorted alphabetically.
@@ -623,7 +1062,11 @@ impl ZedisSlowlogEditor {
         cmds
     }
 
-    /// Applies the current command and duration filters to `all_rows`.
+    /// Applies the current command, duration, and time-window filters
+    /// to `all_rows`. `window_filter`, when set, narrows the table to
+    /// rows whose `raw_timestamp` falls inside the inclusive window —
+    /// this drives the "jump from Latency back to nearby slow commands"
+    /// flow.
     fn filter_rows(&self) -> Vec<SlowLogRow> {
         self.all_rows
             .iter()
@@ -632,6 +1075,11 @@ impl ZedisSlowlogEditor {
                     return false;
                 }
                 if self.min_duration_ms > 0 && row.duration_ms < self.min_duration_ms {
+                    return false;
+                }
+                if let Some((lo, hi)) = self.window_filter
+                    && (row.raw_timestamp < lo || row.raw_timestamp > hi)
+                {
                     return false;
                 }
                 true
@@ -742,7 +1190,7 @@ impl gpui::Render for ZedisSlowlogEditor {
                                             .label(i18n_slowlog_editor(cx, "tab_slowlog"));
                                         btn = if active { btn.primary() } else { btn.outline() };
                                         btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            this.current_tab = PerformanceTab::SlowLog;
+                                            this.set_tab(PerformanceTab::SlowLog, cx);
                                             cx.notify();
                                         }))
                                     })
@@ -753,10 +1201,10 @@ impl gpui::Render for ZedisSlowlogEditor {
                                             .label(i18n_slowlog_editor(cx, "tab_latency"));
                                         btn = if active { btn.primary() } else { btn.outline() };
                                         btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            this.current_tab = PerformanceTab::Latency;
-                                            if this.latency_events.is_empty() && !this.latency_loading {
-                                                this.fetch_latency(cx);
-                                            }
+                                            // `set_tab` handles the initial
+                                            // fetch + polling task — no need
+                                            // to fire `fetch_latency` here.
+                                            this.set_tab(PerformanceTab::Latency, cx);
                                             cx.notify();
                                         }))
                                     }),
@@ -776,22 +1224,31 @@ impl gpui::Render for ZedisSlowlogEditor {
                     .w_full()
                     .min_h_0()
                     .when(self.current_tab == PerformanceTab::SlowLog, |this| {
-                        this.when(is_empty, |this| {
-                            this.child(
-                                div().size_full().flex().items_center().justify_center().child(
-                                    Label::new(i18n_slowlog_editor(cx, "no_slowlogs"))
-                                        .text_color(cx.theme().muted_foreground),
-                                ),
-                            )
-                        })
-                        .when(!is_empty, |this| {
-                            this.child(
-                                DataTable::new(&self.table_state)
-                                    .stripe(true)
-                                    .bordered(false)
-                                    .scrollbar_visible(true, true),
-                            )
-                        })
+                        let window_pill = self.window_filter_label.clone();
+                        this
+                            // Pill banner sits above both the empty-state
+                            // message and the table so users always see why
+                            // the table is narrowed even when the filter
+                            // happens to yield zero rows.
+                            .when_some(window_pill, |this, label| {
+                                this.child(self.render_window_pill(label, cx))
+                            })
+                            .when(is_empty, |this| {
+                                this.child(
+                                    div().size_full().flex().items_center().justify_center().child(
+                                        Label::new(i18n_slowlog_editor(cx, "no_slowlogs"))
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
+                                )
+                            })
+                            .when(!is_empty, |this| {
+                                this.child(
+                                    DataTable::new(&self.table_state)
+                                        .stripe(true)
+                                        .bordered(false)
+                                        .scrollbar_visible(true, true),
+                                )
+                            })
                     })
                     .when(self.current_tab == PerformanceTab::Latency, |this| {
                         this.child(self.render_latency_body(cx))
@@ -917,13 +1374,30 @@ impl ZedisSlowlogEditor {
             )
             .child(div().flex_1().child(Label::new(when_label).text_xs().text_color(muted)));
 
+        // Tracking-disabled banner gets an inline "Enable tracking"
+        // button so users can flip the toggle without bouncing to the
+        // Config panel. Hidden when tracking is already on or the
+        // server pre-dates LATENCY altogether.
+        let show_enable_button = self.latency_threshold_ms == 0 && !self.latency_unsupported;
+
         v_flex()
             .size_full()
             .child(
-                div()
+                h_flex()
                     .px_3()
                     .py_2()
-                    .child(Label::new(threshold_label).text_xs().text_color(banner_color)),
+                    .gap_3()
+                    .items_center()
+                    .child(Label::new(threshold_label).text_xs().text_color(banner_color).flex_1())
+                    .when(show_enable_button, |this| {
+                        this.child(
+                            Button::new("latency-enable-tracking")
+                                .primary()
+                                .xsmall()
+                                .label(i18n_slowlog_editor(cx, "enable_tracking_button"))
+                                .on_click(cx.listener(|this, _, w, cx| this.enable_latency_tracking(w, cx))),
+                        )
+                    }),
             )
             .child(header)
             .when(self.latency_events.is_empty(), |this| {
@@ -945,15 +1419,43 @@ impl ZedisSlowlogEditor {
         let muted = cx.theme().muted_foreground;
         let event = ev.event.clone();
         let event_for_toggle = event.clone();
+        let event_for_jump = event.clone();
+        let event_ts = ev.timestamp;
         let is_expanded = self.expanded_event.as_ref() == Some(&event);
         let when_str = format_unix_seconds(ev.timestamp);
         let id_hash: u32 = djb2_hash(event.as_ref());
+
+        // Cross-tab chip: count of slow-log rows that fired within the
+        // correlation window around this event. When > 0, give the user
+        // a one-click "jump back to SlowLog filtered to that window".
+        let slow_count = correlated_slowlog_count_for_event(ev.timestamp, &self.all_rows);
+        let jump_chip: Option<gpui::AnyElement> = if slow_count > 0 {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+            let label: SharedString = rust_i18n::t!(
+                "slowlog_editor.chip_slow_nearby",
+                count = slow_count.to_string(),
+                locale = locale
+            )
+            .to_string()
+            .into();
+            Some(
+                Button::new(("latency-jump-slow", id_hash))
+                    .outline()
+                    .xsmall()
+                    .label(label)
+                    .on_click(cx.listener(move |this, _, _w, cx| {
+                        this.jump_to_slowlog_window(event_for_jump.clone(), event_ts, cx);
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
 
         // Color the latest/max numbers — yellow at > 100ms, red at > 1s.
         let latest_color = severity_color(ev.latest_ms, cx);
         let max_color = severity_color(ev.max_ms, cx);
 
-        let graph = self.event_graphs.get(&event).cloned();
         let history = self.event_histories.get(&event).cloned();
 
         let row = h_flex()
@@ -976,6 +1478,7 @@ impl ZedisSlowlogEditor {
                     .child(Label::new(format!("{} ms", ev.max_ms)).text_sm().text_color(max_color)),
             )
             .child(div().flex_1().child(Label::new(when_str).text_xs().text_color(muted)))
+            .when_some(jump_chip, |this, chip| this.child(chip))
             .child(
                 Button::new(("latency-toggle", id_hash))
                     .ghost()
@@ -988,10 +1491,10 @@ impl ZedisSlowlogEditor {
                     .on_click(cx.listener(move |this, _, _w, cx| this.expand_event(event_for_toggle.clone(), cx))),
             );
 
-        // Inline drill-down block: ASCII GRAPH (monospace) +
+        // Inline drill-down block: GPU sparkline (from HISTORY) +
         // tail of HISTORY samples.
         let detail: Option<gpui::AnyElement> = if is_expanded {
-            Some(self.render_latency_detail(graph, history, cx).into_any_element())
+            Some(self.render_latency_detail(history, cx).into_any_element())
         } else {
             None
         };
@@ -1001,35 +1504,68 @@ impl ZedisSlowlogEditor {
 
     fn render_latency_detail(
         &self,
-        graph: Option<SharedString>,
         history: Option<Vec<LatencySample>>,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let foreground = cx.theme().foreground;
-        let graph_block: gpui::AnyElement = match graph {
-            Some(g) if !g.trim().is_empty() => div()
-                .px_3()
-                .py_2()
-                .bg(cx.theme().muted.opacity(0.4))
-                .rounded_sm()
-                .child(
-                    Label::new(g)
-                        .font_family(get_font_family())
-                        .text_xs()
-                        .whitespace_normal()
-                        .text_color(foreground),
-                )
-                .into_any_element(),
-            _ => div()
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+
+        // Sparkline block: native GPU line chart sourced from LATENCY
+        // HISTORY. Replaces the previous monospace ASCII `LATENCY
+        // GRAPH` block — server-side ASCII art doesn't scale with the
+        // panel and clashes visually with the Metrics view's canvases.
+        let graph_block: gpui::AnyElement = match history.as_deref() {
+            // No samples yet → render the loading placeholder so the
+            // expanded row has something while the background fetch is
+            // in flight.
+            None => div()
                 .px_3()
                 .py_2()
                 .child(Label::new(i18n_common(cx, "loading")).text_xs().text_color(muted))
                 .into_any_element(),
+            // Empty Vec — render the explicit "no samples yet"
+            // affordance instead of an empty chart frame.
+            Some([]) => div()
+                .px_3()
+                .py_2()
+                .child(
+                    Label::new(i18n_slowlog_editor(cx, "sparkline_no_history"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .into_any_element(),
+            Some(h) => {
+                // LATENCY HISTORY timestamps are unix-seconds; the
+                // chart helper formats unix-millis, so multiply by 1000
+                // to reuse it without forking a second formatter.
+                let dates: Vec<SharedString> = h.iter().map(|s| format_timestamp_ms(s.timestamp * 1000)).collect();
+                let values: Vec<f64> = h.iter().map(|s| s.latency_ms as f64).collect();
+                // Floor y_max at 0.01 — `make_line_canvas` divides by
+                // y_max for scale, so 0 would produce NaN.
+                let y_max = values.iter().copied().fold(0.01_f64, f64::max);
+                // Roughly 4 x-axis labels evenly spaced; clamp at 1 so
+                // a single-sample history still renders a tick.
+                let tick_margin = (h.len() / 4).max(1);
+                let params = ChartParams {
+                    dates,
+                    y_max,
+                    y_format: Box::new(|v| format!("{:.0} ms", v)),
+                    tick_margin,
+                    border: theme.border,
+                    muted_fg: muted,
+                };
+                div()
+                    .h(px(140.))
+                    .px_3()
+                    .py_2()
+                    .child(make_line_canvas(params, values, theme.chart_2, false))
+                    .into_any_element()
+            }
         };
 
-        // Show only the last few samples — full history can be 160+
-        // points, the ASCII GRAPH already summarizes the trend.
+        // Tail of raw history samples for users who want exact numbers.
+        // Limit so a 160-point history doesn't drown the panel — the
+        // sparkline above carries the shape.
         const HISTORY_PREVIEW: usize = 12;
         let samples: Vec<gpui::AnyElement> = history
             .map(|h| {

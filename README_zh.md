@@ -55,16 +55,18 @@
 - **Redis Streams**：完整 Stream 支持——浏览流条目、**实时跟踪**新消息（`XREAD BLOCK`，环形缓冲，热流也不会撑爆内存）、通过 `XINFO` 查看消费者组与待处理消息（Pending Entries），并管理消费者组（`XGROUP CREATE` / `SETID` / `DESTROY`，销毁带确认保护）——全程无需离开 GUI。
 - **批量粘贴**：一次性向 Hash / List / Set / ZSet 添加大量条目——粘贴 TSV 或 CSV（优先 Tab，回退逗号，逐单元格 trim），Zedis 会按行走正常的 `HSET` / `RPUSH` / `SADD` / `ZADD` 路径写入。
 - **Pub/Sub**：内置订阅/发布界面，支持订阅频道模式、实时接收消息，并可直接在 GUI 中发布消息，无需切换到 `redis-cli`。
-- **本地写入历史**：string 类型每次保存时自动在内存中保留最近 10 个历史版本（按 key 隔离），一键即可将旧版本载入编辑器，预览或回滚后再保存。纯客户端记录（不占用 Redis 存储），仅会话内有效，key 被删除或切换服务器时自动清理。
+- **本地写入历史**：string 类型每次保存时自动在内存中保留最近 10 个历史版本（按 key 隔离），一键即可将旧版本载入编辑器，预览或回滚后再保存。纯客户端记录（不占用 Redis 存储），仅会话内有效，key 被删除或切换服务器时自动清理。Restore 旁还有一个**分裂 Diff 按钮**——主点击直接与上一版本并排 diff、下拉可挑选任意旧版本。JSON 类型在差异面板下方额外渲染 RFC 7396 merge patch 文档,与 Save 流程实际发送的 `JSON.MERGE` 内容一模一样。
 - **RediSearch 浏览器**（模块）：专用面板覆盖 `FT.*` 命令族——`FT._LIST` 列出索引、`FT.INFO` 查看 schema 与统计（含 indexing 进度与 `type mismatch` 失败计数，直接解释"明明有数据却 0 docs"的原因）、原始 `FT.SEARCH` 配合 `HIGHLIGHT` / `RETURN` / `LIMIT` chip，或切换到 `FT.AGGREGATE` 跑单层 `GROUPBY` + `REDUCE`（`COUNT` / `SUM` / `AVG` / `QUANTILE` / `TOLIST` 等）。索引创建走结构化表单（HASH / JSON、prefix、每字段 SORTABLE / NOSTEM / NOINDEX 切换），同时支持 alter / drop，全部不需离开 app。未加载 RediSearch 模块的服务器自动隐藏入口。
 - **Functions 编辑器**（Redis 7+）：通过 `FUNCTION LIST / LOAD / DELETE` 管理服务端 Lua library。卡片一眼看到每个 library 的 engine、注册的函数和 flags（`no-writes`、`allow-oom` 等）；点击展开内联只读 Lua 预览，带完整 tree-sitter 语法高亮。Edit 与"新建 library"共用同一个 Lua 编辑器，带行号、缩进引导线、`REPLACE` 开关，确保迭代安全。Redis 6.x 及更早版本自动隐藏入口。
 
 ### 📊 实时可观测性
 内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。
 - **实时指标**：精美渲染的 CPU、内存和网络 I/O 实时图表。
-- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。Top-N 表支持按 **大小 / 最热 / 最冷** 排序——根据服务端 `maxmemory-policy` 自动选用 `OBJECT FREQ`（LFU）或 `OBJECT IDLETIME`（LRU），一键定位真正值得缓存（或淘汰）的 key。
+- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。Top-N 表支持按 **大小 / 最热 / 最冷** 排序——根据服务端 `maxmemory-policy` 自动选用 `OBJECT FREQ`（LFU）或 `OBJECT IDLETIME`（LRU），一键定位真正值得缓存（或淘汰）的 key。同一次 SCAN 还会同步喂养子 Tab 的 **TTL 分布直方图**（`<1m / <1h / <1d / <7d / ≥7d / 无 TTL`）——一眼识别"凌晨 3 点集中淘汰"陷阱、查看 `PERSIST`（内存泄漏红旗）占比，并在 ratio<1 采样时直接读到估算的全量键数。
 - **集群健康度**：状态栏节点指示器悬浮即可查看树状拓扑——各 master 及其 slot 范围、replica 按 master 分组展示，并附带每个 replica 的复制延迟（字节 + 秒 + 连接状态），数据源于 `INFO replication`。Cluster 与 Sentinel 部署均支持。
-- **深度诊断**：追踪慢日志，通过关键字过滤实时监控 `MONITOR` 流，并通过直观的 GUI 管理活跃客户端（`CLIENT LIST/KILL`）。
+- **深度诊断**：追踪慢日志，通过关键字过滤实时监控 `MONITOR` 流，并通过直观的 GUI 管理活跃客户端（`CLIENT LIST/KILL`）。Performance 面板把慢日志与 `LATENCY` 事件交叉关联：每条慢命令上自带徽章，标出 ±5 秒内最近的 fork/AOF/expire 事件，一键跳到该事件的 GPU 折线图（`LATENCY HISTORY`）；反向徽章则在每条 Latency 事件上显示窗口内的慢日志条数，点击把慢日志收窄到该时间段。`latency-monitor-threshold` 关闭时面板内一键开启（默认 100 ms，PROD 标签走标准确认对话框）。
+- **持久化管理**：独立面板持续读取 `INFO persistence`——上次 RDB 快照时间、距上次保存的写入数、AOF 当前体积与重写基线的膨胀比，以及按 fork 失败维度的告警 banner。`BGSAVE` / `BGREWRITEAOF` 一键触发（集群模式下自动 fan-out 到所有 master），走标准确认对话框（PROD 标签自动升级措辞），fork 进行中或连接处于只读时按钮自动 disable 并显示已运行时长。
+- **Keyspace 通知订阅**：一键挂载 `__keyspace@*__:*` 与 `__keyevent@*__:*` 做实时键事件排查——"刚刚是哪个客户端删了 user:42？"不用切到 redis-cli 就有答案。channel 名解析成 `(time, db, key, event, source)` 五列表格，事件动词按严重度上色，ring buffer 保留最近 1000 条；过滤器走纯客户端路径（事件类型多选 chip + key 子串过滤），切换不会重连订阅。`notify-keyspace-events` 为空时面板顶部出现黄色 banner，内嵌 "Enable (AKE)" 按钮一键开启——PROD 标签的服务器会先走标准确认对话框再下发 CONFIG SET。
 
 ### 🛡️ 企业级安全与效率
 - **命令面板**（`⌘K`）：键盘优先的模糊搜索，覆盖服务器与导航命令——无需鼠标即可切换连接或跳转到任意面板（Metrics、性能、内存、Config、ACL、RediSearch、Functions、Lua 脚本、设置……）。方向键移动、Enter 执行、Esc 关闭。
@@ -78,6 +80,7 @@
 - **命名空间树视图**：自动将以冒号（`:`）分隔的键整理为嵌套目录树，右键菜单支持刷新指定文件夹或一键删除该前缀下的所有键。每个 leaf key 旁附带紧凑的 TTL chip——绿色表示存活 TTL，红色表示 2 分钟内即将过期，灰色表示永久 key。
 - **多选批量删除**：切换多选模式，一次性标记并删除多个键，无需编写任何命令。
 - **键收藏与搜索历史**：收藏常用键以便随时快速访问，并可从持久化历史面板中回溯近期搜索记录。
+- **键标签与私人备注**（纯客户端）：给任意键打颜色标签（红/橙/黄/绿/蓝/紫）和自由文本备注——所有数据都存在本地 redb 文件里，**完全不占用 Redis 存储**，永远不会离开本机。打了标签的行在 key tree 左侧出现 4px 色条，鼠标悬停可显示备注 tooltip。每种颜色都可作为筛选条件一键过滤树（工具栏下拉只在已经标过键时才出现）。编辑器工具栏在 ⭐ 旁边也加了 swatch 按钮，从这里或 tree 右键 "编辑标签与备注…" 菜单进入的对话框是同一个。磁盘存储采用 `v: 1` 版本化 envelope，将来扩展多标签 / 按标签备注时可平滑迁移。
 - **自动刷新**：为键目录配置自动刷新间隔，实时同步高频变更的 Redis 实例数据。
 
 ---

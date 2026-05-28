@@ -19,8 +19,8 @@ use crate::{
     helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{
-        ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor,
-        ZedisZsetEditor,
+        DiffCloseCallback, ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisPubsubEditor, ZedisSetEditor,
+        ZedisStreamEditor, ZedisValueDiff, ZedisZsetEditor,
     },
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -43,6 +43,34 @@ use zedis_ui::ZedisDialog;
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
 const TTL_INPUT_MAX_WIDTH: f32 = 120.0;
+
+/// Active side-by-side diff session — captured snapshot of both panes
+/// so the diff view stays stable while the user reads it, even if the
+/// underlying history or live value mutates in the background.
+///
+/// Both sides are stored as raw bytes (not the rendered SharedString)
+/// because the diff view re-renders them via the same formatting paths
+/// the editor uses, so binary-safe round-trips work for non-UTF8 keys.
+#[derive(Clone, Debug)]
+pub(crate) struct DiffSession {
+    /// History index used to look up the reference version. Kept so the
+    /// view can render the same "vN (3 min ago)" label the toolbar
+    /// dropdown shows.
+    pub history_idx: u32,
+    /// Bytes from `value_history_for(key)[history_idx]` — left pane.
+    pub reference_bytes: bytes::Bytes,
+    /// Unix-seconds capture time of the reference version, for the
+    /// "(3 min ago)" relative label.
+    pub reference_at: i64,
+    /// Bytes from the bytes editor at the moment the diff was opened —
+    /// right pane. Snapshotted instead of read live so that an in-flight
+    /// reload doesn't yank the pane out from under the user.
+    pub current_bytes: bytes::Bytes,
+    /// True when the current key was detected as RedisJSON / JSON-format
+    /// at session-open. Drives whether we also render the RFC 7396
+    /// merge-patch block below the side-by-side panes.
+    pub is_json: bool,
+}
 
 /// Main editor component for displaying and editing Redis key values
 /// Supports different key types (String, List, etc.) with type-specific editors
@@ -71,6 +99,16 @@ pub struct ZedisEditor {
 
     auto_refresh_task: Option<Task<()>>,
     auto_refresh_interval_sec: u64,
+
+    /// Active side-by-side diff session, when the user opened the
+    /// "Diff vs version" view. `Some` swaps the body region from the
+    /// bytes editor to the diff view until the user dismisses it.
+    diff_session: Option<DiffSession>,
+    /// Cached diff view entity — kept alive while `diff_session` is
+    /// `Some` so re-renders don't tear it down. Both are taken in
+    /// `close_diff_session` so we don't leak the view past the
+    /// session it was built for.
+    diff_view: Option<Entity<ZedisValueDiff>>,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -118,10 +156,24 @@ impl ZedisEditor {
                 ServerEvent::KeySelected(_) => {
                     this.selected_key_at = Some(Instant::now());
                     this.start_auto_refresh(None, cx);
+                    // Auto-close any open diff — the reference bytes
+                    // belong to the previous key and would be nonsense
+                    // alongside the new key's editor.
+                    this.close_diff_session(cx);
                 }
                 ServerEvent::ValueLoaded => {
                     // stream editor is different of each key, so we need to destroy it
                     this.stream_editor.take();
+                    // A fresh value load (reload, type change, server
+                    // switch) invalidates the diff snapshot.
+                    this.close_diff_session(cx);
+                }
+                ServerEvent::ValueUpdated => {
+                    // After a successful Save the right-pane snapshot
+                    // is stale (the bytes we captured are now an
+                    // ex-version). Dismiss the diff so the user lands
+                    // back on the live editor.
+                    this.close_diff_session(cx);
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
@@ -176,6 +228,78 @@ impl ZedisEditor {
             should_enter_ttl_edit_mode: None,
             _subscriptions: subscriptions,
             selected_key_at: None,
+            diff_session: None,
+            diff_view: None,
+        }
+    }
+
+    /// Open a diff session against the history version at `idx`. No-op
+    /// if the index is out of bounds, the current key has no bytes
+    /// editor, or the bytes editor is still loading — better to silently
+    /// skip than show an empty diff that confuses the user.
+    fn open_diff_session(&mut self, idx: u32, cx: &mut Context<Self>) {
+        let Some(bytes_editor) = self.bytes_editor.clone() else {
+            return;
+        };
+        let (reference_bytes, reference_at, is_redis_json) = {
+            let server_state = self.server_state.read(cx);
+            let Some(key) = server_state.key() else { return };
+            let entry = server_state
+                .value_history_for(&key)
+                .and_then(|history| history.get(idx as usize))
+                .cloned();
+            let Some(entry) = entry else { return };
+            // Detect RedisJSON keys explicitly — for plain String keys
+            // whose payload happens to be valid JSON, the diff view
+            // re-checks by parsing the bytes itself, so we don't need
+            // the bytes-editor's private `is_json_value` flag here.
+            let is_redis_json = server_state.value().map(|v| v.is_redis_json()).unwrap_or(false);
+            (entry.bytes, entry.at, is_redis_json)
+        };
+
+        // Snapshot the current editor bytes — going through
+        // `value_bytes_for_save` would also pull pending hex-edit
+        // changes, which is what we want for the right pane.
+        let current_bytes: bytes::Bytes = bytes_editor.update(cx, |state, cx| {
+            match state.value_bytes_for_save(cx) {
+                Some(Ok(b)) => bytes::Bytes::from(b),
+                // Fall back to the rendered text on hex-parse errors —
+                // the diff is still informative, just textually shaped.
+                Some(Err(_)) | None => bytes::Bytes::from(state.value(cx).to_string()),
+            }
+        });
+
+        let session = DiffSession {
+            history_idx: idx,
+            reference_bytes,
+            reference_at,
+            current_bytes,
+            is_json: is_redis_json,
+        };
+
+        // Build the view eagerly so the close-callback can capture a
+        // WeakEntity of ZedisEditor (closure must outlive this fn).
+        let editor_weak = cx.entity().downgrade();
+        let on_close: DiffCloseCallback = std::sync::Arc::new(move |_w, cx| {
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.update(cx, |this, cx| this.close_diff_session(cx));
+            }
+        });
+        let view = cx.new(|cx| ZedisValueDiff::new(session.clone(), on_close, cx));
+
+        self.diff_session = Some(session);
+        self.diff_view = Some(view);
+        cx.notify();
+    }
+
+    /// Close any active diff session. Safe to call when none is open.
+    /// Triggered by the Close button in the diff view, by a save, and
+    /// by key / server switches (via the existing subscriptions).
+    fn close_diff_session(&mut self, cx: &mut Context<Self>) {
+        let had_session = self.diff_session.take().is_some();
+        let had_view = self.diff_view.take().is_some();
+        if had_session || had_view {
+            cx.notify();
         }
     }
     fn start_auto_refresh(&mut self, auto_refresh_interval_sec: Option<u64>, cx: &mut Context<Self>) {
@@ -430,6 +554,11 @@ impl ZedisEditor {
                     format!("{label} ({count})").into()
                 };
 
+                // Clone the snapshot before the Restore button takes
+                // ownership — the Diff button below needs its own copy
+                // to build a parallel dropdown.
+                let history_snapshot_for_diff = history_snapshot.clone();
+
                 btns.push(
                     Button::new("zedis-editor-history")
                         .outline()
@@ -450,6 +579,57 @@ impl ZedisEditor {
                                 let idx_u32 = idx as u32;
                                 menu = menu
                                     .menu_element(Box::new(EditorAction::LoadHistory(idx_u32)), move |_w, _cx| {
+                                        Label::new(label.clone())
+                                    });
+                            }
+                            menu
+                        })
+                        .into_any_element(),
+                );
+
+                // Diff with history version. Split-button: main click
+                // diffs against v0 (most recent), dropdown lets the user
+                // pick any version. Disabled when there's no history at
+                // all — there's nothing to compare against until the
+                // user has saved at least once.
+                let diff_tooltip: SharedString = if count == 0 {
+                    i18n_editor(cx, "diff_no_history")
+                } else {
+                    i18n_editor(cx, "diff_button_tooltip")
+                };
+                btns.push(
+                    DropdownButton::new("zedis-editor-diff")
+                        .button(
+                            Button::new("zedis-editor-diff-main")
+                                .outline()
+                                .disabled(count == 0 || should_show_loading)
+                                // No diff-shaped glyph in CustomIconName
+                                // yet; the label "Diff" is short and
+                                // self-explanatory next to the Undo
+                                // restore icon, so we skip the icon
+                                // rather than adding a new SVG asset.
+                                .label(i18n_editor(cx, "diff_button"))
+                                .tooltip(diff_tooltip)
+                                .on_click(cx.listener(move |this, _event, _window, cx| {
+                                    // Diff against the most recent
+                                    // history entry — the common case.
+                                    this.open_diff_session(0, cx);
+                                })),
+                        )
+                        .dropdown_menu(move |menu, _, _cx| {
+                            let mut menu = menu;
+                            if history_snapshot_for_diff.is_empty() {
+                                return menu;
+                            }
+                            let now = unix_ts();
+                            for (idx, (at, size)) in history_snapshot_for_diff.iter().enumerate() {
+                                let secs_ago = (now - at).max(0) as u64;
+                                let rel = format_duration(Duration::from_secs(secs_ago));
+                                let size_str = format_size(*size as u64, DECIMAL);
+                                let label = format!("v{} • {} • {}", idx + 1, rel, size_str);
+                                let idx_u32 = idx as u32;
+                                menu = menu
+                                    .menu_element(Box::new(EditorAction::DiffHistory(idx_u32)), move |_w, _cx| {
                                         Label::new(label.clone())
                                     });
                             }
@@ -726,11 +906,23 @@ impl ZedisEditor {
                 // Default to bytes editor for String type and other types
                 self.reset_editors(KeyType::String);
 
-                let editor = self.bytes_editor.get_or_insert_with(|| {
-                    debug!("Creating new bytes editor");
-                    cx.new(|cx| ZedisBytesEditor::new(self.server_state.clone(), window, cx))
-                });
-                editor.clone().into_any_element()
+                let editor = self
+                    .bytes_editor
+                    .get_or_insert_with(|| {
+                        debug!("Creating new bytes editor");
+                        cx.new(|cx| ZedisBytesEditor::new(self.server_state.clone(), window, cx))
+                    })
+                    .clone();
+                // Swap the bytes editor out for the side-by-side diff
+                // view when a session is open. The bytes editor itself
+                // stays alive in `self.bytes_editor` so closing the
+                // diff returns the user to it without losing pending
+                // edits.
+                if let Some(diff_view) = self.diff_view.as_ref() {
+                    diff_view.clone().into_any_element()
+                } else {
+                    editor.into_any_element()
+                }
             }
         }
     }
@@ -764,6 +956,9 @@ impl Render for ZedisEditor {
                 }
                 EditorAction::LoadHistory(idx) => {
                     this.load_history_entry(*idx, window, cx);
+                }
+                EditorAction::DiffHistory(idx) => {
+                    this.open_diff_session(*idx, cx);
                 }
                 _ => {
                     cx.propagate();
