@@ -31,8 +31,8 @@ mod ssh_tunnel;
 
 pub use acl::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami};
 pub use async_connection::{
-    RedisAsyncConn, open_monitor_connection, open_single_connection, set_redis_connection_timeout,
-    set_redis_response_timeout,
+    RedisAsyncConn, open_monitor_connection, open_node_connection, open_single_connection,
+    set_redis_connection_timeout, set_redis_response_timeout,
 };
 pub use config::{RedisServer, get_server, get_server_groups, get_servers, save_servers, tag_color_index};
 pub use danger::{

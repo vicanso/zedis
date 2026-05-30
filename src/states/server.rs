@@ -36,6 +36,7 @@ use tracing::{debug, error, info};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 
+pub mod cluster;
 pub mod event;
 pub mod hash;
 pub mod history;
@@ -43,6 +44,7 @@ pub mod json;
 pub mod key;
 pub mod list;
 pub mod persistence;
+pub mod sentinel;
 pub mod set;
 pub mod stat;
 pub mod stream;

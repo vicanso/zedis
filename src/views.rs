@@ -49,6 +49,7 @@ mod status_bar;
 mod stream_editor;
 mod terminal;
 mod title_bar;
+mod topology;
 mod value_diff;
 mod zset_editor;
 
@@ -91,5 +92,6 @@ pub use status_bar::ZedisStatusBar;
 pub use stream_editor::ZedisStreamEditor;
 pub use terminal::ZedisTerminal;
 pub use title_bar::ZedisTitleBar;
+pub use topology::ZedisTopology;
 pub use value_diff::{DiffCloseCallback, ZedisValueDiff};
 pub use zset_editor::ZedisZsetEditor;

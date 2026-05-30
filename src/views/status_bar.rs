@@ -19,7 +19,7 @@ use crate::{
     helpers::{humanize_keystroke, resolve_tag_color},
     states::{
         ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore,
-        ZedisServerState, get_session_option, i18n_sidebar, i18n_status_bar, save_session_option,
+        ZedisServerState, get_session_option, i18n_sidebar, i18n_status_bar, i18n_topology, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -513,6 +513,17 @@ impl ZedisStatusBar {
             Icon::new(CustomIconName::AudioWaveform),
             Box::new(ServerToolsAction::KeyspaceNotifications),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
+        );
+        // Topology panel adapts to the detected mode (Cluster /
+        // Sentinel / Standalone). P1 ships the scaffold only — the
+        // panel currently shows a mode-specific placeholder; real
+        // write ops (FAILOVER, MEET, FORGET, …) land in later sprints.
+        // Re-using `topology.title` for the tooltip label avoids
+        // adding an 8-locale `toggle_topology_tooltip` key.
+        menu = menu.menu_element_with_icon(
+            Icon::new(CustomIconName::Network),
+            Box::new(ServerToolsAction::Topology),
+            move |_window, cx| Label::new(i18n_topology(cx, "title")),
         );
         menu
     }

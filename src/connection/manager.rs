@@ -421,6 +421,16 @@ pub struct TopologyEntry {
     pub addr: SharedString,
     pub role_marker: SharedString,
     pub annotation: SharedString,
+    /// `CLUSTER NODES` node id (only populated for cluster mode; empty
+    /// for sentinel/standalone where the concept doesn't apply). Used
+    /// by `CLUSTER FORGET node_id` and `CLUSTER REPLICATE node_id`,
+    /// both of which target by id rather than address.
+    pub node_id: SharedString,
+    /// Sentinel master name (only populated for sentinel master rows;
+    /// empty everywhere else). Used by `SENTINEL FAILOVER name`,
+    /// `SENTINEL RESET pattern`, `SENTINEL REMOVE name` — Sentinel
+    /// ops target by master name, not by addr or node_id.
+    pub master_name: SharedString,
 }
 
 /// One master plus the replicas it owns. Replicas already filtered to those
@@ -523,6 +533,8 @@ impl RedisClient {
                         addr: master.host_port().into(),
                         role_marker: role_marker(&master.role),
                         annotation: format_slots(&master.slots).into(),
+                        node_id: master.cluster_id.clone().unwrap_or_default().into(),
+                        master_name: SharedString::default(),
                     };
                     let replicas: Vec<TopologyEntry> = if let Some(master_id) = master.cluster_id.as_ref() {
                         self.nodes
@@ -535,6 +547,8 @@ impl RedisClient {
                                 addr: replica.host_port().into(),
                                 role_marker: role_marker(&replica.role),
                                 annotation: SharedString::default(),
+                                node_id: replica.cluster_id.clone().unwrap_or_default().into(),
+                                master_name: SharedString::default(),
                             })
                             .collect()
                     } else {
@@ -549,6 +563,10 @@ impl RedisClient {
             ServerType::Sentinel => {
                 for master in self.master_nodes.iter() {
                     let label = master.master_name.as_deref().unwrap_or("");
+                    // node_id is left empty in sentinel mode — CLUSTER FORGET /
+                    // REPLICATE don't apply. master_name is populated only on
+                    // the master row (replicas don't directly receive
+                    // SENTINEL ops, which all target by master name).
                     let entry = TopologyEntry {
                         addr: master.host_port().into(),
                         role_marker: role_marker(&master.role),
@@ -557,6 +575,8 @@ impl RedisClient {
                         } else {
                             format!("({label})").into()
                         },
+                        node_id: SharedString::default(),
+                        master_name: SharedString::from(label.to_string()),
                     };
                     let replicas: Vec<TopologyEntry> = self
                         .nodes
@@ -566,6 +586,8 @@ impl RedisClient {
                             addr: replica.host_port().into(),
                             role_marker: role_marker(&replica.role),
                             annotation: SharedString::default(),
+                            node_id: SharedString::default(),
+                            master_name: SharedString::default(),
                         })
                         .collect();
                     out.push(TopologyMaster {

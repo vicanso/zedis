@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::config::RedisServer;
+use super::config::{RedisServer, get_server};
 use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
@@ -359,4 +359,32 @@ pub(crate) async fn query_async_masters_pipeline(
     let values = try_join_all(tasks).await?;
 
     Ok(values)
+}
+
+/// Open a one-shot connection to a specific cluster node by `host:port`,
+/// reusing the named server's stored auth (password / TLS / SSH tunnel
+/// config). Bypasses the connection cache (`use_cache=false`) — cluster
+/// topology ops are rare administrative actions, so caching one
+/// `MultiplexedConnection` per node would bloat the pool for ops that
+/// don't repeat. The returned conn is expected to be dropped after the
+/// single command runs.
+///
+/// Used by `CLUSTER FAILOVER` and `CLUSTER REPLICATE`, both of which
+/// must execute *on* the target node (Redis routes them to the local
+/// instance only — they are not gossiped), so an ad-hoc connection
+/// to that specific host:port is the correct shape.
+pub async fn open_node_connection(server_name: &str, host_port: &str) -> Result<MultiplexedConnection> {
+    // rsplit so hostnames with colons in them (rare; technically only
+    // IPv6 literals would have them, and those should arrive bracketed)
+    // still parse — we take the LAST colon as the port separator.
+    let (host, port) = host_port.rsplit_once(':').ok_or_else(|| Error::Invalid {
+        message: format!("invalid host:port \"{host_port}\""),
+    })?;
+    let port: u16 = port.parse().map_err(|e| Error::Invalid {
+        message: format!("invalid port \"{port}\": {e}"),
+    })?;
+    let mut config = get_server(server_name)?;
+    config.host = host.to_string();
+    config.port = port;
+    open_single_connection(&config, 0, false).await
 }

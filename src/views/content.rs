@@ -19,7 +19,7 @@ use crate::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
         ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
         ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServers, ZedisSlowlogEditor,
-        ZedisStatusBar, ZedisTerminal,
+        ZedisStatusBar, ZedisTerminal, ZedisTopology,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
@@ -64,6 +64,7 @@ pub struct ZedisContent {
     lua_script_library: Option<Entity<ZedisLuaScriptLibrary>>,
     persistence: Option<Entity<ZedisPersistence>>,
     keyspace_notifications: Option<Entity<ZedisKeyspaceNotifications>>,
+    topology: Option<Entity<ZedisTopology>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
     status_bar: Entity<ZedisStatusBar>,
 
@@ -131,6 +132,9 @@ impl ZedisContent {
         }
         if route != Route::KeyspaceNotifications {
             self.keyspace_notifications.take();
+        }
+        if route != Route::Topology {
+            self.topology.take();
         }
     }
     /// Create a new content view with route-aware view management
@@ -204,6 +208,7 @@ impl ZedisContent {
             lua_script_library: None,
             persistence: None,
             keyspace_notifications: None,
+            topology: None,
             key_tree: None,
             key_tree_width,
             should_focus: false,
@@ -380,6 +385,17 @@ impl ZedisContent {
         div().size_full().child(view)
     }
 
+    fn render_topology(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = self
+            .topology
+            .get_or_insert_with(|| {
+                debug!("Creating new topology view");
+                cx.new(|cx| ZedisTopology::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(view)
+    }
+
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().w_full().h_full().items_center().justify_center().child(
             div()
@@ -489,6 +505,7 @@ impl Render for ZedisContent {
                 let is_lua_scripts = route == Route::LuaScripts;
                 let is_persistence = route == Route::Persistence;
                 let is_keyspace_notifications = route == Route::KeyspaceNotifications;
+                let is_topology = route == Route::Topology;
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {
@@ -517,6 +534,7 @@ impl Render for ZedisContent {
                                     .when(is_keyspace_notifications, |this| {
                                         this.child(self.render_keyspace_notifications(window, cx))
                                     })
+                                    .when(is_topology, |this| this.child(self.render_topology(window, cx)))
                                     .when(
                                         !is_metrics
                                             && !is_slowlog
@@ -529,7 +547,8 @@ impl Render for ZedisContent {
                                             && !is_functions
                                             && !is_lua_scripts
                                             && !is_persistence
-                                            && !is_keyspace_notifications,
+                                            && !is_keyspace_notifications
+                                            && !is_topology,
                                         |this| this.child(self.render_editor(window, cx)),
                                     ),
                             ),

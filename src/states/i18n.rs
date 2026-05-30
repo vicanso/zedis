@@ -98,6 +98,10 @@ pub fn i18n_key_tag<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("key_tag.{key}"), locale = locale).into()
 }
+pub fn i18n_topology<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("topology.{key}"), locale = locale).into()
+}
 
 pub fn i18n_proto_editor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();

@@ -111,6 +111,31 @@ pub enum ServerTask {
     Bgsave,
     /// `BGREWRITEAOF` — trigger an asynchronous AOF rewrite on all masters.
     Bgrewriteaof,
+
+    /// `CLUSTER FAILOVER [FORCE]` — promote a specific replica to master.
+    /// Targeted at one replica's `host:port`, not fanned out.
+    ClusterFailover,
+    /// `CLUSTER MEET host port` — introduce a new node to the cluster.
+    /// Sent once to any reachable master; gossip distributes membership.
+    ClusterMeet,
+    /// `CLUSTER FORGET node_id` — drop a node from the cluster view.
+    /// Fanned out to every master; Redis re-adds via gossip if any master
+    /// is missed within 60s, so fan-out is the safe shape.
+    ClusterForget,
+    /// `CLUSTER REPLICATE node_id` — make a specific node become a
+    /// replica of the given master. Targeted at one node's `host:port`.
+    ClusterReplicate,
+
+    /// `SENTINEL FAILOVER master_name` — force a manual failover on
+    /// the named master. Fanned out to all sentinel instances via
+    /// the pooled client.
+    SentinelFailover,
+    /// `SENTINEL RESET pattern` — reset master state matching the
+    /// given glob pattern.
+    SentinelReset,
+    /// `SENTINEL REMOVE master_name` — stop monitoring the named
+    /// master across all sentinel instances.
+    SentinelRemove,
 }
 
 impl ServerTask {
@@ -151,6 +176,13 @@ impl ServerTask {
             ServerTask::PublishMessage => "publish_message",
             ServerTask::Bgsave => "bgsave",
             ServerTask::Bgrewriteaof => "bgrewriteaof",
+            ServerTask::ClusterFailover => "cluster_failover",
+            ServerTask::ClusterMeet => "cluster_meet",
+            ServerTask::ClusterForget => "cluster_forget",
+            ServerTask::ClusterReplicate => "cluster_replicate",
+            ServerTask::SentinelFailover => "sentinel_failover",
+            ServerTask::SentinelReset => "sentinel_reset",
+            ServerTask::SentinelRemove => "sentinel_remove",
         }
     }
 }

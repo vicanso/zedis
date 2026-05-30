@@ -13,7 +13,7 @@
 // limitations under the License.
 use gpui::{Pixels, px};
 
-pub const SIDEBAR_WIDTH: Pixels = px(80.0);
+pub const SIDEBAR_WIDTH: Pixels = px(120.0);
 pub const KEY_TREE_MIN_WIDTH: Pixels = px(275.0);
 pub const KEY_TREE_MAX_WIDTH: Pixels = px(800.0);
 pub const KEY_TREE_KEYWORD_INPUT_HEIGHT: Pixels = px(40.0);
