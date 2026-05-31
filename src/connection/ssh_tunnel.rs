@@ -16,7 +16,7 @@ use super::async_connection::{get_redis_connection_timeout, get_redis_response_t
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
-use crate::helpers::{TtlCache, get_home_dir, resolve_path};
+use crate::helpers::{TtlCache, get_home_dir, get_or_create_config_dir, resolve_path};
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::AuthResult;
 use russh::client::{Handle, Handler};
@@ -114,24 +114,133 @@ impl Handler for ClientHandler {
     ///
     /// # Note
     ///
-    /// Currently accepts all server keys without validation.
-    /// TODO: Implement proper validation against ~/.ssh/known_hosts
+    /// Trust-on-first-use host key verification.
+    ///
+    /// The presented key is matched against both the user's system
+    /// `~/.ssh/known_hosts` (read-only) and Zedis's own known_hosts file in the
+    /// config directory. Behaviour:
+    /// - host recorded in either file with a matching key → accept;
+    /// - host recorded but with a different key → reject (possible MITM);
+    /// - host not recorded anywhere → trust it and append the key to *Zedis's*
+    ///   known_hosts only (the system file is never modified).
+    ///
+    /// Both lookups resolve hashed hostnames and the `[host]:port` form.
     async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
         debug!(host = self.host, port = self.port, "check server key");
-        let Ok(public_key) = server_public_key.to_openssh() else {
+
+        let host_port = if self.port == 22 {
+            self.host.clone()
+        } else {
+            format!("[{}]:{}", self.host, self.port)
+        };
+
+        // Verification reads the system file first, then Zedis's own file.
+        let app_path = app_known_hosts_path();
+        let mut paths = Vec::new();
+        if let Some(home) = get_home_dir() {
+            paths.push(home.join(".ssh/known_hosts"));
+        }
+        if let Some(app_path) = &app_path {
+            paths.push(app_path.clone());
+        }
+
+        let mut host_is_known = false;
+        for path in &paths {
+            // Robust line scan (poison-proof), then augment with russh's parser
+            // which additionally resolves hashed hostnames when the file is clean.
+            let (mut keys, host_seen) = host_keys_in_file(path, &host_port);
+            if host_seen {
+                host_is_known = true;
+            }
+            if let Ok(extra) = russh::keys::known_hosts::known_host_keys_path(&self.host, self.port, path) {
+                if !extra.is_empty() {
+                    host_is_known = true;
+                }
+                for (_, key) in extra {
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+            }
+            if keys.iter().any(|key| key == server_public_key) {
+                return Ok(true);
+            }
+        }
+
+        if host_is_known {
+            // Host is recorded but none of the records match — reject.
+            error!(
+                host = self.host,
+                port = self.port,
+                "ssh host key mismatch: known_hosts has a different fingerprint, rejecting"
+            );
             return Ok(false);
-        };
-        let Some(home) = get_home_dir() else {
-            return Ok(true);
-        };
-        let known_hosts = home.join(".ssh/known_hosts");
-        if known_hosts.exists() {
-            let known_hosts = std::fs::read_to_string(known_hosts)?;
-            // simply check if the public key is in the known_hosts file
-            return Ok(known_hosts.contains(public_key.as_str()));
+        }
+
+        // First time we see this host: trust it and remember the key in
+        // Zedis's own known_hosts so future connections are verified.
+        if let Some(app_path) = app_path {
+            match russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, server_public_key, &app_path)
+            {
+                Ok(()) => debug!(
+                    host = self.host,
+                    port = self.port,
+                    "recorded new ssh host key (trust on first use)"
+                ),
+                Err(e) => error!(error = %e, host = self.host, "failed to record ssh host key"),
+            }
         }
         Ok(true)
     }
+}
+
+/// Path to Zedis's own known_hosts file, kept next to the server config so
+/// trust-on-first-use records persist without touching `~/.ssh/known_hosts`.
+fn app_known_hosts_path() -> Option<std::path::PathBuf> {
+    get_or_create_config_dir().ok().map(|dir| dir.join("known_hosts"))
+}
+
+/// Scan a known_hosts file line by line for entries matching `host_port`.
+///
+/// Returns the parseable keys recorded for the host, and whether the hostname
+/// appeared on any line at all (`host_seen`) — *including* lines whose key
+/// could not be parsed. The caller treats `host_seen == true` as "this host is
+/// known", so a corrupt/unparseable entry forces a reject instead of silently
+/// failing open to "host unknown → trust".
+///
+/// Unlike russh's `known_host_keys_path`, a single malformed entry does not
+/// discard the whole file: blank lines, comments, `@cert-authority`/`@revoked`
+/// markers, and lines whose key fails to parse are skipped individually.
+/// Hashed hostnames (`|1|salt|hash`) are not matched here — the caller augments
+/// the result with russh's parser, which does resolve them.
+fn host_keys_in_file(path: &std::path::Path, host_port: &str) -> (Vec<PublicKey>, bool) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return (Vec::new(), false);
+    };
+    let mut keys = Vec::new();
+    let mut host_seen = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('@') {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let (Some(hosts), Some(_kind), Some(key_b64)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let matched = hosts
+            .split(',')
+            .any(|entry| !entry.starts_with("|1|") && entry == host_port);
+        if !matched {
+            continue;
+        }
+        // Hostname matched — the host is known even if the key is unparseable.
+        host_seen = true;
+        if let Ok(key) = russh::keys::parse_public_key_base64(key_b64) {
+            keys.push(key);
+        }
+    }
+    (keys, host_seen)
 }
 
 type SshHandle = Handle<ClientHandler>;
