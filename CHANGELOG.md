@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.1](https://github.com/vicanso/zedis/compare/v0.4.0..v0.4.1) - 2026-05-31
+
+### ⛰️  Features
+
+- Implement json diff viewer and key space notification support - ([9533aae](https://github.com/vicanso/zedis/commit/9533aae75f394c5a346e0066a8efdb31917fd52e))
+- Support keyboard shortcut to refresh key tree - ([ee58f90](https://github.com/vicanso/zedis/commit/ee58f90893088d610132d3969559ad4e70c65a48))
+- Support auto-completion for jsonpath input - ([1c4775f](https://github.com/vicanso/zedis/commit/1c4775feaa936747da02146d6611090482a26689))
+
+### 🐛 Bug Fixes
+
+- Resolve focus loss in cmd+k palette after multiple invocations - ([38feaa3](https://github.com/vicanso/zedis/commit/38feaa3000b60329faaa4aadf677b091c90140fd))
+
+### 🚜 Refactor
+
+- Adjust human readable duration - ([3fb8e18](https://github.com/vicanso/zedis/commit/3fb8e184450a5f02907f549caf22670971a5a64d))
+- Optimize json data detection in jsonpath evaluation - ([28b1900](https://github.com/vicanso/zedis/commit/28b1900fc87f553275641ed0e1f384ad9a6dd491))
+- Optimize the display layout of the command palette - ([d91731b](https://github.com/vicanso/zedis/commit/d91731bc4f2fba25810502ef18a22535078fd8b5))
+
 ## [0.4.0](https://github.com/vicanso/zedis/compare/v0.3.4..v0.4.0) - 2026-05-16
 
 ### ⛰️  Features
