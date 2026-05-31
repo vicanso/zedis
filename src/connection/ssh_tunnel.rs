@@ -205,7 +205,7 @@ fn app_known_hosts_path() -> Option<std::path::PathBuf> {
 /// Returns the parseable keys recorded for the host, and whether the hostname
 /// appeared on any line at all (`host_seen`) — *including* lines whose key
 /// could not be parsed. The caller treats `host_seen == true` as "this host is
-/// known", so a corrupt/unparseable entry forces a reject instead of silently
+/// known", so a corrupt/unparsable entry forces a reject instead of silently
 /// failing open to "host unknown → trust".
 ///
 /// Unlike russh's `known_host_keys_path`, a single malformed entry does not
@@ -234,7 +234,7 @@ fn host_keys_in_file(path: &std::path::Path, host_port: &str) -> (Vec<PublicKey>
         if !matched {
             continue;
         }
-        // Hostname matched — the host is known even if the key is unparseable.
+        // Hostname matched — the host is known even if the key is unparsable.
         host_seen = true;
         if let Ok(key) = russh::keys::parse_public_key_base64(key_b64) {
             keys.push(key);
