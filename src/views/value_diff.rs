@@ -354,7 +354,12 @@ impl Render for ZedisValueDiff {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
-                            .child(v_flex().w_full().child(body).when_some(patch_block, |this, b| this.child(b))),
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .child(body)
+                                    .when_some(patch_block, |this, b| this.child(b)),
+                            ),
                     )
                     .child(
                         div()
