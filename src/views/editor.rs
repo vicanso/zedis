@@ -946,7 +946,12 @@ impl Render for ZedisEditor {
             .w_full()
             .h_full()
             .when(!is_channel_mode, |this| this.child(self.render_select_key(cx)))
-            .child(self.render_editor(window, cx))
+            // The key bar above is fixed-height; the editor body must be a
+            // bounded flex item (`flex_1` + `min_h_0`) so children that scroll
+            // internally — e.g. the side-by-side diff view's panes — have a
+            // definite parent height to shrink against. Without this the diff
+            // panes grow to their content height and never show a scrollbar.
+            .child(div().flex_1().min_h_0().child(self.render_editor(window, cx)))
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {
                     this.save(window, cx);

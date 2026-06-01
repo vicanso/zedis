@@ -32,13 +32,13 @@ use crate::states::{ZedisGlobalStore, i18n_editor, json_merge_diff};
 // the crate-rooted path doesn't resolve. As siblings under the same
 // parent module we can reach it via `super::editor`.
 use super::editor::DiffSession;
-use gpui::{SharedString, Window, div, prelude::*, px};
+use gpui::{ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
-    scroll::ScrollableElement,
+    scroll::{Scrollbar, ScrollbarShow},
     v_flex,
 };
 use serde_json::Value as JsonValue;
@@ -54,6 +54,9 @@ pub type DiffCloseCallback = Arc<dyn Fn(&mut Window, &mut gpui::App) + 'static>;
 pub struct ZedisValueDiff {
     session: Arc<DiffSession>,
     on_close: DiffCloseCallback,
+    /// Shared by the scroll viewport and the always-on sibling scrollbar
+    /// so the bar tracks the diff body's offset.
+    scroll_handle: ScrollHandle,
 }
 
 impl ZedisValueDiff {
@@ -61,6 +64,7 @@ impl ZedisValueDiff {
         Self {
             session: Arc::new(session),
             on_close,
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -189,6 +193,14 @@ impl ZedisValueDiff {
             );
         }
 
+        // The pane is intentionally natural-height (no inner scroll): the
+        // whole diff is wrapped in a single outer scroll region by the
+        // caller. `gpui-component`'s `overflow_y_scrollbar` rebuilds the
+        // element inside its own `size_full` wrapper and drops flex
+        // modifiers, so a per-pane scroller nested inside the side-by-side
+        // `size_full` row collapses its height chain and never scrolls.
+        // One outer scroller also keeps both panes row-aligned for free,
+        // since `line_diff` already pads both sides to equal line counts.
         v_flex()
             .flex_1()
             .min_w(px(200.))
@@ -204,7 +216,7 @@ impl ZedisValueDiff {
                     .bg(theme.muted.opacity(0.3))
                     .child(Label::new(title).text_xs().text_color(theme.muted_foreground)),
             )
-            .child(div().flex_1().overflow_y_scrollbar().child(v_flex().children(rows)))
+            .child(v_flex().w_full().children(rows))
             .into_any_element()
     }
 
@@ -301,7 +313,8 @@ impl Render for ZedisValueDiff {
             let right_pane = self.render_pane(right_title, &right_lines, &ops, false, cx);
 
             h_flex()
-                .size_full()
+                .w_full()
+                .items_start()
                 .gap_2()
                 .px_2()
                 .pb_2()
@@ -316,11 +329,43 @@ impl Render for ZedisValueDiff {
             self.render_merge_patch_block(&left, &right, cx)
         };
 
+        // Single scroll region for the whole diff: header stays pinned at
+        // the top, while the side-by-side panes and the optional merge-patch
+        // block scroll together below it. `flex_1` + `min_h_0` bound the
+        // region to the space left under the header so the scrollbar engages
+        // instead of the content overflowing the editor.
+        //
+        // The scrollbar is an explicit, absolutely-positioned sibling set to
+        // `ScrollbarShow::Always` (the theme default is `Scrolling`, which
+        // only flashes the bar briefly after the offset changes — so the diff
+        // appeared to have no scrollbar). Both the viewport and the bar share
+        // `self.scroll_handle`.
         v_flex()
             .size_full()
             .child(self.render_header(cx))
-            .child(div().flex_1().min_h_0().child(body))
-            .when_some(patch_block, |this, b| this.child(b))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .id("value-diff-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_handle)
+                            .child(v_flex().w_full().child(body).when_some(patch_block, |this, b| this.child(b))),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                    ),
+            )
             .into_any_element()
     }
 }
