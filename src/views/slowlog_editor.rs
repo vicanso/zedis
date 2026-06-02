@@ -19,10 +19,13 @@ use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 /// periodic `SLOWLOG GET` refresh cycle. Columns: Timestamp, Duration,
 /// Command, Client. Rows are sortable by arrival order (newest first).
 use crate::connection::{
-    LatencyEvent, LatencySample, SlowLogEntry, get_connection_manager, latency_history, latency_latest,
+    LatencyEvent, LatencySample, SlowLogEntry, get_connection_manager, get_server, latency_history, latency_latest,
     latency_monitor_threshold, latency_reset, list_commands,
 };
-use crate::states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_slowlog_editor};
+use crate::error::Error;
+use crate::states::{
+    Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_slowlog_editor,
+};
 use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
 use ahash::AHashMap;
 use chrono::TimeZone;
@@ -706,7 +709,7 @@ impl ZedisSlowlogEditor {
                     // we treat any failure as "unknown" = 0.
                     latency_monitor_threshold(&mut conn).await.unwrap_or(0)
                 };
-                Ok::<_, crate::error::Error>((listing, threshold))
+                Ok::<_, Error>((listing, threshold))
             });
             let result = task.await;
             let _ = handle.update(cx, |this, cx| {
@@ -866,9 +869,7 @@ impl ZedisSlowlogEditor {
         if server_id.is_empty() {
             return;
         }
-        let high_risk = crate::connection::get_server(&server_id)
-            .map(|s| s.is_high_risk_tag())
-            .unwrap_or(false);
+        let high_risk = get_server(&server_id).map(|s| s.is_high_risk_tag()).unwrap_or(false);
         if high_risk {
             self.open_enable_confirm(window, cx);
         } else {
@@ -881,7 +882,7 @@ impl ZedisSlowlogEditor {
         let body = i18n_slowlog_editor(cx, "enable_tracking_confirm_body");
         let editor = cx.entity().downgrade();
         zedis_ui::ZedisDialog::new_alert(title, body.to_string())
-            .button_props(crate::states::dialog_button_props(cx))
+            .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
                     editor.update(cx, |this, cx| this.run_enable_latency_tracking(cx));
@@ -909,7 +910,7 @@ impl ZedisSlowlogEditor {
                     .arg("100")
                     .query_async::<()>(&mut conn)
                     .await?;
-                Ok::<_, crate::error::Error>(())
+                Ok::<_, Error>(())
             });
             let _ = task.await;
             let _ = handle.update(cx, |this, cx| {
@@ -996,7 +997,7 @@ impl ZedisSlowlogEditor {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let history = latency_history(&mut conn, event_for_task.as_ref()).await?;
-                Ok::<_, crate::error::Error>(history)
+                Ok::<_, Error>(history)
             });
             let result = task.await;
             let _ = handle.update(cx, |this, cx| {

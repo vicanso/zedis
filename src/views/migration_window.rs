@@ -16,6 +16,7 @@
 //!
 //! Step 3 wires the Export tab end to end. Step 4 will add Import.
 
+use crate::connection::ConflictMode;
 use crate::states::{
     LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_migration,
 };
@@ -183,7 +184,7 @@ impl ZedisMigrationWindow {
                 server_id: server_id.clone(),
                 db: *db,
                 input_path: path,
-                conflict: crate::connection::ConflictMode::Skip,
+                conflict: ConflictMode::Skip,
             },
         };
         self.state.update(cx, |s, cx| s.start(job, cx));

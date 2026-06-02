@@ -14,6 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
+    connection::get_server,
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
@@ -24,6 +25,7 @@ use crate::{
         KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
         i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
     },
+    views::{OnTagDialogDone, open_key_tag_dialog, open_migration_export_window, open_migration_import_window},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -1786,13 +1788,13 @@ impl Render for ZedisKeyTree {
                     let key = key.clone();
                     let key_for_callback = key.clone();
                     let weak_tree = cx.entity().downgrade();
-                    let on_done: crate::views::OnTagDialogDone = std::sync::Arc::new(move |cx| {
+                    let on_done: OnTagDialogDone = std::sync::Arc::new(move |cx| {
                         if let Some(tree) = weak_tree.upgrade() {
                             let key = key_for_callback.clone();
                             tree.update(cx, |this, cx| this.refresh_metadata_for_key(&key, cx));
                         }
                     });
-                    crate::views::open_key_tag_dialog(server_id, key, window, cx, Some(on_done));
+                    open_key_tag_dialog(server_id, key, window, cx, Some(on_done));
                 }
                 KeyTreeAction::SetTagFilter(color_name) => {
                     let new_filter = if color_name.is_empty() {
@@ -1898,10 +1900,10 @@ impl Render for ZedisKeyTree {
                     let server_state = this.server_state.read(cx);
                     let server_id: SharedString = server_state.server_id().to_string().into();
                     let db = server_state.db();
-                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                    let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    crate::views::open_migration_export_window(server_id, server_name, db, keys, cx);
+                    open_migration_export_window(server_id, server_name, db, keys, cx);
                 }
                 KeyTreeAction::ExportFolder(folder) => {
                     let folder = folder.clone();
@@ -1918,29 +1920,29 @@ impl Render for ZedisKeyTree {
                     }
                     let server_id: SharedString = server_state.server_id().to_string().into();
                     let db = server_state.db();
-                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                    let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    crate::views::open_migration_export_window(server_id, server_name, db, keys, cx);
+                    open_migration_export_window(server_id, server_name, db, keys, cx);
                 }
                 KeyTreeAction::ExportKey(id) => {
                     let id = id.clone();
                     let server_state = this.server_state.read(cx);
                     let server_id: SharedString = server_state.server_id().to_string().into();
                     let db = server_state.db();
-                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                    let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    crate::views::open_migration_export_window(server_id, server_name, db, vec![id], cx);
+                    open_migration_export_window(server_id, server_name, db, vec![id], cx);
                 }
                 KeyTreeAction::ImportFromFile => {
                     let server_state = this.server_state.read(cx);
                     let server_id: SharedString = server_state.server_id().to_string().into();
                     let db = server_state.db();
-                    let server_name: SharedString = crate::connection::get_server(server_id.as_str())
+                    let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    crate::views::open_migration_import_window(server_id, server_name, db, cx);
+                    open_migration_import_window(server_id, server_name, db, cx);
                 }
             }))
             .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {

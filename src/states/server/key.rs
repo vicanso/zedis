@@ -38,7 +38,15 @@ use std::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
-const DEFAULT_SCAN_RESULT_MAX: usize = 3_000;
+/// Base first-page accumulation target, applied *per cluster master* (matching
+/// RedisInsight's default "Keys to Scan" = 10000, which it also applies per
+/// node in cluster mode). For a standalone server the multiplier is 1.
+const DEFAULT_SCAN_RESULT_MAX: usize = 10_000;
+
+/// Hard ceiling on the per-page target after the per-master multiplier, so a
+/// large cluster can't try to pull (and client-side tree-build) an unbounded
+/// batch in a single load. "Load more" still fetches keys beyond this.
+const SCAN_RESULT_MAX_CAP: usize = 100_000;
 
 impl ZedisServerState {
     /// Fills the type of keys that are currently loaded but have an unknown type.
@@ -150,8 +158,14 @@ impl ZedisServerState {
             return;
         }
         let cursors = self.cursors.clone();
-        // Calculate max limit based on scan times to prevent infinite scrolling from loading too much
-        let max = (self.scan_times + 1) * DEFAULT_SCAN_RESULT_MAX;
+        // First-page accumulation target. Scales with the number of cluster
+        // masters so each master contributes ~DEFAULT_SCAN_RESULT_MAX keys
+        // (matching RedisInsight's per-node "Keys to Scan"), capped so a large
+        // cluster can't pull an unbounded batch at once. `scan_times` grows it
+        // on each "load more". Standalone => masters = 1.
+        let masters = self.nodes.0.max(1);
+        let per_page = (DEFAULT_SCAN_RESULT_MAX * masters).min(SCAN_RESULT_MAX_CAP);
+        let max = (self.scan_times + 1) * per_page;
 
         let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
@@ -353,58 +367,75 @@ impl ZedisServerState {
             return;
         }
         cx.emit(ServerEvent::KeyScanStarted);
+        self.scan_prefix_page(self.server_id.clone(), prefix, None, 0, cx);
+    }
 
-        let server_id = self.server_id.clone();
+    /// Performs a single SCAN page for `scan_prefix`, inserting the matched keys
+    /// and emitting `KeyTreeUpdated` before recursing for the next page.
+    ///
+    /// Running one page per background task (instead of looping up to 20 times
+    /// inside a single task and returning everything at once) lets keys stream
+    /// into the tree incrementally as each SCAN round returns, rather than
+    /// appearing all together when the whole loop finishes.
+    fn scan_prefix_page(
+        &mut self,
+        server_id: SharedString,
+        prefix: SharedString,
+        cursors: Option<Vec<u64>>,
+        iteration: usize,
+        cx: &mut Context<Self>,
+    ) {
+        // Bail if the active server changed while paging.
+        if self.server_id != server_id {
+            return;
+        }
         let db = self.db;
         let pattern = format!("{}*", prefix);
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let key_scan_count = store.key_scan_count() as u64;
         let with_ttl = store.show_key_tree_ttl();
+        let task_server_id = server_id.clone();
         self.spawn(
             ServerTask::ScanPrefix,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut cursors: Option<Vec<u64>> = None;
-                let mut result_keys = vec![];
-                let mut done = false;
-                // Attempt to fetch keys in a loop (up to 20 iterations)
-                // to gather a sufficient amount without blocking for too long.
-                for _ in 0..20 {
-                    let (new_cursor, keys) = if let Some(cursors) = cursors.clone() {
-                        client.scan(Some(cursors), &pattern, key_scan_count, with_ttl).await?
-                    } else {
-                        client.first_scan(&pattern, key_scan_count, with_ttl).await?
-                    };
-                    result_keys.extend(keys);
-                    // Break if scan cycle finishes
-                    if new_cursor.iter().sum::<u64>() == 0 {
-                        done = true;
-                        break;
-                    }
-                    cursors = Some(new_cursor);
-                }
-
-                Ok((result_keys, done))
+                let client = get_connection_manager().get_client(&task_server_id, db).await?;
+                let (new_cursor, keys) = if let Some(cursors) = cursors {
+                    client.scan(Some(cursors), &pattern, key_scan_count, with_ttl).await?
+                } else {
+                    client.first_scan(&pattern, key_scan_count, with_ttl).await?
+                };
+                let done = new_cursor.iter().sum::<u64>() == 0;
+                Ok((keys, new_cursor, done))
             },
             move |this, result, cx| {
-                if let Ok((keys, done)) = result {
+                let mut finished = true;
+                if let Ok((keys, new_cursor, done)) = result {
                     debug!(
                         prefix = prefix.as_str(),
                         count = keys.len(),
                         done,
-                        "scan prefix success"
+                        iteration,
+                        "scan prefix page"
                     );
+                    this.extend_keys(keys);
+                    cx.emit(ServerEvent::KeyTreeUpdated);
                     if done {
                         this.loaded_prefixes.insert(prefix.clone());
+                    } else if iteration + 1 < 20 {
+                        // More pages remain — keep scanning so results continue
+                        // streaming in instead of arriving in one burst.
+                        this.scan_prefix_page(server_id, prefix, Some(new_cursor), iteration + 1, cx);
+                        finished = false;
                     }
-                    this.extend_keys(keys);
                 }
-                cx.emit(ServerEvent::KeyScanFinished);
-                cx.emit(ServerEvent::KeyTreeUpdated);
-                if this.keys.len() == 1
-                    && let Some(key) = this.keys.keys().next()
-                {
-                    this.select_key(key.clone(), cx);
+                if finished {
+                    cx.emit(ServerEvent::KeyScanFinished);
+                    cx.emit(ServerEvent::KeyTreeUpdated);
+                    if this.keys.len() == 1
+                        && let Some(key) = this.keys.keys().next()
+                    {
+                        this.select_key(key.clone(), cx);
+                    }
                 }
             },
             cx,

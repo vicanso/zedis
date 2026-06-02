@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{RedisServer, get_servers, open_single_connection, tag_color_index};
+use crate::connection::{RedisServer, get_server_groups, get_servers, open_single_connection, tag_color_index};
 use crate::error::Error;
 use crate::helpers::get_font_family;
 use crate::states::{
@@ -349,7 +349,7 @@ impl ZedisServers {
                     // so users naturally reuse labels instead of creating
                     // near-duplicates ("Team A" vs "team a"). Falls back
                     // to a static prompt when no groups exist yet.
-                    let existing = crate::connection::get_server_groups();
+                    let existing = get_server_groups();
                     if existing.is_empty() {
                         i18n_servers(cx, "group_placeholder")
                     } else {

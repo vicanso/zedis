@@ -18,7 +18,7 @@
 //! posts incremental progress back to the foreground entity.
 
 use crate::connection::{
-    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, dump_keys_chunk,
+    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RedisAsyncConn, RestoreStatus, dump_keys_chunk,
     get_connection_manager, get_server, restore_keys_chunk,
 };
 use crate::error::Error;
@@ -418,7 +418,7 @@ async fn import_worker(
 async fn flush_restore_batch(
     handle: &gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
-    conn: &mut crate::connection::RedisAsyncConn,
+    conn: &mut RedisAsyncConn,
     buffer: &mut Vec<DumpEntry>,
     conflict: ConflictMode,
 ) -> Result<()> {

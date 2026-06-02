@@ -1114,7 +1114,7 @@ impl ZedisMemoryAnalysis {
         cx.notify();
     }
 
-    fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> ZedisDivider {
         let is_running = self.status == AnalysisStatus::Running;
         let is_idle = self.status == AnalysisStatus::Idle;
         let stat_item = |cx: &mut gpui::Context<Self>, key: &'static str, value: SharedString| {
@@ -1554,71 +1554,85 @@ impl gpui::Render for ZedisMemoryAnalysis {
         let has_ttl_data = self.ttl_histogram.total() > 0;
         let active_tab = self.current_tab;
 
+        // Lay the toolbar out as a single non-wrapping row inside a
+        // horizontal scroll container. Modern IDEs (Zed included) keep dense
+        // toolbars on one line and let the overflow scroll rather than
+        // wrapping or stacking — it stays readable at any window width.
+        let nav = h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                Button::new("memory-analysis-back")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ArrowLeft)
+                    .tooltip(i18n_common(cx, "back_to_editor"))
+                    .on_click(|_, _w, cx| {
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                        });
+                    }),
+            )
+            .child(Icon::new(CustomIconName::MemoryStick))
+            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
+            // Segmented Tab switcher — BigKey vs TTL histogram. Same SCAN
+            // feeds both, so a click just swaps the body region; no
+            // re-analysis triggered.
+            .child(
+                h_flex()
+                    .gap_1()
+                    .ml_2()
+                    .child({
+                        let active = active_tab == AnalyzerTab::BigKey;
+                        let mut btn = Button::new("memory-tab-bigkey")
+                            .xsmall()
+                            .label(i18n_memory_analysis(cx, "tab_bigkey"));
+                        btn = if active { btn.primary() } else { btn.outline() };
+                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                            this.current_tab = AnalyzerTab::BigKey;
+                            cx.notify();
+                        }))
+                    })
+                    .child({
+                        let active = active_tab == AnalyzerTab::TtlHistogram;
+                        let mut btn = Button::new("memory-tab-ttl")
+                            .xsmall()
+                            .label(i18n_memory_analysis(cx, "tab_ttl_histogram"));
+                        btn = if active { btn.primary() } else { btn.outline() };
+                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                            this.current_tab = AnalyzerTab::TtlHistogram;
+                            cx.notify();
+                        }))
+                    }),
+            );
+        let functions = self.render_toolbar_functions(cx);
+
         v_flex()
             .size_full()
             .overflow_hidden()
             .gap_2()
-            // ── Toolbar ──
+            // ── Toolbar: single row, horizontal-scroll on overflow ──
+            // The h_flex is itself the scroll viewport (mirrors gpui-component's
+            // tab_bar). `nav`/`functions` are `flex_none` so they keep their
+            // natural width and overflow the row instead of being compressed —
+            // that overflow is what the scroll container actually scrolls. The
+            // `flex_1` spacer only grows when there is leftover space, pushing
+            // the functions group to the right edge when everything fits.
             .child(
                 h_flex()
+                    .id("memory-analysis-toolbar")
                     .w_full()
+                    .flex_none()
                     .h(px(40.))
                     .px_4()
-                    .justify_between()
+                    .gap_2()
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                Button::new("memory-analysis-back")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::ArrowLeft)
-                                    .tooltip(i18n_common(cx, "back_to_editor"))
-                                    .on_click(|_, _w, cx| {
-                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
-                                        });
-                                    }),
-                            )
-                            .child(Icon::new(CustomIconName::MemoryStick))
-                            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
-                            // Segmented Tab switcher — BigKey vs TTL
-                            // histogram. Same SCAN feeds both, so a
-                            // click just swaps the body region; no
-                            // re-analysis triggered.
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .ml_2()
-                                    .child({
-                                        let active = active_tab == AnalyzerTab::BigKey;
-                                        let mut btn = Button::new("memory-tab-bigkey")
-                                            .xsmall()
-                                            .label(i18n_memory_analysis(cx, "tab_bigkey"));
-                                        btn = if active { btn.primary() } else { btn.outline() };
-                                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            this.current_tab = AnalyzerTab::BigKey;
-                                            cx.notify();
-                                        }))
-                                    })
-                                    .child({
-                                        let active = active_tab == AnalyzerTab::TtlHistogram;
-                                        let mut btn = Button::new("memory-tab-ttl")
-                                            .xsmall()
-                                            .label(i18n_memory_analysis(cx, "tab_ttl_histogram"));
-                                        btn = if active { btn.primary() } else { btn.outline() };
-                                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            this.current_tab = AnalyzerTab::TtlHistogram;
-                                            cx.notify();
-                                        }))
-                                    }),
-                            ),
-                    )
-                    .child(self.render_toolbar_functions(cx)),
+                    .overflow_x_scroll()
+                    .child(nav.flex_none())
+                    .child(div().flex_1())
+                    .child(functions.flex_none()),
             )
             // ── Body ──
             .child({

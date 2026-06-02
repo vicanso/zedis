@@ -29,9 +29,9 @@
 use crate::{
     assets::CustomIconName,
     connection::{
-        AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldSchema, IndexInfo, ReducerFn,
-        ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex, ft_info,
-        ft_list, ft_search, get_connection_manager,
+        AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
+        ReducerFn, ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex,
+        ft_info, ft_list, ft_search, get_connection_manager,
     },
     error::Error,
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_search},
@@ -1143,12 +1143,12 @@ impl ZedisSearchManager {
     fn render_schema_row(&self, field: FieldSchema, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let kind = field.kind();
         let kind_color = match kind {
-            crate::connection::FieldKind::Text => cx.theme().blue,
-            crate::connection::FieldKind::Numeric => cx.theme().green,
-            crate::connection::FieldKind::Tag => cx.theme().yellow,
-            crate::connection::FieldKind::Geo | crate::connection::FieldKind::GeoShape => cx.theme().cyan,
-            crate::connection::FieldKind::Vector => cx.theme().magenta,
-            crate::connection::FieldKind::Unknown(_) => cx.theme().muted,
+            FieldKind::Text => cx.theme().blue,
+            FieldKind::Numeric => cx.theme().green,
+            FieldKind::Tag => cx.theme().yellow,
+            FieldKind::Geo | FieldKind::GeoShape => cx.theme().cyan,
+            FieldKind::Vector => cx.theme().magenta,
+            FieldKind::Unknown(_) => cx.theme().muted,
         };
         let mut flag_chips: Vec<gpui::AnyElement> = Vec::new();
         if field.sortable {
