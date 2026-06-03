@@ -275,8 +275,9 @@ impl ZedisServerState {
         let start = current_len;
         let stop = start + 99; // Load 100 items
         cx.emit(ServerEvent::ValuePaginationStarted);
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::LoadMoreValue,
+            key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 // Fetch only the new items

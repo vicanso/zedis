@@ -406,8 +406,9 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
 
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::FetchStreamInfo,
+            key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 load_stream_info_data(&mut conn, key.as_str()).await
@@ -441,8 +442,9 @@ impl ZedisServerState {
         }
         cx.notify();
 
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::ReloadValue,
+            key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 first_load_stream_value(&mut conn, key.as_str(), reverse).await
@@ -501,8 +503,9 @@ impl ZedisServerState {
         let db = self.db;
         cx.emit(ServerEvent::ValuePaginationStarted);
 
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::LoadMoreValue,
+            key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 get_redis_stream_value(&mut conn, key.as_str(), Some(cursor), 100, reverse).await

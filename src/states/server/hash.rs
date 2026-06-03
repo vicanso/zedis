@@ -439,8 +439,9 @@ impl ZedisServerState {
         let supports_field_ttl = self.supports_hash_field_ttl();
         cx.emit(ServerEvent::ValuePaginationStarted);
 
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::LoadMoreValue,
+            key.clone(),
             // Async operation: fetch next batch using HSCAN (+ optional HTTL)
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;

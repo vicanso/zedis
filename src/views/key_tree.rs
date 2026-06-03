@@ -33,12 +33,13 @@ use gpui::{
     Task, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     menu::ContextMenuExt,
+    spinner::Spinner,
     v_flex,
 };
 use gpui_component::{
@@ -166,6 +167,13 @@ struct KeyTreeItem {
     /// hover tooltip on the row label so it doesn't steal layout
     /// space from the type badge / TTL chip.
     note: SharedString,
+    /// True while this folder's lazy `scan_prefix` is still running, so
+    /// `render_item` can show an inline spinner. Always false for leaves.
+    is_scanning: bool,
+    /// When set, this row is a synthetic "Load more" affordance for the
+    /// given (incomplete) folder prefix — clicking it resumes the scan.
+    /// `None` for real key / folder rows.
+    load_more_prefix: Option<SharedString>,
 }
 
 /// When a tag-colour filter is active, derive the input key list
@@ -380,6 +388,67 @@ fn new_key_tree_items(
     result
 }
 
+/// Appends a synthetic "Load more" row after the visible children of any
+/// expanded folder whose prefix scan stopped at the page cap (tracked in
+/// `incomplete`). Clicking that row resumes the scan. No-op when nothing is
+/// incomplete. `incomplete` holds prefixes in `"{folder_id}:"` form — the same
+/// shape `scan_prefix` receives.
+fn append_load_more_rows(
+    items: Vec<KeyTreeItem>,
+    incomplete: &AHashSet<SharedString>,
+    label: &SharedString,
+) -> Vec<KeyTreeItem> {
+    if incomplete.is_empty() {
+        return items;
+    }
+    let len = items.len();
+    // For each incomplete + expanded folder: the index just past its last
+    // descendant (where the row belongs) and the row to insert there.
+    let mut inserts: Vec<(usize, KeyTreeItem)> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if !(item.is_folder && item.expanded) {
+            continue;
+        }
+        let prefix = SharedString::from(format!("{}:", item.id));
+        if !incomplete.contains(&prefix) {
+            continue;
+        }
+        // A folder's subtree is contiguous and strictly deeper; it ends at the
+        // first later row whose depth is not greater (or the end of the list).
+        let mut end = i + 1;
+        while end < len && items[end].depth > item.depth {
+            end += 1;
+        }
+        let row = KeyTreeItem {
+            id: SharedString::from(format!("{prefix}\u{1}load_more")),
+            label: label.clone(),
+            depth: item.depth + 1,
+            load_more_prefix: Some(prefix),
+            ..Default::default()
+        };
+        inserts.push((end, row));
+    }
+    if inserts.is_empty() {
+        return items;
+    }
+    let mut result: Vec<KeyTreeItem> = Vec::with_capacity(len + inserts.len());
+    for (i, item) in items.into_iter().enumerate() {
+        for (end, row) in inserts.iter() {
+            if *end == i {
+                result.push(row.clone());
+            }
+        }
+        result.push(item);
+    }
+    // Folders whose subtree runs to the very end of the list.
+    for (end, row) in inserts {
+        if end == len {
+            result.push(row);
+        }
+    }
+    result
+}
+
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
     selected_index: Option<IndexPath>,
@@ -437,6 +506,26 @@ impl ListDelegate for KeyTreeDelegate {
     ) -> Option<Self::Item> {
         let yellow = cx.theme().colors.yellow;
         let entry = self.items.get(ix.row)?;
+        // Synthetic "Load more" row for an incomplete folder scan — a simple
+        // clickable line indented to the folder's child level. The list's
+        // Select event routes the click to `load_more_prefix` (see
+        // `select_item_by_index`).
+        if entry.load_more_prefix.is_some() {
+            let primary = cx.theme().primary;
+            let label = entry.label.clone();
+            return Some(
+                ListItem::new(ix).w_full().py_2().px_2().child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .justify_center()
+                        .text_color(primary)
+                        .child(Icon::new(CustomIconName::ChevronsDown))
+                        .child(Label::new(label).text_sm().text_color(primary)),
+                ),
+            );
+        }
         let icon = if !entry.is_folder {
             // Key item: Show type badge (String, List, etc.)
             self.render_key_type_badge(&entry.key_type).into_any_element()
@@ -458,6 +547,7 @@ impl ListDelegate for KeyTreeDelegate {
             Hsla::black().alpha(STRIPE_BACKGROUND_ALPHA_LIGHT)
         };
         let is_folder = entry.is_folder;
+        let is_scanning = entry.is_scanning;
 
         let label_color = if is_folder {
             cx.theme().foreground.alpha(0.85)
@@ -663,6 +753,11 @@ impl ListDelegate for KeyTreeDelegate {
                                             .rounded_sm()
                                             .flex_none(),
                                     )
+                                })
+                                .when(is_folder && is_scanning, |this| {
+                                    // Inline spinner while this folder's lazy
+                                    // prefix-scan is still in flight.
+                                    this.child(Spinner::new().with_size(px(14.)).color(cx.theme().muted_foreground))
                                 })
                                 .when(entry.is_folder, |this| {
                                     this.child(
@@ -951,6 +1046,9 @@ impl ZedisKeyTree {
     /// Uses a cached keys snapshot to avoid re-cloning all keys from server state
     /// when only expanded_items changed (e.g., folder expand/collapse).
     fn update_key_tree(&mut self, force_update: bool, cx: &mut Context<Self>) {
+        // Resolve the "Load more" label up front, while `cx` is free (reading
+        // `server_state` below borrows it for the rest of the function).
+        let load_more_label = i18n_key_tree(cx, "load_more");
         let server_state = self.server_state.read(cx);
         let key_tree_id = server_state.key_tree_id();
 
@@ -981,6 +1079,8 @@ impl ZedisKeyTree {
         let keys_snapshot = self.state.cached_keys.clone();
         let key_ttls_snapshot = self.state.cached_key_ttls.clone();
         let readonly = server_state.readonly();
+        let scanning_prefixes = server_state.scanning_prefixes().clone();
+        let incomplete_prefixes = server_state.incomplete_prefix_set();
         let expanded_items = self.state.expanded_items.clone();
 
         let view_handle = cx.entity().downgrade();
@@ -1018,7 +1118,7 @@ impl ZedisKeyTree {
                         Some(color) => build_tagged_keys_list(color, &raw_keys, &metadata_snapshot),
                         None => raw_keys,
                     };
-                    let items = new_key_tree_items(
+                    let mut items = new_key_tree_items(
                         keys_input,
                         keyword,
                         expanded_items,
@@ -1032,6 +1132,19 @@ impl ZedisKeyTree {
                         // when no upstream filtering happened.
                         tag_filter_snapshot,
                     );
+                    // Stamp the inline-spinner flag on folders whose lazy
+                    // prefix-scan is still running. Skipped entirely when
+                    // nothing is scanning (the common case).
+                    if !scanning_prefixes.is_empty() {
+                        for item in items.iter_mut() {
+                            if item.is_folder
+                                && scanning_prefixes.contains(&SharedString::from(format!("{}:", item.id)))
+                            {
+                                item.is_scanning = true;
+                            }
+                        }
+                    }
+                    let items = append_load_more_rows(items, &incomplete_prefixes, &load_more_label);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
                 });
@@ -1377,14 +1490,20 @@ impl ZedisKeyTree {
     }
 
     fn select_item_by_index(&mut self, ix: &IndexPath, toggle: bool, cx: &mut Context<Self>) {
-        let Some((id, is_folder)) = self.key_tree_list_state.update(cx, |state, _cx| {
+        let Some((id, is_folder, load_more)) = self.key_tree_list_state.update(cx, |state, _cx| {
             let item = state.delegate().items.get(ix.row)?;
-            let id = item.id.clone();
-            let is_folder = item.is_folder;
-            Some((id, is_folder))
+            Some((item.id.clone(), item.is_folder, item.load_more_prefix.clone()))
         }) else {
             return;
         };
+        // Synthetic "Load more" row → resume the folder scan rather than
+        // selecting/expanding a key.
+        if let Some(prefix) = load_more {
+            self.server_state.update(cx, |state, cx| {
+                state.load_more_prefix(prefix, cx);
+            });
+            return;
+        }
         self.select_item(id, is_folder, toggle, cx);
     }
 

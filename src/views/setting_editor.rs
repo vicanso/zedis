@@ -227,9 +227,16 @@ impl ZedisSettingEditor {
         }));
 
         subscriptions.push(Self::bind_blur_save(cx, &key_scan_count_state, window, |text, cx| {
-            if let Ok(value) = text.parse::<usize>()
-                && value >= 1000
-            {
+            let text = text.trim();
+            if text.is_empty() {
+                // Cleared input → reset to default (set_key_scan_count maps 0 → None).
+                update_app_state_and_save(cx, "save_key_scan_count", |state, _| {
+                    state.set_key_scan_count(0);
+                });
+            } else if let Ok(value) = text.parse::<usize>() {
+                // Clamp so a tiny/huge "Per Scan" can't break paging; down to 10
+                // so the first-page load can actually be small.
+                let value = value.clamp(10, 100_000);
                 update_app_state_and_save(cx, "save_key_scan_count", move |state, _| {
                     state.set_key_scan_count(value);
                 });
@@ -241,7 +248,13 @@ impl ZedisSettingEditor {
             &auto_expand_threshold_state,
             window,
             |text, cx| {
-                if let Ok(value) = text.parse::<usize>()
+                let text = text.trim();
+                if text.is_empty() {
+                    // Cleared input → reset to default.
+                    update_app_state_and_save(cx, "save_auto_expand_threshold", |state, _| {
+                        state.set_auto_expand_threshold(0);
+                    });
+                } else if let Ok(value) = text.parse::<usize>()
                     && value >= 100
                 {
                     update_app_state_and_save(cx, "save_auto_expand_threshold", move |state, _| {
@@ -256,7 +269,13 @@ impl ZedisSettingEditor {
             &max_truncate_length_state,
             window,
             |text, cx| {
-                if let Ok(value) = text.parse::<usize>()
+                let text = text.trim();
+                if text.is_empty() {
+                    // Cleared input → reset to default.
+                    update_app_state_and_save(cx, "save_max_truncate_length", |state, _| {
+                        state.set_max_truncate_length(0);
+                    });
+                } else if let Ok(value) = text.parse::<usize>()
                     && value >= 10
                 {
                     update_app_state_and_save(cx, "save_max_truncate_length", move |state, _| {

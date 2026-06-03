@@ -169,6 +169,20 @@ pub struct ZedisServerState {
     /// Set of prefixes that have been scanned (for lazy loading folders)
     loaded_prefixes: AHashSet<SharedString>,
 
+    /// Prefixes whose lazy folder-scan (`scan_prefix`) is currently in
+    /// flight, stored in the same `"{folder_id}:"` form `scan_prefix`
+    /// receives. Drives the inline spinner on the matching folder row;
+    /// entries are removed as each prefix scan finishes and the whole set
+    /// is cleared on reset / server switch.
+    scanning_prefixes: AHashSet<SharedString>,
+
+    /// Prefixes whose lazy scan stopped at the per-load page cap before
+    /// completing, mapped to the SCAN cursors to resume from. Drives the
+    /// inline "Load more" row under the folder; an entry is removed once
+    /// its prefix finishes (or is refreshed) and the whole map is cleared
+    /// on reset / server switch.
+    incomplete_prefixes: AHashMap<SharedString, Vec<u64>>,
+
     /// Map of all loaded keys and their types
     keys: AHashMap<SharedString, KeyType>,
 
@@ -208,6 +222,8 @@ impl ZedisServerState {
         self.scan_completed = false;
         self.scan_times = 0;
         self.loaded_prefixes.clear();
+        self.scanning_prefixes.clear();
+        self.incomplete_prefixes.clear();
         cx.emit(ServerEvent::KeyScanReset);
         cx.emit(ServerEvent::KeyTreeUpdated);
     }
@@ -342,8 +358,27 @@ impl ZedisServerState {
         T: Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
+        self.spawn_with_arg(name, SharedString::default(), task, callback, cx);
+    }
+
+    /// Like [`Self::spawn`] but records `arg` — the command's main argument
+    /// (key name, scan pattern, channel, …) — on the task's
+    /// completion/failure log lines so background tasks running against the
+    /// same server can be told apart in the logs.
+    fn spawn_with_arg<T, Fut>(
+        &mut self,
+        name: ServerTask,
+        arg: impl Into<SharedString>,
+        task: impl FnOnce() -> Fut + Send + 'static,
+        callback: impl FnOnce(&mut Self, Result<T>, &mut Context<Self>) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let arg = arg.into();
         cx.emit(ServerEvent::TaskStarted(name.clone()));
-        debug!(name = name.as_str(), "Spawning background task");
+        debug!(name = name.as_str(), arg = arg.as_str(), "Spawning background task");
         let server_id = self.server_id.clone();
         let start = Instant::now();
 
@@ -357,6 +392,7 @@ impl ZedisServerState {
                 if let Err(e) = &result {
                     error!(
                         task = name.as_str(),
+                        arg = arg.as_str(),
                         server_id = server_id.as_str(),
                         error = %e,
                         "Task failed"
@@ -372,6 +408,7 @@ impl ZedisServerState {
                 if name != ServerTask::RefreshRedisInfo {
                     info!(
                         task = name.as_str(),
+                        arg = arg.as_str(),
                         server_id = server_id.as_str(),
                         latency_ms = latency.as_millis(),
                         "Task completed"
@@ -474,6 +511,20 @@ impl ZedisServerState {
     /// Check if a scan is currently in progress
     pub fn scanning(&self) -> bool {
         self.scanning
+    }
+
+    /// Prefixes whose lazy folder-scan is currently in flight (form
+    /// `"{folder_id}:"`). The key tree reads this to show an inline
+    /// spinner on the matching folder row.
+    pub fn scanning_prefixes(&self) -> &AHashSet<SharedString> {
+        &self.scanning_prefixes
+    }
+
+    /// Prefixes whose folder scan stopped at the page cap with more keys
+    /// still on the server (form `"{folder_id}:"`). The key tree shows an
+    /// inline "Load more" row for each so the user can resume the scan.
+    pub fn incomplete_prefix_set(&self) -> AHashSet<SharedString> {
+        self.incomplete_prefixes.keys().cloned().collect()
     }
 
     /// Get the total database size (number of keys)

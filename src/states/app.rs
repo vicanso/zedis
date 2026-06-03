@@ -451,6 +451,11 @@ impl ZedisAppState {
         self.max_truncate_length.unwrap_or(1000)
     }
     pub fn set_max_truncate_length(&mut self, max_truncate_length: usize) {
+        // 0 means "reset to default" (cleared input) — store None.
+        if max_truncate_length == 0 {
+            self.max_truncate_length = None;
+            return;
+        }
         self.max_truncate_length = Some(max_truncate_length);
     }
     pub fn redis_connection_timeout(&self) -> String {
@@ -467,12 +472,23 @@ impl ZedisAppState {
         self.key_scan_count.unwrap_or(10_000)
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
+        // 0 means "reset to default" (cleared input) — store None so the
+        // getter's default applies.
+        if key_scan_count == 0 {
+            self.key_scan_count = None;
+            return;
+        }
         self.key_scan_count = Some(key_scan_count);
     }
     pub fn auto_expand_threshold(&self) -> usize {
         self.auto_expand_threshold.unwrap_or(100)
     }
     pub fn set_auto_expand_threshold(&mut self, auto_expand_threshold: usize) {
+        // 0 means "reset to default" (cleared input) — store None.
+        if auto_expand_threshold == 0 {
+            self.auto_expand_threshold = None;
+            return;
+        }
         self.auto_expand_threshold = Some(auto_expand_threshold);
     }
     pub fn tray_enabled(&self) -> bool {

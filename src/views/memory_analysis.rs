@@ -79,6 +79,11 @@ struct PrefixRow {
     avg_ttl: SharedString,
     /// Average TTL in seconds (-1 means no expiry)
     avg_ttl_secs: f64,
+    /// Estimated count of keys with no expiry (TTL == -1) under this prefix.
+    /// A high value on a cache prefix is a memory-leak red flag.
+    perm_count: u64,
+    /// Display permanent-key count (with "~" prefix when sampled)
+    perm_display: SharedString,
 }
 
 /// A row in the single-key table.
@@ -146,6 +151,7 @@ const COL_KEY_COUNT: &str = "key_count";
 const COL_MEMORY: &str = "memory";
 const COL_TYPES: &str = "types";
 const COL_AVG_TTL: &str = "avg_ttl";
+const COL_PERM_COUNT: &str = "perm_count";
 const COL_KEY: &str = "key";
 const COL_KEY_TYPE: &str = "key_type";
 const COL_TTL: &str = "ttl";
@@ -239,6 +245,7 @@ const MEMORY_KEY_WIDTH: f32 = 200.;
 const COUNT_KEY_WIDTH: f32 = 150.;
 const TTL_KEY_WIDTH: f32 = 120.;
 const HEAT_KEY_WIDTH: f32 = 130.;
+const PERM_KEY_WIDTH: f32 = 130.;
 
 // ─── Prefix table delegate ───────────────────────────────────────────────────
 
@@ -260,15 +267,24 @@ impl PrefixTableDelegate {
             - MEMORY_KEY_WIDTH
             - TYPE_KEY_WIDTH
             - TTL_KEY_WIDTH
+            - PERM_KEY_WIDTH
             - padding_offset
             - scrollbar_offset;
 
-        let column_keys = vec![COL_PREFIX, COL_KEY_COUNT, COL_MEMORY, COL_AVG_TTL, COL_TYPES];
+        let column_keys = vec![
+            COL_PREFIX,
+            COL_KEY_COUNT,
+            COL_MEMORY,
+            COL_AVG_TTL,
+            COL_PERM_COUNT,
+            COL_TYPES,
+        ];
         let widths = [
             prefix_w,
             COUNT_KEY_WIDTH,
             MEMORY_KEY_WIDTH,
             TTL_KEY_WIDTH,
+            PERM_KEY_WIDTH,
             TYPE_KEY_WIDTH,
         ];
 
@@ -319,6 +335,7 @@ impl TableDelegate for PrefixTableDelegate {
                     .avg_ttl_secs
                     .partial_cmp(&b.avg_ttl_secs)
                     .unwrap_or(std::cmp::Ordering::Equal),
+                COL_PERM_COUNT => a.perm_count.cmp(&b.perm_count),
                 COL_TYPES => a.types.cmp(&b.types),
                 _ => std::cmp::Ordering::Equal,
             };
@@ -364,7 +381,8 @@ impl TableDelegate for PrefixTableDelegate {
                 1 => r.display_key_count.clone(),
                 2 => r.memory.clone(),
                 3 => r.avg_ttl.clone(),
-                4 => r.types.clone(),
+                4 => r.perm_display.clone(),
+                5 => r.types.clone(),
                 _ => "--".into(),
             })
             .unwrap_or_else(|| "--".into());
@@ -601,6 +619,7 @@ fn build_prefix_rows(prefix_map: &HashMap<String, PrefixStats>, ratio: f32, key_
             // Raw numeric values for internal logic and sorting
             let est_count = (stats.key_count as f32 * scale) as u64;
             let est_mem = (stats.memory_bytes as f32 * scale) as u64;
+            let est_perm = (stats.perm_count as f32 * scale) as u64;
 
             let mut types: Vec<&String> = stats.types.iter().collect();
             types.sort();
@@ -618,6 +637,7 @@ fn build_prefix_rows(prefix_map: &HashMap<String, PrefixStats>, ratio: f32, key_
                 key_count: est_count,
                 memory_bytes: est_mem,
                 avg_ttl_secs,
+                perm_count: est_perm,
 
                 // Pre-format all display strings here (Zero-Allocation trick)
                 // Add the "~" prefix and format with thousands separators
@@ -628,6 +648,9 @@ fn build_prefix_rows(prefix_map: &HashMap<String, PrefixStats>, ratio: f32, key_
 
                 types: types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ").into(),
                 avg_ttl: format_ttl(avg_ttl_secs).into(),
+
+                // Add the "~" prefix to the estimated permanent-key count
+                perm_display: format!("{est_prefix}{}", format_thousands(est_perm)).into(),
             }
         })
         .collect();
@@ -668,16 +691,6 @@ impl SingleKeyTopGroups {
 }
 
 // ─── TTL distribution ────────────────────────────────────────────────────────
-
-/// Sub-tab selector for the Memory Analyzer panel. Defaults to BigKey
-/// so existing users land on the historical view; the TTL histogram is
-/// a sibling — same SCAN run feeds both, no separate analysis trigger.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum AnalyzerTab {
-    #[default]
-    BigKey,
-    TtlHistogram,
-}
 
 /// Histogram of how soon sampled keys are scheduled to expire. The
 /// boundaries (1m / 1h / 1d / 7d) match what most caching workloads
@@ -773,9 +786,6 @@ pub struct ZedisMemoryAnalysis {
     /// Cached group of top-N selectors so toggling Size/Hot/Cold doesn't
     /// re-run the scan.
     single_groups: SingleKeyTopGroups,
-    /// Active sub-tab — BigKey table vs TTL histogram. Defaults to
-    /// BigKey to match the panel's historical landing view.
-    current_tab: AnalyzerTab,
     /// Sampled TTL distribution. Populated by the existing SCAN loop
     /// (no extra Redis round-trip — `KeyMemoryUsage::ttl` is already
     /// in the pipeline). Reset on each `start_analysis`.
@@ -847,7 +857,6 @@ impl ZedisMemoryAnalysis {
             scan_count: DEFAULT_SCAN_COUNT,
             scan_count_input_state,
             est_commands: 0,
-            current_tab: AnalyzerTab::default(),
             ttl_histogram: TtlHistogram::default(),
             _subscriptions: subscriptions,
         };
@@ -1552,7 +1561,6 @@ impl gpui::Render for ZedisMemoryAnalysis {
         let has_single = self.single_count > 0;
         let has_data = has_prefix || has_single;
         let has_ttl_data = self.ttl_histogram.total() > 0;
-        let active_tab = self.current_tab;
 
         // Lay the toolbar out as a single non-wrapping row inside a
         // horizontal scroll container. Modern IDEs (Zed included) keep dense
@@ -1574,37 +1582,7 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     }),
             )
             .child(Icon::new(CustomIconName::MemoryStick))
-            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
-            // Segmented Tab switcher — BigKey vs TTL histogram. Same SCAN
-            // feeds both, so a click just swaps the body region; no
-            // re-analysis triggered.
-            .child(
-                h_flex()
-                    .gap_1()
-                    .ml_2()
-                    .child({
-                        let active = active_tab == AnalyzerTab::BigKey;
-                        let mut btn = Button::new("memory-tab-bigkey")
-                            .xsmall()
-                            .label(i18n_memory_analysis(cx, "tab_bigkey"));
-                        btn = if active { btn.primary() } else { btn.outline() };
-                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                            this.current_tab = AnalyzerTab::BigKey;
-                            cx.notify();
-                        }))
-                    })
-                    .child({
-                        let active = active_tab == AnalyzerTab::TtlHistogram;
-                        let mut btn = Button::new("memory-tab-ttl")
-                            .xsmall()
-                            .label(i18n_memory_analysis(cx, "tab_ttl_histogram"));
-                        btn = if active { btn.primary() } else { btn.outline() };
-                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                            this.current_tab = AnalyzerTab::TtlHistogram;
-                            cx.notify();
-                        }))
-                    }),
-            );
+            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground));
         let functions = self.render_toolbar_functions(cx);
 
         v_flex()
@@ -1645,70 +1623,60 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .id("memory-analysis-body")
                     .overflow_y_scroll();
 
-                match active_tab {
-                    AnalyzerTab::BigKey => {
-                        // Fragmentation trend chart (pulls from METRICS_CACHE
-                        // populated by the status_bar heartbeat). Always
-                        // attempted — even before the user clicks "Analyse",
-                        // the chart shows the running mem_fragmentation_ratio
-                        // so it doubles as ambient diagnostic.
-                        if let Some(chart) = self.render_fragmentation_chart(cx) {
-                            body = body.child(chart);
-                        }
+                // Combined dashboard — no tab selection. One SCAN feeds every
+                // section, so they stack in a single scroll view: fragmentation
+                // trend, TTL distribution, then the prefix and single-key tables.
 
-                        if !has_data && !is_running {
-                            body = body.child(div().size_full().flex().items_center().justify_center().child(
-                                Label::new(i18n_memory_analysis(cx, "no_data")).text_color(cx.theme().muted_foreground),
-                            ));
-                        }
+                // Fragmentation trend chart (pulls from METRICS_CACHE populated
+                // by the status_bar heartbeat). Always attempted — even before
+                // the user clicks "Analyse" it shows the running
+                // mem_fragmentation_ratio, so it doubles as ambient diagnostic.
+                if let Some(chart) = self.render_fragmentation_chart(cx) {
+                    body = body.child(chart);
+                }
 
-                        // Apply the closure to render the prefix table
-                        if has_prefix {
-                            let table = DataTable::new(&self.prefix_table)
-                                .stripe(true)
-                                .bordered(true)
-                                .scrollbar_visible(false, false);
+                // Unified empty state: nothing sampled yet and not running.
+                if !has_data && !has_ttl_data && !is_running {
+                    body = body.child(div().size_full().flex().items_center().justify_center().child(
+                        Label::new(i18n_memory_analysis(cx, "no_data")).text_color(cx.theme().muted_foreground),
+                    ));
+                }
 
-                            body = body.child(self.render_table_section(
-                                "prefix_table_title",
-                                self.prefix_count,
-                                table,
-                                window,
-                                cx,
-                            ));
-                        }
+                // TTL distribution histogram (same scan — no extra round-trip).
+                if has_ttl_data {
+                    body = body.child(self.render_ttl_histogram_body(cx));
+                }
 
-                        // Apply the closure to render the single key table
-                        if has_single {
-                            let table = DataTable::new(&self.single_table)
-                                .stripe(true)
-                                .bordered(true)
-                                .scrollbar_visible(false, false);
+                // Prefix groups table
+                if has_prefix {
+                    let table = DataTable::new(&self.prefix_table)
+                        .stripe(true)
+                        .bordered(true)
+                        .scrollbar_visible(false, false);
 
-                            body = body.child(self.render_table_section(
-                                "single_table_title",
-                                self.single_count,
-                                table,
-                                window,
-                                cx,
-                            ));
-                        }
-                    }
-                    AnalyzerTab::TtlHistogram => {
-                        if has_ttl_data {
-                            body = body.child(self.render_ttl_histogram_body(cx));
-                        } else if !is_running {
-                            // Same "click Analyse first" affordance the
-                            // BigKey tab uses, so empty-state messaging
-                            // stays consistent across tabs.
-                            body = body.child(
-                                div().size_full().flex().items_center().justify_center().child(
-                                    Label::new(i18n_memory_analysis(cx, "ttl_no_data"))
-                                        .text_color(cx.theme().muted_foreground),
-                                ),
-                            );
-                        }
-                    }
+                    body = body.child(self.render_table_section(
+                        "prefix_table_title",
+                        self.prefix_count,
+                        table,
+                        window,
+                        cx,
+                    ));
+                }
+
+                // Single keys table
+                if has_single {
+                    let table = DataTable::new(&self.single_table)
+                        .stripe(true)
+                        .bordered(true)
+                        .scrollbar_visible(false, false);
+
+                    body = body.child(self.render_table_section(
+                        "single_table_title",
+                        self.single_count,
+                        table,
+                        window,
+                        cx,
+                    ));
                 }
 
                 body

@@ -707,8 +707,9 @@ impl ZedisServerState {
         })));
 
         cx.notify();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::SaveValue,
+            key.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let mut conn = client.connection();
@@ -816,8 +817,9 @@ impl ZedisServerState {
         })));
 
         cx.notify();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::SaveValue,
+            key.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let mut conn = client.connection();

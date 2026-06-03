@@ -38,15 +38,20 @@ use std::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
-/// Base first-page accumulation target, applied *per cluster master* (matching
-/// RedisInsight's default "Keys to Scan" = 10000, which it also applies per
-/// node in cluster mode). For a standalone server the multiplier is 1.
-const DEFAULT_SCAN_RESULT_MAX: usize = 10_000;
-
 /// Hard ceiling on the per-page target after the per-master multiplier, so a
 /// large cluster can't try to pull (and client-side tree-build) an unbounded
 /// batch in a single load. "Load more" still fetches keys beyond this.
 const SCAN_RESULT_MAX_CAP: usize = 100_000;
+
+/// Max SCAN pages a single prefix-scan batch runs before pausing for a
+/// "Load more" click. Keeps a sparse prefix (few matches per page) from
+/// scanning the whole keyspace in one go.
+const SCAN_PREFIX_MAX_PAGES: usize = 5;
+
+/// A prefix-scan batch stops early once it has matched at least this percent
+/// of `key_scan_count` keys — enough to fill the view — instead of running the
+/// full page budget.
+const SCAN_PREFIX_FILL_PERCENT: usize = 80;
 
 impl ZedisServerState {
     /// Fills the type of keys that are currently loaded but have an unknown type.
@@ -158,23 +163,32 @@ impl ZedisServerState {
             return;
         }
         let cursors = self.cursors.clone();
-        // First-page accumulation target. Scales with the number of cluster
-        // masters so each master contributes ~DEFAULT_SCAN_RESULT_MAX keys
-        // (matching RedisInsight's per-node "Keys to Scan"), capped so a large
-        // cluster can't pull an unbounded batch at once. `scan_times` grows it
-        // on each "load more". Standalone => masters = 1.
-        let masters = self.nodes.0.max(1);
-        let per_page = (DEFAULT_SCAN_RESULT_MAX * masters).min(SCAN_RESULT_MAX_CAP);
-        let max = (self.scan_times + 1) * per_page;
-
         let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
         let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let key_scan_count = store.key_scan_count() as u64;
+        let key_scan_count = store.key_scan_count().max(1);
         let with_ttl = store.show_key_tree_ttl();
+        // First-page load follows the user's "Per Scan" setting: one batch of
+        // `key_scan_count` keys per cluster master (each master returns ~that
+        // many in a single SCAN round), capped so a large cluster can't pull an
+        // unbounded batch at once. `scan_times` grows the target by one batch
+        // on each "load more". Standalone => masters = 1.
+        let masters = self.nodes.0.max(1);
+        let per_page = key_scan_count.saturating_mul(masters).min(SCAN_RESULT_MAX_CAP);
+        let max = (self.scan_times + 1) * per_page;
         let db = self.db;
-        self.spawn(
+        // Describe this scan round in the task log: per-round COUNT and how many
+        // keys are already loaded (the effective offset into the overall scan),
+        // plus the match pattern when a keyword filter is active.
+        let offset = self.keys.len();
+        let scan_arg = if keyword.is_empty() {
+            format!("count={key_scan_count} offset={offset}")
+        } else {
+            format!("match=*{keyword}* count={key_scan_count} offset={offset}")
+        };
+        self.spawn_with_arg(
             ServerTask::ScanKeys,
+            scan_arg,
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let pattern = if keyword.is_empty() {
@@ -182,12 +196,10 @@ impl ZedisServerState {
                 } else {
                     format!("*{}*", keyword)
                 };
-                // Adjust count based on keyword specificity
-                let count = if keyword.is_empty() {
-                    (key_scan_count / 5).max(500)
-                } else {
-                    key_scan_count
-                };
+                // COUNT hint = the user's "Per Scan" setting for both browse
+                // and keyword search; the accumulation target (`max`) stops the
+                // auto-paging loop after roughly one batch per master.
+                let count = key_scan_count as u64;
                 if let Some(cursors) = cursors {
                     client.scan(Some(cursors), &pattern, count, with_ttl).await
                 } else {
@@ -254,10 +266,20 @@ impl ZedisServerState {
         };
         let server_id = self.server_id.clone();
         let db = self.db;
-        let count = self.keys.len().max(10_000);
-        let with_ttl = cx.global::<ZedisGlobalStore>().read(cx).show_key_tree_ttl();
-        self.spawn(
+        // Refresh roughly the keys currently shown, spread across cluster
+        // masters (first_scan sends COUNT=count to *each* master), so
+        // auto-refresh keeps the loaded view fresh instead of pulling a fixed
+        // 10k-per-master batch — which ignored "Per Scan" and ballooned the
+        // tree to 10000×masters on a multi-master cluster. Floored at one
+        // "Per Scan" batch so a tiny view still re-scans sensibly.
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
+        let key_scan_count = store.key_scan_count().max(1);
+        let with_ttl = store.show_key_tree_ttl();
+        let masters = self.nodes.0.max(1);
+        let count = (self.keys.len().max(key_scan_count) / masters).max(1);
+        self.spawn_with_arg(
             ServerTask::AutoRefresh,
+            pattern.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
 
@@ -367,22 +389,30 @@ impl ZedisServerState {
             return;
         }
         cx.emit(ServerEvent::KeyScanStarted);
-        self.scan_prefix_page(self.server_id.clone(), prefix, None, 0, cx);
+        // Mark this prefix as in-flight so the matching folder row shows an
+        // inline spinner until the (up to 5-round) scan finishes.
+        self.scanning_prefixes.insert(prefix.clone());
+        self.scan_prefix_page(self.server_id.clone(), prefix, None, 0, 0, cx);
     }
 
     /// Performs a single SCAN page for `scan_prefix`, inserting the matched keys
     /// and emitting `KeyTreeUpdated` before recursing for the next page.
     ///
-    /// Running one page per background task (instead of looping up to 20 times
+    /// Running one page per background task (instead of looping up to 5 times
     /// inside a single task and returning everything at once) lets keys stream
     /// into the tree incrementally as each SCAN round returns, rather than
     /// appearing all together when the whole loop finishes.
+    ///
+    /// `loaded` is the number of matched keys accumulated so far in this batch;
+    /// the batch stops once it reaches ~`SCAN_PREFIX_FILL_PERCENT`% of
+    /// `key_scan_count` or hits `SCAN_PREFIX_MAX_PAGES` pages.
     fn scan_prefix_page(
         &mut self,
         server_id: SharedString,
         prefix: SharedString,
         cursors: Option<Vec<u64>>,
         iteration: usize,
+        loaded: usize,
         cx: &mut Context<Self>,
     ) {
         // Bail if the active server changed while paging.
@@ -394,9 +424,12 @@ impl ZedisServerState {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let key_scan_count = store.key_scan_count() as u64;
         let with_ttl = store.show_key_tree_ttl();
+        // Stop this batch once accumulated matches reach ~80% of key_scan_count.
+        let threshold = key_scan_count as usize * SCAN_PREFIX_FILL_PERCENT / 100;
         let task_server_id = server_id.clone();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::ScanPrefix,
+            prefix.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&task_server_id, db).await?;
                 let (new_cursor, keys) = if let Some(cursors) = cursors {
@@ -410,9 +443,12 @@ impl ZedisServerState {
             move |this, result, cx| {
                 let mut finished = true;
                 if let Ok((keys, new_cursor, done)) = result {
+                    let batch_loaded = loaded + keys.len();
                     debug!(
                         prefix = prefix.as_str(),
                         count = keys.len(),
+                        batch_loaded,
+                        threshold,
                         done,
                         iteration,
                         "scan prefix page"
@@ -421,14 +457,33 @@ impl ZedisServerState {
                     cx.emit(ServerEvent::KeyTreeUpdated);
                     if done {
                         this.loaded_prefixes.insert(prefix.clone());
-                    } else if iteration + 1 < 20 {
-                        // More pages remain — keep scanning so results continue
-                        // streaming in instead of arriving in one burst.
-                        this.scan_prefix_page(server_id, prefix, Some(new_cursor), iteration + 1, cx);
+                        this.incomplete_prefixes.remove(&prefix);
+                    } else if batch_loaded < threshold && iteration + 1 < SCAN_PREFIX_MAX_PAGES {
+                        // Haven't matched ~80% of key_scan_count yet and still
+                        // under the page budget — keep scanning so results keep
+                        // streaming in. Clone `prefix` so the original survives
+                        // for the spinner cleanup in the `finished` branch below.
+                        this.scan_prefix_page(
+                            server_id,
+                            prefix.clone(),
+                            Some(new_cursor),
+                            iteration + 1,
+                            batch_loaded,
+                            cx,
+                        );
                         finished = false;
+                    } else {
+                        // Filled the view (~80% of key_scan_count) or hit the
+                        // page budget without finishing — remember the cursor so
+                        // the inline "Load more" row can resume the scan here.
+                        this.incomplete_prefixes.insert(prefix.clone(), new_cursor);
                     }
                 }
                 if finished {
+                    // Prefix scan is over (completed, hit the page cap, or
+                    // errored) — drop the in-flight marker so the folder
+                    // spinner clears on the rebuild emitted just below.
+                    this.scanning_prefixes.remove(&prefix);
                     cx.emit(ServerEvent::KeyScanFinished);
                     cx.emit(ServerEvent::KeyTreeUpdated);
                     if this.keys.len() == 1
@@ -442,6 +497,21 @@ impl ZedisServerState {
         );
     }
 
+    /// Resumes a folder scan that previously stopped at the page cap,
+    /// continuing from the saved cursor for another batch of pages. Drives
+    /// the inline "Load more" row in the key tree. No-op if the prefix has
+    /// no saved resume state (already finished or never paused).
+    pub fn load_more_prefix(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
+        let Some(cursors) = self.incomplete_prefixes.remove(&prefix) else {
+            return;
+        };
+        cx.emit(ServerEvent::KeyScanStarted);
+        // Re-mark in-flight (spinner) and resume from the saved cursor with a
+        // fresh page budget.
+        self.scanning_prefixes.insert(prefix.clone());
+        self.scan_prefix_page(self.server_id.clone(), prefix, Some(cursors), 0, 0, cx);
+    }
+
     /// Force-refreshes keys under a prefix, bypassing all load caches.
     ///
     /// Unlike `scan_prefix`, this always re-scans from Redis regardless of whether the
@@ -451,6 +521,9 @@ impl ZedisServerState {
         // Drop any cached state for this prefix (and sub-prefixes)
         self.loaded_prefixes
             .retain(|p| !p.as_str().starts_with(prefix.as_str()));
+        // Drop any saved "load more" resume state for this prefix subtree.
+        self.incomplete_prefixes
+            .retain(|p, _| !p.as_str().starts_with(prefix.as_str()));
         // Remove stale keys so the tree shows only what Redis returns
         self.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
         // Clear scan_completed so scan_prefix performs a full Redis re-scan rather than
@@ -581,8 +654,9 @@ impl ZedisServerState {
     pub fn publish_message(&mut self, channel: SharedString, message: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::PublishMessage,
+            channel.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let _: u64 = cmd("PUBLISH")
@@ -629,8 +703,9 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let remove_key = key.clone();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::DeleteKey,
+            key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
@@ -661,8 +736,9 @@ impl ZedisServerState {
         let separator = cx.global::<ZedisGlobalStore>().value(cx).key_separator().to_string();
         let prefix = format!("{folder}{separator}");
         let pattern = format!("{prefix}*");
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::DeleteKeys,
+            prefix.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let count = 10_000;
@@ -697,8 +773,9 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let remove_keys = keys.clone();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::DeleteKeys,
+            format!("{} keys", remove_keys.len()),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 client.unlike_keys_scattered(keys).await
@@ -751,8 +828,9 @@ impl ZedisServerState {
             value.expire_at = Some(unix_ts() + new_ttl.as_secs() as i64);
         }
         cx.notify();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
+            key.clone(),
             move || async move {
                 if !parse_fail_error.is_empty() {
                     return Err(Error::Invalid {
@@ -796,8 +874,9 @@ impl ZedisServerState {
         let db = self.db;
         let key_type = KeyType::from(category.to_lowercase().as_str());
         let key_clone = key.clone();
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::AddKey,
+            key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let exists: bool = cmd("EXISTS").arg(key.as_str()).query_async(&mut conn).await?;

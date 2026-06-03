@@ -62,7 +62,7 @@
 ### 📊 实时可观测性
 内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。
 - **实时指标**：精美渲染的 CPU、内存和网络 I/O 实时图表。
-- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。Top-N 表支持按 **大小 / 最热 / 最冷** 排序——根据服务端 `maxmemory-policy` 自动选用 `OBJECT FREQ`（LFU）或 `OBJECT IDLETIME`（LRU），一键定位真正值得缓存（或淘汰）的 key。同一次 SCAN 还会同步喂养子 Tab 的 **TTL 分布直方图**（`<1m / <1h / <1d / <7d / ≥7d / 无 TTL`）——一眼识别"凌晨 3 点集中淘汰"陷阱、查看 `PERSIST`（内存泄漏红旗）占比，并在 ratio<1 采样时直接读到估算的全量键数。
+- **内存分析器**：可视化排查 **BigKey**，优化存储效率，预防 OOM。Top-N 表支持按 **大小 / 最热 / 最冷** 排序——根据服务端 `maxmemory-policy` 自动选用 `OBJECT FREQ`（LFU）或 `OBJECT IDLETIME`（LRU），一键定位真正值得缓存（或淘汰）的 key。同一次 SCAN 还会在同一视图中（无需切换 Tab）同步展示 **TTL 分布直方图**（`<1m / <1h / <1d / <7d / ≥7d / 无 TTL`）——一眼识别"凌晨 3 点集中淘汰"陷阱、查看 `PERSIST`（内存泄漏红旗）占比，并在 ratio<1 采样时直接读到估算的全量键数。
 - **集群健康度**：状态栏节点指示器悬浮即可查看树状拓扑——各 master 及其 slot 范围、replica 按 master 分组展示，并附带每个 replica 的复制延迟（字节 + 秒 + 连接状态），数据源于 `INFO replication`。Cluster 与 Sentinel 部署均支持。
 - **深度诊断**：追踪慢日志，通过关键字过滤实时监控 `MONITOR` 流，并通过直观的 GUI 管理活跃客户端（`CLIENT LIST/KILL`）。Performance 面板把慢日志与 `LATENCY` 事件交叉关联：每条慢命令上自带徽章，标出 ±5 秒内最近的 fork/AOF/expire 事件，一键跳到该事件的 GPU 折线图（`LATENCY HISTORY`）；反向徽章则在每条 Latency 事件上显示窗口内的慢日志条数，点击把慢日志收窄到该时间段。`latency-monitor-threshold` 关闭时面板内一键开启（默认 100 ms，PROD 标签走标准确认对话框）。
 - **持久化管理**：独立面板持续读取 `INFO persistence`——上次 RDB 快照时间、距上次保存的写入数、AOF 当前体积与重写基线的膨胀比，以及按 fork 失败维度的告警 banner。`BGSAVE` / `BGREWRITEAOF` 一键触发（集群模式下自动 fan-out 到所有 master），走标准确认对话框（PROD 标签自动升级措辞），fork 进行中或连接处于只读时按钮自动 disable 并显示已运行时长。

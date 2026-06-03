@@ -407,8 +407,9 @@ impl ZedisServerState {
         cx.emit(ServerEvent::ValuePaginationStarted);
         let keyword_clone = keyword.clone();
 
-        self.spawn(
+        self.spawn_with_arg(
             ServerTask::LoadMoreValue,
+            key.clone(),
             // Async operation: fetch next batch using appropriate strategy
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
