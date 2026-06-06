@@ -628,7 +628,7 @@ impl ZedisServers {
             })
             .on_ok(move |_, window, cx| {
                 let value = submit_json.read(cx).value().to_string();
-                match RedisServer::from_import_json(&value) {
+                match RedisServer::from_import(&value) {
                     Ok(server) => {
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| state.upsert_server(server, cx));

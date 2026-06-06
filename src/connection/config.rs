@@ -19,7 +19,7 @@ use crate::{
 use arc_swap::ArcSwap;
 use gpui::SharedString;
 use indexmap::IndexMap;
-use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
 use smol::fs;
@@ -269,6 +269,63 @@ impl RedisServer {
         // lands in (max+1 assigned by upsert_server).
         server.sort_order = None;
         Ok(server)
+    }
+
+    /// Smart import entry point used by the paste-to-import dialog.
+    /// Accepts either a JSON config (as produced by
+    /// [`Self::to_export_json`]) or a bare Redis connection URI
+    /// (`redis://` / `rediss://`), dispatching on the leading token so
+    /// a pasted connection string "just works" alongside the JSON form.
+    pub fn from_import(input: &str) -> Result<Self, String> {
+        let trimmed = input.trim();
+        if trimmed.starts_with("redis://") || trimmed.starts_with("rediss://") {
+            Self::from_import_uri(trimmed)
+        } else {
+            Self::from_import_json(trimmed)
+        }
+    }
+
+    /// Parse a Redis connection URI into a `RedisServer`. Supports the
+    /// standard form `scheme://[username[:password]@]host[:port][/db]`,
+    /// where the `rediss` scheme enables TLS. Username and password are
+    /// percent-decoded (so e.g. `%40` round-trips to `@`). The friendly
+    /// `name` defaults to the host since a bare URI carries no label,
+    /// and the trailing `/db` segment is ignored — the database is
+    /// chosen per-session in the UI, not stored on the server entry.
+    ///
+    /// Returns `Err` for a malformed URI, a non-`redis(s)` scheme, or a
+    /// missing host. The entry always gets a fresh `id` so importing
+    /// the same URI twice yields two distinct entries.
+    pub fn from_import_uri(uri: &str) -> Result<Self, String> {
+        let parsed = Url::parse(uri.trim()).map_err(|e| format!("invalid Redis URI: {e}"))?;
+        let scheme = parsed.scheme();
+        if scheme != "redis" && scheme != "rediss" {
+            return Err(format!("unsupported scheme `{scheme}`: expected redis:// or rediss://"));
+        }
+        let host = parsed
+            .host_str()
+            .map(str::to_string)
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| "missing host in Redis URI".to_string())?;
+        let port = parsed.port().unwrap_or(6379);
+
+        let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
+        let username = {
+            let raw = parsed.username();
+            (!raw.is_empty()).then(|| decode(raw))
+        };
+        let password = parsed.password().map(decode).filter(|p| !p.is_empty());
+
+        Ok(Self {
+            id: Uuid::now_v7().to_string(),
+            name: host.clone(),
+            host,
+            port,
+            username,
+            password,
+            tls: (scheme == "rediss").then_some(true),
+            ..Default::default()
+        })
     }
     pub fn tag_label(&self) -> Option<&str> {
         self.tag.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
@@ -540,6 +597,57 @@ mod tests {
     #[test]
     fn import_rejects_malformed_json() {
         assert!(RedisServer::from_import_json("not json").is_err());
+    }
+
+    #[test]
+    fn import_uri_parses_rediss_with_credentials() {
+        let s = RedisServer::from_import_uri("rediss://default:s3cr3t@unified-moccasin-144033.upstash.io:6379")
+            .expect("import uri");
+        assert_eq!(s.host, "unified-moccasin-144033.upstash.io");
+        assert_eq!(s.port, 6379);
+        assert_eq!(s.username.as_deref(), Some("default"));
+        assert_eq!(s.password.as_deref(), Some("s3cr3t"));
+        assert_eq!(s.tls, Some(true));
+        // Name defaults to the host; id is freshly allocated.
+        assert_eq!(s.name, "unified-moccasin-144033.upstash.io");
+        assert!(!s.id.is_empty());
+    }
+
+    #[test]
+    fn import_uri_plain_redis_defaults_port_and_no_tls() {
+        let s = RedisServer::from_import_uri("redis://cache.internal").expect("import uri");
+        assert_eq!(s.host, "cache.internal");
+        assert_eq!(s.port, 6379);
+        assert!(s.username.is_none());
+        assert!(s.password.is_none());
+        assert!(s.tls.is_none());
+    }
+
+    #[test]
+    fn import_uri_percent_decodes_and_allows_password_only() {
+        // Password-only (empty username) and a percent-encoded `@`.
+        let s = RedisServer::from_import_uri("redis://:p%40ss@10.0.0.5:6380").expect("import uri");
+        assert!(s.username.is_none());
+        assert_eq!(s.password.as_deref(), Some("p@ss"));
+        assert_eq!(s.port, 6380);
+    }
+
+    #[test]
+    fn import_uri_rejects_bad_scheme_and_missing_host() {
+        assert!(RedisServer::from_import_uri("http://example.com:6379").is_err());
+        assert!(RedisServer::from_import_uri("not a uri").is_err());
+    }
+
+    #[test]
+    fn import_dispatches_uri_vs_json() {
+        // Leading redis:// routes to the URI parser.
+        let from_uri = RedisServer::from_import("  rediss://h:6379  ").expect("uri branch");
+        assert_eq!(from_uri.host, "h");
+        assert_eq!(from_uri.tls, Some(true));
+        // Anything else routes to the JSON parser.
+        let json = sample_server().to_export_json(false).expect("serialize");
+        let from_json = RedisServer::from_import(&json).expect("json branch");
+        assert_eq!(from_json.name, "prod-cache");
     }
 
     #[test]
