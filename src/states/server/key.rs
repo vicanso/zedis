@@ -592,6 +592,14 @@ impl ZedisServerState {
                         key_type: KeyType::TimeSeries,
                         ..Default::default()
                     }),
+                    // RedisBloom structures (Bloom / Cuckoo / CMS / Top-K
+                    // / t-digest) — classify only; ZedisProbabilisticEditor
+                    // fetches its own *.INFO + extras. `key_type` keeps the
+                    // ProbKind so the dispatch knows which one.
+                    KeyType::Probabilistic(_) => Ok(RedisValue {
+                        key_type,
+                        ..Default::default()
+                    }),
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),

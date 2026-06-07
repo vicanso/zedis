@@ -19,8 +19,8 @@ use crate::{
     helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{
-        DiffCloseCallback, ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisPubsubEditor, ZedisSetEditor,
-        ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisZsetEditor,
+        DiffCloseCallback, ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisProbabilisticEditor,
+        ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisZsetEditor,
     },
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -87,6 +87,7 @@ pub struct ZedisEditor {
     stream_editor: Option<Entity<ZedisStreamEditor>>,
     pubsub_editor: Option<Entity<ZedisPubsubEditor>>,
     timeseries_editor: Option<Entity<ZedisTimeSeriesEditor>>,
+    probabilistic_editor: Option<Entity<ZedisProbabilisticEditor>>,
 
     /// TTL editing state
     should_enter_ttl_edit_mode: Option<bool>,
@@ -169,6 +170,8 @@ impl ZedisEditor {
                     // key at construction and drives its own per-key
                     // TS.INFO / TS.RANGE, so a fresh load must recreate it.
                     this.timeseries_editor.take();
+                    // Likewise the probabilistic (RedisBloom) editor.
+                    this.probabilistic_editor.take();
                     // A fresh value load (reload, type change, server
                     // switch) invalidates the diff snapshot.
                     this.close_diff_session(cx);
@@ -228,6 +231,7 @@ impl ZedisEditor {
             stream_editor: None,
             pubsub_editor: None,
             timeseries_editor: None,
+            probabilistic_editor: None,
             readonly,
             ttl_edit_mode: false,
             ttl_input_state,
@@ -848,6 +852,9 @@ impl ZedisEditor {
         if key_type != KeyType::TimeSeries {
             let _ = self.timeseries_editor.take();
         }
+        if !matches!(key_type, KeyType::Probabilistic(_)) {
+            let _ = self.probabilistic_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -916,6 +923,14 @@ impl ZedisEditor {
                 let editor = self.timeseries_editor.get_or_insert_with(|| {
                     debug!("Creating new time series editor");
                     cx.new(|cx| ZedisTimeSeriesEditor::new(self.server_state.clone(), window, cx))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::Probabilistic(kind) => {
+                self.reset_editors(KeyType::Probabilistic(kind));
+                let editor = self.probabilistic_editor.get_or_insert_with(|| {
+                    debug!("Creating new probabilistic editor");
+                    cx.new(|cx| ZedisProbabilisticEditor::new(self.server_state.clone(), kind, window, cx))
                 });
                 editor.clone().into_any_element()
             }

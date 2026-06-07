@@ -59,6 +59,7 @@
 - **RediSearch 浏览器**（模块）：专用面板覆盖 `FT.*` 命令族——`FT._LIST` 列出索引、`FT.INFO` 查看 schema 与统计（含 indexing 进度与 `type mismatch` 失败计数，直接解释"明明有数据却 0 docs"的原因）、原始 `FT.SEARCH` 配合 `HIGHLIGHT` / `RETURN` / `LIMIT` chip，或切换到 `FT.AGGREGATE` 跑单层 `GROUPBY` + `REDUCE`（`COUNT` / `SUM` / `AVG` / `QUANTILE` / `TOLIST` 等）。索引创建走结构化表单（HASH / JSON、prefix、每字段 SORTABLE / NOSTEM / NOINDEX 切换），同时支持 alter / drop，全部不需离开 app。未加载 RediSearch 模块的服务器自动隐藏入口。
 - **Functions 编辑器**（Redis 7+）：通过 `FUNCTION LIST / LOAD / DELETE` 管理服务端 Lua library。卡片一眼看到每个 library 的 engine、注册的函数和 flags（`no-writes`、`allow-oom` 等）；点击展开内联只读 Lua 预览，带完整 tree-sitter 语法高亮。Edit 与"新建 library"共用同一个 Lua 编辑器，带行号、缩进引导线、`REPLACE` 开关，确保迭代安全。Redis 6.x 及更早版本自动隐藏入口。
 - **时间序列查看器**（RedisTimeSeries 模块）：选中 `TSDB-TYPE` 类型的 key 会打开专用图表——`TS.INFO` 展示采样总数 / 内存 / 保留期 / 分块数与 labels，`TS.RANGE`（服务端 `AVG` 聚合、按 ~240 个点分桶，百万级采样也能流畅响应）驱动 GPU 渲染折线图，配 `15m / 1h / 6h / 24h / 7d / 全部` 范围切换。无需单独的模块门控——key 只有在加载 `timeseries` 模块时才会被识别为该类型，查看器靠 key 是否存在自我门控。
+- **概率型数据结构**（RedisBloom 模块）：Bloom 过滤器、Cuckoo 过滤器、Count-Min Sketch、Top-K、t-digest——过去只能当二进制看——现在会打开专用的只读查看器。每种都展示自己的 `*.INFO` 统计（容量、大小、错误率……）；Top-K 还会列出当前的高频元素（`TOPK.LIST … WITHCOUNT`），t-digest 额外给出 min / max / p50 / p90 / p99（`TDIGEST.QUANTILE`）。按 key 的模块 TYPE 分发，只在加载了 RedisBloom 时出现。
 
 ### 📊 实时可观测性
 内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。

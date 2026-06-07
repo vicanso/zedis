@@ -38,6 +38,7 @@ pub use i18n::i18n_metrics;
 pub use i18n::i18n_migration;
 pub use i18n::i18n_monitor;
 pub use i18n::i18n_persistence;
+pub use i18n::i18n_probabilistic;
 pub use i18n::i18n_proto_editor;
 pub use i18n::i18n_pubsub_editor;
 pub use i18n::i18n_script_editor;

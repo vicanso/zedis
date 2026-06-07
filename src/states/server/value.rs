@@ -433,6 +433,31 @@ impl RedisValue {
     }
 }
 
+/// RedisBloom probabilistic structure, distinguished by the module type
+/// string returned by `TYPE`. Carried inside [`KeyType::Probabilistic`]
+/// so a single key-type arm fans out to the right viewer / commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbKind {
+    Bloom,
+    Cuckoo,
+    CountMinSketch,
+    TopK,
+    TDigest,
+}
+
+impl ProbKind {
+    /// Command prefix / short label (`BF`, `CF`, `CMS`, `TOPK`, `TDIGEST`).
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            ProbKind::Bloom => "BF",
+            ProbKind::Cuckoo => "CF",
+            ProbKind::CountMinSketch => "CMS",
+            ProbKind::TopK => "TOPK",
+            ProbKind::TDigest => "TDIGEST",
+        }
+    }
+}
+
 /// Redis key types: string, list, set, zset, hash, stream, and vectorset
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum KeyType {
@@ -448,6 +473,7 @@ pub enum KeyType {
     Channel,
     Json,
     TimeSeries,
+    Probabilistic(ProbKind),
 }
 impl KeyType {
     /// Returns the abbreviated string representation of the key type
@@ -463,6 +489,7 @@ impl KeyType {
             KeyType::Channel => "CHANNEL",
             KeyType::Json => "JSON",
             KeyType::TimeSeries => "TS",
+            KeyType::Probabilistic(kind) => kind.prefix(),
             KeyType::Unknown => "",
         }
     }
@@ -498,15 +525,16 @@ impl KeyType {
     /// Returns the color associated with this key type for UI display
     pub fn color(&self) -> Hsla {
         match self {
-            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),      // Blue
-            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),        // Purple
-            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),        // Orange
-            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),         // Cyan
-            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),       // Red
-            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),      // Green
-            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0),   // Pink
-            KeyType::TimeSeries => gpui::hsla(0.55, 0.5, 0.5, 1.0), // Teal
-            _ => gpui::hsla(0.0, 0.0, 0.4, 1.0),                    // Gray
+            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),             // Blue
+            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),               // Purple
+            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),               // Orange
+            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),                // Cyan
+            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),              // Red
+            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),             // Green
+            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0),          // Pink
+            KeyType::TimeSeries => gpui::hsla(0.55, 0.5, 0.5, 1.0),        // Teal
+            KeyType::Probabilistic(_) => gpui::hsla(0.78, 0.5, 0.55, 1.0), // Violet
+            _ => gpui::hsla(0.0, 0.0, 0.4, 1.0),                           // Gray
         }
     }
 }
@@ -609,6 +637,11 @@ impl From<&str> for KeyType {
             "ReJSON-RL" => KeyType::Json,
             "json" => KeyType::Json,
             "TSDB-TYPE" => KeyType::TimeSeries,
+            "MBbloom--" => KeyType::Probabilistic(ProbKind::Bloom),
+            "MBbloomCF" => KeyType::Probabilistic(ProbKind::Cuckoo),
+            "CMSk-TYPE" => KeyType::Probabilistic(ProbKind::CountMinSketch),
+            "TopK-TYPE" => KeyType::Probabilistic(ProbKind::TopK),
+            "TDIS-TYPE" => KeyType::Probabilistic(ProbKind::TDigest),
             _ => KeyType::Unknown,
         }
     }

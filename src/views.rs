@@ -35,6 +35,7 @@ mod metrics;
 mod migration_window;
 mod monitor;
 mod persistence;
+mod probabilistic_editor;
 mod proto_editor;
 mod pubsub_editor;
 mod script_editor;
@@ -80,6 +81,7 @@ pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make
 pub use migration_window::{open_migration_export_window, open_migration_import_window};
 pub use monitor::ZedisMonitor;
 pub use persistence::ZedisPersistence;
+pub use probabilistic_editor::ZedisProbabilisticEditor;
 pub use proto_editor::ZedisProtoEditor;
 pub use pubsub_editor::ZedisPubsubEditor;
 pub use script_editor::ZedisScriptEditor;
