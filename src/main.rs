@@ -3,8 +3,8 @@ use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
-    MemuAction, PaletteAction, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development,
-    new_hot_keys, register_extra_languages,
+    MemuAction, NavAction, PaletteAction, get_default_font_family, get_or_create_config_dir, is_app_store_build,
+    is_development, new_hot_keys, register_extra_languages,
 };
 use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, ServerToolsAction,
@@ -288,6 +288,19 @@ impl Render for Zedis {
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
                         state.toggle_route((target, Route::Editor), cx);
+                    });
+                });
+            }))
+            // Esc mirrors the tool pages' "back to editor" button. The
+            // global keybinding only reaches here when no deeper handler
+            // (focused input, open dialog, command palette) claimed the
+            // keystroke; no-op on routes without a back affordance.
+            .on_action(cx.listener(|_this, _e: &NavAction, _window, cx| {
+                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                    store.update(cx, |state, cx| {
+                        if !matches!(state.route(), Route::Home | Route::Editor | Route::Settings) {
+                            state.go_to(Route::Editor, cx);
+                        }
                     });
                 });
             }))

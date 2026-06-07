@@ -23,6 +23,19 @@ pub enum MemuAction {
     About,
 }
 
+/// Navigation. `Back` (bound to `escape`) mirrors the "back to editor"
+/// button on the tool pages (Metrics, Memory, ACL, Search, ...). It is
+/// bound globally, but gpui's deepest-context-wins keybinding
+/// resolution means a focused input / open dialog / command palette
+/// (each of which consumes `escape` in its own context) is handled
+/// first — so `Back` only fires on the bare tool page. The handler
+/// (in `main.rs`) is a no-op on Home / Editor / Settings, which have no
+/// back affordance.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum NavAction {
+    Back,
+}
+
 /// Command palette (⌘K). `Toggle` opens it (or closes if already open).
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum PaletteAction {
@@ -154,6 +167,11 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // owns plain `cmd-r` (above); value reload is the rarer one and
         // takes `cmd-shift-r`.
         KeyBinding::new("cmd-shift-r", EditorAction::Reload, None),
+        // Esc on a tool page returns to the editor (mirrors the page's
+        // back button). Shadowed by any deeper `escape` consumer
+        // (inputs, dialogs, the command palette), so it only fires when
+        // none of those own the keystroke.
+        KeyBinding::new("escape", NavAction::Back, None),
         // Scoped to the JSONPath bar so it only overrides `tab` there;
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.

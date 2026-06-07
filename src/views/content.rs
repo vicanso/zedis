@@ -154,6 +154,14 @@ impl ZedisContent {
                 GlobalEvent::RouteChanged(route) => {
                     this.current_route = *route;
                     this.clear_views();
+                    // clear_views drops the previously focused view, so the
+                    // window is left with no focus target — global
+                    // keybindings (e.g. Esc → back on tool pages) wouldn't
+                    // dispatch until the user clicked. Re-focus the content
+                    // container so they work immediately. A destination view
+                    // that wants its own input focused overrides this when
+                    // it renders.
+                    this.should_focus = true;
                     cx.notify();
                 }
                 GlobalEvent::ServerSelected(server_id, db) => {
