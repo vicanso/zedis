@@ -45,6 +45,7 @@ pub enum DataFormat {
     Protobuf,
     MessagePack,
     Script,
+    Timestamp,
 }
 
 impl DataFormat {
@@ -65,6 +66,7 @@ impl DataFormat {
             DataFormat::Protobuf => "protobuf",
             DataFormat::MessagePack => "messagepack",
             DataFormat::Script => "script",
+            DataFormat::Timestamp => "timestamp",
         }
     }
 }
@@ -125,6 +127,22 @@ fn is_svg(bytes: &[u8]) -> bool {
     false
 }
 
+/// Heuristic: a bare ASCII-digit string of exactly 10 (seconds) or 13
+/// (milliseconds) digits — the two common Unix-timestamp shapes. Kept
+/// deliberately strict (fixed lengths, all digits, no leading zero) to
+/// limit false positives against plain numeric IDs/counters; the raw
+/// value is preserved and the parsed date is only shown as a read-only
+/// preview.
+fn is_unix_timestamp(bytes: &[u8]) -> bool {
+    if bytes.len() != 10 && bytes.len() != 13 {
+        return false;
+    }
+    if bytes[0] == b'0' {
+        return false;
+    }
+    bytes.iter().all(u8::is_ascii_digit)
+}
+
 fn is_snappy_framed(bytes: &[u8]) -> bool {
     if bytes.len() < 10 {
         return false;
@@ -143,6 +161,8 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
             (DataFormat::Svg, Some("image/svg+xml".to_string().into()))
         } else if is_valid_messagepack(bytes) {
             (DataFormat::MessagePack, None)
+        } else if is_unix_timestamp(bytes) {
+            (DataFormat::Timestamp, None)
         } else {
             (DataFormat::Bytes, None)
         };
@@ -913,5 +933,32 @@ impl ZedisServerState {
             cx.emit(ServerEvent::ValueModeViewUpdated);
             cx.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fmt(s: &str) -> DataFormat {
+        detect_format(s.as_bytes()).0
+    }
+
+    #[test]
+    fn detects_unix_timestamps() {
+        assert_eq!(fmt("1700000000"), DataFormat::Timestamp); // 10-digit seconds
+        assert_eq!(fmt("1700000000000"), DataFormat::Timestamp); // 13-digit milliseconds
+    }
+
+    #[test]
+    fn rejects_non_timestamps() {
+        // Wrong digit lengths.
+        assert_ne!(fmt("170000000"), DataFormat::Timestamp); // 9
+        assert_ne!(fmt("17000000000"), DataFormat::Timestamp); // 11
+        // Leading zero reads as a zero-padded id, not an epoch.
+        assert_ne!(fmt("0700000000"), DataFormat::Timestamp);
+        // Non-digit content.
+        assert_ne!(fmt("170000000a"), DataFormat::Timestamp);
+        assert_ne!(fmt("hello world"), DataFormat::Timestamp);
     }
 }

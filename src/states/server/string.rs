@@ -17,6 +17,7 @@ use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::decompress_zstd;
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
+use chrono::{DateTime, Local};
 use flate2::read::GzDecoder;
 use gpui::SharedString;
 use lz4_flex::block::decompress_size_prepended;
@@ -163,6 +164,8 @@ impl RedisBytesValue {
                 decoder.read_to_end(&mut vec).ok().map(|_| vec)
             }),
 
+            DataFormat::Timestamp => format_unix_timestamp(data).map(|text| (DataFormat::Preview, text)),
+
             DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
             _ => {
@@ -190,6 +193,26 @@ impl RedisBytesValue {
             self.format = initial_format;
         }
     }
+}
+
+/// Render a Unix-timestamp digit string (10 = seconds, 13 = milliseconds,
+/// matching [`is_unix_timestamp`]'s detection) as a read-only preview
+/// echoing the raw value plus the local and UTC dates.
+fn format_unix_timestamp(bytes: &[u8]) -> Option<SharedString> {
+    let raw = std::str::from_utf8(bytes).ok()?;
+    let value: i64 = raw.parse().ok()?;
+    let (dt, unit) = if bytes.len() == 13 {
+        (DateTime::from_timestamp_millis(value)?, "milliseconds")
+    } else {
+        (DateTime::from_timestamp(value, 0)?, "seconds")
+    };
+    let local = dt.with_timezone(&Local);
+    let text = format!(
+        "{raw} ({unit})\nLocal: {}\nUTC:   {}",
+        local.format("%Y-%m-%d %H:%M:%S %:z"),
+        dt.format("%Y-%m-%d %H:%M:%S UTC"),
+    );
+    Some(SharedString::from(text))
 }
 
 pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisBytesValue> {
