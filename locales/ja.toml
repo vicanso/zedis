@@ -955,3 +955,13 @@ top_items = "上位アイテム"
 quantiles = "分位数"
 loading = "読み込み中…"
 no_data = "データなし"
+
+[vector_set]
+title = "ベクトルセット"
+dimensions = "次元数"
+elements = "要素数"
+search_placeholder = "近傍を探す要素名"
+search = "検索"
+neighbours = "最近傍"
+sample = "要素サンプル"
+loading = "読み込み中…"

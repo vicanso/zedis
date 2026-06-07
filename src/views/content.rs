@@ -492,6 +492,12 @@ impl Render for ZedisContent {
         let base = v_flex()
             .id("main-container")
             .track_focus(&self.focus_handle)
+            // Scope the Esc→back keybinding to the workspace only. The
+            // command palette is a sibling of this view (see main.rs), so
+            // it does NOT inherit this context — Esc there is handled by
+            // the palette's own capture handler instead of being eaten by
+            // NavAction::Back.
+            .key_context("Workspace")
             .flex_1()
             .h_full();
 

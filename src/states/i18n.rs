@@ -94,6 +94,10 @@ pub fn i18n_probabilistic<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("probabilistic.{key}"), locale = locale).into()
 }
+pub fn i18n_vector_set<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("vector_set.{key}"), locale = locale).into()
+}
 pub fn i18n_persistence<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("persistence.{key}"), locale = locale).into()

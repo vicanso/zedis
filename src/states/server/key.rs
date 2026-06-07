@@ -600,6 +600,12 @@ impl ZedisServerState {
                         key_type,
                         ..Default::default()
                     }),
+                    // Redis 8 Vector Set — classify only; the viewer drives
+                    // its own VINFO / VCARD / VDIM / VRANDMEMBER / VSIM.
+                    KeyType::Vectorset => Ok(RedisValue {
+                        key_type: KeyType::Vectorset,
+                        ..Default::default()
+                    }),
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),

@@ -955,3 +955,13 @@ top_items = "Itens principais"
 quantiles = "Quantis"
 loading = "Carregando…"
 no_data = "Sem dados"
+
+[vector_set]
+title = "Conjunto de vetores"
+dimensions = "Dimensões"
+elements = "Elementos"
+search_placeholder = "Elemento para encontrar vizinhos"
+search = "Buscar"
+neighbours = "Vizinhos mais próximos"
+sample = "Elementos de amostra"
+loading = "Carregando…"

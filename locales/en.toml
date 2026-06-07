@@ -956,3 +956,13 @@ top_items = "Top Items"
 quantiles = "Quantiles"
 loading = "Loading…"
 no_data = "No data"
+
+[vector_set]
+title = "Vector Set"
+dimensions = "Dimensions"
+elements = "Elements"
+search_placeholder = "Element to find neighbors"
+search = "Search"
+neighbours = "Nearest Neighbors"
+sample = "Sample Elements"
+loading = "Loading…"

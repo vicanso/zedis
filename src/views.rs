@@ -53,6 +53,7 @@ mod timeseries_editor;
 mod title_bar;
 mod topology;
 mod value_diff;
+mod vector_set_editor;
 mod zset_editor;
 
 pub use about::open_about_window;
@@ -98,4 +99,5 @@ pub use timeseries_editor::ZedisTimeSeriesEditor;
 pub use title_bar::ZedisTitleBar;
 pub use topology::ZedisTopology;
 pub use value_diff::{DiffCloseCallback, ZedisValueDiff};
+pub use vector_set_editor::ZedisVectorSetEditor;
 pub use zset_editor::ZedisZsetEditor;

@@ -20,7 +20,8 @@ use crate::{
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{
         DiffCloseCallback, ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisProbabilisticEditor,
-        ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisZsetEditor,
+        ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
+        ZedisVectorSetEditor, ZedisZsetEditor,
     },
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -88,6 +89,7 @@ pub struct ZedisEditor {
     pubsub_editor: Option<Entity<ZedisPubsubEditor>>,
     timeseries_editor: Option<Entity<ZedisTimeSeriesEditor>>,
     probabilistic_editor: Option<Entity<ZedisProbabilisticEditor>>,
+    vector_set_editor: Option<Entity<ZedisVectorSetEditor>>,
 
     /// TTL editing state
     should_enter_ttl_edit_mode: Option<bool>,
@@ -172,6 +174,8 @@ impl ZedisEditor {
                     this.timeseries_editor.take();
                     // Likewise the probabilistic (RedisBloom) editor.
                     this.probabilistic_editor.take();
+                    // ...and the vector set editor.
+                    this.vector_set_editor.take();
                     // A fresh value load (reload, type change, server
                     // switch) invalidates the diff snapshot.
                     this.close_diff_session(cx);
@@ -232,6 +236,7 @@ impl ZedisEditor {
             pubsub_editor: None,
             timeseries_editor: None,
             probabilistic_editor: None,
+            vector_set_editor: None,
             readonly,
             ttl_edit_mode: false,
             ttl_input_state,
@@ -855,6 +860,9 @@ impl ZedisEditor {
         if !matches!(key_type, KeyType::Probabilistic(_)) {
             let _ = self.probabilistic_editor.take();
         }
+        if key_type != KeyType::Vectorset {
+            let _ = self.vector_set_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -931,6 +939,14 @@ impl ZedisEditor {
                 let editor = self.probabilistic_editor.get_or_insert_with(|| {
                     debug!("Creating new probabilistic editor");
                     cx.new(|cx| ZedisProbabilisticEditor::new(self.server_state.clone(), kind, window, cx))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::Vectorset => {
+                self.reset_editors(KeyType::Vectorset);
+                let editor = self.vector_set_editor.get_or_insert_with(|| {
+                    debug!("Creating new vector set editor");
+                    cx.new(|cx| ZedisVectorSetEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }

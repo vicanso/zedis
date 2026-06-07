@@ -60,6 +60,7 @@
 - **Functions 编辑器**（Redis 7+）：通过 `FUNCTION LIST / LOAD / DELETE` 管理服务端 Lua library。卡片一眼看到每个 library 的 engine、注册的函数和 flags（`no-writes`、`allow-oom` 等）；点击展开内联只读 Lua 预览，带完整 tree-sitter 语法高亮。Edit 与"新建 library"共用同一个 Lua 编辑器，带行号、缩进引导线、`REPLACE` 开关，确保迭代安全。Redis 6.x 及更早版本自动隐藏入口。
 - **时间序列查看器**（RedisTimeSeries 模块）：选中 `TSDB-TYPE` 类型的 key 会打开专用图表——`TS.INFO` 展示采样总数 / 内存 / 保留期 / 分块数与 labels，`TS.RANGE`（服务端 `AVG` 聚合、按 ~240 个点分桶，百万级采样也能流畅响应）驱动 GPU 渲染折线图，配 `15m / 1h / 6h / 24h / 7d / 全部` 范围切换。无需单独的模块门控——key 只有在加载 `timeseries` 模块时才会被识别为该类型，查看器靠 key 是否存在自我门控。
 - **概率型数据结构**（RedisBloom 模块）：Bloom 过滤器、Cuckoo 过滤器、Count-Min Sketch、Top-K、t-digest——过去只能当二进制看——现在会打开专用的只读查看器。每种都展示自己的 `*.INFO` 统计（容量、大小、错误率……）；Top-K 还会列出当前的高频元素（`TOPK.LIST … WITHCOUNT`），t-digest 额外给出 min / max / p50 / p90 / p99（`TDIGEST.QUANTILE`）。按 key 的模块 TYPE 分发，只在加载了 RedisBloom 时出现。
+- **向量集 + KNN**（Redis 8）：原生 `vectorset` key（过去无法查看）会打开专用查看器——`VINFO` / `VCARD` / `VDIM` 元数据、`VRANDMEMBER` 元素样本，以及**交互式 KNN 检索**：输入（或点击）一个元素即可运行 `VSIM … WITHSCORES`，按相似度得分展示其最近邻；点击某个邻居会以它为起点重新检索，从而逐跳遍历 HNSW 图。只读。
 
 ### 📊 实时可观测性
 内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。

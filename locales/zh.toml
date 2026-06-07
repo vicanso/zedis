@@ -954,3 +954,13 @@ top_items = "热门元素"
 quantiles = "分位数"
 loading = "加载中…"
 no_data = "暂无数据"
+
+[vector_set]
+title = "向量集"
+dimensions = "维度"
+elements = "元素数"
+search_placeholder = "输入元素名查找近邻"
+search = "搜索"
+neighbours = "最近邻"
+sample = "元素样本"
+loading = "加载中…"

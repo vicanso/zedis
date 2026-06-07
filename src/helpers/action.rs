@@ -168,10 +168,12 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // takes `cmd-shift-r`.
         KeyBinding::new("cmd-shift-r", EditorAction::Reload, None),
         // Esc on a tool page returns to the editor (mirrors the page's
-        // back button). Shadowed by any deeper `escape` consumer
-        // (inputs, dialogs, the command palette), so it only fires when
-        // none of those own the keystroke.
-        KeyBinding::new("escape", NavAction::Back, None),
+        // back button). Scoped to the `Workspace` context (the content
+        // container) so it never reaches overlays that live outside it —
+        // notably the command palette, which is a sibling of the content
+        // view and handles Esc itself. Deeper `escape` consumers within
+        // the workspace (focused inputs, dialogs) still win.
+        KeyBinding::new("escape", NavAction::Back, Some("Workspace")),
         // Scoped to the JSONPath bar so it only overrides `tab` there;
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.

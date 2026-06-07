@@ -955,3 +955,13 @@ top_items = "Топ-элементы"
 quantiles = "Квантили"
 loading = "Загрузка…"
 no_data = "Нет данных"
+
+[vector_set]
+title = "Векторный набор"
+dimensions = "Размерность"
+elements = "Элементы"
+search_placeholder = "Элемент для поиска соседей"
+search = "Поиск"
+neighbours = "Ближайшие соседи"
+sample = "Примеры элементов"
+loading = "Загрузка…"

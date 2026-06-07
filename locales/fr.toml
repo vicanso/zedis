@@ -956,3 +956,13 @@ top_items = "Éléments principaux"
 quantiles = "Quantiles"
 loading = "Chargement…"
 no_data = "Aucune donnée"
+
+[vector_set]
+title = "Ensemble de vecteurs"
+dimensions = "Dimensions"
+elements = "Éléments"
+search_placeholder = "Élément pour trouver les voisins"
+search = "Rechercher"
+neighbours = "Voisins les plus proches"
+sample = "Éléments d'exemple"
+loading = "Chargement…"
