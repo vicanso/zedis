@@ -23,9 +23,11 @@ use crate::{
     states::{ServerEvent, ZedisServerState},
     views::confirm_dangerous_command,
 };
-use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*};
+use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Sizable,
+    button::{Button, ButtonVariants},
+    h_flex,
     highlighter::Language,
     input::{Input, InputEvent, InputState, MoveDown, MoveUp, Position},
     label::Label,
@@ -52,6 +54,11 @@ pub struct ZedisTerminal {
     cmd_output_text: String,
     cmd_output_dirty: bool,
     cmd_input_state: Entity<InputState>,
+    /// Multi-line "Workbench" editor: one command per line, run as a
+    /// batch with Cmd/Ctrl+Enter. Reuses the same execute path as the
+    /// single-line REPL (which already iterates `command.lines()`).
+    batch_input_state: Entity<InputState>,
+    batch_mode: bool,
     redis_commands: Vec<SharedString>,
     cmd_suggestions: Vec<String>,
     cmd_suggestion_index: Option<usize>,
@@ -72,6 +79,12 @@ impl ZedisTerminal {
                 .soft_wrap(true)
         });
         let cmd_input_state = cx.new(|cx| InputState::new(window, cx).auto_grow(1, 3));
+        let batch_input_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor(Language::from_str("bash").name())
+                .line_number(true)
+                .soft_wrap(true)
+        });
 
         subscriptions.push(
             cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| match event {
@@ -134,12 +147,25 @@ impl ZedisTerminal {
             }),
         );
 
+        // Cmd/Ctrl+Enter in the batch editor runs every line at once.
+        subscriptions.push(
+            cx.subscribe_in(&batch_input_state, window, |this, _state, event, window, cx| {
+                if let InputEvent::PressEnter { secondary } = event
+                    && *secondary
+                {
+                    this.run_batch(window, cx);
+                }
+            }),
+        );
+
         let mut this = Self {
             server_state,
             cmd_output_state,
             cmd_output_text: String::new(),
             cmd_output_dirty: false,
             cmd_input_state,
+            batch_input_state,
+            batch_mode: false,
             redis_commands: Vec::new(),
             cmd_suggestions: Vec::new(),
             cmd_suggestion_index: None,
@@ -328,6 +354,32 @@ impl ZedisTerminal {
         })
         .detach();
     }
+
+    fn toggle_batch_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.batch_mode = !self.batch_mode;
+        if self.batch_mode {
+            self.batch_input_state.update(cx, |state, cx| state.focus(window, cx));
+        } else {
+            self.cmd_input_state.update(cx, |state, cx| state.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Run every line of the batch editor as one batch (same path the
+    /// single-line REPL uses, which already iterates `command.lines()`).
+    fn run_batch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.batch_input_state.read(cx).value();
+        if value.trim().is_empty() {
+            return;
+        }
+        self.execute_command(value.clone(), window, cx);
+        // secondary-Enter inserts a trailing newline before emitting the
+        // event; strip it (keeping the rest) so repeated runs don't pile
+        // up blank lines, while the script stays put for editing/re-running.
+        let trimmed = SharedString::from(value.trim_end().to_string());
+        self.batch_input_state
+            .update(cx, |state, cx| state.set_value(trimmed, window, cx));
+    }
 }
 
 impl Render for ZedisTerminal {
@@ -407,59 +459,121 @@ impl Render for ZedisTerminal {
                     ),
                 ),
             )
-            .child(
+            .child({
+                let batch_mode = self.batch_mode;
+                let border = cx.theme().border;
+
+                // Single-line REPL row (completion + history) with a toggle
+                // to the batch editor. Built unconditionally so the captured
+                // arrow/key handlers are always consumed.
+                let repl_row =
+                    div()
+                        .w_full()
+                        .border_t_1()
+                        .border_color(border)
+                        .capture_action(handle_move_up)
+                        .capture_action(handle_move_down)
+                        .on_key_down(handle_other_keys)
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_1()
+                                .pr_1()
+                                .child(
+                                    div().flex_1().child(
+                                        Input::new(&self.cmd_input_state)
+                                            .font_family(font_family.clone())
+                                            .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                                            .appearance(false),
+                                    ),
+                                )
+                                .child(
+                                    Button::new("term-mode-batch").label("Batch").ghost().small().on_click(
+                                        cx.listener(|this, _, window, cx| this.toggle_batch_mode(window, cx)),
+                                    ),
+                                ),
+                        );
+
                 v_flex()
                     .w_full()
-                    .when(!self.cmd_suggestions.is_empty(), |this| {
+                    .when(batch_mode, |this| {
                         this.child(
-                            div()
-                                .w_full()
-                                .bg(cx.theme().background)
-                                .border_t_1()
-                                .border_color(cx.theme().border)
-                                .p_1()
-                                .child(v_flex().gap_0p5().children(self.cmd_suggestions.iter().enumerate().map(
-                                    |(idx, cmd)| {
-                                        let is_selected = self.cmd_suggestion_index == Some(idx);
-                                        let text = format!("{}: {cmd}", idx + 1);
-                                        let (summary, syntax) = get_command_description(cmd).unwrap_or_default();
-                                        let make_label = |text: SharedString| {
-                                            Label::new(text)
-                                                .font_family(font_family.clone())
-                                                .text_sm()
-                                                .text_color(cx.theme().muted_foreground)
-                                        };
-                                        div()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_sm()
-                                            .when(is_selected, |this| this.bg(cx.theme().selection))
-                                            .child(
-                                                Label::new(text)
-                                                    .font_family(font_family.clone())
-                                                    .text_color(cx.theme().foreground),
-                                            )
-                                            .child(make_label(syntax))
-                                            .child(make_label(summary))
-                                    },
-                                ))),
-                        )
-                    })
-                    .child(
-                        div()
-                            .w_full()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .capture_action(handle_move_up)
-                            .capture_action(handle_move_down)
-                            .on_key_down(handle_other_keys)
-                            .child(
-                                Input::new(&self.cmd_input_state)
-                                    .font_family(font_family)
-                                    .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                            div().w_full().h(px(180.)).border_t_1().border_color(border).child(
+                                Input::new(&self.batch_input_state)
+                                    .w_full()
+                                    .h_full()
+                                    .font_family(font_family.clone())
                                     .appearance(false),
                             ),
-                    ),
-            )
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .py_1()
+                                .border_t_1()
+                                .border_color(border)
+                                .child(
+                                    Button::new("term-batch-run")
+                                        .label("Run")
+                                        .primary()
+                                        .small()
+                                        .on_click(cx.listener(|this, _, window, cx| this.run_batch(window, cx))),
+                                )
+                                .child(
+                                    Label::new("⌘/Ctrl+Enter")
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    Button::new("term-mode-repl").label("REPL").ghost().small().on_click(
+                                        cx.listener(|this, _, window, cx| this.toggle_batch_mode(window, cx)),
+                                    ),
+                                ),
+                        )
+                    })
+                    .when(!batch_mode, |this| {
+                        this.when(!self.cmd_suggestions.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .bg(cx.theme().background)
+                                    .border_t_1()
+                                    .border_color(border)
+                                    .p_1()
+                                    .child(v_flex().gap_0p5().children(self.cmd_suggestions.iter().enumerate().map(
+                                        |(idx, cmd)| {
+                                            let is_selected = self.cmd_suggestion_index == Some(idx);
+                                            let text = format!("{}: {cmd}", idx + 1);
+                                            let (summary, syntax) = get_command_description(cmd).unwrap_or_default();
+                                            let make_label = |text: SharedString| {
+                                                Label::new(text)
+                                                    .font_family(font_family.clone())
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground)
+                                            };
+                                            div()
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_sm()
+                                                .when(is_selected, |this| this.bg(cx.theme().selection))
+                                                .child(
+                                                    Label::new(text)
+                                                        .font_family(font_family.clone())
+                                                        .text_color(cx.theme().foreground),
+                                                )
+                                                .child(make_label(syntax))
+                                                .child(make_label(summary))
+                                        },
+                                    ))),
+                            )
+                        })
+                        .child(repl_row)
+                    })
+            })
     }
 }
