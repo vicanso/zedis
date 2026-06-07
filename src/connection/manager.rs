@@ -24,7 +24,7 @@ use crate::helpers::TtlCache;
 use crate::{connection::async_connection::set_client_name, error::Error};
 use futures::future::try_join_all;
 use gpui::SharedString;
-use rand::Rng;
+use rand::RngExt;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
 use regex::Regex;
 use semver::Version;
