@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.2](https://github.com/vicanso/zedis/compare/v0.4.1..v0.4.2) - 2026-06-07
+
+### ⛰️  Features
+
+- Auto-format Unix timestamp string values - ([6671361](https://github.com/vicanso/zedis/commit/667136158b73de803950051ef631aa63dfd95001))
+- Multi-line batch mode in the terminal workbench - ([4212667](https://github.com/vicanso/zedis/commit/42126674e2ede0bfbfabb47d2b49fe121bc9fa5a))
+- Redis 8 Vector Set viewer with interactive KNN - ([7e59f3a](https://github.com/vicanso/zedis/commit/7e59f3a8e8a8f31dd3fefe495133d7c9506fbd12))
+- RedisBloom probabilistic-structure viewer - ([f6dc1ad](https://github.com/vicanso/zedis/commit/f6dc1ad99291a38a60588ce90e21ed6356ba6bbe))
+- Esc returns to editor from tool pages - ([26c19e5](https://github.com/vicanso/zedis/commit/26c19e51755898b4740986349aebb20997a11011))
+- RedisTimeSeries chart viewer for TSDB-TYPE keys - ([c87f8b9](https://github.com/vicanso/zedis/commit/c87f8b96663f607ff9cc59a7f2f76f787d810796))
+- Accept redis:// connection URI in server import - ([86e84e4](https://github.com/vicanso/zedis/commit/86e84e4b151a1616c44b4fbf8b4e6388ae61789c))
+- Adaptive key-tree scanning, merged memory analysis, settings reset - ([a53a911](https://github.com/vicanso/zedis/commit/a53a9115d5e869086449242971ae957a20fbf4f5))
+- Per-master scan sizing and streaming prefix scan - ([a89cf9d](https://github.com/vicanso/zedis/commit/a89cf9d59e35f403f5f46a51877ed861e93a5bf8))
+- SSH tunnel keyboard-interactive auth + TOFU host key verification - ([c40974e](https://github.com/vicanso/zedis/commit/c40974e73129e7635cf197e1bc0f67cb87eb06ed))
+
+### 🐛 Bug Fixes
+
+- Fix cargo fmt - ([f74b937](https://github.com/vicanso/zedis/commit/f74b9373386dd08ae92b91aeb7ac8a1f27cbbb96))
+- Show persistent scrollbar in value diff view and bound its height - ([d5068ab](https://github.com/vicanso/zedis/commit/d5068ab928a7d88411415dca122cd665ba047e31))
+- Fix typos - ([64800e2](https://github.com/vicanso/zedis/commit/64800e2c826447529a5115f6fbe1aaf9b70bcc22))
+
+### 🚜 Refactor
+
+- Surface server tag in card and sidebar - ([79cdc04](https://github.com/vicanso/zedis/commit/79cdc04c4d5038a08d43875b153f5320a6d73868))
+
 ## [0.4.1](https://github.com/vicanso/zedis/compare/v0.4.0..v0.4.1) - 2026-05-31
 
 ### ⛰️  Features
