@@ -447,6 +447,7 @@ pub enum KeyType {
     Vectorset,
     Channel,
     Json,
+    TimeSeries,
 }
 impl KeyType {
     /// Returns the abbreviated string representation of the key type
@@ -461,6 +462,7 @@ impl KeyType {
             KeyType::Vectorset => "VEC",
             KeyType::Channel => "CHANNEL",
             KeyType::Json => "JSON",
+            KeyType::TimeSeries => "TS",
             KeyType::Unknown => "",
         }
     }
@@ -496,14 +498,15 @@ impl KeyType {
     /// Returns the color associated with this key type for UI display
     pub fn color(&self) -> Hsla {
         match self {
-            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),    // Blue
-            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),      // Purple
-            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),      // Orange
-            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),       // Cyan
-            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),     // Red
-            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),    // Green
-            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0), // Pink
-            _ => gpui::hsla(0.0, 0.0, 0.4, 1.0),                  // Gray
+            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),      // Blue
+            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),        // Purple
+            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),        // Orange
+            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),         // Cyan
+            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),       // Red
+            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),      // Green
+            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0),   // Pink
+            KeyType::TimeSeries => gpui::hsla(0.55, 0.5, 0.5, 1.0), // Teal
+            _ => gpui::hsla(0.0, 0.0, 0.4, 1.0),                    // Gray
         }
     }
 }
@@ -605,6 +608,7 @@ impl From<&str> for KeyType {
             "string" => KeyType::String,
             "ReJSON-RL" => KeyType::Json,
             "json" => KeyType::Json,
+            "TSDB-TYPE" => KeyType::TimeSeries,
             _ => KeyType::Unknown,
         }
     }

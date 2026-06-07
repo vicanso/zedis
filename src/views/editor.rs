@@ -20,7 +20,7 @@ use crate::{
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
     views::{
         DiffCloseCallback, ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisPubsubEditor, ZedisSetEditor,
-        ZedisStreamEditor, ZedisValueDiff, ZedisZsetEditor,
+        ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisZsetEditor,
     },
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -86,6 +86,7 @@ pub struct ZedisEditor {
     hash_editor: Option<Entity<ZedisHashEditor>>,
     stream_editor: Option<Entity<ZedisStreamEditor>>,
     pubsub_editor: Option<Entity<ZedisPubsubEditor>>,
+    timeseries_editor: Option<Entity<ZedisTimeSeriesEditor>>,
 
     /// TTL editing state
     should_enter_ttl_edit_mode: Option<bool>,
@@ -164,6 +165,10 @@ impl ZedisEditor {
                 ServerEvent::ValueLoaded => {
                     // stream editor is different of each key, so we need to destroy it
                     this.stream_editor.take();
+                    // Same for the time series editor — it snapshots the
+                    // key at construction and drives its own per-key
+                    // TS.INFO / TS.RANGE, so a fresh load must recreate it.
+                    this.timeseries_editor.take();
                     // A fresh value load (reload, type change, server
                     // switch) invalidates the diff snapshot.
                     this.close_diff_session(cx);
@@ -222,6 +227,7 @@ impl ZedisEditor {
             hash_editor: None,
             stream_editor: None,
             pubsub_editor: None,
+            timeseries_editor: None,
             readonly,
             ttl_edit_mode: false,
             ttl_input_state,
@@ -839,6 +845,9 @@ impl ZedisEditor {
         if key_type != KeyType::Channel {
             let _ = self.pubsub_editor.take();
         }
+        if key_type != KeyType::TimeSeries {
+            let _ = self.timeseries_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -899,6 +908,14 @@ impl ZedisEditor {
                 let editor = self.pubsub_editor.get_or_insert_with(|| {
                     debug!("Creating new pubsub editor");
                     cx.new(|cx| ZedisPubsubEditor::new(self.server_state.clone(), window, cx))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::TimeSeries => {
+                self.reset_editors(KeyType::TimeSeries);
+                let editor = self.timeseries_editor.get_or_insert_with(|| {
+                    debug!("Creating new time series editor");
+                    cx.new(|cx| ZedisTimeSeriesEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }

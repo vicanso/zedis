@@ -930,3 +930,18 @@ editor_button_tooltip_untagged = "Add tag & note (purely client-side)"
 filter_button_tooltip = "Filter tree by tag colour"
 filter_all = "All keys"
 
+
+[timeseries]
+title = "Time Series"
+loading = "Loading…"
+no_data = "No samples in range"
+samples = "Samples"
+memory = "Memory"
+retention = "Retention"
+chunks = "Chunks"
+range_15m = "15m"
+range_1h = "1h"
+range_6h = "6h"
+range_24h = "24h"
+range_7d = "7d"
+range_all = "All"

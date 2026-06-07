@@ -583,6 +583,15 @@ impl ZedisServerState {
                     KeyType::Hash => first_load_hash_value(&mut conn, &key, client.is_at_least_version("7.4.0")).await,
                     KeyType::Stream => first_load_stream_value(&mut conn, &key, true).await,
                     KeyType::Json => get_redis_json_value(&mut conn, &key).await,
+                    // The chart + metadata are loaded lazily by
+                    // ZedisTimeSeriesEditor (it drives its own TS.INFO /
+                    // TS.RANGE with range controls), so here we only need
+                    // to classify the key so the editor dispatch routes
+                    // to that viewer.
+                    KeyType::TimeSeries => Ok(RedisValue {
+                        key_type: KeyType::TimeSeries,
+                        ..Default::default()
+                    }),
                     _ => Err(Error::Invalid {
                         message: "unsupported key type".to_string(),
                     }),
