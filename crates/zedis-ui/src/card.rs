@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, Hsla, SharedString, Window, div, prelude::*, px};
 use gpui_component::{ActiveTheme, Icon, StyledExt, button::Button, h_flex, label::Label, list::ListItem, v_flex};
 
 /// Type alias for the click handler closure.
@@ -57,6 +57,11 @@ pub struct ZedisCard {
     subtitle_font: Option<SharedString>,
     /// Secondary description text.
     description: Option<SharedString>,
+    /// Optional tag chip rendered in the header row (e.g. "PROD").
+    /// The label and its resolved color are supplied by the caller —
+    /// this crate has no access to the app's tag-color presets. A
+    /// `None` color falls back to the muted theme token.
+    tag: Option<(SharedString, Option<Hsla>)>,
     /// List of action buttons to display in the header.
     actions: Option<Vec<Button>>,
     /// Action buttons that are only visible while the card is hovered.
@@ -83,6 +88,7 @@ impl ZedisCard {
             subtitle: None,
             subtitle_font: None,
             description: None,
+            tag: None,
             actions: None,
             hover_only_actions: None,
             on_click: None,
@@ -121,6 +127,17 @@ impl ZedisCard {
     /// Sets the description text displayed below the header.
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Sets a colored tag chip shown in the header row. An empty
+    /// `label` is treated as "no tag". `color` is resolved by the
+    /// caller (preset → HSLA); `None` falls back to the muted token.
+    pub fn tag(mut self, label: impl Into<SharedString>, color: Option<Hsla>) -> Self {
+        let label = label.into();
+        if !label.is_empty() {
+            self.tag = Some((label, color));
+        }
         self
     }
 
@@ -232,16 +249,45 @@ impl RenderOnce for ZedisCard {
             .when_some(self.title, |this, title| {
                 let subtitle = self.subtitle.clone();
                 let subtitle_font = self.subtitle_font.clone();
+                let tag = self.tag.clone();
                 this.child(
                     div().flex_1().overflow_hidden().child(
                         v_flex()
                             .ml_2()
                             .child(
-                                Label::new(title)
-                                    .text_base()
-                                    .font_semibold()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis(),
+                                // Name + tag chip share one row, hugging.
+                                // The name is flex_initial + min_w_0 so
+                                // it sizes to its content yet truncates
+                                // when long; the chip is flex_none so it
+                                // always stays right beside the name; a
+                                // trailing flex_1 spacer eats the slack
+                                // so the pair stays left-aligned and
+                                // adjacent even for short names.
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .w_full()
+                                    .child(
+                                        div().flex_initial().min_w_0().overflow_hidden().child(
+                                            Label::new(title)
+                                                .text_base()
+                                                .font_semibold()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis(),
+                                        ),
+                                    )
+                                    .when_some(tag, |row, (label, color)| {
+                                        let color = color.unwrap_or(cx.theme().muted_foreground);
+                                        row.child(
+                                            div()
+                                                .flex_none()
+                                                .px_1p5()
+                                                .rounded_full()
+                                                .bg(Hsla { a: 0.15, ..color })
+                                                .child(Label::new(label).text_xs().text_color(color)),
+                                        )
+                                    })
+                                    .child(div().flex_1()),
                             )
                             .when_some(subtitle, |col, sub| {
                                 let mut label = Label::new(sub)

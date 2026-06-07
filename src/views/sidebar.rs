@@ -18,7 +18,7 @@ use crate::{
     helpers::resolve_tag_color,
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
 };
-use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*};
+use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, label::Label, list::ListItem, v_flex};
@@ -196,17 +196,21 @@ impl ZedisSidebar {
         let list_active_color = cx.theme().foreground.alpha(0.1);
         // Both home and server rows use the same muted/foreground
         // toggle on selection so the icon column registers selection,
-        // not just the 3px right strip. Server rows additionally
-        // tint their icon with the server's tag colour when one is
-        // set (tag colour wins over the selection toggle — tag
-        // identity is the stronger signal, and selection is still
-        // conveyed by the row bg + right border).
+        // not just the 3px right strip. The server's tag colour is no
+        // longer painted onto the icon itself (it read as jarring) —
+        // the icon stays a calm muted/foreground grey and the tag
+        // colour shows as a small dot badge at the icon's lower-right
+        // corner instead.
         let muted_icon_color = cx.theme().muted_foreground;
         let active_icon_color = cx.theme().foreground;
         // Subtle 1px divider drawn between the home row and the first
         // group section to set Home apart visually as a top-level
         // entry, distinct from the group/server tree below it.
         let divider_color = cx.theme().border;
+        // Ring colour drawn around the tag dot so it reads as a crisp
+        // badge instead of bleeding into the icon glyph behind it.
+        // Matches the sidebar panel background (see main.rs).
+        let dot_ring_color = cx.theme().background;
 
         // Snapshot collapse state up front so the click closures
         // don't need to re-borrow `cx`. Server counts are bounded
@@ -338,8 +342,8 @@ impl ZedisSidebar {
                 // visible label uses text_ellipsis in this narrow
                 // strip so long names ("aliyun-clu…") are unreadable
                 // without it. Append the tag label when one is set
-                // ("aliyun-cluster · prod"); the icon already
-                // carries the colour, the tooltip carries the word.
+                // ("aliyun-cluster · prod"); the corner dot carries
+                // the colour, the tooltip carries the word.
                 let tooltip_text: SharedString = if entry.tag.is_empty() {
                     name.clone()
                 } else {
@@ -348,7 +352,7 @@ impl ZedisSidebar {
 
                 let server_id = entry.id.clone();
                 let tag_color = entry.color;
-                let fallback_icon_color = if is_current {
+                let icon_color = if is_current {
                     active_icon_color
                 } else {
                     muted_icon_color
@@ -369,8 +373,27 @@ impl ZedisSidebar {
                             .w_full()
                             .overflow_hidden()
                             .child(
-                                Icon::new(CustomIconName::HardDrive)
-                                    .text_color(tag_color.unwrap_or(fallback_icon_color)),
+                                // Icon stays a calm grey; the tag colour
+                                // rides along as a small dot badge pinned
+                                // to the icon's lower-right corner, ringed
+                                // so it doesn't merge into the glyph.
+                                div()
+                                    .relative()
+                                    .flex_none()
+                                    .child(Icon::new(CustomIconName::HardDrive).text_color(icon_color))
+                                    .when_some(tag_color, |this, color| {
+                                        this.child(
+                                            div()
+                                                .absolute()
+                                                .bottom_0()
+                                                .right_0()
+                                                .size(px(8.))
+                                                .rounded_full()
+                                                .bg(color)
+                                                .border_2()
+                                                .border_color(dot_ring_color),
+                                        )
+                                    }),
                             )
                             .child(
                                 Label::new(name)
