@@ -60,6 +60,9 @@ pub struct ZedisSettingEditor {
     auto_expand_threshold_state: Entity<InputState>,
     redis_connection_timeout_state: Entity<InputState>,
     redis_response_timeout_state: Entity<InputState>,
+    ai_base_url_state: Entity<InputState>,
+    ai_api_key_state: Entity<InputState>,
+    ai_model_state: Entity<InputState>,
     tray_enabled: bool,
     show_key_tree_ttl: bool,
     font_size_select: Entity<ZedisSelect>,
@@ -117,6 +120,9 @@ impl ZedisSettingEditor {
         let show_key_tree_ttl = store.show_key_tree_ttl();
         let font_size = store.font_size();
         let locale = store.locale().to_string();
+        let ai_base_url = store.ai_base_url();
+        let ai_api_key = store.ai_api_key();
+        let ai_model = store.ai_model();
 
         let max_key_tree_depth_state = Self::create_input_state(
             window,
@@ -162,6 +168,15 @@ impl ZedisSettingEditor {
             redis_response_timeout,
             None,
         );
+
+        let ai_base_url_state = Self::create_input_state(window, cx, "ai_base_url_placeholder", ai_base_url, None);
+        let ai_api_key_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, "ai_api_key_placeholder"))
+                .default_value(ai_api_key)
+                .masked(true)
+        });
+        let ai_model_state = Self::create_input_state(window, cx, "ai_model_placeholder", ai_model, None);
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
 
@@ -288,6 +303,22 @@ impl ZedisSettingEditor {
         let config_dir_state =
             cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
 
+        subscriptions.push(Self::bind_blur_save(cx, &ai_base_url_state, window, |text, cx| {
+            update_app_state_and_save(cx, "save_ai_base_url", move |state, _| {
+                state.set_ai_base_url(text);
+            });
+        }));
+        subscriptions.push(Self::bind_blur_save(cx, &ai_api_key_state, window, |text, cx| {
+            update_app_state_and_save(cx, "save_ai_api_key", move |state, _| {
+                state.set_ai_api_key(text);
+            });
+        }));
+        subscriptions.push(Self::bind_blur_save(cx, &ai_model_state, window, |text, cx| {
+            update_app_state_and_save(cx, "save_ai_model", move |state, _| {
+                state.set_ai_model(text);
+            });
+        }));
+
         let font_size_index = match font_size {
             FontSize::Large => 0,
             FontSize::Medium => 1,
@@ -347,6 +378,9 @@ impl ZedisSettingEditor {
             max_key_tree_depth_state,
             redis_response_timeout_state,
             redis_connection_timeout_state,
+            ai_base_url_state,
+            ai_api_key_state,
+            ai_model_state,
             tray_enabled,
             show_key_tree_ttl,
             font_size_select,
@@ -462,6 +496,23 @@ impl Render for ZedisSettingEditor {
                     cx,
                     "redis_response_timeout",
                     Input::new(&self.redis_response_timeout_state),
+                ))
+                // — AI Analysis —
+                .child(Self::render_section_header(cx, "section_ai", "section_ai_desc"))
+                .child(Self::render_setting_row(
+                    cx,
+                    "ai_base_url",
+                    Input::new(&self.ai_base_url_state),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "ai_api_key",
+                    Input::new(&self.ai_api_key_state).mask_toggle(),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "ai_model",
+                    Input::new(&self.ai_model_state),
                 ))
                 // — System —
                 .child(Self::render_section_header(cx, "section_system", "section_system_desc"))

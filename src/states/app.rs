@@ -17,7 +17,7 @@ use crate::connection::{
 };
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
+use crate::helpers::{decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir};
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
@@ -255,6 +255,14 @@ pub struct ZedisAppState {
     /// bucket). A renamed/deleted group simply leaves a harmless
     /// stale string here that no section ever matches.
     collapsed_server_groups: Option<Vec<String>>,
+    /// Base URL of the OpenAI-compatible endpoint used by the AI
+    /// memory-analysis feature, e.g. `https://api.openai.com/v1`.
+    ai_base_url: Option<String>,
+    /// API key for the AI endpoint. Stored **encrypted** (AES-256-GCM,
+    /// same scheme as server passwords) — never persisted in plaintext.
+    ai_api_key: Option<String>,
+    /// Model name passed to the AI endpoint, e.g. `gpt-4o-mini`.
+    ai_model: Option<String>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -502,6 +510,48 @@ impl ZedisAppState {
     }
     pub fn set_show_key_tree_ttl(&mut self, enabled: bool) {
         self.show_key_tree_ttl = Some(enabled);
+    }
+    /// Base URL of the OpenAI-compatible AI endpoint (without trailing
+    /// slash normalization — that happens at request time). Empty when
+    /// unset.
+    pub fn ai_base_url(&self) -> String {
+        self.ai_base_url.clone().unwrap_or_default()
+    }
+    pub fn set_ai_base_url(&mut self, base_url: String) {
+        let base_url = base_url.trim().to_string();
+        self.ai_base_url = if base_url.is_empty() { None } else { Some(base_url) };
+    }
+    /// Decrypted API key for the AI endpoint, or empty when unset.
+    /// Falls back to the stored value if decryption fails (e.g. a
+    /// hand-edited plaintext key in `zedis.toml`).
+    pub fn ai_api_key(&self) -> String {
+        self.ai_api_key
+            .as_ref()
+            .map(|cipher| decrypt(cipher).unwrap_or_else(|_| cipher.clone()))
+            .unwrap_or_default()
+    }
+    /// Store the API key, encrypting it before persistence. An empty
+    /// value clears it.
+    pub fn set_ai_api_key(&mut self, api_key: String) {
+        let api_key = api_key.trim();
+        self.ai_api_key = if api_key.is_empty() {
+            None
+        } else {
+            Some(encrypt(api_key).unwrap_or_else(|_| api_key.to_string()))
+        };
+    }
+    /// Model name passed to the AI endpoint. Empty when unset.
+    pub fn ai_model(&self) -> String {
+        self.ai_model.clone().unwrap_or_default()
+    }
+    pub fn set_ai_model(&mut self, model: String) {
+        let model = model.trim().to_string();
+        self.ai_model = if model.is_empty() { None } else { Some(model) };
+    }
+    /// Whether the AI analysis feature has the minimum configuration
+    /// (endpoint + key) to be usable.
+    pub fn ai_configured(&self) -> bool {
+        self.ai_base_url.is_some() && self.ai_api_key.is_some()
     }
     /// Whether the given server-page group section is collapsed.
     pub fn is_server_group_collapsed(&self, key: &str) -> bool {

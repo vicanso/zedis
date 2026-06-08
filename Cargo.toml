@@ -36,7 +36,7 @@ members = ["crates/*", "zedis-cmd-builder"]
 [dependencies]
 aes-gcm = "0.10.3"
 ahash = "0.8.12"
-anyhow = "1.0.100"
+anyhow = "1.0.102"
 arc-swap = "1.9.1"
 base64 = "0.22.1"
 bitflags = "2.13.0"
@@ -130,12 +130,19 @@ zedis-ui = { path = "crates/zedis-ui" }
 indexmap = { workspace = true }
 simdutf8 = "0.1.5"
 shlex = "2.0.1"
+# Minimal blocking HTTP client for the OpenAI-compatible AI analysis
+# request. `rustls` keeps parity with the rest of the TLS stack and
+# avoids pulling a native (OpenSSL) dependency.
+ureq = { version = "3", default-features = false, features = [
+    "rustls",
+    "gzip",
+] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tray-icon = "0.19"
 
 [workspace.dependencies]
-indexmap = "2.13.0"
+indexmap = "2.14.0"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "font-kit",

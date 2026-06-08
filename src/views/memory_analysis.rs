@@ -21,13 +21,14 @@ use crate::assets::CustomIconName;
 use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::format_duration;
+use crate::helpers::{AiEndpoint, analyze_report, format_duration};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis};
 use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
-use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
+use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::Button,
@@ -189,6 +190,113 @@ fn format_thousands(n: u64) -> String {
         result.push(c);
     }
     result
+}
+
+/// Number of rows from each table included in the AI report. The tables
+/// already hold at most ~20 rows, but cap defensively so the prompt stays
+/// bounded regardless of upstream changes.
+const REPORT_ROW_LIMIT: usize = 20;
+
+/// Escape a value for use inside a single Markdown table cell: pipes
+/// would break the column layout and newlines would break the row.
+fn md_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
+}
+
+/// Compact Markdown styling for the AI panel. The library defaults size
+/// headings up to `rems(2.0)` (~28px h1), which dwarfs the body text in
+/// a side panel; shrink them to a gentle hierarchy and tighten the
+/// inter-paragraph gap so an LLM reply full of `#`/`##` stays readable.
+fn ai_markdown_style() -> TextViewStyle {
+    TextViewStyle::default()
+        .paragraph_gap(rems(0.5))
+        .heading_font_size(|level, _base| match level {
+            1 => px(18.),
+            2 => px(16.),
+            3 => px(15.),
+            _ => px(14.),
+        })
+}
+
+/// Render the current analysis into a Markdown report suitable for
+/// submitting to an LLM. Pure over its inputs — no Redis access. Only
+/// key *names*, sizes and TTLs are included (never key values).
+fn build_markdown_report(
+    dbsize: Option<u64>,
+    policy: &str,
+    ratio: f32,
+    prefix_rows: &[PrefixRow],
+    single_rows: &[SingleKeyRow],
+    ttl: &TtlHistogram,
+) -> String {
+    let mut md = String::with_capacity(2048);
+    md.push_str("# Redis Memory Analysis Report\n\n");
+
+    md.push_str("## Overview\n\n");
+    if let Some(size) = dbsize {
+        md.push_str(&format!("- Total keys (DBSIZE): {}\n", format_thousands(size)));
+    }
+    md.push_str(&format!("- Sample ratio: {:.1}%\n", (ratio * 100.0).clamp(0.0, 100.0)));
+    if !policy.is_empty() {
+        md.push_str(&format!("- maxmemory-policy: `{policy}`\n"));
+    }
+    md.push('\n');
+
+    let total = ttl.total();
+    if total > 0 {
+        md.push_str("## TTL distribution (sampled keys)\n\n");
+        md.push_str("| Bucket | Keys | Percent |\n| --- | ---: | ---: |\n");
+        let pct = |n: u64| -> String { format!("{:.1}%", n as f64 / total as f64 * 100.0) };
+        let buckets = [
+            ("< 1m", ttl.lt_1m),
+            ("< 1h", ttl.lt_1h),
+            ("< 1d", ttl.lt_1d),
+            ("< 7d", ttl.lt_7d),
+            (">= 7d", ttl.gte_7d),
+            ("No expiry", ttl.no_ttl),
+        ];
+        for (label, count) in buckets {
+            md.push_str(&format!("| {label} | {} | {} |\n", format_thousands(count), pct(count)));
+        }
+        md.push('\n');
+    }
+
+    if !prefix_rows.is_empty() {
+        md.push_str("## Top key-prefix groups by estimated memory\n\n");
+        md.push_str("| Prefix | Keys | Est. memory | Avg TTL | No-expiry keys | Types |\n");
+        md.push_str("| --- | ---: | ---: | --- | ---: | --- |\n");
+        for r in prefix_rows.iter().take(REPORT_ROW_LIMIT) {
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                md_cell(&r.prefix),
+                md_cell(&r.display_key_count),
+                md_cell(&r.memory),
+                md_cell(&r.avg_ttl),
+                md_cell(&r.perm_display),
+                md_cell(&r.types),
+            ));
+        }
+        md.push('\n');
+    }
+
+    if !single_rows.is_empty() {
+        md.push_str("## Top single keys by memory\n\n");
+        md.push_str("| Key | Memory | Type | TTL | Heat |\n");
+        md.push_str("| --- | ---: | --- | --- | --- |\n");
+        for r in single_rows.iter().take(REPORT_ROW_LIMIT) {
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                md_cell(&r.key),
+                md_cell(&r.memory),
+                md_cell(&r.key_type),
+                md_cell(&r.ttl),
+                md_cell(&r.heat_display),
+            ));
+        }
+        md.push('\n');
+    }
+
+    md
 }
 
 fn render_copy_cell(
@@ -753,6 +861,21 @@ enum AnalysisStatus {
     Finished,
 }
 
+/// State of the optional "AI analysis" request that sends the current
+/// report to a user-configured OpenAI-compatible endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+enum AiStatus {
+    /// No request made yet — the result panel is hidden.
+    #[default]
+    Idle,
+    /// Request in flight.
+    Running,
+    /// Completed; `ai_output` holds the model's Markdown reply.
+    Done,
+    /// Failed; `ai_output` holds a human-readable error message.
+    Error,
+}
+
 // ─── Main component ──────────────────────────────────────────────────────────
 
 pub struct ZedisMemoryAnalysis {
@@ -790,6 +913,15 @@ pub struct ZedisMemoryAnalysis {
     /// (no extra Redis round-trip — `KeyMemoryUsage::ttl` is already
     /// in the pipeline). Reset on each `start_analysis`.
     ttl_histogram: TtlHistogram,
+    /// Status of the optional AI analysis request.
+    ai_status: AiStatus,
+    /// Model reply (Markdown) when `ai_status == Done`, or the error
+    /// message when `ai_status == Error`. `None` while Idle/Running.
+    ai_output: Option<SharedString>,
+    /// Handle to the in-flight AI request; dropping it cancels the
+    /// foreground update (the background HTTP call still finishes but
+    /// its result is discarded).
+    ai_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -858,6 +990,9 @@ impl ZedisMemoryAnalysis {
             scan_count_input_state,
             est_commands: 0,
             ttl_histogram: TtlHistogram::default(),
+            ai_status: AiStatus::Idle,
+            ai_output: None,
+            ai_task: None,
             _subscriptions: subscriptions,
         };
         this.update_est_commands();
@@ -884,7 +1019,82 @@ impl ZedisMemoryAnalysis {
         cx.notify();
     }
 
+    /// Drop the AI result panel and cancel any in-flight request.
+    fn clear_ai_result(&mut self, cx: &mut gpui::Context<Self>) {
+        self.ai_task.take();
+        self.ai_status = AiStatus::Idle;
+        self.ai_output = None;
+        cx.notify();
+    }
+
+    /// Send the current analysis report to the configured AI endpoint
+    /// and render its advice. No-op (with a notification) when the
+    /// endpoint is not configured or there is nothing to analyze.
+    fn start_ai_analysis(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.ai_status == AiStatus::Running {
+            return;
+        }
+
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
+        if !store.ai_configured() {
+            window.push_notification(Notification::warning(i18n_memory_analysis(cx, "ai_not_configured")), cx);
+            return;
+        }
+        let endpoint = AiEndpoint {
+            base_url: store.ai_base_url(),
+            api_key: store.ai_api_key(),
+            model: store.ai_model(),
+        };
+        // Ask the model to reply in the app's current UI language.
+        let locale = store.locale().to_string();
+
+        // Build the Markdown report from the freshly computed rows. Only
+        // key names/sizes/TTLs are sent — never key values.
+        let prefix_rows = self.prefix_table.read(cx).delegate().rows.clone();
+        let single_rows = self.single_table.read(cx).delegate().rows.clone();
+        if prefix_rows.is_empty() && single_rows.is_empty() && self.ttl_histogram.total() == 0 {
+            window.push_notification(Notification::warning(i18n_memory_analysis(cx, "ai_no_data")), cx);
+            return;
+        }
+        let report = build_markdown_report(
+            self.dbsize,
+            &self.policy,
+            self.ratio,
+            &prefix_rows,
+            &single_rows,
+            &self.ttl_histogram,
+        );
+
+        self.ai_status = AiStatus::Running;
+        self.ai_output = None;
+        cx.notify();
+
+        self.ai_task = Some(cx.spawn(async move |handle, cx| {
+            // `analyze_report` is blocking (ureq) — keep it on the
+            // background pool so the UI thread stays responsive.
+            let result = cx
+                .background_spawn(async move { analyze_report(&endpoint, &report, &locale) })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                match result {
+                    Ok(markdown) => {
+                        this.ai_status = AiStatus::Done;
+                        this.ai_output = Some(markdown.into());
+                    }
+                    Err(e) => {
+                        error!(error = %e, "AI memory analysis failed");
+                        this.ai_status = AiStatus::Error;
+                        this.ai_output = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     fn start_analysis(&mut self, cx: &mut gpui::Context<Self>) {
+        // A fresh scan invalidates any previous AI advice.
+        self.clear_ai_result(cx);
         self.status = AnalysisStatus::Running;
         self.progress = "0%".into();
         self.prefix_count = 0;
@@ -1126,6 +1336,8 @@ impl ZedisMemoryAnalysis {
     fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> ZedisDivider {
         let is_running = self.status == AnalysisStatus::Running;
         let is_idle = self.status == AnalysisStatus::Idle;
+        let has_data = self.prefix_count > 0 || self.single_count > 0;
+        let ai_running = self.ai_status == AiStatus::Running;
         let stat_item = |cx: &mut gpui::Context<Self>, key: &'static str, value: SharedString| {
             h_flex()
                 .gap_1()
@@ -1253,9 +1465,116 @@ impl ZedisMemoryAnalysis {
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.start_analysis(cx);
                             }))
-                    }),
+                    })
+                    // AI analysis: send the current report to the
+                    // configured OpenAI-compatible endpoint for advice.
+                    .child(
+                        Button::new("ai-analysis")
+                            .small()
+                            .outline()
+                            .icon(IconName::Bot)
+                            .disabled(is_running || ai_running || !has_data)
+                            .label(if ai_running {
+                                i18n_memory_analysis(cx, "ai_analyzing")
+                            } else {
+                                i18n_memory_analysis(cx, "ai_analyze")
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.start_ai_analysis(window, cx);
+                            })),
+                    ),
             )
     }
+    /// Render the AI advice panel. Hidden until an AI request has been
+    /// started; then shows a loading line, the model's Markdown advice,
+    /// or an error message, with a button to dismiss it.
+    fn render_ai_panel(&self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
+        if self.ai_status == AiStatus::Idle {
+            return None;
+        }
+        // Theme colors must be copied out before the `cx.listener`
+        // closure below (can't borrow `cx` across it).
+        let border = cx.theme().border;
+        let panel_bg = cx.theme().muted.opacity(0.4);
+        let muted_fg = cx.theme().muted_foreground;
+        let danger = cx.theme().red;
+
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(IconName::Bot))
+                    .child(Label::new(i18n_memory_analysis(cx, "ai_panel_title")).font_semibold()),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    // Copy the model's Markdown reply to the clipboard.
+                    .when(self.ai_status == AiStatus::Done, |this| {
+                        this.child(
+                            Button::new("ai-copy-reply")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Copy)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let Some(reply) = this.ai_output.clone() else {
+                                        return;
+                                    };
+                                    cx.write_to_clipboard(ClipboardItem::new_string(reply.to_string()));
+                                    window.push_notification(
+                                        Notification::info(i18n_common(cx, "copied_to_clipboard")),
+                                        cx,
+                                    );
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("ai-panel-close")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.clear_ai_result(cx);
+                            })),
+                    ),
+            );
+
+        let content = match self.ai_status {
+            AiStatus::Running => Label::new(i18n_memory_analysis(cx, "ai_running"))
+                .text_color(muted_fg)
+                .into_any_element(),
+            AiStatus::Done => {
+                TextView::markdown("memory-analysis-ai-result", self.ai_output.clone().unwrap_or_default())
+                    .style(ai_markdown_style())
+                    .into_any_element()
+            }
+            AiStatus::Error => Label::new(self.ai_output.clone().unwrap_or_default())
+                .text_color(danger)
+                .into_any_element(),
+            AiStatus::Idle => return None,
+        };
+
+        Some(
+            v_flex()
+                .w_full()
+                .flex_none()
+                .gap_2()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(border)
+                .bg(panel_bg)
+                .child(header)
+                .child(content)
+                .into_any_element(),
+        )
+    }
+
     /// Pull the metrics history kept by the status bar heartbeat and
     /// render a fragmentation-ratio line chart. Returns `None` when
     /// there are fewer than two data points — a single sample isn't
@@ -1623,6 +1942,12 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .id("memory-analysis-body")
                     .overflow_y_scroll();
 
+                // AI advice panel — pinned to the top so the result is
+                // visible immediately after the request completes.
+                if let Some(panel) = self.render_ai_panel(cx) {
+                    body = body.child(panel);
+                }
+
                 // Combined dashboard — no tab selection. One SCAN feeds every
                 // section, so they stack in a single scroll view: fragmentation
                 // trend, TTL distribution, then the prefix and single-key tables.
@@ -1687,7 +2012,27 @@ impl gpui::Render for ZedisMemoryAnalysis {
 
 #[cfg(test)]
 mod tests {
-    use super::TtlHistogram;
+    use super::{TtlHistogram, build_markdown_report, md_cell};
+
+    #[test]
+    fn md_cell_escapes_pipes_and_newlines() {
+        assert_eq!(md_cell("a|b\nc"), "a\\|b c");
+    }
+
+    #[test]
+    fn markdown_report_has_sections_and_overview() {
+        let mut ttl = TtlHistogram::default();
+        ttl.add(-1);
+        ttl.add(30);
+        let md = build_markdown_report(Some(1_234), "allkeys-lru", 1.0, &[], &[], &ttl);
+        assert!(md.contains("# Redis Memory Analysis Report"));
+        assert!(md.contains("Total keys (DBSIZE): 1,234"));
+        assert!(md.contains("maxmemory-policy: `allkeys-lru`"));
+        assert!(md.contains("## TTL distribution"));
+        // No prefix/single rows supplied → those sections are omitted.
+        assert!(!md.contains("Top key-prefix groups"));
+        assert!(!md.contains("Top single keys"));
+    }
 
     #[test]
     fn ttl_histogram_buckets_boundary_seconds() {

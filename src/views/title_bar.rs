@@ -15,22 +15,56 @@
 use crate::helpers::MemuAction;
 use crate::{
     assets::CustomIconName,
-    states::{SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
+    connection::get_server,
+    states::{GlobalEvent, Route, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
 };
-use gpui::{App, Context, Corner, Window, prelude::*};
+use gpui::{App, Context, Corner, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
-    Icon, IconName, Sizable, ThemeMode, TitleBar,
+    Icon, IconName, Sizable, StyledExt, ThemeMode, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     menu::{DropdownMenu, PopupMenu},
 };
 
-pub struct ZedisTitleBar;
+pub struct ZedisTitleBar {
+    _subscriptions: Vec<Subscription>,
+}
 
 impl ZedisTitleBar {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
-        Self
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Re-render whenever the active server changes (selection,
+        // clear, or a rename via the server list) so the centered
+        // title stays in sync.
+        let global_state = cx.global::<ZedisGlobalStore>().state();
+        let subscription = cx.subscribe(&global_state, |_this, _global_state, event, cx| {
+            if matches!(
+                event,
+                GlobalEvent::ServerSelected(..) | GlobalEvent::ServerListUpdated | GlobalEvent::RouteChanged(..)
+            ) {
+                cx.notify();
+            }
+        });
+
+        Self {
+            _subscriptions: vec![subscription],
+        }
+    }
+
+    /// Resolve the display name of the currently selected server, if any.
+    ///
+    /// The selected server is persisted across restarts, but the Home
+    /// page is a server-agnostic chooser — showing the previously
+    /// selected name there is misleading, so hide it on `Route::Home`.
+    fn selected_server_name(cx: &App) -> Option<SharedString> {
+        let state = cx.global::<ZedisGlobalStore>().read(cx);
+        if state.route() == Route::Home {
+            return None;
+        }
+        let (server_id, _db) = state.selected_server()?.clone();
+        get_server(&server_id)
+            .ok()
+            .map(|server| SharedString::from(server.name))
     }
 
     fn render_settings_menu(this: PopupMenu, cx: &App) -> PopupMenu {
@@ -99,11 +133,28 @@ impl ZedisTitleBar {
 impl Render for ZedisTitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // right actions container
-        let right_actions = h_flex().items_center().justify_end().px_2().gap_2().mr_2();
+        let right_actions = h_flex().flex_1().items_center().justify_end().px_2().gap_2().mr_2();
+
+        // Centered title showing the active server name (empty when none).
+        let center =
+            h_flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .when_some(Self::selected_server_name(cx), |this, name| {
+                            this.child(Icon::new(IconName::HardDrive).small())
+                                .child(Label::new(name).font_semibold())
+                        }),
+                );
 
         TitleBar::new()
-            // left placeholder
+            // left placeholder balances the right actions so `center` stays centered
             .child(h_flex().flex_1())
+            .child(center)
             // right actions container
             .child(
                 right_actions

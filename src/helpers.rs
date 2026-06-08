@@ -15,6 +15,7 @@
 use std::env;
 
 mod action;
+mod ai;
 mod common;
 mod diff;
 mod font;
@@ -31,6 +32,7 @@ mod ttl_cache;
 mod validate;
 
 pub use action::*;
+pub use ai::{AiEndpoint, analyze_report};
 pub use common::*;
 pub use diff::*;
 pub use font::*;
