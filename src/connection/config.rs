@@ -36,7 +36,12 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Preset tag color keys, ordered to match the RadioGroup option list.
 /// Index 0 = "none" (no chip rendered).
-pub const TAG_COLOR_PRESETS: &[&str] = &["none", "gray", "blue", "green", "amber", "red"];
+/// Tag color preset keys, ordered Local → Dev → UAT → Prod → Archive.
+/// Environment-oriented palette chosen so no swatch reads as a
+/// connection-status color (the old `green`/`red` were mistaken for
+/// "connected"/"error"). `magenta` is the production / high-risk color
+/// (see [`RedisServer::is_high_risk_tag`]).
+pub const TAG_COLOR_PRESETS: &[&str] = &["none", "sky", "teal", "purple", "magenta", "slate"];
 
 fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
     let raw = form_value?.trim();
@@ -332,8 +337,10 @@ impl RedisServer {
     }
     /// Returns true when the tag implies production-grade caution: typed-name confirm,
     /// no "remember choice" shortcut. Driven by tag_color preset key, not by tag text.
+    /// `magenta` is the current production color; `red` is honored as a legacy alias
+    /// so servers tagged before the palette change keep their safety escalation.
     pub fn is_high_risk_tag(&self) -> bool {
-        matches!(self.tag_color.as_deref(), Some("red"))
+        matches!(self.tag_color.as_deref(), Some("magenta") | Some("red"))
     }
     /// Generates the connection URL based on host, port, and optional password.
     pub fn get_connection_url(&self) -> String {
@@ -547,7 +554,7 @@ mod tests {
             ssh_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----\n...".into()),
             updated_at: Some("2026-05-14T08:00:00".into()),
             tag: Some("PROD".into()),
-            tag_color: Some("red".into()),
+            tag_color: Some("magenta".into()),
             ..Default::default()
         }
     }

@@ -44,7 +44,7 @@ pub use jsonpath::{
 };
 pub use string::*;
 pub use syntax::register_extra_languages;
-pub use tag::{resolve_tag_color, theme_color_for_tag};
+pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
 pub use time::{parse_duration, unix_ts, unix_ts_millis};
 pub use ttl::{TtlChipKind, format_ttl_chip, ttl_chip_kind};
 pub use ttl_cache::*;

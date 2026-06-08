@@ -15,7 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_server_groups, get_servers, open_single_connection, tag_color_index};
 use crate::error::Error;
-use crate::helpers::{get_font_family, resolve_tag_color};
+use crate::helpers::{get_font_family, resolve_tag_chip};
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props, i18n_common,
     i18n_servers, update_app_state_and_save,
@@ -686,6 +686,7 @@ impl Render for ZedisServers {
             cx.theme().background.darken(THEME_DARKEN_AMOUNT_LIGHT)
         };
 
+        let dark = cx.theme().is_dark();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let subtitle_font = get_font_family();
         let update_tooltip = i18n_servers(cx, "update_tooltip");
@@ -761,7 +762,7 @@ impl Render for ZedisServers {
                         };
                         let title = server.name.clone();
                         let tag_label = server.tag_label().unwrap_or_default().to_string();
-                        let tag_color = resolve_tag_color(server.tag_color.as_deref());
+                        let tag_chip = resolve_tag_chip(server.tag_color.as_deref(), dark);
                         let subtitle = format!("{}:{}", server.host, server.port);
                         let updated_label = if updated_at.is_empty() {
                             String::new()
@@ -859,7 +860,7 @@ impl Render for ZedisServers {
                             .title(title)
                             .subtitle(subtitle)
                             .subtitle_font(subtitle_font.clone())
-                            .tag(tag_label, tag_color)
+                            .tag(tag_label, tag_chip)
                             .bg(bg)
                             .when(!description.is_empty(), |this| {
                                 this.description(description.to_string())

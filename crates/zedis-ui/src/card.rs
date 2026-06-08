@@ -58,10 +58,11 @@ pub struct ZedisCard {
     /// Secondary description text.
     description: Option<SharedString>,
     /// Optional tag chip rendered in the header row (e.g. "PROD").
-    /// The label and its resolved color are supplied by the caller —
-    /// this crate has no access to the app's tag-color presets. A
-    /// `None` color falls back to the muted theme token.
-    tag: Option<(SharedString, Option<Hsla>)>,
+    /// The label and its resolved `(background, foreground)` colors are
+    /// supplied by the caller — this crate has no access to the app's
+    /// tag-color presets. `None` colors fall back to the muted theme
+    /// token.
+    tag: Option<(SharedString, Option<(Hsla, Hsla)>)>,
     /// List of action buttons to display in the header.
     actions: Option<Vec<Button>>,
     /// Action buttons that are only visible while the card is hovered.
@@ -131,12 +132,14 @@ impl ZedisCard {
     }
 
     /// Sets a colored tag chip shown in the header row. An empty
-    /// `label` is treated as "no tag". `color` is resolved by the
-    /// caller (preset → HSLA); `None` falls back to the muted token.
-    pub fn tag(mut self, label: impl Into<SharedString>, color: Option<Hsla>) -> Self {
+    /// `label` is treated as "no tag". `colors` is the
+    /// `(background, foreground)` pair resolved by the caller
+    /// (preset → HSLA for the active theme mode); `None` falls back to
+    /// the muted token.
+    pub fn tag(mut self, label: impl Into<SharedString>, colors: Option<(Hsla, Hsla)>) -> Self {
         let label = label.into();
         if !label.is_empty() {
-            self.tag = Some((label, color));
+            self.tag = Some((label, colors));
         }
         self
     }
@@ -276,15 +279,18 @@ impl RenderOnce for ZedisCard {
                                                 .text_ellipsis(),
                                         ),
                                     )
-                                    .when_some(tag, |row, (label, color)| {
-                                        let color = color.unwrap_or(cx.theme().muted_foreground);
+                                    .when_some(tag, |row, (label, colors)| {
+                                        let (bg, fg) = colors.unwrap_or_else(|| {
+                                            let muted = cx.theme().muted_foreground;
+                                            (Hsla { a: 0.15, ..muted }, muted)
+                                        });
                                         row.child(
                                             div()
                                                 .flex_none()
                                                 .px_1p5()
                                                 .rounded_full()
-                                                .bg(Hsla { a: 0.15, ..color })
-                                                .child(Label::new(label).text_xs().text_color(color)),
+                                                .bg(bg)
+                                                .child(Label::new(label).text_xs().text_color(fg)),
                                         )
                                     })
                                     .child(div().flex_1()),

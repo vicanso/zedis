@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     connection::{RedisClientDescription, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{humanize_keystroke, resolve_tag_color},
+    helpers::{humanize_keystroke, resolve_tag_chip},
     states::{
         ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore,
         ZedisServerState, get_session_option, i18n_sidebar, i18n_status_bar, i18n_topology, save_session_option,
@@ -159,7 +159,9 @@ struct StatusBarServerState {
     nodes_description: SharedString,
     slow_log_tips: SharedString,
     tag: SharedString,
-    tag_color: Option<Hsla>,
+    /// Stored tag color *preset key* (e.g. `magenta`), resolved to
+    /// mode-aware chip colors at render time.
+    tag_color_key: Option<String>,
     /// Mirrors `ZedisServerState::supports_search()` — gates the Search
     /// item in the Tools dropdown so servers without the RediSearch
     /// module don't get a dead-end menu entry.
@@ -367,10 +369,10 @@ impl ZedisStatusBar {
             && let Ok(server) = get_server(server_id.as_ref())
         {
             self.state.server_state.tag = server.tag_label().unwrap_or_default().to_string().into();
-            self.state.server_state.tag_color = resolve_tag_color(server.tag_color.as_deref());
+            self.state.server_state.tag_color_key = server.tag_color.clone();
         } else {
             self.state.server_state.tag = SharedString::default();
-            self.state.server_state.tag_color = None;
+            self.state.server_state.tag_color_key = None;
         }
         self.should_reset_db = Some(true);
         self.state.data_format = None;
@@ -400,7 +402,7 @@ impl ZedisStatusBar {
 
         let slow_log_tips = format!("{} / {}", state.last_slow_log_count(), state.slow_logs().len()).into();
         let tag = self.state.server_state.tag.clone();
-        let tag_color = self.state.server_state.tag_color;
+        let tag_color_key = self.state.server_state.tag_color_key.clone();
         let supports_search = state.supports_search();
         let supports_acl = state.supports_acl();
         let supports_functions = state.supports_functions();
@@ -420,7 +422,7 @@ impl ZedisStatusBar {
                 cx,
             ),
             tag,
-            tag_color,
+            tag_color_key,
             supports_search,
             supports_acl,
             supports_functions,
@@ -539,25 +541,24 @@ impl ZedisStatusBar {
         );
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
         let tag_text = server_state.tag.clone();
-        let tag_color = server_state.tag_color;
+        let tag_chip = resolve_tag_chip(server_state.tag_color_key.as_deref(), cx.theme().is_dark());
         let supports_search = server_state.supports_search;
         let supports_acl = server_state.supports_acl;
         let supports_functions = server_state.supports_functions;
-        let chip_text_color = cx.theme().background;
 
         ZedisDivider::new()
             .child(
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .when(!tag_text.is_empty() && tag_color.is_some(), |this| {
-                        let color = tag_color.unwrap_or_else(gpui::black);
+                    .when(!tag_text.is_empty() && tag_chip.is_some(), |this| {
+                        let (bg, fg) = tag_chip.unwrap_or_else(|| (gpui::black(), gpui::white()));
                         this.child(
                             div()
                                 .px_1p5()
                                 .rounded_sm()
-                                .bg(color)
-                                .child(Label::new(tag_text).text_xs().text_color(chip_text_color)),
+                                .bg(bg)
+                                .child(Label::new(tag_text).text_xs().text_color(fg)),
                         )
                     })
                     .child(
