@@ -17,11 +17,14 @@ use crate::{
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
-    states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor},
+    states::{
+        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor,
+        i18n_geo_map,
+    },
     views::{
-        DiffCloseCallback, ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisProbabilisticEditor,
-        ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
-        ZedisVectorSetEditor, ZedisZsetEditor,
+        DiffCloseCallback, GeoMapEvent, ZedisBytesEditor, ZedisGeoMap, ZedisHashEditor, ZedisListEditor,
+        ZedisProbabilisticEditor, ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor,
+        ZedisValueDiff, ZedisVectorSetEditor, ZedisZsetEditor, zset_looks_geo,
     },
 };
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -84,6 +87,17 @@ pub struct ZedisEditor {
     bytes_editor: Option<Entity<ZedisBytesEditor>>,
     set_editor: Option<Entity<ZedisSetEditor>>,
     zset_editor: Option<Entity<ZedisZsetEditor>>,
+    /// Geo "radar" map for the current sorted set, created lazily when
+    /// the user flips the ZSET editor into Map mode.
+    geo_map: Option<Entity<ZedisGeoMap>>,
+    /// Whether the ZSET editor is showing the geo map instead of the table.
+    zset_map_mode: bool,
+    /// Whether the current sorted set looks like GEO data (probed via
+    /// `GEOPOS` on the first members). `None` until probed; the Map toggle
+    /// only appears when `Some(true)`.
+    zset_is_geo: Option<bool>,
+    /// In-flight GEOPOS probe task for the current sorted set.
+    geo_probe_task: Option<Task<()>>,
     hash_editor: Option<Entity<ZedisHashEditor>>,
     stream_editor: Option<Entity<ZedisStreamEditor>>,
     pubsub_editor: Option<Entity<ZedisPubsubEditor>>,
@@ -176,6 +190,15 @@ impl ZedisEditor {
                     this.probabilistic_editor.take();
                     // ...and the vector set editor.
                     this.vector_set_editor.take();
+                    // The geo map snapshots the key at construction and
+                    // self-fetches GEOPOS, so recreate it on a fresh load
+                    // and fall back to the table view.
+                    this.geo_map.take();
+                    this.zset_map_mode = false;
+                    // Re-probe whether the freshly loaded value is GEO data
+                    // so the Map toggle only shows for geospatial sorted sets.
+                    this.zset_is_geo = None;
+                    this.probe_zset_geo(cx);
                     // A fresh value load (reload, type change, server
                     // switch) invalidates the diff snapshot.
                     this.close_diff_session(cx);
@@ -231,6 +254,10 @@ impl ZedisEditor {
             bytes_editor: None,
             set_editor: None,
             zset_editor: None,
+            geo_map: None,
+            zset_map_mode: false,
+            zset_is_geo: None,
+            geo_probe_task: None,
             hash_editor: None,
             stream_editor: None,
             pubsub_editor: None,
@@ -831,6 +858,29 @@ impl ZedisEditor {
             )
             .children(btns)
     }
+    /// Probe whether the current sorted set holds GEO data (via `GEOPOS`
+    /// on the first members) so the Map toggle only appears for
+    /// geospatial sets. No-op unless the loaded value is a ZSET.
+    fn probe_zset_geo(&mut self, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        if state.value().map(|v| v.key_type()) != Some(KeyType::Zset) {
+            self.geo_probe_task.take();
+            return;
+        }
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        let Some(key) = state.key().map(|k| k.to_string()) else {
+            return;
+        };
+        self.geo_probe_task = Some(cx.spawn(async move |this, cx| {
+            let is_geo = zset_looks_geo(server_id, db, key).await;
+            let _ = this.update(cx, |this, cx| {
+                this.zset_is_geo = Some(is_geo);
+                cx.notify();
+            });
+        }));
+    }
+
     /// Clean up unused editors when switching between key types
     fn reset_editors(&mut self, key_type: KeyType) {
         if key_type != KeyType::String {
@@ -844,6 +894,10 @@ impl ZedisEditor {
         }
         if key_type != KeyType::Zset {
             let _ = self.zset_editor.take();
+            let _ = self.geo_map.take();
+            self.zset_map_mode = false;
+            self.zset_is_geo = None;
+            let _ = self.geo_probe_task.take();
         }
         if key_type != KeyType::Hash {
             let _ = self.hash_editor.take();
@@ -896,11 +950,65 @@ impl ZedisEditor {
             }
             KeyType::Zset => {
                 self.reset_editors(KeyType::Zset);
-                let editor = self.zset_editor.get_or_insert_with(|| {
-                    debug!("Creating new zset editor");
-                    cx.new(|cx| ZedisZsetEditor::new(self.server_state.clone(), window, cx))
-                });
-                editor.clone().into_any_element()
+                // Map mode only when a GEOPOS probe confirmed GEO data.
+                let map_mode = self.zset_map_mode && self.zset_is_geo == Some(true);
+
+                if map_mode {
+                    let map = self.geo_map.get_or_insert_with(|| {
+                        debug!("Creating new geo map");
+                        let map = cx.new(|cx| ZedisGeoMap::new(self.server_state.clone(), window, cx));
+                        // Switch back to the table when the map's toggle fires.
+                        cx.subscribe(&map, |this, _, _event: &GeoMapEvent, cx| {
+                            if this.zset_map_mode {
+                                this.zset_map_mode = false;
+                                cx.notify();
+                            }
+                        })
+                        .detach();
+                        map
+                    });
+                    map.clone().into_any_element()
+                } else {
+                    let editor = self.zset_editor.get_or_insert_with(|| {
+                        debug!("Creating new zset editor");
+                        let editor = cx.new(|cx| ZedisZsetEditor::new(self.server_state.clone(), window, cx));
+                        // Inject the Table/Map toggle into the table footer, beside
+                        // the keyword filter. Self-gates on the GEO probe so it only
+                        // appears for geospatial sorted sets.
+                        let weak = cx.weak_entity();
+                        editor.update(cx, |ze, cx| {
+                            ze.set_action_button_factory(
+                                Box::new(move |_window, cx| {
+                                    let Some(ed) = weak.upgrade() else {
+                                        return vec![];
+                                    };
+                                    if ed.read(cx).zset_is_geo != Some(true) {
+                                        return vec![];
+                                    }
+                                    let w_map = weak.clone();
+                                    // Icon-only button matching the footer's
+                                    // Add/Bulk style; opens the GEO map view.
+                                    vec![
+                                        Button::new("zset-view-map")
+                                            .icon(IconName::Map)
+                                            .tooltip(i18n_geo_map(cx, "map"))
+                                            .on_click(move |_, _, cx| {
+                                                let _ = w_map.update(cx, |e, cx| {
+                                                    if !e.zset_map_mode {
+                                                        e.zset_map_mode = true;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }),
+                                    ]
+                                }),
+                                cx,
+                            );
+                        });
+                        editor
+                    });
+                    editor.clone().into_any_element()
+                }
             }
             KeyType::Hash => {
                 self.reset_editors(KeyType::Hash);

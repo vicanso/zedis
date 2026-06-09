@@ -185,6 +185,11 @@ pub fn i18n_functions<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("functions.{key}"), locale = locale).into()
 }
 
+pub fn i18n_geo_map<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("geo_map.{key}"), locale = locale).into()
+}
+
 pub fn i18n_lua_scripts<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("lua_scripts.{key}"), locale = locale).into()

@@ -30,7 +30,12 @@ use crate::{
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
+use gpui_component::button::Button;
 use zedis_ui::ZedisFormFieldType;
+
+/// Factory producing extra footer buttons each render (e.g. the Table/Map
+/// toggle). Mirrors the kv table's own factory type.
+type ActionButtonFactory = Box<dyn Fn(&mut Window, &mut App) -> Vec<Button>>;
 
 /// Data adapter for Redis ZSET values to work with the KV table component.
 ///
@@ -193,5 +198,13 @@ impl ZedisZsetEditor {
         });
 
         Self { table_state }
+    }
+
+    /// Inject extra buttons (e.g. the Table/Map toggle) into the table's
+    /// footer toolbar, beside the keyword filter. The factory is invoked
+    /// each render by the underlying kv table.
+    pub fn set_action_button_factory(&self, factory: ActionButtonFactory, cx: &mut Context<Self>) {
+        self.table_state
+            .update(cx, |table, _| table.set_action_button_factory(factory));
     }
 }
