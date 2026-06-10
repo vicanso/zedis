@@ -241,6 +241,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+group_observability = "Наблюдаемость"
+group_scripting = "Запросы и скрипты"
+group_admin = "Администрирование"
+group_cluster = "Кластер"
 toggle_terminal_tooltip = "Переключить терминал Redis"
 scan_completed = "Сканирование завершено"
 scan_more_keys = "Сканировать больше ключей"
@@ -1012,6 +1016,14 @@ skipped = "Ключ уже есть в назначении — пропущен
 key_gone = "Ключ больше не существует"
 failed = "Не удалось скопировать"
 version_note = "Примечание: для DUMP/RESTORE целевой Redis должен быть той же мажорной версии, что и источник, или новее — копирование в более старую версию (например, v8 → v5) завершится ошибкой."
+
+[server_load]
+title = "Статистика команд"
+loading = "Выборка…"
+col_command = "Команда"
+col_rate = "Вызовов/с"
+col_avg = "мкс/вызов"
+col_calls = "Вызовы"
 
 [hll]
 title = "HyperLogLog"

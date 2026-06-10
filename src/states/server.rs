@@ -595,6 +595,16 @@ impl ZedisServerState {
             .unwrap_or(false)
     }
 
+    /// Whether the Topology panel is meaningful: true for multi-node
+    /// deployments (Cluster / Sentinel), false for Standalone where the panel
+    /// would only show placeholder text. Compares the `ServerType` Debug repr
+    /// surfaced on the description (the enum itself is crate-private to the
+    /// connection layer).
+    pub fn supports_topology(&self) -> bool {
+        let server_type = &self.nodes_description().server_type;
+        server_type.as_ref() == "Cluster" || server_type.as_ref() == "Sentinel"
+    }
+
     /// Get the currently selected server id
     pub fn server_id(&self) -> &str {
         &self.server_id

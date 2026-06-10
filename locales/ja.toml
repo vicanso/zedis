@@ -241,6 +241,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+group_observability = "可観測性"
+group_scripting = "クエリとスクリプト"
+group_admin = "管理"
+group_cluster = "クラスター"
 toggle_terminal_tooltip = "Redis ターミナルの切り替え"
 scan_completed = "スキャン完了"
 scan_more_keys = "さらにキーをスキャン"
@@ -1012,6 +1016,14 @@ skipped = "コピー先にキーが既に存在します — スキップしま�
 key_gone = "キーは既に存在しません"
 failed = "コピーに失敗しました"
 version_note = "注意: DUMP/RESTORE では対象 Redis がソースと同じメジャーバージョン以上である必要があります。より古いバージョン（例: v8 → v5）へのコピーは失敗します。"
+
+[server_load]
+title = "コマンド統計"
+loading = "サンプリング中…"
+col_command = "コマンド"
+col_rate = "回/秒"
+col_avg = "µs/回"
+col_calls = "呼び出し"
 
 [hll]
 title = "HyperLogLog"

@@ -49,7 +49,8 @@ pub use latency::{
 };
 pub use lua_script::{ScriptRunOutcome, run_script};
 pub use manager::{
-    AccessMode, HeatMetric, HeatProbe, KeyMemoryUsage, RedisClientDescription, SlowLogEntry, get_connection_manager,
+    AccessMode, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, RedisClientDescription, SlowLogEntry,
+    get_connection_manager,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

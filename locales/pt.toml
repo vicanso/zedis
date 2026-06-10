@@ -241,6 +241,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+group_observability = "Observabilidade"
+group_scripting = "Consulta e scripts"
+group_admin = "Administração"
+group_cluster = "Cluster"
 toggle_terminal_tooltip = "Alternar terminal Redis"
 scan_completed = "Varredura concluída"
 scan_more_keys = "Varrer mais chaves"
@@ -1012,6 +1016,14 @@ skipped = "A chave já existe no destino — ignorada (ative Sobrescrever para s
 key_gone = "A chave não existe mais"
 failed = "Falha ao copiar"
 version_note = "Nota: DUMP/RESTORE exige que o Redis de destino tenha a mesma versão principal da origem ou mais recente — copiar para uma versão mais antiga (ex.: v8 → v5) falhará."
+
+[server_load]
+title = "Estatísticas de comandos"
+loading = "Amostrando…"
+col_command = "Comando"
+col_rate = "Chamadas/s"
+col_avg = "µs/chamada"
+col_calls = "Chamadas"
 
 [hll]
 title = "HyperLogLog"

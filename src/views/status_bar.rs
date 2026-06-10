@@ -19,7 +19,8 @@ use crate::{
     helpers::{humanize_keystroke, resolve_tag_chip},
     states::{
         ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore,
-        ZedisServerState, get_session_option, i18n_sidebar, i18n_status_bar, i18n_topology, save_session_option,
+        ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology,
+        save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -173,6 +174,9 @@ struct StatusBarServerState {
     /// Mirrors `ZedisServerState::supports_functions()` — `FUNCTION`
     /// commands are Redis 7+.
     supports_functions: bool,
+    /// Mirrors `ZedisServerState::supports_topology()` — the Topology panel
+    /// only has content for Cluster / Sentinel, so it's hidden on Standalone.
+    supports_topology: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -406,6 +410,7 @@ impl ZedisStatusBar {
         let supports_search = state.supports_search();
         let supports_acl = state.supports_acl();
         let supports_functions = state.supports_functions();
+        let supports_topology = state.supports_topology();
         self.state.server_state = StatusBarServerState {
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
@@ -426,6 +431,7 @@ impl ZedisStatusBar {
             supports_search,
             supports_acl,
             supports_functions,
+            supports_topology,
         };
     }
     /// Start the heartbeat task. 2-second cadence keeps the chips
@@ -458,27 +464,40 @@ impl ZedisStatusBar {
         supports_search: bool,
         supports_acl: bool,
         supports_functions: bool,
+        supports_topology: bool,
         cx: &gpui::App,
     ) -> PopupMenu {
-        let _ = cx;
+        // The tool list has grown, so it's split into titled,
+        // separator-delimited sections. Each group is anchored by an
+        // always-available item (Monitor / Lua / Config+Persistence /
+        // Topology), so the capability-gated entries can drop out without ever
+        // leaving a dangling separator or an empty group heading. `label()`
+        // renders a dimmed, non-clickable section header.
+
+        // ── Observability ──
         let mut menu = this
+            .label(i18n_status_bar(cx, "group_observability"))
             .menu_element_with_icon(
                 Icon::new(CustomIconName::Radar),
                 Box::new(ServerToolsAction::Monitor),
                 move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_monitor_tooltip")),
             )
             .menu_element_with_icon(
-                Icon::new(IconName::Settings),
-                Box::new(ServerToolsAction::Config),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
+                Icon::new(CustomIconName::Zap),
+                Box::new(ServerToolsAction::ServerLoad),
+                move |_window, cx| Label::new(i18n_server_load(cx, "title")),
+            )
+            // Keyspace Notifications relies on `notify-keyspace-events`
+            // (since 2.8) — no capability gate; an empty config surfaces a
+            // one-click Enable banner inside the panel.
+            .menu_element_with_icon(
+                Icon::new(CustomIconName::AudioWaveform),
+                Box::new(ServerToolsAction::KeyspaceNotifications),
+                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
             );
-        if supports_acl {
-            menu = menu.menu_element_with_icon(
-                Icon::new(IconName::CircleUser),
-                Box::new(ServerToolsAction::Acl),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_acl_tooltip")),
-            );
-        }
+
+        // ── Query & Scripting ──
+        menu = menu.separator().label(i18n_status_bar(cx, "group_scripting"));
         if supports_search {
             menu = menu.menu_element_with_icon(
                 Icon::new(IconName::Search),
@@ -493,40 +512,49 @@ impl ZedisStatusBar {
                 move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_functions_tooltip")),
             );
         }
-        // Lua script library is local-storage backed and uses
-        // EVAL/EVALSHA which work on every Redis version since 2.6,
-        // so no capability gating needed.
+        // Lua script library uses EVAL/EVALSHA (since 2.6) — always available,
+        // so it anchors this group.
         menu = menu.menu_element_with_icon(
             Icon::new(IconName::SquareTerminal),
             Box::new(ServerToolsAction::LuaScripts),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_lua_scripts_tooltip")),
         );
-        // Persistence works on every Redis version (BGSAVE / BGREWRITEAOF
-        // are pre-2.0) so no capability gating — always offered.
+
+        // ── Administration ──
+        menu = menu.separator().label(i18n_status_bar(cx, "group_admin"));
+        menu = menu.menu_element_with_icon(
+            Icon::new(IconName::Settings),
+            Box::new(ServerToolsAction::Config),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
+        );
+        if supports_acl {
+            menu = menu.menu_element_with_icon(
+                Icon::new(IconName::CircleUser),
+                Box::new(ServerToolsAction::Acl),
+                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_acl_tooltip")),
+            );
+        }
+        // Persistence (BGSAVE / BGREWRITEAOF) is pre-2.0 — always offered.
         menu = menu.menu_element_with_icon(
             Icon::new(CustomIconName::HardDrive),
             Box::new(ServerToolsAction::Persistence),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_persistence_tooltip")),
         );
-        // Keyspace Notifications relies on `notify-keyspace-events`
-        // which has been around since 2.8 — no capability gate needed.
-        // (If it's empty, the panel surfaces a one-click Enable banner.)
-        menu = menu.menu_element_with_icon(
-            Icon::new(CustomIconName::AudioWaveform),
-            Box::new(ServerToolsAction::KeyspaceNotifications),
-            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
-        );
-        // Topology panel adapts to the detected mode (Cluster /
-        // Sentinel / Standalone). P1 ships the scaffold only — the
-        // panel currently shows a mode-specific placeholder; real
-        // write ops (FAILOVER, MEET, FORGET, …) land in later sprints.
-        // Re-using `topology.title` for the tooltip label avoids
-        // adding an 8-locale `toggle_topology_tooltip` key.
-        menu = menu.menu_element_with_icon(
-            Icon::new(CustomIconName::Network),
-            Box::new(ServerToolsAction::Topology),
-            move |_window, cx| Label::new(i18n_topology(cx, "title")),
-        );
+
+        // ── Cluster ── (multi-node only; on Standalone the Topology panel is
+        // just a placeholder, so the whole group — separator and heading
+        // included — is hidden).
+        if supports_topology {
+            menu = menu.separator().label(i18n_status_bar(cx, "group_cluster"));
+            // Topology adapts to Cluster / Sentinel. Re-uses `topology.title`
+            // as the label to avoid an extra 8-locale tooltip key.
+            menu = menu.menu_element_with_icon(
+                Icon::new(CustomIconName::Network),
+                Box::new(ServerToolsAction::Topology),
+                move |_window, cx| Label::new(i18n_topology(cx, "title")),
+            );
+        }
+
         menu
     }
     /// Render the server status
@@ -545,6 +573,7 @@ impl ZedisStatusBar {
         let supports_search = server_state.supports_search;
         let supports_acl = server_state.supports_acl;
         let supports_functions = server_state.supports_functions;
+        let supports_topology = server_state.supports_topology;
 
         ZedisDivider::new()
             .child(
@@ -596,7 +625,14 @@ impl ZedisStatusBar {
                             .icon(IconName::Menu)
                             .tooltip(i18n_status_bar(cx, "tools_tooltip"))
                             .dropdown_menu(move |this, _, cx| {
-                                Self::render_tools_menu(this, supports_search, supports_acl, supports_functions, cx)
+                                Self::render_tools_menu(
+                                    this,
+                                    supports_search,
+                                    supports_acl,
+                                    supports_functions,
+                                    supports_topology,
+                                    cx,
+                                )
                             }),
                     ),
             )

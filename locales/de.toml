@@ -241,6 +241,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+group_observability = "Beobachtbarkeit"
+group_scripting = "Abfrage & Skripte"
+group_admin = "Verwaltung"
+group_cluster = "Cluster"
 toggle_terminal_tooltip = "Redis-Terminal umschalten"
 scan_completed = "Scan abgeschlossen"
 scan_more_keys = "Mehr Schlüssel scannen"
@@ -1012,6 +1016,14 @@ skipped = "Schlüssel existiert am Ziel — übersprungen (Überschreiben aktivi
 key_gone = "Schlüssel existiert nicht mehr"
 failed = "Kopieren fehlgeschlagen"
 version_note = "Hinweis: DUMP/RESTORE erfordert ein Ziel-Redis mit derselben Hauptversion wie die Quelle oder neuer — das Kopieren auf eine ältere Version (z. B. v8 → v5) schlägt fehl."
+
+[server_load]
+title = "Befehlsstatistik"
+loading = "Wird abgetastet…"
+col_command = "Befehl"
+col_rate = "Aufrufe/s"
+col_avg = "µs/Aufruf"
+col_calls = "Aufrufe"
 
 [hll]
 title = "HyperLogLog"

@@ -240,6 +240,10 @@ export_key_tooltip = "导出此键"
 import_from_file_tooltip = "从文件导入…"
 
 [status_bar]
+group_observability = "可观测"
+group_scripting = "查询与脚本"
+group_admin = "管理"
+group_cluster = "集群"
 toggle_terminal_tooltip = "切换 Redis 控制台"
 scan_completed = "扫描完成"
 scan_more_keys = "继续扫描更多键"
@@ -1011,6 +1015,14 @@ skipped = "目标已存在该 key，已跳过（勾选覆盖可替换）"
 key_gone = "Key 已不存在"
 failed = "复制失败"
 version_note = "提示：DUMP/RESTORE 要求目标 Redis 与源同主版本或更新——拷到更老的版本（如 v8 → v5）会失败。"
+
+[server_load]
+title = "命令统计"
+loading = "采样中…"
+col_command = "命令"
+col_rate = "次/秒"
+col_avg = "微秒/次"
+col_calls = "调用数"
 
 [hll]
 title = "HyperLogLog"

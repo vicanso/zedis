@@ -161,6 +161,11 @@ HyperLogLog 以普通 `string` 存储，过去只能当二进制乱码看。Zedi
 Top-N 表按 **大小 / 最热 / 最冷** 排序——根据 `maxmemory-policy` 自动选用 `OBJECT FREQ` 或 `OBJECT IDLETIME`。同一次 SCAN 还展示 **TTL 分布直方图**（`<1m / <1h / <1d / <7d / ≥7d / 无 TTL`）——一眼识别"凌晨 3 点集中淘汰"、查看 `PERSIST`（内存泄漏红旗）占比，并在 `ratio<1` 采样时读到估算的全量键数。点击 **AI 分析** 将报告转成 Markdown 提交到任意 **OpenAI 兼容** 接口（设置中填 Base URL + API Key，密钥加密存储），优化建议内联渲染——只发送 key 的*名称*、大小与 TTL，绝不发送 value。兼容 OpenAI、Claude（经 Anthropic 的 OpenAI 兼容端点 `https://api.anthropic.com/v1/`）等服务；建议用当前界面语言返回。
 </details>
 
+<details><summary><b>命令统计</b> —— "Redis 为什么忙"：每命令调用速率表。</summary>
+
+状态栏 Tools 菜单进入的诊断页，轮询 `INFO commandstats`（跨集群所有 master 聚合），按两次采样间的增量算出每个命令的 **次/秒** 速率，以斑马线表格展示（累计计数本身无意义；`CONFIG RESETSTAT` 也能优雅处理）。至于*哪个 key* 最热，内存分析器的"最热"排序已用 `OBJECT FREQ` 覆盖。
+</details>
+
 <details><summary><b>集群健康度</b> —— 以树状查看 Cluster / Sentinel 拓扑与复制延迟。</summary>
 
 悬浮节点指示器即可查看各 master 及其 slot 范围、replica 按 master 分组，并附每个 replica 的复制延迟（字节 + 秒 + 连接状态），数据源于 `INFO replication`。

@@ -276,6 +276,10 @@ impl ZedisPersistence {
             .px_4()
             .gap_2()
             .flex_wrap()
+            // Stretch every card to the tallest in the row so a card with a
+            // hint line (e.g. "Last RDB save") doesn't leave its hint-less
+            // neighbours visibly shorter.
+            .items_stretch()
             .child(self.render_last_save_card(m, cx))
             .child(self.render_changes_card(m, cx))
             .child(self.render_aof_status_card(m, cx))

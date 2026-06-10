@@ -160,6 +160,11 @@ Beautifully rendered, GPU-accelerated time-series charts.
 Sort the Top-N table by **Size / Hottest / Coldest** — `OBJECT FREQ` or `OBJECT IDLETIME` is auto-selected from the server's `maxmemory-policy`. The same SCAN feeds a **TTL distribution histogram** (`<1m / <1h / <1d / <7d / ≥7d / No TTL`) alongside the BigKey tables — spot the "3 AM expiry cliff", see what share of keys is `PERSIST` (a memory-leak red flag), and read the estimated cluster-wide count even at `ratio < 1.0`. One click on **AI Analysis** turns the report into a Markdown summary and sends it to any **OpenAI-compatible** endpoint (Base URL + API key in Settings, key stored encrypted) for actionable advice rendered inline — only key *names*, sizes and TTLs are sent, never values. Works with OpenAI, Claude (via Anthropic's OpenAI-compatible endpoint, `https://api.anthropic.com/v1/`), and other compatible providers; advice is returned in the app's UI language.
 </details>
 
+<details><summary><b>Command Stats</b> — "why is Redis busy": a per-command call-rate table.</summary>
+
+A diagnostics page (status-bar Tools menu) that polls `INFO commandstats` — aggregated across all cluster masters — and shows a striped, per-command **calls/second** table computed from the delta between samples (cumulative counters are meaningless on their own; a `CONFIG RESETSTAT` is handled gracefully). For *which key* is hottest, the Memory Analyzer's "Hottest" sort already covers it via `OBJECT FREQ`.
+</details>
+
 <details><summary><b>Cluster Health</b> — inspect cluster/Sentinel topology as a tree with replication lag.</summary>
 
 Hover the node indicator to see masters with their slot ranges, replicas grouped beneath, plus per-replica replication lag (bytes + seconds + link state) parsed from `INFO replication`.

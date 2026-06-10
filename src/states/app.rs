@@ -55,6 +55,7 @@ pub enum Route {
     Persistence,
     KeyspaceNotifications,
     Topology,
+    ServerLoad,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -132,6 +133,7 @@ pub enum ServerToolsAction {
     Persistence,
     KeyspaceNotifications,
     Topology,
+    ServerLoad,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

@@ -18,8 +18,8 @@ use crate::{
     views::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
         ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
-        ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServers, ZedisSlowlogEditor,
-        ZedisStatusBar, ZedisTerminal, ZedisTopology,
+        ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerLoad, ZedisServers,
+        ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
@@ -55,6 +55,7 @@ pub struct ZedisContent {
     metrics: Option<Entity<ZedisMetrics>>,
     slowlog_editor: Option<Entity<ZedisSlowlogEditor>>,
     memory_analysis: Option<Entity<ZedisMemoryAnalysis>>,
+    server_load: Option<Entity<ZedisServerLoad>>,
     clients_manager: Option<Entity<ZedisClientsManager>>,
     monitor: Option<Entity<ZedisMonitor>>,
     config_editor: Option<Entity<ZedisConfigEditor>>,
@@ -105,6 +106,9 @@ impl ZedisContent {
         }
         if route != Route::MemoryAnalysis {
             self.memory_analysis.take();
+        }
+        if route != Route::ServerLoad {
+            self.server_load.take();
         }
         if route != Route::Clients {
             self.clients_manager.take();
@@ -207,6 +211,7 @@ impl ZedisContent {
             metrics: None,
             slowlog_editor: None,
             memory_analysis: None,
+            server_load: None,
             clients_manager: None,
             monitor: None,
             config_editor: None,
@@ -292,6 +297,17 @@ impl ZedisContent {
             })
             .clone();
         div().size_full().child(memory_analysis)
+    }
+
+    fn render_server_load(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_load = self
+            .server_load
+            .get_or_insert_with(|| {
+                debug!("Creating new server load view");
+                cx.new(|cx| ZedisServerLoad::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(server_load)
     }
 
     fn render_clients(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -520,6 +536,7 @@ impl Render for ZedisContent {
                 let is_persistence = route == Route::Persistence;
                 let is_keyspace_notifications = route == Route::KeyspaceNotifications;
                 let is_topology = route == Route::Topology;
+                let is_server_load = route == Route::ServerLoad;
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {
@@ -549,6 +566,7 @@ impl Render for ZedisContent {
                                         this.child(self.render_keyspace_notifications(window, cx))
                                     })
                                     .when(is_topology, |this| this.child(self.render_topology(window, cx)))
+                                    .when(is_server_load, |this| this.child(self.render_server_load(window, cx)))
                                     .when(
                                         !is_metrics
                                             && !is_slowlog
@@ -562,7 +580,8 @@ impl Render for ZedisContent {
                                             && !is_lua_scripts
                                             && !is_persistence
                                             && !is_keyspace_notifications
-                                            && !is_topology,
+                                            && !is_topology
+                                            && !is_server_load,
                                         |this| this.child(self.render_editor(window, cx)),
                                     ),
                             ),

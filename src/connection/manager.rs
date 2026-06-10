@@ -141,6 +141,59 @@ pub struct KeyMemoryUsage {
     pub heat: HeatMetric,
 }
 
+/// One aggregated `INFO commandstats` row.
+#[derive(Debug, Clone)]
+pub struct CommandStat {
+    pub name: String,
+    pub calls: u64,
+    pub usec: u64,
+}
+
+/// Parse `cmdstat_<name>:calls=N,usec=N,…` lines from an `INFO commandstats`
+/// blob, summing into `agg` so several cluster nodes accumulate into one
+/// total per command. Unrecognised lines are skipped.
+fn aggregate_command_stats(text: &str, agg: &mut HashMap<String, (u64, u64)>) {
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("cmdstat_") else {
+            continue;
+        };
+        let Some((name, fields)) = rest.split_once(':') else {
+            continue;
+        };
+        let (mut calls, mut usec) = (0u64, 0u64);
+        for kv in fields.split(',') {
+            if let Some(v) = kv.strip_prefix("calls=") {
+                calls = v.parse().unwrap_or(0);
+            } else if let Some(v) = kv.strip_prefix("usec=") {
+                usec = v.parse().unwrap_or(0);
+            }
+        }
+        let entry = agg.entry(name.to_string()).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(calls);
+        entry.1 = entry.1.saturating_add(usec);
+    }
+}
+
+#[cfg(test)]
+mod command_stats_tests {
+    use super::aggregate_command_stats;
+    use std::collections::HashMap;
+
+    #[test]
+    fn parses_and_sums_across_nodes() {
+        let mut agg = HashMap::new();
+        aggregate_command_stats(
+            "cmdstat_get:calls=10,usec=20,usec_per_call=2.00\ncmdstat_set:calls=5,usec=15",
+            &mut agg,
+        );
+        // A second node's blob accumulates into the same totals.
+        aggregate_command_stats("cmdstat_get:calls=3,usec=6\n# comment\ngarbage", &mut agg);
+        assert_eq!(agg.get("get"), Some(&(13, 26)));
+        assert_eq!(agg.get("set"), Some(&(5, 15)));
+        assert_eq!(agg.len(), 2);
+    }
+}
+
 // Wrapper for the underlying Redis client
 #[derive(Clone)]
 enum RClient {
@@ -978,6 +1031,33 @@ impl RedisClient {
             Ok(map) => Ok(map.get("maxmemory-policy").cloned().unwrap_or_default()),
             Err(_) => Ok(String::new()),
         }
+    }
+
+    /// Fetch `INFO commandstats`, aggregated across all master nodes on a
+    /// cluster (where the reply is a per-node map) or the single node
+    /// otherwise. Returns one [`CommandStat`] per command.
+    pub async fn command_stats(&self) -> Result<Vec<CommandStat>> {
+        let mut conn = self.connection.clone();
+        let info: Value = cmd("INFO").arg("commandstats").query_async(&mut conn).await?;
+        let mut agg: HashMap<String, (u64, u64)> = HashMap::new();
+        match info {
+            Value::Map(items) => {
+                for (_, node_val) in items {
+                    if let Ok(text) = String::from_redis_value(node_val) {
+                        aggregate_command_stats(&text, &mut agg);
+                    }
+                }
+            }
+            other => {
+                if let Ok(text) = String::from_redis_value(other) {
+                    aggregate_command_stats(&text, &mut agg);
+                }
+            }
+        }
+        Ok(agg
+            .into_iter()
+            .map(|(name, (calls, usec))| CommandStat { name, calls, usec })
+            .collect())
     }
 
     /// Initiates a SCAN operation across all masters.
