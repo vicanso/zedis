@@ -66,6 +66,21 @@ Compressed values are unpacked in place so you read the real payload, not a blob
 Configure a command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`); Zedis runs it via `sh -c` (Unix/macOS) or `cmd /c` (Windows) and shows stdout as the formatted value. Perfect for base64, custom binary protocols, or any tool in your `$PATH`. Key patterns matched by exact / prefix / suffix / regex rules per server.
 </details>
 
+<details><summary><b>Value File Export / Import</b> — save any string value to disk, or load a file back into the key.</summary>
+
+From the key bar's `…` menu, dump the current string value's raw bytes to a file (extension guessed from the detected format — `.png`, `.json`, `.gz`, …), or overwrites the value with a chosen file's bytes. Binary-safe, TTL preserved (`SET … KEEPTTL`), and recorded in the local write history like any other save.
+</details>
+
+<details><summary><b>Key Rename</b> — rename the selected key from the key bar, with overwrite protection.</summary>
+
+The key bar's `…` menu opens a rename dialog (prefilled with the current name). It issues an atomic `RENAMENX`, so it never silently clobbers a different key — if the target name already exists, you get an explicit "overwrite?" confirm before a `RENAME` proceeds. The editor stays on the renamed key and the key tree refreshes; value and TTL ride along server-side.
+</details>
+
+<details><summary><b>Cross-Server Key Copy</b> — copy a key (value + TTL) to another server or db.</summary>
+
+"Copy to…" in the key bar's `…` menu picks a target server + db (with an overwrite toggle), then ships the selected key there via `DUMP` on the source and `RESTORE` on the target — value, encoding and remaining TTL all preserved server-side. Great for promoting a key into a test environment. Cross-version copies obey Redis's `RESTORE` compatibility rules.
+</details>
+
 <details><summary><b>Hash Field-Level TTL</b> (Redis 7.4+) — per-field expiry via HEXPIRE / HPERSIST.</summary>
 
 Set individual expiry times on specific hash fields — no need to restructure your data model just to expire a subset of fields.
@@ -109,6 +124,16 @@ Selecting a `TSDB-TYPE` key opens a dedicated chart — `TS.INFO` surfaces total
 <details><summary><b>Probabilistic Structures</b> (RedisBloom) — Bloom / Cuckoo / Count-Min / Top-K / t-digest viewers.</summary>
 
 Keys that used to render as opaque binary now open a dedicated read-only viewer showing their `*.INFO` stats (capacity, size, error rate, ...). Top-K also lists current heavy hitters (`TOPK.LIST … WITHCOUNT`) and t-digest adds min / max / p50 / p90 / p99 (`TDIGEST.QUANTILE`). Dispatched by the key's module TYPE.
+</details>
+
+<details><summary><b>Bitmap / Bitfield</b> — visualise a string's bits on a GPU grid, with SETBIT / BITCOUNT / BITFIELD.</summary>
+
+Strings that look like a raw bitmap — small (< 4 KB), non-text, unrecognised binary — open in **Bitmap** mode automatically; larger opaque binaries can be flipped from the key bar's `…` menu (text / JSON and recognised formats like images don't get the entry). It paints the bits on a tile-less GPU grid — set bits lit, in Redis bit order. Hover reads off the bit offset; click a cell to flip it with `SETBIT`. A stat row surfaces whole-key `BITCOUNT` and `BITPOS` (first set / first clear), and a thin box runs raw `BITFIELD` sub-commands (e.g. `GET u8 0`). The grid is capped for responsiveness; the stats stay whole-key.
+</details>
+
+<details><summary><b>HyperLogLog</b> — a PFCOUNT cardinality card for HLL-backed string keys.</summary>
+
+A HyperLogLog is stored as a plain `string`, so it used to render as opaque binary. Zedis now detects the `HYLL` header magic and opens a dedicated read-only card showing the estimated cardinality (`PFCOUNT`), the internal encoding (dense / sparse) and the representation size (`STRLEN`), plus a `PFADD` box to fold in new elements and watch the estimate move.
 </details>
 
 <details><summary><b>Vector Set + KNN</b> (Redis 8) — metadata plus interactive nearest-neighbour search.</summary>

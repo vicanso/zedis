@@ -14,20 +14,22 @@
 
 use crate::{
     assets::CustomIconName,
+    connection::{ConflictMode, RestoreStatus, copy_key, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
     states::{
-        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor,
-        i18n_geo_map,
+        DataFormat, KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_bitmap,
+        i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
     },
     views::{
-        DiffCloseCallback, GeoMapEvent, ZedisBytesEditor, ZedisGeoMap, ZedisHashEditor, ZedisListEditor,
-        ZedisProbabilisticEditor, ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor,
-        ZedisValueDiff, ZedisVectorSetEditor, ZedisZsetEditor, zset_looks_geo,
+        BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
+        ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor, ZedisPubsubEditor,
+        ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
+        ZedisZsetEditor, bitmap_eligible, dirs_default_directory, looks_like_bitmap, looks_like_hll, zset_looks_geo,
     },
 };
-use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::{Button, DropdownButton},
@@ -47,6 +49,8 @@ use zedis_ui::ZedisDialog;
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
 const TTL_INPUT_MAX_WIDTH: f32 = 120.0;
+/// Redis caps a string value at 512 MB; refuse to import anything bigger.
+const MAX_IMPORT_VALUE_BYTES: usize = 512 * 1024 * 1024;
 
 /// Active side-by-side diff session — captured snapshot of both panes
 /// so the diff view stays stable while the user reads it, even if the
@@ -85,6 +89,16 @@ pub struct ZedisEditor {
     /// Type-specific editors for different Redis data types
     list_editor: Option<Entity<ZedisListEditor>>,
     bytes_editor: Option<Entity<ZedisBytesEditor>>,
+    /// Dedicated read-only HyperLogLog card, shown in place of the bytes
+    /// editor when a string key's value carries the HLL magic.
+    hll_editor: Option<Entity<ZedisHllEditor>>,
+    /// Bit-grid viewer for the current string, created lazily when the
+    /// string editor enters Bitmap mode.
+    bitmap_editor: Option<Entity<ZedisBitmapEditor>>,
+    /// Explicit Raw/Bitmap choice for the current string. `None` defers to
+    /// the small-binary heuristic; `Some(true/false)` is a user override.
+    /// Reset to `None` on key change so each key re-decides.
+    bitmap_override: Option<bool>,
     set_editor: Option<Entity<ZedisSetEditor>>,
     zset_editor: Option<Entity<ZedisZsetEditor>>,
     /// Geo "radar" map for the current sorted set, created lazily when
@@ -109,6 +123,13 @@ pub struct ZedisEditor {
     should_enter_ttl_edit_mode: Option<bool>,
     ttl_edit_mode: bool,
     ttl_input_state: Entity<InputState>,
+
+    /// Rename dialog input — holds the proposed new key name.
+    rename_input_state: Entity<InputState>,
+    /// Pending overwrite confirmation: `Some((old, new))` after a RENAMENX
+    /// found the destination occupied. Consumed on the next render (which
+    /// has a `Window`) to open the confirm dialog.
+    pending_overwrite_confirm: Option<(SharedString, SharedString)>,
 
     /// Track when a key was selected to handle loading states smoothly
     selected_key_at: Option<Instant>,
@@ -150,6 +171,63 @@ fn format_ttl_string(ttl: &str) -> String {
     trimmed.to_string()
 }
 
+/// File extension suggested when exporting a value, from its detected format.
+fn value_export_extension(format: DataFormat) -> &'static str {
+    match format {
+        DataFormat::Json => "json",
+        DataFormat::Svg => "svg",
+        DataFormat::Jpeg => "jpg",
+        DataFormat::Png => "png",
+        DataFormat::Webp => "webp",
+        DataFormat::Gif => "gif",
+        DataFormat::Gzip => "gz",
+        DataFormat::Zstd => "zst",
+        DataFormat::Snappy => "snappy",
+        DataFormat::MessagePack => "msgpack",
+        DataFormat::Protobuf => "pb",
+        DataFormat::Text => "txt",
+        _ => "bin",
+    }
+}
+
+/// Sanitized `<key>.<ext>` suggestion for the export save dialog (same
+/// character policy as the migration window's dump filenames).
+fn suggested_value_filename(key: &str, format: DataFormat) -> String {
+    let safe: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{safe}.{}", value_export_extension(format))
+}
+
+/// Map a copy failure into a user-facing message: a cross-version
+/// `DUMP` / `RESTORE` incompatibility (the target is an older Redis than the
+/// source) gets the explanatory note; everything else shows the raw error.
+fn copy_failure_message(cx: &gpui::App, raw: &str) -> SharedString {
+    if raw.contains("version or checksum") || raw.contains("Bad data format") {
+        i18n_copy(cx, "version_note")
+    } else {
+        format!("{}: {raw}", i18n_copy(cx, "failed")).into()
+    }
+}
+
+/// Parameters for a cross-server key copy, bundled to keep `run_copy`
+/// under the argument-count limit.
+struct CopyRequest {
+    source_id: String,
+    source_db: usize,
+    target_id: SharedString,
+    target_db: usize,
+    key: SharedString,
+    conflict: ConflictMode,
+}
+
 impl ZedisEditor {
     /// Create a new editor instance with event subscriptions
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -168,12 +246,21 @@ impl ZedisEditor {
                 .placeholder(i18n_common(cx, "ttl_placeholder"))
         });
 
+        let rename_input_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_editor(cx, "rename_placeholder"))
+        });
+
         // Subscribe to server events to track when keys are selected
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeySelected(_) => {
                     this.selected_key_at = Some(Instant::now());
                     this.start_auto_refresh(None, cx);
+                    // A new key re-decides Raw vs Bitmap via the heuristic,
+                    // dropping any override the previous key carried.
+                    this.bitmap_override = None;
                     // Auto-close any open diff — the reference bytes
                     // belong to the previous key and would be nonsense
                     // alongside the new key's editor.
@@ -190,6 +277,11 @@ impl ZedisEditor {
                     this.probabilistic_editor.take();
                     // ...and the vector set editor.
                     this.vector_set_editor.take();
+                    // The HLL card and bitmap grid likewise snapshot the
+                    // key + bytes at construction, so recreate them on a
+                    // fresh load (else a key switch shows stale counts/bits).
+                    this.hll_editor.take();
+                    this.bitmap_editor.take();
                     // The geo map snapshots the key at construction and
                     // self-fetches GEOPOS, so recreate it on a fresh load
                     // and fall back to the table view.
@@ -209,6 +301,13 @@ impl ZedisEditor {
                     // ex-version). Dismiss the diff so the user lands
                     // back on the live editor.
                     this.close_diff_session(cx);
+                }
+                ServerEvent::RenameTargetExists(old, new) => {
+                    // RENAMENX hit an existing destination — stash it so the
+                    // next render (which has a Window) opens the overwrite
+                    // confirm dialog.
+                    this.pending_overwrite_confirm = Some((old.clone(), new.clone()));
+                    cx.notify();
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
@@ -252,6 +351,9 @@ impl ZedisEditor {
             server_state,
             list_editor: None,
             bytes_editor: None,
+            hll_editor: None,
+            bitmap_editor: None,
+            bitmap_override: None,
             set_editor: None,
             zset_editor: None,
             geo_map: None,
@@ -267,6 +369,8 @@ impl ZedisEditor {
             readonly,
             ttl_edit_mode: false,
             ttl_input_state,
+            rename_input_state,
+            pending_overwrite_confirm: None,
             should_enter_ttl_edit_mode: None,
             _subscriptions: subscriptions,
             selected_key_at: None,
@@ -502,6 +606,242 @@ impl ZedisEditor {
         });
         cx.notify();
     }
+    /// Save the current string value's raw bytes to a user-chosen file.
+    /// Binary-safe: writes exactly what `GET` returned, no decoding.
+    fn export_value_to_file(&mut self, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let Some(key) = state.key() else {
+            return;
+        };
+        let Some(bytes_value) = state.value().and_then(|v| v.bytes_value()) else {
+            return;
+        };
+        let bytes = bytes_value.bytes.clone();
+        let suggested = suggested_value_filename(key.as_ref(), bytes_value.format);
+        let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(&suggested));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = receiver.await else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move { std::fs::write(&path, bytes.as_ref()).map(|_| path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.server_state.update(cx, |state, cx| match &result {
+                    Ok(path) => state.emit_success_notification(
+                        path.display().to_string().into(),
+                        i18n_editor(cx, "value_exported"),
+                        cx,
+                    ),
+                    Err(e) => state
+                        .emit_error_notification(format!("{}: {e}", i18n_editor(cx, "export_value_failed")).into(), cx),
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// Pick a file and overwrite the current string value with its bytes.
+    /// Reuses the regular save path (`SET … KEEPTTL` + local write history),
+    /// so a failed write rolls back and the change is diffable/undoable.
+    fn import_value_from_file(&mut self, cx: &mut Context<Self>) {
+        if self.readonly {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let result = cx.background_spawn(async move { std::fs::read(&path) }).await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(bytes) => {
+                    if bytes.len() > MAX_IMPORT_VALUE_BYTES {
+                        this.server_state.update(cx, |state, cx| {
+                            state.emit_error_notification(i18n_editor(cx, "import_value_too_large"), cx);
+                        });
+                        return;
+                    }
+                    let Some(key) = this.server_state.read(cx).key() else {
+                        return;
+                    };
+                    this.server_state
+                        .update(cx, |state, cx| state.update_value_bytes(key, bytes, cx));
+                }
+                Err(e) => {
+                    this.server_state.update(cx, |state, cx| {
+                        state.emit_error_notification(
+                            format!("{}: {e}", i18n_editor(cx, "import_value_failed")).into(),
+                            cx,
+                        );
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Open the rename dialog, prefilled with the current key name. OK
+    /// fires a `RENAMENX`; a destination collision comes back via
+    /// `ServerEvent::RenameTargetExists` and routes to the overwrite confirm.
+    fn open_rename_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.readonly {
+            return;
+        }
+        let Some(key) = self.server_state.read(cx).key() else {
+            return;
+        };
+        self.rename_input_state.update(cx, |state, cx| {
+            state.set_value(key.clone(), window, cx);
+            state.focus(window, cx);
+        });
+        let input_child = self.rename_input_state.clone();
+        let input_ok = self.rename_input_state.clone();
+        let server_state = self.server_state.clone();
+        let old = key.clone();
+        ZedisDialog::new(i18n_editor(cx, "rename_title"))
+            .w(px(420.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || Input::new(&input_child))
+            .on_ok(move |_, _window, cx| {
+                let new = input_ok.read(cx).value().trim().to_string();
+                if new.is_empty() || new.as_str() == old.as_ref() {
+                    return true;
+                }
+                let old = old.clone();
+                let new: SharedString = new.into();
+                server_state.update(cx, move |state, cx| {
+                    state.rename_key(old, new, false, cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Confirm dialog shown when a rename would overwrite an existing key;
+    /// proceeding issues a clobbering `RENAME`.
+    fn open_overwrite_confirm(
+        &mut self,
+        old: SharedString,
+        new: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server_state = self.server_state.clone();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message = t!("editor.rename_overwrite_prompt", key = new.as_ref(), locale = locale).to_string();
+        ZedisDialog::new_alert(i18n_editor(cx, "rename_overwrite_title"), message)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                let (old, new) = (old.clone(), new.clone());
+                server_state.update(cx, move |state, cx| {
+                    state.rename_key(old, new, true, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Open the cross-server "copy to…" dialog for the selected key. On OK
+    /// the chosen target server / db (and overwrite flag) drive `run_copy`.
+    fn open_copy_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let source_id = state.server_id().to_string();
+        let source_db = state.db();
+        let Some(key) = state.key() else {
+            return;
+        };
+        if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
+            return;
+        }
+        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.clone().into(), source_db, window, cx));
+        let view_child = view.clone();
+        let view_ok = view.clone();
+        let editor = cx.entity().downgrade();
+        let source_id_ok = source_id.clone();
+        let key_ok = key.clone();
+        ZedisDialog::new(i18n_copy(cx, "title"))
+            .w(px(460.))
+            .ok_text(i18n_copy(cx, "copy"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_copy(cx, "copy"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, _window, cx| {
+                let Some(target_id) = view_ok.read(cx).target_server_id() else {
+                    return false;
+                };
+                let target_db = view_ok.read(cx).target_db(cx);
+                let conflict = view_ok.read(cx).conflict();
+                if let Some(editor) = editor.upgrade() {
+                    let req = CopyRequest {
+                        source_id: source_id_ok.clone(),
+                        source_db,
+                        target_id,
+                        target_db,
+                        key: key_ok.clone(),
+                        conflict,
+                    };
+                    editor.update(cx, move |this, cx| this.run_copy(req, cx));
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Run the cross-server copy (`DUMP` + `RESTORE`) in the background and
+    /// report the outcome via a notification.
+    fn run_copy(&mut self, req: CopyRequest, cx: &mut Context<Self>) {
+        let CopyRequest {
+            source_id,
+            source_db,
+            target_id,
+            target_db,
+            key,
+            conflict,
+        } = req;
+        let target_name: SharedString = get_server(&target_id)
+            .map(|s| s.name.into())
+            .unwrap_or_else(|_| target_id.clone());
+        cx.spawn(async move |this, cx| {
+            let result = copy_key(source_id, source_db, target_id.to_string(), target_db, key, conflict).await;
+            let _ = this.update(cx, move |this, cx| {
+                this.server_state.update(cx, |state, cx| match result {
+                    Ok(Some(RestoreStatus::Written)) => state.emit_success_notification(
+                        format!("{target_name} / db{target_db}").into(),
+                        i18n_copy(cx, "done"),
+                        cx,
+                    ),
+                    Ok(Some(RestoreStatus::Skipped)) => state.emit_warning_notification(i18n_copy(cx, "skipped"), cx),
+                    Ok(None) => state.emit_warning_notification(i18n_copy(cx, "key_gone"), cx),
+                    Ok(Some(RestoreStatus::Failed(msg))) => {
+                        state.emit_error_notification(copy_failure_message(cx, &msg), cx)
+                    }
+                    Err(e) => state.emit_error_notification(copy_failure_message(cx, &e.to_string()), cx),
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Render the key information bar with actions (copy, save, TTL, delete)
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
@@ -513,6 +853,9 @@ impl ZedisEditor {
         let mut btns = vec![];
         let mut ttl = SharedString::default();
         let mut size = SharedString::default();
+        let mut bitmap_candidate = false;
+        let mut bitmap_view = false;
+        let mut has_bytes_value = false;
 
         // Extract value information if available
         if let Some(value) = server_state.value() {
@@ -533,6 +876,18 @@ impl ZedisEditor {
             };
 
             size = format_size(value.size(), DECIMAL).into();
+            // The Bitmap toggle only makes sense for opaque binary values —
+            // text / JSON / images render as bit noise, and HLL strings keep
+            // their dedicated card.
+            bitmap_candidate = value.key_type() == KeyType::String
+                && value
+                    .bytes_value()
+                    .is_some_and(|b| !looks_like_hll(b.bytes.as_ref()) && bitmap_eligible(b.bytes.as_ref()));
+            bitmap_view = bitmap_candidate
+                && self
+                    .bitmap_override
+                    .unwrap_or_else(|| value.bytes_value().is_some_and(|b| looks_like_bitmap(b.bytes.as_ref())));
+            has_bytes_value = value.bytes_value().is_some();
         }
 
         // Show loading only if busy and not recently selected (avoid flashing)
@@ -596,11 +951,6 @@ impl ZedisEditor {
                     format!("{label} ({count})").into()
                 };
 
-                // Clone the snapshot before the Restore button takes
-                // ownership — the Diff button below needs its own copy
-                // to build a parallel dropdown.
-                let history_snapshot_for_diff = history_snapshot.clone();
-
                 btns.push(
                     Button::new("zedis-editor-history")
                         .outline()
@@ -621,57 +971,6 @@ impl ZedisEditor {
                                 let idx_u32 = idx as u32;
                                 menu = menu
                                     .menu_element(Box::new(EditorAction::LoadHistory(idx_u32)), move |_w, _cx| {
-                                        Label::new(label.clone())
-                                    });
-                            }
-                            menu
-                        })
-                        .into_any_element(),
-                );
-
-                // Diff with history version. Split-button: main click
-                // diffs against v0 (most recent), dropdown lets the user
-                // pick any version. Disabled when there's no history at
-                // all — there's nothing to compare against until the
-                // user has saved at least once.
-                let diff_tooltip: SharedString = if count == 0 {
-                    i18n_editor(cx, "diff_no_history")
-                } else {
-                    i18n_editor(cx, "diff_button_tooltip")
-                };
-                btns.push(
-                    DropdownButton::new("zedis-editor-diff")
-                        .button(
-                            Button::new("zedis-editor-diff-main")
-                                .outline()
-                                .disabled(count == 0 || should_show_loading)
-                                // No diff-shaped glyph in CustomIconName
-                                // yet; the label "Diff" is short and
-                                // self-explanatory next to the Undo
-                                // restore icon, so we skip the icon
-                                // rather than adding a new SVG asset.
-                                .label(i18n_editor(cx, "diff_button"))
-                                .tooltip(diff_tooltip)
-                                .on_click(cx.listener(move |this, _event, _window, cx| {
-                                    // Diff against the most recent
-                                    // history entry — the common case.
-                                    this.open_diff_session(0, cx);
-                                })),
-                        )
-                        .dropdown_menu(move |menu, _, _cx| {
-                            let mut menu = menu;
-                            if history_snapshot_for_diff.is_empty() {
-                                return menu;
-                            }
-                            let now = unix_ts();
-                            for (idx, (at, size)) in history_snapshot_for_diff.iter().enumerate() {
-                                let secs_ago = (now - at).max(0) as u64;
-                                let rel = format_duration(Duration::from_secs(secs_ago));
-                                let size_str = format_size(*size as u64, DECIMAL);
-                                let label = format!("v{} • {} • {}", idx + 1, rel, size_str);
-                                let idx_u32 = idx as u32;
-                                menu = menu
-                                    .menu_element(Box::new(EditorAction::DiffHistory(idx_u32)), move |_w, _cx| {
                                         Label::new(label.clone())
                                     });
                             }
@@ -765,25 +1064,125 @@ impl ZedisEditor {
                 .into_any_element(),
         );
 
-        // Add delete button
-        btns.push(
-            Button::new("zedis-editor-delete-key")
-                .outline()
-                .disabled(self.readonly || should_show_loading)
-                .tooltip(if self.readonly {
-                    i18n_common(cx, "disable_in_readonly")
-                } else {
-                    i18n_editor(cx, "delete_key_tooltip")
-                })
-                .icon(IconName::CircleX)
-                .on_click(cx.listener(move |this, _event, window, cx| {
-                    if is_busy {
-                        return;
-                    }
-                    this.delete_key(window, cx);
-                }))
-                .into_any_element(),
-        );
+        // Lower-frequency actions live behind one "…" menu so the bar
+        // stays compact: bitmap view, value file export / import, diff,
+        // delete.
+        let bitmap_item = bitmap_candidate && !bitmap_view;
+        let export_item = has_bytes_value;
+        let import_item = has_bytes_value && !self.readonly;
+        let rename_item = !self.readonly;
+        // Cross-server copy reads the source and writes a (possibly
+        // different, writable) target, so it stays available even when the
+        // source connection is read-only.
+        let copy_item = true;
+        let delete_item = !self.readonly;
+        // Diff submenu: editable string value with at least one saved
+        // version to compare the live value against.
+        let diff_editable = self
+            .bytes_editor
+            .as_ref()
+            .map(|e| !e.read(cx).is_readonly())
+            .unwrap_or(false)
+            && !self.readonly;
+        let diff_history: Vec<(i64, usize)> = if diff_editable {
+            server_state
+                .value_history_for(&key)
+                .map(|deque| deque.iter().map(|e| (e.at, e.size())).collect())
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let diff_item = !diff_history.is_empty();
+        if rename_item || copy_item || bitmap_item || export_item || import_item || diff_item || delete_item {
+            btns.push(
+                Button::new("zedis-editor-more")
+                    .outline()
+                    .disabled(should_show_loading)
+                    .tooltip(i18n_editor(cx, "more_actions"))
+                    .icon(IconName::Ellipsis)
+                    .dropdown_menu(move |menu, window, cx| {
+                        let mut menu = menu;
+                        if bitmap_item {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::Binary,
+                                Box::new(EditorAction::ViewBitmap),
+                                move |_, cx| Label::new(i18n_bitmap(cx, "bitmap")),
+                            );
+                        }
+                        if export_item {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::Download,
+                                Box::new(EditorAction::ExportValue),
+                                move |_, cx| Label::new(i18n_editor(cx, "export_value_tooltip")),
+                            );
+                        }
+                        if import_item {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::Upload,
+                                Box::new(EditorAction::ImportValue),
+                                move |_, cx| Label::new(i18n_editor(cx, "import_value_tooltip")),
+                            );
+                        }
+                        // Diff submenu: pick any saved version to compare the
+                        // live value against (v1 = most recent, the common case).
+                        if diff_item {
+                            let snap = diff_history.clone();
+                            menu = menu.submenu_with_icon(
+                                Some(Icon::new(CustomIconName::GitCompareArrows)),
+                                i18n_editor(cx, "diff_button"),
+                                window,
+                                cx,
+                                move |submenu, _window, _cx| {
+                                    let mut submenu = submenu;
+                                    let now = unix_ts();
+                                    for (idx, (at, size)) in snap.iter().enumerate() {
+                                        let secs_ago = (now - at).max(0) as u64;
+                                        let rel = format_duration(Duration::from_secs(secs_ago));
+                                        let size_str = format_size(*size as u64, DECIMAL);
+                                        let label = format!("v{} • {} • {}", idx + 1, rel, size_str);
+                                        let idx_u32 = idx as u32;
+                                        submenu = submenu.menu_element(
+                                            Box::new(EditorAction::DiffHistory(idx_u32)),
+                                            move |_w, _cx| Label::new(label.clone()),
+                                        );
+                                    }
+                                    submenu
+                                },
+                            );
+                        }
+                        // Key-level ops (rename / copy / delete) sit below a
+                        // separator from the value-view actions above.
+                        if (rename_item || copy_item || delete_item)
+                            && (bitmap_item || export_item || import_item || diff_item)
+                        {
+                            menu = menu.separator();
+                        }
+                        if rename_item {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::FilePenLine,
+                                Box::new(EditorAction::Rename),
+                                move |_, cx| Label::new(i18n_editor(cx, "rename")),
+                            );
+                        }
+                        if copy_item {
+                            menu = menu.menu_element_with_icon(
+                                IconName::Copy,
+                                Box::new(EditorAction::CopyTo),
+                                move |_, cx| Label::new(i18n_copy(cx, "copy_to")),
+                            );
+                        }
+                        if delete_item {
+                            menu = menu.menu_element_with_icon(
+                                IconName::CircleX,
+                                Box::new(EditorAction::Delete),
+                                move |_, cx| Label::new(i18n_editor(cx, "delete_key_tooltip")),
+                            );
+                        }
+                        menu
+                    })
+                    .into_any_element(),
+            );
+        }
 
         let content = key.clone();
         let server_id = server_state.server_id().to_string();
@@ -885,6 +1284,9 @@ impl ZedisEditor {
     fn reset_editors(&mut self, key_type: KeyType) {
         if key_type != KeyType::String {
             let _ = self.bytes_editor.take();
+            let _ = self.hll_editor.take();
+            let _ = self.bitmap_editor.take();
+            self.bitmap_override = None;
         }
         if key_type != KeyType::List {
             let _ = self.list_editor.take();
@@ -930,6 +1332,19 @@ impl ZedisEditor {
         if value.key_type == KeyType::Unknown && value.is_busy() {
             return div().into_any_element();
         }
+
+        // HyperLogLog sketches live in string keys; detect them from the
+        // already-loaded bytes (the "HYLL" magic) so the dispatch can show
+        // the dedicated read-only card instead of the raw bytes editor.
+        let is_hll = value.key_type() == KeyType::String
+            && value.bytes_value().is_some_and(|b| looks_like_hll(b.bytes.as_ref()));
+        // Bitmap view: the user's explicit override, else the small-binary
+        // heuristic. Only for plain (non-HLL) string keys.
+        let bitmap_view = value.key_type() == KeyType::String
+            && !is_hll
+            && self
+                .bitmap_override
+                .unwrap_or_else(|| value.bytes_value().is_some_and(|b| looks_like_bitmap(b.bytes.as_ref())));
 
         match value.key_type() {
             KeyType::List => {
@@ -1062,6 +1477,38 @@ impl ZedisEditor {
                 // Default to bytes editor for String type and other types
                 self.reset_editors(KeyType::String);
 
+                // A string key holding an HLL sketch gets the dedicated
+                // read-only card instead of the (binary-garbage) bytes view.
+                if is_hll {
+                    let _ = self.bytes_editor.take();
+                    let editor = self.hll_editor.get_or_insert_with(|| {
+                        debug!("Creating new HLL editor");
+                        cx.new(|cx| ZedisHllEditor::new(self.server_state.clone(), window, cx))
+                    });
+                    return editor.clone().into_any_element();
+                }
+                let _ = self.hll_editor.take();
+
+                // Bitmap view: chosen by the heuristic or an explicit toggle
+                // (computed above as `bitmap_view`).
+                if bitmap_view {
+                    let readonly = self.readonly;
+                    let editor = self.bitmap_editor.get_or_insert_with(|| {
+                        debug!("Creating new bitmap editor");
+                        let editor =
+                            cx.new(|cx| ZedisBitmapEditor::new(self.server_state.clone(), readonly, window, cx));
+                        // The "Raw" toggle pins the raw bytes view for this key.
+                        cx.subscribe(&editor, |this, _, _event: &BitmapEvent, cx| {
+                            this.bitmap_override = Some(false);
+                            cx.notify();
+                        })
+                        .detach();
+                        editor
+                    });
+                    return editor.clone().into_any_element();
+                }
+                let _ = self.bitmap_editor.take();
+
                 let editor = self
                     .bytes_editor
                     .get_or_insert_with(|| {
@@ -1097,6 +1544,9 @@ impl Render for ZedisEditor {
         if let Some(true) = self.should_enter_ttl_edit_mode.take() {
             self.enter_ttl_edit_mode(window, cx);
         }
+        if let Some((old, new)) = self.pending_overwrite_confirm.take() {
+            self.open_overwrite_confirm(old, new, window, cx);
+        }
 
         v_flex()
             .w_full()
@@ -1121,10 +1571,50 @@ impl Render for ZedisEditor {
                 EditorAction::DiffHistory(idx) => {
                     this.open_diff_session(*idx, cx);
                 }
+                EditorAction::ExportValue => {
+                    this.export_value_to_file(cx);
+                }
+                EditorAction::ImportValue => {
+                    this.import_value_from_file(cx);
+                }
+                EditorAction::ViewBitmap => {
+                    this.bitmap_override = Some(true);
+                    cx.notify();
+                }
+                EditorAction::Delete => {
+                    this.delete_key(window, cx);
+                }
+                EditorAction::Rename => {
+                    this.open_rename_dialog(window, cx);
+                }
+                EditorAction::CopyTo => {
+                    this.open_copy_dialog(window, cx);
+                }
                 _ => {
                     cx.propagate();
                 }
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{suggested_value_filename, value_export_extension};
+    use crate::states::DataFormat;
+
+    #[test]
+    fn export_filename_is_sanitized_with_extension() {
+        assert_eq!(
+            suggested_value_filename("user:1/avatar", DataFormat::Png),
+            "user_1_avatar.png"
+        );
+        assert_eq!(suggested_value_filename("plain", DataFormat::Json), "plain.json");
+    }
+
+    #[test]
+    fn export_extension_falls_back_to_bin() {
+        assert_eq!(value_export_extension(DataFormat::Bytes), "bin");
+        assert_eq!(value_export_extension(DataFormat::Gzip), "gz");
     }
 }

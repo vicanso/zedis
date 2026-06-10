@@ -73,6 +73,25 @@ pub enum EditorAction {
     /// the right. Both panes are read-only — user closes diff before
     /// editing again.
     DiffHistory(u32),
+    /// Export the current string value's raw bytes to a file.
+    ExportValue,
+    /// Overwrite the current string value with a chosen file's bytes.
+    ImportValue,
+    /// Switch the current string into the bitmap grid view.
+    ViewBitmap,
+    /// Delete the selected key (routes through the confirm dialog).
+    Delete,
+    /// Open the rename dialog for the selected key.
+    Rename,
+    /// Open the cross-server "copy to…" dialog for the selected key.
+    CopyTo,
+}
+
+/// Actions scoped to the side-by-side value diff view.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ValueDiffAction {
+    /// Close the diff and return to the editor (mirrors the Close button).
+    Close,
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {
@@ -174,6 +193,10 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // view and handles Esc itself. Deeper `escape` consumers within
         // the workspace (focused inputs, dialogs) still win.
         KeyBinding::new("escape", NavAction::Back, Some("Workspace")),
+        // Esc inside the open value-diff view closes it. Scoped to the
+        // `ValueDiff` context, which is deeper than `Workspace`, so it wins
+        // over the page-back binding above while the diff is focused.
+        KeyBinding::new("escape", ValueDiffAction::Close, Some("ValueDiff")),
         // Scoped to the JSONPath bar so it only overrides `tab` there;
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.

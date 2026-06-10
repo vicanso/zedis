@@ -93,7 +93,7 @@ impl ZedisTerminal {
                     let mut selected_cmd = "".to_string();
                     if let Some(index) = this.cmd_suggestion_index
                         && let Some(suggestion) = this.cmd_suggestions.get(index)
-                        && !starts_with_ignore_ascii_case(cmd.as_str(), suggestion)
+                        && !starts_with_ignore_ascii_case(cmd.trim_start(), suggestion)
                     {
                         selected_cmd = suggestion.clone();
                     }

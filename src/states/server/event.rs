@@ -56,6 +56,8 @@ pub enum ServerTask {
     AddKey,
     /// Update TTL (time-to-live) for a key
     UpdateKeyTtl,
+    /// Rename a key (RENAME / RENAMENX)
+    RenameKey,
 
     /// Delete an item from a list
     RemoveListValue,
@@ -154,6 +156,7 @@ impl ServerTask {
             ServerTask::ScanPrefix => "scan_prefix",
             ServerTask::AddKey => "add_key",
             ServerTask::UpdateKeyTtl => "update_key_ttl",
+            ServerTask::RenameKey => "rename_key",
             ServerTask::RemoveListValue => "remove_list_value",
             ServerTask::UpdateListValue => "update_list_value",
             ServerTask::LoadMoreValue => "load_more_value",
@@ -211,6 +214,9 @@ pub enum ServerEvent {
 
     /// Key tree has been updated
     KeyTreeUpdated,
+    /// A rename's destination key already exists; the editor confirms an
+    /// overwrite before issuing a clobbering RENAME. Carries (old, new).
+    RenameTargetExists(SharedString, SharedString),
 
     /// A key's value has been fetched (initial load).
     ValueLoaded,

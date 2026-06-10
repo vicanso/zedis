@@ -67,6 +67,21 @@ Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。
 配置含占位符（`{KEY}`、`{VALUE}`、`{HEX}`、`{RAW_FILE}`）的命令模板，Zedis 在 Unix/macOS 用 `sh -c`、Windows 用 `cmd /c` 执行，并将 stdout 作为格式化结果。适用于 base64、自定义二进制协议或 `$PATH` 中任意工具，按服务器配置精确 / 前缀 / 后缀 / 正则匹配键名。
 </details>
 
+<details><summary><b>Value 文件导出 / 导入</b> —— 把任意 string 值存成文件，或从文件加载回写。</summary>
+
+在 key 栏的 `…` 菜单中，可把当前 string 值的原始字节保存为文件（按检测到的格式猜扩展名——`.png`、`.json`、`.gz`……），或选择文件用其字节覆盖当前值。二进制安全、保留 TTL（`SET … KEEPTTL`），并与普通保存一样记入本地写入历史。
+</details>
+
+<details><summary><b>Key 重命名</b> —— 在 key 栏重命名当前 key，带覆盖保护。</summary>
+
+key 栏的 `…` 菜单打开重命名对话框（预填当前名）。底层用原子的 `RENAMENX`，绝不会静默覆盖另一个 key——若目标名已存在，会先弹"是否覆盖？"确认，确认后才执行 `RENAME`。编辑器停留在重命名后的 key、key 树自动刷新；值与 TTL 由服务端随之带走。
+</details>
+
+<details><summary><b>跨服务器复制 Key</b> —— 把某个 key（连值带 TTL）复制到另一台服务器或 db。</summary>
+
+key 栏 `…` 菜单的"复制到…"选择目标服务器 + db（带覆盖开关），随后用源端 `DUMP` + 目标端 `RESTORE` 把该 key 送过去——值、编码、剩余 TTL 全部由服务端保留。把 key 推到测试环境很顺手。跨版本复制遵循 Redis `RESTORE` 的兼容规则。
+</details>
+
 <details><summary><b>Hash 字段级 TTL</b>（Redis 7.4+）—— 通过 HEXPIRE / HPERSIST 设置单字段过期。</summary>
 
 为 Hash 中特定字段设置独立过期时间，无需为了让部分字段过期而重构数据模型。
@@ -110,6 +125,16 @@ Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。
 <details><summary><b>概率型数据结构</b>（RedisBloom）—— Bloom / Cuckoo / Count-Min / Top-K / t-digest 查看器。</summary>
 
 过去只能当二进制看的 key，现在打开专用只读查看器，展示各自的 `*.INFO` 统计（容量、大小、错误率……）。Top-K 还列出当前高频元素（`TOPK.LIST … WITHCOUNT`），t-digest 给出 min / max / p50 / p90 / p99（`TDIGEST.QUANTILE`）。按 key 的模块 TYPE 分发。
+</details>
+
+<details><summary><b>位图 / Bitfield</b> —— 在 GPU 网格上可视化字符串的每一位，支持 SETBIT / BITCOUNT / BITFIELD。</summary>
+
+看起来像裸位图的 string——小（< 4 KB）、非文本、无法识别的二进制——会**自动**进入位图模式；更大的不透明二进制可从 key 栏的 `…` 菜单切入（文本 / JSON 及图片等可识别格式无此入口）。在无底图的 GPU 网格上绘制每一位——置位点亮，按 Redis 位序排列。悬浮读出位偏移，点击格子即用 `SETBIT` 翻转。统计行展示全量 `BITCOUNT` 与 `BITPOS`（首个 1 / 首个 0），下方薄输入框可运行原始 `BITFIELD` 子命令（如 `GET u8 0`）。网格为流畅做了上限，统计始终按整个 key 计算。
+</details>
+
+<details><summary><b>HyperLogLog</b> —— 为 HLL string key 提供 PFCOUNT 基数卡片。</summary>
+
+HyperLogLog 以普通 `string` 存储，过去只能当二进制乱码看。Zedis 现在识别 `HYLL` 头部魔数，打开专用只读卡片，展示估算基数（`PFCOUNT`）、内部编码（稠密 / 稀疏）与表示大小（`STRLEN`），并带一个 `PFADD` 输入框，可加入新元素、实时观察基数变化。
 </details>
 
 <details><summary><b>向量集 + KNN</b>（Redis 8）—— 元数据 + 交互式最近邻检索。</summary>

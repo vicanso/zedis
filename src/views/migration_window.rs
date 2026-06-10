@@ -211,7 +211,7 @@ impl Focusable for ZedisMigrationWindow {
     }
 }
 
-fn dirs_default_directory() -> PathBuf {
+pub(crate) fn dirs_default_directory() -> PathBuf {
     home::home_dir()
         .map(|home| home.join("Downloads"))
         .unwrap_or_else(|| PathBuf::from("."))

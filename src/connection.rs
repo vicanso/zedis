@@ -40,7 +40,8 @@ pub use danger::{
     requires_write_confirm,
 };
 pub use dump_restore::{
-    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, dump_keys_chunk, restore_keys_chunk,
+    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key, dump_keys_chunk,
+    restore_keys_chunk,
 };
 pub use functions::{FunctionLibrary, function_delete, function_list, function_load};
 pub use latency::{

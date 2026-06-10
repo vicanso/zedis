@@ -20,14 +20,17 @@ mod session;
 
 pub use app::*;
 pub use i18n::i18n_acl;
+pub use i18n::i18n_bitmap;
 pub use i18n::i18n_clients_manager;
 pub use i18n::i18n_command_palette;
 pub use i18n::i18n_common;
 pub use i18n::i18n_config_editor;
+pub use i18n::i18n_copy;
 pub use i18n::i18n_editor;
 pub use i18n::i18n_functions;
 pub use i18n::i18n_geo_map;
 pub use i18n::i18n_hash_editor;
+pub use i18n::i18n_hll;
 pub use i18n::i18n_key_tag;
 pub use i18n::i18n_key_tree;
 pub use i18n::i18n_keyspace_notifications;

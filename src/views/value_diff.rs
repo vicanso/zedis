@@ -26,13 +26,13 @@
 //! to editing; the diff view's purpose is *understanding the change*,
 //! not making one.
 
-use crate::helpers::{DiffOp, format_duration, get_font_family, line_diff, unix_ts};
+use crate::helpers::{DiffOp, ValueDiffAction, format_duration, get_font_family, line_diff, unix_ts};
 use crate::states::{ZedisGlobalStore, i18n_editor, json_merge_diff};
 // Sibling-relative path: `editor` is a private child of `views`, so
 // the crate-rooted path doesn't resolve. As siblings under the same
 // parent module we can reach it via `super::editor`.
 use super::editor::DiffSession;
-use gpui::{ScrollHandle, SharedString, Window, div, prelude::*, px};
+use gpui::{FocusHandle, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
@@ -57,14 +57,20 @@ pub struct ZedisValueDiff {
     /// Shared by the scroll viewport and the always-on sibling scrollbar
     /// so the bar tracks the diff body's offset.
     scroll_handle: ScrollHandle,
+    /// Focus is grabbed once on first render so the `ValueDiff` key
+    /// context joins the dispatch path and Esc closes the view.
+    focus_handle: FocusHandle,
+    focused: bool,
 }
 
 impl ZedisValueDiff {
-    pub fn new(session: DiffSession, on_close: DiffCloseCallback, _cx: &mut Context<Self>) -> Self {
+    pub fn new(session: DiffSession, on_close: DiffCloseCallback, cx: &mut Context<Self>) -> Self {
         Self {
             session: Arc::new(session),
             on_close,
             scroll_handle: ScrollHandle::new(),
+            focus_handle: cx.focus_handle(),
+            focused: false,
         }
     }
 
@@ -266,7 +272,13 @@ impl ZedisValueDiff {
 }
 
 impl Render for ZedisValueDiff {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Grab focus on first paint so Esc (scoped to the `ValueDiff` key
+        // context below) closes the diff like the Close button does.
+        if !self.focused {
+            self.focused = true;
+            self.focus_handle.focus(window, cx);
+        }
         let theme = cx.theme();
         let left_raw = self.decode(&self.session.reference_bytes);
         let right_raw = self.decode(&self.session.current_bytes);
@@ -341,6 +353,11 @@ impl Render for ZedisValueDiff {
         // appeared to have no scrollbar). Both the viewport and the bar share
         // `self.scroll_handle`.
         v_flex()
+            .key_context("ValueDiff")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &ValueDiffAction, window, cx| {
+                (this.on_close)(window, cx);
+            }))
             .size_full()
             .child(self.render_header(cx))
             .child(

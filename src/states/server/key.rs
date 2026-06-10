@@ -825,6 +825,84 @@ impl ZedisServerState {
         cx.notify();
         self.delete_key(key, cx);
     }
+    /// Renames a key. With `overwrite == false` it issues `RENAMENX` and,
+    /// if the destination already exists, leaves the key untouched and
+    /// emits [`ServerEvent::RenameTargetExists`] so the editor can confirm
+    /// a clobber. With `overwrite == true` it issues a plain `RENAME`. On
+    /// success the keys map, local write history and the selected key are
+    /// all re-pointed from `old` to `new` (RENAME carries value + TTL
+    /// server-side, so nothing else needs reloading beyond the value view).
+    pub fn rename_key(&mut self, old: SharedString, new: SharedString, overwrite: bool, cx: &mut Context<Self>) {
+        if new.is_empty() || new == old {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_type = self.keys.get(&old).copied();
+        let old_done = old.clone();
+        let new_done = new.clone();
+        self.spawn_with_arg(
+            ServerTask::RenameKey,
+            new.clone(),
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                if overwrite {
+                    let _: () = cmd("RENAME")
+                        .arg(old.as_str())
+                        .arg(new.as_str())
+                        .query_async(&mut conn)
+                        .await?;
+                    Ok(true)
+                } else {
+                    let renamed: i64 = cmd("RENAMENX")
+                        .arg(old.as_str())
+                        .arg(new.as_str())
+                        .query_async(&mut conn)
+                        .await?;
+                    Ok(renamed == 1)
+                }
+            },
+            move |this, result, cx| {
+                match result {
+                    Ok(true) => {
+                        if let Some(kt) = key_type {
+                            this.keys.insert(new_done.clone(), kt);
+                        }
+                        this.keys.remove(&old_done);
+                        // The key tree renders each key's TTL state from this
+                        // cache (no entry → the TTL icon goes missing), so move
+                        // it across too. RENAME preserves the TTL server-side.
+                        if let Some(ttl) = this.key_ttls.remove(&old_done) {
+                            this.key_ttls.insert(new_done.clone(), ttl);
+                        }
+                        if let Some(history) = this.value_history.remove(&old_done) {
+                            this.value_history.insert(new_done.clone(), history);
+                        }
+                        this.key_tree_id = Uuid::now_v7().to_string().into();
+                        // Re-select via the normal path so the key tree expands
+                        // to reveal the renamed node — `KeySelected` drives the
+                        // tree's `update_expand`; a bare rebuild would leave the
+                        // key hidden under a collapsed folder. Also reloads the
+                        // value into the editor.
+                        if this.key.as_ref() == Some(&old_done) {
+                            this.select_key(new_done.clone(), cx);
+                        }
+                        cx.emit(ServerEvent::KeyTreeUpdated);
+                    }
+                    Ok(false) => {
+                        // RENAMENX refused: destination exists. Ask the UI
+                        // to confirm an overwrite (clobbering RENAME).
+                        cx.emit(ServerEvent::RenameTargetExists(old_done.clone(), new_done.clone()));
+                    }
+                    Err(_) => {
+                        // Failure already surfaced via spawn_with_arg's error path.
+                    }
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
     /// Updates the TTL (expiration) for a key.
     pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         if ttl.is_empty() {

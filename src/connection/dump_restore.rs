@@ -469,6 +469,32 @@ async fn restore_single_key(
     }
 }
 
+/// Copy a single key's value (and remaining TTL) to another server / db
+/// via `DUMP` on the source and `RESTORE` on the target. Source and target
+/// may be the same server (e.g. a cross-db copy). Returns `Ok(None)` when
+/// the source key no longer exists, otherwise the restore outcome.
+pub async fn copy_key(
+    source_id: String,
+    source_db: usize,
+    target_id: String,
+    target_db: usize,
+    key: SharedString,
+    conflict: ConflictMode,
+) -> Result<Option<RestoreStatus>> {
+    let mut src = super::get_connection_manager()
+        .get_connection(&source_id, source_db)
+        .await?;
+    let entries = dump_keys_chunk(&mut src, std::slice::from_ref(&key)).await?;
+    let Some(entry) = entries.into_iter().next() else {
+        return Ok(None);
+    };
+    let mut dst = super::get_connection_manager()
+        .get_connection(&target_id, target_db)
+        .await?;
+    let mut statuses = restore_keys_chunk(&mut dst, std::slice::from_ref(&entry), conflict).await?;
+    Ok(statuses.pop())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

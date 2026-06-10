@@ -77,6 +77,9 @@ pub enum CustomIconName {
     HardDrive,
     Radar,
     SunMoon,
+    Download,
+    Upload,
+    GitCompareArrows,
 }
 
 impl CustomIconName {
@@ -117,6 +120,9 @@ impl CustomIconName {
             CustomIconName::HardDrive => "icons/hard-drive.svg",
             CustomIconName::Radar => "icons/radar.svg",
             CustomIconName::SunMoon => "icons/sun-moon.svg",
+            CustomIconName::Download => "icons/download.svg",
+            CustomIconName::Upload => "icons/upload.svg",
+            CustomIconName::GitCompareArrows => "icons/git-compare-arrows.svg",
         }
         .into()
     }
