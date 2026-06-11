@@ -14,6 +14,8 @@
 
 mod kv_delegate;
 mod kv_types;
+mod key_type_badge;
 
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};
 pub use kv_types::{KvTableColumn, KvTableColumnType, KvTableMode};
+pub use key_type_badge::KeyTypeBadge;
