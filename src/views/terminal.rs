@@ -261,6 +261,9 @@ impl ZedisTerminal {
         if let Some(cmd) = suggestion {
             self.cmd_input_state.update(cx, |state, cx| {
                 state.set_value(SharedString::from(cmd), window, cx);
+                // Move the caret to the end of the completed command so the
+                // user can keep typing args (mirrors history navigation).
+                state.set_cursor_position(Position::new(0, u32::MAX), window, cx);
             });
             self.cmd_suggestions.clear();
             self.cmd_suggestion_index = None;
