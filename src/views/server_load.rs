@@ -23,9 +23,15 @@
 
 use crate::connection::{CommandStat, get_connection_manager};
 use crate::error::Error;
-use crate::states::{ZedisServerState, i18n_server_load};
+use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_server_load};
 use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
-use gpui_component::{ActiveTheme, StyledExt, h_flex, label::Label, v_flex};
+use gpui_component::{
+    ActiveTheme, IconName, Sizable, StyledExt,
+    button::{Button, ButtonVariants},
+    h_flex,
+    label::Label,
+    v_flex,
+};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -338,7 +344,24 @@ impl Render for ZedisServerLoad {
             .size_full()
             .gap_2()
             .p_3()
-            .child(Label::new(i18n_server_load(cx, "title")).font_semibold())
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("server-load-back")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip(i18n_common(cx, "back_to_editor"))
+                            .on_click(|_, _w, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                });
+                            }),
+                    )
+                    .child(Label::new(i18n_server_load(cx, "title")).font_semibold()),
+            )
             .child(
                 div()
                     .id("server-load-body")

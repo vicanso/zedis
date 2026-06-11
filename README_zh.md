@@ -82,6 +82,11 @@ key 栏的 `…` 菜单打开重命名对话框（预填当前名）。底层用
 key 栏 `…` 菜单的"复制到…"选择目标服务器 + db（带覆盖开关），随后用源端 `DUMP` + 目标端 `RESTORE` 把该 key 送过去——值、编码、剩余 TTL 全部由服务端保留。把 key 推到测试环境很顺手。跨版本复制遵循 Redis `RESTORE` 的兼容规则。
 </details>
 
+<details><summary><b>跨服务器 Key 对比</b> —— 把某个 string key 与另一台服务器上的同名 key 对比。</summary>
+
+key 栏 `…` 菜单的"与服务器对比…"选择目标服务器 + db，取对端该 key 的值（`GET`），打开并排 diff 视图——左边对端、右边本机（RedisJSON 还附 RFC 7396 merge-patch 块）。专为排查"prod 和 staging 配置为何不一致"。仅支持 string 类型。
+</details>
+
 <details><summary><b>Hash 字段级 TTL</b>（Redis 7.4+）—— 通过 HEXPIRE / HPERSIST 设置单字段过期。</summary>
 
 为 Hash 中特定字段设置独立过期时间，无需为了让部分字段过期而重构数据模型。
@@ -166,9 +171,19 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序——根据 `maxmemory-policy` 
 状态栏 Tools 菜单进入的诊断页，轮询 `INFO commandstats`（跨集群所有 master 聚合），按两次采样间的增量算出每个命令的 **次/秒** 速率，以斑马线表格展示（累计计数本身无意义；`CONFIG RESETSTAT` 也能优雅处理）。至于*哪个 key* 最热，内存分析器的"最热"排序已用 `OBJECT FREQ` 覆盖。
 </details>
 
+<details><summary><b>按值搜索</b> —— 找出<i>值里包含</i>某段文本的 key（Redis 无法索引值，故为带护栏的采样）。</summary>
+
+Redis 只能按 key 名匹配，"哪个 key 装了这个值"只能 SCAN 后逐个读值——`O(keyspace)`。本页（状态栏 Tools 菜单）带护栏运行：**必填 key 前缀**把扫描钉在某命名空间内，扫满 **1 万个 key 或 10 秒**即停（可取消），超过 **1 MiB**（或元素数超 **1 万**的容器）跳过，结果区如实标注*已扫描 / 命中 / 跳过*及停止原因——结果是明确的**采样**，绝不号称完整。搜索范围覆盖 **string 值、hash 字段、list / set / zset 成员**（大小写不敏感子串），每条命中还标注*命中位置*（字段 / 下标 / 成员）。点击命中项在本面板内联预览其值。
+</details>
+
 <details><summary><b>集群健康度</b> —— 以树状查看 Cluster / Sentinel 拓扑与复制延迟。</summary>
 
 悬浮节点指示器即可查看各 master 及其 slot 范围、replica 按 master 分组，并附每个 replica 的复制延迟（字节 + 秒 + 连接状态），数据源于 `INFO replication`。
+</details>
+
+<details><summary><b>Cluster / Sentinel 管理</b> —— GUI 面板里直接做 failover / forget / meet / replicate。</summary>
+
+拓扑面板（状态栏 Tools 菜单）把检测到的部署形态变成可操作的控制项。**Cluster**：每个 replica 的 `CLUSTER FAILOVER`（带 `FORCE` 选项，在该副本上执行）、fan-out 到每个 master 的 `CLUSTER FORGET`，以及 `CLUSTER MEET host:port` 和 `CLUSTER REPLICATE` 表单。**Sentinel**：每个 master 的 `SENTINEL FAILOVER` / `RESET` / `REMOVE`。每个写操作都过确认对话框、PROD 自动升级。面板只在多节点部署出现——Standalone 不显示该菜单项。
 </details>
 
 <details><summary><b>深度诊断</b> —— 慢日志 ↔ Latency 交叉关联、实时 MONITOR、客户端管理。</summary>
@@ -236,6 +251,11 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序——根据 `maxmemory-policy` 
 <details><summary><b>多选批量删除</b> —— 一次标记并删除多个键。</summary>
 
 切换多选模式即可删除大量键，无需编写任何命令。
+</details>
+
+<details><summary><b>批量 TTL</b> —— 对整批多选或某 key 前缀一次性设置 / 移除过期。</summary>
+
+在树里右键多选项或文件夹：**设置 TTL…** 弹出对话框（支持 `7d`、`3600`、`1h30m` 等时长），对范围内每个 key 流水线下发 `EXPIRE`；**移除 TTL（持久化）** 执行 `PERSIST`。集群安全（逐键并发而非跨 slot pipeline），两条路径都过确认对话框、PROD 自动升级——不用再逐个 key 改过期了。
 </details>
 
 <details><summary><b>键收藏与搜索历史</b> —— 收藏常用键、回溯近期搜索。</summary>

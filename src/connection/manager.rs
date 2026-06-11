@@ -149,6 +149,61 @@ pub struct CommandStat {
     pub usec: u64,
 }
 
+/// Where in a key's value the search needle was found.
+#[derive(Debug, Clone)]
+pub enum MatchLocation {
+    /// The whole string value.
+    Value,
+    /// A hash field — carries the field name.
+    Field(SharedString),
+    /// A list element — carries its index.
+    Index(usize),
+    /// A set / sorted-set member — carries the member (truncated).
+    Member(SharedString),
+}
+
+/// One value-search hit: the key plus where the needle matched.
+#[derive(Debug, Clone)]
+pub struct ValueMatch {
+    pub key: SharedString,
+    /// The key's Redis type (`string` / `hash` / `list` / `set` / `zset`).
+    pub key_type: SharedString,
+    pub location: MatchLocation,
+}
+
+/// Result of one [`RedisClient::scan_values_round`] page.
+#[derive(Debug, Clone)]
+pub struct ValueSearchRound {
+    /// Per-master SCAN cursors to resume from (all zero = keyspace exhausted).
+    pub cursors: Vec<u64>,
+    /// Keys whose value matched this round, with the match location.
+    pub matches: Vec<ValueMatch>,
+    /// Keys examined this round.
+    pub scanned: usize,
+    /// Values skipped for exceeding the size / element-count gate.
+    pub skipped_oversized: usize,
+    /// True once every cursor returned to 0 (whole keyspace covered).
+    pub done: bool,
+}
+
+/// Case-insensitive substring match on a lossy-UTF8 view of raw bytes.
+fn contains_needle(bytes: &[u8], needle_lower: &str) -> bool {
+    String::from_utf8_lossy(bytes).to_lowercase().contains(needle_lower)
+}
+
+/// Lossy-UTF8 render of a matched member/field, truncated for the location chip.
+fn truncate_member(bytes: &[u8]) -> SharedString {
+    const MAX_CHARS: usize = 80;
+    let s = String::from_utf8_lossy(bytes);
+    if s.chars().count() > MAX_CHARS {
+        let mut t: String = s.chars().take(MAX_CHARS).collect();
+        t.push('…');
+        t.into()
+    } else {
+        s.into_owned().into()
+    }
+}
+
 /// Parse `cmdstat_<name>:calls=N,usec=N,…` lines from an `INFO commandstats`
 /// blob, summing into `agg` so several cluster nodes accumulate into one
 /// total per command. Unrecognised lines are skipped.
@@ -740,6 +795,52 @@ impl RedisClient {
         Ok(())
     }
 
+    /// Apply `EXPIRE` (`ttl_secs = Some`) or `PERSIST` (`None`) to many keys,
+    /// cluster-safe. Mirrors [`Self::unlike_keys_scattered`]: one pipeline on a
+    /// standalone, per-key concurrent commands (chunked) on a cluster so no
+    /// cross-slot pipeline is ever built.
+    pub async fn set_ttl_keys_scattered(&self, keys: Vec<SharedString>, ttl_secs: Option<u64>) -> Result<(), Error> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if !self.is_cluster() {
+            let mut conn = self.connection();
+            let mut pipe = redis::pipe();
+            for key in &keys {
+                match ttl_secs {
+                    Some(secs) => pipe.cmd("EXPIRE").arg(key.as_str()).arg(secs),
+                    None => pipe.cmd("PERSIST").arg(key.as_str()),
+                };
+            }
+            let _: Vec<i64> = pipe.query_async(&mut conn).await?;
+            return Ok(());
+        }
+        let conn = self.connection();
+        for chunk in keys.chunks(1000) {
+            let futures = chunk.iter().map(|key| {
+                let mut conn_clone = conn.clone();
+                let key = key.clone();
+                async move {
+                    match ttl_secs {
+                        Some(secs) => {
+                            let _: i64 = cmd("EXPIRE")
+                                .arg(key.as_str())
+                                .arg(secs)
+                                .query_async(&mut conn_clone)
+                                .await?;
+                        }
+                        None => {
+                            let _: i64 = cmd("PERSIST").arg(key.as_str()).query_async(&mut conn_clone).await?;
+                        }
+                    }
+                    Ok::<(), Error>(())
+                }
+            });
+            let _: Vec<()> = try_join_all(futures).await?;
+        }
+        Ok(())
+    }
+
     /// Returns the memory usage of a key.
     /// # Arguments
     /// * `key` - The key to get the memory usage of.
@@ -1058,6 +1159,208 @@ impl RedisClient {
             .into_iter()
             .map(|(name, (calls, usec))| CommandStat { name, calls, usec })
             .collect())
+    }
+
+    /// One bounded round of **search-by-value**: SCAN a single page across all
+    /// masters, then for each *string* key read its value (size-gated) and
+    /// case-insensitively substring-match it against `needle_lower` (which must
+    /// already be lowercased). Non-string keys and values larger than
+    /// `max_value_bytes` are skipped (the latter counted in `skipped_oversized`).
+    ///
+    /// The caller drives this in a cancellable loop, accumulating across pages
+    /// until the keyspace is exhausted (`done`) or a scan/time budget trips —
+    /// results are an explicit **sample**, never guaranteed exhaustive. Reads
+    /// route per-key through the shared cluster-aware connection (they pipeline
+    /// and don't block), guarded by the caller's caps rather than a dedicated
+    /// connection.
+    pub async fn scan_values_round(
+        &self,
+        pattern: &str,
+        needle_lower: &str,
+        max_value_bytes: u64,
+        max_container_elems: u64,
+        cursors: Option<Vec<u64>>,
+        page_count: u64,
+    ) -> Result<ValueSearchRound> {
+        let (cursors, keys_per_node) = self.scan_nodes(cursors, pattern, page_count).await?;
+        let mut conn = self.connection.clone();
+        let mut matches = Vec::new();
+        let mut scanned = 0usize;
+        let mut skipped_oversized = 0usize;
+        for keys in keys_per_node {
+            for key in keys {
+                scanned += 1;
+                let key_str = key.as_ref();
+                // A key may vanish mid-scan; treat read errors as "no match".
+                let key_type: String = cmd("TYPE")
+                    .arg(key_str)
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or_default();
+                // Only the first match per key is recorded (one row per key);
+                // the inline preview shows the full value. Containers are gated
+                // on element count so a giant collection isn't pulled whole.
+                let location = match key_type.as_str() {
+                    "string" => {
+                        let len: u64 = cmd("STRLEN").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
+                        if len > max_value_bytes {
+                            skipped_oversized += 1;
+                            continue;
+                        }
+                        let value: Vec<u8> = cmd("GET").arg(key_str).query_async(&mut conn).await.unwrap_or_default();
+                        contains_needle(&value, needle_lower).then_some(MatchLocation::Value)
+                    }
+                    "hash" => {
+                        let n: u64 = cmd("HLEN").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
+                        if n > max_container_elems {
+                            skipped_oversized += 1;
+                            continue;
+                        }
+                        let fields: Vec<(Vec<u8>, Vec<u8>)> = cmd("HGETALL")
+                            .arg(key_str)
+                            .query_async(&mut conn)
+                            .await
+                            .unwrap_or_default();
+                        fields
+                            .into_iter()
+                            .find(|(f, v)| contains_needle(f, needle_lower) || contains_needle(v, needle_lower))
+                            .map(|(f, _)| MatchLocation::Field(truncate_member(&f)))
+                    }
+                    "list" => {
+                        let n: u64 = cmd("LLEN").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
+                        if n > max_container_elems {
+                            skipped_oversized += 1;
+                            continue;
+                        }
+                        let items: Vec<Vec<u8>> = cmd("LRANGE")
+                            .arg(key_str)
+                            .arg(0)
+                            .arg(-1)
+                            .query_async(&mut conn)
+                            .await
+                            .unwrap_or_default();
+                        items
+                            .into_iter()
+                            .position(|e| contains_needle(&e, needle_lower))
+                            .map(MatchLocation::Index)
+                    }
+                    "set" => {
+                        let n: u64 = cmd("SCARD").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
+                        if n > max_container_elems {
+                            skipped_oversized += 1;
+                            continue;
+                        }
+                        let members: Vec<Vec<u8>> = cmd("SMEMBERS")
+                            .arg(key_str)
+                            .query_async(&mut conn)
+                            .await
+                            .unwrap_or_default();
+                        members
+                            .into_iter()
+                            .find(|m| contains_needle(m, needle_lower))
+                            .map(|m| MatchLocation::Member(truncate_member(&m)))
+                    }
+                    "zset" => {
+                        let n: u64 = cmd("ZCARD").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
+                        if n > max_container_elems {
+                            skipped_oversized += 1;
+                            continue;
+                        }
+                        let members: Vec<Vec<u8>> = cmd("ZRANGE")
+                            .arg(key_str)
+                            .arg(0)
+                            .arg(-1)
+                            .query_async(&mut conn)
+                            .await
+                            .unwrap_or_default();
+                        members
+                            .into_iter()
+                            .find(|m| contains_needle(m, needle_lower))
+                            .map(|m| MatchLocation::Member(truncate_member(&m)))
+                    }
+                    // Streams and module types aren't searched.
+                    _ => None,
+                };
+                if let Some(location) = location {
+                    matches.push(ValueMatch {
+                        key: key.clone(),
+                        key_type: key_type.into(),
+                        location,
+                    });
+                }
+            }
+        }
+        let done = cursors.iter().all(|&c| c == 0);
+        Ok(ValueSearchRound {
+            cursors,
+            matches,
+            scanned,
+            skipped_oversized,
+            done,
+        })
+    }
+
+    /// Build a bounded, type-aware text preview of a key's value (for the
+    /// value-search preview pane). Containers are sampled to ~200 elements.
+    pub async fn get_value_preview(&self, key: &str) -> Result<String> {
+        let mut conn = self.connection.clone();
+        let key_type: String = cmd("TYPE").arg(key).query_async(&mut conn).await?;
+        const N: isize = 200;
+        let text = match key_type.as_str() {
+            "string" => {
+                let v: Vec<u8> = cmd("GET").arg(key).query_async(&mut conn).await?;
+                String::from_utf8_lossy(&v).into_owned()
+            }
+            "hash" => {
+                let fields: Vec<(Vec<u8>, Vec<u8>)> = cmd("HGETALL").arg(key).query_async(&mut conn).await?;
+                fields
+                    .iter()
+                    .take(N as usize)
+                    .map(|(f, v)| format!("{}: {}", String::from_utf8_lossy(f), String::from_utf8_lossy(v)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            "list" => {
+                let items: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(0).arg(N - 1).query_async(&mut conn).await?;
+                items
+                    .iter()
+                    .map(|e| String::from_utf8_lossy(e).into_owned())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            "set" => {
+                let members: Vec<Vec<u8>> = cmd("SRANDMEMBER").arg(key).arg(N).query_async(&mut conn).await?;
+                members
+                    .iter()
+                    .map(|m| String::from_utf8_lossy(m).into_owned())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            "zset" => {
+                let members: Vec<(Vec<u8>, f64)> = cmd("ZRANGE")
+                    .arg(key)
+                    .arg(0)
+                    .arg(N - 1)
+                    .arg("WITHSCORES")
+                    .query_async(&mut conn)
+                    .await?;
+                members
+                    .iter()
+                    .map(|(m, s)| format!("{} ({s})", String::from_utf8_lossy(m)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            other => format!("(type: {other} — open in editor to view)"),
+        };
+        Ok(text)
+    }
+
+    /// Fetch a key's raw value bytes via `GET` for the cross-server diff
+    /// (empty when the key is absent). A wrong-type key surfaces an error.
+    pub async fn get_key_bytes(&self, key: &str) -> Result<Vec<u8>> {
+        let mut conn = self.connection.clone();
+        let value: Option<Vec<u8>> = cmd("GET").arg(key).query_async(&mut conn).await?;
+        Ok(value.unwrap_or_default())
     }
 
     /// Initiates a SCAN operation across all masters.

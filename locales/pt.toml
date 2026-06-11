@@ -42,6 +42,9 @@ clients = "Clientes bloqueados e conectados"
 slow_logs = "Logs lentos"
 disable_in_readonly = "Desabilitado no modo somente leitura"
 back_to_editor = "Back to editor"
+export_csv = "Exportar CSV"
+csv_exported = "CSV exportado"
+csv_export_failed = "Falha ao exportar CSV"
 
 
 # --- Placeholders gerais ---
@@ -191,6 +194,8 @@ history_empty = "Sem histórico ainda — salve uma alteração para começar a 
 
 # Visão de diff lado a lado (cenários 1 e 2 do histórico local)
 diff_button = "Diff"
+diff_with_server = "Comparar com servidor…"
+diff_string_only = "A comparação entre servidores só está disponível para chaves string."
 diff_button_tooltip = "Comparar com uma versão anterior (botão dividido: clique = anterior, dropdown = qualquer versão)"
 diff_no_history = "Diff requer pelo menos uma versão salva no histórico"
 diff_view_title = "Diff vs v%{version} (há %{ago})"
@@ -202,6 +207,15 @@ diff_patch_label = "Patch RFC 7396 (carga equivalente de JSON.MERGE)"
 diff_patch_empty = "{}  // sem alteração"
 
 [key_tree]
+set_ttl_tooltip = "Definir TTL…"
+persist_tooltip = "Remover TTL (PERSIST)"
+batch_ttl_title = "Definir TTL"
+batch_ttl_placeholder = "ex.: 7d, 3600, 1h30m"
+batch_ttl_prompt = "Aplicar este TTL às chaves no escopo:"
+set_ttl_confirm = "Definir TTL"
+persist_title = "Remover TTL"
+persist_prompt = "Remover o TTL (PERSIST) das chaves no escopo?"
+export_csv_confirm = "Exportar as %{count} chaves carregadas atualmente? É o subconjunto SCAN atual, não todo o keyspace."
 no_keys_found = "Nenhuma chave encontrada"
 load_more = "Carregar mais"
 key_not_exists = "A chave não existe ou expirou"
@@ -1024,6 +1038,28 @@ col_command = "Comando"
 col_rate = "Chamadas/s"
 col_avg = "µs/chamada"
 col_calls = "Chamadas"
+
+[value_search]
+title = "Busca por valor"
+prefix_placeholder = "Prefixo da chave (obrigatório), ex.: session:"
+query_placeholder = "Texto a localizar dentro de valores string"
+search = "Buscar"
+stop = "Parar"
+need_prefix = "É obrigatório um prefixo de chave (varrer todo o keyspace é recusado)"
+need_query = "Digite o texto a buscar"
+searching = "Buscando…"
+no_matches = "Nenhum valor correspondente"
+truncated = "Mostrando apenas as primeiras correspondências — restrinja o prefixo ou a consulta"
+summary = "Varridos %{scanned} · correspondências %{matched} · %{skipped} ignorados por tamanho · %{reason}"
+reason_done = "concluído"
+reason_capped = "limite de varredura atingido"
+reason_timeout = "tempo esgotado"
+reason_cancelled = "parado"
+preview_hint = "Clique em um resultado para visualizar o valor"
+loading = "Carregando…"
+open = "Abrir"
+loc_field = "campo"
+loc_member = "membro"
 
 [hll]
 title = "HyperLogLog"

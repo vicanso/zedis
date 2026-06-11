@@ -42,6 +42,9 @@ clients = "Clientes bloqueados y conectados"
 slow_logs = "Registros lentos"
 disable_in_readonly = "Deshabilitado en modo solo lectura"
 back_to_editor = "Back to editor"
+export_csv = "Exportar CSV"
+csv_exported = "CSV exportado"
+csv_export_failed = "Error al exportar CSV"
 
 
 # --- Marcadores de posición generales ---
@@ -191,6 +194,8 @@ history_empty = "Aún sin historial — guarda un cambio para empezar a registra
 
 # Vista de diff lado a lado (escenarios 1 y 2 del historial local)
 diff_button = "Diff"
+diff_with_server = "Comparar con servidor…"
+diff_string_only = "La comparación entre servidores solo está disponible para claves string."
 diff_button_tooltip = "Comparar con una versión anterior (botón dividido: clic = versión previa, desplegable = cualquier versión)"
 diff_no_history = "El diff requiere al menos una versión guardada en el historial"
 diff_view_title = "Diff vs v%{version} (hace %{ago})"
@@ -202,6 +207,15 @@ diff_patch_label = "Parche RFC 7396 (carga equivalente de JSON.MERGE)"
 diff_patch_empty = "{}  // sin cambios"
 
 [key_tree]
+set_ttl_tooltip = "Establecer TTL…"
+persist_tooltip = "Quitar TTL (PERSIST)"
+batch_ttl_title = "Establecer TTL"
+batch_ttl_placeholder = "p. ej. 7d, 3600, 1h30m"
+batch_ttl_prompt = "Aplicar este TTL a las claves del ámbito:"
+set_ttl_confirm = "Establecer TTL"
+persist_title = "Quitar TTL"
+persist_prompt = "¿Quitar el TTL (PERSIST) de las claves del ámbito?"
+export_csv_confirm = "¿Exportar las %{count} claves cargadas actualmente? Es el subconjunto SCAN actual, no todo el keyspace."
 no_keys_found = "No se encontraron claves"
 load_more = "Cargar más"
 key_not_exists = "La clave no existe o ha expirado"
@@ -1024,6 +1038,28 @@ col_command = "Comando"
 col_rate = "Llamadas/s"
 col_avg = "µs/llamada"
 col_calls = "Llamadas"
+
+[value_search]
+title = "Búsqueda por valor"
+prefix_placeholder = "Prefijo de clave (obligatorio), p. ej. session:"
+query_placeholder = "Texto a buscar dentro de valores string"
+search = "Buscar"
+stop = "Detener"
+need_prefix = "Se requiere un prefijo de clave (se rechaza escanear todo el keyspace)"
+need_query = "Introduce el texto a buscar"
+searching = "Buscando…"
+no_matches = "No hay valores coincidentes"
+truncated = "Mostrando solo las primeras coincidencias — acota el prefijo o la consulta"
+summary = "Escaneados %{scanned} · coincidencias %{matched} · %{skipped} omitidos por tamaño · %{reason}"
+reason_done = "completado"
+reason_capped = "límite de escaneo alcanzado"
+reason_timeout = "tiempo agotado"
+reason_cancelled = "detenido"
+preview_hint = "Haz clic en un resultado para ver su valor"
+loading = "Cargando…"
+open = "Abrir"
+loc_field = "campo"
+loc_member = "miembro"
 
 [hll]
 title = "HyperLogLog"

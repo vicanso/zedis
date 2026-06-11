@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{ConflictMode, RestoreStatus, copy_key, get_server, get_servers},
+    connection::{ConflictMode, RestoreStatus, copy_key, get_connection_manager, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
@@ -78,6 +78,10 @@ pub(crate) struct DiffSession {
     /// at session-open. Drives whether we also render the RFC 7396
     /// merge-patch block below the side-by-side panes.
     pub is_json: bool,
+    /// Custom left-pane / title label. `None` for a history-version diff
+    /// (which labels the reference as "vN (3 min ago)"); `Some` for a
+    /// cross-server diff, where it carries the other server's "name / dbN".
+    pub reference_label: Option<SharedString>,
 }
 
 /// Main editor component for displaying and editing Redis key values
@@ -421,6 +425,7 @@ impl ZedisEditor {
             reference_at,
             current_bytes,
             is_json: is_redis_json,
+            reference_label: None,
         };
 
         // Build the view eagerly so the close-callback can capture a
@@ -769,7 +774,7 @@ impl ZedisEditor {
         if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
             return;
         }
-        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.clone().into(), source_db, window, cx));
+        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.clone().into(), source_db, true, window, cx));
         let view_child = view.clone();
         let view_ok = view.clone();
         let editor = cx.entity().downgrade();
@@ -805,6 +810,116 @@ impl ZedisEditor {
                 true
             })
             .open(window, cx);
+    }
+
+    /// Open the cross-server diff picker (the copy dialog reused as a pure
+    /// server / db picker). On OK, diff this server's value of the key against
+    /// the same key on the chosen server.
+    fn open_diff_with_server_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let source_id = state.server_id().to_string();
+        let source_db = state.db();
+        let Some(key) = state.key() else {
+            return;
+        };
+        if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
+            return;
+        }
+        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.into(), source_db, false, window, cx));
+        let view_child = view.clone();
+        let view_ok = view.clone();
+        let editor = cx.entity().downgrade();
+        let key_ok = key.clone();
+        ZedisDialog::new(i18n_editor(cx, "diff_with_server"))
+            .w(px(460.))
+            .ok_text(i18n_editor(cx, "diff_with_server"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_editor(cx, "diff_with_server"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, _window, cx| {
+                let Some(target_id) = view_ok.read(cx).target_server_id() else {
+                    return false;
+                };
+                let target_db = view_ok.read(cx).target_db(cx);
+                if let Some(editor) = editor.upgrade() {
+                    let key = key_ok.clone();
+                    editor.update(cx, move |this, cx| {
+                        this.run_cross_server_diff(target_id, target_db, key, cx)
+                    });
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Fetch the same key's value from `target_id`/`target_db` and open the
+    /// diff view: the other server's value (left) vs this server's (right).
+    /// String keys only — non-string keys have no bytes editor to diff.
+    fn run_cross_server_diff(
+        &mut self,
+        target_id: SharedString,
+        target_db: usize,
+        key: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(bytes_editor) = self.bytes_editor.clone() else {
+            self.server_state.update(cx, |s, cx| {
+                s.emit_warning_notification(i18n_editor(cx, "diff_string_only"), cx);
+            });
+            return;
+        };
+        // Snapshot this server's current bytes for the right pane.
+        let current_bytes: bytes::Bytes = bytes_editor.update(cx, |state, cx| match state.value_bytes_for_save(cx) {
+            Some(Ok(b)) => bytes::Bytes::from(b),
+            Some(Err(_)) | None => bytes::Bytes::from(state.value(cx).to_string()),
+        });
+        let is_json = self
+            .server_state
+            .read(cx)
+            .value()
+            .map(|v| v.is_redis_json())
+            .unwrap_or(false);
+        let target_name: SharedString = get_server(&target_id)
+            .map(|s| s.name.into())
+            .unwrap_or_else(|_| target_id.clone());
+        let label: SharedString = format!("{target_name} / db{target_db}").into();
+        cx.spawn(async move |this, cx| {
+            let fetched = async {
+                let client = get_connection_manager().get_client(&target_id, target_db).await?;
+                client.get_key_bytes(&key).await
+            }
+            .await;
+            let _ = this.update(cx, move |this, cx| match fetched {
+                Ok(other_bytes) => {
+                    let session = DiffSession {
+                        history_idx: 0,
+                        reference_bytes: bytes::Bytes::from(other_bytes),
+                        reference_at: 0,
+                        current_bytes,
+                        is_json,
+                        reference_label: Some(label),
+                    };
+                    let editor_weak = cx.entity().downgrade();
+                    let on_close: DiffCloseCallback = std::sync::Arc::new(move |_w, cx| {
+                        if let Some(editor) = editor_weak.upgrade() {
+                            editor.update(cx, |this, cx| this.close_diff_session(cx));
+                        }
+                    });
+                    let view = cx.new(|cx| ZedisValueDiff::new(session.clone(), on_close, cx));
+                    this.diff_session = Some(session);
+                    this.diff_view = Some(view);
+                    cx.notify();
+                }
+                Err(e) => this.server_state.update(cx, |s, cx| {
+                    s.emit_error_notification(format!("{}: {e}", i18n_editor(cx, "diff_with_server")).into(), cx);
+                }),
+            });
+        })
+        .detach();
     }
 
     /// Run the cross-server copy (`DUMP` + `RESTORE`) in the background and
@@ -876,13 +991,18 @@ impl ZedisEditor {
             };
 
             size = format_size(value.size(), DECIMAL).into();
-            // The Bitmap toggle only makes sense for opaque binary values —
-            // text / JSON / images render as bit noise, and HLL strings keep
-            // their dedicated card.
+            // The Bitmap toggle only makes sense for genuinely opaque binary —
+            // anything the format pipeline decoded (Protobuf, MessagePack,
+            // JSON, timestamps, compressed, images, text) keeps its own viewer,
+            // so we require the detected format to be the raw `Bytes` fallback.
+            // `infer` can't recognise Protobuf/MessagePack, so the byte
+            // heuristic alone would wrongly grab them.
             bitmap_candidate = value.key_type() == KeyType::String
-                && value
-                    .bytes_value()
-                    .is_some_and(|b| !looks_like_hll(b.bytes.as_ref()) && bitmap_eligible(b.bytes.as_ref()));
+                && value.bytes_value().is_some_and(|b| {
+                    matches!(b.format, DataFormat::Bytes)
+                        && !looks_like_hll(b.bytes.as_ref())
+                        && bitmap_eligible(b.bytes.as_ref())
+                });
             bitmap_view = bitmap_candidate
                 && self
                     .bitmap_override
@@ -1069,6 +1189,7 @@ impl ZedisEditor {
         // delete.
         let bitmap_item = bitmap_candidate && !bitmap_view;
         let export_item = has_bytes_value;
+        let diff_with_server_item = has_bytes_value;
         let import_item = has_bytes_value && !self.readonly;
         let rename_item = !self.readonly;
         // Cross-server copy reads the source and writes a (possibly
@@ -1152,7 +1273,7 @@ impl ZedisEditor {
                         }
                         // Key-level ops (rename / copy / delete) sit below a
                         // separator from the value-view actions above.
-                        if (rename_item || copy_item || delete_item)
+                        if (rename_item || copy_item || delete_item || diff_with_server_item)
                             && (bitmap_item || export_item || import_item || diff_item)
                         {
                             menu = menu.separator();
@@ -1169,6 +1290,13 @@ impl ZedisEditor {
                                 IconName::Copy,
                                 Box::new(EditorAction::CopyTo),
                                 move |_, cx| Label::new(i18n_copy(cx, "copy_to")),
+                            );
+                        }
+                        if diff_with_server_item {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::GitCompareArrows,
+                                Box::new(EditorAction::DiffWithServer),
+                                move |_, cx| Label::new(i18n_editor(cx, "diff_with_server")),
                             );
                         }
                         if delete_item {
@@ -1338,13 +1466,18 @@ impl ZedisEditor {
         // the dedicated read-only card instead of the raw bytes editor.
         let is_hll = value.key_type() == KeyType::String
             && value.bytes_value().is_some_and(|b| looks_like_hll(b.bytes.as_ref()));
-        // Bitmap view: the user's explicit override, else the small-binary
-        // heuristic. Only for plain (non-HLL) string keys.
+        // Bitmap view: only for genuinely opaque (`DataFormat::Bytes`) non-HLL
+        // string keys — anything the format pipeline decoded (Protobuf,
+        // MessagePack, JSON, timestamps, compressed, …) keeps its own viewer.
+        // Then the user's explicit override, else the small-binary heuristic.
         let bitmap_view = value.key_type() == KeyType::String
             && !is_hll
-            && self
-                .bitmap_override
-                .unwrap_or_else(|| value.bytes_value().is_some_and(|b| looks_like_bitmap(b.bytes.as_ref())));
+            && value.bytes_value().is_some_and(|b| {
+                matches!(b.format, DataFormat::Bytes)
+                    && self
+                        .bitmap_override
+                        .unwrap_or_else(|| looks_like_bitmap(b.bytes.as_ref()))
+            });
 
         match value.key_type() {
             KeyType::List => {
@@ -1589,6 +1722,9 @@ impl Render for ZedisEditor {
                 }
                 EditorAction::CopyTo => {
                     this.open_copy_dialog(window, cx);
+                }
+                EditorAction::DiffWithServer => {
+                    this.open_diff_with_server_dialog(window, cx);
                 }
                 _ => {
                     cx.propagate();

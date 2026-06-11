@@ -42,10 +42,20 @@ pub struct ZedisCopyKeyDialog {
     db_input: Entity<InputState>,
     /// Overwrite an existing destination key (`RESTORE … REPLACE`).
     overwrite: bool,
+    /// Whether to show the overwrite checkbox + RESTORE version note. The
+    /// cross-server *diff* reuses this dialog purely as a server / db picker,
+    /// so it hides both.
+    show_overwrite: bool,
 }
 
 impl ZedisCopyKeyDialog {
-    pub fn new(source_id: SharedString, source_db: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        source_id: SharedString,
+        source_db: usize,
+        show_overwrite: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let servers: Vec<(SharedString, SharedString)> = get_servers()
             .unwrap_or_default()
             .into_iter()
@@ -64,6 +74,7 @@ impl ZedisCopyKeyDialog {
             selected_server_id,
             db_input,
             overwrite: false,
+            show_overwrite,
         }
     }
 
@@ -121,19 +132,21 @@ impl Render for ZedisCopyKeyDialog {
             .child(server_row)
             .child(Label::new(i18n_copy(cx, "target_db")).text_xs().text_color(muted))
             .child(Input::new(&self.db_input).small().w(px(120.)))
-            .child(
-                Checkbox::new("copy-overwrite")
-                    .label(i18n_copy(cx, "overwrite"))
-                    .checked(self.overwrite)
-                    .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                        this.overwrite = *checked;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Label::new(i18n_copy(cx, "version_note"))
-                    .text_xs()
-                    .text_color(cx.theme().yellow),
-            )
+            .when(self.show_overwrite, |this| {
+                this.child(
+                    Checkbox::new("copy-overwrite")
+                        .label(i18n_copy(cx, "overwrite"))
+                        .checked(self.overwrite)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.overwrite = *checked;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Label::new(i18n_copy(cx, "version_note"))
+                        .text_xs()
+                        .text_color(cx.theme().yellow),
+                )
+            })
     }
 }

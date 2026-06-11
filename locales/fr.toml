@@ -42,6 +42,9 @@ clients = "Clients bloqués et connectés"
 slow_logs = "Journaux lents"
 disable_in_readonly = "Désactivé en mode lecture seule"
 back_to_editor = "Back to editor"
+export_csv = "Exporter en CSV"
+csv_exported = "CSV exporté"
+csv_export_failed = "Échec de l'export CSV"
 
 
 # --- Espaces réservés généraux ---
@@ -191,6 +194,8 @@ history_empty = "Pas encore d'historique — enregistrez une modification pour c
 
 # Vue de diff côte à côte (scénarios 1 et 2 de l'historique local)
 diff_button = "Diff"
+diff_with_server = "Comparer avec le serveur…"
+diff_string_only = "La comparaison entre serveurs n'est disponible que pour les clés string."
 diff_button_tooltip = "Comparer avec une version précédente (bouton fractionné : clic = précédente, menu = n'importe quelle version)"
 diff_no_history = "Le diff nécessite au moins une version sauvegardée"
 diff_view_title = "Diff vs v%{version} (il y a %{ago})"
@@ -202,6 +207,15 @@ diff_patch_label = "Patch RFC 7396 (charge équivalente à JSON.MERGE)"
 diff_patch_empty = "{}  // aucun changement"
 
 [key_tree]
+set_ttl_tooltip = "Définir le TTL…"
+persist_tooltip = "Retirer le TTL (PERSIST)"
+batch_ttl_title = "Définir le TTL"
+batch_ttl_placeholder = "ex. 7d, 3600, 1h30m"
+batch_ttl_prompt = "Appliquer ce TTL aux clés concernées :"
+set_ttl_confirm = "Définir le TTL"
+persist_title = "Retirer le TTL"
+persist_prompt = "Retirer le TTL (PERSIST) des clés concernées ?"
+export_csv_confirm = "Exporter les %{count} clés actuellement chargées ? C'est le sous-ensemble SCAN actuel, pas tout le keyspace."
 no_keys_found = "Aucune clé trouvée"
 load_more = "Charger plus"
 key_not_exists = "La clé n'existe pas ou a expiré"
@@ -1025,6 +1039,28 @@ col_command = "Commande"
 col_rate = "Appels/s"
 col_avg = "µs/appel"
 col_calls = "Appels"
+
+[value_search]
+title = "Recherche par valeur"
+prefix_placeholder = "Préfixe de clé (obligatoire), ex. session:"
+query_placeholder = "Texte à trouver dans les valeurs string"
+search = "Rechercher"
+stop = "Arrêter"
+need_prefix = "Un préfixe de clé est obligatoire (le scan de tout le keyspace est refusé)"
+need_query = "Saisissez le texte à rechercher"
+searching = "Recherche…"
+no_matches = "Aucune valeur correspondante"
+truncated = "Affichage des premières correspondances seulement — affinez le préfixe ou la requête"
+summary = "Analysés %{scanned} · correspondances %{matched} · %{skipped} ignorés (trop gros) · %{reason}"
+reason_done = "terminé"
+reason_capped = "limite de scan atteinte"
+reason_timeout = "expiré"
+reason_cancelled = "arrêté"
+preview_hint = "Cliquez sur un résultat pour prévisualiser sa valeur"
+loading = "Chargement…"
+open = "Ouvrir"
+loc_field = "champ"
+loc_member = "membre"
 
 [hll]
 title = "HyperLogLog"

@@ -81,6 +81,11 @@ The key bar's `…` menu opens a rename dialog (prefilled with the current name)
 "Copy to…" in the key bar's `…` menu picks a target server + db (with an overwrite toggle), then ships the selected key there via `DUMP` on the source and `RESTORE` on the target — value, encoding and remaining TTL all preserved server-side. Great for promoting a key into a test environment. Cross-version copies obey Redis's `RESTORE` compatibility rules.
 </details>
 
+<details><summary><b>Cross-Server Key Diff</b> — compare a string key against the same key on another server.</summary>
+
+"Diff with server…" in the key bar's `…` menu picks a target server + db, fetches that server's value of the current key (`GET`), and opens the side-by-side diff view — the other server on the left, this one on the right (RedisJSON keys also get the RFC 7396 merge-patch block). Built for "why does prod's config differ from staging?". String keys only.
+</details>
+
 <details><summary><b>Hash Field-Level TTL</b> (Redis 7.4+) — per-field expiry via HEXPIRE / HPERSIST.</summary>
 
 Set individual expiry times on specific hash fields — no need to restructure your data model just to expire a subset of fields.
@@ -165,9 +170,19 @@ Sort the Top-N table by **Size / Hottest / Coldest** — `OBJECT FREQ` or `OBJEC
 A diagnostics page (status-bar Tools menu) that polls `INFO commandstats` — aggregated across all cluster masters — and shows a striped, per-command **calls/second** table computed from the delta between samples (cumulative counters are meaningless on their own; a `CONFIG RESETSTAT` is handled gracefully). For *which key* is hottest, the Memory Analyzer's "Hottest" sort already covers it via `OBJECT FREQ`.
 </details>
 
+<details><summary><b>Value Search</b> — find which key <i>contains</i> some text (Redis can't index this, so it's a guarded sample).</summary>
+
+Redis only matches by key name, so "which key holds this value" means SCANning and reading values — `O(keyspace)`. This page (status-bar Tools menu) runs it behind guardrails: a **mandatory key prefix** pins the scan to a namespace, it stops after **10k keys or 10s** (cancellable), values over **1 MiB** (or containers over **10k elements**) are skipped, and the summary states exactly what was *scanned / matched / skipped* and why it stopped — results are an explicit **sample**, never claimed exhaustive. Searches **string values, hash fields, and list / set / sorted-set members** (case-insensitive substring), and every hit shows *where* it matched (field / index / member). Click a hit to preview its value inline.
+</details>
+
 <details><summary><b>Cluster Health</b> — inspect cluster/Sentinel topology as a tree with replication lag.</summary>
 
 Hover the node indicator to see masters with their slot ranges, replicas grouped beneath, plus per-replica replication lag (bytes + seconds + link state) parsed from `INFO replication`.
+</details>
+
+<details><summary><b>Cluster / Sentinel Management</b> — failover, forget, meet, replicate from a GUI panel.</summary>
+
+The Topology panel (status-bar Tools menu) turns the detected deployment into actionable controls. **Cluster**: per-replica `CLUSTER FAILOVER` (with a `FORCE` option, run on that replica), `CLUSTER FORGET` fanned out to every master, plus `CLUSTER MEET host:port` and `CLUSTER REPLICATE` forms. **Sentinel**: per-master `SENTINEL FAILOVER`, `RESET`, and `REMOVE`. Every write routes through the confirm dialog with production-tag escalation. The panel only appears on multi-node deployments — Standalone servers don't get the menu entry.
 </details>
 
 <details><summary><b>Deep Diagnostics</b> — Slow Log ↔ Latency cross-linking, live MONITOR, client management.</summary>
@@ -235,6 +250,11 @@ Right-click any folder to refresh its contents or delete all keys under that pre
 <details><summary><b>Multi-Select & Batch Delete</b> — mark and delete dozens of keys at once.</summary>
 
 Toggle multi-select mode to delete many keys without writing a single command.
+</details>
+
+<details><summary><b>Batch TTL</b> — set or remove expiry on a whole multi-selection or key prefix at once.</summary>
+
+Right-click a multi-selection or a folder in the tree: **Set TTL…** opens a dialog (durations like `7d`, `3600`, `1h30m`) and pipelines `EXPIRE` across every key in scope; **Remove TTL (persist)** runs `PERSIST`. Cluster-safe (per-key concurrent commands instead of a cross-slot pipeline), and both routes go through the confirm dialog with PROD escalation — no more setting expiry one key at a time.
 </details>
 
 <details><summary><b>Key Favorites & Search History</b> — bookmark keys, revisit recent searches.</summary>
