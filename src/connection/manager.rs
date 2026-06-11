@@ -1618,9 +1618,39 @@ async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<(String, Version)>>
     Ok(modules)
 }
 async fn get_databases(mut conn: RedisAsyncConn) -> Result<usize> {
-    let db_config: Vec<String> = cmd("CONFIG").arg("GET").arg("databases").query_async(&mut conn).await?;
-    let databases = db_config.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
-    Ok(databases)
+    // Step 1 — CONFIG GET databases: the exact count on self-hosted /
+    // unrestricted servers.
+    let config_reply: redis::RedisResult<Vec<String>> =
+        cmd("CONFIG").arg("GET").arg("databases").query_async(&mut conn).await;
+    if let Ok(reply) = config_reply
+        && let Some(count) = reply.get(1).and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0)
+    {
+        return Ok(count);
+    }
+
+    // Step 2 — CONFIG blocked (e.g. AWS ElastiCache) → degrade to INFO
+    // keyspace, which ACLs and managed clouds almost always allow. It lists
+    // only *non-empty* DBs, so the highest `dbN:` line proves at least N+1
+    // selectable DBs exist; clamp up to the conventional 16 so the switcher
+    // offers the usual range.
+    let info_reply: redis::RedisResult<String> = cmd("INFO").arg("keyspace").query_async(&mut conn).await;
+    if let Ok(info) = info_reply {
+        let mut max_db: Option<usize> = None;
+        for line in info.lines() {
+            if let Some(rest) = line.strip_prefix("db")
+                && let Some(n) = rest.split(':').next().and_then(|s| s.parse::<usize>().ok())
+            {
+                max_db = Some(max_db.map_or(n, |m| m.max(n)));
+            }
+        }
+        if let Some(n) = max_db {
+            return Ok((n + 1).max(16));
+        }
+    }
+
+    // Both probes inconclusive (CONFIG blocked + every DB empty). Fall back to
+    // 1 — the user can still set an explicit count in the server config.
+    Ok(1)
 }
 impl ConnectionManager {
     pub fn new() -> Self {
@@ -1823,7 +1853,13 @@ impl ConnectionManager {
             AccessMode::ReadWrite
         };
         let modules = get_modules(connection.clone()).await.unwrap_or_default();
-        let databases = get_databases(connection.clone()).await.unwrap_or(1);
+        // Prefer the user-configured count — it works on managed clouds that
+        // block `CONFIG` (ElastiCache) and on Valkey cluster (multi-db). Only
+        // probe `CONFIG GET databases` when the server config leaves it unset.
+        let databases = match config.databases {
+            Some(n) => n,
+            None => get_databases(connection.clone()).await.unwrap_or(1),
+        };
         let mut client = RedisClient {
             db,
             databases,

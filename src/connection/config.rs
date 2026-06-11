@@ -109,6 +109,12 @@ pub struct RedisServer {
     pub username: Option<String>,
     pub password: Option<String>,
     pub server_type: Option<usize>,
+    /// User-set number of selectable logical databases. When `None` the
+    /// count is probed at connect via `CONFIG GET databases`. Lets managed
+    /// clouds that block `CONFIG` (e.g. ElastiCache) or Valkey cluster
+    /// (which, unlike Redis cluster, allows multi-db) still get the db
+    /// switcher by setting it explicitly.
+    pub databases: Option<usize>,
     pub master_name: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
@@ -187,6 +193,9 @@ impl RedisServer {
             insecure: get_bool("insecure"),
             ssh_tunnel: get_bool("ssh_tunnel"),
             readonly: get_bool("readonly"),
+            databases: get_str("databases")
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0),
             tag: get_str("tag"),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
             require_confirm_writes: get_bool("require_confirm_writes"),

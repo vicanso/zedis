@@ -332,6 +332,10 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "server_type_placeholder"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::RadioGroup),
+            ZedisFormField::new("databases", i18n_servers(cx, "databases"))
+                .default_value(redis_server.databases.map(|n| n.to_string()).unwrap_or_default())
+                .placeholder(i18n_servers(cx, "databases_placeholder"))
+                .tab_index(3),
             ZedisFormField::new("readonly", i18n_servers(cx, "readonly"))
                 .default_value(redis_server.readonly.unwrap_or(false).to_string())
                 .placeholder(i18n_servers(cx, "readonly_check_label"))
