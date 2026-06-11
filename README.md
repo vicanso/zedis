@@ -86,6 +86,11 @@ The key bar's `…` menu opens a rename dialog (prefilled with the current name)
 "Diff with server…" in the key bar's `…` menu picks a target server + db, fetches that server's value of the current key (`GET`), and opens the side-by-side diff view — the other server on the left, this one on the right (RedisJSON keys also get the RFC 7396 merge-patch block). Built for "why does prod's config differ from staging?". String keys only.
 </details>
 
+<details><summary><b>Cross-Server Config Diff</b> — compare two servers' <code>CONFIG GET *</code>, showing only what differs.</summary>
+
+The Config editor's "Compare" button picks another server and pulls `CONFIG GET *` from both, then renders a striped table of only the parameters whose values differ (parameter / this server / other server). The fast way to answer "why does this node behave differently?". Needs a server where `CONFIG` is permitted.
+</details>
+
 <details><summary><b>Hash Field-Level TTL</b> (Redis 7.4+) — per-field expiry via HEXPIRE / HPERSIST.</summary>
 
 Set individual expiry times on specific hash fields — no need to restructure your data model just to expire a subset of fields.

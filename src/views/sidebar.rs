@@ -174,9 +174,12 @@ impl ZedisSidebar {
     /// user can re-expand) but skips all of its server rows.
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let current_server_id = self.state.server_id.clone();
+        // The config editor (`Route::Config`) operates on the active server, so
+        // it keeps that server row highlighted; only the Protos / Scripts
+        // managers drop the server-row selection.
         let is_match_route = !matches!(
             cx.global::<ZedisGlobalStore>().read(cx).route(),
-            Route::Protos | Route::Scripts | Route::Config,
+            Route::Protos | Route::Scripts,
         );
 
         // App brand name as the top entry — matches the convention

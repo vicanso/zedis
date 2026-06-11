@@ -642,6 +642,12 @@ edit_tooltip = "Редактировать конфигурацию"
 save_success = "Конфигурация сохранена"
 save_failed = "Ошибка сохранения"
 no_data = "Конфигурация не загружена. Подключитесь к серверу."
+compare_tooltip = "Сравнить конфигурацию с другим сервером"
+compare_title = "Сравнить конфигурацию"
+compare_failed = "Ошибка сравнения"
+no_diff = "Нет различий"
+param = "Параметр"
+exit_diff = "Выйти из сравнения"
 
 [migration]
 export_title = "Export Keys"

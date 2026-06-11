@@ -642,6 +642,12 @@ edit_tooltip = "Diese Konfiguration bearbeiten"
 save_success = "Konfiguration gespeichert"
 save_failed = "Speichern fehlgeschlagen"
 no_data = "Keine Konfiguration geladen. Verbinden Sie sich mit einem Server."
+compare_tooltip = "Konfiguration mit anderem Server vergleichen"
+compare_title = "Konfiguration vergleichen"
+compare_failed = "Vergleich fehlgeschlagen"
+no_diff = "Keine Unterschiede"
+param = "Parameter"
+exit_diff = "Vergleich beenden"
 
 [migration]
 export_title = "Export Keys"

@@ -642,6 +642,12 @@ edit_tooltip = "Edit this config"
 save_success = "Config saved"
 save_failed = "Save failed"
 no_data = "No config loaded. Connect to a server to view configuration."
+compare_tooltip = "Compare config with another server"
+compare_title = "Compare config"
+compare_failed = "Compare failed"
+no_diff = "No differences"
+param = "Parameter"
+exit_diff = "Exit diff"
 
 [migration]
 export_title = "Export Keys"

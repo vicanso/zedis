@@ -539,12 +539,14 @@ impl Render for ZedisValueSearch {
         let border = cx.theme().border;
         v_flex()
             .size_full()
-            .gap_2()
-            .p_3()
             .child(
                 h_flex()
                     .items_center()
                     .gap_2()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(border)
                     .child(
                         Button::new("vs-back")
                             .ghost()
@@ -559,34 +561,41 @@ impl Render for ZedisValueSearch {
                     )
                     .child(Label::new(i18n_value_search(cx, "title")).font_semibold()),
             )
-            .child(header)
-            .when_some(status, |this, label| this.child(label))
             .child(
-                h_flex()
+                v_flex()
                     .flex_1()
                     .min_h_0()
-                    .w_full()
                     .gap_2()
+                    .p_3()
+                    .child(header)
+                    .when_some(status, |this, label| this.child(label))
                     .child(
-                        div()
-                            .id("vs-results")
-                            .w(px(320.))
-                            .h_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .child(results),
-                    )
-                    .child(
-                        div()
-                            .id("vs-preview")
+                        h_flex()
                             .flex_1()
-                            .h_full()
-                            .min_w_0()
-                            .border_l_1()
-                            .border_color(border)
-                            .overflow_scroll()
-                            .track_scroll(&self.preview_scroll)
-                            .child(preview),
+                            .min_h_0()
+                            .w_full()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("vs-results")
+                                    .w(px(320.))
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll)
+                                    .child(results),
+                            )
+                            .child(
+                                div()
+                                    .id("vs-preview")
+                                    .flex_1()
+                                    .h_full()
+                                    .min_w_0()
+                                    .border_l_1()
+                                    .border_color(border)
+                                    .overflow_scroll()
+                                    .track_scroll(&self.preview_scroll)
+                                    .child(preview),
+                            ),
                     ),
             )
     }

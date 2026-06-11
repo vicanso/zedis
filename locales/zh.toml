@@ -641,6 +641,12 @@ edit_tooltip = "编辑此配置"
 save_success = "配置已保存"
 save_failed = "保存失败"
 no_data = "未加载配置。连接到服务器后查看配置。"
+compare_tooltip = "与另一台服务器对比配置"
+compare_title = "对比配置"
+compare_failed = "对比失败"
+no_diff = "无差异"
+param = "参数"
+exit_diff = "退出对比"
 
 [migration]
 export_title = "导出键"

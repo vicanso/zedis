@@ -642,6 +642,12 @@ edit_tooltip = "この設定を編集"
 save_success = "設定を保存しました"
 save_failed = "保存に失敗しました"
 no_data = "設定が読み込まれていません。サーバーに接続して設定を表示してください。"
+compare_tooltip = "別のサーバーと設定を比較"
+compare_title = "設定を比較"
+compare_failed = "比較に失敗しました"
+no_diff = "差分なし"
+param = "パラメータ"
+exit_diff = "比較を終了"
 
 [migration]
 export_title = "Export Keys"

@@ -14,11 +14,13 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{DangerKind, get_connection_manager, get_server},
+    connection::{DangerKind, get_connection_manager, get_server, get_servers},
     error::Error,
     helpers::get_font_family,
-    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_config_editor},
-    views::confirm_dangerous_command,
+    states::{
+        Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_config_editor,
+    },
+    views::{ZedisCopyKeyDialog, confirm_dangerous_command},
 };
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -31,10 +33,21 @@ use gpui_component::{
     v_flex,
 };
 use redis::cmd;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use tracing::error;
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// A computed `CONFIG GET *` diff between the active server and another:
+/// only the parameters whose values differ, plus the two column labels.
+struct ConfigDiff {
+    local_label: SharedString,
+    other_label: SharedString,
+    /// `(parameter, local value, other value)`; a value absent on one side is
+    /// an empty string.
+    rows: Vec<(SharedString, SharedString, SharedString)>,
+}
 
 pub struct ZedisConfigEditor {
     server_state: Entity<ZedisServerState>,
@@ -45,6 +58,8 @@ pub struct ZedisConfigEditor {
     edit_state: Entity<InputState>,
     loading: bool,
     pending_notification: Option<Notification>,
+    /// Active cross-server config comparison (`None` = normal editor view).
+    diff: Option<ConfigDiff>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -78,6 +93,7 @@ impl ZedisConfigEditor {
             edit_state,
             loading: false,
             pending_notification: None,
+            diff: None,
             _subscriptions: subscriptions,
         };
         this.load_configs(cx);
@@ -150,6 +166,95 @@ impl ZedisConfigEditor {
             });
         })
         .detach();
+    }
+
+    /// Open the server picker (copy dialog reused as a server / db picker) and,
+    /// on OK, compare this server's `CONFIG GET *` against the chosen one.
+    fn open_compare_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        let source_id = server_state.server_id().to_string();
+        let source_db = server_state.db();
+        if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
+            return;
+        }
+        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.into(), source_db, false, window, cx));
+        let view_child = view.clone();
+        let view_ok = view.clone();
+        let editor = cx.entity().downgrade();
+        ZedisDialog::new(i18n_config_editor(cx, "compare_title"))
+            .w(px(460.))
+            .ok_text(i18n_config_editor(cx, "compare_title"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_config_editor(cx, "compare_title"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, _window, cx| {
+                let Some(target_id) = view_ok.read(cx).target_server_id() else {
+                    return false;
+                };
+                let target_db = view_ok.read(cx).target_db(cx);
+                if let Some(editor) = editor.upgrade() {
+                    editor.update(cx, |this, cx| this.run_compare(target_id, target_db, cx));
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Fetch `CONFIG GET *` from the target and store the differing parameters.
+    fn run_compare(&mut self, target_id: SharedString, target_db: usize, cx: &mut Context<Self>) {
+        let local = self.configs.clone();
+        let local_id = self.server_state.read(cx).server_id().to_string();
+        let local_label: SharedString = get_server(&local_id)
+            .map(|s| s.name.into())
+            .unwrap_or_else(|_| local_id.clone().into());
+        let other_label: SharedString = get_server(&target_id)
+            .map(|s| s.name.into())
+            .unwrap_or_else(|_| target_id.clone());
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&target_id, target_db).await?;
+                let map: HashMap<String, String> = cmd("CONFIG").arg("GET").arg("*").query_async(&mut conn).await?;
+                Ok::<HashMap<String, String>, Error>(map)
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |this, cx| match result {
+                Ok(other_map) => {
+                    let mut local_map: HashMap<String, String> =
+                        local.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                    let mut keys: BTreeSet<String> = local_map.keys().cloned().collect();
+                    keys.extend(other_map.keys().cloned());
+                    let mut rows: Vec<(SharedString, SharedString, SharedString)> = Vec::new();
+                    for key in keys {
+                        let lv = local_map.remove(&key).unwrap_or_default();
+                        let ov = other_map.get(&key).cloned().unwrap_or_default();
+                        if lv != ov {
+                            rows.push((key.into(), lv.into(), ov.into()));
+                        }
+                    }
+                    this.diff = Some(ConfigDiff {
+                        local_label,
+                        other_label,
+                        rows,
+                    });
+                    cx.notify();
+                }
+                Err(e) => {
+                    let msg: SharedString = format!("{}: {e}", i18n_config_editor(cx, "compare_failed")).into();
+                    this.pending_notification = Some(Notification::error(msg));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn close_diff(&mut self, cx: &mut Context<Self>) {
+        self.diff = None;
+        cx.notify();
     }
 }
 
@@ -329,9 +434,107 @@ impl Render for ZedisConfigEditor {
                                 this.load_configs(cx);
                             })),
                     )
+                    .child(
+                        Button::new("config-compare")
+                            .small()
+                            .ghost()
+                            .icon(Icon::new(CustomIconName::GitCompareArrows))
+                            .tooltip(i18n_config_editor(cx, "compare_tooltip"))
+                            .on_click(cx.listener(|this, _, window, cx| this.open_compare_dialog(window, cx))),
+                    )
+                    .when(self.diff.is_some(), |this| {
+                        this.child(
+                            Button::new("config-exit-diff")
+                                .small()
+                                .ghost()
+                                .label(i18n_config_editor(cx, "exit_diff"))
+                                .on_click(cx.listener(|this, _, _, cx| this.close_diff(cx))),
+                        )
+                    })
                     .child(div().w(px(200.0)).child(Input::new(&self.filter_state).small())),
             )
-            .child(if self.configs.is_empty() && !self.loading {
+            .child(if let Some(diff) = &self.diff {
+                let border = cx.theme().border;
+                let muted = cx.theme().muted_foreground;
+                let fg = cx.theme().foreground;
+                let filter = self.filter.to_lowercase();
+                let filtered_diff: Vec<&(SharedString, SharedString, SharedString)> = diff
+                    .rows
+                    .iter()
+                    .filter(|(k, _, _)| filter.is_empty() || k.to_lowercase().contains(&filter))
+                    .collect();
+                if filtered_diff.is_empty() {
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Label::new(i18n_config_editor(cx, "no_diff")).text_color(muted))
+                        .into_any_element()
+                } else {
+                    let header_row = h_flex()
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .w(px(280.0))
+                                .flex_none()
+                                .child(Label::new(i18n_config_editor(cx, "param")).text_xs().text_color(muted)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(Label::new(diff.local_label.clone()).text_xs().text_color(muted)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(Label::new(diff.other_label.clone()).text_xs().text_color(muted)),
+                        );
+                    let diff_rows = filtered_diff.into_iter().enumerate().map(move |(i, (key, lv, ov))| {
+                        let is_stripe = i % 2 != 0;
+                        h_flex()
+                            .w_full()
+                            .px_3()
+                            .py_1()
+                            .gap_2()
+                            .border_b_1()
+                            .border_color(border)
+                            .when(is_stripe, |this| this.bg(stripe_bg))
+                            .child(
+                                div()
+                                    .w(px(280.0))
+                                    .flex_none()
+                                    .child(Label::new(key.clone()).text_sm().text_color(fg)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(Label::new(lv.clone()).text_sm().text_ellipsis().text_color(muted)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(Label::new(ov.clone()).text_sm().text_ellipsis().text_color(fg)),
+                            )
+                    });
+                    div()
+                        .id("config-diff-body")
+                        .flex_1()
+                        .w_full()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(header_row)
+                        .children(diff_rows)
+                        .into_any_element()
+                }
+            } else if self.configs.is_empty() && !self.loading {
                 div()
                     .flex_1()
                     .flex()

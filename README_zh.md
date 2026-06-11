@@ -87,6 +87,11 @@ key 栏 `…` 菜单的"复制到…"选择目标服务器 + db（带覆盖开�
 key 栏 `…` 菜单的"与服务器对比…"选择目标服务器 + db，取对端该 key 的值（`GET`），打开并排 diff 视图——左边对端、右边本机（RedisJSON 还附 RFC 7396 merge-patch 块）。专为排查"prod 和 staging 配置为何不一致"。仅支持 string 类型。
 </details>
 
+<details><summary><b>跨服务器配置对比</b> —— 对比两台的 <code>CONFIG GET *</code>，只列有差异的项。</summary>
+
+配置编辑器的"对比"按钮选择另一台服务器，从两边各拉一份 `CONFIG GET *`，再以斑马线表格只显示值不同的参数（参数 / 本机 / 对端）。排查"为什么这台节点行为不一样"的利器。需目标服务器允许 `CONFIG` 命令。
+</details>
+
 <details><summary><b>Hash 字段级 TTL</b>（Redis 7.4+）—— 通过 HEXPIRE / HPERSIST 设置单字段过期。</summary>
 
 为 Hash 中特定字段设置独立过期时间，无需为了让部分字段过期而重构数据模型。

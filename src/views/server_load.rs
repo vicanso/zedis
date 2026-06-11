@@ -342,12 +342,14 @@ impl Render for ZedisServerLoad {
         let body = self.render_table(cx);
         v_flex()
             .size_full()
-            .gap_2()
-            .p_3()
             .child(
                 h_flex()
                     .items_center()
                     .gap_2()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
                         Button::new("server-load-back")
                             .ghost()

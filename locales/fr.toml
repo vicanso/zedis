@@ -643,6 +643,12 @@ edit_tooltip = "Modifier cette configuration"
 save_success = "Configuration sauvegardée"
 save_failed = "Échec de la sauvegarde"
 no_data = "Aucune configuration chargée. Connectez-vous à un serveur."
+compare_tooltip = "Comparer la configuration avec un autre serveur"
+compare_title = "Comparer la configuration"
+compare_failed = "Échec de la comparaison"
+no_diff = "Aucune différence"
+param = "Paramètre"
+exit_diff = "Quitter la comparaison"
 
 [migration]
 export_title = "Export Keys"
