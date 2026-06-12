@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::async_connection::{get_redis_connection_timeout, get_redis_response_timeout};
+use super::async_connection::{resolve_connection_timeout, resolve_response_timeout};
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
@@ -565,6 +565,8 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
     let ssh_password = config.ssh_password.clone().unwrap_or_default();
     let host = config.host.to_string();
     let port = config.port;
+    let connection_timeout = resolve_connection_timeout(config);
+    let response_timeout = resolve_response_timeout(config);
     let username = config.username.clone();
     let password = config.password.clone();
     let tls_connector = if config.tls.unwrap_or(false) {
@@ -582,8 +584,8 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
         let ssh_stream = SshRedisStream::new(channel.into_stream());
         let info = RedisConnectionInfo::default();
         let conn_config = redis::AsyncConnectionConfig::new()
-            .set_connection_timeout(Some(get_redis_connection_timeout()))
-            .set_response_timeout(Some(get_redis_response_timeout()));
+            .set_connection_timeout(Some(connection_timeout))
+            .set_response_timeout(Some(response_timeout));
 
         let mut connection = if let Some(tls_connector) = tls_connector {
             let server_name = ServerName::try_from(host.as_str())

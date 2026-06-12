@@ -33,8 +33,13 @@ use gpui_component::{
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use std::sync::Arc;
+use std::collections::VecDeque;
 use tracing::{error, info};
+
+/// Cap on retained messages. The list is a ring buffer (like the Monitor
+/// view's `MAX_RECORDS`) so subscribing to a hot channel can't grow
+/// memory without bound; matches the Keyspace-notifications history cap.
+const MAX_MESSAGES: usize = 1_000;
 
 /// A single message received from a Redis Pub/Sub channel.
 #[derive(Clone, Debug)]
@@ -47,13 +52,15 @@ struct PubsubMessage {
 /// Table delegate that drives the message list display.
 /// Column widths are computed from the available content area so the message
 /// column fills whatever space remains after timestamp and channel.
+/// `messages` is a newest-first ring buffer owned by the delegate — the
+/// subscription drainer pushes batches in via `TableState::update`.
 struct PubsubTableDelegate {
-    messages: Arc<Vec<PubsubMessage>>,
+    messages: VecDeque<PubsubMessage>,
     columns: Vec<Column>,
 }
 
 impl PubsubTableDelegate {
-    fn new(messages: Arc<Vec<PubsubMessage>>, window: &mut Window, cx: &mut gpui::App) -> Self {
+    fn new(window: &mut Window, cx: &mut gpui::App) -> Self {
         // Use the global content width if available; fall back to the full window width.
         let window_width = window.viewport_size().width;
         let content_width = cx
@@ -100,7 +107,10 @@ impl PubsubTableDelegate {
                     col
                 }),
         ];
-        Self { messages, columns }
+        Self {
+            messages: VecDeque::new(),
+            columns,
+        }
     }
 }
 
@@ -208,9 +218,11 @@ impl TableDelegate for PubsubTableDelegate {
 ///   2. Message table   – live stream of received messages (newest first)
 ///   3. Publish bar     – channel input + message input + publish button
 ///
-/// The subscription runs as a background async task (`subscribe_task`) that
-/// continuously reads from the Redis Pub/Sub stream and pushes messages into
-/// the shared `messages` vec. Dropping the task cancels the subscription.
+/// The subscription mirrors the Monitor pattern: a dedicated connection is
+/// read (and payloads decoded) on a *background* task that ferries parsed
+/// messages over a `smol::channel`; a foreground drainer pulls them in
+/// batches into the delegate's capped ring buffer with one `notify` per
+/// batch. Dropping `subscribe_task` cancels the loop and the connection.
 pub struct ZedisPubsubEditor {
     server_state: Entity<ZedisServerState>,
 
@@ -219,7 +231,9 @@ pub struct ZedisPubsubEditor {
     publish_message_input_state: Entity<InputState>,
 
     table_state: Entity<TableState<PubsubTableDelegate>>,
-    messages: Arc<Vec<PubsubMessage>>,
+    /// Mirror of the delegate's row count, kept by the drainer so
+    /// `render` can branch to the empty state without reading the table.
+    message_count: usize,
 
     /// True while the initial subscribe handshake is in progress.
     subscribing: bool,
@@ -278,8 +292,7 @@ impl ZedisPubsubEditor {
             },
         ));
 
-        let messages: Arc<Vec<PubsubMessage>> = Arc::new(Vec::new());
-        let delegate = PubsubTableDelegate::new(messages.clone(), window, cx);
+        let delegate = PubsubTableDelegate::new(window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         info!("Creating new pubsub editor");
@@ -290,7 +303,7 @@ impl ZedisPubsubEditor {
             publish_channel_input_state,
             publish_message_input_state,
             table_state,
-            messages,
+            message_count: 0,
             subscribing: false,
             subscribe_task: None,
             _subscriptions: subscriptions,
@@ -315,6 +328,7 @@ impl ZedisPubsubEditor {
 
         let entity = cx.entity().downgrade();
         let channel_clone = channel.clone();
+        let (tx, rx) = smol::channel::unbounded::<PubsubMessage>();
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
             // Establish a dedicated Pub/Sub connection on a background thread
@@ -338,47 +352,68 @@ impl ZedisPubsubEditor {
                         cx.notify();
                     });
 
-                    // Continuously read messages from the subscription stream.
-                    // Each incoming message is prepended to the list so the
-                    // newest message always appears at the top of the table.
-                    use futures::StreamExt;
-                    let mut stream = pubsub.on_message();
-                    loop {
-                        let msg_opt = stream.next().await;
-
-                        match msg_opt {
-                            Some(msg) => {
-                                let channel: String = msg.get_channel_name().to_string();
-                                let payload = msg.get_payload_bytes();
-                                let (_, text) = detect_and_decode(payload, 1024);
-                                let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                                // Update both the editor's own message list and the
-                                // table delegate's reference so the UI stays in sync.
-                                let result = entity.update(cx, move |this, cx| {
-                                    let mut msgs = (*this.messages).clone();
-                                    msgs.insert(
-                                        0,
-                                        PubsubMessage {
-                                            timestamp: timestamp.into(),
-                                            channel: channel.into(),
-                                            message: text,
-                                        },
-                                    );
-                                    let messages = Arc::new(msgs);
-                                    this.messages = messages.clone();
-                                    this.table_state.update(cx, |state, _| {
-                                        state.delegate_mut().messages = messages;
-                                    });
-                                    cx.notify();
-                                });
-                                // Entity was dropped – stop the loop.
-                                if result.is_err() {
-                                    break;
-                                }
+                    // Read + decode messages on a background task so payload
+                    // decoding never lands on the UI thread; parsed entries
+                    // are ferried over the channel to the drainer below.
+                    let reader = cx.background_spawn(async move {
+                        use futures::StreamExt;
+                        let mut stream = pubsub.on_message();
+                        while let Some(msg) = stream.next().await {
+                            let channel: String = msg.get_channel_name().to_string();
+                            let (_, text) = detect_and_decode(msg.get_payload_bytes(), 1024);
+                            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                            let entry = PubsubMessage {
+                                timestamp: timestamp.into(),
+                                channel: channel.into(),
+                                message: text,
+                            };
+                            // Receiver gone (entity dropped) — stop reading.
+                            if tx.send(entry).await.is_err() {
+                                break;
                             }
-                            None => break,
+                        }
+                    });
+
+                    // Foreground drainer (Monitor pattern): after the first
+                    // recv() wakes us, drain everything pending (capped per
+                    // batch) into the ring buffer with a single notify —
+                    // a hot channel costs one refresh per batch, not per
+                    // message, and memory stays bounded by MAX_MESSAGES.
+                    const BATCH_LIMIT: usize = 200;
+                    while let Ok(first) = rx.recv().await {
+                        let mut batch = Vec::with_capacity(BATCH_LIMIT);
+                        batch.push(first);
+                        while batch.len() < BATCH_LIMIT {
+                            match rx.try_recv() {
+                                Ok(entry) => batch.push(entry),
+                                Err(_) => break,
+                            }
+                        }
+
+                        let result = entity.update(cx, |this, cx| {
+                            let count = this.table_state.update(cx, |state, _| {
+                                let delegate = state.delegate_mut();
+                                // Newest first: prepend, trim from the tail.
+                                for entry in batch {
+                                    delegate.messages.push_front(entry);
+                                }
+                                while delegate.messages.len() > MAX_MESSAGES {
+                                    delegate.messages.pop_back();
+                                }
+                                delegate.messages.len()
+                            });
+                            this.message_count = count;
+                            cx.notify();
+                        });
+                        // Entity was dropped – stop the loop.
+                        if result.is_err() {
+                            break;
                         }
                     }
+
+                    // Stream ended or entity dropped: cancel the reader (and
+                    // with it the dedicated Pub/Sub connection).
+                    drop(reader);
                 }
                 Err(e) => {
                     error!("Pubsub subscribe error: {:?}", e);
@@ -482,7 +517,7 @@ impl ZedisPubsubEditor {
 
 impl Render for ZedisPubsubEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_empty = self.messages.is_empty();
+        let is_empty = self.message_count == 0;
 
         v_flex()
             .size_full()

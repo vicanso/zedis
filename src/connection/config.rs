@@ -115,6 +115,13 @@ pub struct RedisServer {
     /// (which, unlike Redis cluster, allows multi-db) still get the db
     /// switcher by setting it explicitly.
     pub databases: Option<usize>,
+    /// Per-server connection-establishment timeout in **seconds**. When
+    /// unset, falls back to the global setting — handy on a flaky link
+    /// where the global default is too slow to fail.
+    pub connection_timeout: Option<u64>,
+    /// Per-server per-command response timeout in **seconds**. When
+    /// unset, falls back to the global setting.
+    pub response_timeout: Option<u64>,
     pub master_name: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
@@ -195,6 +202,12 @@ impl RedisServer {
             readonly: get_bool("readonly"),
             databases: get_str("databases")
                 .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0),
+            connection_timeout: get_str("connection_timeout")
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|&n| n > 0),
+            response_timeout: get_str("response_timeout")
+                .and_then(|s| s.parse::<u64>().ok())
                 .filter(|&n| n > 0),
             tag: get_str("tag"),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),

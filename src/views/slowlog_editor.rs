@@ -23,9 +23,11 @@ use crate::connection::{
     latency_monitor_threshold, latency_reset, list_commands,
 };
 use crate::error::Error;
+use crate::helpers::{SlowlogAction, build_csv};
 use crate::states::{
     Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_slowlog_editor,
 };
+use crate::views::export_to_file;
 use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
 use ahash::AHashMap;
 use chrono::TimeZone;
@@ -39,6 +41,7 @@ use gpui_component::{
     button::Button,
     h_flex,
     label::Label,
+    menu::DropdownMenu,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -1099,6 +1102,69 @@ impl ZedisSlowlogEditor {
         cx.notify();
     }
 
+    /// Export the currently-filtered slow-log rows to a CSV file. The
+    /// numeric `duration_ms` (not the humanised "12ms") is exported so
+    /// the result sorts/analyses cleanly in a spreadsheet.
+    fn export_csv(&mut self, cx: &mut gpui::Context<Self>) {
+        let rows = self.filter_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                vec![
+                    r.timestamp.to_string(),
+                    r.duration_ms.to_string(),
+                    r.command.to_string(),
+                    r.args.to_string(),
+                    r.client.to_string(),
+                ]
+            })
+            .collect();
+        let csv = build_csv(&["timestamp", "duration_ms", "command", "args", "client"], &data);
+        self.save_export(csv.into_bytes(), "slowlog.csv", true, cx);
+    }
+
+    /// Export the currently-filtered slow-log rows to a pretty-printed
+    /// JSON array (one object per row, same columns as the CSV export).
+    fn export_json(&mut self, cx: &mut gpui::Context<Self>) {
+        let rows = self.filter_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let values: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "timestamp": r.timestamp.to_string(),
+                    "duration_ms": r.duration_ms,
+                    "command": r.command.to_string(),
+                    "args": r.args.to_string(),
+                    "client": r.client.to_string(),
+                })
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
+        self.save_export(json.into_bytes(), "slowlog.json", false, cx);
+    }
+
+    /// Shared save flow for the exports: prompt for a path, write the
+    /// bytes off the UI thread, and notify on success/failure. `is_csv`
+    /// only selects which notification strings to use. Mirrors the
+    /// value-search CSV export.
+    fn save_export(&mut self, bytes: Vec<u8>, suggested: &'static str, is_csv: bool, cx: &mut gpui::Context<Self>) {
+        let server_state = self.server_state.clone();
+        let (success_key, error_key) = if is_csv {
+            ("csv_exported", "csv_export_failed")
+        } else {
+            ("json_exported", "json_export_failed")
+        };
+        let success = i18n_common(cx, success_key);
+        let error = i18n_common(cx, error_key);
+        export_to_file(cx, server_state, bytes, suggested, success, error);
+    }
+
     /// Toggles a command in the selected set.
     fn toggle_command(&mut self, command: SharedString, cx: &mut gpui::Context<Self>) {
         if self.selected_commands.contains(&command) {
@@ -1255,6 +1321,12 @@ impl gpui::Render for ZedisSlowlogEditor {
                         this.child(self.render_latency_body(cx))
                     }),
             )
+            // The toolbar Export dropdown dispatches these; handle them
+            // here on the panel root (same pattern as `EditorAction`).
+            .on_action(cx.listener(|this, event: &SlowlogAction, _window, cx| match event {
+                SlowlogAction::ExportCsv => this.export_csv(cx),
+                SlowlogAction::ExportJson => this.export_json(cx),
+            }))
             .into_any_element()
     }
 }
@@ -1280,6 +1352,21 @@ impl ZedisSlowlogEditor {
                 )
                 .when(!command_buttons.is_empty(), |this| {
                     this.child(h_flex().gap_2().children(command_buttons))
+                })
+                // Export the currently-filtered rows (CSV / JSON). Only
+                // shown when there is at least one row to export.
+                .when(self.row_count > 0, |this| {
+                    this.child(
+                        Button::new("slowlog-export")
+                            .outline()
+                            .small()
+                            .icon(Icon::new(CustomIconName::Download))
+                            .label(i18n_common(cx, "export"))
+                            .dropdown_menu(move |menu, _window, cx| {
+                                menu.menu(i18n_common(cx, "export_csv"), Box::new(SlowlogAction::ExportCsv))
+                                    .menu(i18n_common(cx, "export_json"), Box::new(SlowlogAction::ExportJson))
+                            }),
+                    )
                 })
                 .into_any_element(),
             PerformanceTab::Latency => h_flex()

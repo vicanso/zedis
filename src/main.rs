@@ -3,15 +3,16 @@ use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
-    MemuAction, NavAction, PaletteAction, get_default_font_family, get_or_create_config_dir, is_app_store_build,
-    is_development, new_hot_keys, register_extra_languages,
+    MemuAction, NavAction, PaletteAction, ShortcutsAction, get_default_font_family, get_or_create_config_dir,
+    is_app_store_build, is_development, new_hot_keys, register_extra_languages,
 };
 use crate::states::{
     FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, ServerToolsAction,
     SettingsAction, ThemeAction, ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
 };
 use crate::views::{
-    ZedisCommandPalette, ZedisContent, ZedisSidebar, ZedisTitleBar, open_about_window, open_settings_window,
+    ZedisCommandPalette, ZedisContent, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, open_about_window,
+    open_settings_window,
 };
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance, WindowBounds,
@@ -51,6 +52,7 @@ pub struct Zedis {
     sidebar: Entity<ZedisSidebar>,
     content: Entity<ZedisContent>,
     command_palette: Entity<ZedisCommandPalette>,
+    shortcuts_overlay: Entity<ZedisShortcutsOverlay>,
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
     _clear_expired_cache: Option<Task<()>>,
@@ -61,6 +63,7 @@ impl Zedis {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
         let content = cx.new(|cx| ZedisContent::new(window, cx));
         let command_palette = cx.new(|cx| ZedisCommandPalette::new(window, cx));
+        let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
         let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
             if let GlobalEvent::Notification(e) = event {
@@ -115,6 +118,7 @@ impl Zedis {
             save_task: None,
             content,
             command_palette,
+            shortcuts_overlay,
             pending_notification: None,
             title_bar,
             theme_update_task: None,
@@ -154,6 +158,14 @@ impl Zedis {
     /// nothing is focused (e.g. right after the palette closed on ESC).
     pub fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette.update(cx, |palette, cx| palette.toggle(cx));
+    }
+
+    /// Toggle the keyboard-shortcuts overlay. Like the command palette
+    /// it is driven by a global (focus-independent) `ShortcutsAction`
+    /// handler so `⌘/` works regardless of focus, and so the command
+    /// palette can hand off to it via a dispatched action.
+    pub fn toggle_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.shortcuts_overlay.update(cx, |overlay, cx| overlay.toggle(cx));
     }
 
     fn render_titlebar(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -196,7 +208,10 @@ impl Render for Zedis {
             )
             // Command palette overlays everything (absolute, full-size
             // when open; zero-footprint when closed).
-            .child(self.command_palette.clone());
+            .child(self.command_palette.clone())
+            // Keyboard-shortcuts reference overlay (⌘/), same overlay
+            // model as the palette; rendered last so it stacks on top.
+            .child(self.shortcuts_overlay.clone());
         content
             .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let action = *e;
@@ -443,6 +458,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cx.on_action(move |_: &PaletteAction, cx: &mut App| {
                         if let Some(view) = weak_zedis.upgrade() {
                             view.update(cx, |zedis, cx| zedis.toggle_command_palette(cx));
+                        }
+                    });
+                    // Global (focus-independent) ⌘/ handler — same
+                    // rationale as the ⌘K handler above; also the target
+                    // of the command palette's "Keyboard Shortcuts" row.
+                    let weak_zedis_shortcuts = zedis_view.downgrade();
+                    cx.on_action(move |_: &ShortcutsAction, cx: &mut App| {
+                        if let Some(view) = weak_zedis_shortcuts.upgrade() {
+                            view.update(cx, |zedis, cx| zedis.toggle_shortcuts(cx));
                         }
                     });
                     cx.new(|cx| Root::new(zedis_view, window, cx))

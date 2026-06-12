@@ -9,4 +9,10 @@ ignore = [
     "RUSTSEC-2024-0419",
     "RUSTSEC-2024-0420",
     "RUSTSEC-2024-0429",
+    # proc-macro-error2 (unmaintained, informational — not a vulnerability).
+    # Build-time-only proc-macro dep, never in the shipped binary. Pulled
+    # transitively through pinned gpui / gpui-component git forks
+    # (stacksafe-macro, and rust-embed -> include-flate-codegen) that we
+    # can't swap out, and it has no newer/maintained release to update to.
+    "RUSTSEC-2026-0173",
 ]

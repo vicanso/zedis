@@ -29,14 +29,9 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 
 ### 🚀 Blazingly Fast & Native
 
-<details><summary><b>GPU Rendering</b> — every pixel drawn on the GPU; zero-lag scrolling, instant tab switches.</summary>
+<details><summary><b>Native GPU Rendering</b> — every pixel on the GPU, virtual-scrolled SCAN; millions of keys at 60+ FPS with minimal RAM.</summary>
 
-Minimal memory footprint even when navigating massive databases.
-</details>
-
-<details><summary><b>Virtual Lists</b> — browse instances with millions of keys without ever blocking the UI.</summary>
-
-Virtual scrolling combined with `SCAN` iteration keeps the interface responsive no matter how large the keyspace.
+Virtual scrolling combined with `SCAN` iteration keeps the interface responsive no matter how large the keyspace — zero-lag scrolling, instant tab switches, minimal memory footprint.
 </details>
 
 <details><summary><b>Cross-Platform</b> — native on macOS, Windows, and Linux, with Light / Dark / System themes.</summary>
@@ -55,105 +50,37 @@ Compressed values are unpacked in place so you read the real payload, not a blob
 
 <details><summary><b>Rich Content Decoding</b> — JSON/RedisJSON, Protobuf, MessagePack, Unix timestamps, media & hex.</summary>
 
-- **JSON & RedisJSON**: Full read/write with pretty-printing and syntax highlighting. Computes RFC 7396 Merge Patch diffs to send minimal `JSON.MERGE` commands instead of full overwrites. **JSONPath filtering** works on plain string keys too — query nested fields with `$.user.email` or `$.items[?(@.price > 100)]` without the RedisJSON module.
-- **Protobuf & MessagePack**: Zero-config binary deserialization into readable JSON-like output.
-- **Unix Timestamps**: A string that is exactly a 10-digit (seconds) or 13-digit (milliseconds) epoch is auto-recognized and previewed as local + UTC dates — the raw value stays intact and editable.
-- **Media & Hex**: Native preview for images (`PNG`, `JPG`, `WEBP`, `SVG`, `GIF`) and a fully editable hex view for raw binary — paste in hex (whitespace, commas, and `0x` prefixes tolerated) and Zedis decodes it back to bytes on save. Bytes-per-row auto-adapts (16 / 24 / 32) to viewport width.
+**JSON & RedisJSON** with pretty-printing, syntax highlighting, and minimal `JSON.MERGE` diffs (RFC 7396) — **JSONPath** (`$.user.email`, `$.items[?(@.price > 100)]`) works on plain string keys too, no module needed. **Protobuf & MessagePack** deserialize with zero config; 10/13-digit **Unix timestamps** preview as local + UTC; **images** (`PNG/JPG/WEBP/SVG/GIF`) and a fully editable **hex** view round it out.
 </details>
 
 <details><summary><b>Custom Script Viewer</b> — pipe any value through an external shell command for custom decoding.</summary>
 
-Configure a command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`); Zedis runs it via `sh -c` (Unix/macOS) or `cmd /c` (Windows) and shows stdout as the formatted value. Perfect for base64, custom binary protocols, or any tool in your `$PATH`. Key patterns matched by exact / prefix / suffix / regex rules per server.
+Configure a command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`); Zedis runs it via `sh -c` / `cmd /c` and shows stdout as the formatted value. Per-server key matching by exact / prefix / suffix / regex.
 </details>
 
-<details><summary><b>Value File Export / Import</b> — save any string value to disk, or load a file back into the key.</summary>
+<details><summary><b>Specialized Type Viewers</b> — opaque values open in purpose-built, interactive viewers.</summary>
 
-From the key bar's `…` menu, dump the current string value's raw bytes to a file (extension guessed from the detected format — `.png`, `.json`, `.gz`, …), or overwrites the value with a chosen file's bytes. Binary-safe, TTL preserved (`SET … KEEPTTL`), and recorded in the local write history like any other save.
+**Bitmap/Bitfield** paints bits on a GPU grid (`SETBIT`/`BITCOUNT`/`BITFIELD`); **HyperLogLog** shows `PFCOUNT` cardinality; **Vector Set + KNN** (Redis 8) walks the HNSW graph via `VSIM`; **Geo Map** plots a sorted set on a tile-less radar with `GEOSEARCH`; **Probabilistic** (RedisBloom: Bloom/Cuckoo/Count-Min/Top-K/t-digest) and **Time Series** (RedisTimeSeries `TS.INFO` + bucketed `TS.RANGE` chart) each get a dedicated card. Dispatched by the key's type / module.
 </details>
 
-<details><summary><b>Key Rename</b> — rename the selected key from the key bar, with overwrite protection.</summary>
+<details><summary><b>Module Browsers</b> — dedicated panels for RediSearch (FT.*) and Functions (Lua libraries).</summary>
 
-The key bar's `…` menu opens a rename dialog (prefilled with the current name). It issues an atomic `RENAMENX`, so it never silently clobbers a different key — if the target name already exists, you get an explicit "overwrite?" confirm before a `RENAME` proceeds. The editor stays on the renamed key and the key tree refreshes; value and TTL ride along server-side.
-</details>
-
-<details><summary><b>Cross-Server Key Copy</b> — copy a key (value + TTL) to another server or db.</summary>
-
-"Copy to…" in the key bar's `…` menu picks a target server + db (with an overwrite toggle), then ships the selected key there via `DUMP` on the source and `RESTORE` on the target — value, encoding and remaining TTL all preserved server-side. Great for promoting a key into a test environment. Cross-version copies obey Redis's `RESTORE` compatibility rules.
-</details>
-
-<details><summary><b>Cross-Server Key Diff</b> — compare a string key against the same key on another server.</summary>
-
-"Diff with server…" in the key bar's `…` menu picks a target server + db, fetches that server's value of the current key (`GET`), and opens the side-by-side diff view — the other server on the left, this one on the right (RedisJSON keys also get the RFC 7396 merge-patch block). Built for "why does prod's config differ from staging?". String keys only.
-</details>
-
-<details><summary><b>Cross-Server Config Diff</b> — compare two servers' <code>CONFIG GET *</code>, showing only what differs.</summary>
-
-The Config editor's "Compare" button picks another server and pulls `CONFIG GET *` from both, then renders a striped table of only the parameters whose values differ (parameter / this server / other server). The fast way to answer "why does this node behave differently?". Needs a server where `CONFIG` is permitted.
-</details>
-
-<details><summary><b>Hash Field-Level TTL</b> (Redis 7.4+) — per-field expiry via HEXPIRE / HPERSIST.</summary>
-
-Set individual expiry times on specific hash fields — no need to restructure your data model just to expire a subset of fields.
+**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor. Both auto-hide when the module / version isn't present.
 </details>
 
 <details><summary><b>Redis Streams</b> — browse, live-tail, and manage consumer groups without leaving the GUI.</summary>
 
-Browse entries, **live-tail** new messages in real time (`XREAD BLOCK`, ring-buffered so a hot stream never blows up memory), inspect Consumer Groups & Pending Entries via `XINFO`, and manage groups (`XGROUP CREATE` / `SETID` / `DESTROY`, with a confirm guard on destroy).
+Browse entries, **live-tail** new messages (`XREAD BLOCK`, ring-buffered), inspect Consumer Groups & Pending Entries via `XINFO`, and manage groups (`XGROUP CREATE` / `SETID` / `DESTROY`, with a confirm guard on destroy).
 </details>
 
-<details><summary><b>Bulk Paste</b> — add many Hash/List/Set/ZSet entries from TSV or CSV in one shot.</summary>
+<details><summary><b>Cross-Server Tools</b> — copy or diff a key, or diff full configs, between two servers.</summary>
 
-Paste TSV or CSV (tab preferred, comma fallback, per-cell trimmed) and Zedis fans the rows out through the normal `HSET` / `RPUSH` / `SADD` / `ZADD` paths.
+**Copy** a key with value + TTL (`DUMP`/`RESTORE`), **diff** a string key against the same key elsewhere (side-by-side), or **diff** two servers' `CONFIG GET *` (striped table of only what differs). Built for "why does prod differ from staging?".
 </details>
 
-<details><summary><b>Pub/Sub</b> — subscribe to patterns and publish, live, from the GUI.</summary>
+<details><summary><b>Key Editing & History</b> — rename, per-field TTL, file import/export, bulk paste, and version history.</summary>
 
-Built-in subscribe/publish interface — subscribe to channel patterns, receive live messages, and publish directly without switching to `redis-cli`.
-</details>
-
-<details><summary><b>Local Write History</b> — last 10 versions of every string value, with diff & restore.</summary>
-
-Kept in memory per key — one click rolls a previous version back into the editor. Purely client-side (no Redis storage cost), scoped to the session, cleared on key delete or server switch. A split-button **Diff** sits next to Restore — main click shows a side-by-side diff against the previous version, the dropdown picks any older version. JSON keys also get an RFC 7396 merge-patch block equivalent to the `JSON.MERGE` the Save path would send.
-</details>
-
-<details><summary><b>RediSearch Browser</b> (module) — a dedicated panel for the FT.* command family.</summary>
-
-List indexes via `FT._LIST`, inspect schema and stats from `FT.INFO` (including indexing progress and `type mismatch` failure counters that explain "0 docs" mysteries), run raw `FT.SEARCH` with `HIGHLIGHT` / `RETURN` / `LIMIT` chips, or switch to `FT.AGGREGATE` with single-stage `GROUPBY` + `REDUCE` (`COUNT`, `SUM`, `AVG`, `QUANTILE`, `TOLIST`...). Create indexes from a structured form (HASH / JSON, prefixes, per-field SORTABLE / NOSTEM / NOINDEX), or alter / drop existing ones. Auto-hidden when the module isn't loaded.
-</details>
-
-<details><summary><b>Functions Editor</b> (Redis 7+) — manage server-side Lua libraries with syntax highlighting.</summary>
-
-Manage libraries through `FUNCTION LIST / LOAD / DELETE`. Cards show each library's engine, registered functions, and flags (`no-writes`, `allow-oom`, ...); click to expand a read-only Lua viewer with tree-sitter highlighting. Edit and "New library" share one Lua editor with line numbers, indent guides, and an explicit `REPLACE` toggle. Auto-hidden on Redis 6.x and earlier.
-</details>
-
-<details><summary><b>Time Series Viewer</b> (RedisTimeSeries) — TS.INFO metadata plus a bucketed TS.RANGE chart.</summary>
-
-Selecting a `TSDB-TYPE` key opens a dedicated chart — `TS.INFO` surfaces total samples / memory / retention / chunk count and labels, while `TS.RANGE` (server-side `AVG` aggregation, bucketed to ~240 points so even a multi-million-sample series stays responsive) feeds a GPU-rendered line chart with `15m / 1h / 6h / 24h / 7d / All` toggles. Self-gates by the key's existence.
-</details>
-
-<details><summary><b>Probabilistic Structures</b> (RedisBloom) — Bloom / Cuckoo / Count-Min / Top-K / t-digest viewers.</summary>
-
-Keys that used to render as opaque binary now open a dedicated read-only viewer showing their `*.INFO` stats (capacity, size, error rate, ...). Top-K also lists current heavy hitters (`TOPK.LIST … WITHCOUNT`) and t-digest adds min / max / p50 / p90 / p99 (`TDIGEST.QUANTILE`). Dispatched by the key's module TYPE.
-</details>
-
-<details><summary><b>Bitmap / Bitfield</b> — visualise a string's bits on a GPU grid, with SETBIT / BITCOUNT / BITFIELD.</summary>
-
-Strings that look like a raw bitmap — small (< 4 KB), non-text, unrecognised binary — open in **Bitmap** mode automatically; larger opaque binaries can be flipped from the key bar's `…` menu (text / JSON and recognised formats like images don't get the entry). It paints the bits on a tile-less GPU grid — set bits lit, in Redis bit order. Hover reads off the bit offset; click a cell to flip it with `SETBIT`. A stat row surfaces whole-key `BITCOUNT` and `BITPOS` (first set / first clear), and a thin box runs raw `BITFIELD` sub-commands (e.g. `GET u8 0`). The grid is capped for responsiveness; the stats stay whole-key.
-</details>
-
-<details><summary><b>HyperLogLog</b> — a PFCOUNT cardinality card for HLL-backed string keys.</summary>
-
-A HyperLogLog is stored as a plain `string`, so it used to render as opaque binary. Zedis now detects the `HYLL` header magic and opens a dedicated read-only card showing the estimated cardinality (`PFCOUNT`), the internal encoding (dense / sparse) and the representation size (`STRLEN`), plus a `PFADD` box to fold in new elements and watch the estimate move.
-</details>
-
-<details><summary><b>Vector Set + KNN</b> (Redis 8) — metadata plus interactive nearest-neighbour search.</summary>
-
-Native `vectorset` keys open a viewer with `VINFO` / `VCARD` / `VDIM` metadata, a `VRANDMEMBER` sample, and an **interactive KNN search**: type (or click) an element to run `VSIM … WITHSCORES` and see its ranked nearest neighbours; click a neighbour to re-search from it and walk the HNSW graph hop by hop. Read-only.
-</details>
-
-<details><summary><b>Geo Map</b> — plot a geospatial sorted set on a tile-less radar canvas.</summary>
-
-Flip any sorted set into **Map** mode to plot its members on a dark, GPU-rendered Web Mercator canvas — no map tiles, no network. `GEOPOS` decodes the geohash, fit-to-bounds frames the data, and scroll-zoom / drag-pan / hover (with a live coordinate readout and a side list that cross-highlights) make it a fast GEO debugging "radar". Enter a center lon/lat + radius to run `GEOSEARCH` and highlight the matching points (the rest dim out) with the radius circle drawn on the canvas. Capped for responsiveness; invalid / non-geo members are listed separately.
+Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXPIRE`/`HPERSIST`, Redis 7.4+), **value file export/import** (binary-safe, `KEEPTTL`), **bulk paste** of TSV/CSV into Hash/List/Set/ZSet, and a client-side **last-10-versions** write history with diff & one-click restore.
 </details>
 
 ### 📊 Real-Time Observability
@@ -167,114 +94,64 @@ Beautifully rendered, GPU-accelerated time-series charts.
 
 <details><summary><b>Memory Analyzer + AI Advice</b> — hunt BigKeys, see the TTL distribution, get AI optimization tips.</summary>
 
-Sort the Top-N table by **Size / Hottest / Coldest** — `OBJECT FREQ` or `OBJECT IDLETIME` is auto-selected from the server's `maxmemory-policy`. The same SCAN feeds a **TTL distribution histogram** (`<1m / <1h / <1d / <7d / ≥7d / No TTL`) alongside the BigKey tables — spot the "3 AM expiry cliff", see what share of keys is `PERSIST` (a memory-leak red flag), and read the estimated cluster-wide count even at `ratio < 1.0`. One click on **AI Analysis** turns the report into a Markdown summary and sends it to any **OpenAI-compatible** endpoint (Base URL + API key in Settings, key stored encrypted) for actionable advice rendered inline — only key *names*, sizes and TTLs are sent, never values. Works with OpenAI, Claude (via Anthropic's OpenAI-compatible endpoint, `https://api.anthropic.com/v1/`), and other compatible providers; advice is returned in the app's UI language.
+Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` auto-picked from `maxmemory-policy`), with a **TTL histogram** alongside. One click sends the report (key *names*, sizes, TTLs only — never values) to any **OpenAI-compatible** endpoint for inline advice in your UI language.
 </details>
 
-<details><summary><b>Command Stats</b> — "why is Redis busy": a per-command call-rate table.</summary>
+<details><summary><b>Performance Diagnostics</b> — Slow Log ↔ Latency, live MONITOR, clients, and command stats.</summary>
 
-A diagnostics page (status-bar Tools menu) that polls `INFO commandstats` — aggregated across all cluster masters — and shows a striped, per-command **calls/second** table computed from the delta between samples (cumulative counters are meaningless on their own; a `CONFIG RESETSTAT` is handled gracefully). For *which key* is hottest, the Memory Analyzer's "Hottest" sort already covers it via `OBJECT FREQ`.
+The Performance panel cross-links **Slow Log** entries with `LATENCY` events (±5 s chips jump to the `LATENCY HISTORY` sparkline) and exports the filtered view to **CSV/JSON**; plus live `MONITOR` with keyword filtering, client management (`CLIENT LIST/KILL`), and a per-command **calls/second** table from `INFO commandstats`.
 </details>
 
-<details><summary><b>Value Search</b> — find which key <i>contains</i> some text (Redis can't index this, so it's a guarded sample).</summary>
+<details><summary><b>Value Search</b> — find which key <i>contains</i> some text (a guarded, sampled scan).</summary>
 
-Redis only matches by key name, so "which key holds this value" means SCANning and reading values — `O(keyspace)`. This page (status-bar Tools menu) runs it behind guardrails: a **mandatory key prefix** pins the scan to a namespace, it stops after **10k keys or 10s** (cancellable), values over **1 MiB** (or containers over **10k elements**) are skipped, and the summary states exactly what was *scanned / matched / skipped* and why it stopped — results are an explicit **sample**, never claimed exhaustive. Searches **string values, hash fields, and list / set / sorted-set members** (case-insensitive substring), and every hit shows *where* it matched (field / index / member). Click a hit to preview its value inline.
+Redis can't index values, so this `O(keyspace)` search runs behind guardrails: a mandatory key prefix, a 10k-key / 10s cap (cancellable), and skipped over-1 MiB values — searching string values, hash fields, and list/set/sorted-set members, with each hit showing where it matched. Results are an explicit **sample**, never claimed exhaustive.
 </details>
 
-<details><summary><b>Cluster Health</b> — inspect cluster/Sentinel topology as a tree with replication lag.</summary>
+<details><summary><b>Cluster Health & Management</b> — topology tree with replication lag, plus failover / forget / meet / replicate.</summary>
 
-Hover the node indicator to see masters with their slot ranges, replicas grouped beneath, plus per-replica replication lag (bytes + seconds + link state) parsed from `INFO replication`.
+Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per-replica lag from `INFO replication`), then act: `CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` and `SENTINEL FAILOVER` / `RESET` / `REMOVE`, each through the confirm dialog with PROD escalation. Only appears on multi-node deployments.
 </details>
 
-<details><summary><b>Cluster / Sentinel Management</b> — failover, forget, meet, replicate from a GUI panel.</summary>
+<details><summary><b>Persistence & Keyspace Events</b> — RDB/AOF status with one-click saves, plus live key-event triage.</summary>
 
-The Topology panel (status-bar Tools menu) turns the detected deployment into actionable controls. **Cluster**: per-replica `CLUSTER FAILOVER` (with a `FORCE` option, run on that replica), `CLUSTER FORGET` fanned out to every master, plus `CLUSTER MEET host:port` and `CLUSTER REPLICATE` forms. **Sentinel**: per-master `SENTINEL FAILOVER`, `RESET`, and `REMOVE`. Every write routes through the confirm dialog with production-tag escalation. The panel only appears on multi-node deployments — Standalone servers don't get the menu entry.
+A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (PROD-escalated). Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with a one-click `notify-keyspace-events` enable.
 </details>
 
-<details><summary><b>Deep Diagnostics</b> — Slow Log ↔ Latency cross-linking, live MONITOR, client management.</summary>
+### 🛡️ Security & Productivity
 
-Track Slowlogs, monitor live `MONITOR` streams with keyword filtering, and manage active clients (`CLIENT LIST/KILL`). The Performance panel cross-links Slow Log entries with `LATENCY` events: each slow command shows a chip naming the nearest fork/AOF/expire event within ±5 s, one click jumps to that event's `LATENCY HISTORY` sparkline; the reverse chip narrows the Slow Log to that window. Disabled `latency-monitor-threshold` can be flipped on (default 100 ms) from the panel (PROD servers go through the confirm dialog).
-</details>
+<details><summary><b>Command Palette & Shortcuts</b> — ⌘K fuzzy navigation and a ⌘/ keyboard-shortcut reference.</summary>
 
-<details><summary><b>Persistence Management</b> — RDB/AOF status with one-click BGSAVE / BGREWRITEAOF.</summary>
-
-A dedicated panel reads `INFO persistence` continuously — last RDB save time, changes since last save, AOF size with growth ratio against the rewrite baseline, plus per-fork failure banners. One-click `BGSAVE` / `BGREWRITEAOF` (cluster mode fans out to every master) through a confirm dialog with PROD escalation; buttons auto-disable while a fork runs or when read-only.
-</details>
-
-<details><summary><b>Keyspace Notifications</b> — live key-event triage from keyspace / keyevent channels.</summary>
-
-"Which client just deleted user:42?" answered without leaving the GUI. Channels are parsed into a `(time, db, key, event, source)` table with severity-colored verbs, a ring-buffered 1000-row history, and post-subscription chip filters (event-type multi-select + key substring). When `notify-keyspace-events` is empty, an inline banner offers a one-click "Enable (AKE)" — PROD servers detour through the confirm dialog first.
-</details>
-
-### 🛡️ Enterprise-Grade Security & Productivity
-
-<details><summary><b>Command Palette</b> (⌘K) — keyboard-first fuzzy search over servers and panels.</summary>
-
-Switch connections or jump to any panel (Metrics, Performance, Memory, Config, ACL, RediSearch, Functions, Lua Scripts, Settings...) without the mouse. Arrow keys to move, Enter to run, Esc to dismiss.
-</details>
-
-<details><summary><b>Server Groups & Ordering</b> — named, collapsible groups; reorder; share as JSON.</summary>
-
-Organize connections into named groups, reorder cards within a group, and share a single connection as JSON (credentials stripped by default — opt in to include secrets for personal backups). Collapse state persists across sessions.
-</details>
-
-<details><summary><b>Read-Only Mode</b> — lock a connection to prevent accidental writes.</summary>
-
-Guards against accidental writes in production environments.
-</details>
-
-<details><summary><b>ACL Management</b> (Redis 6+) — GUI for the full ACL lifecycle.</summary>
-
-List users, view flags / commands / key patterns / channel rules, and edit via a quick-preset toolbar (Full access / Read-only / Disabled) plus toggleable chips for command categories (`+@read`, `-@dangerous`, ...) and key/channel wildcards.
+**⌘K** fuzzy-searches servers and panels (arrows to move, Enter to run, Esc to dismiss); **⌘/** opens a read-only, grouped overlay of every hotkey with per-platform symbols.
 </details>
 
 <details><summary><b>Connection Safety</b> — environment tags + confirm dialogs that escalate on production.</summary>
 
-Tag each server (PROD / DEV / STAGING) with a colored chip surfaced in the sidebar and status bar. Dangerous commands (`FLUSHALL`, `FLUSHDB`, `CONFIG SET`, `SHUTDOWN`, `DEBUG`, `SCRIPT FLUSH`, `KEYS *`, batch `DEL`...) are intercepted with a confirm dialog that escalates wording on production-tagged servers.
+Tag servers PROD / DEV / STAGING (colored chip in the sidebar and status bar) and lock any connection **read-only**. Dangerous commands (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`...) are intercepted with a confirm dialog that escalates wording on production.
 </details>
 
-<details><summary><b>Data Import / Export</b> — DUMP/RESTORE-based, binary-safe across all key types.</summary>
+<details><summary><b>ACL Management</b> (Redis 6+) — GUI for the full ACL lifecycle.</summary>
 
-Dump any selection of keys (multi-select, single key, or whole folder prefix) to a framed binary file with magic header + CRC32, then restore on another instance.
+List users, view flags / commands / key patterns / channel rules, and edit via quick presets (Full / Read-only / Disabled) plus toggleable chips for command categories and wildcards.
 </details>
 
-<details><summary><b>Advanced Tunnels</b> — TLS/SSL (custom CA, client certs) and SSH tunneling.</summary>
+<details><summary><b>Secure Connections & Groups</b> — TLS/SSL and SSH tunnels, with named, shareable server groups.</summary>
 
-Full support for TLS/SSL and SSH Tunneling (Password, Private Key, SSH Agent).
+Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, private key, agent). Organize connections into named, collapsible **groups**, reorder them, and share a single connection as JSON (credentials stripped by default).
 </details>
 
 <details><summary><b>Integrated CLI & Workbench</b> — redis-cli terminal with completion plus a multi-line Batch mode.</summary>
 
-Version-aware command completion and inline argument/summary hints. A one-click **Batch** mode swaps the single-line REPL for a multi-line editor — one command per line, run the whole script with `⌘`/`Ctrl`+`Enter` (dangerous lines still route through the confirm dialog).
+Version-aware command completion with inline argument/summary hints. A one-click **Batch** mode swaps the REPL for a multi-line editor — one command per line, run with `⌘`/`Ctrl`+`Enter` (dangerous lines still route through the confirm dialog).
 </details>
 
-<details><summary><b>Namespace Tree View</b> — keys grouped into a nested tree by <code>:</code>, with TTL chips.</summary>
+<details><summary><b>Key Organization</b> — namespace tree with TTL chips, favorites, and client-side tags & notes.</summary>
 
-Right-click any folder to refresh its contents or delete all keys under that prefix. Each leaf key carries a compact TTL chip — green for live TTL, red when expiring within 2 minutes, gray for permanent keys.
+Keys group into a nested tree by `:` with compact TTL chips (green live / red expiring / gray permanent). Bookmark keys, revisit search history, and add colour **tags & notes** — stored in a local redb file, **zero Redis cost**, never leaving the machine.
 </details>
 
-<details><summary><b>Multi-Select & Batch Delete</b> — mark and delete dozens of keys at once.</summary>
+<details><summary><b>Bulk Key Operations</b> — multi-select delete, batch TTL, DUMP/RESTORE import/export, auto-refresh.</summary>
 
-Toggle multi-select mode to delete many keys without writing a single command.
-</details>
-
-<details><summary><b>Batch TTL</b> — set or remove expiry on a whole multi-selection or key prefix at once.</summary>
-
-Right-click a multi-selection or a folder in the tree: **Set TTL…** opens a dialog (durations like `7d`, `3600`, `1h30m`) and pipelines `EXPIRE` across every key in scope; **Remove TTL (persist)** runs `PERSIST`. Cluster-safe (per-key concurrent commands instead of a cross-slot pipeline), and both routes go through the confirm dialog with PROD escalation — no more setting expiry one key at a time.
-</details>
-
-<details><summary><b>Key Favorites & Search History</b> — bookmark keys, revisit recent searches.</summary>
-
-Bookmark frequently used keys for instant access and revisit recent searches from a persistent history panel.
-</details>
-
-<details><summary><b>Key Tags & Notes</b> <i>(client-side only)</i> — colour-tag and annotate keys, stored locally.</summary>
-
-Annotate any key with a colour tag (red / orange / yellow / green / blue / purple) and a free-form note — everything lives in the local redb file, **zero Redis storage cost**, never leaves the machine. Tagged rows carry a 4 px colour bar on the left edge; hover reveals the note. Edit via right-click → "Edit tag & note…". Each tag colour can be used as a one-click filter from the tree's ⋯ menu; the filter sources keys directly from local metadata rather than the in-flight SCAN snapshot, so every tagged key shows up immediately. After a save, only the affected row re-renders. Schema is versioned on disk for future migration.
-</details>
-
-<details><summary><b>Auto-Refresh</b> — periodic key-tree refresh for fast-changing instances.</summary>
-
-Configure an automatic refresh interval to keep the tree in sync with a live instance.
+Multi-select to delete dozens of keys at once; set / remove TTL across a whole selection or prefix (cluster-safe, PROD-escalated); export any selection to a framed binary file (magic header + CRC32) and restore on another instance; and auto-refresh the tree for fast-changing instances.
 </details>
 
 ---

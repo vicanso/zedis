@@ -42,6 +42,15 @@ pub enum PaletteAction {
     Toggle,
 }
 
+/// Keyboard-shortcuts reference overlay (⌘/). `Toggle` opens it (or
+/// closes if already open). Like `PaletteAction` it is handled by a
+/// global, focus-independent handler in `main.rs` so the hotkey works
+/// regardless of what is focused.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ShortcutsAction {
+    Toggle,
+}
+
 /// JSONPath query bar. `AcceptCompletion` is bound to `tab` in the
 /// `JsonPathBar` key context: it accepts the highlighted completion
 /// when the menu is open, otherwise it propagates so `tab` keeps its
@@ -94,6 +103,17 @@ pub enum EditorAction {
 pub enum ValueDiffAction {
     /// Close the diff and return to the editor (mirrors the Close button).
     Close,
+}
+
+/// Slow-log panel export actions, dispatched by the toolbar "Export"
+/// dropdown and handled by the panel's own `.on_action` (same pattern
+/// as `EditorAction`). They export the currently-filtered rows.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum SlowlogAction {
+    /// Export the filtered slow-log rows to a CSV file.
+    ExportCsv,
+    /// Export the filtered slow-log rows to a JSON file.
+    ExportJson,
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {
@@ -153,6 +173,7 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
             }
             "enter" => "Enter",
             "space" => "Space",
+            "escape" => "Esc",
             "backspace" => {
                 #[cfg(target_os = "macos")]
                 {
@@ -174,10 +195,57 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
     display_text
 }
 
+/// One section of the keyboard-shortcuts reference overlay.
+pub struct ShortcutGroup {
+    /// i18n key (under the `shortcuts.` section) for the group heading.
+    pub title_key: &'static str,
+    /// `(raw keystroke, i18n key for the human description)`. The
+    /// keystroke is rendered through [`humanize_keystroke`] so it shows
+    /// the right per-platform symbols (⌘ vs Ctrl, …).
+    pub items: &'static [(&'static str, &'static str)],
+}
+
+/// Curated, user-facing keyboard-shortcut reference shown by the ⌘/
+/// overlay. Deliberately *not* derived from [`new_hot_keys`]: that list
+/// also holds context-scoped internal bindings (the `tab` JSONPath
+/// completion, the `escape` back/close handlers) that would only confuse
+/// users as "global shortcuts", and a raw `KeyBinding` carries no
+/// localizable description. Keep this in sync with [`new_hot_keys`] when
+/// adding a user-visible binding.
+pub fn shortcut_reference() -> &'static [ShortcutGroup] {
+    &[
+        ShortcutGroup {
+            title_key: "group_general",
+            items: &[
+                ("cmd-k", "command_palette"),
+                ("cmd-/", "keyboard_shortcuts"),
+                ("cmd-q", "quit"),
+            ],
+        },
+        ShortcutGroup {
+            title_key: "group_editor",
+            items: &[
+                ("cmd-n", "new_key"),
+                ("cmd-s", "save"),
+                ("cmd-r", "reload_keys"),
+                ("cmd-shift-r", "reload_value"),
+                ("cmd-t", "update_ttl"),
+                ("cmd-f", "search"),
+                ("cmd-j", "terminal"),
+            ],
+        },
+        ShortcutGroup {
+            title_key: "group_navigation",
+            items: &[("escape", "back")],
+        },
+    ]
+}
+
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
         KeyBinding::new("cmd-k", PaletteAction::Toggle, None),
+        KeyBinding::new("cmd-/", ShortcutsAction::Toggle, None),
         KeyBinding::new("cmd-s", EditorAction::Save, None),
         KeyBinding::new("cmd-r", EditorAction::ReloadKeyTree, None),
         KeyBinding::new("cmd-n", EditorAction::Create, None),

@@ -644,9 +644,26 @@ impl ZedisServerState {
                         }
                         this.value = Some(value);
                     }
-                    Err(_) => {
-                        this.key = None;
-                        this.value = None;
+                    Err(e) => {
+                        // Keep the key selected and surface the failure in the
+                        // value panel (Failed status) instead of silently
+                        // deselecting — a transient toast was otherwise the
+                        // only signal, and a blank panel looks identical to
+                        // "no key selected". The editor renders this inline
+                        // with a retry button.
+                        let message: SharedString = e.to_string().into();
+                        match this.value.as_mut() {
+                            Some(value) => {
+                                value.status = RedisValueStatus::Failed(message);
+                                value.data = None;
+                            }
+                            None => {
+                                this.value = Some(RedisValue {
+                                    status: RedisValueStatus::Failed(message),
+                                    ..Default::default()
+                                });
+                            }
+                        }
                     }
                 };
                 cx.emit(ServerEvent::ValueLoaded);

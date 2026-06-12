@@ -37,7 +37,7 @@
 use crate::connection::{MatchLocation, ValueMatch, ValueSearchRound, get_connection_manager};
 use crate::helpers::build_csv;
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_value_search};
-use crate::views::dirs_default_directory;
+use crate::views::export_to_file;
 use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt,
@@ -305,28 +305,10 @@ impl ZedisValueSearch {
             .map(|m| vec![m.key.to_string(), m.key_type.to_string(), location_csv(&m.location)])
             .collect();
         let csv = build_csv(&["key", "type", "match"], &rows);
-        let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some("value-search.csv"));
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = receiver.await else {
-                return;
-            };
-            let bytes = csv.into_bytes();
-            let result = cx
-                .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.server_state.update(cx, |state, cx| match &result {
-                    Ok(path) => state.emit_success_notification(
-                        path.display().to_string().into(),
-                        i18n_common(cx, "csv_exported"),
-                        cx,
-                    ),
-                    Err(e) => state
-                        .emit_error_notification(format!("{}: {e}", i18n_common(cx, "csv_export_failed")).into(), cx),
-                });
-            });
-        })
-        .detach();
+        let server_state = self.server_state.clone();
+        let success = i18n_common(cx, "csv_exported");
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file(cx, server_state, csv.into_bytes(), "value-search.csv", success, error);
     }
 
     fn summary_line(&self, cx: &Context<Self>) -> SharedString {

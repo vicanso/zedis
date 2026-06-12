@@ -336,6 +336,19 @@ impl ZedisServers {
                 .default_value(redis_server.databases.map(|n| n.to_string()).unwrap_or_default())
                 .placeholder(i18n_servers(cx, "databases_placeholder"))
                 .tab_index(3),
+            ZedisFormField::new("connection_timeout", i18n_servers(cx, "connection_timeout"))
+                .default_value(
+                    redis_server
+                        .connection_timeout
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
+                )
+                .placeholder(i18n_servers(cx, "connection_timeout_placeholder"))
+                .tab_index(3),
+            ZedisFormField::new("response_timeout", i18n_servers(cx, "response_timeout"))
+                .default_value(redis_server.response_timeout.map(|n| n.to_string()).unwrap_or_default())
+                .placeholder(i18n_servers(cx, "response_timeout_placeholder"))
+                .tab_index(3),
             ZedisFormField::new("readonly", i18n_servers(cx, "readonly"))
                 .default_value(redis_server.readonly.unwrap_or(false).to_string())
                 .placeholder(i18n_servers(cx, "readonly_check_label"))

@@ -51,6 +51,7 @@ pub use i18n::i18n_server_load;
 pub use i18n::i18n_servers;
 pub use i18n::i18n_set_editor;
 pub use i18n::i18n_settings;
+pub use i18n::i18n_shortcuts;
 pub use i18n::i18n_sidebar;
 pub use i18n::i18n_slowlog_editor;
 pub use i18n::i18n_status_bar;

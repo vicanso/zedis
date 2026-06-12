@@ -27,7 +27,7 @@ use crate::{
         i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
     },
     views::{
-        OnTagDialogDone, dirs_default_directory, open_key_tag_dialog, open_migration_export_window,
+        OnTagDialogDone, export_to_file, open_key_tag_dialog, open_migration_export_window,
         open_migration_import_window,
     },
 };
@@ -1218,28 +1218,10 @@ impl ZedisKeyTree {
     /// notification. Split from the `ExportCsv` handler so the confirm dialog's
     /// OK can invoke it.
     fn export_keys_csv_to_file(&mut self, csv: String, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some("keys.csv"));
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = receiver.await else {
-                return;
-            };
-            let bytes = csv.into_bytes();
-            let result = cx
-                .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.server_state.update(cx, |state, cx| match &result {
-                    Ok(path) => state.emit_success_notification(
-                        path.display().to_string().into(),
-                        i18n_common(cx, "csv_exported"),
-                        cx,
-                    ),
-                    Err(e) => state
-                        .emit_error_notification(format!("{}: {e}", i18n_common(cx, "csv_export_failed")).into(), cx),
-                });
-            });
-        })
-        .detach();
+        let server_state = self.server_state.clone();
+        let success = i18n_common(cx, "csv_exported");
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file(cx, server_state, csv.into_bytes(), "keys.csv", success, error);
     }
 
     fn handle_filter(&mut self, cx: &mut Context<Self>) {

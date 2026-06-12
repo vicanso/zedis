@@ -79,8 +79,8 @@ struct RedisConfig {
 
 static GLOBAL_REDIS_CONFIG: LazyLock<ArcSwap<RedisConfig>> = LazyLock::new(|| {
     ArcSwap::from_pointee(RedisConfig {
-        connection_timeout: Duration::from_secs(30),
-        response_timeout: Duration::from_secs(60),
+        connection_timeout: Duration::from_secs(10),
+        response_timeout: Duration::from_secs(20),
     })
 });
 
@@ -107,6 +107,22 @@ pub fn get_redis_connection_timeout() -> Duration {
 
 pub fn get_redis_response_timeout() -> Duration {
     GLOBAL_REDIS_CONFIG.load().response_timeout
+}
+
+/// Per-server connection timeout if set, else the global default.
+pub fn resolve_connection_timeout(config: &RedisServer) -> Duration {
+    config
+        .connection_timeout
+        .map(Duration::from_secs)
+        .unwrap_or_else(get_redis_connection_timeout)
+}
+
+/// Per-server response timeout if set, else the global default.
+pub fn resolve_response_timeout(config: &RedisServer) -> Duration {
+    config
+        .response_timeout
+        .map(Duration::from_secs)
+        .unwrap_or_else(get_redis_response_timeout)
 }
 
 pub(crate) async fn set_client_name(conn: &mut impl ConnectionLike) {
@@ -152,8 +168,8 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
         let client = open_single_client(config)?;
         // Configure connection with timeouts
         let cfg = AsyncConnectionConfig::default()
-            .set_connection_timeout(Some(get_redis_connection_timeout()))
-            .set_response_timeout(Some(get_redis_response_timeout()));
+            .set_connection_timeout(Some(resolve_connection_timeout(config)))
+            .set_response_timeout(Some(resolve_response_timeout(config)));
         client.get_multiplexed_async_connection_with_config(&cfg).await?
     };
 

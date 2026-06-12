@@ -27,7 +27,7 @@ use crate::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
         ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor, ZedisPubsubEditor,
         ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
-        ZedisZsetEditor, bitmap_eligible, dirs_default_directory, looks_like_bitmap, looks_like_hll, zset_looks_geo,
+        ZedisZsetEditor, bitmap_eligible, export_to_file, looks_like_bitmap, looks_like_hll, zset_looks_geo,
     },
 };
 use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -622,29 +622,12 @@ impl ZedisEditor {
         let Some(bytes_value) = state.value().and_then(|v| v.bytes_value()) else {
             return;
         };
-        let bytes = bytes_value.bytes.clone();
+        let bytes = bytes_value.bytes.to_vec();
         let suggested = suggested_value_filename(key.as_ref(), bytes_value.format);
-        let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(&suggested));
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = receiver.await else {
-                return;
-            };
-            let result = cx
-                .background_spawn(async move { std::fs::write(&path, bytes.as_ref()).map(|_| path) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.server_state.update(cx, |state, cx| match &result {
-                    Ok(path) => state.emit_success_notification(
-                        path.display().to_string().into(),
-                        i18n_editor(cx, "value_exported"),
-                        cx,
-                    ),
-                    Err(e) => state
-                        .emit_error_notification(format!("{}: {e}", i18n_editor(cx, "export_value_failed")).into(), cx),
-                });
-            });
-        })
-        .detach();
+        let server_state = self.server_state.clone();
+        let success = i18n_editor(cx, "value_exported");
+        let error = i18n_editor(cx, "export_value_failed");
+        export_to_file(cx, server_state, bytes, &suggested, success, error);
     }
 
     /// Pick a file and overwrite the current string value with its bytes.
@@ -1456,7 +1439,40 @@ impl ZedisEditor {
     }
 
     /// Render the appropriate editor based on the key type
+    /// Inline error panel shown when a value load failed (the key stays
+    /// selected). Offers a Retry that re-fetches the current key.
+    fn render_load_error(&mut self, message: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = i18n_editor(cx, "value_load_failed");
+        let retry = i18n_editor(cx, "retry");
+        let danger = cx.theme().danger;
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_4()
+            .child(Label::new(title).text_color(danger))
+            .child(Label::new(message).text_sm().text_color(muted))
+            .child(
+                Button::new("value-reload-retry")
+                    .outline()
+                    .label(retry)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        let key = this.server_state.read(cx).key();
+                        if let Some(key) = key {
+                            this.server_state.update(cx, |state, cx| state.reload_value(key, cx));
+                        }
+                    })),
+            )
+    }
+
     fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A failed value load keeps the key selected — surface the error
+        // inline (with a Retry) instead of a blank/looks-empty sub-editor.
+        if let Some(message) = self.server_state.read(cx).value().and_then(|v| v.failure_message()) {
+            return self.render_load_error(message, cx).into_any_element();
+        }
         let Some(value) = self.server_state.read(cx).value() else {
             self.reset_editors(KeyType::Unknown);
             return div().into_any_element();

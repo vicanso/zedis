@@ -18,8 +18,8 @@
 //! needs its own design pass).
 
 use crate::connection::get_servers;
-use crate::helpers::fuzzy_score;
-use crate::states::{Route, ZedisGlobalStore, i18n_command_palette};
+use crate::helpers::{ShortcutsAction, fuzzy_score};
+use crate::states::{Route, ZedisGlobalStore, i18n_command_palette, i18n_shortcuts};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
@@ -31,6 +31,10 @@ enum PaletteCommand {
     Server(String),
     /// Navigate to a route.
     Route(Route),
+    /// Open the keyboard-shortcuts reference overlay (⌘/). Handed off
+    /// to the global `ShortcutsAction` handler so the palette stays
+    /// decoupled from the overlay entity.
+    ShowShortcuts,
 }
 
 struct PaletteItem {
@@ -169,6 +173,15 @@ impl ZedisCommandPalette {
             });
         }
 
+        // Global, server-independent: the keyboard-shortcuts reference.
+        let shortcuts_label = i18n_shortcuts(cx, "title");
+        items.push(PaletteItem {
+            label: shortcuts_label.clone(),
+            hint: gpui::SharedString::default(),
+            search: shortcuts_label.to_string(),
+            command: PaletteCommand::ShowShortcuts,
+        });
+
         items
     }
 
@@ -189,6 +202,13 @@ impl ZedisCommandPalette {
 
     fn execute(&mut self, command: &PaletteCommand, window: &mut Window, cx: &mut Context<Self>) {
         let command = command.clone();
+        // The shortcuts overlay is owned by the `Zedis` root, not the
+        // palette; close here and let its global action handler open it.
+        if let PaletteCommand::ShowShortcuts = command {
+            self.close(window, cx);
+            window.dispatch_action(Box::new(ShortcutsAction::Toggle), cx);
+            return;
+        }
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
                 PaletteCommand::Server(id) => {
@@ -205,6 +225,8 @@ impl ZedisCommandPalette {
                         state.clear_selected_server(cx);
                     }
                 }
+                // Handled above (early return); arm kept for exhaustiveness.
+                PaletteCommand::ShowShortcuts => {}
             });
         });
         self.close(window, cx);

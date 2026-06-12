@@ -566,6 +566,10 @@ pub enum RedisValueStatus {
     Idle,
     Loading,
     Updating,
+    /// The value load failed; the key stays selected so the editor can
+    /// show this message inline (with a retry) instead of silently
+    /// deselecting — the string is the error to display.
+    Failed(SharedString),
 }
 
 /// Redis value with metadata including type, data, expiration, and status
@@ -579,14 +583,24 @@ pub struct RedisValue {
 }
 
 impl RedisValue {
-    /// Checks if the value is currently being loaded or updated
+    /// Checks if the value is currently being loaded or updated.
+    /// A `Failed` load is **not** busy — otherwise the editor would show
+    /// a perpetual spinner on a failed load instead of the error state.
     pub fn is_busy(&self) -> bool {
-        !matches!(self.status, RedisValueStatus::Idle)
+        matches!(self.status, RedisValueStatus::Loading | RedisValueStatus::Updating)
     }
 
     /// Checks if the value is currently loading
     pub fn is_loading(&self) -> bool {
         matches!(self.status, RedisValueStatus::Loading)
+    }
+
+    /// The error message when the last load failed, else `None`.
+    pub fn failure_message(&self) -> Option<SharedString> {
+        match &self.status {
+            RedisValueStatus::Failed(message) => Some(message.clone()),
+            _ => None,
+        }
     }
 
     /// Checks if the value is a Redis JSON type

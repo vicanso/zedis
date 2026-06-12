@@ -14,8 +14,8 @@
 
 use super::{
     async_connection::{
-        RedisAsyncConn, get_redis_connection_timeout, get_redis_response_timeout, open_single_connection,
-        query_async_masters, query_async_masters_pipeline, remove_connection_from_pool,
+        RedisAsyncConn, open_single_connection, query_async_masters, query_async_masters_pipeline,
+        remove_connection_from_pool, resolve_connection_timeout, resolve_response_timeout,
     },
     config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
@@ -411,10 +411,9 @@ async fn get_async_connection(client: &RClient, db: usize, use_cache: bool) -> R
             Ok(RedisAsyncConn::Single(conn))
         }
         RClient::Cluster(client) => {
-            let cfg = cluster::ClusterConfig::default()
-                .set_connection_timeout(get_redis_connection_timeout())
-                .set_response_timeout(get_redis_response_timeout());
-            let mut conn = client.get_async_connection_with_config(cfg).await?;
+            // Per-server timeouts are baked into the cluster builder at
+            // build time, so the no-config getter uses them.
+            let mut conn = client.get_async_connection().await?;
             set_client_name(&mut conn).await;
             Ok(RedisAsyncConn::Cluster(conn))
         }
@@ -1820,7 +1819,12 @@ impl ConnectionManager {
         let client = match server_type {
             ServerType::Cluster => {
                 let addrs: Vec<String> = nodes.iter().map(|n| n.server.get_connection_url()).collect();
-                let mut builder = cluster::ClusterClientBuilder::new(addrs);
+                // Bake the (per-server, else global) timeouts into the client
+                // here — the cluster connection getters use the client's
+                // configured timeouts rather than a per-call override.
+                let mut builder = cluster::ClusterClientBuilder::new(addrs)
+                    .connection_timeout(resolve_connection_timeout(&first_node.server))
+                    .response_timeout(resolve_response_timeout(&first_node.server));
                 if let Some(certificates) = first_node.server.tls_certificates() {
                     builder = builder.certs(certificates);
                 }
