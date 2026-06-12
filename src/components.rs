@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod key_type_badge;
 mod kv_delegate;
 mod kv_types;
-mod key_type_badge;
 
+pub use key_type_badge::KeyTypeBadge;
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};
 pub use kv_types::{KvTableColumn, KvTableColumnType, KvTableMode};
-pub use key_type_badge::KeyTypeBadge;
