@@ -48,6 +48,40 @@ const ZEDIS_LOGO: &str = r#" __________ ____ ___ ____
 /____|_____|____/___|____/
 "#;
 
+/// Shown when a blocking command is typed in the terminal (see
+/// [`is_blocking_command`]). Hardcoded English to match the rest of this
+/// panel, which is not internationalized.
+const BLOCKING_REJECT_MSG: &str = "Blocking commands (BLPOP / BRPOP / BLMOVE / BRPOPLPUSH / BLMPOP / BZPOPMIN / BZPOPMAX / BZMPOP / XREAD BLOCK / XREADGROUP BLOCK / WAIT / WAITAOF) are not run here: on the app's shared connection they would stall every other operation on this database (key tree, metrics, other lines). Use the live key tail or the Monitor view for blocking reads.";
+
+/// Whether a parsed command would park the Redis connection until data
+/// arrives or it times out. The terminal runs lines on the app's shared
+/// multiplexed connection, so a blocking command there is a hazard — it
+/// stalls the key tree, metrics, and every other operation on the same db —
+/// and the response timeout would break its semantics anyway. Refuse up front.
+fn is_blocking_command(cmd_name: &str, args: &[String]) -> bool {
+    const ALWAYS_BLOCKING: &[&str] = &[
+        "BLPOP",
+        "BRPOP",
+        "BLMOVE",
+        "BRPOPLPUSH",
+        "BLMPOP",
+        "BZPOPMIN",
+        "BZPOPMAX",
+        "BZMPOP",
+        "WAIT",
+        "WAITAOF",
+    ];
+    let verb = cmd_name.to_ascii_uppercase();
+    if ALWAYS_BLOCKING.contains(&verb.as_str()) {
+        return true;
+    }
+    // XREAD / XREADGROUP only block when given a BLOCK option.
+    if verb == "XREAD" || verb == "XREADGROUP" {
+        return args.iter().any(|a| a.eq_ignore_ascii_case("BLOCK"));
+    }
+    false
+}
+
 pub struct ZedisTerminal {
     server_state: Entity<ZedisServerState>,
     cmd_output_state: Entity<InputState>,
@@ -333,6 +367,11 @@ impl ZedisTerminal {
                     }
                     let cmd_name = parts[0].clone();
                     let args = parts[1..].to_vec();
+                    // Refuse blocking commands before touching the shared
+                    // connection — running them here would stall the whole db.
+                    if is_blocking_command(&cmd_name, &args) {
+                        return Ok(SharedString::from(BLOCKING_REJECT_MSG));
+                    }
                     let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                     let data: redis::Value = cmd(&cmd_name).arg(&args).query_async(&mut conn).await?;
                     let _ = get_cmd_history_manager().add_record(server_id.as_str(), line.as_str());

@@ -42,6 +42,9 @@ clients = "ブロック中・接続中クライアント"
 slow_logs = "スローログ"
 disable_in_readonly = "読み取り専用モードでは無効"
 back_to_editor = "Back to editor"
+export_csv = "CSV をエクスポート"
+csv_exported = "CSV をエクスポートしました"
+csv_export_failed = "CSV のエクスポートに失敗しました"
 
 
 # --- 一般プレースホルダー ---
@@ -191,6 +194,8 @@ history_empty = "書き込み履歴はまだありません — 変更を保存�
 
 # 並列 Diff ビュー（ローカル書き込み履歴 シナリオ 1 & 2）
 diff_button = "Diff"
+diff_with_server = "サーバーと比較…"
+diff_string_only = "サーバー間の比較は string 型のキーのみ対応しています。"
 diff_button_tooltip = "履歴バージョンと比較(分割ボタン:クリック=前回、ドロップダウン=任意のバージョン)"
 diff_no_history = "Diff には少なくとも 1 件の保存履歴が必要です"
 diff_view_title = "Diff vs v%{version} (%{ago}前)"
@@ -202,6 +207,15 @@ diff_patch_label = "RFC 7396 マージパッチ(JSON.MERGE と同等のペイロ
 diff_patch_empty = "{}  // 変更なし"
 
 [key_tree]
+set_ttl_tooltip = "TTL を設定…"
+persist_tooltip = "TTL を削除（PERSIST）"
+batch_ttl_title = "TTL を設定"
+batch_ttl_placeholder = "例: 7d、3600、1h30m"
+batch_ttl_prompt = "対象のキーにこの TTL を適用します:"
+set_ttl_confirm = "設定"
+persist_title = "TTL を削除"
+persist_prompt = "対象のキーの TTL を削除（PERSIST）しますか？"
+export_csv_confirm = "現在読み込まれている %{count} 個のキーをエクスポートしますか？これは現在の SCAN サブセットで、キースペース全体ではありません。"
 no_keys_found = "キーが見つかりません"
 load_more = "もっと読み込む"
 key_not_exists = "キーが存在しないか期限切れです"
@@ -1024,6 +1038,28 @@ col_command = "コマンド"
 col_rate = "回/秒"
 col_avg = "µs/回"
 col_calls = "呼び出し"
+
+[value_search]
+title = "値で検索"
+prefix_placeholder = "キーのプレフィックス（必須）、例: session:"
+query_placeholder = "string 値の中から探すテキスト"
+search = "検索"
+stop = "停止"
+need_prefix = "キーのプレフィックスは必須です（全キースペースのスキャンは拒否されます）"
+need_query = "検索するテキストを入力してください"
+searching = "検索中…"
+no_matches = "一致する値はありません"
+truncated = "最初の一致のみ表示しています — プレフィックスかクエリを絞り込んでください"
+summary = "スキャン %{scanned} · 一致 %{matched} · 特大値 %{skipped} 件スキップ · %{reason}"
+reason_done = "完了"
+reason_capped = "スキャン上限に到達"
+reason_timeout = "タイムアウト"
+reason_cancelled = "停止しました"
+preview_hint = "結果をクリックして値をプレビュー"
+loading = "読み込み中…"
+open = "開く"
+loc_field = "フィールド"
+loc_member = "メンバー"
 
 [hll]
 title = "HyperLogLog"

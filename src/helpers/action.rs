@@ -85,6 +85,8 @@ pub enum EditorAction {
     Rename,
     /// Open the cross-server "copy to…" dialog for the selected key.
     CopyTo,
+    /// Open the cross-server "diff with…" dialog for the selected key.
+    DiffWithServer,
 }
 
 /// Actions scoped to the side-by-side value diff view.

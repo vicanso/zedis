@@ -19,7 +19,7 @@ use crate::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
         ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
         ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerLoad, ZedisServers,
-        ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology,
+        ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology, ZedisValueSearch,
     },
 };
 use gpui::{Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
@@ -56,6 +56,7 @@ pub struct ZedisContent {
     slowlog_editor: Option<Entity<ZedisSlowlogEditor>>,
     memory_analysis: Option<Entity<ZedisMemoryAnalysis>>,
     server_load: Option<Entity<ZedisServerLoad>>,
+    value_search: Option<Entity<ZedisValueSearch>>,
     clients_manager: Option<Entity<ZedisClientsManager>>,
     monitor: Option<Entity<ZedisMonitor>>,
     config_editor: Option<Entity<ZedisConfigEditor>>,
@@ -109,6 +110,9 @@ impl ZedisContent {
         }
         if route != Route::ServerLoad {
             self.server_load.take();
+        }
+        if route != Route::ValueSearch {
+            self.value_search.take();
         }
         if route != Route::Clients {
             self.clients_manager.take();
@@ -212,6 +216,7 @@ impl ZedisContent {
             slowlog_editor: None,
             memory_analysis: None,
             server_load: None,
+            value_search: None,
             clients_manager: None,
             monitor: None,
             config_editor: None,
@@ -308,6 +313,17 @@ impl ZedisContent {
             })
             .clone();
         div().size_full().child(server_load)
+    }
+
+    fn render_value_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let value_search = self
+            .value_search
+            .get_or_insert_with(|| {
+                debug!("Creating new value search view");
+                cx.new(|cx| ZedisValueSearch::new(self.server_state.clone(), window, cx))
+            })
+            .clone();
+        div().size_full().child(value_search)
     }
 
     fn render_clients(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -537,6 +553,7 @@ impl Render for ZedisContent {
                 let is_keyspace_notifications = route == Route::KeyspaceNotifications;
                 let is_topology = route == Route::Topology;
                 let is_server_load = route == Route::ServerLoad;
+                let is_value_search = route == Route::ValueSearch;
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {
@@ -567,6 +584,7 @@ impl Render for ZedisContent {
                                     })
                                     .when(is_topology, |this| this.child(self.render_topology(window, cx)))
                                     .when(is_server_load, |this| this.child(self.render_server_load(window, cx)))
+                                    .when(is_value_search, |this| this.child(self.render_value_search(window, cx)))
                                     .when(
                                         !is_metrics
                                             && !is_slowlog
@@ -581,7 +599,8 @@ impl Render for ZedisContent {
                                             && !is_persistence
                                             && !is_keyspace_notifications
                                             && !is_topology
-                                            && !is_server_load,
+                                            && !is_server_load
+                                            && !is_value_search,
                                         |this| this.child(self.render_editor(window, cx)),
                                     ),
                             ),

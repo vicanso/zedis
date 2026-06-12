@@ -19,14 +19,17 @@ use crate::{
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
-        EditorAction, TtlChipKind, format_ttl_chip, get_font_family, humanize_keystroke, theme_color_for_tag,
-        ttl_chip_kind, validate_long_string, validate_ttl,
+        EditorAction, TtlChipKind, build_csv, format_ttl_chip, get_font_family, humanize_keystroke, parse_duration,
+        theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
         KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
         i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
     },
-    views::{OnTagDialogDone, open_key_tag_dialog, open_migration_export_window, open_migration_import_window},
+    views::{
+        OnTagDialogDone, dirs_default_directory, open_key_tag_dialog, open_migration_export_window,
+        open_migration_import_window,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -72,8 +75,16 @@ enum KeyTreeAction {
     DeleteMultipleKeys,
     DeleteKey(SharedString),
     DeleteFolder(SharedString),
+    /// Batch TTL on the multi-selection / a folder prefix. `SetTtl*` open a
+    /// TTL-input dialog (`EXPIRE`); `Persist*` confirm then `PERSIST`.
+    SetTtlMultipleKeys,
+    PersistMultipleKeys,
+    SetTtlFolder(SharedString),
+    PersistFolder(SharedString),
     RefreshFolder(SharedString),
     CollapseAllKeys,
+    /// Export the current key list (name / type / TTL) to a CSV file.
+    ExportCsv,
     ToggleMultiSelectMode,
     ChangeChannelMode,
     AutoRefresh(u32),
@@ -597,11 +608,22 @@ impl ListDelegate for KeyTreeDelegate {
                                         count = selected_items_count,
                                         locale = locale
                                     );
-                                    menu = menu.menu_element_with_icon(
-                                        CustomIconName::ListX,
-                                        Box::new(KeyTreeAction::DeleteMultipleKeys),
-                                        move |_, _cx| Label::new(text.clone()),
-                                    );
+                                    menu = menu
+                                        .menu_element_with_icon(
+                                            CustomIconName::ListX,
+                                            Box::new(KeyTreeAction::DeleteMultipleKeys),
+                                            move |_, _cx| Label::new(text.clone()),
+                                        )
+                                        .menu_element_with_icon(
+                                            CustomIconName::Clock3,
+                                            Box::new(KeyTreeAction::SetTtlMultipleKeys),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "set_ttl_tooltip")),
+                                        )
+                                        .menu_element_with_icon(
+                                            CustomIconName::Clock3,
+                                            Box::new(KeyTreeAction::PersistMultipleKeys),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
+                                        );
                                 } else {
                                     menu = if is_folder {
                                         menu.menu_element_with_icon(
@@ -613,6 +635,16 @@ impl ListDelegate for KeyTreeDelegate {
                                             CustomIconName::X,
                                             Box::new(KeyTreeAction::DeleteFolder(id.clone())),
                                             move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
+                                        )
+                                        .menu_element_with_icon(
+                                            CustomIconName::Clock3,
+                                            Box::new(KeyTreeAction::SetTtlFolder(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "set_ttl_tooltip")),
+                                        )
+                                        .menu_element_with_icon(
+                                            CustomIconName::Clock3,
+                                            Box::new(KeyTreeAction::PersistFolder(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
                                         )
                                     } else {
                                         menu.menu_element_with_icon(
@@ -1182,6 +1214,34 @@ impl ZedisKeyTree {
 
     /// Delegates to server state to perform the actual filtering based on
     /// current query mode. Ignores if a scan is already in progress.
+    /// Pick a file and write the prepared keys CSV to it, reporting via a
+    /// notification. Split from the `ExportCsv` handler so the confirm dialog's
+    /// OK can invoke it.
+    fn export_keys_csv_to_file(&mut self, csv: String, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some("keys.csv"));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = receiver.await else {
+                return;
+            };
+            let bytes = csv.into_bytes();
+            let result = cx
+                .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.server_state.update(cx, |state, cx| match &result {
+                    Ok(path) => state.emit_success_notification(
+                        path.display().to_string().into(),
+                        i18n_common(cx, "csv_exported"),
+                        cx,
+                    ),
+                    Err(e) => state
+                        .emit_error_notification(format!("{}: {e}", i18n_common(cx, "csv_export_failed")).into(), cx),
+                });
+            });
+        })
+        .detach();
+    }
+
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         // Don't trigger filter while already scanning
         let server_state_clone = self.server_state.clone();
@@ -1685,6 +1745,11 @@ impl ZedisKeyTree {
                     Box::new(KeyTreeAction::CollapseAllKeys),
                     move |_, cx| Label::new(i18n_key_tree(cx, "collapse_keys")),
                 )
+                .menu_element_with_icon(
+                    Icon::new(CustomIconName::Save),
+                    Box::new(KeyTreeAction::ExportCsv),
+                    move |_, cx| Label::new(i18n_common(cx, "export_csv")),
+                )
                 .when(!readonly, |this| {
                     let icon = if enabled_multiple_selection {
                         Icon::new(IconName::Check)
@@ -1856,6 +1921,42 @@ impl Render for ZedisKeyTree {
                         state.collapse_all_keys(cx);
                     });
                 }
+                KeyTreeAction::ExportCsv => {
+                    let (count, csv) = {
+                        let state = this.server_state.read(cx);
+                        let keys = state.keys();
+                        if keys.is_empty() {
+                            return;
+                        }
+                        let ttls = state.key_ttls();
+                        let mut rows: Vec<Vec<String>> = keys
+                            .iter()
+                            .map(|(k, t)| {
+                                let ttl = ttls.get(k).copied().unwrap_or(-1);
+                                let ttl_str = if ttl >= 0 { ttl.to_string() } else { String::new() };
+                                vec![k.to_string(), t.as_str().to_string(), ttl_str]
+                            })
+                            .collect();
+                        rows.sort_by(|a, b| a[0].cmp(&b[0]));
+                        (rows.len(), build_csv(&["key", "type", "ttl_seconds"], &rows))
+                    };
+                    // The CSV only covers the keys currently loaded into the
+                    // tree (a SCAN-limited subset), so confirm with the count
+                    // first — it is not the whole keyspace.
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                    let message = t!("key_tree.export_csv_confirm", count = count, locale = locale).to_string();
+                    let weak = cx.entity().downgrade();
+                    ZedisDialog::new_alert(i18n_common(cx, "export_csv"), message)
+                        .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "export_csv")))
+                        .on_ok(move |_, _window, cx| {
+                            if let Some(tree) = weak.upgrade() {
+                                let csv = csv.clone();
+                                tree.update(cx, |this, cx| this.export_keys_csv_to_file(csv, cx));
+                            }
+                            true
+                        })
+                        .open(window, cx);
+                }
                 KeyTreeAction::ToggleMultiSelectMode => {
                     this.key_tree_list_state.update(cx, |state, cx| {
                         state.delegate_mut().toggle_multiple_selection(cx);
@@ -1976,6 +2077,116 @@ impl Render for ZedisKeyTree {
                                 state.delete_folder(id.clone(), cx);
                             });
                             true
+                        })
+                        .open(window, cx);
+                }
+                KeyTreeAction::PersistMultipleKeys => {
+                    let keys = this.key_tree_list_state.update(cx, |state, _cx| {
+                        state
+                            .delegate()
+                            .selected_items
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<SharedString>>()
+                    });
+                    if keys.is_empty() {
+                        return;
+                    }
+                    let server_state = this.server_state.clone();
+                    ZedisDialog::new_alert(i18n_key_tree(cx, "persist_title"), i18n_key_tree(cx, "persist_prompt"))
+                        .button_props(dialog_button_props(cx))
+                        .on_ok(move |_, _, cx| {
+                            server_state.update(cx, |state, cx| state.batch_set_ttl_keys(keys.clone(), None, cx));
+                            true
+                        })
+                        .open(window, cx);
+                }
+                KeyTreeAction::PersistFolder(id) => {
+                    let id = id.clone();
+                    let server_state = this.server_state.clone();
+                    ZedisDialog::new_alert(i18n_key_tree(cx, "persist_title"), i18n_key_tree(cx, "persist_prompt"))
+                        .button_props(dialog_button_props(cx))
+                        .on_ok(move |_, _, cx| {
+                            server_state.update(cx, |state, cx| state.batch_set_ttl_folder(id.clone(), None, cx));
+                            true
+                        })
+                        .open(window, cx);
+                }
+                KeyTreeAction::SetTtlMultipleKeys => {
+                    let keys = this.key_tree_list_state.update(cx, |state, _cx| {
+                        state
+                            .delegate()
+                            .selected_items
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<SharedString>>()
+                    });
+                    if keys.is_empty() {
+                        return;
+                    }
+                    let server_state = this.server_state.clone();
+                    let ttl_input = cx
+                        .new(|cx| InputState::new(window, cx).placeholder(i18n_key_tree(cx, "batch_ttl_placeholder")));
+                    let input_child = ttl_input.clone();
+                    let input_ok = ttl_input.clone();
+                    let prompt = i18n_key_tree(cx, "batch_ttl_prompt");
+                    ZedisDialog::new(i18n_key_tree(cx, "batch_ttl_title"))
+                        .w(px(360.))
+                        .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
+                        .cancel_text(i18n_common(cx, "cancel"))
+                        .button_props(
+                            dialog_button_props(cx)
+                                .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
+                                .cancel_text(i18n_common(cx, "cancel")),
+                        )
+                        .child(move || {
+                            v_flex()
+                                .gap_2()
+                                .child(Label::new(prompt.clone()).text_sm())
+                                .child(Input::new(&input_child).small())
+                        })
+                        .on_ok(move |_, _, cx| match parse_duration(input_ok.read(cx).value().trim()) {
+                            Ok(d) => {
+                                let secs = d.as_secs();
+                                server_state
+                                    .update(cx, |state, cx| state.batch_set_ttl_keys(keys.clone(), Some(secs), cx));
+                                true
+                            }
+                            Err(_) => false,
+                        })
+                        .open(window, cx);
+                }
+                KeyTreeAction::SetTtlFolder(id) => {
+                    let id = id.clone();
+                    let server_state = this.server_state.clone();
+                    let ttl_input = cx
+                        .new(|cx| InputState::new(window, cx).placeholder(i18n_key_tree(cx, "batch_ttl_placeholder")));
+                    let input_child = ttl_input.clone();
+                    let input_ok = ttl_input.clone();
+                    let prompt = i18n_key_tree(cx, "batch_ttl_prompt");
+                    ZedisDialog::new(i18n_key_tree(cx, "batch_ttl_title"))
+                        .w(px(360.))
+                        .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
+                        .cancel_text(i18n_common(cx, "cancel"))
+                        .button_props(
+                            dialog_button_props(cx)
+                                .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
+                                .cancel_text(i18n_common(cx, "cancel")),
+                        )
+                        .child(move || {
+                            v_flex()
+                                .gap_2()
+                                .child(Label::new(prompt.clone()).text_sm())
+                                .child(Input::new(&input_child).small())
+                        })
+                        .on_ok(move |_, _, cx| match parse_duration(input_ok.read(cx).value().trim()) {
+                            Ok(d) => {
+                                let secs = d.as_secs();
+                                server_state
+                                    .update(cx, |state, cx| state.batch_set_ttl_folder(id.clone(), Some(secs), cx));
+                                true
+                            }
+                            Err(_) => false,
                         })
                         .open(window, cx);
                 }

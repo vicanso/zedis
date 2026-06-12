@@ -42,6 +42,9 @@ clients = "Blockierte & verbundene Clients"
 slow_logs = "Langsame Logs"
 disable_in_readonly = "Im Nur-Lese-Modus deaktiviert"
 back_to_editor = "Back to editor"
+export_csv = "CSV exportieren"
+csv_exported = "CSV exportiert"
+csv_export_failed = "CSV-Export fehlgeschlagen"
 
 
 # --- Allgemeine Platzhalter ---
@@ -191,6 +194,8 @@ history_empty = "Noch kein Schreibverlauf — speichern Sie eine Änderung, um z
 
 # Vergleichsansicht für Schreibverlauf (Szenarios 1 & 2)
 diff_button = "Diff"
+diff_with_server = "Mit Server vergleichen…"
+diff_string_only = "Server-übergreifender Vergleich ist nur für String-Schlüssel verfügbar."
 diff_button_tooltip = "Mit früherer Version vergleichen (Splitbutton: Klick = vorherige Version, Dropdown = beliebige Version)"
 diff_no_history = "Diff benötigt mindestens eine gespeicherte Verlaufsversion"
 diff_view_title = "Diff vs v%{version} (vor %{ago})"
@@ -202,6 +207,15 @@ diff_patch_label = "RFC 7396 Merge-Patch (äquivalente JSON.MERGE-Payload)"
 diff_patch_empty = "{}  // keine Änderung"
 
 [key_tree]
+set_ttl_tooltip = "TTL festlegen…"
+persist_tooltip = "TTL entfernen (PERSIST)"
+batch_ttl_title = "TTL festlegen"
+batch_ttl_placeholder = "z. B. 7d, 3600, 1h30m"
+batch_ttl_prompt = "Diese TTL auf die betroffenen Schlüssel anwenden:"
+set_ttl_confirm = "TTL festlegen"
+persist_title = "TTL entfernen"
+persist_prompt = "Die TTL der betroffenen Schlüssel entfernen (PERSIST)?"
+export_csv_confirm = "Die %{count} aktuell geladenen Schlüssel exportieren? Das ist die aktuelle SCAN-Teilmenge, nicht der gesamte Keyspace."
 no_keys_found = "Keine Schlüssel gefunden"
 load_more = "Mehr laden"
 key_not_exists = "Schlüssel existiert nicht oder ist abgelaufen"
@@ -1024,6 +1038,28 @@ col_command = "Befehl"
 col_rate = "Aufrufe/s"
 col_avg = "µs/Aufruf"
 col_calls = "Aufrufe"
+
+[value_search]
+title = "Wertsuche"
+prefix_placeholder = "Schlüsselpräfix (erforderlich), z. B. session:"
+query_placeholder = "In String-Werten zu suchender Text"
+search = "Suchen"
+stop = "Stopp"
+need_prefix = "Ein Schlüsselpräfix ist erforderlich (kompletter Keyspace-Scan wird abgelehnt)"
+need_query = "Suchtext eingeben"
+searching = "Suche läuft…"
+no_matches = "Keine passenden Werte"
+truncated = "Es werden nur die ersten Treffer angezeigt — Präfix oder Suche eingrenzen"
+summary = "Gescannt %{scanned} · Treffer %{matched} · %{skipped} zu groß übersprungen · %{reason}"
+reason_done = "fertig"
+reason_capped = "Scan-Limit erreicht"
+reason_timeout = "Zeitüberschreitung"
+reason_cancelled = "gestoppt"
+preview_hint = "Auf ein Ergebnis klicken, um den Wert anzuzeigen"
+loading = "Wird geladen…"
+open = "Öffnen"
+loc_field = "Feld"
+loc_member = "Mitglied"
 
 [hll]
 title = "HyperLogLog"

@@ -959,6 +959,82 @@ impl ZedisServerState {
         );
     }
 
+    /// Batch-apply a TTL to an explicit key list (multi-select). `ttl_secs =
+    /// Some` issues `EXPIRE`, `None` issues `PERSIST`; cluster-safe via
+    /// `set_ttl_keys_scattered`. Updates the local TTL cache on success.
+    pub fn batch_set_ttl_keys(&mut self, keys: Vec<SharedString>, ttl_secs: Option<u64>, cx: &mut Context<Self>) {
+        if keys.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let affected = keys.clone();
+        self.spawn_with_arg(
+            ServerTask::UpdateKeyTtl,
+            format!("{} keys", keys.len()),
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                client.set_ttl_keys_scattered(keys, ttl_secs).await
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
+                    for key in &affected {
+                        this.key_ttls.insert(key.clone(), new_ttl);
+                    }
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                }
+                cx.emit(ServerEvent::KeyTreeUpdated);
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Batch-apply a TTL to every key under a folder prefix. Scans `prefix*`
+    /// across masters (like `delete_folder`) and applies in pages.
+    pub fn batch_set_ttl_folder(&mut self, folder: SharedString, ttl_secs: Option<u64>, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let separator = cx.global::<ZedisGlobalStore>().value(cx).key_separator().to_string();
+        let prefix = format!("{folder}{separator}");
+        let pattern = format!("{prefix}*");
+        let prefix_done = prefix.clone();
+        self.spawn_with_arg(
+            ServerTask::UpdateKeyTtl,
+            prefix,
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let count = 10_000;
+                let mut cursors: Option<Vec<u64>> = None;
+                for _ in 0..20 {
+                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count).await?;
+                    let flat: Vec<SharedString> = keys_per_node.into_iter().flatten().collect();
+                    client.set_ttl_keys_scattered(flat, ttl_secs).await?;
+                    if new_cursors.iter().sum::<u64>() == 0 {
+                        break;
+                    }
+                    cursors = Some(new_cursors);
+                }
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
+                    for (k, v) in this.key_ttls.iter_mut() {
+                        if k.starts_with(prefix_done.as_str()) {
+                            *v = new_ttl;
+                        }
+                    }
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                }
+                cx.emit(ServerEvent::KeyTreeUpdated);
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     pub fn add_key(
         &mut self,
         category: SharedString,
@@ -975,6 +1051,17 @@ impl ZedisServerState {
         let db = self.db;
         let key_type = KeyType::from(category.to_lowercase().as_str());
         let key_clone = key.clone();
+        // Remaining TTL in seconds for the optimistic local cache (-1 = none),
+        // so the new row carries the right TTL chip immediately.
+        let ttl_secs: i64 = if ttl.trim().is_empty() {
+            -1
+        } else if let Ok(secs) = ttl.trim().parse::<u64>() {
+            secs as i64
+        } else {
+            humantime::parse_duration(ttl.trim())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(-1)
+        };
         self.spawn_with_arg(
             ServerTask::AddKey,
             key.clone(),
@@ -1023,8 +1110,12 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     this.keys.insert(key_clone.clone(), key_type);
+                    this.key_ttls.insert(key_clone.clone(), ttl_secs);
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     this.select_key(key_clone, cx);
+                    // Rebuild the tree from `keys` so the new row actually
+                    // appears (without this it stays hidden until a refresh).
+                    cx.emit(ServerEvent::KeyTreeUpdated);
                 }
                 cx.notify();
             },

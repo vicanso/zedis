@@ -42,6 +42,9 @@ clients = "Заблокированные и подключённые клиен
 slow_logs = "Медленные запросы"
 disable_in_readonly = "Отключено в режиме только для чтения"
 back_to_editor = "Back to editor"
+export_csv = "Экспорт в CSV"
+csv_exported = "CSV экспортирован"
+csv_export_failed = "Не удалось экспортировать CSV"
 
 
 # --- Основные заполнители ---
@@ -191,6 +194,8 @@ history_empty = "Истории записей пока нет — сохран�
 
 # Просмотр различий бок о бок (сценарии 1 и 2 локальной истории записи)
 diff_button = "Diff"
+diff_with_server = "Сравнить с сервером…"
+diff_string_only = "Сравнение между серверами доступно только для строковых ключей."
 diff_button_tooltip = "Сравнить с предыдущей версией (составная кнопка: клик = предыдущая, меню = любая версия)"
 diff_no_history = "Для diff нужна хотя бы одна сохранённая версия в истории"
 diff_view_title = "Diff vs v%{version} (%{ago} назад)"
@@ -202,6 +207,15 @@ diff_patch_label = "RFC 7396 merge patch (эквивалент JSON.MERGE payloa
 diff_patch_empty = "{}  // без изменений"
 
 [key_tree]
+set_ttl_tooltip = "Задать TTL…"
+persist_tooltip = "Убрать TTL (PERSIST)"
+batch_ttl_title = "Задать TTL"
+batch_ttl_placeholder = "напр. 7d, 3600, 1h30m"
+batch_ttl_prompt = "Применить этот TTL к ключам в области:"
+set_ttl_confirm = "Задать TTL"
+persist_title = "Убрать TTL"
+persist_prompt = "Убрать TTL (PERSIST) у ключей в области?"
+export_csv_confirm = "Экспортировать %{count} загруженных сейчас ключей? Это текущая подвыборка SCAN, а не всё пространство ключей."
 no_keys_found = "Ключи не найдены"
 load_more = "Загрузить ещё"
 key_not_exists = "Ключ не существует или истёк"
@@ -1024,6 +1038,28 @@ col_command = "Команда"
 col_rate = "Вызовов/с"
 col_avg = "мкс/вызов"
 col_calls = "Вызовы"
+
+[value_search]
+title = "Поиск по значению"
+prefix_placeholder = "Префикс ключа (обязательно), напр. session:"
+query_placeholder = "Текст для поиска в строковых значениях"
+search = "Искать"
+stop = "Стоп"
+need_prefix = "Требуется префикс ключа (сканирование всего пространства ключей запрещено)"
+need_query = "Введите текст для поиска"
+searching = "Поиск…"
+no_matches = "Совпадающих значений нет"
+truncated = "Показаны только первые совпадения — сузьте префикс или запрос"
+summary = "Просканировано %{scanned} · совпадений %{matched} · пропущено %{skipped} больших · %{reason}"
+reason_done = "готово"
+reason_capped = "достигнут лимит сканирования"
+reason_timeout = "тайм-аут"
+reason_cancelled = "остановлено"
+preview_hint = "Нажмите на результат, чтобы посмотреть значение"
+loading = "Загрузка…"
+open = "Открыть"
+loc_field = "поле"
+loc_member = "элемент"
 
 [hll]
 title = "HyperLogLog"

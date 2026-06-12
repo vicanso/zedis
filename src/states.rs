@@ -58,6 +58,7 @@ pub use i18n::i18n_stream_editor;
 pub use i18n::i18n_timeseries;
 pub use i18n::i18n_topology;
 pub use i18n::i18n_tray;
+pub use i18n::i18n_value_search;
 pub use i18n::i18n_vector_set;
 pub use i18n::i18n_zset_editor;
 pub use migration::{LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState};

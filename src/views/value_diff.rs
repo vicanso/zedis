@@ -99,19 +99,25 @@ impl ZedisValueDiff {
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let secs_ago = (unix_ts() - self.session.reference_at).max(0) as u64;
-        let rel = format_duration(Duration::from_secs(secs_ago));
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let title: SharedString = rust_i18n::t!(
-            "editor.diff_view_title",
-            // History is 0-indexed internally; users read "v1" for the
-            // newest entry — convert at display time.
-            version = (self.session.history_idx + 1).to_string(),
-            ago = rel,
-            locale = locale
-        )
-        .to_string()
-        .into();
+        // Cross-server diffs carry their own label (the other server's
+        // "name / dbN"); history diffs render "vN (3 min ago)".
+        let title: SharedString = if let Some(label) = self.session.reference_label.clone() {
+            label
+        } else {
+            let secs_ago = (unix_ts() - self.session.reference_at).max(0) as u64;
+            let rel = format_duration(Duration::from_secs(secs_ago));
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+            rust_i18n::t!(
+                "editor.diff_view_title",
+                // History is 0-indexed internally; users read "v1" for the
+                // newest entry — convert at display time.
+                version = (self.session.history_idx + 1).to_string(),
+                ago = rel,
+                locale = locale
+            )
+            .to_string()
+            .into()
+        };
 
         let on_close = self.on_close.clone();
         h_flex()
@@ -311,14 +317,18 @@ impl Render for ZedisValueDiff {
                 .child(Label::new(i18n_editor(cx, "diff_identical")).text_color(theme.muted_foreground))
                 .into_any_element()
         } else {
-            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-            let left_title: SharedString = rust_i18n::t!(
-                "editor.diff_reference_label",
-                version = (self.session.history_idx + 1).to_string(),
-                locale = locale
-            )
-            .to_string()
-            .into();
+            let left_title: SharedString = if let Some(label) = self.session.reference_label.clone() {
+                label
+            } else {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                rust_i18n::t!(
+                    "editor.diff_reference_label",
+                    version = (self.session.history_idx + 1).to_string(),
+                    locale = locale
+                )
+                .to_string()
+                .into()
+            };
             let right_title = i18n_editor(cx, "diff_current_label");
 
             let left_pane = self.render_pane(left_title, &left_lines, &ops, true, cx);

@@ -20,7 +20,7 @@ use crate::{
     states::{
         ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore,
         ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology,
-        save_session_option,
+        i18n_value_search, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -498,6 +498,13 @@ impl ZedisStatusBar {
 
         // ── Query & Scripting ──
         menu = menu.separator().label(i18n_status_bar(cx, "group_scripting"));
+        // Search keys by value content — works on any Redis (no module), so it
+        // anchors this group.
+        menu = menu.menu_element_with_icon(
+            Icon::new(IconName::Search),
+            Box::new(ServerToolsAction::ValueSearch),
+            move |_window, cx| Label::new(i18n_value_search(cx, "title")),
+        );
         if supports_search {
             menu = menu.menu_element_with_icon(
                 Icon::new(IconName::Search),
