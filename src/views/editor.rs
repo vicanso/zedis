@@ -14,6 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
+	components::KeyTypeBadge,
     connection::{ConflictMode, RestoreStatus, copy_key, get_connection_manager, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
@@ -972,9 +973,11 @@ impl ZedisEditor {
         let mut bitmap_view = false;
         let mut has_bytes_value = false;
 
+        let mut key_type = KeyType::Unknown;
         // Extract value information if available
         if let Some(value) = server_state.value() {
             is_busy = value.is_busy();
+            key_type = value.key_type();
 
             // Format TTL display
             ttl = if let Some(ttl) = value.ttl() {
@@ -1374,6 +1377,9 @@ impl ZedisEditor {
                         .detach();
                         cx.notify();
                     })),
+            )
+            .child(
+                KeyTypeBadge::new(key_type).into_any_element()
             )
             .child(
                 // Key name display - w_0 prevents long keys from breaking layout

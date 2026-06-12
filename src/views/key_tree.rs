@@ -14,6 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
+	components::KeyTypeBadge,
     connection::get_server,
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
@@ -61,8 +62,6 @@ use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
 const TREE_INDENT_OFFSET: f32 = 8.0; // Additional offset for all items
 const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
-const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges
-const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
 /// Fixed width of the TTL chip, in pixels. Sized to fit the two-digit cap
 /// of `format_ttl_chip` (`59s` / `59m`) at 10px font with 1px borders.
 const TTL_CHIP_WIDTH: f32 = 34.0;
@@ -469,30 +468,6 @@ struct KeyTreeDelegate {
 }
 
 impl KeyTreeDelegate {
-    /// Renders the colored badge for key types (String, Hash, etc.)
-    fn render_key_type_badge(&self, key_type: &KeyType) -> impl IntoElement {
-        if key_type == &KeyType::Unknown {
-            return div().into_any_element();
-        }
-
-        let color = key_type.color();
-        let mut bg = color;
-        bg.fade_out(KEY_TYPE_FADE_ALPHA);
-        let mut border = color;
-        border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
-
-        Label::new(key_type.as_str())
-            .text_size(px(10.))
-            .w(px(36.))
-            .text_center()
-            .bg(bg)
-            .text_color(color)
-            .border_1()
-            .px_1()
-            .rounded_sm()
-            .border_color(border)
-            .into_any_element()
-    }
     fn toggle_multiple_selection(&mut self, cx: &mut Context<ListState<Self>>) {
         self.enabled_multiple_selection = !self.enabled_multiple_selection;
         if self.enabled_multiple_selection {
@@ -539,7 +514,7 @@ impl ListDelegate for KeyTreeDelegate {
         }
         let icon = if !entry.is_folder {
             // Key item: Show type badge (String, List, etc.)
-            self.render_key_type_badge(&entry.key_type).into_any_element()
+            KeyTypeBadge::new(entry.key_type).into_any_element()
         } else if entry.expanded {
             // Expanded folder: Show open folder icon
             Icon::new(IconName::FolderOpen).text_color(yellow).into_any_element()
