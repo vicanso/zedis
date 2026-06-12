@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-	  components::KeyTypeBadge,
+	components::KeyTypeBadge,
     connection::{ConflictMode, RestoreStatus, copy_key, get_connection_manager, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
