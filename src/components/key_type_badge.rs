@@ -45,12 +45,18 @@ impl RenderOnce for KeyTypeBadge {
 
         Label::new(self.key_type.as_str())
             .text_size(px(10.))
-            .w(px(36.))
-            .text_center()
+            // The width hugs the text instead of being fixed: `flex_none`
+            // keeps the badge from being squeezed in the tight title /
+            // key-tree rows, `whitespace_nowrap` keeps it on a single line,
+            // and the horizontal padding gives every label the same breathing
+            // room — so "TS" stays compact while "STRM"/"CHANNEL" get the
+            // space they need instead of wrapping.
+            .flex_none()
+            .whitespace_nowrap()
             .bg(bg)
             .text_color(color)
             .border_1()
-            .px_1()
+            .px_1p5()
             .rounded_sm()
             .border_color(border)
             .into_any_element()
