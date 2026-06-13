@@ -82,6 +82,25 @@ fn is_blocking_command(cmd_name: &str, args: &[String]) -> bool {
     false
 }
 
+/// Scrollback cap for the REPL output pane. The whole buffer is re-cloned
+/// into the read-only `InputState` on every command, so leaving it unbounded
+/// made a long session O(n²) in total output. ~200 KB ≈ a few thousand lines.
+const MAX_OUTPUT_CHARS: usize = 200_000;
+
+/// Drop the oldest output once the scrollback buffer exceeds
+/// [`MAX_OUTPUT_CHARS`], cutting at a line boundary so the top stays clean.
+fn trim_output_scrollback(buf: &mut String) {
+    if buf.len() <= MAX_OUTPUT_CHARS {
+        return;
+    }
+    let target = buf.len() - MAX_OUTPUT_CHARS;
+    // `\n` is ASCII (always a valid char boundary), so draining up to and
+    // including it keeps `buf` a valid `String`.
+    if let Some(i) = buf.as_bytes()[target..].iter().position(|&b| b == b'\n') {
+        buf.drain(..target + i + 1);
+    }
+}
+
 pub struct ZedisTerminal {
     server_state: Entity<ZedisServerState>,
     cmd_output_state: Entity<InputState>,
@@ -389,6 +408,7 @@ impl ZedisTerminal {
                     use std::fmt::Write;
                     let _ = writeln!(this.cmd_output_text, "{CMD_LABEL} {line_clone}");
                     let _ = writeln!(this.cmd_output_text, "{content}");
+                    trim_output_scrollback(&mut this.cmd_output_text);
                     this.cmd_output_dirty = true;
                     cx.notify();
                 });

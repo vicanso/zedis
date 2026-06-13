@@ -46,7 +46,7 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use zedis_ui::ZedisDivider;
 
@@ -1635,7 +1635,7 @@ impl ZedisSlowlogEditor {
                 // a single-sample history still renders a tick.
                 let tick_margin = (h.len() / 4).max(1);
                 let params = ChartParams {
-                    dates,
+                    dates: Arc::new(dates),
                     y_max,
                     y_format: Box::new(|v| format!("{:.0} ms", v)),
                     tick_margin,
@@ -1646,7 +1646,7 @@ impl ZedisSlowlogEditor {
                     .h(px(140.))
                     .px_3()
                     .py_2()
-                    .child(make_line_canvas(params, values, theme.chart_2, false))
+                    .child(make_line_canvas(params, Arc::new(values), theme.chart_2, false))
                     .into_any_element()
             }
         };

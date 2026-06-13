@@ -34,6 +34,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use std::sync::Arc;
 use std::time::Duration;
 use zedis_ui::ZedisSkeletonLoading;
 
@@ -48,7 +49,7 @@ const Y_TICK_COUNT: usize = 4;
 /// views (e.g. memory_analysis) can reuse the same axis-rendering
 /// primitives without duplicating the y-tick / x-label logic.
 pub(crate) struct ChartParams {
-    pub dates: Vec<SharedString>,
+    pub dates: Arc<Vec<SharedString>>,
     pub y_max: f64,
     pub y_format: Box<dyn Fn(f64) -> String>,
     pub tick_margin: usize,
@@ -82,80 +83,39 @@ impl ChartFrame {
     }
 }
 
-#[derive(Debug, Clone)]
-struct MetricsCpu {
-    date: SharedString,
-    used_cpu_sys_percent: f64,
-    used_cpu_user_percent: f64,
-}
-#[derive(Debug, Clone)]
-struct MetricsMemory {
-    date: SharedString,
-    used_memory: f64,
-}
-
-#[derive(Debug, Clone)]
-struct MetricsLatency {
-    date: SharedString,
-    latency_ms: f64,
-}
-
-#[derive(Debug, Clone)]
-struct MetricsConnectedClients {
-    date: SharedString,
-    connected_clients: f64,
-}
-
-#[derive(Debug, Clone)]
-struct MetricsTotalCommandsProcessed {
-    date: SharedString,
-    total_commands_processed: f64,
-}
-
-#[derive(Debug, Clone)]
-struct MetricsOutputKbps {
-    date: SharedString,
-    output_kbps: f64,
-}
-
-#[derive(Debug, Clone)]
-struct MetricsKeyHitRate {
-    date: SharedString,
-    key_hit_rate: f64,
-}
-
-#[derive(Debug, Clone)]
-struct MetricsEvictedKeys {
-    date: SharedString,
-    evicted_keys: f64,
-}
-
+/// Chart-ready series, computed once per heartbeat in
+/// [`convert_metrics_to_chart_data`] and rendered by borrowing: each
+/// `render_*_chart` just bumps these `Arc`s instead of re-flattening and
+/// re-collecting a fresh `Vec` every frame. `dates` is the shared x-axis —
+/// one allocation reused by all eight charts.
 #[derive(Debug, Clone)]
 struct MetricsChartData {
+    dates: Arc<Vec<SharedString>>,
     max_cpu_percent: f64,
     min_cpu_percent: f64,
-    cpu: Vec<MetricsCpu>,
+    cpu_sys: Arc<Vec<f64>>,
+    cpu_user: Arc<Vec<f64>>,
     max_memory: f64,
     min_memory: f64,
-    memory: Vec<MetricsMemory>,
+    memory: Arc<Vec<f64>>,
     min_latency_ms: f64,
     max_latency_ms: f64,
-    latency: Vec<MetricsLatency>,
+    latency: Arc<Vec<f64>>,
     max_connected_clients: f64,
     min_connected_clients: f64,
-    connected_clients: Vec<MetricsConnectedClients>,
+    connected_clients: Arc<Vec<f64>>,
     max_total_commands_processed: f64,
     min_total_commands_processed: f64,
-    total_commands_processed: Vec<MetricsTotalCommandsProcessed>,
+    total_commands_processed: Arc<Vec<f64>>,
     max_output_kbps: f64,
     min_output_kbps: f64,
-    output_kbps: Vec<MetricsOutputKbps>,
+    output_kbps: Arc<Vec<f64>>,
     max_key_hit_rate: f64,
     min_key_hit_rate: f64,
-    key_hit_rate: Vec<MetricsKeyHitRate>,
+    key_hit_rate: Arc<Vec<f64>>,
     max_evicted_keys: f64,
     min_evicted_keys: f64,
-    evicted_keys: Vec<MetricsEvictedKeys>,
+    evicted_keys: Arc<Vec<f64>>,
 }
 
 pub struct ZedisMetrics {
@@ -178,35 +138,38 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
     let mut prev_metrics = RedisMetrics::default();
     let n = history_metrics.len();
 
-    let mut cpu_list = Vec::with_capacity(n);
+    let mut dates = Vec::with_capacity(n);
+
+    let mut cpu_sys = Vec::with_capacity(n);
+    let mut cpu_user = Vec::with_capacity(n);
     let mut max_cpu_percent = f64::MIN;
     let mut min_cpu_percent = f64::MAX;
 
-    let mut memory_list = Vec::with_capacity(n);
+    let mut memory = Vec::with_capacity(n);
     let mut max_memory = f64::MIN;
     let mut min_memory = f64::MAX;
 
-    let mut latency_list = Vec::with_capacity(n);
+    let mut latency = Vec::with_capacity(n);
     let mut min_latency_ms = f64::MAX;
     let mut max_latency_ms = f64::MIN;
 
-    let mut connected_clients_list = Vec::with_capacity(n);
+    let mut connected_clients = Vec::with_capacity(n);
     let mut max_connected_clients = f64::MIN;
     let mut min_connected_clients = f64::MAX;
 
-    let mut total_commands_processed_list = Vec::with_capacity(n);
+    let mut total_commands_processed = Vec::with_capacity(n);
     let mut max_total_commands_processed = f64::MIN;
     let mut min_total_commands_processed = f64::MAX;
 
-    let mut output_kbps_list = Vec::with_capacity(n);
+    let mut output_kbps = Vec::with_capacity(n);
     let mut max_output_kbps = f64::MIN;
     let mut min_output_kbps = f64::MAX;
 
-    let mut key_hit_rate_list = Vec::with_capacity(n);
+    let mut key_hit_rate = Vec::with_capacity(n);
     let mut max_key_hit_rate = f64::MIN;
     let mut min_key_hit_rate = f64::MAX;
 
-    let mut evicted_keys_list = Vec::with_capacity(n);
+    let mut evicted_keys = Vec::with_capacity(n);
     let mut max_evicted_keys = f64::MIN;
     let mut min_evicted_keys = f64::MAX;
 
@@ -221,61 +184,40 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
             continue;
         }
 
-        let date = format_timestamp_ms(metrics.timestamp_ms);
+        dates.push(format_timestamp_ms(metrics.timestamp_ms));
         let delta_time = (duration_ms as f64) / 1000.;
+
         let used_cpu_sys_percent = (metrics.used_cpu_sys - prev_metrics.used_cpu_sys) / delta_time * 100.;
         let used_cpu_user_percent = (metrics.used_cpu_user - prev_metrics.used_cpu_user) / delta_time * 100.;
-
-        let cpu_high = used_cpu_sys_percent.max(used_cpu_user_percent);
-        let cpu_low = used_cpu_sys_percent.min(used_cpu_user_percent);
-        max_cpu_percent = max_cpu_percent.max(cpu_high);
-        min_cpu_percent = min_cpu_percent.min(cpu_low);
-
-        cpu_list.push(MetricsCpu {
-            date: date.clone(),
-            used_cpu_sys_percent,
-            used_cpu_user_percent,
-        });
+        max_cpu_percent = max_cpu_percent.max(used_cpu_sys_percent.max(used_cpu_user_percent));
+        min_cpu_percent = min_cpu_percent.min(used_cpu_sys_percent.min(used_cpu_user_percent));
+        cpu_sys.push(used_cpu_sys_percent);
+        cpu_user.push(used_cpu_user_percent);
 
         let used_memory = metrics.used_memory as f64 / BYTES_TO_MB;
         max_memory = max_memory.max(used_memory);
         min_memory = min_memory.min(used_memory);
-        memory_list.push(MetricsMemory {
-            date: date.clone(),
-            used_memory,
-        });
+        memory.push(used_memory);
 
         let latency_ms = metrics.latency_ms as f64;
         max_latency_ms = max_latency_ms.max(latency_ms);
         min_latency_ms = min_latency_ms.min(latency_ms);
-        latency_list.push(MetricsLatency {
-            date: date.clone(),
-            latency_ms,
-        });
+        latency.push(latency_ms);
 
         let clients = metrics.connected_clients as f64;
         max_connected_clients = max_connected_clients.max(clients);
         min_connected_clients = min_connected_clients.min(clients);
-        connected_clients_list.push(MetricsConnectedClients {
-            date: date.clone(),
-            connected_clients: clients,
-        });
+        connected_clients.push(clients);
 
         let processed = (metrics.total_commands_processed - prev_metrics.total_commands_processed) as f64;
         max_total_commands_processed = max_total_commands_processed.max(processed);
         min_total_commands_processed = min_total_commands_processed.min(processed);
-        total_commands_processed_list.push(MetricsTotalCommandsProcessed {
-            date: date.clone(),
-            total_commands_processed: processed,
-        });
+        total_commands_processed.push(processed);
 
         let output = metrics.instantaneous_output_kbps;
         max_output_kbps = max_output_kbps.max(output);
         min_output_kbps = min_output_kbps.min(output);
-        output_kbps_list.push(MetricsOutputKbps {
-            date: date.clone(),
-            output_kbps: output,
-        });
+        output_kbps.push(output);
 
         let keyspace_hits = metrics.keyspace_hits - prev_metrics.keyspace_hits;
         let keyspace_misses = metrics.keyspace_misses - prev_metrics.keyspace_misses;
@@ -287,18 +229,12 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         };
         max_key_hit_rate = max_key_hit_rate.max(rate);
         min_key_hit_rate = min_key_hit_rate.min(rate);
-        key_hit_rate_list.push(MetricsKeyHitRate {
-            date: date.clone(),
-            key_hit_rate: rate,
-        });
+        key_hit_rate.push(rate);
 
-        let evicted_keys = (metrics.evicted_keys - prev_metrics.evicted_keys) as f64;
-        max_evicted_keys = max_evicted_keys.max(evicted_keys);
-        min_evicted_keys = min_evicted_keys.min(evicted_keys);
-        evicted_keys_list.push(MetricsEvictedKeys {
-            date: date.clone(),
-            evicted_keys,
-        });
+        let evicted = (metrics.evicted_keys - prev_metrics.evicted_keys) as f64;
+        max_evicted_keys = max_evicted_keys.max(evicted);
+        min_evicted_keys = min_evicted_keys.min(evicted);
+        evicted_keys.push(evicted);
 
         prev_metrics = *metrics;
     }
@@ -310,28 +246,30 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
 
     (
         MetricsChartData {
-            cpu: cpu_list,
+            dates: Arc::new(dates),
+            cpu_sys: Arc::new(cpu_sys),
+            cpu_user: Arc::new(cpu_user),
             max_cpu_percent,
             min_cpu_percent,
-            memory: memory_list,
+            memory: Arc::new(memory),
             max_memory,
             min_memory,
-            latency: latency_list,
+            latency: Arc::new(latency),
             min_latency_ms,
             max_latency_ms,
-            connected_clients: connected_clients_list,
+            connected_clients: Arc::new(connected_clients),
             max_connected_clients,
             min_connected_clients,
-            total_commands_processed: total_commands_processed_list,
+            total_commands_processed: Arc::new(total_commands_processed),
             max_total_commands_processed,
             min_total_commands_processed,
-            output_kbps: output_kbps_list,
+            output_kbps: Arc::new(output_kbps),
             max_output_kbps,
             min_output_kbps,
-            key_hit_rate: key_hit_rate_list,
+            key_hit_rate: Arc::new(key_hit_rate),
             min_key_hit_rate,
             max_key_hit_rate,
-            evicted_keys: evicted_keys_list,
+            evicted_keys: Arc::new(evicted_keys),
             max_evicted_keys,
             min_evicted_keys,
         },
@@ -434,7 +372,7 @@ fn make_x_labels_band(
         .collect()
 }
 
-fn make_area_canvas(params: ChartParams, series: Vec<(Vec<f64>, Hsla, Background)>) -> impl IntoElement {
+fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Background)>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
@@ -446,6 +384,9 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Vec<f64>, Hsla, Background
                 border,
                 muted_fg,
             } = &params;
+            // `params.dates` is an `Arc<Vec<_>>`; deref to a plain `Vec` ref so
+            // the rest of the paint code (and the chart lib) stays unchanged.
+            let dates: &Vec<SharedString> = dates;
             if dates.is_empty() {
                 return;
             }
@@ -487,7 +428,7 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Vec<f64>, Hsla, Background
 
 pub(crate) fn make_line_canvas(
     params: ChartParams,
-    values: Vec<f64>,
+    values: Arc<Vec<f64>>,
     stroke: Hsla,
     step_after: bool,
 ) -> impl IntoElement {
@@ -502,6 +443,9 @@ pub(crate) fn make_line_canvas(
                 border,
                 muted_fg,
             } = &params;
+            // `params.dates` is an `Arc<Vec<_>>`; deref to a plain `Vec` ref so
+            // the rest of the paint code (and the chart lib) stays unchanged.
+            let dates: &Vec<SharedString> = dates;
             if dates.is_empty() {
                 return;
             }
@@ -540,7 +484,7 @@ pub(crate) fn make_line_canvas(
     .size_full()
 }
 
-pub(crate) fn make_bar_canvas(params: ChartParams, values: Vec<f64>, fill_color: Hsla) -> impl IntoElement {
+pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
@@ -552,6 +496,9 @@ pub(crate) fn make_bar_canvas(params: ChartParams, values: Vec<f64>, fill_color:
                 border,
                 muted_fg,
             } = &params;
+            // `params.dates` is an `Arc<Vec<_>>`; deref to a plain `Vec` ref so
+            // the rest of the paint code (and the chart lib) stays unchanged.
+            let dates: &Vec<SharedString> = dates;
             if dates.is_empty() {
                 return;
             }
@@ -659,7 +606,7 @@ impl ZedisMetrics {
     fn chart_params(
         &self,
         cx: &mut Context<Self>,
-        dates: Vec<SharedString>,
+        dates: Arc<Vec<SharedString>>,
         y_max: f64,
         y_format: impl Fn(f64) -> String + 'static,
     ) -> ChartParams {
@@ -739,19 +686,9 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_cpu_percent,
             self.metrics_chart_data.max_cpu_percent
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.cpu.iter().map(|d| d.date.clone()).collect();
-        let sys_values: Vec<f64> = self
-            .metrics_chart_data
-            .cpu
-            .iter()
-            .map(|d| d.used_cpu_sys_percent)
-            .collect();
-        let user_values: Vec<f64> = self
-            .metrics_chart_data
-            .cpu
-            .iter()
-            .map(|d| d.used_cpu_user_percent)
-            .collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let sys_values = self.metrics_chart_data.cpu_sys.clone();
+        let user_values = self.metrics_chart_data.cpu_user.clone();
         let max_val = self.metrics_chart_data.max_cpu_percent.max(0.01);
         let chart_1 = cx.theme().chart_1;
         let chart_2 = cx.theme().chart_2;
@@ -789,8 +726,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_memory,
             self.metrics_chart_data.max_memory
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.memory.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.memory.iter().map(|d| d.used_memory).collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.memory.clone();
         let max_val = self.metrics_chart_data.max_memory.max(0.01);
         let fill_color = cx.theme().chart_2;
         let chart = make_bar_canvas(
@@ -808,8 +745,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_latency_ms,
             self.metrics_chart_data.max_latency_ms
         );
-        let dates: Vec<SharedString> = self.metrics_chart_data.latency.iter().map(|d| d.date.clone()).collect();
-        let values: Vec<f64> = self.metrics_chart_data.latency.iter().map(|d| d.latency_ms).collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.latency.clone();
         let max_val = self.metrics_chart_data.max_latency_ms.max(0.01);
         let stroke = cx.theme().chart_2;
         let chart = make_line_canvas(
@@ -828,18 +765,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_connected_clients,
             self.metrics_chart_data.max_connected_clients
         );
-        let dates: Vec<SharedString> = self
-            .metrics_chart_data
-            .connected_clients
-            .iter()
-            .map(|d| d.date.clone())
-            .collect();
-        let values: Vec<f64> = self
-            .metrics_chart_data
-            .connected_clients
-            .iter()
-            .map(|d| d.connected_clients)
-            .collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.connected_clients.clone();
         let max_val = self.metrics_chart_data.max_connected_clients.max(0.01);
         let stroke = cx.theme().chart_2;
         let chart = make_line_canvas(
@@ -858,18 +785,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_total_commands_processed,
             self.metrics_chart_data.max_total_commands_processed
         );
-        let dates: Vec<SharedString> = self
-            .metrics_chart_data
-            .total_commands_processed
-            .iter()
-            .map(|d| d.date.clone())
-            .collect();
-        let values: Vec<f64> = self
-            .metrics_chart_data
-            .total_commands_processed
-            .iter()
-            .map(|d| d.total_commands_processed)
-            .collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.total_commands_processed.clone();
         let max_val = self.metrics_chart_data.max_total_commands_processed.max(0.01);
         let stroke = cx.theme().chart_2;
         let chart = make_line_canvas(
@@ -888,18 +805,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_output_kbps,
             self.metrics_chart_data.max_output_kbps
         );
-        let dates: Vec<SharedString> = self
-            .metrics_chart_data
-            .output_kbps
-            .iter()
-            .map(|d| d.date.clone())
-            .collect();
-        let values: Vec<f64> = self
-            .metrics_chart_data
-            .output_kbps
-            .iter()
-            .map(|d| d.output_kbps)
-            .collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.output_kbps.clone();
         let max_val = self.metrics_chart_data.max_output_kbps.max(0.01);
         let chart_2 = cx.theme().chart_2;
         let chart = make_area_canvas(
@@ -916,18 +823,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_key_hit_rate,
             self.metrics_chart_data.max_key_hit_rate
         );
-        let dates: Vec<SharedString> = self
-            .metrics_chart_data
-            .key_hit_rate
-            .iter()
-            .map(|d| d.date.clone())
-            .collect();
-        let values: Vec<f64> = self
-            .metrics_chart_data
-            .key_hit_rate
-            .iter()
-            .map(|d| d.key_hit_rate)
-            .collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.key_hit_rate.clone();
         let max_val = self.metrics_chart_data.max_key_hit_rate.max(0.01);
         let fill_color = cx.theme().chart_2;
         let chart = make_bar_canvas(
@@ -945,18 +842,8 @@ impl ZedisMetrics {
             self.metrics_chart_data.min_evicted_keys,
             self.metrics_chart_data.max_evicted_keys
         );
-        let dates: Vec<SharedString> = self
-            .metrics_chart_data
-            .evicted_keys
-            .iter()
-            .map(|d| d.date.clone())
-            .collect();
-        let values: Vec<f64> = self
-            .metrics_chart_data
-            .evicted_keys
-            .iter()
-            .map(|d| d.evicted_keys)
-            .collect();
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.evicted_keys.clone();
         let max_val = self.metrics_chart_data.max_evicted_keys.max(0.01);
         let chart_2 = cx.theme().chart_2;
         let chart = make_area_canvas(
@@ -976,14 +863,14 @@ impl Render for ZedisMetrics {
                 .text(i18n_common(cx, "loading"))
                 .into_any_element();
         }
-        let time_range = if let Some(first) = self.metrics_chart_data.cpu.first()
-            && let Some(last) = self.metrics_chart_data.cpu.last()
+        let time_range = if let Some(first) = self.metrics_chart_data.dates.first()
+            && let Some(last) = self.metrics_chart_data.dates.last()
         {
-            format!("{} - {}", first.date, last.date)
+            format!("{first} - {last}")
         } else {
             "".to_string()
         };
-        let has_chart_data = !self.metrics_chart_data.cpu.is_empty();
+        let has_chart_data = !self.metrics_chart_data.dates.is_empty();
         div()
             .size_full()
             .p_2()

@@ -42,6 +42,7 @@ use gpui_component::{
     v_flex,
 };
 use redis::{Value, cmd};
+use std::sync::Arc;
 use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -238,14 +239,14 @@ impl ZedisTimeSeriesEditor {
         let tick_margin = (dates.len() / 6).max(1);
 
         let params = ChartParams {
-            dates,
+            dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v: f64| format!("{v:.2}")),
             tick_margin,
             border: cx.theme().border,
             muted_fg: cx.theme().muted_foreground,
         };
-        let chart = make_line_canvas(params, values, cx.theme().chart_1, false);
+        let chart = make_line_canvas(params, Arc::new(values), cx.theme().chart_1, false);
         v_flex().w_full().h(px(CHART_HEIGHT)).child(chart)
     }
 }

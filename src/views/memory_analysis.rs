@@ -38,6 +38,7 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
 use zedis_ui::ZedisDivider;
@@ -1669,14 +1670,14 @@ impl ZedisMemoryAnalysis {
         const TARGET_X_LABELS: usize = 5;
         let tick_margin = samples.len().div_ceil(TARGET_X_LABELS).max(1);
         let params = ChartParams {
-            dates,
+            dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v| format!("{v:.2}")),
             tick_margin,
             border: theme.border,
             muted_fg: theme.muted_foreground,
         };
-        let chart = make_line_canvas(params, values, stroke, false);
+        let chart = make_line_canvas(params, Arc::new(values), stroke, false);
 
         Some(
             v_flex()
@@ -1734,7 +1735,7 @@ impl ZedisMemoryAnalysis {
 
         // 6 buckets and the chart is usually wide → label every bar.
         let params = ChartParams {
-            dates,
+            dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v| format!("{v:.0}")),
             tick_margin: 1,
@@ -1751,7 +1752,7 @@ impl ZedisMemoryAnalysis {
         } else {
             theme.chart_2
         };
-        let chart = make_bar_canvas(params, values, fill_color);
+        let chart = make_bar_canvas(params, Arc::new(values), fill_color);
 
         // Summary line: sampled total + (if ratio<1) estimated full
         // population + no-TTL share (the "are we leaking?" signal).
