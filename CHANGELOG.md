@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.4.3](https://github.com/vicanso/zedis/compare/v0.4.2..v0.4.3) - 2026-06-13
+
+### ⛰️  Features
+
+- CSV export for collection editors (Hash/List/Set/Zset/Stream) - ([40e3a29](https://github.com/vicanso/zedis/commit/40e3a29377357c12e8c7eb0a8fbc0bbf0023109f))
+- Keyboard shortcut for deleting the selected key - ([99412a2](https://github.com/vicanso/zedis/commit/99412a271b8bf4e3f1121989afd34cf77da2e0de))
+- Server env tags as a fixed preset (None/Dev/UAT/Prod) - ([a968b50](https://github.com/vicanso/zedis/commit/a968b5058bf532f76bc32c75c1f5c1a1e9f50cfc))
+- Shortcuts overlay, Slow Log export, per-server timeouts; faster conn failure - ([c43a0c9](https://github.com/vicanso/zedis/commit/c43a0c9c0de83ba10bbd519c3abb8762025d4caa))
+- Cross-server config diff (CONFIG GET *) - ([311e56c](https://github.com/vicanso/zedis/commit/311e56cd94e4a442c1b3710ece92d58f11833a3d))
+- Reuse key_type_badge as component in editor select key titlebar ([#91](https://github.com/orhun/git-cliff/issues/91)) - ([280e172](https://github.com/vicanso/zedis/commit/280e172d419a65152de0f303eab506a8053c81ec))
+- Value search, command stats, cross-server diff, batch TTL & CSV export - ([0026c5b](https://github.com/vicanso/zedis/commit/0026c5b993388379ea518c37eb0fd561d4c1fda3))
+- Command Stats page + Tools menu grouping + persistence card fix - ([fef2517](https://github.com/vicanso/zedis/commit/fef25179807189980f0bc0c33877dcd65a5df2c5))
+- HyperLogLog + Bitmap viewers, key rename / cross-server copy - ([891117a](https://github.com/vicanso/zedis/commit/891117ac1d97027fcaa209554f4e83254ad99112))
+- GEO map viewer for geospatial sorted sets - ([80d1231](https://github.com/vicanso/zedis/commit/80d123182275c67e69b1aed07351b57719ac653b))
+- AI optimization advice for memory analysis - ([242cf1a](https://github.com/vicanso/zedis/commit/242cf1ab2674ff438cb64117b5b7fb016a36e6a2))
+
+### 🐛 Bug Fixes
+
+- Surface swallowed load errors instead of empty panels - ([de659b9](https://github.com/vicanso/zedis/commit/de659b93ac1579649d45d2e6cadeeb2f6756d4c3))
+- Memory analysis surfaces scan errors + samples large DBs by default - ([4dff1ad](https://github.com/vicanso/zedis/commit/4dff1ad639db7b1ec3da85a15e77732399285d5b))
+- Key type badge sizes to content instead of wrapping - ([f456e28](https://github.com/vicanso/zedis/commit/f456e289acae17a2758466816fc7ccd3c4929539))
+- Retry server load after failure when re-selecting from home - ([30476d0](https://github.com/vicanso/zedis/commit/30476d0ed2897d9a021f1b82c84b1de790b39b99))
+- Fix lint - ([2db2b23](https://github.com/vicanso/zedis/commit/2db2b234364a5d0df9c810a6d5d8250aeae163e6))
+- User-configurable db count + INFO keyspace fallback when CONFIG is blocked ([#88](https://github.com/orhun/git-cliff/issues/88)) - ([bafb01f](https://github.com/vicanso/zedis/commit/bafb01f5c7f82eb68bc21c8a16d509b9642516fe))
+
+### 🚜 Refactor
+
+- Move caret to end after selecting a terminal command suggestion ([#90](https://github.com/orhun/git-cliff/issues/90)) - ([ed84df6](https://github.com/vicanso/zedis/commit/ed84df6c4b40942a0cf40b38b16c5590e8a0abc8))
+- Environment-oriented tag colors - ([e465c96](https://github.com/vicanso/zedis/commit/e465c967e3dfc82dc7927ec8abedd9914bb5957d))
+
+### ⚡ Performance
+
+- Cache metrics chart data at heartbeat instead of per frame - ([6b551b0](https://github.com/vicanso/zedis/commit/6b551b095e011298dbca8161a3ed62eda016c0be))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update dependencies - ([553000c](https://github.com/vicanso/zedis/commit/553000c69ba3a0c49c037c756424fbfa1c148f1e))
+
+### I18n
+
+- Translate status bar tool tooltips (de/es/fr/ja/pt/ru) - ([9b6ed2b](https://github.com/vicanso/zedis/commit/9b6ed2b687045b5812561c26c5e329c2801fdbe8))
+
 ## [0.4.2](https://github.com/vicanso/zedis/compare/v0.4.1..v0.4.2) - 2026-06-07
 
 ### ⛰️  Features
