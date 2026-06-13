@@ -521,6 +521,9 @@ pub struct ZedisClientsManager {
     idle_state: Entity<InputState>,
     age_state: Entity<InputState>,
     row_count: usize,
+    /// Set when `CLIENT LIST` fails, so the empty body shows the error
+    /// instead of a misleading "no clients" message.
+    error: Option<SharedString>,
     _fetch_task: Option<Task<()>>,
     _kill_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -565,6 +568,7 @@ impl ZedisClientsManager {
             idle_state,
             age_state,
             row_count: 0,
+            error: None,
             _fetch_task: None,
             _kill_task: None,
             _subscriptions: subscriptions,
@@ -625,10 +629,12 @@ impl ZedisClientsManager {
                             state.delegate_mut().apply_filter(&keyword, min_idle, min_age);
                         });
                         this.row_count = table_state.read(cx).delegate().rows.len();
+                        this.error = None;
                         this.setup_kill_callback(cx);
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to fetch client list");
+                        this.error = Some(e.to_string().into());
                     }
                 }
                 cx.notify();
@@ -696,6 +702,13 @@ impl ZedisClientsManager {
 impl gpui::Render for ZedisClientsManager {
     fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let is_empty = self.row_count == 0;
+        // On a fetch error, show the error (red) in the empty body instead of
+        // the misleading "no clients" message.
+        let (empty_text, empty_color) = if let Some(err) = &self.error {
+            (err.clone(), cx.theme().red)
+        } else {
+            (i18n_clients_manager(cx, "no_clients"), cx.theme().muted_foreground)
+        };
         let total = self.table_state.read(cx).delegate().all_rows.len();
         let count_label = if self.row_count == total {
             format!("({})", total)
@@ -780,9 +793,14 @@ impl gpui::Render for ZedisClientsManager {
                     .w_full()
                     .min_h_0()
                     .when(is_empty, |this| {
-                        this.child(div().size_full().flex().items_center().justify_center().child(
-                            Label::new(i18n_clients_manager(cx, "no_clients")).text_color(cx.theme().muted_foreground),
-                        ))
+                        this.child(
+                            div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(Label::new(empty_text).text_color(empty_color)),
+                        )
                     })
                     .when(!is_empty, |this| {
                         this.child(

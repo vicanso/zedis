@@ -359,6 +359,10 @@ pub struct ZedisKeyspaceNotifications {
     /// `notify_flags` asynchronously so we'd otherwise loop a fetch
     /// every frame while it's empty.
     notify_flags_fetched: bool,
+    /// Set when the `CONFIG GET notify-keyspace-events` probe fails
+    /// (read-only/ACL-blocked, network, …). The banner then shows the error
+    /// instead of misreporting the server as "notifications off".
+    flags_error: Option<SharedString>,
     /// Set of event names the user has filtered IN. `None` = show all,
     /// `Some(set)` = show only events in the set (empty set ⇒ nothing).
     selected_events: Option<AHashSet<String>>,
@@ -408,6 +412,7 @@ impl ZedisKeyspaceNotifications {
             subscribing: false,
             notify_flags: SharedString::default(),
             notify_flags_fetched: false,
+            flags_error: None,
             selected_events: None,
             key_filter: String::new(),
             key_filter_input,
@@ -599,10 +604,14 @@ impl ZedisKeyspaceNotifications {
             });
             let result = task.await;
             let _ = entity.update(cx, |this, cx| {
-                if let Ok(flags) = result {
-                    this.notify_flags = flags.into();
-                    cx.notify();
+                match result {
+                    Ok(flags) => {
+                        this.notify_flags = flags.into();
+                        this.flags_error = None;
+                    }
+                    Err(e) => this.flags_error = Some(e.to_string().into()),
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -754,10 +763,32 @@ impl ZedisKeyspaceNotifications {
     }
 
     fn render_config_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let theme = cx.theme();
+        // The CONFIG GET probe failed (read-only/ACL-blocked, network, …):
+        // surface that instead of pretending notifications are simply "off".
+        if let Some(err) = &self.flags_error {
+            return Some(
+                div()
+                    .mx_4()
+                    .my_2()
+                    .p_3()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.danger)
+                    .bg(theme.danger.opacity(0.1))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Icon::new(IconName::CircleX).text_color(theme.danger))
+                            .child(Label::new(err.clone()).text_sm().text_color(theme.danger).flex_1()),
+                    )
+                    .into_any_element(),
+            );
+        }
         if !self.notify_flags.is_empty() {
             return None;
         }
-        let theme = cx.theme();
         Some(
             div()
                 .mx_4()

@@ -57,6 +57,9 @@ pub struct ZedisConfigEditor {
     editing_key: Option<SharedString>,
     edit_state: Entity<InputState>,
     loading: bool,
+    /// Set when the `CONFIG GET *` load fails, so the body shows the error
+    /// instead of a misleading empty "no data" panel.
+    error: Option<SharedString>,
     pending_notification: Option<Notification>,
     /// Active cross-server config comparison (`None` = normal editor view).
     diff: Option<ConfigDiff>,
@@ -92,6 +95,7 @@ impl ZedisConfigEditor {
             editing_key: None,
             edit_state,
             loading: false,
+            error: None,
             pending_notification: None,
             diff: None,
             _subscriptions: subscriptions,
@@ -121,8 +125,14 @@ impl ZedisConfigEditor {
             let _ = handle.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(configs) => this.configs = configs,
-                    Err(e) => error!(error = %e, "load configs failed"),
+                    Ok(configs) => {
+                        this.configs = configs;
+                        this.error = None;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "load configs failed");
+                        this.error = Some(e.to_string().into());
+                    }
                 }
                 cx.notify();
             });
@@ -540,7 +550,11 @@ impl Render for ZedisConfigEditor {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(Label::new(i18n_config_editor(cx, "no_data")).text_color(cx.theme().muted_foreground))
+                    .child(if let Some(err) = &self.error {
+                        Label::new(err.clone()).text_color(cx.theme().red)
+                    } else {
+                        Label::new(i18n_config_editor(cx, "no_data")).text_color(cx.theme().muted_foreground)
+                    })
                     .into_any_element()
             } else {
                 div()
