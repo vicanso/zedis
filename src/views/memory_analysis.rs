@@ -54,6 +54,27 @@ const SECTION_TITLE_HEIGHT: f32 = 30.;
 
 const DEFAULT_SCAN_COUNT: u64 = 100;
 
+/// Default target number of keys to *probe* (`MEMORY USAGE`/`TTL`) per run. On
+/// a larger DB the default sample ratio is scaled down so roughly this many
+/// keys get probed — the keyspace is still fully traversed, but the expensive
+/// per-key probes (and the load/time they cost) stay bounded. Users can still
+/// override the ratio up to 100%.
+const DEFAULT_SAMPLE_TARGET: u64 = 50_000;
+
+/// Default sampling ratio for a database of `dbsize` keys: 100% up to
+/// [`DEFAULT_SAMPLE_TARGET`], then `DEFAULT_SAMPLE_TARGET / dbsize` rounded
+/// **up** to one decimal place — keeps the default a clean tenth and errs
+/// toward more coverage, so the smallest default is 0.1 (10%).
+fn default_sample_ratio(dbsize: Option<u64>) -> f32 {
+    match dbsize {
+        Some(n) if n > DEFAULT_SAMPLE_TARGET => {
+            let raw = DEFAULT_SAMPLE_TARGET as f32 / n as f32;
+            ((raw * 10.0).ceil() / 10.0).clamp(0.1, 1.0)
+        }
+        _ => 1.0,
+    }
+}
+
 /// Calculate the pixel height needed for a DataTable with the given row count.
 /// Includes 1 header row + data rows.
 fn table_height(row_count: usize) -> Pixels {
@@ -860,6 +881,9 @@ enum AnalysisStatus {
     Idle,
     Running,
     Finished,
+    /// A sampling SCAN round errored mid-run; `scan_error` holds the
+    /// message. Any rows accumulated before the failure are still shown.
+    Error,
 }
 
 /// State of the optional "AI analysis" request that sends the current
@@ -887,6 +911,9 @@ pub struct ZedisMemoryAnalysis {
     prefix_count: usize,
     single_count: usize,
     progress: SharedString,
+    /// Error message when `status == Error` (a sampling SCAN failed
+    /// mid-run). `None` otherwise. Mirrors `ai_output` for the AI path.
+    scan_error: Option<SharedString>,
     analysis_task: Option<Task<()>>,
     /// Database key count fetched on load.
     dbsize: Option<u64>,
@@ -934,11 +961,19 @@ impl ZedisMemoryAnalysis {
         let single_table =
             cx.new(|cx| TableState::new(SingleKeyTableDelegate::new(Vec::new(), window, cx), window, cx));
 
-        let ratio_input_state = cx.new(|cx| InputState::new(window, cx).default_value("1".to_string()));
+        let dbsize = server_state.read(cx).dbsize();
+        // Large DBs default to a sampled ratio so we don't `MEMORY USAGE`
+        // every key; small DBs stay at 100%. See `default_sample_ratio`.
+        let default_ratio = default_sample_ratio(dbsize);
+        let ratio_default_text = if default_ratio >= 1.0 {
+            "1".to_string()
+        } else {
+            format!("{default_ratio:.2}")
+        };
+
+        let ratio_input_state = cx.new(|cx| InputState::new(window, cx).default_value(ratio_default_text));
         let scan_count_input_state =
             cx.new(|cx| InputState::new(window, cx).default_value(DEFAULT_SCAN_COUNT.to_string()));
-
-        let dbsize = server_state.read(cx).dbsize();
 
         // Listen for ratio input blur to update ratio
         subscriptions.push(
@@ -982,9 +1017,10 @@ impl ZedisMemoryAnalysis {
             prefix_count: 0,
             single_count: 0,
             progress: SharedString::default(),
+            scan_error: None,
             analysis_task: None,
             dbsize,
-            ratio: 1.0,
+            ratio: default_ratio,
             ratio_input_state,
             ratio_dirty: false,
             scan_count: DEFAULT_SCAN_COUNT,
@@ -1097,6 +1133,7 @@ impl ZedisMemoryAnalysis {
         // A fresh scan invalidates any previous AI advice.
         self.clear_ai_result(cx);
         self.status = AnalysisStatus::Running;
+        self.scan_error = None;
         self.progress = "0%".into();
         self.prefix_count = 0;
         self.single_count = 0;
@@ -1164,6 +1201,9 @@ impl ZedisMemoryAnalysis {
             let mut ttl_histogram: TtlHistogram = TtlHistogram::default();
             let mut cursors: Option<Vec<u64>> = None;
             let mut analysis_count: u64 = 0;
+            // Set when a SCAN round errors; carried out of the loop so the
+            // final update surfaces the failure instead of a fake "100%".
+            let mut scan_error: Option<SharedString> = None;
             let redis_process_ratio = 0.5;
             let min_sleep = Duration::from_micros(500);
             let max_sleep = Duration::from_millis(20);
@@ -1189,6 +1229,7 @@ impl ZedisMemoryAnalysis {
                     Ok(result) => result,
                     Err(e) => {
                         error!(error = %e, "Failed to sample scan for memory analysis");
+                        scan_error = Some(e.to_string().into());
                         break;
                     }
                 };
@@ -1306,8 +1347,16 @@ impl ZedisMemoryAnalysis {
             let final_groups = single_groups;
             let final_histogram = ttl_histogram;
             let _ = handle.update(cx, |this, cx| {
-                this.status = AnalysisStatus::Finished;
-                this.progress = "100%".into();
+                if let Some(err) = scan_error {
+                    // Surface the failure instead of a fake "100% / Finished".
+                    // `progress` keeps the last percentage the scan reached,
+                    // and any rows accumulated before the error still render.
+                    this.status = AnalysisStatus::Error;
+                    this.scan_error = Some(err);
+                } else {
+                    this.status = AnalysisStatus::Finished;
+                    this.progress = "100%".into();
+                }
                 this.prefix_count = pc;
                 this.single_groups = final_groups;
                 this.ttl_histogram = final_histogram;
@@ -1947,6 +1996,31 @@ impl gpui::Render for ZedisMemoryAnalysis {
                 // visible immediately after the request completes.
                 if let Some(panel) = self.render_ai_panel(cx) {
                     body = body.child(panel);
+                }
+
+                // Scan-failure banner — surfaces a SCAN error (which would
+                // otherwise have been hidden behind a fake "100% / Finished")
+                // while keeping any partial results visible below it.
+                if self.status == AnalysisStatus::Error
+                    && let Some(message) = self.scan_error.clone()
+                {
+                    let theme = cx.theme();
+                    body = body.child(
+                        div()
+                            .w_full()
+                            .p_3()
+                            .rounded(theme.radius)
+                            .border_1()
+                            .border_color(theme.danger)
+                            .bg(theme.danger.opacity(0.1))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_start()
+                                    .child(Icon::new(IconName::CircleX).text_color(theme.danger))
+                                    .child(Label::new(message).text_sm().text_color(theme.danger)),
+                            ),
+                    );
                 }
 
                 // Combined dashboard — no tab selection. One SCAN feeds every
