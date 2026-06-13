@@ -45,7 +45,7 @@ fn canonical_tag_key(key: Option<&str>) -> Option<&'static str> {
 pub fn resolve_tag_color(key: Option<&str>) -> Option<Hsla> {
     let hex = match canonical_tag_key(key)? {
         "sky" => 0x60a5fa,
-        "teal" => 0x48cae4,
+        "teal" => 0x9ca3af, // Dev — neutral light gray (low-risk tier)
         "purple" => 0xb886fb,
         "magenta" => 0xf472b6,
         _ => 0x94a3b8,
@@ -62,7 +62,7 @@ pub fn resolve_tag_chip(key: Option<&str>, dark: bool) -> Option<(Hsla, Hsla)> {
     let (lbg, lfg, dbg, dfg): (u32, u32, u32, u32) = match canonical_tag_key(key)? {
         "magenta" => (0xfdf2f8, 0xbe185d, 0x68113f, 0xf472b6),
         "purple" => (0xf3e8ff, 0x7e22ce, 0x3c225f, 0xb886fb),
-        "teal" => (0xccfbf1, 0x0f766e, 0x0f4c5c, 0x48cae4),
+        "teal" => (0xf3f4f6, 0x4b5563, 0x374151, 0x9ca3af), // Dev — neutral light gray
         "sky" => (0xeff6ff, 0x1d4ed8, 0x1e3a8a, 0x60a5fa),
         _ => (0xf1f5f9, 0x475569, 0x334155, 0x94a3b8), // slate
     };

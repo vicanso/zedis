@@ -20,8 +20,8 @@ use crate::{
     db::get_favorites_manager,
     helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
     states::{
-        DataFormat, KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_bitmap,
-        i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
+        DataFormat, KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
+        escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
     },
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
@@ -509,8 +509,10 @@ impl ZedisEditor {
         };
 
         let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
         let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
+        let message = escalate_dangerous_body(cx, &server_id, message);
 
         ZedisDialog::new_alert(i18n_editor(cx, "delete_key_title"), message)
             .button_props(dialog_button_props(cx))

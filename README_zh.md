@@ -127,7 +127,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 
 <details><summary><b>连接安全</b> —— 环境标签 + 对生产升级措辞的确认对话框。</summary>
 
-为服务器打 PROD / DEV / STAGING 标签（侧栏与状态栏的颜色 chip），并可把任意连接锁为**只读**。危险命令（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`…）执行前拦截，对 PROD 使用更严肃的确认文案。
+为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏，并可把任意连接锁为**只读**。破坏性操作（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。
 </details>
 
 <details><summary><b>ACL 用户管理</b>（Redis 6+）—— 覆盖完整 ACL 生命周期的 GUI。</summary>

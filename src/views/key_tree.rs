@@ -23,8 +23,8 @@ use crate::{
         theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
-        KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, get_session_option,
-        i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
+        KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
+        escalate_dangerous_body, get_session_option, i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
     },
     views::{
         OnTagDialogDone, export_to_file, open_key_tag_dialog, open_migration_export_window,
@@ -2013,6 +2013,8 @@ impl Render for ZedisKeyTree {
                     let server_state = this.server_state.clone();
                     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                     let text = t!("key_tree.delete_keys_prompt", keys = keys.join(", "), locale = locale).to_string();
+                    let server_id = this.server_state.read(cx).server_id().to_string();
+                    let text = escalate_dangerous_body(cx, &server_id, text);
 
                     ZedisDialog::new_alert(i18n_key_tree(cx, "delete_keys_title"), text)
                         .button_props(dialog_button_props(cx))
@@ -2029,6 +2031,8 @@ impl Render for ZedisKeyTree {
                     let server_state = this.server_state.clone();
                     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                     let text = t!("key_tree.delete_key_prompt", key = id.clone(), locale = locale).to_string();
+                    let server_id = this.server_state.read(cx).server_id().to_string();
+                    let text = escalate_dangerous_body(cx, &server_id, text);
 
                     ZedisDialog::new_alert(i18n_key_tree(cx, "delete_key_title"), text)
                         .button_props(dialog_button_props(cx))
@@ -2051,6 +2055,8 @@ impl Render for ZedisKeyTree {
                     let server_state = this.server_state.clone();
                     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                     let text = t!("key_tree.delete_folder_prompt", folder = id.clone(), locale = locale).to_string();
+                    let server_id = this.server_state.read(cx).server_id().to_string();
+                    let text = escalate_dangerous_body(cx, &server_id, text);
 
                     ZedisDialog::new_alert(i18n_key_tree(cx, "delete_folder_title"), text)
                         .button_props(dialog_button_props(cx))

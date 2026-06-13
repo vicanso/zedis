@@ -126,7 +126,7 @@ A persistence panel reads `INFO persistence` (last save, AOF growth, fork failur
 
 <details><summary><b>Connection Safety</b> — environment tags + confirm dialogs that escalate on production.</summary>
 
-Tag servers PROD / DEV / STAGING (colored chip in the sidebar and status bar) and lock any connection **read-only**. Dangerous commands (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`...) are intercepted with a confirm dialog that escalates wording on production.
+Tag each server with a preset environment — **Dev / UAT / Prod** — shown as a colored chip in the sidebar and status bar, and lock any connection **read-only**. Destructive actions (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`, key/server delete, `XGROUP DESTROY`, cluster ops...) are intercepted with a confirm dialog that escalates its wording on a **Prod** server.
 </details>
 
 <details><summary><b>ACL Management</b> (Redis 6+) — GUI for the full ACL lifecycle.</summary>

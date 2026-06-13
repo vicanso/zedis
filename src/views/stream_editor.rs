@@ -19,7 +19,7 @@ use crate::{
     helpers::{fast_contains_ignore_case, format_duration},
     states::{
         KeyType, RedisStreamEntry, RedisValue, ServerEvent, StreamInfoData, ZedisGlobalStore, ZedisServerState,
-        dialog_button_props, i18n_common, i18n_kv_table, i18n_stream_editor, tail_read,
+        dialog_button_props, escalate_dangerous_body, i18n_common, i18n_kv_table, i18n_stream_editor, tail_read,
     },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
@@ -764,19 +764,23 @@ impl ZedisStreamEditor {
         )
         .to_string();
         let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
         let group_for_ok = group.clone();
 
-        ZedisDialog::new_alert(i18n_stream_editor(cx, "destroy_group_title"), message)
-            .button_props(dialog_button_props(cx))
-            .on_ok(move |_, window, cx| {
-                let group = group_for_ok.clone();
-                server_state.update(cx, |state, cx| {
-                    state.destroy_stream_group(group, cx);
-                });
-                window.close_dialog(cx);
-                true
-            })
-            .open(window, cx);
+        ZedisDialog::new_alert(
+            i18n_stream_editor(cx, "destroy_group_title"),
+            escalate_dangerous_body(cx, &server_id, message),
+        )
+        .button_props(dialog_button_props(cx))
+        .on_ok(move |_, window, cx| {
+            let group = group_for_ok.clone();
+            server_state.update(cx, |state, cx| {
+                state.destroy_stream_group(group, cx);
+            });
+            window.close_dialog(cx);
+            true
+        })
+        .open(window, cx);
     }
 
     fn render_metric(&self, label: SharedString, value: SharedString, muted: gpui::Hsla) -> impl gpui::IntoElement {

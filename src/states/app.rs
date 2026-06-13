@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::{
-    RedisServer, get_servers, save_servers, set_redis_connection_timeout, set_redis_response_timeout,
+    RedisServer, get_server, get_servers, save_servers, set_redis_connection_timeout, set_redis_response_timeout,
 };
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
@@ -788,4 +788,26 @@ pub fn dialog_button_props(cx: &App) -> DialogButtonProps {
     DialogButtonProps::default()
         .cancel_text(i18n_common(cx, "cancel"))
         .ok_text(i18n_common(cx, "delete"))
+}
+
+/// Escalate a destructive-action confirm-dialog body for production servers.
+///
+/// The app's safety convention is that destructive Redis ops escalate their
+/// *wording* on a high-risk (PROD-tagged) connection. `dialog_button_props`
+/// only sets button labels, so call-sites that build their own
+/// `ZedisDialog::new_alert(...)` must run the body through this to actually
+/// get the escalation. It mirrors the `high_risk_warning` suffix that
+/// `confirm_dangerous_command` appends for `ConfirmStrictness::TypeName`, but
+/// works for the many UI actions (key/server delete, XGROUP DESTROY, cluster
+/// ops, ACL/FUNCTION delete, ...) that don't map to a CLI `DangerKind`.
+/// Returns the body unchanged for non-high-risk servers.
+pub fn escalate_dangerous_body(cx: &App, server_id: &str, body: impl Into<SharedString>) -> SharedString {
+    let body = body.into();
+    let high_risk = get_server(server_id).map(|s| s.is_high_risk_tag()).unwrap_or(false);
+    if !high_risk {
+        return body;
+    }
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+    let warning = rust_i18n::t!("danger.high_risk_warning", locale = &locale).to_string();
+    format!("{body}\n\n{warning}").into()
 }

@@ -386,6 +386,7 @@ impl ZedisServerState {
         cx.emit(ServerEvent::TaskStarted(name.clone()));
         debug!(name = name.as_str(), arg = arg.as_str(), "Spawning background task");
         let server_id = self.server_id.clone();
+        let db = self.db;
         let start = Instant::now();
 
         cx.spawn(async move |handle, cx| {
@@ -395,6 +396,13 @@ impl ZedisServerState {
 
             // Update state with result on main thread
             handle.update(cx, move |this, cx| {
+                // Stale-result guard: the user may have switched server/db
+                // while this task was in flight. Every task here is scoped to
+                // the server+db that was current at launch, so applying its
+                // result now would inject the previous target's data into the
+                // freshly-reset state. The connection-level work already
+                // happened — we only skip the state-mutating callback.
+                let stale = this.server_id != server_id || this.db != db;
                 if let Err(e) = &result {
                     error!(
                         task = name.as_str(),
@@ -403,11 +411,14 @@ impl ZedisServerState {
                         error = %e,
                         "Task failed"
                     );
-                    // only add error message if the server id is the same as the current server id
-                    // ignore refresh redis info error
-                    if this.server_id == server_id && name != ServerTask::RefreshRedisInfo {
+                    // Surface a toast only for the still-active target, and
+                    // never for background info refreshes.
+                    if !stale && name != ServerTask::RefreshRedisInfo {
                         this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
                     }
+                }
+                if stale {
+                    return;
                 }
                 callback(this, result, cx);
                 let latency = start.elapsed();

@@ -26,7 +26,8 @@ use crate::{
     error::Error,
     helpers::get_font_family,
     states::{
-        Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_functions,
+        Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+        i18n_common, i18n_functions,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -268,7 +269,7 @@ impl ZedisFunctionEditor {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         let library_for_task = library.clone();
-        ZedisDialog::new_alert(title, message)
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, message))
             .button_props(
                 dialog_button_props(cx)
                     .ok_text(i18n_functions(cx, "delete_confirm"))

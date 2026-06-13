@@ -23,7 +23,8 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::format_duration;
 use crate::states::{
-    Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_clients_manager, i18n_common,
+    Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+    i18n_clients_manager, i18n_common,
 };
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
@@ -139,6 +140,9 @@ struct ClientsTableDelegate {
     /// Callback for killing a client by (ID, addr, node).
     kill_callback: Option<KillCallback>,
     readonly: bool,
+    /// Active server id, used to escalate the kill-confirm wording on
+    /// high-risk (PROD-tagged) servers. Set when the client list loads.
+    server_id: String,
 }
 
 impl ClientsTableDelegate {
@@ -230,6 +234,7 @@ impl ClientsTableDelegate {
             column_keys,
             kill_callback: None,
             readonly,
+            server_id: String::new(),
         }
     }
 
@@ -283,6 +288,7 @@ impl Clone for ClientsTableDelegate {
             column_keys: self.column_keys.clone(),
             kill_callback: self.kill_callback.clone(),
             readonly: self.readonly,
+            server_id: self.server_id.clone(),
         }
     }
 }
@@ -393,6 +399,7 @@ impl TableDelegate for ClientsTableDelegate {
                 locale = locale
             )
             .to_string();
+            let prompt = escalate_dangerous_body(cx, &self.server_id, prompt);
             return div()
                 .size_full()
                 .flex()
@@ -590,6 +597,7 @@ impl ZedisClientsManager {
         }
         let db = self.server_state.read(cx).db();
         let readonly = self.server_state.read(cx).readonly();
+        let server_id_for_delegate = server_id.clone();
 
         self._fetch_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
@@ -613,6 +621,7 @@ impl ZedisClientsManager {
                         table_state.update(cx, |state, _| {
                             state.delegate_mut().all_rows = rows;
                             state.delegate_mut().readonly = readonly;
+                            state.delegate_mut().server_id = server_id_for_delegate;
                             state.delegate_mut().apply_filter(&keyword, min_idle, min_age);
                         });
                         this.row_count = table_state.read(cx).delegate().rows.len();

@@ -31,15 +31,15 @@
 //!   * Standalone / Unknown: localized placeholder text only —
 //!     topology operations do not apply.
 //!
-//! All destructive commands route through `ZedisDialog::new_alert` +
-//! `dialog_button_props`, so production-tagged servers automatically
-//! get the escalated wording. Cluster commands live in
+//! All destructive commands route through `ZedisDialog::new_alert`, with
+//! the body run through `escalate_dangerous_body` so production-tagged
+//! (high-risk) servers get the escalated warning. Cluster commands live in
 //! `states/server/cluster.rs`; Sentinel commands in
 //! `states/server/sentinel.rs`. Slot-range RESHARD is intentionally
 //! out of scope — the visual slot editor is a substantial side
 //! project the maintainer chose not to pursue.
 
-use crate::states::{ServerEvent, ZedisServerState, dialog_button_props, i18n_topology};
+use crate::states::{ServerEvent, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_topology};
 use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*};
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt, WindowExt,
@@ -424,7 +424,8 @@ impl ZedisTopology {
             )
         };
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let addr = target_addr.clone();
@@ -453,7 +454,8 @@ impl ZedisTopology {
              Gossip may re-add it within 60s if any master misses the forget."
         );
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let id = node_id.clone();
@@ -477,7 +479,8 @@ impl ZedisTopology {
              table after the next heartbeat refresh."
         );
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let h = host.clone();
@@ -506,7 +509,8 @@ impl ZedisTopology {
              empty and an already-known cluster member, otherwise Redis rejects the command."
         );
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let t = target_addr.clone();
@@ -534,7 +538,8 @@ impl ZedisTopology {
              automatic detection — use when manual intervention is required."
         );
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let name = master_name.clone();
@@ -557,7 +562,8 @@ impl ZedisTopology {
              data masters themselves."
         );
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let pattern = master_name.clone();
@@ -581,7 +587,8 @@ impl ZedisTopology {
              failover for them. Re-adding requires SENTINEL MONITOR (config + quorum)."
         );
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body)
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 let name = master_name.clone();

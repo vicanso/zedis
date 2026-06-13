@@ -207,6 +207,13 @@ impl ZedisServerState {
                 }
             },
             move |this, result, cx| {
+                // Abandon a page whose keyword filter no longer matches the
+                // active scan — a stale page would inject the previous
+                // query's keys into the current tree. (Server/db switches are
+                // already filtered out by spawn_with_arg's stale guard.)
+                if this.keyword != processing_keyword {
+                    return;
+                }
                 let mut should_select_processing_key = false;
                 match result {
                     Ok((cursors, keys)) => {
@@ -286,6 +293,15 @@ impl ZedisServerState {
                 client.first_scan(&pattern, count as u64, with_ttl).await
             },
             move |this, result, cx| {
+                // This refresh diffs against the live key set and *removes*
+                // keys missing from its result. If the active filter changed
+                // while it was in flight, its result is for the old pattern —
+                // abandon it so it can't delete keys that match the new one.
+                // (`keyword` tracks `self.keyword`, set together in
+                // handle_filter; server/db switches are handled upstream.)
+                if this.keyword != keyword {
+                    return;
+                }
                 if let Ok((_, keys)) = result {
                     let new_keys_set: AHashSet<SharedString> = keys.iter().map(|(k, _, _)| k.clone()).collect();
 

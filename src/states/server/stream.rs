@@ -405,6 +405,7 @@ impl ZedisServerState {
         let Some(key) = self.key.clone() else { return };
         let server_id = self.server_id.clone();
         let db = self.db;
+        let guard_key = key.clone();
 
         self.spawn_with_arg(
             ServerTask::FetchStreamInfo,
@@ -413,16 +414,24 @@ impl ZedisServerState {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 load_stream_info_data(&mut conn, key.as_str()).await
             },
-            |this, result, cx| match result {
-                Ok(info) => {
-                    if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
-                    {
-                        Arc::make_mut(stream_data).info = Some(Arc::new(info));
-                    }
-                    cx.emit(ServerEvent::ValueUpdated);
-                    cx.notify();
+            move |this, result, cx| {
+                // Drop a result that arrived after the user switched keys — it
+                // would otherwise be written into the newly selected key.
+                if this.key.as_ref() != Some(&guard_key) {
+                    return;
                 }
-                Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                match result {
+                    Ok(info) => {
+                        if let Some(RedisValueData::Stream(stream_data)) =
+                            this.value.as_mut().and_then(|v| v.data.as_mut())
+                        {
+                            Arc::make_mut(stream_data).info = Some(Arc::new(info));
+                        }
+                        cx.emit(ServerEvent::ValueUpdated);
+                        cx.notify();
+                    }
+                    Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                }
             },
             cx,
         );
@@ -436,6 +445,7 @@ impl ZedisServerState {
         let Some(key) = self.key.clone() else { return };
         let server_id = self.server_id.clone();
         let db = self.db;
+        let guard_key = key.clone();
 
         if let Some(value) = self.value.as_mut() {
             value.status = RedisValueStatus::Loading;
@@ -449,16 +459,23 @@ impl ZedisServerState {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 first_load_stream_value(&mut conn, key.as_str(), reverse).await
             },
-            |this, result, cx| match result {
-                Ok(new_value) => {
-                    if let Some(value) = this.value.as_mut() {
-                        value.data = new_value.data;
-                        value.status = RedisValueStatus::Idle;
-                    }
-                    cx.emit(ServerEvent::ValueLoaded);
-                    cx.notify();
+            move |this, result, cx| {
+                // Drop a result that arrived after the user switched keys — it
+                // would otherwise overwrite the newly selected key's value.
+                if this.key.as_ref() != Some(&guard_key) {
+                    return;
                 }
-                Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                match result {
+                    Ok(new_value) => {
+                        if let Some(value) = this.value.as_mut() {
+                            value.data = new_value.data;
+                            value.status = RedisValueStatus::Idle;
+                        }
+                        cx.emit(ServerEvent::ValueLoaded);
+                        cx.notify();
+                    }
+                    Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                }
             },
             cx,
         );
@@ -501,6 +518,7 @@ impl ZedisServerState {
 
         let server_id = self.server_id.clone();
         let db = self.db;
+        let guard_key = key.clone();
         cx.emit(ServerEvent::ValuePaginationStarted);
 
         self.spawn_with_arg(
@@ -512,6 +530,11 @@ impl ZedisServerState {
             },
             // UI callback: merge results into local state
             move |this, result, cx| {
+                // Drop results for a key the user already navigated away from —
+                // appending them would corrupt the newly selected stream.
+                if this.key.as_ref() != Some(&guard_key) {
+                    return;
+                }
                 let mut should_load_more = false;
                 if let Ok((new_cursor, new_values)) = result
                     && let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())

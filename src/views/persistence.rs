@@ -23,14 +23,15 @@
 //!
 //! Both action paths go through `ZedisDialog::new_alert` so a stray
 //! click never forks a 50 GB instance — the dialog spells out the
-//! latency-spike risk, and the high-risk-tag treatment is layered in
-//! automatically via `dialog_button_props`.
+//! latency-spike risk, and the high-risk-tag treatment is layered in by
+//! running the body through `escalate_dangerous_body` (PROD-tagged
+//! servers get an extra warning appended).
 
 use crate::connection::get_server;
 use crate::helpers::{format_duration, unix_ts};
 use crate::states::{
-    RedisMetrics, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
-    i18n_persistence,
+    RedisMetrics, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+    i18n_common, i18n_persistence,
 };
 use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -408,14 +409,15 @@ impl ZedisPersistence {
     }
 
     // ── Confirm dialogs ────────────────────────────────────────────────
-    /// Both confirmations share the standard `new_alert + button_props`
-    /// pattern used by destructive ops like `XGROUP DESTROY` so that
-    /// PROD-tagged servers automatically get the escalated wording.
+    /// Both confirmations run their body through `escalate_dangerous_body`
+    /// so that PROD-tagged (high-risk) servers get the escalated warning,
+    /// matching the convention used by destructive ops like `XGROUP DESTROY`.
     fn open_bgsave_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = i18n_persistence(cx, "bgsave_confirm_title");
         let body = i18n_persistence(cx, "bgsave_confirm_body");
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body.to_string())
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body.to_string()))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 server_state.update(cx, |state, cx| state.bgsave(cx));
@@ -429,7 +431,8 @@ impl ZedisPersistence {
         let title = i18n_persistence(cx, "bgrewriteaof_confirm_title");
         let body = i18n_persistence(cx, "bgrewriteaof_confirm_body");
         let server_state = self.server_state.clone();
-        ZedisDialog::new_alert(title, body.to_string())
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body.to_string()))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 server_state.update(cx, |state, cx| state.bgrewriteaof(cx));

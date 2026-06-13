@@ -37,11 +37,12 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// Preset tag color keys, ordered to match the RadioGroup option list.
 /// Index 0 = "none" (no chip rendered).
 /// Tag color preset keys, ordered Local → Dev → UAT → Prod → Archive.
-/// Environment-oriented palette chosen so no swatch reads as a
-/// connection-status color (the old `green`/`red` were mistaken for
-/// "connected"/"error"). `magenta` is the production / high-risk color
-/// (see [`RedisServer::is_high_risk_tag`]).
-pub const TAG_COLOR_PRESETS: &[&str] = &["none", "sky", "teal", "purple", "magenta", "slate"];
+/// Environment presets offered in the server form, paired 1:1 with
+/// [`TAG_ENV_LABELS`] by index. `magenta` is the production / high-risk
+/// color (see [`RedisServer::is_high_risk_tag`]). Retired keys (`sky`,
+/// `slate`, `green`, `red`, ...) are no longer offered but still render via
+/// `canonical_tag_key`, so older servers keep their colored chip.
+pub const TAG_COLOR_PRESETS: &[&str] = &["none", "teal", "purple", "magenta"];
 
 fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
     let raw = form_value?.trim();
@@ -65,6 +66,22 @@ fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
 pub fn tag_color_index(value: Option<&str>) -> usize {
     let Some(v) = value else { return 0 };
     TAG_COLOR_PRESETS.iter().position(|k| *k == v).unwrap_or(0)
+}
+
+/// User-facing environment names for the server form's single "Environment"
+/// select, index-aligned with [`TAG_COLOR_PRESETS`] (None→none, Dev→teal,
+/// UAT→purple, Prod→magenta). These double as the persisted display tag, so
+/// they are intentionally kept as stable English identifiers (not localized)
+/// — like the color preset keys they pair with.
+pub const TAG_ENV_LABELS: &[&str] = &["None", "Dev", "UAT", "Prod"];
+
+/// Display label for a canonical tag-color preset key (e.g. `magenta` → `Prod`).
+/// Returns `None` for `none`/unknown so a server with no environment stays
+/// unlabeled.
+fn env_label_for_key(key: &str) -> Option<&'static str> {
+    let idx = TAG_COLOR_PRESETS.iter().position(|k| *k == key)?;
+    let label = *TAG_ENV_LABELS.get(idx)?;
+    (label != "None").then_some(label)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -209,7 +226,13 @@ impl RedisServer {
             response_timeout: get_str("response_timeout")
                 .and_then(|s| s.parse::<u64>().ok())
                 .filter(|&n| n > 0),
-            tag: get_str("tag"),
+            // The environment select is the single source of truth: derive the
+            // display tag from the chosen preset rather than a separate
+            // free-text field.
+            tag: tag_color_from_form_value(get_str("tag_color").as_deref())
+                .as_deref()
+                .and_then(env_label_for_key)
+                .map(String::from),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
             require_confirm_writes: get_bool("require_confirm_writes"),
             group: get_str("group"),

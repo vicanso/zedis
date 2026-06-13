@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{RedisServer, get_server_groups, get_servers, open_single_connection, tag_color_index};
+use crate::connection::{
+    RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
+};
 use crate::error::Error;
 use crate::helpers::{get_font_family, resolve_tag_chip};
 use crate::states::{
-    GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props, i18n_common,
-    i18n_servers, update_app_state_and_save,
+    GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
+    escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
 };
 use gpui::{ClipboardItem, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::h_flex;
@@ -118,18 +120,21 @@ impl ZedisServers {
 
         let message = t!("servers.remove_prompt", server = server, locale = locale).to_string();
 
-        ZedisDialog::new_alert(i18n_servers(cx, "remove_server_title"), message)
-            .button_props(dialog_button_props(cx))
-            .on_ok(move |_, window, cx| {
-                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                    store.update(cx, |state, cx| {
-                        state.remove_server(&server_id, cx);
-                    });
+        ZedisDialog::new_alert(
+            i18n_servers(cx, "remove_server_title"),
+            escalate_dangerous_body(cx, &server_id, message),
+        )
+        .button_props(dialog_button_props(cx))
+        .on_ok(move |_, window, cx| {
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |state, cx| {
+                    state.remove_server(&server_id, cx);
                 });
-                window.close_dialog(cx);
-                true
-            })
-            .open(window, cx);
+            });
+            window.close_dialog(cx);
+            true
+        })
+        .open(window, cx);
     }
 
     fn add_or_update_server_dialog(&mut self, redis_server: &RedisServer, window: &mut Window, cx: &mut Context<Self>) {
@@ -374,19 +379,20 @@ impl ZedisServers {
                     }
                 })
                 .tab_index(3),
-            ZedisFormField::new("tag", i18n_servers(cx, "tag"))
-                .default_value(redis_server.tag.clone().unwrap_or_default())
-                .placeholder(i18n_servers(cx, "tag_placeholder"))
-                .tab_index(3),
-            ZedisFormField::new("tag_color", i18n_servers(cx, "tag_color"))
+            // Single "Environment" preset (None/Local/Dev/UAT/Prod/Archive)
+            // drives the display tag, chip color, and high-risk (PROD)
+            // escalation. The option index maps straight onto
+            // TAG_COLOR_PRESETS, so the stored `tag_color` key stays the
+            // source of truth and `from_form_data` derives the label from it —
+            // replacing the old free-text tag + separate color picker.
+            ZedisFormField::new("tag_color", i18n_servers(cx, "tag"))
                 .default_value(tag_color_index(redis_server.tag_color.as_deref()).to_string())
                 .options(
-                    i18n_servers(cx, "tag_color_list")
-                        .split(' ')
-                        .map(|s| s.to_string().into())
+                    TAG_ENV_LABELS
+                        .iter()
+                        .map(|s| SharedString::from(*s))
                         .collect::<Vec<SharedString>>(),
                 )
-                .placeholder(i18n_servers(cx, "tag_color_placeholder"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::RadioGroup),
         ];

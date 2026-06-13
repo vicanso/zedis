@@ -30,25 +30,33 @@
 //!    means the subscription connects fine but never receives a
 //!    message), with a one-click "Enable (AKE)" button gated by the // spellchecker:disable-line
 //!    standard confirm dialog on PROD-tagged servers.
+//!
+//! A hot key on a busy server can emit hundreds of messages per second,
+//! so — like [`crate::views::ZedisMonitor`] — incoming rows are decoded
+//! off-thread, ferried over a channel, and merged into a virtualized
+//! `DataTable` in coalesced batches (one re-render per batch, not per
+//! message), backed by a `VecDeque` ring buffer with O(1) push/evict.
 
 use crate::connection::{get_connection_manager, get_server};
+use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::states::{
     Route, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
 use ahash::AHashSet;
 use chrono::Local;
-use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use futures::StreamExt;
+use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
-    scroll::ScrollableElement,
+    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use std::sync::Arc;
+use std::collections::VecDeque;
 use tracing::error;
 use zedis_ui::ZedisDialog;
 
@@ -66,6 +74,10 @@ const ENABLE_FLAGS: &str = "AKE"; // spellchecker:disable-line
 /// hundreds per second — without a bound we'd run away with memory in
 /// minutes. 1000 keeps the last few minutes visible on most workloads.
 const RING_BUFFER_CAPACITY: usize = 1000;
+/// Max rows merged per foreground wake-up. A burst is drained from the
+/// channel and applied in one state update + one re-render, so a noisy
+/// server can't trigger a render per message.
+const BATCH_LIMIT: usize = 200;
 
 #[derive(Clone, Debug)]
 struct NotificationRow {
@@ -120,11 +132,219 @@ const DEFAULT_EVENT_CHIPS: &[&str] = &[
     "xadd",
 ];
 
+// ── Virtualized table delegate ───────────────────────────────────────
+
+const COL_TIME: &str = "col_time";
+const COL_DB: &str = "col_db";
+const COL_KEY: &str = "col_key";
+const COL_EVENT: &str = "col_event";
+const COL_SOURCE: &str = "col_source";
+
+/// Backs the virtualized `DataTable`. `all_rows` is the newest-first ring
+/// buffer; `filtered_rows` is the materialized view when an event-chip or
+/// key-substring filter is active. Only the rows the table actually paints
+/// are turned into elements, so a full 1000-row buffer costs ~one screen of
+/// cells per frame rather than 1000.
+struct KeyspaceTableDelegate {
+    all_rows: VecDeque<NotificationRow>,
+    filtered_rows: Vec<NotificationRow>,
+    is_filtered: bool,
+    columns: Vec<Column>,
+    column_keys: Vec<&'static str>,
+}
+
+impl KeyspaceTableDelegate {
+    fn new(window: &mut Window) -> Self {
+        let window_width = window.viewport_size().width;
+        let content_width = window_width - SIDEBAR_WIDTH;
+
+        let time_width = 160.;
+        let db_width = 60.;
+        let event_width = 120.;
+        let source_width = 90.;
+        let remaining = content_width.as_f32() - time_width - db_width - event_width - source_width - 10.;
+        let key_width = remaining.max(200.);
+
+        let make_paddings = || {
+            Some(Edges {
+                top: px(2.),
+                bottom: px(2.),
+                left: px(10.),
+                right: px(10.),
+            })
+        };
+
+        let column_keys = vec![COL_TIME, COL_DB, COL_KEY, COL_EVENT, COL_SOURCE];
+        let widths = [time_width, db_width, key_width, event_width, source_width];
+
+        let columns = column_keys
+            .iter()
+            .zip(widths.iter())
+            .map(|(&key, &width)| {
+                Column::new(key, SharedString::default()).width(width).map(|mut col| {
+                    col.paddings = make_paddings();
+                    col
+                })
+            })
+            .collect();
+
+        Self {
+            all_rows: VecDeque::new(),
+            filtered_rows: Vec::new(),
+            is_filtered: false,
+            columns,
+            column_keys,
+        }
+    }
+
+    /// Recompute `filtered_rows` from the event-chip set and key substring.
+    /// With no filters active we leave `filtered_rows` empty and read straight
+    /// from `all_rows`, so the common (unfiltered) case allocates nothing.
+    fn apply_filter(&mut self, selected_events: &Option<AHashSet<String>>, key_filter: &str) {
+        if selected_events.is_none() && key_filter.is_empty() {
+            self.is_filtered = false;
+            self.filtered_rows.clear();
+            return;
+        }
+        self.is_filtered = true;
+        self.filtered_rows = self
+            .all_rows
+            .iter()
+            .filter(|r| match selected_events {
+                None => true,
+                Some(set) => set.contains(r.event.as_ref()),
+            })
+            .filter(|r| key_filter.is_empty() || r.key.contains(key_filter))
+            .cloned()
+            .collect();
+    }
+
+    fn visible_row(&self, index: usize) -> Option<&NotificationRow> {
+        if self.is_filtered {
+            self.filtered_rows.get(index)
+        } else {
+            self.all_rows.get(index)
+        }
+    }
+
+    fn visible_count(&self) -> usize {
+        if self.is_filtered {
+            self.filtered_rows.len()
+        } else {
+            self.all_rows.len()
+        }
+    }
+}
+
+impl Clone for KeyspaceTableDelegate {
+    fn clone(&self) -> Self {
+        Self {
+            all_rows: self.all_rows.clone(),
+            filtered_rows: self.filtered_rows.clone(),
+            is_filtered: self.is_filtered,
+            columns: self.columns.clone(),
+            column_keys: self.column_keys.clone(),
+        }
+    }
+}
+
+impl TableDelegate for KeyspaceTableDelegate {
+    fn columns_count(&self, _cx: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _cx: &App) -> usize {
+        self.visible_count()
+    }
+
+    fn column(&self, index: usize, _cx: &App) -> Column {
+        self.columns[index].clone()
+    }
+
+    // Live tail is intrinsically newest-first; column sorting is not offered
+    // (columns are created without `.sortable()`), so this is never called.
+    fn perform_sort(&mut self, _col_ix: usize, _sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {}
+
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let column = &self.columns[col_ix];
+        let name = i18n_keyspace_notifications(cx, self.column_keys[col_ix]);
+        div()
+            .size_full()
+            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
+            .child(
+                Label::new(name)
+                    .text_align(column.align)
+                    .text_color(cx.theme().primary)
+                    .text_sm(),
+            )
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let column = &self.columns[col_ix];
+        let col_key = self.column_keys[col_ix];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+
+        let (value, color): (SharedString, gpui::Hsla) = if let Some(row) = self.visible_row(row_ix) {
+            match col_key {
+                COL_TIME => (row.timestamp.clone(), muted),
+                COL_DB => (row.db.to_string().into(), theme.foreground),
+                COL_KEY => (row.key.clone(), theme.foreground),
+                COL_EVENT => {
+                    let c = match row.event.as_ref() {
+                        "del" | "expired" | "evicted" => theme.red,
+                        "set" | "hset" | "sadd" | "zadd" | "lpush" | "rpush" | "xadd" => theme.green,
+                        "expire" => theme.yellow,
+                        _ => theme.foreground,
+                    };
+                    (row.event.clone(), c)
+                }
+                COL_SOURCE => (row.source.as_str().into(), muted),
+                _ => ("--".into(), theme.foreground),
+            }
+        } else {
+            ("--".into(), theme.foreground)
+        };
+
+        div()
+            .size_full()
+            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
+            .child(
+                Label::new(value)
+                    .text_align(column.align)
+                    .text_color(color)
+                    .text_sm()
+                    .text_ellipsis(),
+            )
+    }
+
+    fn has_more(&self, _cx: &App) -> bool {
+        false
+    }
+    fn load_more_threshold(&self) -> usize {
+        0
+    }
+    fn load_more(&mut self, _window: &mut Window, _cx: &mut Context<TableState<Self>>) {}
+}
+
 pub struct ZedisKeyspaceNotifications {
     server_state: Entity<ZedisServerState>,
     title: SharedString,
-    /// Ring buffer of received notifications, newest first.
-    rows: Arc<Vec<NotificationRow>>,
+    /// Virtualized table over the ring buffer; row data lives in the delegate.
+    table_state: Entity<TableState<KeyspaceTableDelegate>>,
+    /// Cached count of currently-visible (post-filter) rows.
+    row_count: usize,
     /// Long-running PSUBSCRIBE task. `Some` ⇒ currently subscribed.
     subscribe_task: Option<Task<()>>,
     /// True while the initial subscribe handshake is in flight (button
@@ -143,8 +363,7 @@ pub struct ZedisKeyspaceNotifications {
     /// `Some(set)` = show only events in the set (empty set ⇒ nothing).
     selected_events: Option<AHashSet<String>>,
     /// Substring filter applied to the key column. Stored separately
-    /// from the InputState so subscriptions can compute filtered rows
-    /// in a single &self borrow.
+    /// from the InputState so the drain loop can re-apply it cheaply.
     key_filter: String,
     key_filter_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
@@ -165,6 +384,9 @@ impl ZedisKeyspaceNotifications {
                 .placeholder(i18n_keyspace_notifications(cx, "key_pattern_placeholder"))
         });
 
+        let delegate = KeyspaceTableDelegate::new(window);
+        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+
         let mut subscriptions = Vec::new();
         // Key filter is post-subscription: typing into the input only
         // narrows the visible rows, no SUBSCRIBE churn.
@@ -172,7 +394,7 @@ impl ZedisKeyspaceNotifications {
             cx.subscribe_in(&key_filter_input, window, |this, state, event, _window, cx| {
                 if let InputEvent::Change = event {
                     this.key_filter = state.read(cx).value().to_string();
-                    cx.notify();
+                    this.apply_filter_now(cx);
                 }
             }),
         );
@@ -180,7 +402,8 @@ impl ZedisKeyspaceNotifications {
         Self {
             server_state,
             title,
-            rows: Arc::new(Vec::new()),
+            table_state,
+            row_count: 0,
             subscribe_task: None,
             subscribing: false,
             notify_flags: SharedString::default(),
@@ -194,6 +417,10 @@ impl ZedisKeyspaceNotifications {
 
     fn is_subscribed(&self) -> bool {
         self.subscribe_task.is_some()
+    }
+
+    fn total_rows(&self, cx: &App) -> usize {
+        self.table_state.read(cx).delegate().all_rows.len()
     }
 
     /// Open the dedicated pub/sub connection and start the read loop.
@@ -216,7 +443,8 @@ impl ZedisKeyspaceNotifications {
         self.refresh_notify_flags(cx);
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
-            let result: Result<_, Error> = cx
+            // Connect + PSUBSCRIBE off-thread, then await the handshake.
+            let connect: Result<_, Error> = cx
                 .background_spawn(async move {
                     let mut pubsub = get_connection_manager()
                         .get_pubsub_connection(&server_id_for_task)
@@ -235,31 +463,8 @@ impl ZedisKeyspaceNotifications {
                 })
                 .await;
 
-            match result {
-                Ok(mut pubsub) => {
-                    let _ = entity.update(cx, |this, cx| {
-                        this.subscribing = false;
-                        cx.notify();
-                    });
-                    use futures::StreamExt;
-                    let mut stream = pubsub.on_message();
-                    loop {
-                        let Some(msg) = stream.next().await else { break };
-                        let channel: String = msg.get_channel_name().to_string();
-                        let payload = msg.get_payload_bytes();
-                        let Some(row) = parse_notification(&channel, payload) else {
-                            continue;
-                        };
-                        let update_result = entity.update(cx, move |this, cx| {
-                            this.push_row(row);
-                            cx.notify();
-                        });
-                        // Entity dropped → bail rather than leak.
-                        if update_result.is_err() {
-                            break;
-                        }
-                    }
-                }
+            let mut pubsub = match connect {
+                Ok(pubsub) => pubsub,
                 Err(e) => {
                     error!(error = %e, "Keyspace notifications subscribe failed");
                     let _ = entity.update(cx, |this, cx| {
@@ -267,8 +472,56 @@ impl ZedisKeyspaceNotifications {
                         this.subscribe_task = None;
                         cx.notify();
                     });
+                    return;
+                }
+            };
+
+            // Handshake done — flip the button from spinner to "Stop".
+            if entity
+                .update(cx, |this, cx| {
+                    this.subscribing = false;
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+
+            // Background reader → channel. Channel-name parsing runs off the
+            // main thread; only the batched merge touches the foreground.
+            let (tx, rx) = smol::channel::unbounded::<NotificationRow>();
+            let reader = cx.background_spawn(async move {
+                let mut stream = pubsub.on_message();
+                while let Some(msg) = stream.next().await {
+                    let channel: String = msg.get_channel_name().to_string();
+                    let payload = msg.get_payload_bytes();
+                    if let Some(row) = parse_notification(&channel, payload)
+                        && tx.send(row).await.is_err()
+                    {
+                        // Drainer gone → stop reading.
+                        break;
+                    }
+                }
+            });
+
+            // Foreground drainer: coalesce a burst into one state update +
+            // one re-render instead of re-painting the table per message.
+            while let Ok(first) = rx.recv().await {
+                let mut batch = Vec::with_capacity(BATCH_LIMIT);
+                batch.push(first);
+                while batch.len() < BATCH_LIMIT {
+                    match rx.try_recv() {
+                        Ok(row) => batch.push(row),
+                        Err(_) => break,
+                    }
+                }
+                if entity.update(cx, |this, cx| this.ingest_batch(batch, cx)).is_err() {
+                    break;
                 }
             }
+
+            // Stream ended or entity dropped — drop the reader connection.
+            drop(reader);
         }));
     }
 
@@ -279,24 +532,50 @@ impl ZedisKeyspaceNotifications {
         }
     }
 
-    fn clear_rows(&mut self, cx: &mut Context<Self>) {
-        if self.rows.is_empty() {
-            return;
-        }
-        self.rows = Arc::new(Vec::new());
+    /// Merge a drained batch into the ring buffer (O(1) per row), trim to
+    /// capacity, refresh the filtered view, and notify once.
+    fn ingest_batch(&mut self, batch: Vec<NotificationRow>, cx: &mut Context<Self>) {
+        let selected = self.selected_events.clone();
+        let key_filter = self.key_filter.clone();
+        self.table_state.update(cx, |state, _| {
+            let delegate = state.delegate_mut();
+            for row in batch {
+                delegate.all_rows.push_front(row);
+                if delegate.all_rows.len() > RING_BUFFER_CAPACITY {
+                    // Newest-first: evict from the tail (oldest) at cap.
+                    delegate.all_rows.pop_back();
+                }
+            }
+            delegate.apply_filter(&selected, &key_filter);
+        });
+        self.row_count = self.table_state.read(cx).delegate().visible_count();
         cx.notify();
     }
 
-    /// Append a row to the buffer, dropping the oldest when capacity is
-    /// reached. We mutate via `Arc::make_mut` so the existing snapshot
-    /// (in flight to a previous render) stays untouched.
-    fn push_row(&mut self, row: NotificationRow) {
-        let buf = Arc::make_mut(&mut self.rows);
-        if buf.len() >= RING_BUFFER_CAPACITY {
-            // Newest-first: drop from the tail (oldest) when at cap.
-            buf.pop();
+    fn clear_rows(&mut self, cx: &mut Context<Self>) {
+        if self.total_rows(cx) == 0 {
+            return;
         }
-        buf.insert(0, row);
+        self.table_state.update(cx, |state, _| {
+            let delegate = state.delegate_mut();
+            delegate.all_rows.clear();
+            delegate.filtered_rows.clear();
+            delegate.is_filtered = false;
+        });
+        self.row_count = 0;
+        cx.notify();
+    }
+
+    /// Re-run the active filter against the buffer and refresh the count.
+    /// Called when an event chip or the key substring changes.
+    fn apply_filter_now(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_events.clone();
+        let key_filter = self.key_filter.clone();
+        self.table_state.update(cx, |state, _| {
+            state.delegate_mut().apply_filter(&selected, &key_filter);
+        });
+        self.row_count = self.table_state.read(cx).delegate().visible_count();
+        cx.notify();
     }
 
     fn refresh_notify_flags(&mut self, cx: &mut Context<Self>) {
@@ -393,38 +672,19 @@ impl ZedisKeyspaceNotifications {
         if !set.insert(event.to_string()) {
             set.remove(event);
         }
-        cx.notify();
+        self.apply_filter_now(cx);
     }
 
     fn reset_event_filter(&mut self, cx: &mut Context<Self>) {
         if self.selected_events.take().is_some() {
-            cx.notify();
+            self.apply_filter_now(cx);
         }
-    }
-
-    /// Materialise the visible rows: pass through if no filters are
-    /// active, otherwise filter by event-type set and key substring.
-    fn visible_rows(&self) -> Vec<NotificationRow> {
-        self.rows
-            .iter()
-            .filter(|r| match &self.selected_events {
-                None => true,
-                Some(set) => set.contains(r.event.as_ref()),
-            })
-            .filter(|r| {
-                if self.key_filter.is_empty() {
-                    true
-                } else {
-                    r.key.contains(&self.key_filter)
-                }
-            })
-            .cloned()
-            .collect()
     }
 
     // ── Render helpers ────────────────────────────────────────────────
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let total = self.total_rows(cx);
         let theme = cx.theme();
         let subscribed = self.is_subscribed();
         let subscribing = self.subscribing;
@@ -447,11 +707,10 @@ impl ZedisKeyspaceNotifications {
                 .on_click(cx.listener(|this, _, _w, cx| this.start_subscribe(cx)))
         };
 
-        let rows_total = self.rows.len();
-        let count_label: SharedString = if rows_total == 0 {
+        let count_label: SharedString = if total == 0 {
             SharedString::default()
         } else {
-            format!("({rows_total})").into()
+            format!("({total})").into()
         };
 
         h_flex()
@@ -488,7 +747,7 @@ impl ZedisKeyspaceNotifications {
                         .ghost()
                         .small()
                         .label(i18n_keyspace_notifications(cx, "clear"))
-                        .disabled(self.rows.is_empty())
+                        .disabled(total == 0)
                         .on_click(cx.listener(|this, _, _w, cx| this.clear_rows(cx))),
                 ),
             )
@@ -595,100 +854,13 @@ impl ZedisKeyspaceNotifications {
             )
     }
 
-    fn render_message_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let visible = self.visible_rows();
-
-        let header = h_flex()
-            .px_3()
-            .py_2()
-            .gap_4()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(
-                div().w(px(160.)).child(
-                    Label::new(i18n_keyspace_notifications(cx, "col_time"))
-                        .text_xs()
-                        .text_color(muted),
-                ),
-            )
-            .child(
-                div().w(px(40.)).child(
-                    Label::new(i18n_keyspace_notifications(cx, "col_db"))
-                        .text_xs()
-                        .text_color(muted),
-                ),
-            )
-            .child(
-                div().flex_1().child(
-                    Label::new(i18n_keyspace_notifications(cx, "col_key"))
-                        .text_xs()
-                        .text_color(muted),
-                ),
-            )
-            .child(
-                div().w(px(110.)).child(
-                    Label::new(i18n_keyspace_notifications(cx, "col_event"))
-                        .text_xs()
-                        .text_color(muted),
-                ),
-            )
-            .child(
-                div().w(px(80.)).child(
-                    Label::new(i18n_keyspace_notifications(cx, "col_source"))
-                        .text_xs()
-                        .text_color(muted),
-                ),
-            );
-
-        let rows: Vec<gpui::AnyElement> = visible
-            .iter()
-            .map(|r| self.render_row(r, cx).into_any_element())
-            .collect();
-
-        v_flex().flex_1().min_h_0().child(header).child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scrollbar()
-                .child(v_flex().children(rows)),
+    fn render_message_table(&self) -> impl IntoElement {
+        div().flex_1().w_full().min_h_0().child(
+            DataTable::new(&self.table_state)
+                .stripe(true)
+                .bordered(false)
+                .scrollbar_visible(true, true),
         )
-    }
-
-    fn render_row(&self, r: &NotificationRow, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let event_color = match r.event.as_ref() {
-            "del" | "expired" | "evicted" => theme.red,
-            "set" | "hset" | "sadd" | "zadd" | "lpush" | "rpush" | "xadd" => theme.green,
-            "expire" => theme.yellow,
-            _ => theme.foreground,
-        };
-
-        h_flex()
-            .px_3()
-            .py_1()
-            .gap_4()
-            .border_b_1()
-            .border_color(theme.border.opacity(0.5))
-            .child(
-                div()
-                    .w(px(160.))
-                    .child(Label::new(r.timestamp.clone()).text_xs().text_color(muted)),
-            )
-            .child(div().w(px(40.)).child(Label::new(format!("{}", r.db)).text_xs()))
-            .child(div().flex_1().child(Label::new(r.key.clone()).text_sm()))
-            .child(
-                div()
-                    .w(px(110.))
-                    .child(Label::new(r.event.clone()).text_sm().text_color(event_color)),
-            )
-            .child(
-                div()
-                    .w(px(80.))
-                    .child(Label::new(r.source.as_str()).text_xs().text_color(muted)),
-            )
     }
 }
 
@@ -708,7 +880,7 @@ impl Render for ZedisKeyspaceNotifications {
             body = body.child(banner);
         }
         body = body.child(self.render_filter_bar(cx));
-        body = body.child(self.render_message_table(cx));
+        body = body.child(self.render_message_table());
         body.into_any_element()
     }
 }

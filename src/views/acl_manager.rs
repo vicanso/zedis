@@ -22,7 +22,10 @@ use crate::{
     assets::CustomIconName,
     connection::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, get_connection_manager},
     error::Error,
-    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_acl, i18n_common},
+    states::{
+        Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_acl,
+        i18n_common,
+    },
 };
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::notification::Notification;
@@ -327,9 +330,11 @@ impl ZedisAclManager {
 
     fn confirm_delete(&mut self, username: SharedString, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let entity = cx.entity().downgrade();
+        let server_id = self.server_state.read(cx).server_id().to_string();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
         let title = i18n_acl(cx, "delete_user_title");
         let message = t!("acl.delete_user_prompt", user = username.as_ref(), locale = locale).to_string();
+        let message = escalate_dangerous_body(cx, &server_id, message);
         let username_for_run = username.clone();
         ZedisDialog::new_alert(title, message)
             .button_props(dialog_button_props(cx))
