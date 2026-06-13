@@ -75,6 +75,12 @@ pub enum RedisServerStatus {
 
     /// Server is loading initial data (connecting, fetching metadata)
     Loading,
+
+    /// The last connection / metadata load failed (e.g. network down).
+    /// Tracked separately from `Idle` so a later re-select of the *same*
+    /// server retries the load instead of being swallowed by the
+    /// same-server guard in [`ZedisServerState::select`].
+    Failed,
 }
 
 /// Main state management for Redis server operations
@@ -439,9 +445,13 @@ impl ZedisServerState {
         cx.emit(ServerEvent::TerminalToggled(self.terminal));
     }
 
-    /// Check if the server is currently busy with an operation
+    /// Check if the server is currently busy with an operation.
+    ///
+    /// Only `Loading` counts as busy — `Failed` must render the normal
+    /// (empty) editor so the user can re-select and retry, otherwise the
+    /// loading skeleton would spin forever after a connection failure.
     pub fn is_busy(&self) -> bool {
-        !matches!(self.server_status, RedisServerStatus::Idle)
+        matches!(self.server_status, RedisServerStatus::Loading)
     }
 
     /// Get the current key tree ID (changes when keys are reloaded)
@@ -683,8 +693,15 @@ impl ZedisServerState {
     /// * `db` - Database to connect to
     /// * `cx` - Context for spawning async tasks and state updates
     pub fn select(&mut self, server_id: SharedString, db: usize, cx: &mut Context<Self>) {
-        // Only proceed if selecting a different server
-        if self.server_id != server_id || self.db != db {
+        // Reload when switching to a different server, OR when re-selecting
+        // the *same* server whose previous load failed. The latter matters
+        // because going Home clears only the global selection (the empty
+        // `ServerSelected` is ignored by content.rs), so `self.server_id`
+        // stays stale; without the `Failed` check, re-clicking the server
+        // after a network error would be a silent no-op and never retry.
+        let same_target = self.server_id == server_id && self.db == db;
+        let retry_failed = same_target && matches!(self.server_status, RedisServerStatus::Failed);
+        if !same_target || retry_failed {
             get_metrics_cache().remove_server(self.server_id.as_str());
             self.reset(cx);
             self.server_id = server_id.clone();
@@ -754,39 +771,51 @@ impl ZedisServerState {
                         return;
                     }
 
-                    // Update metadata if successful
-                    if let Ok((
-                        dbsize,
-                        nodes,
-                        nodes_description,
-                        version,
-                        databases,
-                        access_mode,
-                        supports_rejson,
-                        supports_search,
-                    )) = result
-                    {
-                        this.dbsize = Some(dbsize);
-                        this.nodes = nodes;
-                        this.nodes_description = Arc::new(nodes_description);
-                        this.version = version.into();
-                        this.databases = databases;
-                        this.access_mode = access_mode;
-                        this.supports_rejson = supports_rejson;
-                        this.supports_search = supports_search;
-                    };
+                    match result {
+                        Ok((
+                            dbsize,
+                            nodes,
+                            nodes_description,
+                            version,
+                            databases,
+                            access_mode,
+                            supports_rejson,
+                            supports_search,
+                        )) => {
+                            this.dbsize = Some(dbsize);
+                            this.nodes = nodes;
+                            this.nodes_description = Arc::new(nodes_description);
+                            this.version = version.into();
+                            this.databases = databases;
+                            this.access_mode = access_mode;
+                            this.supports_rejson = supports_rejson;
+                            this.supports_search = supports_search;
 
-                    let server_id = this.server_id.clone();
-                    this.server_status = RedisServerStatus::Idle;
-                    cx.emit(ServerEvent::ServerInfoUpdated);
-                    let is_exact_mode = this.query_mode == QueryMode::Exact;
-                    if is_exact_mode {
-                        this.scanning = false;
-                    }
-                    cx.notify();
-                    // Auto-scan keys if not exact mode
-                    if !is_exact_mode {
-                        this.scan_keys(server_id, SharedString::default(), cx);
+                            let server_id = this.server_id.clone();
+                            this.server_status = RedisServerStatus::Idle;
+                            cx.emit(ServerEvent::ServerInfoUpdated);
+                            let is_exact_mode = this.query_mode == QueryMode::Exact;
+                            if is_exact_mode {
+                                this.scanning = false;
+                            }
+                            cx.notify();
+                            // Auto-scan keys if not exact mode
+                            if !is_exact_mode {
+                                this.scan_keys(server_id, SharedString::default(), cx);
+                            }
+                        }
+                        Err(_) => {
+                            // Connection / metadata load failed (e.g. network
+                            // down). Mark Failed so a later re-select retries
+                            // instead of being swallowed by select()'s
+                            // same-server guard. The error toast was already
+                            // emitted in spawn_with_arg; skip the key scan
+                            // since it would just fail again with a 2nd toast.
+                            this.server_status = RedisServerStatus::Failed;
+                            this.scanning = false;
+                            cx.emit(ServerEvent::ServerInfoUpdated);
+                            cx.notify();
+                        }
                     }
                 },
                 cx,
