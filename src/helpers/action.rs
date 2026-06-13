@@ -230,6 +230,7 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
                 ("cmd-r", "reload_keys"),
                 ("cmd-shift-r", "reload_value"),
                 ("cmd-t", "update_ttl"),
+                ("cmd-backspace", "delete_key"),
                 ("cmd-f", "search"),
                 ("cmd-j", "terminal"),
             ],
@@ -252,6 +253,12 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
         KeyBinding::new("cmd-j", EditorAction::Cmd, None),
         KeyBinding::new("cmd-f", EditorAction::Search, None),
+        // Delete the selected key. A modifier combo (not bare Backspace) so it
+        // can't fire while navigating the tree or typing; still routes through
+        // the confirm dialog (with PROD escalation), so a stray press is safe.
+        // When a text editor is focused it keeps ⌘⌫ for editing — the global
+        // delete only fires when no input consumes it.
+        KeyBinding::new("cmd-backspace", EditorAction::Delete, None),
         // Key-tree refresh is the primary, high-frequency action so it
         // owns plain `cmd-r` (above); value reload is the rarer one and
         // takes `cmd-shift-r`.

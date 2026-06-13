@@ -2242,6 +2242,23 @@ impl Render for ZedisKeyTree {
                 EditorAction::Search => {
                     this.keyword_state.focus_handle(cx).focus(window, cx);
                 }
+                EditorAction::Delete => {
+                    // `cmd-backspace` while the tree is focused deletes the
+                    // current selection. `EditorAction::Delete` is otherwise
+                    // only handled by the editor view (a sibling), so it never
+                    // reached us via focus-tree dispatch. Reuse the tree's own
+                    // delete-confirm flow: batch when multi-select has picks,
+                    // else the selected key.
+                    let multi = {
+                        let delegate = this.key_tree_list_state.read(cx).delegate();
+                        delegate.enabled_multiple_selection && !delegate.selected_items.is_empty()
+                    };
+                    if multi {
+                        window.dispatch_action(Box::new(KeyTreeAction::DeleteMultipleKeys), cx);
+                    } else if let Some(key) = this.server_state.read(cx).key() {
+                        window.dispatch_action(Box::new(KeyTreeAction::DeleteKey(key)), cx);
+                    }
+                }
                 _ => {
                     cx.propagate();
                 }
