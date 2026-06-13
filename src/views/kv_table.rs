@@ -17,11 +17,12 @@ use crate::helpers::get_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvDelegate, ZedisKvFetcher},
-    helpers::{EditorAction, humanize_keystroke},
+    helpers::{EditorAction, build_csv, humanize_keystroke},
     states::{
         KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
         i18n_list_editor,
     },
+    views::export_to_file,
 };
 use gpui::{App, Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::TITLE_BAR_HEIGHT;
@@ -132,6 +133,8 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     editor_form: Option<Entity<ZedisForm>>,
     /// Fetcher instance
     fetcher: Arc<T>,
+    /// Server state, kept so the CSV export action can call `export_to_file`.
+    server_state: Entity<ZedisServerState>,
     /// Factory that produces extra action buttons for the footer toolbar each render.
     /// Set by the owner of this table (e.g. ZedisStreamEditor) so button logic
     /// can reference the owner's entity context.
@@ -303,7 +306,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         };
 
         // Initialize table data and state
-        let fetcher = Arc::new(Self::new_values(server_state, cx));
+        let fetcher = Arc::new(Self::new_values(server_state.clone(), cx));
         let done = fetcher.is_done();
         let items_count = fetcher.rows_count();
         let total_count = fetcher.count();
@@ -368,12 +371,73 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             readonly,
             mode,
             fetcher,
+            server_state,
             columns,
             editor_form: None,
             action_button_factory: None,
             list_push_mode_state: cx.new(|_cx| 0),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Export the currently-loaded rows to a CSV file via the shared
+    /// `export_to_file` flow. Headers come from the table columns and cells
+    /// from the fetcher, so one implementation covers Hash/List/Set/Zset/Stream.
+    /// Honest about completeness: when the table isn't fully loaded the success
+    /// notification notes "loaded / total", so a partial export is never
+    /// mistaken for the whole collection.
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        if self.items_count == 0 {
+            return;
+        }
+        let headers: Vec<&str> = self.columns.iter().map(|c| c.name.as_ref()).collect();
+        let rows: Vec<Vec<String>> = (0..self.items_count)
+            .map(|r| {
+                // The delegate prepends an Index ("#") column at position 0,
+                // so the fetcher's value columns (matching `self.columns`)
+                // start at delegate index 1 — offset `get` accordingly.
+                (0..self.columns.len())
+                    .map(|c| self.fetcher.get(r, c + 1).map(|s| s.to_string()).unwrap_or_default())
+                    .collect()
+            })
+            .collect();
+        let csv = build_csv(&headers, &rows);
+
+        // Filename from the key, sanitized so a name with `:` / `/` can't
+        // break the suggested save path.
+        let key = self.server_state.read(cx).key().unwrap_or_default();
+        let safe: String = key
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let suggested = format!("{}.csv", if safe.is_empty() { "export" } else { safe.as_str() });
+
+        let success: SharedString = if self.done {
+            i18n_common(cx, "csv_exported")
+        } else {
+            format!(
+                "{} ({} / {})",
+                i18n_common(cx, "csv_exported"),
+                self.items_count,
+                self.total_count
+            )
+            .into()
+        };
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file(
+            cx,
+            self.server_state.clone(),
+            csv.into_bytes(),
+            &suggested,
+            success,
+            error,
+        );
     }
 
     /// Sets a factory closure that produces extra action buttons for the footer each render.
@@ -918,6 +982,19 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                     })
                                     .when_some(self.action_button_factory.as_ref(), |this, factory| {
                                         this.children(factory(window, cx))
+                                    })
+                                    // Export loaded rows to CSV — one button on the
+                                    // shared table covers every collection type.
+                                    .when(self.items_count > 0, |this| {
+                                        this.child(
+                                            Button::new("kv-table-export-btn")
+                                                .ghost()
+                                                .icon(CustomIconName::Download)
+                                                .tooltip(i18n_common(cx, "export_csv"))
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.export_csv(cx);
+                                                })),
+                                        )
                                     })
                                     .flex_1(),
                             )
