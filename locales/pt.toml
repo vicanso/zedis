@@ -203,6 +203,8 @@ jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
 history_label = "Histórico"
 history_empty = "Sem histórico ainda — salve uma alteração para começar a rastrear"
+no_key_selected_title = "Nenhuma chave selecionada"
+no_key_selected_hint = "Selecione uma chave na árvore à esquerda para ver seu valor"
 
 # Visão de diff lado a lado (cenários 1 e 2 do histórico local)
 diff_button = "Diff"

@@ -203,6 +203,8 @@ jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
 history_label = "Verlauf"
 history_empty = "Noch kein Schreibverlauf — speichern Sie eine Änderung, um zu beginnen"
+no_key_selected_title = "Kein Schlüssel ausgewählt"
+no_key_selected_hint = "Wählen Sie links im Baum einen Schlüssel aus, um seinen Wert anzuzeigen"
 
 # Vergleichsansicht für Schreibverlauf (Szenarios 1 & 2)
 diff_button = "Diff"

@@ -32,7 +32,7 @@ use crate::{
 };
 use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -1684,6 +1684,36 @@ impl ZedisEditor {
             }
         }
     }
+
+    /// Centered empty state for the right panel when no key is selected.
+    ///
+    /// The editor pane is otherwise a blank rectangle on first connect —
+    /// before the user clicks anything in the tree — which reads as dead
+    /// space. A calm muted icon + a one-line hint pointing at the key
+    /// tree gives the pane a deliberate resting state instead.
+    fn render_no_key_selected(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(
+                Icon::new(IconName::Inbox)
+                    .with_size(px(44.))
+                    .text_color(muted.alpha(0.55)),
+            )
+            .child(
+                Label::new(i18n_editor(cx, "no_key_selected_title"))
+                    .font_medium()
+                    .text_color(cx.theme().foreground),
+            )
+            .child(
+                Label::new(i18n_editor(cx, "no_key_selected_hint"))
+                    .text_sm()
+                    .text_color(muted),
+            )
+    }
 }
 
 impl Render for ZedisEditor {
@@ -1691,10 +1721,12 @@ impl Render for ZedisEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
         let is_channel_mode = server_state.is_channel_mode();
+        let no_key_selected = !is_channel_mode && server_state.key().is_none();
 
-        // Don't render anything if no key is selected
-        if !is_channel_mode && server_state.key().is_none() {
-            return v_flex().into_any_element();
+        // Right after connecting (no key clicked yet) the pane would
+        // otherwise be blank — show a centered empty-state hint instead.
+        if no_key_selected {
+            return self.render_no_key_selected(cx).into_any_element();
         }
         if let Some(true) = self.should_enter_ttl_edit_mode.take() {
             self.enter_ttl_edit_mode(window, cx);

@@ -203,6 +203,8 @@ jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
 history_label = "履歴"
 history_empty = "書き込み履歴はまだありません — 変更を保存すると記録が開始されます"
+no_key_selected_title = "キーが選択されていません"
+no_key_selected_hint = "左側のツリーからキーを選択すると値が表示されます"
 
 # 並列 Diff ビュー（ローカル書き込み履歴 シナリオ 1 & 2）
 diff_button = "Diff"

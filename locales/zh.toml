@@ -203,6 +203,8 @@ jsonpath_no_match = "无匹配项"
 jsonpath_not_json = "当前值不是有效 JSON"
 history_label = "历史版本"
 history_empty = "暂无写入历史 — 保存一次后开始记录"
+no_key_selected_title = "未选择键"
+no_key_selected_hint = "从左侧的键树中选择一个键以查看其值"
 
 # 并排 Diff 视图（本地写入历史场景 1 & 2）
 diff_button = "Diff"

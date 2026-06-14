@@ -203,6 +203,8 @@ jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
 history_label = "Historial"
 history_empty = "Aún sin historial — guarda un cambio para empezar a registrar"
+no_key_selected_title = "Ninguna clave seleccionada"
+no_key_selected_hint = "Selecciona una clave en el árbol de la izquierda para ver su valor"
 
 # Vista de diff lado a lado (escenarios 1 y 2 del historial local)
 diff_button = "Diff"

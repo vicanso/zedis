@@ -203,6 +203,8 @@ jsonpath_no_match = "No match"
 jsonpath_not_json = "Value is not valid JSON"
 history_label = "История"
 history_empty = "Истории записей пока нет — сохраните изменение, чтобы начать"
+no_key_selected_title = "Ключ не выбран"
+no_key_selected_hint = "Выберите ключ в дереве слева, чтобы просмотреть его значение"
 
 # Просмотр различий бок о бок (сценарии 1 и 2 локальной истории записи)
 diff_button = "Diff"
