@@ -134,6 +134,12 @@ struct KeyTreeState {
     error: Option<SharedString>,
     /// Set of expanded folder paths (persisted during tree rebuilds)
     expanded_items: AHashSet<SharedString>,
+    /// Folders the user explicitly collapsed. The single-child
+    /// auto-expand (`single_child_expanded_set`) skips these so a
+    /// collapse sticks instead of being reopened on the next rebuild.
+    /// Cleared for a folder when it's expanded again, and on
+    /// collapse-all / a new scan.
+    suppressed_auto_expand: AHashSet<SharedString>,
     /// Index path to scroll to when the tree is updated
     scroll_to_index: Option<IndexPath>,
     /// Whether to clear the list selection on the next render (requires window)
@@ -220,6 +226,79 @@ fn build_tagged_keys_list(
         .collect()
 }
 
+/// Expands the user's `expanded_items` through single-child folder chains:
+/// while an expanded folder's only child is itself a folder, that child is
+/// treated as expanded too. Lets a deep single-child namespace
+/// (`app:user` → `profile` → leaves) open in one click instead of one click
+/// per level. Returns the augmented set (owned, so the caller can borrow
+/// `&str` views into it). Recomputed every rebuild, so a streaming scan that
+/// later reveals a second child stops the auto-expand at that level on the
+/// next pass. No-op (skips the child-map pass) when nothing is expanded.
+fn single_child_expanded_set(
+    keys: &[(SharedString, KeyType)],
+    expanded_items: &AHashSet<SharedString>,
+    suppressed: &AHashSet<SharedString>,
+    keyword: &str,
+    separator: &str,
+    max_depth: usize,
+) -> AHashSet<String> {
+    let mut effective: AHashSet<String> = expanded_items.iter().map(|s| s.to_string()).collect();
+    if effective.is_empty() {
+        return effective;
+    }
+    // For each folder prefix: (sole-child id, whether that child is itself a
+    // folder, whether more than one distinct child was seen). Tracking just
+    // the first child plus a "multiple" flag avoids a per-folder child set.
+    let mut child_info: AHashMap<String, (String, bool, bool)> = AHashMap::new();
+    for (key, _) in keys {
+        if !keyword.is_empty() && !key.contains(keyword) {
+            continue;
+        }
+        if !key.contains(separator) {
+            continue;
+        }
+        let segs: Vec<&str> = key.splitn(max_depth, separator).collect();
+        let mut dir = String::new();
+        for (i, seg) in segs.iter().enumerate() {
+            let parent = dir.clone();
+            if i > 0 {
+                dir.push_str(separator);
+            }
+            dir.push_str(seg);
+            let child_is_folder = i + 1 < segs.len();
+            match child_info.entry(parent) {
+                Vacant(e) => {
+                    e.insert((dir.clone(), child_is_folder, false));
+                }
+                Occupied(mut e) => {
+                    let info = e.get_mut();
+                    if info.0 == dir {
+                        info.1 |= child_is_folder;
+                    } else {
+                        info.2 = true;
+                    }
+                }
+            }
+        }
+    }
+    // Follow single-folder-child links transitively from each expanded folder,
+    // but never auto-open a folder the user explicitly collapsed.
+    let suppressed_set: AHashSet<String> = suppressed.iter().map(|s| s.to_string()).collect();
+    let mut stack: Vec<String> = effective.iter().cloned().collect();
+    while let Some(dir) = stack.pop() {
+        let Some((child, child_is_folder, multiple)) = child_info.get(dir.as_str()) else {
+            continue;
+        };
+        if *multiple || !*child_is_folder || suppressed_set.contains(child) {
+            continue;
+        }
+        if effective.insert(child.clone()) {
+            stack.push(child.clone());
+        }
+    }
+    effective
+}
+
 // Eight distinct concerns: input keys, keyword filter, expansion state,
 // separator, depth cap, TTL map, metadata map, and tag filter. Bundling
 // them into a struct would add more boilerplate than clarity since each
@@ -229,6 +308,7 @@ fn new_key_tree_items(
     mut keys: Vec<(SharedString, KeyType)>,
     keyword: SharedString,
     expanded_items: AHashSet<SharedString>,
+    suppressed: AHashSet<SharedString>,
     separator: &str,
     max_key_tree_depth: usize,
     key_ttls: &AHashMap<SharedString, i64>,
@@ -243,7 +323,22 @@ fn new_key_tree_items(
     tag_filter: Option<TagColor>,
 ) -> Vec<KeyTreeItem> {
     keys.sort_unstable_by_key(|(k, _)| k.clone());
-    let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
+    // Effective expansion = the user-expanded folders plus any single-child
+    // folder chains hanging off them, so drilling into a deep single-child
+    // namespace (`app:user` → `profile` → leaves) opens straight through in
+    // one click instead of one click per level.
+    let effective_expanded = single_child_expanded_set(
+        &keys,
+        &expanded_items,
+        &suppressed,
+        &keyword,
+        separator,
+        max_key_tree_depth,
+    );
+    let expanded_items_set = effective_expanded
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<AHashSet<&str>>();
     let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
     // Tracks standalone keys whose HashMap slot was taken over by a folder
     // with the same name (e.g. key "test" exists alongside "test:key1").
@@ -881,6 +976,7 @@ impl ZedisKeyTree {
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeyCollapseAll => {
                     this.state.expanded_items.clear();
+                    this.state.suppressed_auto_expand.clear();
                 }
                 ServerEvent::ServerSelected(_) => {
                     this.reset(cx);
@@ -1033,6 +1129,7 @@ impl ZedisKeyTree {
     }
     fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
+        self.state.suppressed_auto_expand.clear();
         self.state.scroll_to_index = Some(IndexPath::new(0));
     }
     fn update_expand(&mut self, selected_key: SharedString, cx: &mut Context<Self>) {
@@ -1124,6 +1221,7 @@ impl ZedisKeyTree {
         let scanning_prefixes = server_state.scanning_prefixes().clone();
         let incomplete_prefixes = server_state.incomplete_prefix_set();
         let expanded_items = self.state.expanded_items.clone();
+        let suppressed = self.state.suppressed_auto_expand.clone();
 
         let view_handle = cx.entity().downgrade();
         let keyword = self.state.keyword.clone();
@@ -1164,6 +1262,7 @@ impl ZedisKeyTree {
                         keys_input,
                         keyword,
                         expanded_items,
+                        suppressed,
                         &separator,
                         max_key_tree_depth,
                         &key_ttls_snapshot,
@@ -1542,9 +1641,14 @@ impl ZedisKeyTree {
     }
 
     fn select_item_by_index(&mut self, ix: &IndexPath, toggle: bool, cx: &mut Context<Self>) {
-        let Some((id, is_folder, load_more)) = self.key_tree_list_state.update(cx, |state, _cx| {
+        let Some((id, is_folder, load_more, is_expanded)) = self.key_tree_list_state.update(cx, |state, _cx| {
             let item = state.delegate().items.get(ix.row)?;
-            Some((item.id.clone(), item.is_folder, item.load_more_prefix.clone()))
+            Some((
+                item.id.clone(),
+                item.is_folder,
+                item.load_more_prefix.clone(),
+                item.expanded,
+            ))
         }) else {
             return;
         };
@@ -1556,20 +1660,32 @@ impl ZedisKeyTree {
             });
             return;
         }
-        self.select_item(id, is_folder, toggle, cx);
+        self.select_item(id, is_folder, toggle, is_expanded, cx);
     }
 
-    fn select_item(&mut self, item_id: SharedString, is_folder: bool, toggle: bool, cx: &mut Context<Self>) {
+    fn select_item(
+        &mut self,
+        item_id: SharedString,
+        is_folder: bool,
+        toggle: bool,
+        is_expanded: bool,
+        cx: &mut Context<Self>,
+    ) {
         if is_folder {
-            if self.state.expanded_items.contains(&item_id) {
+            if is_expanded {
                 if !toggle {
                     return;
                 }
-                // User clicked an expanded folder -> collapse it
+                // Collapse a folder shown open — whether expanded explicitly
+                // or auto-opened as a single-child chain. Suppress the
+                // auto-expand so the collapse sticks instead of being reopened
+                // on the next rebuild.
                 self.state.expanded_items.remove(&item_id);
+                self.state.suppressed_auto_expand.insert(item_id.clone());
             } else {
-                // User clicked a collapsed folder -> expand it and load data
+                // Expand a collapsed folder: clear any suppression and load it.
                 self.state.expanded_items.insert(item_id.clone());
+                self.state.suppressed_auto_expand.remove(&item_id);
                 self.server_state.update(cx, |state, cx| {
                     state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
                 });
@@ -2023,7 +2139,7 @@ impl Render for ZedisKeyTree {
                     }
                 }
                 KeyTreeAction::SelectFavoriteKey(key) => {
-                    this.select_item(key.clone(), false, false, cx);
+                    this.select_item(key.clone(), false, false, false, cx);
                 }
                 KeyTreeAction::ClearFavorites => {
                     let server_id = this.server_state.read(cx).server_id().to_string();
