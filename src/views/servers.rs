@@ -833,9 +833,9 @@ impl Render for ZedisServers {
                         }
                         // Export sits with the hover-only block — it's a
                         // share/copy operation that's used much less
-                        // often than Edit/Delete, so giving it visual
-                        // weight at rest competes with the more common
-                        // actions for attention.
+                        // often than Edit, so giving it visual weight at
+                        // rest competes with the more common actions for
+                        // attention.
                         hover_actions.push(
                             Button::new(("servers-card-action-export", index))
                                 .ghost()
@@ -844,6 +844,22 @@ impl Render for ZedisServers {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.export_server_dialog(&export_server, window, cx);
+                                })),
+                        );
+                        // Delete is hover-only too: a destructive action
+                        // shouldn't sit in the resting state right beside
+                        // Edit, where it invites misclicks. It still
+                        // routes through the confirm dialog (with PROD
+                        // escalation) when clicked, and the cmd-backspace
+                        // shortcut deletes the selected key elsewhere.
+                        hover_actions.push(
+                            Button::new(("servers-card-action-delete", index))
+                                .ghost()
+                                .tooltip(remove_tooltip.clone())
+                                .icon(CustomIconName::FileXCorner)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_server(window, cx, &remove_server_id);
                                 })),
                         );
                         let mut actions: Vec<Button> = Vec::new();
@@ -855,16 +871,6 @@ impl Render for ZedisServers {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.add_or_update_server_dialog(&update_server, window, cx);
-                                })),
-                        );
-                        actions.push(
-                            Button::new(("servers-card-action-delete", index))
-                                .ghost()
-                                .tooltip(remove_tooltip.clone())
-                                .icon(CustomIconName::FileXCorner)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.remove_server(window, cx, &remove_server_id);
                                 })),
                         );
 

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, Hsla, SharedString, Window, div, prelude::*, px};
-use gpui_component::{ActiveTheme, Icon, StyledExt, button::Button, h_flex, label::Label, list::ListItem, v_flex};
+use gpui_component::{
+    ActiveTheme, Icon, StyledExt, button::Button, h_flex, label::Label, list::ListItem, tooltip::Tooltip, v_flex,
+};
 
 /// Type alias for the click handler closure.
 type ZedisCardOnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -288,14 +290,20 @@ impl RenderOnce for ZedisCard {
                                             div()
                                                 .flex_none()
                                                 .px_1p5()
+                                                .py_0p5()
                                                 .rounded_full()
                                                 .bg(bg)
-                                                .child(Label::new(label).text_xs().text_color(fg)),
+                                                .child(Label::new(label).text_xs().font_semibold().text_color(fg)),
                                         )
                                     })
                                     .child(div().flex_1()),
                             )
                             .when_some(subtitle, |col, sub| {
+                                // Keep the full address for the tooltip before
+                                // it's moved into the (truncating) label, so a
+                                // clipped long host:port is still readable on
+                                // hover.
+                                let full = sub.clone();
                                 let mut label = Label::new(sub)
                                     .text_xs()
                                     .whitespace_nowrap()
@@ -304,7 +312,14 @@ impl RenderOnce for ZedisCard {
                                 if let Some(family) = subtitle_font {
                                     label = label.font_family(family);
                                 }
-                                col.child(label)
+                                col.child(
+                                    div()
+                                        .id("zedis-card-subtitle")
+                                        .w_full()
+                                        .overflow_hidden()
+                                        .child(label)
+                                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx)),
+                                )
                             }),
                     ),
                 )
@@ -343,14 +358,27 @@ impl RenderOnce for ZedisCard {
             .child(header)
             // Always render the description slot — fall back to a
             // non-breaking space so cards without a description still
-            // reserve one line of height. Keeps grid rows visually
-            // aligned across mixed has-description / no-description
-            // entries.
-            .child(
-                Label::new(self.description.unwrap_or_else(|| SharedString::from("\u{00A0}")))
+            // reserve one line of height. A real description is clamped
+            // to a single line (ellipsis + hover tooltip for the full
+            // text) so a long, wrapping description can't make its grid
+            // row taller than its neighbors. Together these keep every
+            // card the same height regardless of description length.
+            .child(match self.description {
+                Some(desc) => {
+                    let full = desc.clone();
+                    div()
+                        .id("zedis-card-description")
+                        .w_full()
+                        .overflow_hidden()
+                        .child(Label::new(desc).text_sm().whitespace_nowrap().text_ellipsis())
+                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                        .into_any_element()
+                }
+                None => Label::new(SharedString::from("\u{00A0}"))
                     .text_sm()
-                    .whitespace_normal(),
-            )
+                    .whitespace_normal()
+                    .into_any_element(),
+            })
             // Footer behind a dim hairline divider so metadata reads
             // as a distinct region. No top margin — the v_flex gap
             // already provides separation from the description.
@@ -363,6 +391,11 @@ impl RenderOnce for ZedisCard {
 
         let card = ListItem::new(self.id)
             .m_2()
+            // Hand cursor so the whole card reads as clickable (it is —
+            // clicking the body connects/opens the server). ListItem
+            // already paints a `list_hover` background on hover; the
+            // pointer cursor completes the affordance.
+            .cursor_pointer()
             .border(px(1.))
             .border_color(cx.theme().border)
             // Slightly tighter vertical padding than horizontal so the

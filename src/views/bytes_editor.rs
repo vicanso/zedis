@@ -22,12 +22,12 @@ use crate::states::{
 use bytes::Bytes;
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
 use gpui::{div, hsla, prelude::*};
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::highlighter::Language;
 use gpui_component::input::{CompletionProvider, Enter, Input, InputEvent, InputState, TabSize};
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_component::{ActiveTheme, IndexPath, Sizable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, IconName, IndexPath, Sizable, h_flex, v_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
 use std::cell::RefCell;
@@ -94,6 +94,11 @@ pub struct ZedisBytesEditor {
     /// Last JSONPath outcome, populated after the user hits Enter / Run.
     /// `None` ⇒ no query has been issued yet on the current value.
     jsonpath_result: Option<JsonPathOutcome>,
+
+    /// Whether the JSONPath query bar is expanded. Collapsed by default so
+    /// the query UI doesn't permanently occupy a row above the value; a
+    /// slim toggle in its place expands it on demand.
+    jsonpath_open: bool,
 
     /// Read-only JSON viewer for the JSONPath result. Reused across queries
     /// so syntax highlighting / scroll position / search work like the main
@@ -394,6 +399,7 @@ impl ZedisBytesEditor {
             jsonpath_input,
             jsonpath_doc,
             jsonpath_result: None,
+            jsonpath_open: false,
             jsonpath_result_editor,
             is_json_value: false,
             is_hex_text: false,
@@ -611,9 +617,18 @@ impl Render for ZedisBytesEditor {
                 }
                 v_flex()
                     .size_full()
-                    .child(self.render_jsonpath_bar(cx))
-                    .when_some(self.jsonpath_result.clone(), |this, outcome| {
-                        this.child(self.render_jsonpath_result(outcome, cx))
+                    // Collapsed by default: a slim toggle row instead of the
+                    // full query bar, returning the vertical space to the
+                    // value. Expanding shows the bar (and any prior result).
+                    .child(if self.jsonpath_open {
+                        self.render_jsonpath_bar(cx).into_any_element()
+                    } else {
+                        self.render_jsonpath_toggle(cx).into_any_element()
+                    })
+                    .when(self.jsonpath_open, |this| {
+                        this.when_some(self.jsonpath_result.clone(), |this, outcome| {
+                            this.child(self.render_jsonpath_result(outcome, cx))
+                        })
                     })
                     .child(editor)
                     .into_any_element()
@@ -650,6 +665,17 @@ impl ZedisBytesEditor {
                     cx.stop_propagation();
                 }
             }))
+            // Collapse chevron — hides the bar again, back to the slim toggle.
+            .child(
+                Button::new("jsonpath-collapse")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronDown)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.jsonpath_open = false;
+                        cx.notify();
+                    })),
+            )
             .child(
                 Label::new(i18n_editor(cx, "jsonpath_label"))
                     .text_xs()
@@ -667,6 +693,32 @@ impl ZedisBytesEditor {
                     .outline()
                     .label(i18n_editor(cx, "jsonpath_run"))
                     .on_click(cx.listener(|this, _, window, cx| this.run_jsonpath_query(window, cx))),
+            )
+    }
+
+    /// Slim collapsed-state row that stands in for the JSONPath bar: a single
+    /// ghost toggle that expands the full query bar on click. Keeps the query
+    /// affordance discoverable without spending a full input row at rest.
+    fn render_jsonpath_toggle(&self, cx: &Context<Self>) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .px_2()
+            .py_0p5()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("jsonpath-expand")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronRight)
+                    .label(i18n_editor(cx, "jsonpath_label"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.jsonpath_open = true;
+                        // Expanding is intent to query — drop the caret
+                        // straight into the path input so the user can type.
+                        this.jsonpath_input.update(cx, |state, cx| state.focus(window, cx));
+                        cx.notify();
+                    })),
             )
     }
 

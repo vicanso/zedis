@@ -581,6 +581,10 @@ impl ListDelegate for KeyTreeDelegate {
         let note = entry.note.clone();
         let has_note = !note.is_empty();
         let edit_tag_id = entry.id.clone();
+        let del_id = entry.id.clone();
+        // Inline delete only on leaf keys (folders use their context-menu
+        // delete) and only when writes are allowed.
+        let show_inline_delete = !is_folder && !readonly;
         Some(
             ListItem::new(ix)
                 .font_family(get_font_family())
@@ -597,6 +601,9 @@ impl ListDelegate for KeyTreeDelegate {
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
                     div()
+                        // Hover group so the inline delete button (below)
+                        // can reveal itself only while this row is hovered.
+                        .group("ktree-row")
                         .context_menu(move |mut menu, _window, cx| {
                             let id = id.clone();
                             let multi_selection_count = if selected { selected_items_count } else { 0 };
@@ -771,6 +778,34 @@ impl ListDelegate for KeyTreeDelegate {
                                         Label::new(entry.children_count.to_string())
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground),
+                                    )
+                                })
+                                // Inline delete, revealed on row hover. Dispatches
+                                // the same `DeleteKey` action as the context menu, so
+                                // it shares the confirm dialog + PROD escalation.
+                                // `invisible` (not absent) reserves its width so the
+                                // row layout doesn't shift when hovered.
+                                .when(show_inline_delete, |this| {
+                                    let del_id = del_id.clone();
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .invisible()
+                                            .group_hover("ktree-row", |s| s.visible())
+                                            .child(
+                                                Button::new(("ktree-del", ix.row))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(CustomIconName::X)
+                                                    .tooltip(i18n_key_tree(cx, "delete_key_tooltip"))
+                                                    .on_click(move |_, window, cx| {
+                                                        cx.stop_propagation();
+                                                        window.dispatch_action(
+                                                            Box::new(KeyTreeAction::DeleteKey(del_id.clone())),
+                                                            cx,
+                                                        );
+                                                    }),
+                                            ),
                                     )
                                 }),
                         ),

@@ -542,19 +542,27 @@ impl KeyType {
         }
     }
 
-    /// Returns the color associated with this key type for UI display
+    /// Returns the color associated with this key type for UI display.
+    ///
+    /// Desaturated palette (saturation ~0.35, hues unchanged): the type
+    /// badge repeats down every key-tree row, so vivid fills stack into a
+    /// noisy color column that competes with the key names. Lower
+    /// saturation keeps types distinguishable by hue while letting the
+    /// names lead. (Previous values were saturation 0.5–0.6 — restore
+    /// those to revert.) Orange/Red keep a touch more saturation so they
+    /// don't drift toward brown/gray.
     pub fn color(&self) -> Hsla {
         match self {
-            KeyType::String => gpui::hsla(0.6, 0.5, 0.5, 1.0),             // Blue
-            KeyType::List => gpui::hsla(0.8, 0.5, 0.5, 1.0),               // Purple
-            KeyType::Hash => gpui::hsla(0.1, 0.6, 0.5, 1.0),               // Orange
-            KeyType::Set => gpui::hsla(0.5, 0.5, 0.5, 1.0),                // Cyan
-            KeyType::Zset => gpui::hsla(0.0, 0.6, 0.55, 1.0),              // Red
-            KeyType::Stream => gpui::hsla(0.3, 0.5, 0.4, 1.0),             // Green
-            KeyType::Vectorset => gpui::hsla(0.9, 0.5, 0.5, 1.0),          // Pink
-            KeyType::TimeSeries => gpui::hsla(0.55, 0.5, 0.5, 1.0),        // Teal
-            KeyType::Probabilistic(_) => gpui::hsla(0.78, 0.5, 0.55, 1.0), // Violet
-            _ => gpui::hsla(0.0, 0.0, 0.4, 1.0),                           // Gray
+            KeyType::String => gpui::hsla(0.6, 0.35, 0.55, 1.0),      // Blue
+            KeyType::List => gpui::hsla(0.8, 0.35, 0.6, 1.0),         // Purple
+            KeyType::Hash => gpui::hsla(0.1, 0.42, 0.52, 1.0),        // Orange
+            KeyType::Set => gpui::hsla(0.5, 0.35, 0.52, 1.0),         // Cyan
+            KeyType::Zset => gpui::hsla(0.0, 0.42, 0.6, 1.0),         // Red
+            KeyType::Stream => gpui::hsla(0.3, 0.35, 0.45, 1.0),      // Green
+            KeyType::Vectorset => gpui::hsla(0.9, 0.35, 0.6, 1.0),    // Pink
+            KeyType::TimeSeries => gpui::hsla(0.55, 0.35, 0.52, 1.0), // Teal
+            KeyType::Probabilistic(_) => gpui::hsla(0.78, 0.35, 0.6, 1.0), // Violet
+            _ => gpui::hsla(0.0, 0.0, 0.45, 1.0),                     // Gray
         }
     }
 }

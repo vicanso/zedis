@@ -59,8 +59,12 @@ pub fn resolve_tag_color(key: Option<&str>) -> Option<Hsla> {
 /// environments (Dev/Local, UAT/Prod) visually separable.
 pub fn resolve_tag_chip(key: Option<&str>, dark: bool) -> Option<(Hsla, Hsla)> {
     // (light_bg, light_fg, dark_bg, dark_fg)
+    // Prod (magenta) is a *solid* filled badge — saturated pink ground +
+    // white text in both modes — so high-risk servers read as a strong
+    // chip, not the pale tint the lower-risk tiers use. Destructive ops
+    // escalate on these servers, so the badge weight matches the stakes.
     let (lbg, lfg, dbg, dfg): (u32, u32, u32, u32) = match canonical_tag_key(key)? {
-        "magenta" => (0xfdf2f8, 0xbe185d, 0x68113f, 0xf472b6),
+        "magenta" => (0xdb2777, 0xffffff, 0xdb2777, 0xffe4f0),
         "purple" => (0xf3e8ff, 0x7e22ce, 0x3c225f, 0xb886fb),
         "teal" => (0xf3f4f6, 0x4b5563, 0x374151, 0x9ca3af), // Dev — neutral light gray
         "sky" => (0xeff6ff, 0x1d4ed8, 0x1e3a8a, 0x60a5fa),
