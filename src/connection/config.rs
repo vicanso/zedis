@@ -288,17 +288,18 @@ impl RedisServer {
     /// personal backups (e.g. moving to a new machine) but should
     /// never be shared.
     pub fn to_export_json(&self, include_secrets: bool) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(&self.export_clone(include_secrets))
+    }
+
+    /// Clean copy of this server for export: the transient identity bits
+    /// (`id` / `updated_at` / `sort_order`) are blanked so the importer treats
+    /// it as a fresh entry, and credentials are stripped unless
+    /// `include_secrets`. The group label is kept — a useful organizational
+    /// hint that often carries across teammates.
+    fn export_clone(&self, include_secrets: bool) -> RedisServer {
         let mut clone = self.clone();
-        // Strip transient identity bits so the importer treats this
-        // as a fresh entry (avoids overwriting an existing config
-        // with the same id) and so the export survives across redb
-        // versions even if id semantics change.
         clone.id = String::new();
         clone.updated_at = None;
-        // sort_order is install-local — the receiver will be assigned
-        // a fresh index by upsert_server. Group label is kept since
-        // it's a meaningful organizational hint that often carries
-        // across teammates.
         clone.sort_order = None;
         if !include_secrets {
             clone.password = None;
@@ -308,7 +309,15 @@ impl RedisServer {
             clone.client_key = None;
             clone.root_cert = None;
         }
-        serde_json::to_string_pretty(&clone)
+        clone
+    }
+
+    /// Export several servers as one pretty JSON **array**, round-trippable
+    /// through [`Self::from_import_multi`]. Each entry is cleaned via
+    /// [`Self::export_clone`].
+    pub fn to_export_json_many(servers: &[RedisServer], include_secrets: bool) -> serde_json::Result<String> {
+        let cleaned: Vec<RedisServer> = servers.iter().map(|s| s.export_clone(include_secrets)).collect();
+        serde_json::to_string_pretty(&cleaned)
     }
 
     /// Parse a JSON blob produced by [`Self::to_export_json`] (or
@@ -321,10 +330,15 @@ impl RedisServer {
     /// (name / host / port), or extreme port values. Empty optional
     /// fields are preserved as `None`.
     pub fn from_import_json(json: &str) -> Result<Self, ImportError> {
-        let mut server: RedisServer =
-            serde_json::from_str(json).map_err(|e| ImportError::InvalidJson(e.to_string()))?;
-        // Validate the bare minimum so a typo doesn't ship a broken
-        // entry to the list view (which would crash on connect).
+        let server: RedisServer = serde_json::from_str(json).map_err(|e| ImportError::InvalidJson(e.to_string()))?;
+        Self::finalize_imported(server)
+    }
+
+    /// Validate a freshly-deserialized imported server and stamp it with a
+    /// fresh `id` (so importing twice never clobbers an existing entry),
+    /// dropping the sender's `updated_at` / `sort_order`. Shared by the single
+    /// JSON path and the multi-server array path.
+    fn finalize_imported(mut server: RedisServer) -> Result<Self, ImportError> {
         if server.name.trim().is_empty() {
             return Err(ImportError::MissingName);
         }
@@ -334,13 +348,8 @@ impl RedisServer {
         if server.port == 0 {
             return Err(ImportError::InvalidPort);
         }
-        // Always allocate a fresh id so import is idempotent and
-        // never clobbers an existing entry.
         server.id = Uuid::now_v7().to_string();
         server.updated_at = None;
-        // sort_order is install-local — drop the sender's index so
-        // the importer appends to the tail of whatever group it
-        // lands in (max+1 assigned by upsert_server).
         server.sort_order = None;
         Ok(server)
     }
@@ -418,6 +427,13 @@ impl RedisServer {
         // export — is a single server handled by `from_import`.
         if let Some(servers) = Self::try_redis_insight_import(trimmed)? {
             return Ok(servers);
+        }
+        // A Zedis export of multiple servers is a plain JSON array of server
+        // objects (Redis Insight arrays were already handled above).
+        if trimmed.starts_with('[') {
+            let list: Vec<RedisServer> =
+                serde_json::from_str(trimmed).map_err(|e| ImportError::InvalidJson(e.to_string()))?;
+            return list.into_iter().map(Self::finalize_imported).collect();
         }
         Self::from_import(trimmed).map(|s| vec![s])
     }
@@ -961,6 +977,23 @@ mod tests {
         let from_uri = RedisServer::from_import_multi("redis://h:6379").expect("uri");
         assert_eq!(from_uri.len(), 1);
         assert_eq!(from_uri[0].host, "h");
+    }
+
+    #[test]
+    fn export_many_round_trips_through_import() {
+        let a = sample_server();
+        let mut b = sample_server();
+        b.name = "second".into();
+        b.host = "10.0.0.6".into();
+        let json = RedisServer::to_export_json_many(&[a, b], true).expect("export many");
+        assert!(json.trim_start().starts_with('['), "expected a JSON array");
+        let imported = RedisServer::from_import_multi(&json).expect("import array");
+        assert_eq!(imported.len(), 2);
+        assert_eq!(imported[0].name, "prod-cache");
+        assert_eq!(imported[1].name, "second");
+        // Fresh, distinct ids — never the source id, never empty.
+        assert_ne!(imported[0].id, imported[1].id);
+        assert!(imported.iter().all(|s| !s.id.is_empty() && s.id != "src-id"));
     }
 
     #[test]

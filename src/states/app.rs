@@ -738,6 +738,71 @@ impl ZedisAppState {
         })
         .detach();
     }
+
+    /// Insert or update **multiple** servers in one atomic read-modify-save.
+    ///
+    /// Calling [`Self::upsert_server`] in a loop races: each call is an
+    /// independent detached task that reads the whole list, appends one entry,
+    /// and writes the list back — so concurrent saves clobber each other and
+    /// only one entry survives. Batching reads the list once and saves once.
+    pub fn upsert_servers(&mut self, servers: Vec<RedisServer>, cx: &mut Context<Self>) {
+        if servers.is_empty() {
+            return;
+        }
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut current = get_servers()?;
+                for mut server in servers {
+                    // Skip nameless entries rather than abort the whole batch.
+                    if server.name.is_empty() {
+                        continue;
+                    }
+                    if server.id.is_empty() {
+                        server.id = Uuid::now_v7().to_string();
+                    }
+                    server.updated_at = Some(Local::now().to_string());
+                    if let Some(existing) = current.iter_mut().find(|s| s.id == server.id) {
+                        if server.sort_order.is_none() {
+                            server.sort_order = existing.sort_order;
+                        }
+                        *existing = server;
+                    } else {
+                        // Append to the tail of its group; `sort_order` is
+                        // computed against the in-progress list so a batch
+                        // gets sequential indices.
+                        if server.sort_order.is_none() {
+                            let new_group = server.group.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                            let next = current
+                                .iter()
+                                .filter(|s| s.group.as_deref().map(str::trim).filter(|g| !g.is_empty()) == new_group)
+                                .filter_map(|s| s.sort_order)
+                                .max()
+                                .map(|m| m + 1)
+                                .unwrap_or(0);
+                            server.sort_order = Some(next);
+                        }
+                        current.push(server);
+                    }
+                }
+                save_servers(current.clone()).await?;
+                Ok(())
+            });
+            let result: Result<()> = task.await;
+
+            handle.update(cx, |_this, cx| {
+                if let Err(e) = &result {
+                    error!(error = %e, "Failed to upsert servers");
+                    cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                        e.to_string().into(),
+                    )));
+                    return;
+                }
+                cx.emit(GlobalEvent::ServerListUpdated);
+                cx.notify();
+            })
+        })
+        .detach();
+    }
 }
 
 /// Update app state in background, persist to disk, and refresh UI

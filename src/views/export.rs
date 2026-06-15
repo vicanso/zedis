@@ -16,8 +16,8 @@
 //! (value file export, key-tree CSV, Slow Log CSV/JSON, value-search CSV).
 
 use super::dirs_default_directory;
-use crate::states::ZedisServerState;
-use gpui::{Context, Entity, SharedString, prelude::*};
+use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
+use gpui::{App, Context, Entity, SharedString, prelude::*};
 
 /// Prompt for a save path, write `bytes` to it off the UI thread, and emit
 /// a success / error notification through the server state.
@@ -48,6 +48,40 @@ pub(crate) fn export_to_file<V: 'static>(
         server_state.update(cx, |state, cx| match &result {
             Ok(path) => state.emit_success_notification(path.display().to_string().into(), success_title, cx),
             Err(e) => state.emit_error_notification(format!("{error_label}: {e}").into(), cx),
+        });
+    })
+    .detach();
+}
+
+/// Like [`export_to_file`] but for views without a [`ZedisServerState`] (e.g.
+/// the server list): notifications are surfaced through the global store
+/// instead. Prompts for a save path (defaulting to `~/Downloads`), writes
+/// `bytes` off the UI thread, then emits a success / error notification.
+/// Cancelling the dialog is a no-op; fire-and-forget.
+pub(crate) fn export_to_file_global(
+    cx: &mut App,
+    bytes: Vec<u8>,
+    suggested_name: &str,
+    success_label: SharedString,
+    error_label: SharedString,
+) {
+    let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(suggested_name));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(path))) = receiver.await else {
+            return;
+        };
+        let result = cx
+            .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
+            .await;
+        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+            store.update(cx, |_state, cx| match &result {
+                Ok(path) => cx.emit(GlobalEvent::Notification(NotificationAction::new_success(
+                    format!("{success_label}: {}", path.display()).into(),
+                ))),
+                Err(e) => cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                    format!("{error_label}: {e}").into(),
+                ))),
+            });
         });
     })
     .detach();

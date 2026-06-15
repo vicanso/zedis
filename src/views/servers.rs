@@ -17,14 +17,15 @@ use crate::connection::{
     ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
 };
 use crate::error::Error;
-use crate::helpers::{get_font_family, resolve_tag_chip};
+use crate::helpers::{get_font_family, resolve_path, resolve_tag_chip};
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
 };
-use gpui::{ClipboardItem, SharedString, Subscription, Window, div, prelude::*, px};
+use crate::views::{ZedisExportServersDialog, export_to_file_global};
+use gpui::{ClipboardItem, ExternalPaths, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::h_flex;
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
@@ -62,6 +63,9 @@ const THEME_DARKEN_AMOUNT_LIGHT: f32 = 0.02;
 pub struct ZedisServers {
     should_popup_new_server: bool,
     _subscriptions: Vec<Subscription>,
+    /// Live subscription on the import dialog's text input — replaced each
+    /// time the dialog opens so a pasted file path is read back into the box.
+    import_input_sub: Option<Subscription>,
 }
 
 impl ZedisServers {
@@ -103,6 +107,7 @@ impl ZedisServers {
         Self {
             should_popup_new_server: false,
             _subscriptions: subscriptions,
+            import_input_sub: None,
         }
     }
     /// Show confirmation dialog and remove server from configuration
@@ -562,6 +567,10 @@ impl ZedisServers {
         let warning_label = i18n_servers(cx, "export_secrets_warning");
         let warning_color = cx.theme().yellow;
         let copied_label = i18n_servers(cx, "export_copied");
+        let save_label = i18n_servers(cx, "export_save_file");
+        let save_success = i18n_common(cx, "json_exported");
+        let save_error = i18n_common(cx, "json_export_failed");
+        let suggested_name = export_filename(&server.name);
 
         let body_json = json_state.clone();
         let body_flag = include_secrets.clone();
@@ -600,11 +609,34 @@ impl ZedisServers {
                     });
                 });
 
+                // "Save to file" alongside the secrets toggle — writes the
+                // JSON to a file (Save dialog defaults to ~/Downloads). Copy
+                // to clipboard stays the dialog's primary OK action.
+                let save_server = body_server.clone();
+                let save_flag = body_flag.clone();
+                let suggested = suggested_name.clone();
+                let save_success_c = save_success.clone();
+                let save_error_c = save_error.clone();
+                let save_btn = Button::new("export-save-file")
+                    .small()
+                    .outline()
+                    .label(save_label.clone())
+                    .on_click(move |_, _window, cx| {
+                        let json = save_server.to_export_json(save_flag.get()).unwrap_or_default();
+                        export_to_file_global(
+                            cx,
+                            json.into_bytes(),
+                            &suggested,
+                            save_success_c.clone(),
+                            save_error_c.clone(),
+                        );
+                    });
+
                 gpui_component::v_flex()
                     .gap_3()
                     .w_full()
                     .child(Label::new(hint.clone()).text_xs())
-                    .child(toggle_btn)
+                    .child(h_flex().gap_2().child(toggle_btn).child(save_btn))
                     .when(include_on, |this| {
                         this.child(Label::new(warning_label.clone()).text_xs().text_color(warning_color))
                     })
@@ -614,6 +646,49 @@ impl ZedisServers {
                 let value = submit_json.read(cx).value().to_string();
                 cx.write_to_clipboard(ClipboardItem::new_string(value));
                 window.push_notification(Notification::success(copied_label.clone()), cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Show the multi-server export picker: tick which connections to export
+    /// and whether credentials are included, then copy a JSON **array** to the
+    /// clipboard (round-trippable through the import dialog). The per-card
+    /// export action covers the single-server case.
+    fn export_servers_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.new(|cx| ZedisExportServersDialog::new(window, cx));
+        let view_ok = view.clone();
+        let view_child = view.clone();
+        let select_none_label = i18n_servers(cx, "export_select_none");
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+
+        ZedisDialog::new(i18n_servers(cx, "export_servers_title"))
+            .w(px(560.))
+            .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, window, cx| {
+                let selected = view_ok.read(cx).selected_servers();
+                if selected.is_empty() {
+                    // Keep the dialog open until at least one is ticked.
+                    window.push_notification(Notification::warning(select_none_label.clone()), cx);
+                    return false;
+                }
+                let include_secrets = view_ok.read(cx).include_secrets();
+                let count = selected.len();
+                let json = RedisServer::to_export_json_many(&selected, include_secrets).unwrap_or_default();
+                cx.write_to_clipboard(ClipboardItem::new_string(json));
+                window.push_notification(
+                    Notification::success(SharedString::from(
+                        t!("servers.export_done_multi", count = count, locale = locale).to_string(),
+                    )),
+                    cx,
+                );
                 true
             })
             .open(window, cx);
@@ -629,6 +704,33 @@ impl ZedisServers {
                 .auto_grow(6, 16)
                 .placeholder(i18n_servers(cx, "import_placeholder"))
         });
+        // Live: the moment the input becomes a path to an existing file, read
+        // its contents back into the box so the user sees (and can review) the
+        // real config before importing. Writing the multi-line content back
+        // never re-triggers the path check, so there's no loop.
+        self.import_input_sub = Some(cx.subscribe_in(&json_state, window, |_this, state, event, window, cx| {
+            if !matches!(event, InputEvent::Change) {
+                return;
+            }
+            let value = state.read(cx).value().to_string();
+            match resolve_import_input(&value) {
+                // A file was read — its contents differ from the pasted path.
+                Ok(content) if content != value => {
+                    state.update(cx, |s, cx| s.set_value(SharedString::from(content), window, cx));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    window.push_notification(
+                        Notification::error(SharedString::from(format!(
+                            "{}: {}",
+                            i18n_servers(cx, "import_error_prefix"),
+                            import_file_error_message(cx, &e)
+                        ))),
+                        cx,
+                    );
+                }
+            }
+        }));
         let hint = i18n_servers(cx, "import_hint");
         let bad_json_label = i18n_servers(cx, "import_error_prefix");
         let body_json = json_state.clone();
@@ -647,20 +749,69 @@ impl ZedisServers {
                 gpui_component::v_flex()
                     .gap_2()
                     .w_full()
+                    // Drop a file onto the dialog to load it — dropping carries
+                    // the full path (unlike a copy-paste, which is often just
+                    // the filename). Reuses the .json / size-cap read.
+                    .on_drop::<ExternalPaths>({
+                        let drop_state = body_json.clone();
+                        move |dropped, window, cx| {
+                            let Some(path) = dropped.paths().first() else {
+                                return;
+                            };
+                            let path_str = path.to_string_lossy().to_string();
+                            match resolve_import_input(&path_str) {
+                                // A .json file was read — its contents differ from the path.
+                                Ok(content) if content != path_str => {
+                                    drop_state.update(cx, |s, cx| s.set_value(SharedString::from(content), window, cx));
+                                }
+                                // Dropped a non-.json file — only JSON exports are read.
+                                Ok(_) => {
+                                    window.push_notification(
+                                        Notification::warning(i18n_servers(cx, "import_drop_only_json")),
+                                        cx,
+                                    );
+                                }
+                                Err(e) => {
+                                    window.push_notification(
+                                        Notification::error(SharedString::from(format!(
+                                            "{}: {}",
+                                            i18n_servers(cx, "import_error_prefix"),
+                                            import_file_error_message(cx, &e)
+                                        ))),
+                                        cx,
+                                    );
+                                }
+                            }
+                        }
+                    })
                     .child(Label::new(hint.clone()).text_xs())
                     .child(Input::new(&body_json).appearance(true))
             })
             .on_ok(move |_, window, cx| {
-                let value = submit_json.read(cx).value().to_string();
+                let raw = submit_json.read(cx).value().to_string();
+                // If the pasted text is a path to an existing file, read it
+                // (size-capped); otherwise use it verbatim as JSON / URI.
+                let value = match resolve_import_input(&raw) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        window.push_notification(
+                            Notification::error(SharedString::from(format!(
+                                "{bad_json_label}: {}",
+                                import_file_error_message(cx, &e)
+                            ))),
+                            cx,
+                        );
+                        return false;
+                    }
+                };
                 match RedisServer::from_import_multi(&value) {
                     Ok(servers) => {
                         let count = servers.len();
+                        // One atomic batch — looping upsert_server races and
+                        // would drop all but one entry (each is a detached
+                        // read-modify-save of the whole list).
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                            store.update(cx, |state, cx| {
-                                for server in servers {
-                                    state.upsert_server(server, cx);
-                                }
-                            });
+                            store.update(cx, |state, cx| state.upsert_servers(servers, cx));
                         });
                         // A Redis Insight export can carry several databases —
                         // confirm the count so the user knows they all landed.
@@ -689,6 +840,81 @@ impl ZedisServers {
                 }
             })
             .open(window, cx);
+    }
+}
+
+/// Largest file the paste-a-path import shortcut will read. Connection exports
+/// are KB-sized, so this is a generous ceiling that simply guards against
+/// pasting a path to some huge unrelated file.
+const MAX_IMPORT_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// A failure resolving a pasted file path (distinct from a parse error).
+#[derive(Debug)]
+enum FileImportError {
+    /// The file exists but exceeds [`MAX_IMPORT_FILE_BYTES`].
+    TooLarge,
+    /// The file exists but couldn't be read (detail = io error).
+    ReadFailed(String),
+}
+
+/// If `raw` (trimmed) is a single-line path to an existing `.json` file within
+/// the size cap, read and return its contents; otherwise return `raw` unchanged
+/// so it is parsed as literal JSON / URI. Multi-line, empty, or non-`.json`
+/// input never touches the filesystem, so normal pasted JSON costs nothing.
+fn resolve_import_input(raw: &str) -> Result<String, FileImportError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return Ok(raw.to_string());
+    }
+    // Only a path ending in `.json` triggers a read — Redis Insight and Zedis
+    // exports are JSON, and this keeps any other single-line input (URIs,
+    // hand-typed JSON, an unrelated existing file) from being slurped.
+    let is_json_path = std::path::Path::new(trimmed)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+    if !is_json_path {
+        return Ok(raw.to_string());
+    }
+    // Reuse the shared resolver: expands `~`/`~/` via get_home_dir and
+    // absolutizes, the same way SSH key / proto paths are handled.
+    let path = resolve_path(trimmed);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => {
+            if meta.len() > MAX_IMPORT_FILE_BYTES {
+                return Err(FileImportError::TooLarge);
+            }
+            std::fs::read_to_string(&path).map_err(|e| FileImportError::ReadFailed(e.to_string()))
+        }
+        // Not an existing file (missing, or a directory) — treat as literal text.
+        _ => Ok(raw.to_string()),
+    }
+}
+
+/// Localize a [`FileImportError`] for the paste-to-import dialog.
+fn import_file_error_message(cx: &gpui::App, err: &FileImportError) -> SharedString {
+    match err {
+        FileImportError::TooLarge => format!(
+            "{} (≤ {} MiB)",
+            i18n_servers(cx, "import_file_too_large"),
+            MAX_IMPORT_FILE_BYTES / 1024 / 1024
+        )
+        .into(),
+        FileImportError::ReadFailed(e) => format!("{}: {e}", i18n_servers(cx, "import_file_read_failed")).into(),
+    }
+}
+
+/// Build a default export filename from a server name, sanitized to a
+/// filesystem-safe slug (`zedis-<slug>.json`).
+fn export_filename(name: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "zedis-server.json".to_string()
+    } else {
+        format!("zedis-{slug}.json")
     }
 }
 
@@ -1036,7 +1262,21 @@ impl Render for ZedisServers {
                     .on_click(Box::new(cx.listener(move |this, _, window, cx| {
                         this.import_server_dialog(window, cx);
                     }))),
-            );
+            )
+            // Export card — only when there's something to export.
+            .when(!all_servers.is_empty(), |this| {
+                this.child(
+                    ZedisCard::new("servers-card-export")
+                        .action()
+                        .icon(IconName::ExternalLink)
+                        .title(i18n_servers(cx, "export_servers_title"))
+                        .bg(bg)
+                        .description(i18n_servers(cx, "export_servers_card_description"))
+                        .on_click(Box::new(cx.listener(move |this, _, window, cx| {
+                            this.export_servers_dialog(window, cx);
+                        }))),
+                )
+            });
 
         gpui_component::v_flex()
             .gap_4()
@@ -1044,5 +1284,26 @@ impl Render for ZedisServers {
             .children(sections)
             .child(tail)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod path_import_tests {
+    use super::resolve_import_input;
+
+    #[test]
+    fn literal_text_is_passed_through_untouched() {
+        // Multi-line JSON is never treated as a path (no filesystem touch).
+        let json = "{\n  \"name\": \"x\"\n}";
+        assert_eq!(resolve_import_input(json).expect("multiline"), json);
+        // A single-line URI that isn't an existing file is returned verbatim.
+        let uri = "redis://h:6379";
+        assert_eq!(resolve_import_input(uri).expect("uri"), uri);
+        // A single-line path that doesn't exist falls back to literal text.
+        let missing = "/no/such/zedis-import-9d3f.json";
+        assert_eq!(resolve_import_input(missing).expect("missing"), missing);
+        // An existing non-.json file is NOT read — only .json paths are slurped.
+        let non_json = "/etc/hosts";
+        assert_eq!(resolve_import_input(non_json).expect("non-json"), non_json);
     }
 }

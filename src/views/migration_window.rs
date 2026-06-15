@@ -17,6 +17,7 @@
 //! Step 3 wires the Export tab end to end. Step 4 will add Import.
 
 use crate::connection::ConflictMode;
+use crate::helpers::{get_download_dir, get_home_dir};
 use crate::states::{
     LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_migration,
 };
@@ -212,8 +213,10 @@ impl Focusable for ZedisMigrationWindow {
 }
 
 pub(crate) fn dirs_default_directory() -> PathBuf {
-    home::home_dir()
-        .map(|home| home.join("Downloads"))
+    // Prefer the platform's real Downloads dir (UserDirs), falling back to the
+    // home dir, then the current dir.
+    get_download_dir()
+        .or_else(get_home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
 }
 

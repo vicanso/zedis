@@ -107,6 +107,18 @@ pub fn get_home_dir() -> Option<PathBuf> {
     Some(dirs.home_dir().to_path_buf())
 }
 
+/// The user's Downloads directory via `UserDirs` — cross-platform and
+/// honoring localized folder names / XDG user dirs (rather than blindly
+/// joining `~/Downloads`). `None` on App Store builds or when the platform
+/// reports no configured Downloads directory.
+pub fn get_download_dir() -> Option<PathBuf> {
+    if is_app_store_build() {
+        return None;
+    }
+    let dirs = UserDirs::new()?;
+    dirs.download_dir().map(Path::to_path_buf)
+}
+
 /// Gets or creates the application's configuration directory.
 ///
 /// This function handles configuration directory management with backward compatibility:

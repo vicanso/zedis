@@ -327,7 +327,10 @@ impl ZedisTerminal {
         if command.is_empty() {
             return;
         }
-        if command == CMD_CLEAR {
+        // Clear the output pane like a terminal would — tolerant of case and
+        // surrounding whitespace so `CLEAR` / `clear ` work too (they'd
+        // otherwise be sent to Redis as an unknown command).
+        if command.trim().eq_ignore_ascii_case(CMD_CLEAR) {
             self.reset_cmd_state(cx);
             cx.notify();
             return;
