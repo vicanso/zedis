@@ -168,6 +168,29 @@ pub struct RedisServer {
     /// renumber is supported.
     pub sort_order: Option<i64>,
 }
+
+/// Why an import failed, surfaced to the paste-to-import dialog. Kept as a
+/// typed enum (not a `String`) so the UI layer can localize each case; the
+/// JSON / URI parser details are carried verbatim since they can't be
+/// meaningfully translated.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImportError {
+    /// `serde_json` couldn't parse the input as JSON (detail = parser message).
+    InvalidJson(String),
+    /// The Redis URI was malformed (detail = parser message).
+    InvalidUri(String),
+    /// URI scheme other than `redis` / `rediss` (carries the offending scheme).
+    UnsupportedScheme(String),
+    /// Required `name` field missing or empty.
+    MissingName,
+    /// Required `host` field missing or empty.
+    MissingHost,
+    /// Port is zero or out of range.
+    InvalidPort,
+    /// A Redis Insight payload was recognized but held no databases.
+    EmptyRedisInsight,
+}
+
 impl RedisServer {
     pub fn from_form_data(id: &str, data: &IndexMap<SharedString, SharedString>) -> Self {
         let get_str = |k: &str| data.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
@@ -297,18 +320,19 @@ impl RedisServer {
     /// Returns `Err` for malformed JSON, missing required fields
     /// (name / host / port), or extreme port values. Empty optional
     /// fields are preserved as `None`.
-    pub fn from_import_json(json: &str) -> Result<Self, String> {
-        let mut server: RedisServer = serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
+    pub fn from_import_json(json: &str) -> Result<Self, ImportError> {
+        let mut server: RedisServer =
+            serde_json::from_str(json).map_err(|e| ImportError::InvalidJson(e.to_string()))?;
         // Validate the bare minimum so a typo doesn't ship a broken
         // entry to the list view (which would crash on connect).
         if server.name.trim().is_empty() {
-            return Err("missing required field: name".into());
+            return Err(ImportError::MissingName);
         }
         if server.host.trim().is_empty() {
-            return Err("missing required field: host".into());
+            return Err(ImportError::MissingHost);
         }
         if server.port == 0 {
-            return Err("port must be a positive number".into());
+            return Err(ImportError::InvalidPort);
         }
         // Always allocate a fresh id so import is idempotent and
         // never clobbers an existing entry.
@@ -326,7 +350,7 @@ impl RedisServer {
     /// [`Self::to_export_json`]) or a bare Redis connection URI
     /// (`redis://` / `rediss://`), dispatching on the leading token so
     /// a pasted connection string "just works" alongside the JSON form.
-    pub fn from_import(input: &str) -> Result<Self, String> {
+    pub fn from_import(input: &str) -> Result<Self, ImportError> {
         let trimmed = input.trim();
         if trimmed.starts_with("redis://") || trimmed.starts_with("rediss://") {
             Self::from_import_uri(trimmed)
@@ -346,17 +370,17 @@ impl RedisServer {
     /// Returns `Err` for a malformed URI, a non-`redis(s)` scheme, or a
     /// missing host. The entry always gets a fresh `id` so importing
     /// the same URI twice yields two distinct entries.
-    pub fn from_import_uri(uri: &str) -> Result<Self, String> {
-        let parsed = Url::parse(uri.trim()).map_err(|e| format!("invalid Redis URI: {e}"))?;
+    pub fn from_import_uri(uri: &str) -> Result<Self, ImportError> {
+        let parsed = Url::parse(uri.trim()).map_err(|e| ImportError::InvalidUri(e.to_string()))?;
         let scheme = parsed.scheme();
         if scheme != "redis" && scheme != "rediss" {
-            return Err(format!("unsupported scheme `{scheme}`: expected redis:// or rediss://"));
+            return Err(ImportError::UnsupportedScheme(scheme.to_string()));
         }
         let host = parsed
             .host_str()
             .map(str::to_string)
             .filter(|h| !h.is_empty())
-            .ok_or_else(|| "missing host in Redis URI".to_string())?;
+            .ok_or(ImportError::MissingHost)?;
         let port = parsed.port().unwrap_or(6379);
 
         let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
@@ -377,6 +401,146 @@ impl RedisServer {
             ..Default::default()
         })
     }
+
+    /// Import **one or more** servers from pasted text — the entry point used
+    /// by the paste-to-import dialog. Recognizes, in order:
+    /// 1. a Redis connection URI (`redis://` / `rediss://`) → one server,
+    /// 2. a **Redis Insight** database export (a JSON array — or a single
+    ///    object — carrying a `connectionType` field) → one server per entry,
+    /// 3. a Zedis export produced by [`Self::to_export_json`] → one server.
+    ///
+    /// Every returned server gets a fresh `id`, so importing twice never
+    /// clobbers existing entries.
+    pub fn from_import_multi(input: &str) -> Result<Vec<RedisServer>, ImportError> {
+        let trimmed = input.trim();
+        // Redis Insight payloads are detected first (JSON with a distinctive
+        // `connectionType` marker); everything else — a Redis URI or a Zedis
+        // export — is a single server handled by `from_import`.
+        if let Some(servers) = Self::try_redis_insight_import(trimmed)? {
+            return Ok(servers);
+        }
+        Self::from_import(trimmed).map(|s| vec![s])
+    }
+
+    /// Detect and convert a Redis Insight database export. Returns `Ok(None)`
+    /// when the input is not a Redis Insight payload (so the caller falls
+    /// through to the Zedis-JSON path), `Ok(Some(..))` on success, and `Err`
+    /// when it *is* a Redis Insight payload but an entry is unusable (missing
+    /// host / bad port).
+    ///
+    /// The distinguishing marker is the `connectionType` string field, which
+    /// Redis Insight writes on every database and Zedis exports never carry.
+    /// Both the multi-database array form and a bare single object are taken.
+    fn try_redis_insight_import(input: &str) -> Result<Option<Vec<RedisServer>>, ImportError> {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
+            // Not JSON at all — let the caller surface the Zedis-JSON error.
+            return Ok(None);
+        };
+        let objects: Vec<&serde_json::Value> = match &value {
+            serde_json::Value::Array(arr) => arr.iter().collect(),
+            serde_json::Value::Object(_) => vec![&value],
+            _ => return Ok(None),
+        };
+        let looks_like_ri = objects
+            .first()
+            .and_then(|o| o.get("connectionType"))
+            .and_then(|v| v.as_str())
+            .is_some();
+        if !looks_like_ri {
+            return Ok(None);
+        }
+        let mut servers = Vec::with_capacity(objects.len());
+        for obj in objects {
+            servers.push(Self::from_redis_insight_object(obj)?);
+        }
+        if servers.is_empty() {
+            return Err(ImportError::EmptyRedisInsight);
+        }
+        Ok(Some(servers))
+    }
+
+    /// Convert a single Redis Insight database object into a `RedisServer`,
+    /// mapping its field names and nested cert / SSH objects onto the flat
+    /// Zedis shape. Best-effort: unknown or empty fields fall back to `None`.
+    /// The selected `db` index and Redis Insight `tags` / `modules` are
+    /// intentionally dropped — Zedis picks the database per session and ties
+    /// its tag to an environment preset, so there is nothing to map onto.
+    fn from_redis_insight_object(obj: &serde_json::Value) -> Result<Self, ImportError> {
+        let get_str = |k: &str| {
+            obj.get(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+        };
+        let get_bool = |k: &str| obj.get(k).and_then(serde_json::Value::as_bool);
+        // Pull a string out of a nested `{ "<field>": "..." }` blob (cert / ssh).
+        let nested_str = |parent: &str, field: &str| {
+            obj.get(parent)
+                .and_then(|p| p.get(field))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+        };
+
+        let host = get_str("host").ok_or(ImportError::MissingHost)?;
+        let port = obj
+            .get("port")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&p| p > 0 && p <= u16::MAX as u64)
+            .map(|p| p as u16)
+            .ok_or(ImportError::InvalidPort)?;
+        let name = get_str("name").unwrap_or_else(|| format!("{host}:{port}"));
+
+        // connectionType → server_type (0 standalone / 1 cluster / 2 sentinel).
+        let server_type = match obj.get("connectionType").and_then(|v| v.as_str()) {
+            Some("CLUSTER") => Some(1),
+            Some("SENTINEL") => Some(2),
+            _ => Some(0),
+        };
+
+        let tls = get_bool("tls");
+        // Redis Insight `verifyServerCert == false` ⇒ skip verification, which
+        // is Zedis `insecure == true`. Only meaningful when TLS is enabled.
+        let insecure = (tls == Some(true) && get_bool("verifyServerCert") == Some(false)).then_some(true);
+
+        // SSH tunnel: `ssh` toggle + nested `sshOptions { host, port, username,
+        // password, privateKey }`. Zedis stores the endpoint as `host:port`.
+        let ssh_addr = nested_str("sshOptions", "host").map(|h| {
+            match obj
+                .get("sshOptions")
+                .and_then(|o| o.get("port"))
+                .and_then(serde_json::Value::as_u64)
+            {
+                Some(p) => format!("{h}:{p}"),
+                None => format!("{h}:22"),
+            }
+        });
+
+        Ok(Self {
+            id: Uuid::now_v7().to_string(),
+            name,
+            host,
+            port,
+            username: get_str("username"),
+            password: get_str("password"),
+            server_type,
+            // Sentinel master name, when Redis Insight recorded one.
+            master_name: nested_str("sentinelMaster", "name"),
+            tls,
+            insecure,
+            // caCert / clientCert are nested objects holding PEM strings.
+            root_cert: nested_str("caCert", "certificate"),
+            client_cert: nested_str("clientCert", "certificate"),
+            client_key: nested_str("clientCert", "key"),
+            ssh_tunnel: get_bool("ssh"),
+            ssh_addr,
+            ssh_username: nested_str("sshOptions", "username"),
+            ssh_password: nested_str("sshOptions", "password"),
+            ssh_key: nested_str("sshOptions", "privateKey"),
+            ..Default::default()
+        })
+    }
+
     pub fn tag_label(&self) -> Option<&str> {
         self.tag.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
     }
@@ -700,6 +864,103 @@ mod tests {
         let json = sample_server().to_export_json(false).expect("serialize");
         let from_json = RedisServer::from_import(&json).expect("json branch");
         assert_eq!(from_json.name, "prod-cache");
+    }
+
+    #[test]
+    fn import_redis_insight_standalone_sample() {
+        // The exact shape Redis Insight writes for "export databases".
+        let ri = r#"[
+          {
+            "id": "e8ee0846-71df-4f60-95dc-9fb19285d7ab",
+            "host": "127.0.0.1",
+            "port": 6379,
+            "name": "127.0.0.1:6379",
+            "db": null,
+            "username": null,
+            "password": null,
+            "connectionType": "STANDALONE",
+            "tls": null,
+            "verifyServerCert": null,
+            "caCert": null,
+            "clientCert": null,
+            "ssh": null,
+            "sshOptions": null
+          }
+        ]"#;
+        let servers = RedisServer::from_import_multi(ri).expect("ri import");
+        assert_eq!(servers.len(), 1);
+        let s = &servers[0];
+        assert_eq!(s.host, "127.0.0.1");
+        assert_eq!(s.port, 6379);
+        assert_eq!(s.name, "127.0.0.1:6379");
+        assert_eq!(s.server_type, Some(0)); // STANDALONE
+        assert!(s.username.is_none() && s.password.is_none());
+        assert!(s.tls.is_none() && s.insecure.is_none());
+        assert!(s.ssh_tunnel.is_none() && s.ssh_addr.is_none());
+        // A fresh id is allocated, not the Redis Insight UUID.
+        assert!(!s.id.is_empty());
+        assert_ne!(s.id, "e8ee0846-71df-4f60-95dc-9fb19285d7ab");
+    }
+
+    #[test]
+    fn import_redis_insight_maps_tls_ssh_and_cluster() {
+        let ri = r#"[
+          {
+            "host": "redis.example.com",
+            "port": 6380,
+            "name": "prod",
+            "username": "app",
+            "password": "pw",
+            "connectionType": "CLUSTER",
+            "tls": true,
+            "verifyServerCert": false,
+            "caCert": { "name": "ca", "certificate": "-----BEGIN CERTIFICATE-----CA-----END CERTIFICATE-----" },
+            "clientCert": { "name": "cli", "certificate": "-----BEGIN CERTIFICATE-----CLI-----END CERTIFICATE-----", "key": "-----BEGIN PRIVATE KEY-----K-----END PRIVATE KEY-----" },
+            "ssh": true,
+            "sshOptions": { "host": "bastion.example.com", "port": 2222, "username": "ops", "password": "sshpw", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----PK" }
+          }
+        ]"#;
+        let servers = RedisServer::from_import_multi(ri).expect("ri import");
+        let s = &servers[0];
+        assert_eq!(s.server_type, Some(1)); // CLUSTER
+        assert_eq!(s.username.as_deref(), Some("app"));
+        assert_eq!(s.password.as_deref(), Some("pw"));
+        assert_eq!(s.tls, Some(true));
+        assert_eq!(s.insecure, Some(true)); // verifyServerCert=false → skip verify
+        assert!(s.root_cert.as_deref().expect("ca").contains("CA"));
+        assert!(s.client_cert.as_deref().expect("client cert").contains("CLI"));
+        assert!(s.client_key.as_deref().expect("client key").contains("PRIVATE KEY"));
+        assert_eq!(s.ssh_tunnel, Some(true));
+        assert_eq!(s.ssh_addr.as_deref(), Some("bastion.example.com:2222"));
+        assert_eq!(s.ssh_username.as_deref(), Some("ops"));
+        assert_eq!(s.ssh_password.as_deref(), Some("sshpw"));
+        assert!(s.ssh_key.as_deref().expect("ssh key").contains("OPENSSH"));
+    }
+
+    #[test]
+    fn import_redis_insight_multiple_entries_get_distinct_ids() {
+        let ri = r#"[
+          { "host": "a", "port": 6379, "name": "A", "connectionType": "STANDALONE" },
+          { "host": "b", "port": 6380, "name": "B", "connectionType": "SENTINEL" }
+        ]"#;
+        let servers = RedisServer::from_import_multi(ri).expect("ri import");
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].host, "a");
+        assert_eq!(servers[1].server_type, Some(2)); // SENTINEL
+        assert_ne!(servers[0].id, servers[1].id);
+    }
+
+    #[test]
+    fn import_multi_still_handles_zedis_json_and_uri() {
+        // Non-Redis-Insight JSON (no connectionType) routes to the Zedis path.
+        let json = sample_server().to_export_json(true).expect("serialize");
+        let from_json = RedisServer::from_import_multi(&json).expect("zedis json");
+        assert_eq!(from_json.len(), 1);
+        assert_eq!(from_json[0].name, "prod-cache");
+        // A bare URI still yields a single server.
+        let from_uri = RedisServer::from_import_multi("redis://h:6379").expect("uri");
+        assert_eq!(from_uri.len(), 1);
+        assert_eq!(from_uri[0].host, "h");
     }
 
     #[test]

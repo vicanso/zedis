@@ -321,6 +321,216 @@ fn build_markdown_report(
     md
 }
 
+// ─── Recommendations (offline rule engine) ───────────────────────────────────
+
+/// Severity of a local recommendation. Variant order is the priority order:
+/// deriving `Ord` lets a single `sort_by_key` surface critical items first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RecoSeverity {
+    Critical,
+    Warning,
+    Info,
+}
+
+/// One finding from the offline rule engine. `kind` carries the
+/// machine-readable facts (numbers, offending key/prefix); the renderer
+/// turns it into localized title/detail text. Keeping the numbers out of
+/// the i18n layer means the rules stay unit-testable without a running
+/// app and the locale files need no `%{var}` placeholders.
+#[derive(Clone, Debug, PartialEq)]
+struct Recommendation {
+    severity: RecoSeverity,
+    kind: RecoKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum RecoKind {
+    /// A single key large enough to risk O(N)/serialization latency on
+    /// access, `DEL`, replication or migration.
+    BigKey {
+        key: SharedString,
+        key_type: SharedString,
+        bytes: u64,
+    },
+    /// `volatile-*` eviction policy but a large share of keys have no TTL —
+    /// those keys can never be evicted, so the server can OOM under pressure.
+    UnevictableKeys { no_ttl_pct: u8, policy: SharedString },
+    /// `noeviction` policy — writes start failing once `maxmemory` is hit.
+    NoEvictionPolicy,
+    /// High allocator fragmentation with a meaningful absolute waste.
+    HighFragmentation { ratio: f64, waste_bytes: u64 },
+    /// A prefix holds many tiny `string` keys — folding them into one Hash
+    /// removes the per-key overhead (dict entry, object header, expire slot).
+    ManySmallStrings {
+        prefix: SharedString,
+        keys: u64,
+        avg_bytes: u64,
+    },
+    /// One prefix dominates sampled memory — a hotspot worth reviewing.
+    DominantPrefix { prefix: SharedString, pct: u8 },
+}
+
+/// Largest single key that is merely "worth noticing" vs an outright red
+/// flag. A 5MiB collection makes O(N) ops (`HGETALL`, `SMEMBERS`, `DEL`) and
+/// replication chunks visibly slower; 50MiB can stall the event loop on a
+/// single command.
+const BIG_KEY_WARN_BYTES: u64 = 5 * 1024 * 1024;
+const BIG_KEY_CRIT_BYTES: u64 = 50 * 1024 * 1024;
+/// Cap big-key findings so a pathological DB doesn't bury the other advice —
+/// the input is already sorted biggest-first.
+const BIG_KEY_MAX_FINDINGS: usize = 3;
+/// Minimum sampled keys before TTL-distribution rules fire — below this the
+/// percentages are too noisy to act on.
+const RECO_MIN_TTL_SAMPLE: u64 = 50;
+/// Share (%) of sampled keys with no TTL that turns a `volatile-*` policy
+/// into an OOM hazard.
+const UNEVICTABLE_PCT: u8 = 50;
+/// A prefix with at least this many keys, all of type `string`, whose
+/// average size is under [`SMALL_STRING_MAX_AVG`], is a fold-into-Hash
+/// candidate.
+const MANY_SMALL_MIN_KEYS: u64 = 1000;
+const SMALL_STRING_MAX_AVG: u64 = 200;
+/// A prefix holding at least this share (%) of summed sampled prefix memory
+/// is flagged as a hotspot (needs ≥2 prefixes to be meaningful).
+const DOMINANT_PREFIX_PCT: u8 = 60;
+/// Fragmentation ratio above which the allocator is wasting enough to suggest
+/// `activedefrag`/restart — paired with [`FRAG_FLOOR_BYTES`] so a tiny DB's
+/// noisy ratio doesn't trip it.
+const FRAG_RATIO_WARN: f64 = 1.5;
+/// Below this much absolute waste the ratio carries no signal (jemalloc's
+/// fixed overhead dominates). Mirrors the chart's `FRAG_FLOOR_BYTES`.
+const FRAG_FLOOR_BYTES: u64 = 200 * 1024 * 1024;
+
+/// Build the offline recommendation list from one analysis run. Pure over its
+/// inputs (no Redis, no `cx`) so it is fully unit-testable. `prefix_rows` and
+/// `biggest_keys` are the already-computed aggregates; `frag` is
+/// `Some((ratio, waste_bytes))` when the status-bar heartbeat has a recent
+/// fragmentation sample, else `None`.
+fn build_recommendations(
+    policy: &str,
+    prefix_rows: &[PrefixRow],
+    biggest_keys: &[SingleKeyRow],
+    ttl: &TtlHistogram,
+    frag: Option<(f64, u64)>,
+) -> Vec<Recommendation> {
+    let mut out = Vec::new();
+
+    // ── Big single keys (input is sorted biggest-first) ──
+    for row in biggest_keys.iter().take(BIG_KEY_MAX_FINDINGS) {
+        let severity = if row.memory_bytes >= BIG_KEY_CRIT_BYTES {
+            RecoSeverity::Critical
+        } else if row.memory_bytes >= BIG_KEY_WARN_BYTES {
+            RecoSeverity::Warning
+        } else {
+            // Once one is under the bar, every later (smaller) one is too.
+            break;
+        };
+        out.push(Recommendation {
+            severity,
+            kind: RecoKind::BigKey {
+                key: row.key.clone(),
+                key_type: row.key_type.clone(),
+                bytes: row.memory_bytes,
+            },
+        });
+    }
+
+    // ── Eviction-policy hazards ──
+    let total = ttl.total();
+    let policy_lc = policy.to_ascii_lowercase();
+    if policy_lc == "noeviction" {
+        out.push(Recommendation {
+            severity: RecoSeverity::Info,
+            kind: RecoKind::NoEvictionPolicy,
+        });
+    } else if policy_lc.starts_with("volatile-") && total >= RECO_MIN_TTL_SAMPLE {
+        let pct = (ttl.no_ttl as f64 / total as f64 * 100.0).round() as u8;
+        if pct >= UNEVICTABLE_PCT {
+            out.push(Recommendation {
+                severity: RecoSeverity::Critical,
+                kind: RecoKind::UnevictableKeys {
+                    no_ttl_pct: pct,
+                    policy: policy.to_string().into(),
+                },
+            });
+        }
+    }
+
+    // ── Fragmentation (both a bad ratio AND meaningful absolute waste) ──
+    if let Some((ratio, waste)) = frag
+        && ratio >= FRAG_RATIO_WARN
+        && waste >= FRAG_FLOOR_BYTES
+    {
+        out.push(Recommendation {
+            severity: RecoSeverity::Warning,
+            kind: RecoKind::HighFragmentation {
+                ratio,
+                waste_bytes: waste,
+            },
+        });
+    }
+
+    // ── Prefix-design hints ──
+    for row in prefix_rows {
+        // `types` is the comma-joined set built in `build_prefix_rows`.
+        let only_string = !row.types.is_empty() && row.types.split(", ").all(|t| t == "string");
+        if only_string && row.key_count >= MANY_SMALL_MIN_KEYS {
+            let avg = row.memory_bytes / row.key_count.max(1);
+            if avg <= SMALL_STRING_MAX_AVG {
+                out.push(Recommendation {
+                    severity: RecoSeverity::Info,
+                    kind: RecoKind::ManySmallStrings {
+                        prefix: row.prefix.clone(),
+                        keys: row.key_count,
+                        avg_bytes: avg,
+                    },
+                });
+            }
+        }
+    }
+    // Dominant prefix — only meaningful when several prefixes compete.
+    let total_prefix_mem: u64 = prefix_rows.iter().map(|r| r.memory_bytes).sum();
+    if prefix_rows.len() >= 2
+        && total_prefix_mem > 0
+        && let Some(top) = prefix_rows.iter().max_by_key(|r| r.memory_bytes)
+    {
+        let pct = (top.memory_bytes as f64 / total_prefix_mem as f64 * 100.0).round() as u8;
+        if pct >= DOMINANT_PREFIX_PCT {
+            out.push(Recommendation {
+                severity: RecoSeverity::Info,
+                kind: RecoKind::DominantPrefix {
+                    prefix: top.prefix.clone(),
+                    pct,
+                },
+            });
+        }
+    }
+
+    // Most-urgent first; stable so within a severity the discovery order
+    // (big keys, then policy, then design hints) is preserved.
+    out.sort_by_key(|r| r.severity);
+    out
+}
+
+/// Most recent fragmentation sample from the status-bar heartbeat cache:
+/// `(mem_fragmentation_ratio, wasted_bytes)` where waste = RSS − used.
+/// `None` when no non-zero sample exists yet. Mirrors the filtering in
+/// `render_fragmentation_chart` so the rule engine and the chart agree.
+fn latest_fragmentation(server_id: &str) -> Option<(f64, u64)> {
+    if server_id.is_empty() {
+        return None;
+    }
+    get_metrics_cache()
+        .list_metrics(server_id)
+        .iter()
+        .rev()
+        .find(|m| m.mem_fragmentation_ratio > 0.0)
+        .map(|m| {
+            let waste = (m.used_memory_rss as i64).saturating_sub(m.used_memory as i64).max(0) as u64;
+            (m.mem_fragmentation_ratio, waste)
+        })
+}
+
 fn render_copy_cell(
     row_ix: usize,
     col_ix: usize,
@@ -941,6 +1151,10 @@ pub struct ZedisMemoryAnalysis {
     /// (no extra Redis round-trip — `KeyMemoryUsage::ttl` is already
     /// in the pipeline). Reset on each `start_analysis`.
     ttl_histogram: TtlHistogram,
+    /// Offline rule-engine findings, recomputed locally each time a scan
+    /// finishes (no Redis round-trip, no external AI). Empty while a scan
+    /// is running or when the keyspace is healthy.
+    recommendations: Vec<Recommendation>,
     /// Status of the optional AI analysis request.
     ai_status: AiStatus,
     /// Model reply (Markdown) when `ai_status == Done`, or the error
@@ -1027,6 +1241,7 @@ impl ZedisMemoryAnalysis {
             scan_count_input_state,
             est_commands: 0,
             ttl_histogram: TtlHistogram::default(),
+            recommendations: Vec::new(),
             ai_status: AiStatus::Idle,
             ai_output: None,
             ai_task: None,
@@ -1143,6 +1358,9 @@ impl ZedisMemoryAnalysis {
         // stale data here would briefly show the old bars on top of
         // a partial new run.
         self.ttl_histogram = TtlHistogram::default();
+        // Stale advice from a previous run is worse than none — clear it so
+        // the panel hides until the fresh scan completes and recomputes.
+        self.recommendations.clear();
 
         self.prefix_table.update(cx, |s, _| s.delegate_mut().rows.clear());
         self.single_table.update(cx, |s, _| s.delegate_mut().rows.clear());
@@ -1353,9 +1571,22 @@ impl ZedisMemoryAnalysis {
                     // and any rows accumulated before the error still render.
                     this.status = AnalysisStatus::Error;
                     this.scan_error = Some(err);
+                    this.recommendations.clear();
                 } else {
                     this.status = AnalysisStatus::Finished;
                     this.progress = "100%".into();
+                    // Offline rule engine — free + instant, runs on the
+                    // just-computed aggregates before they're moved into
+                    // `this` below. Big-key detection uses `by_size` (the
+                    // global biggest keys), independent of the table's sort.
+                    let frag = latest_fragmentation(this.server_state.read(cx).server_id());
+                    this.recommendations = build_recommendations(
+                        &this.policy,
+                        &prefix_rows,
+                        &final_groups.by_size.items,
+                        &final_histogram,
+                        frag,
+                    );
                 }
                 this.prefix_count = pc;
                 this.single_groups = final_groups;
@@ -1386,8 +1617,6 @@ impl ZedisMemoryAnalysis {
     fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> ZedisDivider {
         let is_running = self.status == AnalysisStatus::Running;
         let is_idle = self.status == AnalysisStatus::Idle;
-        let has_data = self.prefix_count > 0 || self.single_count > 0;
-        let ai_running = self.ai_status == AiStatus::Running;
         let stat_item = |cx: &mut gpui::Context<Self>, key: &'static str, value: SharedString| {
             h_flex()
                 .gap_1()
@@ -1515,24 +1744,7 @@ impl ZedisMemoryAnalysis {
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.start_analysis(cx);
                             }))
-                    })
-                    // AI analysis: send the current report to the
-                    // configured OpenAI-compatible endpoint for advice.
-                    .child(
-                        Button::new("ai-analysis")
-                            .small()
-                            .outline()
-                            .icon(IconName::Bot)
-                            .disabled(is_running || ai_running || !has_data)
-                            .label(if ai_running {
-                                i18n_memory_analysis(cx, "ai_analyzing")
-                            } else {
-                                i18n_memory_analysis(cx, "ai_analyze")
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.start_ai_analysis(window, cx);
-                            })),
-                    ),
+                    }),
             )
     }
     /// Render the AI advice panel. Hidden until an AI request has been
@@ -1621,6 +1833,226 @@ impl ZedisMemoryAnalysis {
                 .bg(panel_bg)
                 .child(header)
                 .child(content)
+                .into_any_element(),
+        )
+    }
+
+    /// Map a recommendation to its localized `(title, subject, detail)`. The
+    /// subject is the language-neutral concrete fact (key/prefix name, sizes,
+    /// percentages) composed in Rust; title/detail come from the locale files.
+    fn reco_text(&self, reco: &Recommendation, cx: &gpui::App) -> (SharedString, Option<SharedString>, SharedString) {
+        let k = |key: &str| i18n_memory_analysis(cx, key);
+        match &reco.kind {
+            RecoKind::BigKey { key, key_type, bytes } => (
+                k("reco_big_key_title"),
+                Some(format!("{key} · {key_type} · {}", format_memory(*bytes)).into()),
+                k("reco_big_key_detail"),
+            ),
+            RecoKind::UnevictableKeys { no_ttl_pct, policy } => (
+                k("reco_unevictable_title"),
+                Some(format!("{policy} · {no_ttl_pct}%").into()),
+                k("reco_unevictable_detail"),
+            ),
+            RecoKind::NoEvictionPolicy => (
+                k("reco_noeviction_title"),
+                Some("noeviction".into()),
+                k("reco_noeviction_detail"),
+            ),
+            RecoKind::HighFragmentation { ratio, waste_bytes } => (
+                k("reco_fragmentation_title"),
+                Some(format!("{ratio:.2}× · {}", format_memory(*waste_bytes)).into()),
+                k("reco_fragmentation_detail"),
+            ),
+            RecoKind::ManySmallStrings {
+                prefix,
+                keys,
+                avg_bytes,
+            } => (
+                k("reco_small_strings_title"),
+                Some(
+                    format!(
+                        "{prefix} · {} · ~{}",
+                        format_thousands(*keys),
+                        format_memory(*avg_bytes)
+                    )
+                    .into(),
+                ),
+                k("reco_small_strings_detail"),
+            ),
+            RecoKind::DominantPrefix { prefix, pct } => (
+                k("reco_dominant_prefix_title"),
+                Some(format!("{prefix} · {pct}%").into()),
+                k("reco_dominant_prefix_detail"),
+            ),
+        }
+    }
+
+    /// Flatten the current recommendations into a plain-text block for the
+    /// clipboard — one localized `[SEVERITY] Title (subject)` line plus its
+    /// detail per finding.
+    fn recommendations_plaintext(&self, cx: &gpui::App) -> String {
+        let mut s = String::new();
+        for reco in &self.recommendations {
+            let (title, subject, detail) = self.reco_text(reco, cx);
+            let sev = match reco.severity {
+                RecoSeverity::Critical => "[CRITICAL]",
+                RecoSeverity::Warning => "[WARNING]",
+                RecoSeverity::Info => "[INFO]",
+            };
+            s.push_str(sev);
+            s.push(' ');
+            s.push_str(&title);
+            if let Some(sub) = subject {
+                s.push_str(" (");
+                s.push_str(&sub);
+                s.push(')');
+            }
+            s.push('\n');
+            s.push_str(&detail);
+            s.push_str("\n\n");
+        }
+        s
+    }
+
+    /// The offline rule engine's verdict, shown automatically once a scan
+    /// finishes. A green "healthy" line when there are no findings, otherwise
+    /// a severity-colored list. Hidden entirely until a scan completes.
+    fn render_recommendations_panel(&self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
+        if self.status != AnalysisStatus::Finished {
+            return None;
+        }
+        // Copy theme colors out before any `cx.listener` closure below.
+        let border = cx.theme().border;
+        let panel_bg = cx.theme().muted.opacity(0.4);
+        let muted_fg = cx.theme().muted_foreground;
+        let green = cx.theme().green;
+        let c_critical = cx.theme().danger;
+        let c_warning = cx.theme().warning;
+        let c_info = cx.theme().blue;
+        let sev_color = move |s: RecoSeverity| match s {
+            RecoSeverity::Critical => c_critical,
+            RecoSeverity::Warning => c_warning,
+            RecoSeverity::Info => c_info,
+        };
+        let sev_icon = |s: RecoSeverity| match s {
+            RecoSeverity::Critical => IconName::CircleX,
+            RecoSeverity::Warning => IconName::TriangleAlert,
+            RecoSeverity::Info => IconName::Info,
+        };
+
+        let count = self.recommendations.len();
+        // The AI deep-dive trigger lives here in the panel header (next to
+        // Copy), not in the toolbar — it surfaces exactly when a finished
+        // scan has data worth sending to the model.
+        let has_data = self.prefix_count > 0 || self.single_count > 0;
+        let ai_running = self.ai_status == AiStatus::Running;
+        let header =
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Icon::new(CustomIconName::ListCheck))
+                        .child(Label::new(i18n_memory_analysis(cx, "reco_panel_title")).font_semibold())
+                        .when(count > 0, |this| {
+                            this.child(Label::new(format!("{count}")).text_xs().text_color(muted_fg))
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        // AI advice: send the report (key names / sizes / TTLs
+                        // only) to the configured OpenAI-compatible endpoint.
+                        .when(has_data, |this| {
+                            this.child(
+                                Button::new("reco-ai-analysis")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Bot)
+                                    .disabled(ai_running)
+                                    .label(if ai_running {
+                                        i18n_memory_analysis(cx, "ai_analyzing")
+                                    } else {
+                                        i18n_memory_analysis(cx, "ai_analyze")
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_ai_analysis(window, cx);
+                                    })),
+                            )
+                        })
+                        .when(count > 0, |this| {
+                            this.child(Button::new("reco-copy").ghost().small().icon(IconName::Copy).on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    let text = this.recommendations_plaintext(cx);
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                    window.push_notification(
+                                        Notification::info(i18n_common(cx, "copied_to_clipboard")),
+                                        cx,
+                                    );
+                                }),
+                            ))
+                        }),
+                );
+
+        let body = if count == 0 {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Icon::new(CustomIconName::CircleCheckBig).text_color(green))
+                .child(
+                    Label::new(i18n_memory_analysis(cx, "reco_healthy"))
+                        .text_sm()
+                        .text_color(muted_fg),
+                )
+                .into_any_element()
+        } else {
+            let mut list = v_flex().w_full().gap_2();
+            for reco in &self.recommendations {
+                let (title, subject, detail) = self.reco_text(reco, cx);
+                let color = sev_color(reco.severity);
+                list = list.child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_start()
+                        .child(Icon::new(sev_icon(reco.severity)).text_color(color))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(Label::new(title).font_medium().text_color(color))
+                                        .when_some(subject, |this, sub| {
+                                            this.child(Label::new(sub).text_xs().text_color(muted_fg))
+                                        }),
+                                )
+                                .child(Label::new(detail).text_sm().text_color(muted_fg)),
+                        ),
+                );
+            }
+            list.into_any_element()
+        };
+
+        Some(
+            v_flex()
+                .w_full()
+                .flex_none()
+                .gap_2()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(border)
+                .bg(panel_bg)
+                .child(header)
+                .child(body)
                 .into_any_element(),
         )
     }
@@ -1992,6 +2424,12 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .id("memory-analysis-body")
                     .overflow_y_scroll();
 
+                // Offline recommendations — the local rule engine's verdict,
+                // shown automatically once a scan finishes (no AI, no config).
+                if let Some(panel) = self.render_recommendations_panel(cx) {
+                    body = body.child(panel);
+                }
+
                 // AI advice panel — pinned to the top so the result is
                 // visible immediately after the request completes.
                 if let Some(panel) = self.render_ai_panel(cx) {
@@ -2087,7 +2525,41 @@ impl gpui::Render for ZedisMemoryAnalysis {
 
 #[cfg(test)]
 mod tests {
-    use super::{TtlHistogram, build_markdown_report, md_cell};
+    use super::{
+        PrefixRow, RecoKind, RecoSeverity, SingleKeyRow, TtlHistogram, build_markdown_report, build_recommendations,
+        format_memory, format_thousands, md_cell,
+    };
+    use crate::connection::HeatMetric;
+
+    const MIB: u64 = 1024 * 1024;
+
+    fn single_key(key: &str, key_type: &str, bytes: u64) -> SingleKeyRow {
+        SingleKeyRow {
+            key: key.to_string().into(),
+            memory_bytes: bytes,
+            memory: format_memory(bytes).into(),
+            key_type: key_type.to_string().into(),
+            ttl: "Perm".into(),
+            ttl_secs: -1,
+            heat: HeatMetric::None,
+            heat_display: "—".into(),
+        }
+    }
+
+    fn prefix_row(prefix: &str, key_count: u64, memory_bytes: u64, types: &str) -> PrefixRow {
+        PrefixRow {
+            prefix: prefix.to_string().into(),
+            key_count,
+            display_key_count: format_thousands(key_count).into(),
+            memory_bytes,
+            memory: format_memory(memory_bytes).into(),
+            types: types.to_string().into(),
+            avg_ttl: "Perm".into(),
+            avg_ttl_secs: -1.0,
+            perm_count: 0,
+            perm_display: "0".into(),
+        }
+    }
 
     #[test]
     fn md_cell_escapes_pipes_and_newlines() {
@@ -2146,5 +2618,126 @@ mod tests {
         h.add(-99);
         assert_eq!(h.lt_1m, 1);
         assert_eq!(h.total(), 1);
+    }
+
+    #[test]
+    fn big_keys_are_tiered_and_capped() {
+        let biggest = [
+            single_key("a", "hash", 60 * MIB),   // ≥ crit
+            single_key("b", "list", 6 * MIB),    // ≥ warn
+            single_key("c", "set", 5 * MIB + 1), // ≥ warn
+            single_key("d", "string", 1024),     // under the bar
+        ];
+        let recs = build_recommendations("allkeys-lru", &[], &biggest, &TtlHistogram::default(), None);
+        let big: Vec<_> = recs
+            .iter()
+            .filter(|r| matches!(r.kind, RecoKind::BigKey { .. }))
+            .collect();
+        // Capped at 3 and the sub-threshold "d" is excluded anyway.
+        assert_eq!(big.len(), 3);
+        // Sorted most-urgent first, so the 60MiB critical leads.
+        assert_eq!(big[0].severity, RecoSeverity::Critical);
+        assert!(big[1..].iter().all(|r| r.severity == RecoSeverity::Warning));
+    }
+
+    #[test]
+    fn unevictable_keys_only_under_volatile_policy() {
+        let mut ttl = TtlHistogram::default();
+        for _ in 0..60 {
+            ttl.add(-1); // 60 with no TTL
+        }
+        for _ in 0..40 {
+            ttl.add(30); // 40 with a TTL → 60% unevictable
+        }
+        let recs = build_recommendations("volatile-lru", &[], &[], &ttl, None);
+        assert!(recs.iter().any(|r| {
+            matches!(r.kind, RecoKind::UnevictableKeys { no_ttl_pct: 60, .. }) && r.severity == RecoSeverity::Critical
+        }));
+        // allkeys-* evicts regardless of TTL, so the same shape is fine there.
+        let ok = build_recommendations("allkeys-lru", &[], &[], &ttl, None);
+        assert!(!ok.iter().any(|r| matches!(r.kind, RecoKind::UnevictableKeys { .. })));
+    }
+
+    #[test]
+    fn noeviction_policy_is_flagged() {
+        let recs = build_recommendations("noeviction", &[], &[], &TtlHistogram::default(), None);
+        assert!(
+            recs.iter()
+                .any(|r| r.kind == RecoKind::NoEvictionPolicy && r.severity == RecoSeverity::Info)
+        );
+    }
+
+    #[test]
+    fn fragmentation_needs_both_ratio_and_absolute_waste() {
+        // High ratio but tiny waste → noise, not flagged.
+        let small = build_recommendations("allkeys-lru", &[], &[], &TtlHistogram::default(), Some((3.0, 10 * MIB)));
+        assert!(
+            !small
+                .iter()
+                .any(|r| matches!(r.kind, RecoKind::HighFragmentation { .. }))
+        );
+        // High ratio AND meaningful waste → flagged.
+        let real = build_recommendations(
+            "allkeys-lru",
+            &[],
+            &[],
+            &TtlHistogram::default(),
+            Some((1.8, 400 * MIB)),
+        );
+        assert!(
+            real.iter().any(|r| {
+                matches!(r.kind, RecoKind::HighFragmentation { .. }) && r.severity == RecoSeverity::Warning
+            })
+        );
+    }
+
+    #[test]
+    fn many_small_strings_suggest_a_hash() {
+        let p = prefix_row("cache:*", 5_000, 5_000 * 50, "string"); // avg 50B
+        let recs = build_recommendations("allkeys-lru", &[p], &[], &TtlHistogram::default(), None);
+        assert!(recs.iter().any(|r| matches!(
+            &r.kind,
+            RecoKind::ManySmallStrings {
+                keys: 5_000,
+                avg_bytes: 50,
+                ..
+            }
+        )));
+        // A mixed-type prefix of the same shape is not a fold candidate.
+        let mixed = prefix_row("cache:*", 5_000, 5_000 * 50, "hash, string");
+        let none = build_recommendations("allkeys-lru", &[mixed], &[], &TtlHistogram::default(), None);
+        assert!(!none.iter().any(|r| matches!(r.kind, RecoKind::ManySmallStrings { .. })));
+    }
+
+    #[test]
+    fn dominant_prefix_needs_competition() {
+        let big = prefix_row("a:*", 100, 9_000, "hash");
+        let small = prefix_row("b:*", 100, 1_000, "hash");
+        let recs = build_recommendations(
+            "allkeys-lru",
+            &[big.clone(), small],
+            &[],
+            &TtlHistogram::default(),
+            None,
+        );
+        assert!(
+            recs.iter()
+                .any(|r| matches!(&r.kind, RecoKind::DominantPrefix { pct: 90, .. }))
+        );
+        // A lone prefix can't "dominate" — nothing to compare against.
+        let solo = build_recommendations("allkeys-lru", &[big], &[], &TtlHistogram::default(), None);
+        assert!(!solo.iter().any(|r| matches!(r.kind, RecoKind::DominantPrefix { .. })));
+    }
+
+    #[test]
+    fn healthy_keyspace_yields_no_recommendations() {
+        let recs = build_recommendations(
+            "allkeys-lru",
+            &[prefix_row("u:*", 10, 2_000, "hash")],
+            &[single_key("u:1", "hash", 1024)],
+            &TtlHistogram::default(),
+            None,
+        );
+        assert!(recs.is_empty(), "unexpected findings: {recs:?}");
     }
 }

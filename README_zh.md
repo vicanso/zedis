@@ -93,9 +93,9 @@ Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。
 精美渲染的 GPU 加速时序图表。
 </details>
 
-<details><summary><b>内存分析器 + AI 建议</b> —— 排查 BigKey、查看 TTL 分布、获取 AI 优化建议。</summary>
+<details><summary><b>内存分析器 + 体检建议</b> —— 排查 BigKey、查看 TTL 分布、获取离线体检与可选 AI 建议。</summary>
 
-Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。
+Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。扫描一结束，**离线规则引擎** 即自动给出体检建议 —— 大 key、`volatile-*` 策略下无法淘汰的键、`noeviction`、内存碎片偏高、应合并为 Hash 的大量小 string、占用大部分内存的前缀 —— 零配置、零网络。也可一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。
 </details>
 
 <details><summary><b>性能诊断</b> —— 慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。</summary>
@@ -137,7 +137,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 
 <details><summary><b>安全连接与分组</b> —— TLS/SSL 与 SSH 隧道，配可命名、可分享的服务器分组。</summary>
 
-完整 **TLS/SSL**（自定义 CA、客户端证书）与 **SSH 隧道**（密码、私钥、Agent）。把连接整理进可命名、可折叠的**分组**并重排，单个连接可导出为 JSON（默认剥离凭据）。
+完整 **TLS/SSL**（自定义 CA、客户端证书）与 **SSH 隧道**（密码、私钥、Agent）。把连接整理进可命名、可折叠的**分组**并重排，单个连接可导出为 JSON（默认剥离凭据）。也可粘贴 `redis://` 连接串或 **Redis Insight** 的数据库导出一键迁入 —— 多个数据库一次到位。
 </details>
 
 <details><summary><b>集成 CLI 与 Workbench</b> —— 带补全的 redis-cli 终端 + 多行 Batch 模式。</summary>

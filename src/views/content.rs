@@ -246,7 +246,26 @@ impl ZedisContent {
                 cx.new(|cx| ZedisServers::new(window, cx))
             })
             .clone();
-        div().m(px(SERVERS_MARGIN)).child(servers)
+        // A long server list (many connections / groups) must scroll instead
+        // of overflowing and clipping the lower cards. Mirror the bounded-box
+        // pattern the other routes use: a `flex_1 relative` shell with an
+        // `absolute inset_0` child pins the scroll viewport to a definite size
+        // (a plain `size_full` flex child still sizes to its content here), so
+        // `overflow_y_scroll` has real bounds to scroll within.
+        div().flex_1().w_full().relative().child(
+            div()
+                .id("servers-scroll")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .overflow_y_scroll()
+                // Inset via padding, not margin: a scroll viewport often omits
+                // its content's trailing margin from the scrollable height, so
+                // a bottom margin would clip the last row. Padding on this
+                // in-flow child is part of its box height and always scrolls
+                // into reach.
+                .child(div().p(px(SERVERS_MARGIN)).child(servers)),
+        )
     }
 
     fn render_proto_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

@@ -35,7 +35,7 @@ pub use async_connection::{
     set_redis_connection_timeout, set_redis_response_timeout,
 };
 pub use config::{
-    RedisServer, TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, tag_color_index,
+    ImportError, RedisServer, TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, tag_color_index,
 };
 pub use danger::{
     ConfirmStrictness, DangerKind, classify_dangerous_line, confirm_strictness, is_write_command,

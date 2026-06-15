@@ -14,7 +14,7 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{
-    RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
+    ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
 };
 use crate::error::Error;
 use crate::helpers::{get_font_family, resolve_tag_chip};
@@ -141,11 +141,12 @@ impl ZedisServers {
         let server_id = redis_server.id.clone();
         let is_new = server_id.is_empty();
         let server_type_list = i18n_servers(cx, "server_type_list");
-        let validate_host = |s: &str| {
+        let host_invalid_msg = i18n_common(cx, "host_invalid");
+        let validate_host = move |s: &str| {
             if s.len() <= 1024 && s.is_ascii() {
                 return None;
             }
-            Some("host is invalid".into())
+            Some(host_invalid_msg.clone())
         };
 
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
@@ -651,19 +652,36 @@ impl ZedisServers {
             })
             .on_ok(move |_, window, cx| {
                 let value = submit_json.read(cx).value().to_string();
-                match RedisServer::from_import(&value) {
-                    Ok(server) => {
+                match RedisServer::from_import_multi(&value) {
+                    Ok(servers) => {
+                        let count = servers.len();
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                            store.update(cx, |state, cx| state.upsert_server(server, cx));
+                            store.update(cx, |state, cx| {
+                                for server in servers {
+                                    state.upsert_server(server, cx);
+                                }
+                            });
                         });
+                        // A Redis Insight export can carry several databases —
+                        // confirm the count so the user knows they all landed.
+                        if count > 1 {
+                            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                            window.push_notification(
+                                Notification::info(SharedString::from(
+                                    t!("servers.import_multi_done", count = count, locale = locale).to_string(),
+                                )),
+                                cx,
+                            );
+                        }
                         true
                     }
                     Err(e) => {
-                        // Surface the parse error as a notification so
-                        // the user can fix the JSON; keep the dialog
-                        // open by returning false.
+                        // Surface the parse error as a localized notification so
+                        // the user can fix the input; keep the dialog open by
+                        // returning false.
+                        let detail = import_error_message(cx, &e);
                         window.push_notification(
-                            Notification::error(SharedString::from(format!("{bad_json_label}: {e}"))),
+                            Notification::error(SharedString::from(format!("{bad_json_label}: {detail}"))),
                             cx,
                         );
                         false
@@ -671,6 +689,23 @@ impl ZedisServers {
                 }
             })
             .open(window, cx);
+    }
+}
+
+/// Localize an [`ImportError`] for the paste-to-import dialog. Detail-carrying
+/// variants append the parser's own message, which can't be meaningfully
+/// translated.
+fn import_error_message(cx: &gpui::App, err: &ImportError) -> SharedString {
+    match err {
+        ImportError::InvalidJson(d) => format!("{}: {d}", i18n_servers(cx, "import_err_invalid_json")).into(),
+        ImportError::InvalidUri(d) => format!("{}: {d}", i18n_servers(cx, "import_err_invalid_uri")).into(),
+        ImportError::UnsupportedScheme(s) => {
+            format!("{} {s}", i18n_servers(cx, "import_err_unsupported_scheme")).into()
+        }
+        ImportError::MissingName => i18n_servers(cx, "import_err_missing_name"),
+        ImportError::MissingHost => i18n_servers(cx, "import_err_missing_host"),
+        ImportError::InvalidPort => i18n_servers(cx, "import_err_invalid_port"),
+        ImportError::EmptyRedisInsight => i18n_servers(cx, "import_err_empty_insight"),
     }
 }
 

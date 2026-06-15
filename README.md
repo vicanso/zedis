@@ -92,9 +92,9 @@ A built-in, GPU-accelerated dashboard for monitoring your instances.
 Beautifully rendered, GPU-accelerated time-series charts.
 </details>
 
-<details><summary><b>Memory Analyzer + AI Advice</b> — hunt BigKeys, see the TTL distribution, get AI optimization tips.</summary>
+<details><summary><b>Memory Analyzer + Recommendations</b> — hunt BigKeys, see the TTL distribution, get instant offline health checks plus optional AI tips.</summary>
 
-Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` auto-picked from `maxmemory-policy`), with a **TTL histogram** alongside. One click sends the report (key *names*, sizes, TTLs only — never values) to any **OpenAI-compatible** endpoint for inline advice in your UI language.
+Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` auto-picked from `maxmemory-policy`), with a **TTL histogram** alongside. The moment a scan finishes, an **offline rule engine** flags issues automatically — big keys, keys that can't be evicted under a `volatile-*` policy, `noeviction`, high fragmentation, many tiny strings that should be a Hash, and memory-dominating prefixes — no config or network needed. One click also sends the report (key *names*, sizes, TTLs only — never values) to any **OpenAI-compatible** endpoint for inline advice in your UI language.
 </details>
 
 <details><summary><b>Performance Diagnostics</b> — Slow Log ↔ Latency, live MONITOR, clients, and command stats.</summary>
@@ -136,7 +136,7 @@ List users, view flags / commands / key patterns / channel rules, and edit via q
 
 <details><summary><b>Secure Connections & Groups</b> — TLS/SSL and SSH tunnels, with named, shareable server groups.</summary>
 
-Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, private key, agent). Organize connections into named, collapsible **groups**, reorder them, and share a single connection as JSON (credentials stripped by default).
+Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, private key, agent). Organize connections into named, collapsible **groups**, reorder them, and share a single connection as JSON (credentials stripped by default). Migrate in by pasting a `redis://` URI or a **Redis Insight** database export — every database lands at once.
 </details>
 
 <details><summary><b>Integrated CLI & Workbench</b> — redis-cli terminal with completion plus a multi-line Batch mode.</summary>
