@@ -14,7 +14,7 @@
 
 use crate::connection::get_connection_manager;
 use crate::helpers::{unix_ts, unix_ts_millis};
-use crate::states::{ServerEvent, ServerTask, ZedisServerState};
+use crate::states::{ConnectionHealth, ServerEvent, ServerTask, ZedisServerState};
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
@@ -466,6 +466,35 @@ fn parse_keyspace_value(v: &str) -> Result<RedisKeySpaceStats, ()> {
 }
 
 impl ZedisServerState {
+    /// Consecutive heartbeat PING failures before the live link is reported as
+    /// Offline rather than Reconnecting (~2s heartbeat cadence -> >=6s down).
+    const PING_OFFLINE_THRESHOLD: u32 = 3;
+
+    /// Fold a heartbeat `PING` outcome into the observable [`ConnectionHealth`].
+    /// Success -> `Connected` (failure counter cleared). Failure ->
+    /// `Reconnecting` for the first few consecutive misses, then `Offline` past
+    /// the threshold (the heartbeat can't distinguish "retrying" from "down",
+    /// so this elapsed-failures heuristic stands in). Emits
+    /// `ConnectionHealthChanged` only on an actual transition, so a steady
+    /// state costs no extra re-render.
+    fn note_ping_result(&mut self, ok: bool, cx: &mut Context<Self>) {
+        let next = if ok {
+            self.ping_failures = 0;
+            ConnectionHealth::Connected
+        } else {
+            self.ping_failures = self.ping_failures.saturating_add(1);
+            if self.ping_failures >= Self::PING_OFFLINE_THRESHOLD {
+                ConnectionHealth::Offline
+            } else {
+                ConnectionHealth::Reconnecting
+            }
+        };
+        if self.connection_health != next {
+            self.connection_health = next;
+            cx.emit(ServerEvent::ConnectionHealthChanged);
+        }
+    }
+
     pub fn refresh_redis_info(&mut self, cx: &mut Context<Self>) {
         if self.server_id.is_empty() {
             return;
@@ -518,11 +547,13 @@ impl ZedisServerState {
                         this.last_slow_logs_checked_at = unix_ts();
                     }
                     cx.emit(ServerEvent::ServerRedisInfoUpdated);
+                    this.note_ping_result(true, cx);
                 }
                 Err(e) => {
                     // Connection is invalid, remove cached client
                     get_connection_manager().remove_client(&server_id_clone, db);
                     error!(error = %e, "Ping failed, client connection removed");
+                    this.note_ping_result(false, cx);
                 }
             },
             cx,

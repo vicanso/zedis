@@ -119,6 +119,11 @@ A persistence panel reads `INFO persistence` (last save, AOF growth, fork failur
 
 ### 🛡️ Security & Productivity
 
+<details><summary><b>Privacy-First</b> — your data and credentials stay on your machine; nothing is phoned home.</summary>
+
+Tags, notes, favorites and search history live in a **local redb file** — zero Redis cost, never sent anywhere. Connection secrets are **encrypted at rest**, and sharing a connection as JSON **strips credentials** by default. The optional AI analysis sends only key **names, sizes and TTLs — never your values**, and only to the OpenAI-compatible endpoint *you* configure. The custom script viewer runs locally through your own shell. **No telemetry, no accounts, no cloud.**
+</details>
+
 <details><summary><b>Command Palette & Shortcuts</b> — ⌘K fuzzy navigation and a ⌘/ keyboard-shortcut reference.</summary>
 
 **⌘K** fuzzy-searches servers and panels (arrows to move, Enter to run, Esc to dismiss); **⌘/** opens a read-only, grouped overlay of every hotkey with per-platform symbols.

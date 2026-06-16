@@ -18,12 +18,12 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::{humanize_keystroke, resolve_tag_chip},
     states::{
-        ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode, ZedisGlobalStore,
-        ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology,
-        i18n_value_search, save_session_option,
+        ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode,
+        ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar, i18n_status_bar,
+        i18n_topology, i18n_value_search, save_session_option,
     },
 };
-use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -152,6 +152,9 @@ struct StatusBarServerState {
     server_id: SharedString,
     size: SharedString,
     latency: (SharedString, Hsla),
+    /// Live-connection health for the status dot, mirrored from
+    /// `ZedisServerState::connection_health()` each heartbeat / health change.
+    health: ConnectionHealth,
     used_memory: SharedString,
     clients: SharedString,
     nodes: SharedString,
@@ -231,6 +234,12 @@ impl ZedisStatusBar {
                 }
                 ServerEvent::ServerRedisInfoUpdated => {
                     this.fill_state(server_state, cx);
+                }
+                ServerEvent::ConnectionHealthChanged => {
+                    // Heartbeat reported a link transition (e.g. a failed PING).
+                    // The Ok path already refreshes health via fill_state; this
+                    // arm covers the Err path, which emits no info update.
+                    this.state.server_state.health = server_state.read(cx).connection_health();
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
@@ -415,6 +424,7 @@ impl ZedisStatusBar {
             server_id: state.server_id().to_string().into(),
             size: format_size(state.dbsize(), state.scan_count()),
             latency: format_latency(Some(Duration::from_millis(redis_info.metrics.latency_ms)), cx),
+            health: state.connection_health(),
             used_memory: used_memory.into(),
             clients: clients.into(),
             nodes: format_nodes(state.nodes(), state.version()),
@@ -581,6 +591,22 @@ impl ZedisStatusBar {
         let supports_acl = server_state.supports_acl;
         let supports_functions = server_state.supports_functions;
         let supports_topology = server_state.supports_topology;
+        // Live-connection dot beside the latency chip. Colors mirror the
+        // latency palette next to it (green/yellow/red) so the row reads as one
+        // health cluster; muted = no heartbeat result yet.
+        let (health_color, health_label) = match server_state.health {
+            ConnectionHealth::Connected => (cx.theme().green, i18n_status_bar(cx, "conn_connected")),
+            ConnectionHealth::Reconnecting => (cx.theme().yellow, i18n_status_bar(cx, "conn_reconnecting")),
+            ConnectionHealth::Offline => (cx.theme().red, i18n_status_bar(cx, "conn_offline")),
+            ConnectionHealth::Unknown => (cx.theme().muted_foreground, i18n_status_bar(cx, "conn_connecting")),
+        };
+        // When the link is down the cached latency is stale and misleading
+        // (a green "5ms" beside a red dot), so blank it to a muted "--".
+        let (latency_text, latency_color) = if server_state.health == ConnectionHealth::Offline {
+            (SharedString::from("--"), cx.theme().muted_foreground)
+        } else {
+            server_state.latency.clone()
+        };
 
         ZedisDivider::new()
             .child(
@@ -685,6 +711,14 @@ impl ZedisStatusBar {
                         h_flex()
                             .gap_2()
                             .child(
+                                div()
+                                    .id("zedis-conn-health")
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .bg(health_color)
+                                    .tooltip(move |window, cx| Tooltip::new(health_label.clone()).build(window, cx)),
+                            )
+                            .child(
                                 Button::new("zedis-status-bar-server-metrics")
                                     .ghost()
                                     .small()
@@ -696,7 +730,7 @@ impl ZedisStatusBar {
                                         });
                                     })),
                             )
-                            .child(Label::new(server_state.latency.0.clone()).text_color(server_state.latency.1)),
+                            .child(Label::new(latency_text).text_color(latency_color)),
                     )
                     .child(
                         h_flex()

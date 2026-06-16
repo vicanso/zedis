@@ -22,17 +22,17 @@ use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
 };
-use crate::views::{ZedisExportServersDialog, export_to_file_global};
+use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global};
 use gpui::{ClipboardItem, ExternalPaths, SharedString, Subscription, Window, div, prelude::*, px};
-use gpui_component::h_flex;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
-    ActiveTheme, Colorize, Disableable, Icon, IconName, Sizable, WindowExt,
+    ActiveTheme, Colorize, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
 };
+use gpui_component::{h_flex, v_flex};
 use redis::cmd;
 use rust_i18n::t;
 use std::cell::Cell;
@@ -567,7 +567,7 @@ impl ZedisServers {
         let warning_label = i18n_servers(cx, "export_secrets_warning");
         let warning_color = cx.theme().yellow;
         let copied_label = i18n_servers(cx, "export_copied");
-        let save_label = i18n_servers(cx, "export_save_file");
+        let copy_label = i18n_servers(cx, "export_copy_clipboard");
         let save_success = i18n_common(cx, "json_exported");
         let save_error = i18n_common(cx, "json_export_failed");
         let suggested_name = export_filename(&server.name);
@@ -579,11 +579,11 @@ impl ZedisServers {
 
         ZedisDialog::new(i18n_servers(cx, "export_title"))
             .w(px(620.))
-            .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+            .ok_text(i18n_servers(cx, "export_save_file"))
             .cancel_text(i18n_common(cx, "cancel"))
             .button_props(
                 dialog_button_props(cx)
-                    .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+                    .ok_text(i18n_servers(cx, "export_save_file"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
@@ -609,43 +609,41 @@ impl ZedisServers {
                     });
                 });
 
-                // "Save to file" alongside the secrets toggle — writes the
-                // JSON to a file (Save dialog defaults to ~/Downloads). Copy
-                // to clipboard stays the dialog's primary OK action.
-                let save_server = body_server.clone();
-                let save_flag = body_flag.clone();
-                let suggested = suggested_name.clone();
-                let save_success_c = save_success.clone();
-                let save_error_c = save_error.clone();
-                let save_btn = Button::new("export-save-file")
+                // "Copy to clipboard" alongside the secrets toggle — Save to
+                // file is now the dialog's primary OK action.
+                let copy_json = body_json.clone();
+                let copied = copied_label.clone();
+                let copy_btn = Button::new("export-copy-clipboard")
                     .small()
                     .outline()
-                    .label(save_label.clone())
-                    .on_click(move |_, _window, cx| {
-                        let json = save_server.to_export_json(save_flag.get()).unwrap_or_default();
-                        export_to_file_global(
-                            cx,
-                            json.into_bytes(),
-                            &suggested,
-                            save_success_c.clone(),
-                            save_error_c.clone(),
-                        );
+                    .label(copy_label.clone())
+                    .on_click(move |_, window, cx| {
+                        let value = copy_json.read(cx).value().to_string();
+                        cx.write_to_clipboard(ClipboardItem::new_string(value));
+                        window.push_notification(Notification::success(copied.clone()), cx);
                     });
 
                 gpui_component::v_flex()
                     .gap_3()
                     .w_full()
                     .child(Label::new(hint.clone()).text_xs())
-                    .child(h_flex().gap_2().child(toggle_btn).child(save_btn))
+                    .child(h_flex().gap_2().child(toggle_btn).child(copy_btn))
                     .when(include_on, |this| {
                         this.child(Label::new(warning_label.clone()).text_xs().text_color(warning_color))
                     })
                     .child(Input::new(&body_json).appearance(true))
             })
-            .on_ok(move |_, window, cx| {
+            .on_ok(move |_, _window, cx| {
+                // Save the displayed JSON to a file (default ~/Downloads,
+                // timestamped). Copy to clipboard is the secondary body action.
                 let value = submit_json.read(cx).value().to_string();
-                cx.write_to_clipboard(ClipboardItem::new_string(value));
-                window.push_notification(Notification::success(copied_label.clone()), cx);
+                export_to_file_global(
+                    cx,
+                    value.into_bytes(),
+                    &suggested_name,
+                    save_success.clone(),
+                    save_error.clone(),
+                );
                 true
             })
             .open(window, cx);
@@ -660,15 +658,16 @@ impl ZedisServers {
         let view_ok = view.clone();
         let view_child = view.clone();
         let select_none_label = i18n_servers(cx, "export_select_none");
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let save_success = i18n_common(cx, "json_exported");
+        let save_error = i18n_common(cx, "json_export_failed");
 
         ZedisDialog::new(i18n_servers(cx, "export_servers_title"))
             .w(px(560.))
-            .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+            .ok_text(i18n_servers(cx, "export_save_file"))
             .cancel_text(i18n_common(cx, "cancel"))
             .button_props(
                 dialog_button_props(cx)
-                    .ok_text(i18n_servers(cx, "export_copy_clipboard"))
+                    .ok_text(i18n_servers(cx, "export_save_file"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || view_child.clone())
@@ -679,16 +678,12 @@ impl ZedisServers {
                     window.push_notification(Notification::warning(select_none_label.clone()), cx);
                     return false;
                 }
+                // Save the selection to a file (default ~/Downloads,
+                // timestamped). Copy to clipboard is the body action.
                 let include_secrets = view_ok.read(cx).include_secrets();
-                let count = selected.len();
                 let json = RedisServer::to_export_json_many(&selected, include_secrets).unwrap_or_default();
-                cx.write_to_clipboard(ClipboardItem::new_string(json));
-                window.push_notification(
-                    Notification::success(SharedString::from(
-                        t!("servers.export_done_multi", count = count, locale = locale).to_string(),
-                    )),
-                    cx,
-                );
+                let name = export_filename("servers");
+                export_to_file_global(cx, json.into_bytes(), &name, save_success.clone(), save_error.clone());
                 true
             })
             .open(window, cx);
@@ -841,6 +836,73 @@ impl ZedisServers {
             })
             .open(window, cx);
     }
+
+    /// Welcoming empty state for the Home view when no servers are configured.
+    ///
+    /// The first thing a brand-new user saw was otherwise a near-blank page
+    /// (only the floating Add/Import action cards). A centered hero — muted
+    /// icon, one-line orientation, a primary "add connection" CTA and an
+    /// import shortcut — gives an obvious next step and surfaces the Redis
+    /// Insight migration path right where it matters. `min_h` keeps it
+    /// vertically centered even though the parent scroll viewport sizes to
+    /// its content.
+    fn render_empty(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let add_label = i18n_servers(cx, "empty_add");
+        let import_label = i18n_servers(cx, "empty_import");
+        // Stay a touch shorter than the viewport so centering doesn't add a
+        // scrollbar (the parent scroll box wraps us in its own padding).
+        let min_h = (window.viewport_size().height - px(96.)).max(px(380.));
+
+        v_flex()
+            .w_full()
+            .min_h(min_h)
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(
+                Icon::new(CustomIconName::DatabaseZap)
+                    .with_size(px(56.))
+                    .text_color(muted.alpha(0.5)),
+            )
+            .child(
+                Label::new(i18n_servers(cx, "empty_title"))
+                    .text_lg()
+                    .font_medium()
+                    .text_color(cx.theme().foreground),
+            )
+            .child(Label::new(i18n_servers(cx, "empty_hint")).text_sm().text_color(muted))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .pt_2()
+                    .child(
+                        Button::new("servers-empty-add")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(add_label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_or_update_server_dialog(
+                                    &RedisServer {
+                                        port: DEFAULT_REDIS_PORT,
+                                        ..Default::default()
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("servers-empty-import")
+                            .outline()
+                            .icon(IconName::Asterisk)
+                            .label(import_label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.import_server_dialog(window, cx);
+                            })),
+                    ),
+            )
+    }
 }
 
 /// Largest file the paste-a-path import shortcut will read. Connection exports
@@ -903,21 +965,6 @@ fn import_file_error_message(cx: &gpui::App, err: &FileImportError) -> SharedStr
     }
 }
 
-/// Build a default export filename from a server name, sanitized to a
-/// filesystem-safe slug (`zedis-<slug>.json`).
-fn export_filename(name: &str) -> String {
-    let slug: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let slug = slug.trim_matches('-');
-    if slug.is_empty() {
-        "zedis-server.json".to_string()
-    } else {
-        format!("zedis-{slug}.json")
-    }
-}
-
 /// Localize an [`ImportError`] for the paste-to-import dialog. Detail-carrying
 /// variants append the parser's own message, which can't be meaningfully
 /// translated.
@@ -956,6 +1003,14 @@ impl Render for ZedisServers {
             );
         }
 
+        // First-run / empty Home: before any connection is configured, show a
+        // centered welcome hero (primary "add" CTA + import shortcut) instead
+        // of the near-blank page the floating Add/Import cards left behind.
+        let all_servers = get_servers().unwrap_or_default();
+        if all_servers.is_empty() {
+            return self.render_empty(window, cx).into_any_element();
+        }
+
         // Responsive grid columns based on viewport width
         let cols = match width {
             width if width < px(VIEWPORT_BREAKPOINT_SMALL) => 1,
@@ -984,7 +1039,6 @@ impl Render for ZedisServers {
         // `get_servers()` already returns them in canonical sort order
         // (group A→Z, then sort_order ASC, ungrouped last). We just
         // need to find the boundaries.
-        let all_servers = get_servers().unwrap_or_default();
         let mut groups: Vec<(Option<String>, Vec<RedisServer>)> = Vec::new();
         for server in &all_servers {
             let g = server

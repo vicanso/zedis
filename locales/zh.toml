@@ -186,6 +186,10 @@ move_up_tooltip = "在分组中上移"
 move_down_tooltip = "在分组中下移"
 ungrouped_label = "未分组"
 updated_at_label = "更新于 %{date}"
+empty_title = "还没有连接"
+empty_hint = "添加你的第一个 Redis 连接,或从 Redis Insight、Zedis 导入已有配置。"
+empty_add = "添加连接"
+empty_import = "导入连接"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
@@ -286,6 +290,10 @@ export_key_tooltip = "导出此键"
 import_from_file_tooltip = "从文件导入…"
 
 [status_bar]
+conn_connected = "已连接"
+conn_reconnecting = "重连中…"
+conn_offline = "已断开"
+conn_connecting = "连接中…"
 group_observability = "可观测"
 group_scripting = "查询与脚本"
 group_admin = "管理"

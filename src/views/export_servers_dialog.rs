@@ -20,18 +20,19 @@
 //! the clipboard. This view is just the form body — the caller wraps it in a
 //! [`zedis_ui::ZedisDialog`] and reads the selection on OK.
 
-use super::export_to_file_global;
 use crate::connection::{RedisServer, get_servers};
-use crate::states::{i18n_common, i18n_servers};
-use gpui::{SharedString, Window, prelude::*, px};
+use crate::states::{ZedisGlobalStore, i18n_servers};
+use gpui::{ClipboardItem, SharedString, Window, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable,
+    ActiveTheme, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
     label::Label,
+    notification::Notification,
     v_flex,
 };
+use rust_i18n::t;
 use std::collections::HashSet;
 
 pub struct ZedisExportServersDialog {
@@ -68,17 +69,23 @@ impl ZedisExportServersDialog {
         self.include_secrets
     }
 
-    /// Save the ticked servers as a JSON array to a file (Save dialog defaults
-    /// to `~/Downloads`). No-op when nothing is ticked.
-    fn save_to_file(&self, cx: &mut Context<Self>) {
+    /// Copy the ticked servers as a JSON array to the clipboard. No-op when
+    /// nothing is ticked. (Save to file is the dialog's primary OK action.)
+    fn copy_to_clipboard(&self, window: &mut Window, cx: &mut Context<Self>) {
         let selected = self.selected_servers();
         if selected.is_empty() {
             return;
         }
+        let count = selected.len();
         let json = RedisServer::to_export_json_many(&selected, self.include_secrets).unwrap_or_default();
-        let success = i18n_common(cx, "json_exported");
-        let error = i18n_common(cx, "json_export_failed");
-        export_to_file_global(cx, json.into_bytes(), "zedis-servers.json", success, error);
+        cx.write_to_clipboard(ClipboardItem::new_string(json));
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        window.push_notification(
+            Notification::success(SharedString::from(
+                t!("servers.export_done_multi", count = count, locale = locale).to_string(),
+            )),
+            cx,
+        );
     }
 
     fn toggle(&mut self, id: String, on: bool, cx: &mut Context<Self>) {
@@ -132,13 +139,13 @@ impl Render for ZedisExportServersDialog {
             cx.notify();
         }));
 
-        // Secondary action: save the selection to a file (Copy stays the
-        // dialog's primary OK). Defaults to ~/Downloads.
-        let save_btn = Button::new("export-servers-save")
+        // Secondary action: copy the selection to the clipboard. Save to file
+        // is the dialog's primary OK action.
+        let copy_btn = Button::new("export-servers-copy")
             .small()
             .outline()
-            .label(i18n_servers(cx, "export_save_file"))
-            .on_click(cx.listener(|this, _, _window, cx| this.save_to_file(cx)));
+            .label(i18n_servers(cx, "export_copy_clipboard"))
+            .on_click(cx.listener(|this, _, window, cx| this.copy_to_clipboard(window, cx)));
 
         v_flex()
             .w_full()
@@ -148,7 +155,7 @@ impl Render for ZedisExportServersDialog {
                     .text_xs()
                     .text_color(muted),
             )
-            .child(h_flex().gap_2().child(secrets_btn).child(save_btn))
+            .child(h_flex().gap_2().child(secrets_btn).child(copy_btn))
             .when(include_on, |this| {
                 this.child(
                     Label::new(i18n_servers(cx, "export_secrets_warning"))

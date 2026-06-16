@@ -186,6 +186,10 @@ move_up_tooltip = "Переместить вверх в группе"
 move_down_tooltip = "Переместить вниз в группе"
 ungrouped_label = "Без группы"
 updated_at_label = "Обновлено %{date}"
+empty_title = "Пока нет подключений"
+empty_hint = "Добавьте первое подключение Redis или импортируйте существующую конфигурацию из Redis Insight или Zedis."
+empty_add = "Добавить подключение"
+empty_import = "Импортировать подключения"
 
 [editor]
 delete_key_prompt = "Вы уверены, что хотите удалить этот ключ: %{key}?"
@@ -287,6 +291,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+conn_connected = "Подключено"
+conn_reconnecting = "Переподключение…"
+conn_offline = "Не в сети"
+conn_connecting = "Подключение…"
 group_observability = "Наблюдаемость"
 group_scripting = "Запросы и скрипты"
 group_admin = "Администрирование"

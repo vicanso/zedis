@@ -186,6 +186,10 @@ move_up_tooltip = "Mover para cima no grupo"
 move_down_tooltip = "Mover para baixo no grupo"
 ungrouped_label = "Sem grupo"
 updated_at_label = "Atualizado %{date}"
+empty_title = "Ainda sem conexões"
+empty_hint = "Adicione sua primeira conexão Redis ou importe uma configuração existente do Redis Insight ou Zedis."
+empty_add = "Adicionar conexão"
+empty_import = "Importar conexões"
 
 [editor]
 delete_key_prompt = "Tem certeza que deseja excluir esta chave: %{key}?"
@@ -287,6 +291,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+conn_connected = "Conectado"
+conn_reconnecting = "Reconectando…"
+conn_offline = "Offline"
+conn_connecting = "Conectando…"
 group_observability = "Observabilidade"
 group_scripting = "Consulta e scripts"
 group_admin = "Administração"

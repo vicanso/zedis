@@ -77,7 +77,7 @@ pub use content::ZedisContent;
 pub use copy_key_dialog::ZedisCopyKeyDialog;
 pub use danger_confirm::confirm_dangerous_command;
 pub use editor::ZedisEditor;
-pub(crate) use export::{export_to_file, export_to_file_global};
+pub(crate) use export::{export_filename, export_to_file, export_to_file_global};
 pub use export_servers_dialog::ZedisExportServersDialog;
 pub use function_editor::ZedisFunctionEditor;
 pub(crate) use geo_map::zset_looks_geo;

@@ -237,6 +237,9 @@ pub enum ServerEvent {
     ServerInfoUpdated,
     /// Periodic redis info updated.
     ServerRedisInfoUpdated,
+    /// Live-connection health (online / reconnecting / offline) changed,
+    /// driven by the heartbeat PING outcome. Emitted only on a transition.
+    ConnectionHealthChanged,
 
     /// Soft wrap changed
     SoftWrapToggled(bool),

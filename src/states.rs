@@ -63,6 +63,7 @@ pub use i18n::i18n_value_search;
 pub use i18n::i18n_vector_set;
 pub use i18n::i18n_zset_editor;
 pub use migration::{LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState};
+pub use server::ConnectionHealth;
 pub use server::ErrorMessage;
 pub use server::ZedisServerState;
 pub use server::event::ServerEvent;

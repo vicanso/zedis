@@ -65,6 +65,10 @@ const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
 /// Fixed width of the TTL chip, in pixels. Sized to fit the two-digit cap
 /// of `format_ttl_chip` (`59s` / `59m`) at 10px font with 1px borders.
 const TTL_CHIP_WIDTH: f32 = 34.0;
+/// Width of the hover-only inline delete button slot, in pixels. The button is
+/// absolutely positioned in this fixed slot at the row's right edge (out of
+/// flow → no reserved width); the TTL chip hides on hover so they don't overlap.
+const INLINE_DELETE_WIDTH: f32 = 28.0;
 const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
 const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
 
@@ -657,6 +661,15 @@ impl ListDelegate for KeyTreeDelegate {
         };
 
         let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
+        // Full-bleed hover fill applied on the content div below. In dark a grey
+        // tint blends into the odd-row stripe, so use a saturated blue that
+        // stands out against both stripe colours. In light the native
+        // `list_hover` already reads fine — leave it unchanged there.
+        let hover_bg = if is_dark {
+            cx.theme().blue.alpha(0.3)
+        } else {
+            cx.theme().blue.alpha(0.1)
+        };
         let show_check_icon = self.enabled_multiple_selection && !is_folder;
         let selected = if show_check_icon && let Some(item) = self.items.get(ix.row) {
             let id = &item.id;
@@ -680,25 +693,37 @@ impl ListDelegate for KeyTreeDelegate {
         // Inline delete only on leaf keys (folders use their context-menu
         // delete) and only when writes are allowed.
         let show_inline_delete = !is_folder && !readonly;
+        // When the row shows a TTL chip, scope the inline delete to that chip
+        // slot (hover the chip to swap it for the delete) instead of revealing
+        // on hover of the whole row. Rows without a chip fall back to row-hover.
+        let has_ttl_chip = ttl_chip.is_some();
+        let delete_tooltip = i18n_key_tree(cx, "delete_key_tooltip");
         Some(
             ListItem::new(ix)
                 .font_family(get_font_family())
                 .w_full()
-                .bg(bg)
-                .py_2()
-                .px_2()
+                // Padding/background/hover live on the content div below so the
+                // hover fill is full-bleed and high-contrast; zero ListItem's
+                // own padding here.
+                .py_0()
+                .px_0()
                 .mb_1()
                 // 4px left bar carries the tag colour; transparent when
                 // untagged keeps row height identical to non-tagged
                 // rows (no jitter when tagging/untagging).
                 .border_l_4()
                 .border_color(row_border)
-                .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
                     div()
                         // Hover group so the inline delete button (below)
                         // can reveal itself only while this row is hovered.
                         .group("ktree-row")
+                        .w_full()
+                        .py_2()
+                        .px_2()
+                        .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
+                        .bg(bg)
+                        .hover(|s| s.bg(hover_bg))
                         .context_menu(move |mut menu, _window, cx| {
                             let id = id.clone();
                             let multi_selection_count = if selected { selected_items_count } else { 0 };
@@ -813,6 +838,11 @@ impl ListDelegate for KeyTreeDelegate {
                                 .gap_2()
                                 .flex_1()
                                 .min_w_0()
+                                // Positioning context for the absolute, hover-only
+                                // delete button below (out of flow → reserves no
+                                // width). The TTL chip hides on hover so the button
+                                // takes its spot without overlapping it.
+                                .relative()
                                 .child(icon)
                                 .child(
                                     div()
@@ -841,26 +871,65 @@ impl ListDelegate for KeyTreeDelegate {
                                     this.child(Icon::new(check_icon))
                                 })
                                 .when_some(ttl_chip, |this, (chip_label, chip_color)| {
-                                    // Soft-tinted chip: low-alpha fill + opaque text
-                                    // (matches the visual weight of the type badge
-                                    // without competing with it). Fixed width so
-                                    // chips align across rows — the formatter caps
-                                    // at two digits + a unit suffix.
+                                    // Soft-tinted chip: low-alpha fill + opaque text.
                                     let mut bg = chip_color;
                                     bg.fade_out(0.85);
                                     let mut border = chip_color;
                                     border.fade_out(0.65);
                                     this.child(
-                                        Label::new(chip_label)
-                                            .text_size(px(10.))
-                                            .w(px(TTL_CHIP_WIDTH))
-                                            .text_center()
-                                            .text_color(chip_color)
-                                            .bg(bg)
-                                            .border_1()
-                                            .border_color(border)
-                                            .rounded_sm()
-                                            .flex_none(),
+                                        div()
+                                            // Hover scope limited to this chip slot
+                                            // (its own group): hovering the chip — not
+                                            // the whole row — swaps it for the delete
+                                            // button, so the TTL stays visible when
+                                            // hovering elsewhere on the row.
+                                            .group("ktree-ttl")
+                                            .relative()
+                                            .flex_none()
+                                            .child(
+                                                div().group_hover("ktree-ttl", |s| s.invisible()).child(
+                                                    Label::new(chip_label)
+                                                        .text_size(px(10.))
+                                                        .w(px(TTL_CHIP_WIDTH))
+                                                        .text_center()
+                                                        .text_color(chip_color)
+                                                        .bg(bg)
+                                                        .border_1()
+                                                        .border_color(border)
+                                                        .rounded_sm()
+                                                        .flex_none(),
+                                                ),
+                                            )
+                                            .when(show_inline_delete, |this| {
+                                                let del_id = del_id.clone();
+                                                let tooltip = delete_tooltip.clone();
+                                                this.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .invisible()
+                                                        .group_hover("ktree-ttl", |s| s.visible())
+                                                        .child(
+                                                            Button::new(("ktree-del", ix.row))
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .icon(CustomIconName::X)
+                                                                .tooltip(tooltip)
+                                                                .on_click(move |_, window, cx| {
+                                                                    cx.stop_propagation();
+                                                                    window.dispatch_action(
+                                                                        Box::new(KeyTreeAction::DeleteKey(
+                                                                            del_id.clone(),
+                                                                        )),
+                                                                        cx,
+                                                                    );
+                                                                }),
+                                                        ),
+                                                )
+                                            }),
                                     )
                                 })
                                 .when(is_folder && is_scanning, |this| {
@@ -875,16 +944,24 @@ impl ListDelegate for KeyTreeDelegate {
                                             .text_color(cx.theme().muted_foreground),
                                     )
                                 })
-                                // Inline delete, revealed on row hover. Dispatches
-                                // the same `DeleteKey` action as the context menu, so
-                                // it shares the confirm dialog + PROD escalation.
-                                // `invisible` (not absent) reserves its width so the
-                                // row layout doesn't shift when hovered.
-                                .when(show_inline_delete, |this| {
+                                // Row-hover inline delete — used only when the row has
+                                // no TTL chip (chip rows scope the delete to the chip
+                                // slot above). Absolutely positioned (out of flow → no
+                                // reserved width); dispatches the same `DeleteKey`
+                                // action as the context menu (confirm + PROD escalation).
+                                .when(show_inline_delete && !has_ttl_chip, |this| {
                                     let del_id = del_id.clone();
+                                    let tooltip = delete_tooltip.clone();
                                     this.child(
                                         div()
-                                            .flex_none()
+                                            .absolute()
+                                            .right_0()
+                                            .top_0()
+                                            .bottom_0()
+                                            .w(px(INLINE_DELETE_WIDTH))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
                                             .invisible()
                                             .group_hover("ktree-row", |s| s.visible())
                                             .child(
@@ -892,7 +969,7 @@ impl ListDelegate for KeyTreeDelegate {
                                                     .ghost()
                                                     .xsmall()
                                                     .icon(CustomIconName::X)
-                                                    .tooltip(i18n_key_tree(cx, "delete_key_tooltip"))
+                                                    .tooltip(tooltip)
                                                     .on_click(move |_, window, cx| {
                                                         cx.stop_propagation();
                                                         window.dispatch_action(

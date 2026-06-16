@@ -17,6 +17,7 @@
 
 use super::dirs_default_directory;
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
+use chrono::Local;
 use gpui::{App, Context, Entity, SharedString, prelude::*};
 
 /// Prompt for a save path, write `bytes` to it off the UI thread, and emit
@@ -85,4 +86,21 @@ pub(crate) fn export_to_file_global(
         });
     })
     .detach();
+}
+
+/// Build a unique, filesystem-safe export filename `zedis-<slug>-<ts>.json`.
+/// The `YYYYMMDD-HHMMSS` timestamp keeps repeated exports from overwriting
+/// each other; `stem` is sanitized to an ASCII-alphanumeric slug.
+pub(crate) fn export_filename(stem: &str) -> String {
+    let slug: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug = slug.trim_matches('-');
+    let ts = Local::now().format("%Y%m%d-%H%M%S");
+    if slug.is_empty() {
+        format!("zedis-{ts}.json")
+    } else {
+        format!("zedis-{slug}-{ts}.json")
+    }
 }

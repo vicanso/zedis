@@ -186,6 +186,10 @@ move_up_tooltip = "グループ内で上に移動"
 move_down_tooltip = "グループ内で下に移動"
 ungrouped_label = "未分類"
 updated_at_label = "更新 %{date}"
+empty_title = "接続がまだありません"
+empty_hint = "最初の Redis 接続を追加するか、Redis Insight や Zedis から既存の設定をインポートしてください。"
+empty_add = "接続を追加"
+empty_import = "接続をインポート"
 
 [editor]
 delete_key_prompt = "このキーを削除しますか: %{key}?"
@@ -287,6 +291,10 @@ import_from_file_tooltip = "Import from file…"
 
 
 [status_bar]
+conn_connected = "接続済み"
+conn_reconnecting = "再接続中…"
+conn_offline = "オフライン"
+conn_connecting = "接続中…"
 group_observability = "可観測性"
 group_scripting = "クエリとスクリプト"
 group_admin = "管理"

@@ -83,6 +83,24 @@ pub enum RedisServerStatus {
     Failed,
 }
 
+/// Health of the live connection, derived purely from the status-bar
+/// heartbeat's `PING` outcome (see `note_ping_result`). Distinct from
+/// [`RedisServerStatus`], which only tracks the *initial* connect/load and
+/// drives retry-on-reselect; this reflects the *ongoing* link so the UI can
+/// show an online / reconnecting / offline dot.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ConnectionHealth {
+    /// No heartbeat result yet (just selected / still doing the first load).
+    #[default]
+    Unknown,
+    /// Last heartbeat PING succeeded.
+    Connected,
+    /// Recent PING(s) failed but still inside the retry window.
+    Reconnecting,
+    /// PING has failed past the threshold â treat the link as down.
+    Offline,
+}
+
 /// Main state management for Redis server operations
 ///
 /// This struct manages:
@@ -132,6 +150,15 @@ pub struct ZedisServerState {
 
     /// Current server status
     server_status: RedisServerStatus,
+
+    /// Live-connection health derived from the heartbeat PING (online /
+    /// reconnecting / offline). Separate from `server_status`, which only
+    /// covers the initial connect/load.
+    connection_health: ConnectionHealth,
+
+    /// Consecutive heartbeat PING failures; drives the reconnecting->offline
+    /// transition in `note_ping_result`, reset to 0 on any success.
+    ping_failures: u32,
 
     /// Total number of keys in the database (from DBSIZE command)
     dbsize: Option<u64>,
@@ -270,6 +297,8 @@ impl ZedisServerState {
         self.dbsize = None;
         self.key = None;
         self.redis_info = None;
+        self.connection_health = ConnectionHealth::Unknown;
+        self.ping_failures = 0;
         self.value = None;
         self.reset_scan(cx);
         self.terminal = false;
@@ -561,6 +590,12 @@ impl ZedisServerState {
     /// Get the last measured latency to the server
     pub fn redis_info(&self) -> Option<&RedisInfo> {
         self.redis_info.as_ref()
+    }
+
+    /// Current live-connection health (online / reconnecting / offline),
+    /// updated each heartbeat tick by `note_ping_result`.
+    pub fn connection_health(&self) -> ConnectionHealth {
+        self.connection_health
     }
 
     /// Get the slow logs
