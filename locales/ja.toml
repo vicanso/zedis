@@ -921,6 +921,9 @@ terminal = "コマンドターミナル"
 back = "エディターに戻る / オーバーレイを閉じる"
 
 [command_palette]
+search_placeholder = "サーバーとキーを検索"
+scope_commands = "コマンド"
+scope_favorites = "お気に入り"
 title = "コマンドパレット"
 placeholder = "サーバーとコマンドを検索…"
 group_servers = "サーバー"

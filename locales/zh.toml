@@ -920,6 +920,9 @@ terminal = "命令终端"
 back = "返回编辑器 / 关闭浮层"
 
 [command_palette]
+search_placeholder = "搜索服务器与 key"
+scope_commands = "命令"
+scope_favorites = "收藏"
 title = "命令面板"
 placeholder = "搜索服务器和命令…"
 group_servers = "服务器"

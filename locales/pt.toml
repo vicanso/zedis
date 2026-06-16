@@ -921,6 +921,9 @@ terminal = "Terminal de comandos"
 back = "Voltar ao editor / fechar sobreposição"
 
 [command_palette]
+search_placeholder = "Buscar servidores e keys"
+scope_commands = "Comandos"
+scope_favorites = "Favoritos"
 title = "Paleta de comandos"
 placeholder = "Buscar servidores e comandos…"
 group_servers = "Servidores"

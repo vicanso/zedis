@@ -921,6 +921,9 @@ terminal = "Command terminal"
 back = "Back to editor / close overlay"
 
 [command_palette]
+search_placeholder = "Search servers and keys"
+scope_commands = "Commands"
+scope_favorites = "Favorites"
 title = "Command Palette"
 placeholder = "Search servers and commands…"
 group_servers = "Servers"

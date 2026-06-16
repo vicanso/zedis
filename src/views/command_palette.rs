@@ -18,6 +18,7 @@
 //! served by the ⌘F key-tree filter instead.
 
 use crate::connection::get_servers;
+use crate::db::get_favorites_manager;
 use crate::helpers::{ShortcutsAction, fuzzy_score};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
@@ -28,6 +29,23 @@ use gpui_component::{ActiveTheme, label::Label, v_flex};
 /// on a large keyspace from turning tens of thousands of loaded keys into
 /// palette rows (and from scoring/sorting an unbounded list per keystroke).
 const KEY_RESULT_CAP: usize = 50;
+
+/// Leading sigils that switch the palette's scope (VS Code style): `>` lists
+/// navigation commands/pages, `*` lists the active server's favorites. With
+/// neither, the palette searches servers + the active connection's loaded keys.
+const CMD_SIGIL: char = '>';
+const FAV_SIGIL: char = '*';
+
+/// Which slice of candidates the palette shows, selected by a leading sigil.
+#[derive(Clone, Copy, PartialEq)]
+enum Scope {
+    /// No sigil: configured servers + (when typing) loaded keys.
+    General,
+    /// `>`: navigation commands / pages + the shortcuts reference.
+    Commands,
+    /// `*`: the active server's favorited keys.
+    Favorites,
+}
 
 /// What activating a palette row does.
 #[derive(Clone)]
@@ -54,9 +72,27 @@ struct PaletteItem {
     command: PaletteCommand,
 }
 
+/// One `<sigil> label` segment of the palette footer's scope legend.
+fn scope_hint(sigil: &str, label: gpui::SharedString, chip_bg: gpui::Hsla, text: gpui::Hsla) -> impl IntoElement {
+    gpui_component::h_flex()
+        .gap_1p5()
+        .items_center()
+        .child(
+            div()
+                .px_1()
+                .rounded_sm()
+                .bg(chip_bg)
+                .child(Label::new(sigil.to_string()).text_xs()),
+        )
+        .child(Label::new(label).text_xs().text_color(text))
+}
+
 pub struct ZedisCommandPalette {
     /// The active connection's state — source of loaded keys for deep search.
     server_state: gpui::Entity<ZedisServerState>,
+    /// Favorited keys for the active server, snapshotted when the palette
+    /// opens so the per-keystroke `build_items` stays DB- and alloc-light.
+    favorites: Vec<gpui::SharedString>,
     open: bool,
     query: gpui::Entity<gpui_component::input::InputState>,
     selected: usize,
@@ -76,9 +112,13 @@ pub struct ZedisCommandPalette {
 
 impl ZedisCommandPalette {
     pub fn new(server_state: gpui::Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| gpui_component::input::InputState::new(window, cx));
+        let query = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx)
+                .placeholder(i18n_command_palette(cx, "search_placeholder"))
+        });
         Self {
             server_state,
+            favorites: Vec::new(),
             open: false,
             query,
             selected: 0,
@@ -97,6 +137,10 @@ impl ZedisCommandPalette {
         if self.open {
             self.selected = 0;
             self.pending_focus = true;
+            // Snapshot the active server's favorites once per open — the
+            // build_items run on every keystroke must stay DB-free.
+            let server_id = self.server_state.read(cx).server_id().to_string();
+            self.favorites = get_favorites_manager().records(&server_id).unwrap_or_default();
             // The ScrollHandle keeps its offset across open/close, so
             // without this the list stays scrolled where it was last
             // time while the selection is back at the top.
@@ -117,118 +161,149 @@ impl ZedisCommandPalette {
         cx.notify();
     }
 
-    /// Build the full (unfiltered) candidate list: configured servers
-    /// first, then navigation commands.
-    fn build_items(&self, cx: &Context<Self>) -> Vec<PaletteItem> {
+    /// Split the raw input into (scope, effective query). A leading `>` or `*`
+    /// sigil selects the scope; the remaining text is what actually gets
+    /// matched. With no sigil the trimmed input searches the General scope.
+    fn parse_query(&self, cx: &Context<Self>) -> (Scope, String) {
+        let raw = self.query.read(cx).value().to_string();
+        let trimmed = raw.trim_start();
+        if let Some(rest) = trimmed.strip_prefix(CMD_SIGIL) {
+            (Scope::Commands, rest.trim().to_string())
+        } else if let Some(rest) = trimmed.strip_prefix(FAV_SIGIL) {
+            (Scope::Favorites, rest.trim().to_string())
+        } else {
+            (Scope::General, raw.trim().to_string())
+        }
+    }
+
+    /// Build the candidate list for the current scope. General lists servers
+    /// first, then (on a non-empty query) loaded-key matches; `>` lists
+    /// navigation commands + the shortcuts reference; `*` lists the active
+    /// server's favorites. `query` is the effective query (sigil stripped);
+    /// `ranked` scores against the same string.
+    fn build_items(&self, scope: Scope, query: &str, cx: &Context<Self>) -> Vec<PaletteItem> {
         let mut items: Vec<PaletteItem> = Vec::new();
 
-        for server in get_servers().unwrap_or_default() {
-            let hint = format!("{}:{}", server.host, server.port);
-            // Match against name + address so "10.0" finds a server too.
-            let search = format!("{} {hint}", server.name);
-            items.push(PaletteItem {
-                label: server.name.clone().into(),
-                hint: hint.into(),
-                search,
-                command: PaletteCommand::Server(server.id.clone()),
-            });
-        }
-
-        // Home/Settings are global; every other view operates on the
-        // selected connection (this mirrors the server-scoped status-bar
-        // "Tools" menu, which is only visible in a server context).
-        // `selected_server` can linger in state after navigating back to
-        // Home (only the sidebar Home button clears it), so a server is
-        // "in context" only when a connection is selected AND we're not
-        // on a global page — otherwise Home would still list everything.
+        // `selected_server` can linger after navigating back to Home, so a
+        // server is "in context" only when one is selected AND we're not on a
+        // global page — otherwise Home would list server-scoped entries too.
         let (has_server, current_route) = {
             let state = cx.global::<ZedisGlobalStore>().read(cx);
             (state.selected_server().is_some(), state.route())
         };
         let in_server_context = has_server && !matches!(current_route, Route::Home | Route::Settings);
 
-        // (i18n key, route) — order defines empty-query display order.
-        let commands: [(&str, Route); 15] = [
-            ("cmd_home", Route::Home),
-            ("cmd_editor", Route::Editor),
-            ("cmd_metrics", Route::Metrics),
-            ("cmd_performance", Route::Slowlog),
-            ("cmd_memory", Route::MemoryAnalysis),
-            ("cmd_clients", Route::Clients),
-            ("cmd_monitor", Route::Monitor),
-            ("cmd_persistence", Route::Persistence),
-            ("cmd_keyspace_notifications", Route::KeyspaceNotifications),
-            ("cmd_config", Route::Config),
-            ("cmd_acl", Route::Acl),
-            ("cmd_search", Route::Search),
-            ("cmd_functions", Route::Functions),
-            ("cmd_lua_scripts", Route::LuaScripts),
-            ("cmd_settings", Route::Settings),
-        ];
-        for (key, route) in commands {
-            // Don't offer to navigate to the page we're already on
-            // (e.g. no "go to Home" while on Home).
-            if route == current_route {
-                continue;
+        match scope {
+            // `*` — the active server's starred keys (a leading star marks
+            // them). Kept out of the General list so servers stay up top; this
+            // is the keyboard-fast path to favorites.
+            Scope::Favorites => {
+                if in_server_context {
+                    for key in &self.favorites {
+                        items.push(PaletteItem {
+                            label: format!("★ {key}").into(),
+                            hint: gpui::SharedString::default(),
+                            search: key.to_string(),
+                            command: PaletteCommand::Key(key.clone()),
+                        });
+                    }
+                }
             }
-            let needs_server = !matches!(route, Route::Home | Route::Settings);
-            if needs_server && !in_server_context {
-                continue;
-            }
-            let label = i18n_command_palette(cx, key);
-            items.push(PaletteItem {
-                label: label.clone(),
-                hint: gpui::SharedString::default(),
-                search: label.to_string(),
-                command: PaletteCommand::Route(route),
-            });
-        }
 
-        // Loaded-key deep search. Only on a non-empty query in a server
-        // context: score the *already-loaded* keys (the SCAN-paginated subset
-        // the tree holds, not the whole keyspace — full-keyspace search stays
-        // with the ⌘F tree filter) directly and keep the top `KEY_RESULT_CAP`,
-        // so we never materialise tens of thousands of rows per keystroke.
-        let key_query = self.query.read(cx).value().trim().to_string();
-        if in_server_context && !key_query.is_empty() {
-            let state = self.server_state.read(cx);
-            let mut scored: Vec<(i32, gpui::SharedString, &'static str)> = state
-                .keys()
-                .iter()
-                .filter_map(|(k, t)| fuzzy_score(&key_query, k).map(|s| (s, k.clone(), t.as_str())))
-                .collect();
-            scored.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
-            scored.truncate(KEY_RESULT_CAP);
-            for (_, key, type_hint) in scored {
+            // `>` — navigation commands / pages, then the shortcuts reference.
+            Scope::Commands => {
+                // (i18n key, route) — order defines empty-query display order.
+                let commands: [(&str, Route); 15] = [
+                    ("cmd_home", Route::Home),
+                    ("cmd_editor", Route::Editor),
+                    ("cmd_metrics", Route::Metrics),
+                    ("cmd_performance", Route::Slowlog),
+                    ("cmd_memory", Route::MemoryAnalysis),
+                    ("cmd_clients", Route::Clients),
+                    ("cmd_monitor", Route::Monitor),
+                    ("cmd_persistence", Route::Persistence),
+                    ("cmd_keyspace_notifications", Route::KeyspaceNotifications),
+                    ("cmd_config", Route::Config),
+                    ("cmd_acl", Route::Acl),
+                    ("cmd_search", Route::Search),
+                    ("cmd_functions", Route::Functions),
+                    ("cmd_lua_scripts", Route::LuaScripts),
+                    ("cmd_settings", Route::Settings),
+                ];
+                for (key, route) in commands {
+                    // Don't offer to navigate to the page we're already on.
+                    if route == current_route {
+                        continue;
+                    }
+                    let needs_server = !matches!(route, Route::Home | Route::Settings);
+                    if needs_server && !in_server_context {
+                        continue;
+                    }
+                    let label = i18n_command_palette(cx, key);
+                    items.push(PaletteItem {
+                        label: label.clone(),
+                        hint: gpui::SharedString::default(),
+                        search: label.to_string(),
+                        command: PaletteCommand::Route(route),
+                    });
+                }
+                let shortcuts_label = i18n_shortcuts(cx, "title");
                 items.push(PaletteItem {
-                    label: key.clone(),
-                    hint: type_hint.into(),
-                    search: key.to_string(),
-                    command: PaletteCommand::Key(key),
+                    label: shortcuts_label.clone(),
+                    hint: gpui::SharedString::default(),
+                    search: shortcuts_label.to_string(),
+                    command: PaletteCommand::ShowShortcuts,
                 });
             }
-        }
 
-        // Global, server-independent: the keyboard-shortcuts reference.
-        let shortcuts_label = i18n_shortcuts(cx, "title");
-        items.push(PaletteItem {
-            label: shortcuts_label.clone(),
-            hint: gpui::SharedString::default(),
-            search: shortcuts_label.to_string(),
-            command: PaletteCommand::ShowShortcuts,
-        });
+            // No sigil — configured servers first, then (on a non-empty query)
+            // the active connection's loaded keys. Full-keyspace search stays
+            // with the ⌘F tree filter; we only score the SCAN-paginated subset
+            // the tree holds and cap at `KEY_RESULT_CAP`, so a big keyspace
+            // never materialises tens of thousands of rows per keystroke.
+            Scope::General => {
+                for server in get_servers().unwrap_or_default() {
+                    let hint = format!("{}:{}", server.host, server.port);
+                    // Match against name + address so "10.0" finds a server too.
+                    let search = format!("{} {hint}", server.name);
+                    items.push(PaletteItem {
+                        label: server.name.clone().into(),
+                        hint: hint.into(),
+                        search,
+                        command: PaletteCommand::Server(server.id.clone()),
+                    });
+                }
+                if in_server_context && !query.is_empty() {
+                    let state = self.server_state.read(cx);
+                    let mut scored: Vec<(i32, gpui::SharedString, &'static str)> = state
+                        .keys()
+                        .iter()
+                        .filter_map(|(k, t)| fuzzy_score(query, k).map(|s| (s, k.clone(), t.as_str())))
+                        .collect();
+                    scored.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+                    scored.truncate(KEY_RESULT_CAP);
+                    for (_, key, type_hint) in scored {
+                        items.push(PaletteItem {
+                            label: key.clone(),
+                            hint: type_hint.into(),
+                            search: key.to_string(),
+                            command: PaletteCommand::Key(key),
+                        });
+                    }
+                }
+            }
+        }
 
         items
     }
 
-    /// Filter+rank `items` by the current query. Returns indices into
-    /// `items`, best match first. Empty query keeps the natural order.
-    fn ranked(&self, items: &[PaletteItem], cx: &Context<Self>) -> Vec<usize> {
-        let query = self.query.read(cx).value().to_string();
+    /// Filter+rank `items` by `query`. Returns indices into `items`, best
+    /// match first. Empty query keeps the natural (insertion) order.
+    fn ranked(&self, items: &[PaletteItem], query: &str) -> Vec<usize> {
         let mut scored: Vec<(i32, usize)> = items
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| fuzzy_score(&query, &it.search).map(|s| (s, i)))
+            .filter_map(|(i, it)| fuzzy_score(query, &it.search).map(|s| (s, i)))
             .collect();
         // Stable sort, higher score first. Equal scores (e.g. empty
         // query → all 0) keep insertion order (sort_by_key is stable).
@@ -305,8 +380,9 @@ impl Render for ZedisCommandPalette {
             });
         }
 
-        let items = self.build_items(cx);
-        let order = self.ranked(&items, cx);
+        let (scope, query_str) = self.parse_query(cx);
+        let items = self.build_items(scope, &query_str, cx);
+        let order = self.ranked(&items, &query_str);
         let count = order.len();
         // Clamp selection to the filtered list.
         let selected = if count == 0 { 0 } else { self.selected.min(count - 1) };
@@ -484,7 +560,33 @@ impl Render for ZedisCommandPalette {
                                 .bottom_0()
                                 .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
                         ),
-                    ),
+                    )
+                    .when(scope == Scope::General, |this| {
+                        // Footer legend teaching the `>` / `*` scope sigils,
+                        // shown only in the default view where discoverability
+                        // matters (in a scoped view the user already knows).
+                        this.child(
+                            gpui_component::h_flex()
+                                .w_full()
+                                .gap_4()
+                                .px_3()
+                                .py_1p5()
+                                .border_t_1()
+                                .border_color(border)
+                                .child(scope_hint(
+                                    ">",
+                                    i18n_command_palette(cx, "scope_commands"),
+                                    active,
+                                    muted,
+                                ))
+                                .child(scope_hint(
+                                    "*",
+                                    i18n_command_palette(cx, "scope_favorites"),
+                                    active,
+                                    muted,
+                                )),
+                        )
+                    }),
             )
             .into_any_element()
     }

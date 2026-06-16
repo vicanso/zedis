@@ -921,6 +921,9 @@ terminal = "Командный терминал"
 back = "Назад к редактору / закрыть оверлей"
 
 [command_palette]
+search_placeholder = "Поиск серверов и ключей"
+scope_commands = "Команды"
+scope_favorites = "Избранное"
 title = "Палитра команд"
 placeholder = "Поиск серверов и команд…"
 group_servers = "Серверы"

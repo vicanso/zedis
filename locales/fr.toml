@@ -922,6 +922,9 @@ terminal = "Terminal de commandes"
 back = "Retour à l'éditeur / fermer la superposition"
 
 [command_palette]
+search_placeholder = "Rechercher serveurs et clés"
+scope_commands = "Commandes"
+scope_favorites = "Favoris"
 title = "Palette de commandes"
 placeholder = "Rechercher serveurs et commandes…"
 group_servers = "Serveurs"
