@@ -147,6 +147,13 @@ impl ZedisContent {
     }
     /// Create a new content view with route-aware view management
     ///
+    /// The single, app-lifetime [`ZedisServerState`] entity (reset on server
+    /// switch). Shared with the command palette so it can fuzzy-search the
+    /// active connection's loaded keys.
+    pub fn server_state(&self) -> Entity<ZedisServerState> {
+        self.server_state.clone()
+    }
+
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {

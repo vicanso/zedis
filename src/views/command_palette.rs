@@ -12,17 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! ⌘K command palette: fuzzy-search configured servers and
-//! navigation commands, keyboard-driven. Phase 1 scope — keys/settings
-//! deep-search deliberately out of scope (per-server lazy SCAN state
-//! needs its own design pass).
+//! ⌘K command palette: fuzzy-search configured servers, navigation
+//! commands, and the active connection's *loaded* keys, keyboard-driven.
+//! Whole-keyspace search (a fresh SCAN per query) stays out of scope and is
+//! served by the ⌘F key-tree filter instead.
 
 use crate::connection::get_servers;
 use crate::helpers::{ShortcutsAction, fuzzy_score};
-use crate::states::{Route, ZedisGlobalStore, i18n_command_palette, i18n_shortcuts};
+use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
+
+/// Cap on loaded-key matches shown in the palette. Keeps a non-empty query
+/// on a large keyspace from turning tens of thousands of loaded keys into
+/// palette rows (and from scoring/sorting an unbounded list per keystroke).
+const KEY_RESULT_CAP: usize = 50;
 
 /// What activating a palette row does.
 #[derive(Clone)]
@@ -31,6 +36,9 @@ enum PaletteCommand {
     Server(String),
     /// Navigate to a route.
     Route(Route),
+    /// Jump to a loaded key on the active server (select it + open the
+    /// editor). Only built for a non-empty query in a server context.
+    Key(gpui::SharedString),
     /// Open the keyboard-shortcuts reference overlay (⌘/). Handed off
     /// to the global `ShortcutsAction` handler so the palette stays
     /// decoupled from the overlay entity.
@@ -47,6 +55,8 @@ struct PaletteItem {
 }
 
 pub struct ZedisCommandPalette {
+    /// The active connection's state — source of loaded keys for deep search.
+    server_state: gpui::Entity<ZedisServerState>,
     open: bool,
     query: gpui::Entity<gpui_component::input::InputState>,
     selected: usize,
@@ -65,9 +75,10 @@ pub struct ZedisCommandPalette {
 }
 
 impl ZedisCommandPalette {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(server_state: gpui::Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| gpui_component::input::InputState::new(window, cx));
         Self {
+            server_state,
             open: false,
             query,
             selected: 0,
@@ -173,6 +184,31 @@ impl ZedisCommandPalette {
             });
         }
 
+        // Loaded-key deep search. Only on a non-empty query in a server
+        // context: score the *already-loaded* keys (the SCAN-paginated subset
+        // the tree holds, not the whole keyspace — full-keyspace search stays
+        // with the ⌘F tree filter) directly and keep the top `KEY_RESULT_CAP`,
+        // so we never materialise tens of thousands of rows per keystroke.
+        let key_query = self.query.read(cx).value().trim().to_string();
+        if in_server_context && !key_query.is_empty() {
+            let state = self.server_state.read(cx);
+            let mut scored: Vec<(i32, gpui::SharedString, &'static str)> = state
+                .keys()
+                .iter()
+                .filter_map(|(k, t)| fuzzy_score(&key_query, k).map(|s| (s, k.clone(), t.as_str())))
+                .collect();
+            scored.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+            scored.truncate(KEY_RESULT_CAP);
+            for (_, key, type_hint) in scored {
+                items.push(PaletteItem {
+                    label: key.clone(),
+                    hint: type_hint.into(),
+                    search: key.to_string(),
+                    command: PaletteCommand::Key(key),
+                });
+            }
+        }
+
         // Global, server-independent: the keyboard-shortcuts reference.
         let shortcuts_label = i18n_shortcuts(cx, "title");
         items.push(PaletteItem {
@@ -209,6 +245,18 @@ impl ZedisCommandPalette {
             window.dispatch_action(Box::new(ShortcutsAction::Toggle), cx);
             return;
         }
+        // Selecting a key needs the per-connection ServerState entity (not the
+        // global store), so handle it here rather than in the update_global
+        // block below: select the key, then jump to the editor.
+        if let PaletteCommand::Key(key) = &command {
+            let key = key.clone();
+            self.server_state.update(cx, |state, cx| state.select_key(key, cx));
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+            });
+            self.close(window, cx);
+            return;
+        }
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
                 PaletteCommand::Server(id) => {
@@ -225,8 +273,9 @@ impl ZedisCommandPalette {
                         state.clear_selected_server(cx);
                     }
                 }
-                // Handled above (early return); arm kept for exhaustiveness.
+                // Handled above (early return); arms kept for exhaustiveness.
                 PaletteCommand::ShowShortcuts => {}
+                PaletteCommand::Key(_) => {}
             });
         });
         self.close(window, cx);

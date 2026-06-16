@@ -62,7 +62,10 @@ impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
         let content = cx.new(|cx| ZedisContent::new(window, cx));
-        let command_palette = cx.new(|cx| ZedisCommandPalette::new(window, cx));
+        // The palette fuzzy-searches the active connection's loaded keys, so
+        // hand it the content's shared ServerState entity.
+        let server_state = content.read(cx).server_state();
+        let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state, window, cx));
         let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
         let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
