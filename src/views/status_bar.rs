@@ -466,9 +466,12 @@ impl ZedisStatusBar {
     ///
     /// `supports_search` / `supports_acl` / `supports_functions` gate
     /// per-server-capability menu entries. Monitor and Config work on
-    /// all Redis versions so they stay unconditional. We hide rather
-    /// than disable so users don't see an entry that visibly does
-    /// nothing.
+    /// all Redis versions so they stay unconditional. Capability-gated
+    /// entries stay *visible but disabled* with a why-suffix (e.g.
+    /// "module not loaded" / "requires Redis ≥ 7.0") so the feature is
+    /// discoverable and the user knows what to enable. `supports_topology`
+    /// is the exception: a cluster topology isn't a feature you can turn
+    /// on, so that group is still hidden on Standalone.
     fn render_tools_menu(
         this: PopupMenu,
         supports_search: bool,
@@ -515,20 +518,43 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::ValueSearch),
             move |_window, cx| Label::new(i18n_value_search(cx, "title")),
         );
-        if supports_search {
-            menu = menu.menu_element_with_icon(
-                Icon::new(IconName::Search),
-                Box::new(ServerToolsAction::Search),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_search_tooltip")),
-            );
-        }
-        if supports_functions {
-            menu = menu.menu_element_with_icon(
-                Icon::new(IconName::Asterisk),
-                Box::new(ServerToolsAction::Functions),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_functions_tooltip")),
-            );
-        }
+        // RediSearch (module `search`). Shown disabled with a "module not
+        // loaded" suffix when the module is absent, so the feature stays
+        // discoverable and the user knows what to enable.
+        let search_label: SharedString = if supports_search {
+            i18n_status_bar(cx, "toggle_search_tooltip")
+        } else {
+            format!(
+                "{}  ·  {}",
+                i18n_status_bar(cx, "toggle_search_tooltip"),
+                i18n_status_bar(cx, "module_not_loaded")
+            )
+            .into()
+        };
+        menu = menu.menu_with_icon_and_disabled(
+            search_label,
+            Icon::new(IconName::Search),
+            Box::new(ServerToolsAction::Search),
+            !supports_search,
+        );
+        // Functions (`FUNCTION`, Redis 7.0+). Version-gated rather than a
+        // module, so the suffix points at the required Redis version.
+        let functions_label: SharedString = if supports_functions {
+            i18n_status_bar(cx, "toggle_functions_tooltip")
+        } else {
+            format!(
+                "{}  ·  {}",
+                i18n_status_bar(cx, "toggle_functions_tooltip"),
+                i18n_status_bar(cx, "requires_redis_7")
+            )
+            .into()
+        };
+        menu = menu.menu_with_icon_and_disabled(
+            functions_label,
+            Icon::new(IconName::Asterisk),
+            Box::new(ServerToolsAction::Functions),
+            !supports_functions,
+        );
         // Lua script library uses EVAL/EVALSHA (since 2.6) — always available,
         // so it anchors this group.
         menu = menu.menu_element_with_icon(
@@ -544,13 +570,24 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::Config),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
         );
-        if supports_acl {
-            menu = menu.menu_element_with_icon(
-                Icon::new(IconName::CircleUser),
-                Box::new(ServerToolsAction::Acl),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_acl_tooltip")),
-            );
-        }
+        // ACL (Redis 6.0+). Version-gated; suffix points at the required
+        // Redis version when unavailable.
+        let acl_label: SharedString = if supports_acl {
+            i18n_status_bar(cx, "toggle_acl_tooltip")
+        } else {
+            format!(
+                "{}  ·  {}",
+                i18n_status_bar(cx, "toggle_acl_tooltip"),
+                i18n_status_bar(cx, "requires_redis_6")
+            )
+            .into()
+        };
+        menu = menu.menu_with_icon_and_disabled(
+            acl_label,
+            Icon::new(IconName::CircleUser),
+            Box::new(ServerToolsAction::Acl),
+            !supports_acl,
+        );
         // Persistence (BGSAVE / BGREWRITEAOF) is pre-2.0 — always offered.
         menu = menu.menu_element_with_icon(
             Icon::new(CustomIconName::HardDrive),
