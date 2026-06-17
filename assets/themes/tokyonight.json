@@ -1,0 +1,147 @@
+{
+  "name": "Tokyo",
+  "author": "Folke Lemaitre",
+  "url": "https://github.com/folke/tokyonight.nvim",
+  "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
+  "themes": [
+    {
+      "name": "Tokyo",
+      "mode": "dark",
+      "colors": {
+        "accent.background": "#2C3045",
+        "accent.foreground": "#c0caf5",
+        "background": "#1a1b26",
+        "border": "#292e42",
+        "window_border": "#3d4462",
+        "ring": "#7aa2f7",
+        "foreground": "#c0caf5",
+        "link.active.foreground": "#7aa2f722",
+        "link.foreground": "#7aa2f7",
+        "link.hover.foreground": "#7aa2f7",
+        "list.active.background": "#7aa2f722",
+        "list.active.border": "#7aa2f7",
+        "list.even.background": "#2C304599",
+        "muted.background": "#2C304544",
+        "muted.foreground": "#565f89",
+        "panel.background": "#292e42",
+        "popover.background": "#1a1b26",
+        "popover.foreground": "#c0caf5",
+        "primary.background": "#7aa2f7",
+        "primary.foreground": "#1a1b26",
+        "scrollbar.background": "#1a1b2600",
+        "scrollbar.thumb.background": "#414868",
+        "secondary.active.background": "#292e42",
+        "secondary.background": "#292e42",
+        "secondary.foreground": "#C0CAF5",
+        "secondary.hover.background": "#2d3349",
+        "title_bar.background": "#161720",
+        "title_bar.border": "#292e42",
+        "chart.grid": "#222332",
+        "base.red": "#f7768e",
+        "base.green": "#9ece6a",
+        "base.yellow": "#e0af68",
+        "base.blue": "#7aa2f7",
+        "base.magenta": "#565f89",
+        "base.cyan": "#7dcfff"
+      },
+      "highlight": {
+        "editor.foreground": "#c0caf5",
+        "editor.background": "#1a1b26",
+        "editor.active_line.background": "#292e42",
+        "editor.line_number": "#565f89",
+        "editor.active_line_number": "#c0caf5",
+        "editor.invisible": "#565f8966",
+        "conflict": "#f7768e",
+        "created": "#9ece6a",
+        "deleted": "#f7768e",
+        "error": "#f7768e",
+        "hidden": "#565f89",
+        "hint": "#7dcfff",
+        "ignored": "#565f89",
+        "info": "#7aa2f7",
+        "modified": "#e0af68",
+        "predictive": "#565f89",
+        "renamed": "#7aa2f7",
+        "success": "#9ece6a",
+        "unreachable": "#565f89",
+        "warning": "#e0af68",
+        "syntax": {
+          "attribute": {
+            "color": "#e0af68"
+          },
+          "boolean": {
+            "color": "#9ece6a"
+          },
+          "comment": {
+            "color": "#565f89",
+            "font_style": "italic"
+          },
+          "comment.doc": {
+            "color": "#565f89",
+            "font_style": "italic"
+          },
+          "constant": {
+            "color": "#7aa2f7"
+          },
+          "constructor": {
+            "color": "#e0af68"
+          },
+          "embedded": {
+            "color": "#c0caf5"
+          },
+          "function": {
+            "color": "#7aa2f7"
+          },
+          "keyword": {
+            "color": "#f7768e"
+          },
+          "link_text": {
+            "color": "#7dcfff",
+            "font_style": "underline"
+          },
+          "link_uri": {
+            "color": "#7aa2f7",
+            "font_style": "italic"
+          },
+          "number": {
+            "color": "#e0af68"
+          },
+          "string": {
+            "color": "#9ece6a"
+          },
+          "string.escape": {
+            "color": "#7dcfff"
+          },
+          "string.regex": {
+            "color": "#9ece6a"
+          },
+          "string.special": {
+            "color": "#e0af68"
+          },
+          "string.special.symbol": {
+            "color": "#e0af68"
+          },
+          "tag": {
+            "color": "#f7768e"
+          },
+          "text.literal": {
+            "color": "#c0caf5"
+          },
+          "title": {
+            "color": "#7aa2f7",
+            "font_weight": 600
+          },
+          "type": {
+            "color": "#7dcfff"
+          },
+          "property": {
+            "color": "#c0caf5"
+          },
+          "variable.special": {
+            "color": "#f7768e"
+          }
+        }
+      }
+    }
+  ]
+}

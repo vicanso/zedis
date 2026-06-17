@@ -243,6 +243,8 @@ diff_patch_label = "Patch RFC 7396 (charge équivalente à JSON.MERGE)"
 diff_patch_empty = "{}  // aucun changement"
 
 [key_tree]
+type_filter = "Type"
+type_filter_all = "Tous les types"
 set_ttl_tooltip = "Définir le TTL…"
 persist_tooltip = "Retirer le TTL (PERSIST)"
 batch_ttl_title = "Définir le TTL"
@@ -922,6 +924,7 @@ terminal = "Terminal de commandes"
 back = "Retour à l'éditeur / fermer la superposition"
 
 [command_palette]
+keys_hint = "Seulement les clés chargées, pas tout le keyspace"
 search_placeholder = "Rechercher serveurs et clés"
 scope_commands = "Commandes"
 scope_favorites = "Favoris"

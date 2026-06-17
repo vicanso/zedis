@@ -1,6 +1,6 @@
 use anyhow::anyhow;
-use gpui::{AssetSource, Result, SharedString};
-use gpui_component::Icon;
+use gpui::{App, AssetSource, Result, SharedString};
+use gpui_component::{Icon, ThemeRegistry};
 use gpui_component_assets::Assets as ComponentAssets;
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
@@ -10,6 +10,7 @@ use std::borrow::Cow;
 #[include = "icons/**/*.svg"]
 #[include = "commands.json"]
 #[include = "icon.png"]
+#[include = "themes/*.json"]
 pub struct Assets;
 
 impl AssetSource for Assets {
@@ -38,6 +39,25 @@ impl AssetSource for Assets {
         );
 
         Ok(files)
+    }
+}
+
+/// Register the embedded `assets/themes/*.json` theme sets into the global
+/// [`ThemeRegistry`] so they appear in the title-bar theme menu. Adapted from
+/// gpui-component's `watch_dir` flow for rust-embedded assets — there is no
+/// on-disk themes directory at runtime. Must run after `gpui_component::init`.
+pub fn register_themes(cx: &mut App) {
+    let registry = ThemeRegistry::global_mut(cx);
+    for path in Assets::iter().filter(|p| p.starts_with("themes/") && p.ends_with(".json")) {
+        let Some(file) = Assets::get(path.as_ref()) else {
+            continue;
+        };
+        let Ok(content) = std::str::from_utf8(&file.data) else {
+            continue;
+        };
+        if let Err(err) = registry.load_themes_from_str(content) {
+            tracing::warn!(theme = %path, error = %err, "failed to load embedded theme");
+        }
     }
 }
 

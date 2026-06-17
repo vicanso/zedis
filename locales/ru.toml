@@ -243,6 +243,8 @@ diff_patch_label = "RFC 7396 merge patch (эквивалент JSON.MERGE payloa
 diff_patch_empty = "{}  // без изменений"
 
 [key_tree]
+type_filter = "Тип"
+type_filter_all = "Все типы"
 set_ttl_tooltip = "Задать TTL…"
 persist_tooltip = "Убрать TTL (PERSIST)"
 batch_ttl_title = "Задать TTL"
@@ -921,6 +923,7 @@ terminal = "Командный терминал"
 back = "Назад к редактору / закрыть оверлей"
 
 [command_palette]
+keys_hint = "Только загруженные ключи, не весь keyspace"
 search_placeholder = "Поиск серверов и ключей"
 scope_commands = "Команды"
 scope_favorites = "Избранное"

@@ -16,11 +16,11 @@ use crate::helpers::MemuAction;
 use crate::{
     assets::CustomIconName,
     connection::get_server,
-    states::{GlobalEvent, Route, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
+    states::{GlobalEvent, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
 };
 use gpui::{App, Context, Corner, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
-    Icon, IconName, Sizable, StyledExt, ThemeMode, TitleBar,
+    Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -70,9 +70,12 @@ impl ZedisTitleBar {
     fn render_settings_menu(this: PopupMenu, cx: &App) -> PopupMenu {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let theme = store.theme();
-        let light_checked = theme == Some(ThemeMode::Light);
-        let dark_checked = theme == Some(ThemeMode::Dark);
-        let system_checked = theme.is_none();
+        // A named theme overrides the mode, so none of Light/Dark/System is
+        // checked while one is active.
+        let has_named_theme = store.theme_name().is_some();
+        let light_checked = !has_named_theme && theme == Some(ThemeMode::Light);
+        let dark_checked = !has_named_theme && theme == Some(ThemeMode::Dark);
+        let system_checked = !has_named_theme && theme.is_none();
 
         let this = this.label(i18n_sidebar(cx, "theme"));
 
@@ -105,6 +108,36 @@ impl ZedisTitleBar {
                 move |_window, cx| Label::new(i18n_sidebar(cx, "system")),
             )
         };
+
+        // Registered color themes, listed in the same group right after
+        // Light/Dark/System (no separator). The registry's built-in default
+        // light/dark are skipped — Light/Dark/System already cover them.
+        // Selecting one applies it and overrides the mode until a mode is
+        // re-picked (which clears the saved theme name).
+        let registry = ThemeRegistry::global(cx);
+        let default_light = registry.default_light_theme().name.clone();
+        let default_dark = registry.default_dark_theme().name.clone();
+        let current_theme_name = store.theme_name();
+        let mut this = this;
+        for config in registry.sorted_themes() {
+            let name = config.name.clone();
+            if name == default_light || name == default_dark {
+                continue;
+            }
+            if current_theme_name.as_deref() == Some(&*name) {
+                this = this.menu_with_check(
+                    name.clone(),
+                    true,
+                    Box::new(SelectThemeAction { name: name.to_string() }),
+                );
+            } else {
+                let action = Box::new(SelectThemeAction { name: name.to_string() });
+                this =
+                    this.menu_element_with_icon(Icon::new(CustomIconName::SwatchBook), action, move |_window, _cx| {
+                        Label::new(name.clone())
+                    });
+            }
+        }
 
         this.separator()
             .menu_element_with_icon(

@@ -23,7 +23,7 @@ use crate::{
         theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
-        KeyType, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
+        KeyType, KeyTypeFilter, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
         escalate_dangerous_body, get_session_option, i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
     },
     views::{
@@ -1820,6 +1820,7 @@ impl ZedisKeyTree {
             });
         }
         let query_mode = self.state.query_mode;
+        let type_filter = self.server_state.read(cx).type_filter();
 
         // Select icon based on query mode
         let icon = match query_mode {
@@ -1906,6 +1907,48 @@ impl ZedisKeyTree {
                                 query_mode == QueryMode::Exact,
                                 Box::new(QueryMode::Exact),
                                 |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")),
+                            )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(Icon::new(CustomIconName::Binary)),
+                    i18n_key_tree(cx, "type_filter"),
+                    window,
+                    cx,
+                    move |submenu, _window, _cx| {
+                        submenu
+                            .menu_element_with_check(type_filter.is_none(), Box::new(KeyTypeFilter::All), |_, cx| {
+                                Label::new(i18n_key_tree(cx, "type_filter_all"))
+                            })
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::String),
+                                Box::new(KeyTypeFilter::String),
+                                |_, _| Label::new("String"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::Hash),
+                                Box::new(KeyTypeFilter::Hash),
+                                |_, _| Label::new("Hash"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::List),
+                                Box::new(KeyTypeFilter::List),
+                                |_, _| Label::new("List"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::Set),
+                                Box::new(KeyTypeFilter::Set),
+                                |_, _| Label::new("Set"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::Zset),
+                                Box::new(KeyTypeFilter::Zset),
+                                |_, _| Label::new("Zset"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::Stream),
+                                Box::new(KeyTypeFilter::Stream),
+                                |_, _| Label::new("Stream"),
                             )
                     },
                 )
@@ -2107,6 +2150,19 @@ impl Render for ZedisKeyTree {
 
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
+            }))
+            .on_action(cx.listener(|this, e: &KeyTypeFilter, _window, cx| {
+                let filter = match e {
+                    KeyTypeFilter::All => None,
+                    KeyTypeFilter::String => Some(KeyType::String),
+                    KeyTypeFilter::List => Some(KeyType::List),
+                    KeyTypeFilter::Set => Some(KeyType::Set),
+                    KeyTypeFilter::Zset => Some(KeyType::Zset),
+                    KeyTypeFilter::Hash => Some(KeyType::Hash),
+                    KeyTypeFilter::Stream => Some(KeyType::Stream),
+                };
+                this.server_state
+                    .update(cx, |state, cx| state.set_type_filter(filter, cx));
             }))
             .on_action(cx.listener(|this, e: &KeyTreeAction, window, cx| match e {
                 KeyTreeAction::ChangeChannelMode => {

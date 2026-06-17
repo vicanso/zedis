@@ -12,16 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    error::Error,
-    helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
-};
+use crate::error::Error;
+use crate::helpers::{decrypt, encrypt, get_or_create_config_dir, is_development};
 use arc_swap::ArcSwap;
 use gpui::SharedString;
 use indexmap::IndexMap;
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use smol::fs;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -169,6 +168,22 @@ pub struct RedisServer {
     pub sort_order: Option<i64>,
 }
 
+/// Recursively drop `null` entries from JSON objects so exported configs stay
+/// terse. Import is unaffected: every optional field deserializes to `None`
+/// when its key is absent.
+fn strip_null_fields(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_null_fields(v)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(arr.into_iter().map(strip_null_fields).collect()),
+        other => other,
+    }
+}
+
 /// Why an import failed, surfaced to the paste-to-import dialog. Kept as a
 /// typed enum (not a `String`) so the UI layer can localize each case; the
 /// JSON / URI parser details are carried verbatim since they can't be
@@ -288,7 +303,8 @@ impl RedisServer {
     /// personal backups (e.g. moving to a new machine) but should
     /// never be shared.
     pub fn to_export_json(&self, include_secrets: bool) -> serde_json::Result<String> {
-        serde_json::to_string_pretty(&self.export_clone(include_secrets))
+        let value = serde_json::to_value(self.export_clone(include_secrets))?;
+        serde_json::to_string_pretty(&strip_null_fields(value))
     }
 
     /// Clean copy of this server for export: the transient identity bits
@@ -317,7 +333,8 @@ impl RedisServer {
     /// [`Self::export_clone`].
     pub fn to_export_json_many(servers: &[RedisServer], include_secrets: bool) -> serde_json::Result<String> {
         let cleaned: Vec<RedisServer> = servers.iter().map(|s| s.export_clone(include_secrets)).collect();
-        serde_json::to_string_pretty(&cleaned)
+        let value = serde_json::to_value(&cleaned)?;
+        serde_json::to_string_pretty(&strip_null_fields(value))
     }
 
     /// Parse a JSON blob produced by [`Self::to_export_json`] (or
@@ -1003,9 +1020,10 @@ mod tests {
         s.sort_order = Some(42);
         let json = s.to_export_json(false).expect("serialize");
         assert!(json.contains("\"Team A\""));
-        // sort_order should be `null` (Option::None) in the exported
-        // JSON — the receiver's upsert assigns its own.
-        assert!(json.contains("\"sort_order\": null"));
+        // Null (None) fields are stripped from the export entirely — including
+        // the blanked sort_order, which the receiver's upsert reassigns.
+        assert!(!json.contains("sort_order"));
+        assert!(!json.contains(": null"), "exported JSON should contain no null fields");
         let imported = RedisServer::from_import_json(&json).expect("import");
         assert_eq!(imported.group.as_deref(), Some("Team A"));
         assert!(imported.sort_order.is_none());

@@ -1023,7 +1023,7 @@ impl RedisClient {
         heat: HeatProbe,
     ) -> Result<(u64, Vec<u64>, Vec<KeyMemoryUsage>)> {
         let pattern = "*";
-        let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
+        let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, count, None).await?;
 
         let total_count: usize = keys_per_node.iter().map(|keys| keys.len()).sum();
 
@@ -1181,7 +1181,7 @@ impl RedisClient {
         cursors: Option<Vec<u64>>,
         page_count: u64,
     ) -> Result<ValueSearchRound> {
-        let (cursors, keys_per_node) = self.scan_nodes(cursors, pattern, page_count).await?;
+        let (cursors, keys_per_node) = self.scan_nodes(cursors, pattern, page_count, None).await?;
         let mut conn = self.connection.clone();
         let mut matches = Vec::new();
         let mut scanned = 0usize;
@@ -1373,8 +1373,9 @@ impl RedisClient {
         pattern: &str,
         count: u64,
         with_ttl: bool,
+        type_filter: Option<&str>,
     ) -> Result<(Vec<u64>, Vec<(SharedString, SharedString, i64)>)> {
-        let (cursors, keys) = self.scan(None, pattern, count, with_ttl).await?;
+        let (cursors, keys) = self.scan(None, pattern, count, with_ttl, type_filter).await?;
         Ok((cursors, keys))
     }
     pub async fn scan_nodes(
@@ -1382,6 +1383,7 @@ impl RedisClient {
         cursors: Option<Vec<u64>>,
         pattern: &str,
         count: u64,
+        type_filter: Option<&str>,
     ) -> Result<(Vec<u64>, Vec<Vec<SharedString>>)> {
         debug!("scan, cursors: {cursors:?}, pattern: {pattern}, count: {count}");
         let mut first_scan = false;
@@ -1402,15 +1404,13 @@ impl RedisClient {
             .iter()
             .map(|&cursor| {
                 if first_scan || cursor != 0 {
-                    Some(
-                        cmd("SCAN")
-                            .cursor_arg(cursor)
-                            .arg("MATCH")
-                            .arg(pattern)
-                            .arg("COUNT")
-                            .arg(count)
-                            .clone(),
-                    )
+                    let mut c = cmd("SCAN");
+                    c.cursor_arg(cursor).arg("MATCH").arg(pattern).arg("COUNT").arg(count);
+                    // Redis 6.0+ server-side type filter (gated by the caller).
+                    if let Some(t) = type_filter {
+                        c.arg("TYPE").arg(t);
+                    }
+                    Some(c)
                 } else {
                     None
                 }
@@ -1448,8 +1448,18 @@ impl RedisClient {
         pattern: &str,
         count: u64,
         with_ttl: bool,
+        type_filter: Option<&str>,
     ) -> Result<(Vec<u64>, Vec<(SharedString, SharedString, i64)>)> {
-        let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count).await?;
+        // Server-side TYPE filter on Redis 6.0+; the client-side `retain` below
+        // covers older servers (the per-key TYPE is fetched regardless). TYPE
+        // filters within each COUNT batch, so a sparse type just needs more
+        // rounds — the caller's paging loop handles that.
+        let server_type = if type_filter.is_some() && self.is_at_least_version("6.0.0") {
+            type_filter
+        } else {
+            None
+        };
+        let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count, server_type).await?;
 
         // Pipeline TYPE (+ optional TTL) per key in one RTT per master.
         // TTL is skipped entirely when the caller doesn't need it — saves
@@ -1497,6 +1507,11 @@ impl RedisClient {
                 };
                 all_keys.push((key, key_type, ttl_secs));
             }
+        }
+        // Always filter client-side too: covers Redis < 6.0 (no server TYPE)
+        // and is a no-op when the server already filtered.
+        if let Some(t) = type_filter {
+            all_keys.retain(|(_, key_type, _)| key_type.as_ref() == t);
         }
         Ok((new_cursors, all_keys))
     }

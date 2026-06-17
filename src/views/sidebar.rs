@@ -414,7 +414,9 @@ impl ZedisSidebar {
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| {
                                 state.go_to(Route::Editor, cx);
-                                state.set_selected_server((server_id.to_string(), 0), cx);
+                                let id = server_id.to_string();
+                                let db = state.last_db_for(&id);
+                                state.set_selected_server((id, db), cx);
                             });
                         });
                     });

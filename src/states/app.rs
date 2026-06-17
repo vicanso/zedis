@@ -87,6 +87,13 @@ pub enum ThemeAction {
     System,
 }
 
+/// Apply a named theme from the registry (carries the theme's name, e.g.
+/// "Ayu Dark"). Dispatched from the title-bar theme menu.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub struct SelectThemeAction {
+    pub name: String,
+}
+
 /// Locale/language selection actions for the settings menu
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum LocaleAction {
@@ -108,12 +115,6 @@ pub enum LocaleAction {
     Es,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
-pub enum FontSizeAction {
-    Large,
-    Medium,
-    Small,
-}
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum SettingsAction {
     Editor,
@@ -239,7 +240,14 @@ pub struct ZedisAppState {
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
     theme: Option<String>,
+    /// Selected named theme from the registry (e.g. "Ayu Dark"). Takes
+    /// precedence over the `theme` mode; `None` falls back to Light/Dark/System.
+    theme_name: Option<String>,
     font_size: Option<FontSize>,
+    /// Continuous UI font size (rem px) from the settings slider. Takes
+    /// precedence over the legacy `font_size` enum; `None` falls back to it,
+    /// then to gpui's 16px default. Additive so old configs migrate silently.
+    font_rem_px: Option<f32>,
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
     auto_expand_threshold: Option<usize>,
@@ -248,6 +256,10 @@ pub struct ZedisAppState {
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
     selected_server: Option<(String, usize)>,
+    /// Per-server last-viewed database, so connecting reopens the DB the user
+    /// left it on instead of always DB 0. Keyed by server id.
+    #[serde(default)]
+    last_db: HashMap<String, usize>,
     tray_enabled: Option<bool>,
     /// When `true`, the key tree fetches TTL per key during SCAN and shows
     /// a TTL chip next to each leaf. When `false` the TTL pipeline command
@@ -391,8 +403,14 @@ impl ZedisAppState {
         cx.emit(GlobalEvent::RouteChanged(route));
         cx.notify();
     }
-    pub fn font_size(&self) -> FontSize {
-        self.font_size.unwrap_or(FontSize::Medium)
+    /// Effective UI font size in rem px: the slider value if set, else the
+    /// legacy `font_size` enum's pixels, else `None` (gpui's 16px default).
+    pub fn font_rem_px(&self) -> Option<f32> {
+        self.font_rem_px
+            .or_else(|| self.font_size.and_then(FontSize::to_pixels))
+    }
+    pub fn set_font_rem_px(&mut self, px: Option<f32>) {
+        self.font_rem_px = px;
     }
     pub fn max_key_tree_depth(&self) -> usize {
         self.max_key_tree_depth.unwrap_or(5)
@@ -416,15 +434,19 @@ impl ZedisAppState {
         }
         self.redis_response_timeout = redis_response_timeout;
     }
-    pub fn set_font_size(&mut self, font_size: Option<FontSize>) {
-        self.font_size = font_size;
-    }
     pub fn theme(&self) -> Option<ThemeMode> {
         match self.theme.as_deref() {
             Some(LIGHT_THEME_MODE) => Some(ThemeMode::Light),
             Some(DARK_THEME_MODE) => Some(ThemeMode::Dark),
             _ => None,
         }
+    }
+    /// The selected named theme, if any (overrides the Light/Dark/System mode).
+    pub fn theme_name(&self) -> Option<String> {
+        self.theme_name.clone()
+    }
+    pub fn set_theme_name(&mut self, name: Option<String>) {
+        self.theme_name = name;
     }
     pub fn locale(&self) -> &str {
         self.locale.as_deref().unwrap_or("en")
@@ -434,6 +456,9 @@ impl ZedisAppState {
         self.bounds = Some(bounds);
     }
     pub fn set_theme(&mut self, theme: Option<ThemeMode>) {
+        // Picking a Light/Dark/System mode clears any named theme so the mode
+        // actually takes effect (the two are mutually exclusive).
+        self.theme_name = None;
         match theme {
             Some(ThemeMode::Light) => {
                 self.theme = Some(LIGHT_THEME_MODE.to_string());
@@ -575,14 +600,33 @@ impl ZedisAppState {
     pub fn selected_server(&self) -> Option<&(String, usize)> {
         self.selected_server.as_ref()
     }
+    /// The DB this server was last viewed on (0 if never). Lets connecting to a
+    /// server reopen the database the user left it on instead of always DB 0.
+    pub fn last_db_for(&self, server_id: &str) -> usize {
+        self.last_db.get(server_id).copied().unwrap_or(0)
+    }
     pub fn clear_selected_server(&mut self, cx: &mut Context<Self>) {
         self.selected_server = None;
         cx.emit(GlobalEvent::ServerSelected(SharedString::default(), 0));
     }
     pub fn set_selected_server(&mut self, selected_server: (String, usize), cx: &mut Context<Self>) {
         let (server_id, db) = selected_server.clone();
+        // Remember the DB per server so a later reconnect reopens it here.
+        if !server_id.is_empty() {
+            self.last_db.insert(server_id.clone(), db);
+        }
         cx.emit(GlobalEvent::ServerSelected(server_id.into(), db));
         self.selected_server = Some(selected_server);
+        // Selection goes through a plain `store.update` (no autosave), so the
+        // remembered DB would be lost on restart. Persist the state explicitly.
+        let snapshot = self.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = save_app_state(&snapshot) {
+                    error!(error = %e, "failed to persist last selected db");
+                }
+            })
+            .detach();
     }
     pub fn remove_server(&mut self, id: &str, cx: &mut Context<Self>) {
         let id = id.to_string();

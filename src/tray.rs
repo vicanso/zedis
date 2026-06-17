@@ -304,7 +304,8 @@ pub fn init_tray(cx: &mut App) {
                                                 cx,
                                                 |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
                                                     state.go_to(Editor, cx);
-                                                    state.set_selected_server((server_id.clone(), 0), cx);
+                                                    let db = state.last_db_for(&server_id);
+                                                    state.set_selected_server((server_id.clone(), db), cx);
                                                 },
                                             );
                                         },

@@ -1,0 +1,152 @@
+{
+  "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
+  "name": "Gruvbox",
+  "author": "Pavel Pertsev",
+  "url": "https://github.com/morhetz/gruvbox",
+  "themes": [
+    {
+      "name": "Gruvbox",
+      "mode": "dark",
+      "colors": {
+        "accent.background": "#303030",
+        "accent.foreground": "#ebdbb2",
+        "background": "#1d2021",
+        "border": "#3e3936",
+        "danger.active.background": "#fb4934",
+        "foreground": "#ebdbb2",
+        "input.border": "#504945",
+        "link.active.foreground": "#83a598",
+        "link.foreground": "#83a598",
+        "link.hover.foreground": "#83a598",
+        "list.active.background": "#d7992111",
+        "list.active.border": "#b17f1b",
+        "list.even.background": "#282828",
+        "muted.background": "#3c383655",
+        "muted.foreground": "#928374",
+        "panel.background": "#282828",
+        "popover.background": "#1d2021",
+        "popover.foreground": "#ebdbb2",
+        "primary.background": "#d79921",
+        "primary.foreground": "#282828",
+        "primary.hover.background": "#fabd2f",
+        "ring": "#b17f1b",
+        "scrollbar.background": "#1d202100",
+        "scrollbar.thumb.background": "#504945",
+        "secondary.active.background": "#333332",
+        "secondary.background": "#282828",
+        "secondary.foreground": "#ebdbb2",
+        "secondary.hover.background": "#33333299",
+        "tab.active.background": "#1d2021",
+        "tab.active.foreground": "#ebdbb2",
+        "tab.background": "#28282800",
+        "tab.foreground": "#928374",
+        "tab_bar.background": "#28282899",
+        "title_bar.background": "#252525",
+        "title_bar.border": "#3e3936",
+        "base.magenta.light": "#D3869B66",
+        "base.red": "#f06555",
+        "base.green": "#98971a",
+        "base.yellow": "#d79921",
+        "base.blue": "#458588",
+        "base.magenta": "#b16286",
+        "base.cyan": "#689d6a"
+      },
+      "highlight": {
+        "editor.foreground": "#DDDDDD",
+        "editor.background": "#1d2021",
+        "editor.active_line.background": "#131313",
+        "editor.line_number": "#8F8F8F",
+        "editor.active_line_number": "#DDDDDD",
+        "editor.invisible": "#92837466",
+        "conflict": "#f06555",
+        "created": "#3f72e2",
+        "deleted": "#9d0006",
+        "error": "#cc241d",
+        "hidden": "#9E9E9E",
+        "hint": "#b283f8",
+        "ignored": "#928374",
+        "info": "#458588",
+        "modified": "#B0A878",
+        "predictive": "#5D5945",
+        "renamed": "#b57614",
+        "success": "#79740e",
+        "unreachable": "#928374",
+        "warning": "#d79921",
+        "syntax": {
+          "attribute": {
+            "color": "#be9a52"
+          },
+          "boolean": {
+            "color": "#E1D797"
+          },
+          "comment": {
+            "color": "#9E9E9E"
+          },
+          "comment.doc": {
+            "color": "#9E9E9E"
+          },
+          "constant": {
+            "color": "#E1D797"
+          },
+          "constructor": {
+            "color": "#b5af9a"
+          },
+          "embedded": {
+            "color": "#CACCCA"
+          },
+          "function": {
+            "color": "#E1D797"
+          },
+          "keyword": {
+            "color": "#E19773"
+          },
+          "link_text": {
+            "color": "#A86D3B",
+            "font_style": "normal"
+          },
+          "link_uri": {
+            "color": "#6F6D66",
+            "font_style": "italic"
+          },
+          "number": {
+            "color": "#E19773"
+          },
+          "string": {
+            "color": "#76BA53"
+          },
+          "string.escape": {
+            "color": "#76BA53"
+          },
+          "string.regex": {
+            "color": "#76BA53"
+          },
+          "string.special": {
+            "color": "#E1D797"
+          },
+          "string.special.symbol": {
+            "color": "#E1D797"
+          },
+          "tag": {
+            "color": "#b5af9a"
+          },
+          "text.literal": {
+            "color": "#E1D797"
+          },
+          "title": {
+            "color": "#A76D3B",
+            "font_weight": 600
+          },
+          "type": {
+            "color": "#A86D3B"
+          },
+          "property": {
+            "color": "#CACCCA"
+          },
+          "variable.special": {
+            "color": "#E19773"
+          }
+        }
+      }
+    }
+  ]
+}

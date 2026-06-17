@@ -15,7 +15,7 @@
 use crate::views::secondary_window::open_secondary_window;
 use crate::{
     helpers::{get_or_create_config_dir, parse_duration},
-    states::{FontSize, ZedisGlobalStore, i18n_settings, update_app_state_and_save},
+    states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
 use gpui::{
     App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
@@ -26,6 +26,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     scroll::ScrollableElement,
+    slider::{Slider, SliderEvent, SliderState, SliderValue},
     switch::Switch,
     v_flex,
 };
@@ -65,7 +66,7 @@ pub struct ZedisSettingEditor {
     ai_model_state: Entity<InputState>,
     tray_enabled: bool,
     show_key_tree_ttl: bool,
-    font_size_select: Entity<ZedisSelect>,
+    font_size_slider: Entity<SliderState>,
     locale_select: Entity<ZedisSelect>,
     _subscriptions: Vec<Subscription>,
 }
@@ -118,7 +119,7 @@ impl ZedisSettingEditor {
         let key_scan_count = store.key_scan_count();
         let tray_enabled = store.tray_enabled();
         let show_key_tree_ttl = store.show_key_tree_ttl();
-        let font_size = store.font_size();
+        let font_rem = store.font_rem_px().unwrap_or(16.0);
         let locale = store.locale().to_string();
         let ai_base_url = store.ai_base_url();
         let ai_api_key = store.ai_api_key();
@@ -319,31 +320,27 @@ impl ZedisSettingEditor {
             });
         }));
 
-        let font_size_index = match font_size {
-            FontSize::Large => 0,
-            FontSize::Medium => 1,
-            FontSize::Small => 2,
-        };
-        let font_size_items = vec![
-            i18n_settings(cx, "font_size_large").to_string(),
-            i18n_settings(cx, "font_size_medium").to_string(),
-            i18n_settings(cx, "font_size_small").to_string(),
-        ];
-        let font_size_select = cx.new(|cx| ZedisSelect::new(font_size_items, Some(font_size_index), window, cx));
-
+        // Continuous font size (rem px) via a slider, 12–22px. The save is
+        // debounced; `cx.notify()` re-renders the row so the px readout tracks
+        // the thumb live.
+        let font_size_slider = cx.new(|_| {
+            SliderState::new()
+                .min(12.0)
+                .max(20.0)
+                .step(1.0)
+                .default_value(font_rem.clamp(12.0, 20.0))
+        });
         subscriptions.push(cx.subscribe_in(
-            &font_size_select,
+            &font_size_slider,
             window,
-            |_view, _select, event: &ZedisSelectEvent, _window, cx| {
-                let ZedisSelectEvent::Change(index) = event;
-                let font_size = match *index {
-                    0 => Some(FontSize::Large),
-                    2 => Some(FontSize::Small),
-                    _ => None,
-                };
-                update_app_state_and_save(cx, "save_font_size", move |state, _| {
-                    state.set_font_size(font_size);
-                });
+            |_view, _slider, event: &SliderEvent, _window, cx| {
+                if let SliderEvent::Change(SliderValue::Single(rem)) = event {
+                    let rem = *rem;
+                    update_app_state_and_save(cx, "save_font_size", move |state, _| {
+                        state.set_font_rem_px(Some(rem));
+                    });
+                    cx.notify();
+                }
             },
         ));
 
@@ -383,7 +380,7 @@ impl ZedisSettingEditor {
             ai_model_state,
             tray_enabled,
             show_key_tree_ttl,
-            font_size_select,
+            font_size_slider,
             locale_select,
         }
     }
@@ -425,8 +422,13 @@ impl ZedisSettingEditor {
 
 impl Render for ZedisSettingEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels() {
-            window.set_rem_size(font_size);
+        // Apply the *persisted* font size, not the live slider value: this
+        // window scales by rem and the slider sets rem, so driving rem straight
+        // from the slider rescales the slider itself mid-drag — the thumb drifts
+        // and resizes (e.g. looked centred at 15px). The debounced store keeps
+        // the control stable while dragging.
+        if let Some(rem) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
+            window.set_rem_size(rem);
         }
 
         v_flex().size_full().overflow_y_scrollbar().px_6().child(
@@ -439,7 +441,31 @@ impl Render for ZedisSettingEditor {
                     "section_appearance",
                     "section_appearance_desc",
                 ))
-                .child(Self::render_setting_row(cx, "font_size", self.font_size_select.clone()))
+                .child(Self::render_setting_row(cx, "font_size", {
+                    let muted = cx.theme().muted_foreground;
+                    let rem = match self.font_size_slider.read(cx).value() {
+                        SliderValue::Single(v) | SliderValue::Range(v, _) => v,
+                    };
+                    // Fill the row's shared 200px control column (render_setting_row
+                    // wraps every input in a `w(px(200.))` div). `min_w_0` lets the
+                    // flex_1 slider shrink below its content width so the px readout
+                    // beside it stays visible — the original overflow was flex_1
+                    // with the default `min-width: auto`.
+                    // gap_4 (1rem) leaves room for the thumb, which overhangs the
+                    // track end by ~half its width (size_4) at the max; flex_none
+                    // keeps the px readout from being squeezed.
+                    h_flex()
+                        .w_full()
+                        .gap_4()
+                        .items_center()
+                        .child(Slider::new(&self.font_size_slider).flex_1().min_w_0())
+                        .child(
+                            Label::new(format!("{}px", rem as i32))
+                                .flex_none()
+                                .text_sm()
+                                .text_color(muted),
+                        )
+                }))
                 .child(Self::render_setting_row(cx, "lang", self.locale_select.clone()))
                 // — Key Behavior —
                 .child(Self::render_section_header(

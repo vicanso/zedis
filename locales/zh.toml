@@ -243,6 +243,8 @@ diff_patch_label = "RFC 7396 merge patch(等价的 JSON.MERGE 内容)"
 diff_patch_empty = "{}  // 无变化"
 
 [key_tree]
+type_filter = "类型"
+type_filter_all = "全部类型"
 set_ttl_tooltip = "设置 TTL…"
 persist_tooltip = "移除 TTL（持久化）"
 batch_ttl_title = "设置 TTL"
@@ -920,6 +922,7 @@ terminal = "命令终端"
 back = "返回编辑器 / 关闭浮层"
 
 [command_palette]
+keys_hint = "仅显示已加载的 key（非整库）"
 search_placeholder = "搜索服务器与 key"
 scope_commands = "命令"
 scope_favorites = "收藏"

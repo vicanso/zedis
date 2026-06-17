@@ -144,6 +144,8 @@ pub struct ZedisServerState {
 
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
+    /// Optional filter to show only keys of one native type (`SCAN ... TYPE`).
+    type_filter: Option<KeyType>,
 
     /// Whether to soft wrap the editor
     soft_wrap: bool,
@@ -300,6 +302,9 @@ impl ZedisServerState {
         self.connection_health = ConnectionHealth::Unknown;
         self.ping_failures = 0;
         self.value = None;
+        // Cleared on server switch (but NOT in reset_scan, which a filter
+        // change triggers and must preserve the just-set filter).
+        self.type_filter = None;
         self.reset_scan(cx);
         self.terminal = false;
         self.last_slow_logs_checked_at = 0;
@@ -542,6 +547,10 @@ impl ZedisServerState {
     /// Set the query mode (All/Prefix/Exact)
     pub fn set_query_mode(&mut self, mode: QueryMode, _cx: &mut Context<Self>) {
         self.query_mode = mode;
+    }
+    /// The active key-type filter, if any.
+    pub fn type_filter(&self) -> Option<KeyType> {
+        self.type_filter
     }
     /// Set whether to soft wrap the editor
     pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {

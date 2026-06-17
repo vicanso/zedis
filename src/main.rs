@@ -7,8 +7,8 @@ use crate::helpers::{
     is_app_store_build, is_development, new_hot_keys, register_extra_languages,
 };
 use crate::states::{
-    FontSize, FontSizeAction, GlobalEvent, LocaleAction, NotificationCategory, Route, ServerToolsAction,
-    SettingsAction, ThemeAction, ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
+    GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, SettingsAction,
+    ThemeAction, ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, open_about_window,
@@ -18,7 +18,9 @@ use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, prelude::*, px, size,
 };
-use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
+use gpui_component::{
+    ActiveTheme, Root, Theme, ThemeMode, ThemeRegistry, WindowExt, h_flex, notification::Notification, v_flex,
+};
 use std::{env, str::FromStr, time::Duration};
 use sys_locale::get_locale;
 use tracing::{Level, error, info};
@@ -98,9 +100,16 @@ impl Zedis {
         })
         .detach();
         cx.observe_window_appearance(window, |this, _window, cx| {
-            if cx.global::<ZedisGlobalStore>().read(cx).theme().is_none() {
+            // Only follow the OS appearance on System mode with no named theme
+            // active — a named theme should persist across OS appearance changes.
+            let follow_system = {
+                let store = cx.global::<ZedisGlobalStore>().read(cx);
+                store.theme().is_none() && store.theme_name().is_none()
+            };
+            if follow_system {
                 this.theme_update_task = Some(cx.spawn(async move |_this, cx| {
                     cx.update(|cx| {
+                        restore_default_themes(cx);
                         Theme::change(cx.window_appearance(), None, cx);
                         cx.refresh_windows();
                     });
@@ -179,6 +188,34 @@ impl Zedis {
     }
 }
 
+/// Apply a registry theme by name (e.g. "Ayu Dark") if present, returning
+/// whether it was found. Used at startup and from the title-bar theme menu.
+fn apply_named_theme(name: &str, cx: &mut App) -> bool {
+    let Some(config) = ThemeRegistry::global(cx).themes().get(name).cloned() else {
+        return false;
+    };
+    Theme::global_mut(cx).apply_config(&config);
+    cx.refresh_windows();
+    true
+}
+
+/// Restore the registry's default light/dark configs into the global `Theme`.
+/// `apply_config` (used to apply a named theme) overwrites the matching
+/// `light_theme`/`dark_theme` slot, so picking Light/Dark/System afterwards
+/// would just re-apply that named theme unless the slots are reset first.
+fn restore_default_themes(cx: &mut App) {
+    let (light, dark) = {
+        let registry = ThemeRegistry::global(cx);
+        (
+            registry.default_light_theme().clone(),
+            registry.default_dark_theme().clone(),
+        )
+    };
+    let theme = Theme::global_mut(cx);
+    theme.light_theme = light;
+    theme.dark_theme = dark;
+}
+
 impl Render for Zedis {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
@@ -190,7 +227,7 @@ impl Render for Zedis {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
-        if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels() {
+        if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
             window.set_rem_size(font_size);
         }
 
@@ -235,6 +272,10 @@ impl Render for Zedis {
                     },
                 };
 
+                // A previously-applied named theme overwrote the Theme's
+                // light/dark slot, so restore the registry defaults first —
+                // otherwise switching mode would just re-apply that named theme.
+                restore_default_themes(cx);
                 // Apply theme immediately for instant visual feedback
                 Theme::change(render_mode, None, cx);
 
@@ -242,6 +283,14 @@ impl Render for Zedis {
                 update_app_state_and_save(cx, "save_theme", move |state, _cx| {
                     state.set_theme(mode);
                 });
+            }))
+            .on_action(cx.listener(|_this, e: &SelectThemeAction, _window, cx| {
+                let name = e.name.clone();
+                if apply_named_theme(&name, cx) {
+                    update_app_state_and_save(cx, "save_theme_name", move |state, _cx| {
+                        state.set_theme_name(Some(name));
+                    });
+                }
             }))
             // Locale action handler - changes language and saves to disk
             .on_action(cx.listener(|_this, e: &LocaleAction, _window, cx| {
@@ -259,19 +308,6 @@ impl Render for Zedis {
                 // Save locale preference and refresh UI
                 update_app_state_and_save(cx, "save_locale", move |state, _cx| {
                     state.set_locale(locale.to_string());
-                });
-            }))
-            .on_action(cx.listener(move |_this, e: &FontSizeAction, _window, cx| {
-                let action = *e;
-
-                let font_size = match action {
-                    FontSizeAction::Large => Some(FontSize::Large),
-                    FontSizeAction::Small => Some(FontSize::Small),
-                    _ => None,
-                };
-                // Save locale preference and refresh UI
-                update_app_state_and_save(cx, "save_font_size", move |state, _cx| {
-                    state.set_font_size(font_size);
                 });
             }))
             .on_action(cx.listener(move |_this, e: &SettingsAction, _window, cx| match e {
@@ -388,6 +424,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
+        // Register the embedded color themes so they appear in the theme menu.
+        assets::register_themes(cx);
 
         cx.activate(true);
         let window_bounds = if let Some(bounds) = app_state.bounds() {
@@ -404,7 +442,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let app_state = cx.new(|_| app_state);
         let app_store = ZedisGlobalStore::new(app_state);
-        if let Some(theme) = app_store.read(cx).theme() {
+        // A saved named theme wins; otherwise fall back to the Light/Dark/System
+        // mode (resolved against the OS appearance by the renderer).
+        let saved_theme_name = app_store.read(cx).theme_name();
+        let saved_mode = app_store.read(cx).theme();
+        let applied = match saved_theme_name {
+            Some(name) => apply_named_theme(&name, cx),
+            None => false,
+        };
+        if !applied && let Some(theme) = saved_mode {
             Theme::change(theme, None, cx);
         }
         cx.set_global(app_store);

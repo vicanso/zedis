@@ -1194,7 +1194,8 @@ impl Render for ZedisServers {
                             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                 store.update(cx, |state, cx| {
                                     state.go_to(Route::Editor, cx);
-                                    state.set_selected_server((select_server_id.clone(), 0), cx);
+                                    let db = state.last_db_for(&select_server_id);
+                                    state.set_selected_server((select_server_id.clone(), db), cx);
                                 });
                             });
                         });

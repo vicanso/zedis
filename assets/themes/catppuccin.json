@@ -1,0 +1,157 @@
+{
+  "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
+  "name": "Catppuccin",
+  "author": "Catppuccino",
+  "url": "https://github.com/catppuccin/catppuccin",
+  "themes": [
+    {
+      "name": "Catppuccin",
+      "mode": "dark",
+      "colors": {
+        "accent.background": "#2e2e3e",
+        "accent.foreground": "#cdd6f4",
+        "background": "#181825",
+        "border": "#313244",
+        "ring": "#cba6f7",
+        "danger.background": "#f38ba8",
+        "danger.active.background": "#eba0ac",
+        "danger.hover.background": "#f38ba8",
+        "foreground": "#cdd6f4",
+        "input.border": "#6c7086",
+        "link.active.foreground": "#89b4fa",
+        "link.foreground": "#89b4fa",
+        "link.hover.foreground": "#89b4fa",
+        "list.active.background": "#89b4fa15",
+        "list.active.border": "#89b4fa77",
+        "list.hover.background": "#202031",
+        "list.even.background": "#161622",
+        "list.head.background": "#1E1E2E",
+        "muted.background": "#302d41",
+        "muted.foreground": "#6c7086",
+        "panel.background": "#302d41",
+        "popover.background": "#1e1e2e",
+        "popover.foreground": "#cdd6f4",
+        "primary.active.background": "#89b4fa",
+        "primary.background": "#89b4fa",
+        "primary.foreground": "#1e1e2e",
+        "primary.hover.background": "#74c7ec",
+        "scrollbar.background": "#1e1e2e00",
+        "scrollbar.thumb.background": "#4e4e5e",
+        "secondary.active.background": "#45475a",
+        "secondary.background": "#302d41",
+        "secondary.foreground": "#cdd6f4",
+        "secondary.hover.background": "#575268",
+        "tab.background": "#0B0B1100",
+        "tab.foreground": "#aeb7d5",
+        "tab_bar.background": "#0B0B11",
+        "title_bar.background": "#11111B",
+        "title_bar.border": "#313244",
+        "base.red": "#f38ba8",
+        "base.green": "#a6e3a1",
+        "base.yellow": "#f9e2af",
+        "base.blue": "#89b4fa",
+        "base.magenta": "#f5c2e7",
+        "base.magenta.light": "#f38ba866",
+        "base.cyan": "#94e2d5"
+      },
+      "highlight": {
+        "editor.foreground": "#cdd6f4",
+        "editor.background": "#181825",
+        "editor.active_line.background": "#222230AA",
+        "editor.line_number": "#6c7086",
+        "editor.active_line_number": "#cdd6f4",
+        "editor.invisible": "#7c7f9366",
+        "conflict": "#f38ba8",
+        "created": "#a6e3a1",
+        "deleted": "#f38ba8",
+        "error": "#f38ba8",
+        "hidden": "#6c7086",
+        "hint": "#89b4fa",
+        "ignored": "#6c7086",
+        "info": "#89b4fa",
+        "modified": "#f9e2af",
+        "predictive": "#6c7086",
+        "renamed": "#f5c2e7",
+        "success": "#a6e3a1",
+        "unreachable": "#6c7086",
+        "warning": "#f9e2af",
+        "syntax": {
+          "attribute": {
+            "color": "#f9e2af"
+          },
+          "boolean": {
+            "color": "#f5c2e7"
+          },
+          "comment": {
+            "color": "#6c7086",
+            "font_style": "italic"
+          },
+          "comment.doc": {
+            "color": "#6c7086",
+            "font_style": "italic"
+          },
+          "constant": {
+            "color": "#f9e2af"
+          },
+          "constructor": {
+            "color": "#89b4fa"
+          },
+          "embedded": {
+            "color": "#cdd6f4"
+          },
+          "function": {
+            "color": "#89b4fa"
+          },
+          "keyword": {
+            "color": "#f5c2e7"
+          },
+          "link_text": {
+            "color": "#89b4fa",
+            "font_style": "normal"
+          },
+          "link_uri": {
+            "color": "#6c7086",
+            "font_style": "italic"
+          },
+          "number": {
+            "color": "#f9e2af"
+          },
+          "string": {
+            "color": "#a6e3a1"
+          },
+          "string.escape": {
+            "color": "#a6e3a1"
+          },
+          "string.regex": {
+            "color": "#a6e3a1"
+          },
+          "string.special": {
+            "color": "#f9e2af"
+          },
+          "string.special.symbol": {
+            "color": "#f9e2af"
+          },
+          "tag": {
+            "color": "#89b4fa"
+          },
+          "text.literal": {
+            "color": "#cdd6f4"
+          },
+          "title": {
+            "color": "#f5c2e7",
+            "font_weight": 600
+          },
+          "type": {
+            "color": "#89b4fa"
+          },
+          "property": {
+            "color": "#cdd6f4"
+          },
+          "variable.special": {
+            "color": "#f5c2e7"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -243,6 +243,8 @@ diff_patch_label = "RFC 7396 Merge-Patch (äquivalente JSON.MERGE-Payload)"
 diff_patch_empty = "{}  // keine Änderung"
 
 [key_tree]
+type_filter = "Typ"
+type_filter_all = "Alle Typen"
 set_ttl_tooltip = "TTL festlegen…"
 persist_tooltip = "TTL entfernen (PERSIST)"
 batch_ttl_title = "TTL festlegen"
@@ -921,6 +923,7 @@ terminal = "Befehlsterminal"
 back = "Zurück zum Editor / Overlay schließen"
 
 [command_palette]
+keys_hint = "Nur geladene Keys — nicht der ganze Keyspace"
 search_placeholder = "Server und Keys suchen"
 scope_commands = "Befehle"
 scope_favorites = "Favoriten"

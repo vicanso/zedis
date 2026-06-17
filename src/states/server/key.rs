@@ -186,6 +186,7 @@ impl ZedisServerState {
         } else {
             format!("match=*{keyword}* count={key_scan_count} offset={offset}")
         };
+        let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
         self.spawn_with_arg(
             ServerTask::ScanKeys,
             scan_arg,
@@ -201,9 +202,9 @@ impl ZedisServerState {
                 // auto-paging loop after roughly one batch per master.
                 let count = key_scan_count as u64;
                 if let Some(cursors) = cursors {
-                    client.scan(Some(cursors), &pattern, count, with_ttl).await
+                    client.scan(Some(cursors), &pattern, count, with_ttl, type_arg).await
                 } else {
-                    client.first_scan(&pattern, count, with_ttl).await
+                    client.first_scan(&pattern, count, with_ttl, type_arg).await
                 }
             },
             move |this, result, cx| {
@@ -284,13 +285,14 @@ impl ZedisServerState {
         let with_ttl = store.show_key_tree_ttl();
         let masters = self.nodes.0.max(1);
         let count = (self.keys.len().max(key_scan_count) / masters).max(1);
+        let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
         self.spawn_with_arg(
             ServerTask::AutoRefresh,
             pattern.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
 
-                client.first_scan(&pattern, count as u64, with_ttl).await
+                client.first_scan(&pattern, count as u64, with_ttl, type_arg).await
             },
             move |this, result, cx| {
                 // This refresh diffs against the live key set and *removes*
@@ -351,6 +353,13 @@ impl ZedisServerState {
             QueryMode::Exact => self.select_key(keyword, cx),
             _ => self.scan(keyword, cx),
         }
+    }
+    /// Set the key-type filter and re-run the current filter so the tree shows
+    /// only keys of that type (`None` clears it).
+    pub fn set_type_filter(&mut self, type_filter: Option<KeyType>, cx: &mut Context<Self>) {
+        self.type_filter = type_filter;
+        let keyword = self.keyword.clone();
+        self.handle_filter(keyword, cx);
     }
     /// Collapse all keys
     pub fn collapse_all_keys(&mut self, cx: &mut Context<Self>) {
@@ -443,15 +452,18 @@ impl ZedisServerState {
         // Stop this batch once accumulated matches reach ~80% of key_scan_count.
         let threshold = key_scan_count as usize * SCAN_PREFIX_FILL_PERCENT / 100;
         let task_server_id = server_id.clone();
+        let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
         self.spawn_with_arg(
             ServerTask::ScanPrefix,
             prefix.clone(),
             move || async move {
                 let client = get_connection_manager().get_client(&task_server_id, db).await?;
                 let (new_cursor, keys) = if let Some(cursors) = cursors {
-                    client.scan(Some(cursors), &pattern, key_scan_count, with_ttl).await?
+                    client
+                        .scan(Some(cursors), &pattern, key_scan_count, with_ttl, type_arg)
+                        .await?
                 } else {
-                    client.first_scan(&pattern, key_scan_count, with_ttl).await?
+                    client.first_scan(&pattern, key_scan_count, with_ttl, type_arg).await?
                 };
                 let done = new_cursor.iter().sum::<u64>() == 0;
                 Ok((keys, new_cursor, done))
@@ -800,7 +812,7 @@ impl ZedisServerState {
                 let count = 10_000;
                 let mut cursors: Option<Vec<u64>> = None;
                 for _ in 0..20 {
-                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count).await?;
+                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count, None).await?;
                     client.unlike_keys(keys_per_node).await?;
 
                     if new_cursors.iter().sum::<u64>() == 0 {
@@ -1041,7 +1053,7 @@ impl ZedisServerState {
                 let count = 10_000;
                 let mut cursors: Option<Vec<u64>> = None;
                 for _ in 0..20 {
-                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count).await?;
+                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count, None).await?;
                     let flat: Vec<SharedString> = keys_per_node.into_iter().flatten().collect();
                     client.set_ttl_keys_scattered(flat, ttl_secs).await?;
                     if new_cursors.iter().sum::<u64>() == 0 {

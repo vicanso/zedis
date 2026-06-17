@@ -231,9 +231,9 @@ fn phase_label(phase: &MigrationPhase, cx: &App) -> SharedString {
 }
 
 impl Render for ZedisMigrationWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_size().to_pixels() {
-            _window.set_rem_size(font_size);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
+            window.set_rem_size(font_size);
         }
         let theme = cx.theme();
         let muted = theme.muted_foreground;

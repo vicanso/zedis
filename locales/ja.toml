@@ -243,6 +243,8 @@ diff_patch_label = "RFC 7396 マージパッチ(JSON.MERGE と同等のペイロ
 diff_patch_empty = "{}  // 変更なし"
 
 [key_tree]
+type_filter = "型"
+type_filter_all = "すべての型"
 set_ttl_tooltip = "TTL を設定…"
 persist_tooltip = "TTL を削除（PERSIST）"
 batch_ttl_title = "TTL を設定"
@@ -921,6 +923,7 @@ terminal = "コマンドターミナル"
 back = "エディターに戻る / オーバーレイを閉じる"
 
 [command_palette]
+keys_hint = "読み込み済みのキーのみ（全体ではありません）"
 search_placeholder = "サーバーとキーを検索"
 scope_commands = "コマンド"
 scope_favorites = "お気に入り"

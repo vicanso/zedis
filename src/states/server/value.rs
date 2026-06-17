@@ -514,6 +514,21 @@ impl KeyType {
         }
     }
 
+    /// The lowercase Redis `TYPE` name for native types, used with
+    /// `SCAN ... TYPE`. `None` for module/derived types (JSON, TimeSeries,
+    /// Vector, Probabilistic, Channel) that have no native-type SCAN filter.
+    pub fn scan_type_name(self) -> Option<&'static str> {
+        match self {
+            KeyType::String => Some("string"),
+            KeyType::List => Some("list"),
+            KeyType::Set => Some("set"),
+            KeyType::Zset => Some("zset"),
+            KeyType::Hash => Some("hash"),
+            KeyType::Stream => Some("stream"),
+            _ => None,
+        }
+    }
+
     /// Returns the Redis command used to create a key of this type.
     pub fn create_command(&self) -> &'static str {
         match self {

@@ -68,6 +68,20 @@ impl FromStr for QueryMode {
     }
 }
 
+/// Key-tree filter by Redis native type, dispatched from the key-tree menu.
+/// `All` clears the filter; the others map 1:1 to `KeyType` in the handler.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+pub enum KeyTypeFilter {
+    #[default]
+    All,
+    String,
+    List,
+    Set,
+    Zset,
+    Hash,
+    Stream,
+}
+
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 pub struct SessionOption {
     pub id: String,
