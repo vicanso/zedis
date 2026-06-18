@@ -17,148 +17,74 @@
   <video src="https://github.com/user-attachments/assets/217cc0a7-cc7e-40d0-ac7e-1ec61c36a02b" autoplay loop muted playsinline width="100%"></video>
 </p>
 
-
 ---
 
 ## 🤔 为什么选择 Zedis？
 
 厌倦了那些仅仅为了显示一个 JSON 字符串就吃掉几 GB 内存的 Electron Redis 客户端，或者在你不小心点击了一个包含 10 万个元素的键时直接卡死？我们也有同感。
 
-**Zedis** 专为追求原生性能的开发者而生，从零开始打造。由 **GPUI**（[Zed Editor](https://zed.dev) 背后同款革命性渲染引擎）驱动，即便在浏览超大数据库时，Zedis 也能以极低的内存占用，带来流畅丝滑的 60+ FPS 原生体验。
+**Zedis** 专为追求原生性能的开发者而生，从零开始打造。由 **GPUI**（[Zed Editor](https://zed.dev) 背后同款渲染引擎）驱动，即便在浏览超大数据库时，Zedis 也能以极低的内存占用，带来流畅丝滑的 60+ FPS 原生体验。
 
-## ✨ 核心特性
+## ✨ 亮点
 
-### 🚀 极速原生体验
+- 🦀 **原生，而非 Electron** —— 每个像素都在 GPU 上绘制、虚拟滚动 `SCAN`，百万级键也保持 60+ FPS、极低内存。
+- 🧠 **看得懂你的数据** —— 自动解压并解码 JSON/JSONPath、Protobuf、MessagePack、时间戳、图片与 Hex，并为每种 Redis 类型和模块提供专用查看器。
+- 📊 **实时可观测** —— 实时指标、带离线 + AI 建议的内存分析器、慢日志 ↔ Latency、`MONITOR`、按值搜索。
+- 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥加密存储、破坏性操作对生产环境升级确认措辞。
+- 🌐 **连接一切** —— TLS/SSL、SSH 隧道、Cluster/Sentinel、Redis Insight 导入，以及 8 种界面语言。
+- ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、Batch 模式、跨服务器复制/对比。
 
-<details><summary><b>原生 GPU 渲染</b> —— 每个像素都在 GPU 上绘制、虚拟滚动 SCAN，百万级键也保持 60+ FPS、极低内存。</summary>
+## 📸 截图
 
-虚拟滚动结合 `SCAN` 迭代，无论 keyspace 多大都保持响应——滚动零延迟、标签页秒切换、内存占用极低。
-</details>
+<!--
+  方案 A —— 图片托管在 GitHub:把每张截图拖进任意 issue/PR 评论(或 release),
+  得到 https://github.com/user-attachments/assets/... 链接,然后替换下面的
+  REPLACE-* 占位符。点击缩略图打开原图;width="260" 让三列网格约占一屏。
+  建议截图(按重要性):
+    1. key-browser     —— 命名空间树 + JSON / 语法高亮的值编辑器
+    2. memory-analyzer —— Top-N 表 + TTL 直方图 + 体检建议
+    3. live-metrics    —— 实时 GPU 图表(CPU / 内存 / 网络)
+    4. geo-map         —— sorted set 画在雷达上
+    5. vector-set      —— 向量集 + KNN(VSIM)结果
+    6. command-palette —— ⌘K 命令面板
+-->
 
-<details><summary><b>跨平台</b> —— macOS、Windows、Linux 均为原生体验，支持浅色 / 深色 / 跟随系统。</summary>
+<table>
+  <tr>
+    <td><a href="REPLACE-key-browser"><img src="REPLACE-key-browser" width="260" alt="键浏览与数据查看"></a></td>
+    <td><a href="REPLACE-memory-analyzer"><img src="REPLACE-memory-analyzer" width="260" alt="内存分析器"></a></td>
+    <td><a href="REPLACE-live-metrics"><img src="REPLACE-live-metrics" width="260" alt="实时指标"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>键浏览与数据查看</sub></td>
+    <td align="center"><sub>内存分析器</sub></td>
+    <td align="center"><sub>实时指标</sub></td>
+  </tr>
+  <tr>
+    <td><a href="REPLACE-geo-map"><img src="REPLACE-geo-map" width="260" alt="地理地图"></a></td>
+    <td><a href="REPLACE-vector-set"><img src="REPLACE-vector-set" width="260" alt="向量集 + KNN"></a></td>
+    <td><a href="REPLACE-command-palette"><img src="REPLACE-command-palette" width="260" alt="命令面板"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>地理地图</sub></td>
+    <td align="center"><sub>向量集 + KNN</sub></td>
+    <td align="center"><sub>命令面板(⌘K)</sub></td>
+  </tr>
+</table>
 
-在三大桌面平台上都有真正的原生质感。
-</details>
+## 🧩 功能一览
 
-### 🧠 智能数据查看器
+| 领域 | 包含内容 |
+| --- | --- |
+| 🚀 **原生 & 快** | GPU 渲染 · 虚拟滚动 `SCAN`，百万键 60+ FPS · macOS / Windows / Linux · 浅色 / 深色 / 跟随系统 |
+| 🧠 **智能数据查看器** | 自动解压(LZ4 / Snappy / GZIP / ZSTD)· JSON & RedisJSON + JSONPath · Protobuf · MessagePack · 时间戳 · 图片 · Hex · 自定义脚本 |
+| 🗂️ **类型 & 模块查看器** | 位图 · HyperLogLog · 向量集(KNN)· 地理地图 · Bloom / Cuckoo / Count-Min / Top-K · 时间序列 · Streams(实时跟踪)· Pub/Sub · RediSearch · Functions |
+| 📊 **可观测性** | 实时指标 · 内存分析 + AI 建议 · 慢日志 ↔ Latency · `MONITOR` · 按值搜索 · 集群健康 · 持久化 & 键事件 |
+| 🔑 **Keys & 数据** | 带 TTL chip 的命名空间树 · 标签 / 备注 / 收藏 · 重命名 · 字段级 TTL · 版本历史 · 文件导入导出 · 批量操作 · 跨服务器复制 & 对比 |
+| 🔐 **安全 & 隐私** | 环境标签 + PROD 升级确认 · 只读锁 · ACL 编辑 · TLS/SSL & SSH · 密钥加密 · 纯本地、无遥测 |
+| ⌨️ **效率** | ⌘K 面板 · ⌘/ 快捷键速查 · 带补全的 redis-cli · 多行 Batch 模式 · Lua 脚本库 |
 
-Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。
-
-<details><summary><b>自动解压缩</b> —— 透明解包 LZ4、SNAPPY、GZIP、ZSTD。</summary>
-
-压缩值就地解包，你看到的是真实内容而非二进制 blob。
-</details>
-
-<details><summary><b>丰富内容解码</b> —— JSON/RedisJSON、Protobuf、MessagePack、Unix 时间戳、媒体 & Hex。</summary>
-
-**JSON & RedisJSON** 内置美化、语法高亮与最小化 `JSON.MERGE` 差异（RFC 7396）——**JSONPath**（`$.user.email`、`$.items[?(@.price > 100)]`）对普通 string 键也适用，无需模块。**Protobuf & MessagePack** 零配置反序列化；10/13 位 **Unix 时间戳** 预览为本地 + UTC；**图片**（`PNG/JPG/WEBP/SVG/GIF`）与完全可编辑的 **Hex** 视图一应俱全。
-</details>
-
-<details><summary><b>自定义脚本查看器</b> —— 通过外部 Shell 命令对任意值做自定义解码。</summary>
-
-配置含占位符（`{KEY}`、`{VALUE}`、`{HEX}`、`{RAW_FILE}`）的命令模板，Zedis 用 `sh -c` / `cmd /c` 执行并将 stdout 作为格式化结果，按服务器精确 / 前缀 / 后缀 / 正则匹配键名。
-</details>
-
-<details><summary><b>专项类型查看器</b> —— 不透明的值都会打开为专用的交互式查看器。</summary>
-
-**位图/Bitfield** 在 GPU 网格上绘制每一位（`SETBIT`/`BITCOUNT`/`BITFIELD`）；**HyperLogLog** 展示 `PFCOUNT` 基数；**向量集 + KNN**（Redis 8）经 `VSIM` 逐跳遍历 HNSW 图；**地理地图** 把 sorted set 画在无底图雷达上并支持 `GEOSEARCH`；**概率型**（RedisBloom：Bloom/Cuckoo/Count-Min/Top-K/t-digest）与**时间序列**（RedisTimeSeries `TS.INFO` + 分桶 `TS.RANGE` 图表）各有专卡。按 key 的类型 / 模块分发。
-</details>
-
-<details><summary><b>模块面板</b> —— RediSearch（FT.*）与 Functions（Lua library）的专用面板。</summary>
-
-**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器。模块 / 版本不满足时自动隐藏。
-</details>
-
-<details><summary><b>Redis Streams</b> —— 浏览、实时跟踪、管理消费者组，全程不离开 GUI。</summary>
-
-浏览流条目、**实时跟踪**新消息（`XREAD BLOCK`，环形缓冲）、经 `XINFO` 查看消费者组与待处理消息，并管理消费者组（`XGROUP CREATE` / `SETID` / `DESTROY`，销毁带确认）。
-</details>
-
-<details><summary><b>跨服务器工具</b> —— 在两台服务器间复制 / 对比 key、或对比完整配置。</summary>
-
-**复制** key（连值带 TTL，`DUMP`/`RESTORE`）、**对比** string key 与对端同名 key（并排 diff）、或**对比**两台的 `CONFIG GET *`（斑马线表格只列差异）。专为排查"prod 和 staging 为何不一致"。
-</details>
-
-<details><summary><b>Key 编辑与历史</b> —— 重命名、字段级 TTL、文件导入导出、批量粘贴、版本历史。</summary>
-
-原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。
-</details>
-
-### 📊 实时可观测性
-
-内置 GPU 加速仪表盘，彻底改变你监控 Redis 实例的方式。
-
-<details><summary><b>实时指标</b> —— CPU、内存、网络 I/O 的实时图表。</summary>
-
-精美渲染的 GPU 加速时序图表。
-</details>
-
-<details><summary><b>内存分析器 + 体检建议</b> —— 排查 BigKey、查看 TTL 分布、获取离线体检与可选 AI 建议。</summary>
-
-Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。扫描一结束，**离线规则引擎** 即自动给出体检建议 —— 大 key、`volatile-*` 策略下无法淘汰的键、`noeviction`、内存碎片偏高、应合并为 Hash 的大量小 string、占用大部分内存的前缀 —— 零配置、零网络。也可一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。
-</details>
-
-<details><summary><b>性能诊断</b> —— 慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。</summary>
-
-Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），并把过滤后的视图导出为 **CSV/JSON**；外加关键字过滤的实时 `MONITOR`、客户端管理（`CLIENT LIST/KILL`）、以及来自 `INFO commandstats` 的每命令 **次/秒** 表。
-</details>
-
-<details><summary><b>按值搜索</b> —— 找出<i>值里包含</i>某段文本的 key（带护栏的采样扫描）。</summary>
-
-Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 key 前缀、1 万键 / 10 秒上限（可取消）、跳过超 1 MiB 的值——覆盖 string 值、hash 字段、list/set/zset 成员，每条命中标注命中位置。结果是明确的**采样**，绝不号称完整。
-</details>
-
-<details><summary><b>集群健康与管理</b> —— 带复制延迟的拓扑树，以及 failover / forget / meet / replicate。</summary>
-
-以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` 与 `SENTINEL FAILOVER` / `RESET` / `REMOVE`，每个写操作都过确认对话框、PROD 升级。仅在多节点部署出现。
-</details>
-
-<details><summary><b>持久化与键事件</b> —— RDB/AOF 状态 + 一键保存，外加实时键事件排查。</summary>
-
-持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级）。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供一键开启 `notify-keyspace-events`。
-</details>
-
-### 🛡️ 安全与效率
-
-<details><summary><b>隐私优先</b> —— 数据与凭据都留在本机，绝不外传。</summary>
-
-标签、备注、收藏与搜索历史存于**本地 redb 文件** —— 完全不占 Redis 存储，也不发往任何地方。连接密钥**加密存储**，以 JSON 分享连接时**默认剥离凭据**。可选的 AI 分析只发送 key 的**名称、大小与 TTL —— 绝不含 value**，且只发往**你自己配置**的 OpenAI 兼容接口。自定义脚本查看器经你本机的 Shell 本地运行。**无遥测、无账号、无云端。**
-</details>
-
-<details><summary><b>命令面板与快捷键</b> —— ⌘K 模糊导航 + ⌘/ 快捷键速查。</summary>
-
-**⌘K** 模糊搜索服务器与各面板（方向键移动、Enter 执行、Esc 关闭）；**⌘/** 打开只读的分组浮层，按平台符号列出所有快捷键。
-</details>
-
-<details><summary><b>连接安全</b> —— 环境标签 + 对生产升级措辞的确认对话框。</summary>
-
-为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏，并可把任意连接锁为**只读**。破坏性操作（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。
-</details>
-
-<details><summary><b>ACL 用户管理</b>（Redis 6+）—— 覆盖完整 ACL 生命周期的 GUI。</summary>
-
-列出用户，查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设（Full / Read-only / Disabled）和可切换 chip（命令类别 + 通配符）编辑。
-</details>
-
-<details><summary><b>安全连接与分组</b> —— TLS/SSL 与 SSH 隧道，配可命名、可分享的服务器分组。</summary>
-
-完整 **TLS/SSL**（自定义 CA、客户端证书）与 **SSH 隧道**（密码、私钥、Agent）。把连接整理进可命名、可折叠的**分组**并重排，单个连接可导出为 JSON（默认剥离凭据）。也可粘贴 `redis://` 连接串或 **Redis Insight** 的数据库导出一键迁入 —— 多个数据库一次到位。
-</details>
-
-<details><summary><b>集成 CLI 与 Workbench</b> —— 带补全的 redis-cli 终端 + 多行 Batch 模式。</summary>
-
-按版本过滤的命令补全与内联参数 / 说明提示。一键 **Batch** 模式把 REPL 换成多行编辑器——每行一条命令，用 `⌘`/`Ctrl`+`Enter` 运行（危险命令仍走确认对话框）。
-</details>
-
-<details><summary><b>Key 组织</b> —— 带 TTL chip 的命名空间树、收藏、纯客户端标签与备注。</summary>
-
-键按 `:` 整理成嵌套树，带紧凑 TTL chip（绿色存活 / 红色将过期 / 灰色永久）。收藏常用键、回溯搜索历史，并打颜色**标签与备注**——存于本地 redb 文件，**完全不占 Redis 存储**，永不离开本机。
-</details>
-
-<details><summary><b>批量 Key 操作</b> —— 多选删除、批量 TTL、DUMP/RESTORE 导入导出、自动刷新。</summary>
-
-多选一次删除大量键；对整批选择或前缀设置 / 移除 TTL（集群安全、PROD 升级）；把任意选择导出为带 magic header + CRC32 的 framed 二进制文件并在他处 restore；并为高频变更实例自动刷新树视图。
-</details>
+📖 **[查看完整功能巡览 →](./docs/FEATURES_zh.md)**
 
 ---
 
@@ -189,7 +115,11 @@ yay -S zedis-bin
 ### Cargo（跨平台源码编译）
 
 ```bash
+# 最新发布版（来自 crates.io）
 cargo install --locked zedis-gui
+
+# 或直接从 GitHub 编译最新提交
+cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
 
 ---

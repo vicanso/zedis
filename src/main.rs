@@ -30,7 +30,15 @@ use tracing_subscriber::FmtSubscriber;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-rust_i18n::i18n!("locales", fallback = "en");
+// Pointed at the empty `locales_stub/` so the macro embeds no translations at
+// compile time; the real `locales/*.toml` are loaded (compressed) at runtime by
+// `i18n_loader::runtime_backend`, which the `t!` lookups resolve through. See
+// `src/i18n_loader.rs`.
+rust_i18n::i18n!(
+    "locales_stub",
+    fallback = "en",
+    backend = crate::i18n_loader::runtime_backend()
+);
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -41,6 +49,7 @@ mod constants;
 mod db;
 mod error;
 mod helpers;
+mod i18n_loader;
 mod states;
 #[cfg(not(target_os = "linux"))]
 mod tray;

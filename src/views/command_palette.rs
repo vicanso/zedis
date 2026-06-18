@@ -24,17 +24,11 @@ use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_command_pale
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
-use std::time::Duration;
 
 /// Cap on loaded-key matches shown in the palette. Keeps a non-empty query
 /// on a large keyspace from turning tens of thousands of loaded keys into
 /// palette rows (and from scoring/sorting an unbounded list per keystroke).
 const KEY_RESULT_CAP: usize = 50;
-
-/// Debounce window (ms) before the General-scope loaded-key scan runs after a
-/// keystroke — keeps fast typing from fuzzy-scanning the whole loaded set on
-/// every keypress.
-const KEY_DEBOUNCE_MS: u64 = 150;
 
 /// Leading sigils that switch the palette's scope (VS Code style): `>` lists
 /// navigation commands/pages, `*` lists the active server's favorites. With
@@ -99,14 +93,6 @@ pub struct ZedisCommandPalette {
     /// Favorited keys for the active server, snapshotted when the palette
     /// opens so the per-keystroke `build_items` stays DB- and alloc-light.
     favorites: Vec<gpui::SharedString>,
-    /// Debounced copy of the General-scope query. The loaded-key scan (which
-    /// fuzzy-scores the whole loaded set) runs only once this catches up to the
-    /// live query — ~`KEY_DEBOUNCE_MS` after typing pauses — so each keystroke
-    /// no longer scans tens of thousands of keys.
-    key_query: String,
-    /// Pending debounce timer that advances `key_query`; dropped (cancelled) on
-    /// the next keystroke.
-    debounce_task: Option<gpui::Task<()>>,
     open: bool,
     query: gpui::Entity<gpui_component::input::InputState>,
     selected: usize,
@@ -133,8 +119,6 @@ impl ZedisCommandPalette {
         Self {
             server_state,
             favorites: Vec::new(),
-            key_query: String::new(),
-            debounce_task: None,
             open: false,
             query,
             selected: 0,
@@ -157,9 +141,6 @@ impl ZedisCommandPalette {
             // build_items run on every keystroke must stay DB-free.
             let server_id = self.server_state.read(cx).server_id().to_string();
             self.favorites = get_favorites_manager().records(&server_id).unwrap_or_default();
-            // Reset the debounced key query so a stale one from last open can't
-            // briefly drive the loaded-key scan on the first render.
-            self.key_query = String::new();
             // The ScrollHandle keeps its offset across open/close, so
             // without this the list stays scrolled where it was last
             // time while the selection is back at the top.
@@ -200,7 +181,7 @@ impl ZedisCommandPalette {
     /// navigation commands + the shortcuts reference; `*` lists the active
     /// server's favorites. `query` is the effective query (sigil stripped);
     /// `ranked` scores against the same string.
-    fn build_items(&self, scope: Scope, query: &str, key_query: &str, cx: &Context<Self>) -> Vec<PaletteItem> {
+    fn build_items(&self, scope: Scope, query: &str, cx: &Context<Self>) -> Vec<PaletteItem> {
         let mut items: Vec<PaletteItem> = Vec::new();
 
         // `selected_server` can linger after navigating back to Home, so a
@@ -292,11 +273,12 @@ impl ZedisCommandPalette {
                         command: PaletteCommand::Server(server.id.clone()),
                     });
                 }
-                // Gated on the debounced `key_query`: while the user is still
-                // typing (query != key_query) the scan is skipped, so a big
-                // loaded set isn't fuzzy-scanned on every keystroke. Whole-
-                // keyspace search lives in the ⌘F tree filter.
-                if in_server_context && !query.is_empty() && query == key_query {
+                // Scored live on every keystroke: the loaded set is the SCAN-
+                // paginated subset the tree holds (not the whole keyspace), and
+                // fuzzy-scoring a few thousand short keys is sub-millisecond, so
+                // no debounce is needed. Whole-keyspace search lives in the ⌘F
+                // tree filter.
+                if in_server_context && !query.is_empty() {
                     let state = self.server_state.read(cx);
                     let mut scored: Vec<(i32, gpui::SharedString, &'static str)> = state
                         .keys()
@@ -405,25 +387,7 @@ impl Render for ZedisCommandPalette {
         }
 
         let (scope, query_str) = self.parse_query(cx);
-        // Debounce the loaded-key scan (see `key_query`): each keystroke that
-        // changes the query reschedules a ~150ms catch-up instead of scanning
-        // the whole loaded set now. Cheap items (servers/commands/favorites)
-        // still filter on the live query for instant feedback.
-        if scope == Scope::General && query_str != self.key_query {
-            let q = query_str.clone();
-            self.debounce_task = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(KEY_DEBOUNCE_MS))
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.key_query = q;
-                    cx.notify();
-                })
-                .ok();
-            }));
-        }
-        let key_query = self.key_query.clone();
-        let items = self.build_items(scope, &query_str, &key_query, cx);
+        let items = self.build_items(scope, &query_str, cx);
         let order = self.ranked(&items, &query_str);
         let count = order.len();
         // Clamp selection to the filtered list.
