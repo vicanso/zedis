@@ -51,9 +51,9 @@
 
 <table>
   <tr>
-    <td><a href="REPLACE-key-browser"><img src="REPLACE-key-browser" width="260" alt="键浏览与数据查看"></a></td>
-    <td><a href="REPLACE-memory-analyzer"><img src="REPLACE-memory-analyzer" width="260" alt="内存分析器"></a></td>
-    <td><a href="REPLACE-live-metrics"><img src="REPLACE-live-metrics" width="260" alt="实时指标"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa"><img src="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa" width="260" alt="键浏览与数据查看"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0"><img src="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0" width="260" alt="内存分析器"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21"><img src="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21" width="260" alt="实时指标"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>键浏览与数据查看</sub></td>
@@ -61,9 +61,9 @@
     <td align="center"><sub>实时指标</sub></td>
   </tr>
   <tr>
-    <td><a href="REPLACE-geo-map"><img src="REPLACE-geo-map" width="260" alt="地理地图"></a></td>
-    <td><a href="REPLACE-vector-set"><img src="REPLACE-vector-set" width="260" alt="向量集 + KNN"></a></td>
-    <td><a href="REPLACE-command-palette"><img src="REPLACE-command-palette" width="260" alt="命令面板"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507"><img src="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507" width="260" alt="地理地图"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13"><img src="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13" width="260" alt="向量集 + KNN"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b"><img src="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b" width="260" alt="命令面板"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>地理地图</sub></td>

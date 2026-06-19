@@ -53,9 +53,9 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 
 <table>
   <tr>
-    <td><a href="REPLACE-key-browser"><img src="REPLACE-key-browser" width="260" alt="Key browser & data viewer"></a></td>
-    <td><a href="REPLACE-memory-analyzer"><img src="REPLACE-memory-analyzer" width="260" alt="Memory analyzer"></a></td>
-    <td><a href="REPLACE-live-metrics"><img src="REPLACE-live-metrics" width="260" alt="Live metrics"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa"><img src="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa" width="260" alt="Key browser & data viewer"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0"><img src="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0" width="260" alt="Memory analyzer"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21"><img src="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21" width="260" alt="Live metrics"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>Key browser & data viewer</sub></td>
@@ -63,9 +63,9 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
     <td align="center"><sub>Live metrics</sub></td>
   </tr>
   <tr>
-    <td><a href="REPLACE-geo-map"><img src="REPLACE-geo-map" width="260" alt="Geo map"></a></td>
-    <td><a href="REPLACE-vector-set"><img src="REPLACE-vector-set" width="260" alt="Vector Set + KNN"></a></td>
-    <td><a href="REPLACE-command-palette"><img src="REPLACE-command-palette" width="260" alt="Command palette"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507"><img src="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507" width="260" alt="Geo map"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13"><img src="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13" width="260" alt="Vector Set + KNN"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b"><img src="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b" width="260" alt="Command palette"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>Geo map</sub></td>
