@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.4](https://github.com/vicanso/zedis/compare/v0.4.3..v0.4.4) - 2026-06-19
+
+### ⛰️  Features
+
+- Show module/version-gated tools disabled with a why-hint - ([55c9476](https://github.com/vicanso/zedis/commit/55c94767babd3668bb7a5458679cea6b08106661))
+- Themes, font slider, per-server DB memory, type filter, palette polish - ([77524ba](https://github.com/vicanso/zedis/commit/77524bab2a2a20a998f2bb42c7e3f9d808e7e3d6))
+- VS Code-style scoped command palette (keys, favorites, commands) - ([111f2f2](https://github.com/vicanso/zedis/commit/111f2f2ad2cab2b9500ecd6e8932ff86f0402a64))
+- Search loaded keys from the command palette - ([64c36f8](https://github.com/vicanso/zedis/commit/64c36f8e341857c57c9347aadeb8be89bf663496))
+- Welcome empty state for the home server list and live connection status dot in the status bar - ([07872cb](https://github.com/vicanso/zedis/commit/07872cb26abb857541968fca422450e73bcc2666))
+- Import and export Redis connections - ([6fd5625](https://github.com/vicanso/zedis/commit/6fd5625d86bc64ebdbf453ef94e9e09d5468d529))
+- Import Redis Insight connections, with localized import errors - ([ba1ca0f](https://github.com/vicanso/zedis/commit/ba1ca0f5e7c1c0234bbe801d9d9f941863b4bc37))
+- Auto-expand single-child folder chains in the key tree - ([d9c2e7d](https://github.com/vicanso/zedis/commit/d9c2e7d2098861c3293d5943343e06bc185d377c))
+- Key-tree inline delete + collapsible JSONPath bar - ([3da1f3a](https://github.com/vicanso/zedis/commit/3da1f3a239509714a9749b3c91f072bd18fe53d7))
+
+### 🚜 Refactor
+
+- Empty state for the editor when no key is selected - ([eae6c2f](https://github.com/vicanso/zedis/commit/eae6c2f543d1f01a3754fdd91b11066f29c92c85))
+
+### 📚 Documentation
+
+- Update readme - ([92f2c86](https://github.com/vicanso/zedis/commit/92f2c86b7ea4b75c5dcbcf3cf4d7afb8d95a99d5))
+
+### ⚙️ Miscellaneous Tasks
+
+- Version 0.4.4 - ([21bc3e1](https://github.com/vicanso/zedis/commit/21bc3e18260c1ecbfd81311cc01f398c2c520d00))
+- Binary-size + UX tuning and a documentation overhaul - ([80716c8](https://github.com/vicanso/zedis/commit/80716c88a791cff23cf016cac540da0244649c4b))
+
 ## [0.4.3](https://github.com/vicanso/zedis/compare/v0.4.2..v0.4.3) - 2026-06-13
 
 ### ⛰️  Features
