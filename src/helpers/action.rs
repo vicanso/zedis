@@ -231,6 +231,7 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
                 ("cmd-shift-r", "reload_value"),
                 ("cmd-t", "update_ttl"),
                 ("cmd-backspace", "delete_key"),
+                ("cmd-e", "rename_key"),
                 ("cmd-f", "search"),
                 ("cmd-j", "terminal"),
             ],
@@ -253,6 +254,11 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
         KeyBinding::new("cmd-j", EditorAction::Cmd, None),
         KeyBinding::new("cmd-f", EditorAction::Search, None),
+        // Rename the selected key. ⌘E is free on macOS text inputs (unlike
+        // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
+        // keys; the rename flow routes through its own dialog with an
+        // overwrite confirm, so a stray press is safe.
+        KeyBinding::new("cmd-e", EditorAction::Rename, None),
         // Delete the selected key. A modifier combo (not bare Backspace) so it
         // can't fire while navigating the tree or typing; still routes through
         // the confirm dialog (with PROD escalation), so a stray press is safe.

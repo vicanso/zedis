@@ -637,6 +637,18 @@ impl ZedisStatusBar {
             ConnectionHealth::Offline => (cx.theme().red, i18n_status_bar(cx, "conn_offline")),
             ConnectionHealth::Unknown => (cx.theme().muted_foreground, i18n_status_bar(cx, "conn_connecting")),
         };
+        // When the link is down the dot doubles as a one-click reconnect
+        // affordance. The heartbeat alone leaves `server_status` Idle, so a
+        // plain re-select would no-op — `reconnect()` forces the reload.
+        let is_link_down = matches!(
+            server_state.health,
+            ConnectionHealth::Offline | ConnectionHealth::Reconnecting
+        );
+        let health_tooltip = if is_link_down {
+            i18n_status_bar(cx, "conn_click_reconnect")
+        } else {
+            health_label
+        };
         // When the link is down the cached latency is stale and misleading
         // (a green "5ms" beside a red dot), so blank it to a muted "--".
         let (latency_text, latency_color) = if server_state.health == ConnectionHealth::Offline {
@@ -753,7 +765,14 @@ impl ZedisStatusBar {
                                     .size(px(8.))
                                     .rounded_full()
                                     .bg(health_color)
-                                    .tooltip(move |window, cx| Tooltip::new(health_label.clone()).build(window, cx)),
+                                    .when(is_link_down, |this| {
+                                        this.cursor_pointer().on_click(cx.listener(|this, _, _window, cx| {
+                                            this.server_state.update(cx, |state, cx| {
+                                                state.reconnect(cx);
+                                            });
+                                        }))
+                                    })
+                                    .tooltip(move |window, cx| Tooltip::new(health_tooltip.clone()).build(window, cx)),
                             )
                             .child(
                                 Button::new("zedis-status-bar-server-metrics")

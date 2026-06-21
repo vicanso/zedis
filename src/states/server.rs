@@ -877,4 +877,22 @@ impl ZedisServerState {
             );
         }
     }
+
+    /// Force a reconnect of the currently-selected server/db.
+    ///
+    /// The heartbeat marks a live connection `Offline` after repeated PING
+    /// failures but leaves `server_status` as `Idle` (the initial load
+    /// succeeded), so [`select`](Self::select)'s same-target guard would treat
+    /// a re-select as a silent no-op. Flipping the status to `Failed` first
+    /// makes the existing `retry_failed` path fire, reusing the full reload
+    /// logic (reset, metadata fetch, key scan) instead of duplicating it.
+    pub fn reconnect(&mut self, cx: &mut Context<Self>) {
+        if self.server_id.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        self.server_status = RedisServerStatus::Failed;
+        self.select(server_id, db, cx);
+    }
 }
