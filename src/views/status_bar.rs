@@ -18,9 +18,9 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::{humanize_keystroke, resolve_tag_chip},
     states::{
-        ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask, ServerToolsAction, ViewMode,
-        ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar, i18n_status_bar,
-        i18n_topology, i18n_value_search, save_session_option,
+        ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask,
+        ServerToolsAction, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load,
+        i18n_sidebar, i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
@@ -155,6 +155,9 @@ struct StatusBarServerState {
     /// Live-connection health for the status dot, mirrored from
     /// `ZedisServerState::connection_health()` each heartbeat / health change.
     health: ConnectionHealth,
+    /// Mirrors `ZedisServerState::last_connection_error()` — names the reason
+    /// in the offline tooltip (auth / perms / timeout / network / tunnel).
+    last_connection_error: ConnectionErrorKind,
     used_memory: SharedString,
     clients: SharedString,
     nodes: SharedString,
@@ -239,7 +242,9 @@ impl ZedisStatusBar {
                     // Heartbeat reported a link transition (e.g. a failed PING).
                     // The Ok path already refreshes health via fill_state; this
                     // arm covers the Err path, which emits no info update.
-                    this.state.server_state.health = server_state.read(cx).connection_health();
+                    let s = server_state.read(cx);
+                    this.state.server_state.health = s.connection_health();
+                    this.state.server_state.last_connection_error = s.last_connection_error();
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
@@ -425,6 +430,7 @@ impl ZedisStatusBar {
             size: format_size(state.dbsize(), state.scan_count()),
             latency: format_latency(Some(Duration::from_millis(redis_info.metrics.latency_ms)), cx),
             health: state.connection_health(),
+            last_connection_error: state.last_connection_error(),
             used_memory: used_memory.into(),
             clients: clients.into(),
             nodes: format_nodes(state.nodes(), state.version()),
@@ -645,7 +651,19 @@ impl ZedisStatusBar {
             ConnectionHealth::Offline | ConnectionHealth::Reconnecting
         );
         let health_tooltip = if is_link_down {
-            i18n_status_bar(cx, "conn_click_reconnect")
+            // Name the failure ("Connection timed out · click to reconnect")
+            // when we classified it; fall back to a bare "Offline" otherwise.
+            let hint = i18n_status_bar(cx, "conn_reconnect_hint");
+            let reason_key = match server_state.last_connection_error {
+                ConnectionErrorKind::Auth => "conn_reason_auth",
+                ConnectionErrorKind::Permission => "conn_reason_permission",
+                ConnectionErrorKind::Timeout => "conn_reason_timeout",
+                ConnectionErrorKind::Network => "conn_reason_network",
+                ConnectionErrorKind::Tunnel => "conn_reason_tunnel",
+                ConnectionErrorKind::Unknown => "conn_offline",
+            };
+            let reason = i18n_status_bar(cx, reason_key);
+            format!("{reason} · {hint}").into()
         } else {
             health_label
         };

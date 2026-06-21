@@ -18,6 +18,7 @@ mod migration;
 mod server;
 mod session;
 
+pub use crate::error::ConnectionErrorKind;
 pub use app::*;
 pub use i18n::i18n_acl;
 pub use i18n::i18n_bitmap;

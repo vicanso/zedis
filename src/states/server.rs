@@ -16,7 +16,7 @@ use crate::connection::{
     AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server, get_servers,
 };
 use crate::db::get_search_history_manager;
-use crate::error::Error;
+use crate::error::{ConnectionErrorKind, Error};
 use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{ValueHistoryEntry, push_history};
@@ -157,6 +157,11 @@ pub struct ZedisServerState {
     /// reconnecting / offline). Separate from `server_status`, which only
     /// covers the initial connect/load.
     connection_health: ConnectionHealth,
+
+    /// Why the last heartbeat failed (auth / perms / timeout / network /
+    /// tunnel), surfaced in the status-bar offline tooltip. Cleared on a
+    /// healthy PING.
+    last_connection_error: ConnectionErrorKind,
 
     /// Consecutive heartbeat PING failures; drives the reconnecting->offline
     /// transition in `note_ping_result`, reset to 0 on any success.
@@ -300,6 +305,7 @@ impl ZedisServerState {
         self.key = None;
         self.redis_info = None;
         self.connection_health = ConnectionHealth::Unknown;
+        self.last_connection_error = ConnectionErrorKind::Unknown;
         self.ping_failures = 0;
         self.value = None;
         // Cleared on server switch (but NOT in reset_scan, which a filter
@@ -605,6 +611,12 @@ impl ZedisServerState {
     /// updated each heartbeat tick by `note_ping_result`.
     pub fn connection_health(&self) -> ConnectionHealth {
         self.connection_health
+    }
+
+    /// Why the last heartbeat failed, for the offline tooltip. `Unknown` when
+    /// healthy or when the driver didn't give us enough to classify.
+    pub fn last_connection_error(&self) -> ConnectionErrorKind {
+        self.last_connection_error
     }
 
     /// Get the slow logs

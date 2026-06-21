@@ -14,7 +14,7 @@
 
 use crate::connection::get_connection_manager;
 use crate::helpers::{unix_ts, unix_ts_millis};
-use crate::states::{ConnectionHealth, ServerEvent, ServerTask, ZedisServerState};
+use crate::states::{ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState};
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
@@ -480,6 +480,7 @@ impl ZedisServerState {
     fn note_ping_result(&mut self, ok: bool, cx: &mut Context<Self>) {
         let next = if ok {
             self.ping_failures = 0;
+            self.last_connection_error = ConnectionErrorKind::Unknown;
             ConnectionHealth::Connected
         } else {
             self.ping_failures = self.ping_failures.saturating_add(1);
@@ -553,6 +554,10 @@ impl ZedisServerState {
                     // Connection is invalid, remove cached client
                     get_connection_manager().remove_client(&server_id_clone, db);
                     error!(error = %e, "Ping failed, client connection removed");
+                    // Remember *why* so the offline tooltip can name it. Set
+                    // before note_ping_result, which emits the health
+                    // transition the status bar reads.
+                    this.last_connection_error = e.connection_kind();
                     this.note_ping_result(false, cx);
                 }
             },

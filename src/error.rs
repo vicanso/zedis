@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use redis::ErrorKind;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
@@ -55,6 +56,60 @@ pub enum Error {
 
     #[snafu(display("Prost reflect decode error: {source}"))]
     ProstReflectDecode { source: prost_reflect::prost::DecodeError },
+}
+
+/// Why a connection or command failed, as far as the driver lets us tell.
+/// Lets the UI explain a dropped link ("Connection timed out", "Authentication
+/// failed") instead of echoing a raw redis string. Best-effort: `Unknown` when
+/// the error doesn't carry enough to disambiguate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionErrorKind {
+    /// Couldn't classify — caller should fall back to a generic message.
+    #[default]
+    Unknown,
+    /// Missing or wrong password (NOAUTH / WRONGPASS / auth required).
+    Auth,
+    /// Authenticated but the ACL user lacks permission (NOPERM).
+    Permission,
+    /// Connection or response timed out.
+    Timeout,
+    /// Host refused the connection, dropped it, or is unreachable.
+    Network,
+    /// The SSH tunnel itself failed to establish.
+    Tunnel,
+}
+
+impl Error {
+    /// Best-effort semantic classification of a connection/command failure,
+    /// used to tell the user *why* a link went down rather than surfacing a
+    /// raw driver string. Order matters: timeouts also report as IO errors, so
+    /// they're checked first.
+    pub fn connection_kind(&self) -> ConnectionErrorKind {
+        use ConnectionErrorKind as K;
+        match self {
+            Error::Redis { source } => {
+                if source.is_timeout() {
+                    return K::Timeout;
+                }
+                if matches!(source.kind(), ErrorKind::AuthenticationFailed) {
+                    return K::Auth;
+                }
+                match source.code() {
+                    Some("NOAUTH" | "WRONGPASS") => return K::Auth,
+                    Some("NOPERM") => return K::Permission,
+                    _ => {}
+                }
+                if source.is_connection_refusal() || source.is_connection_dropped() || source.is_io_error() {
+                    K::Network
+                } else {
+                    K::Unknown
+                }
+            }
+            Error::Io { .. } => K::Network,
+            Error::Ssh { .. } | Error::Key { .. } => K::Tunnel,
+            _ => K::Unknown,
+        }
+    }
 }
 
 impl From<redis::RedisError> for Error {
@@ -150,5 +205,30 @@ impl From<prost_reflect::DescriptorError> for Error {
 impl From<prost_reflect::prost::DecodeError> for Error {
     fn from(source: prost_reflect::prost::DecodeError) -> Self {
         Error::ProstReflectDecode { source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_connection_failures() {
+        // A raw IO failure reads as an unreachable host.
+        let io = Error::Io {
+            source: std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"),
+        };
+        assert_eq!(io.connection_kind(), ConnectionErrorKind::Network);
+
+        // A redis auth-kind error maps to Auth.
+        let auth = Error::Redis {
+            source: redis::RedisError::from((ErrorKind::AuthenticationFailed, "auth failed")),
+        };
+        assert_eq!(auth.connection_kind(), ConnectionErrorKind::Auth);
+
+        // Anything that isn't a connection/command failure stays Unknown so
+        // the UI falls back to a generic message rather than mislabeling it.
+        let other = Error::Invalid { message: "x".into() };
+        assert_eq!(other.connection_kind(), ConnectionErrorKind::Unknown);
     }
 }
