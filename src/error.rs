@@ -79,6 +79,23 @@ pub enum ConnectionErrorKind {
     Tunnel,
 }
 
+impl ConnectionErrorKind {
+    /// i18n key (in the `status_bar` section) naming this reason. `Unknown`
+    /// falls back to the generic "offline" label, so callers get a sensible
+    /// string for every variant — used by the offline tooltip and by the
+    /// live-tail / MONITOR failure toasts.
+    pub fn reason_key(self) -> &'static str {
+        match self {
+            ConnectionErrorKind::Auth => "conn_reason_auth",
+            ConnectionErrorKind::Permission => "conn_reason_permission",
+            ConnectionErrorKind::Timeout => "conn_reason_timeout",
+            ConnectionErrorKind::Network => "conn_reason_network",
+            ConnectionErrorKind::Tunnel => "conn_reason_tunnel",
+            ConnectionErrorKind::Unknown => "conn_offline",
+        }
+    }
+}
+
 impl Error {
     /// Best-effort semantic classification of a connection/command failure,
     /// used to tell the user *why* a link went down rather than surfacing a

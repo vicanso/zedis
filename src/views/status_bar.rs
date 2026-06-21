@@ -654,15 +654,7 @@ impl ZedisStatusBar {
             // Name the failure ("Connection timed out · click to reconnect")
             // when we classified it; fall back to a bare "Offline" otherwise.
             let hint = i18n_status_bar(cx, "conn_reconnect_hint");
-            let reason_key = match server_state.last_connection_error {
-                ConnectionErrorKind::Auth => "conn_reason_auth",
-                ConnectionErrorKind::Permission => "conn_reason_permission",
-                ConnectionErrorKind::Timeout => "conn_reason_timeout",
-                ConnectionErrorKind::Network => "conn_reason_network",
-                ConnectionErrorKind::Tunnel => "conn_reason_tunnel",
-                ConnectionErrorKind::Unknown => "conn_offline",
-            };
-            let reason = i18n_status_bar(cx, reason_key);
+            let reason = i18n_status_bar(cx, server_state.last_connection_error.reason_key());
             format!("{reason} · {hint}").into()
         } else {
             health_label

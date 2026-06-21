@@ -647,6 +647,7 @@ ttl_summary_label = "%{sampled} サンプリング(≈ %{estimated} 推定) — 
 ttl_dominant_label = "最大バケット: %{bucket} (%{count} 件)"
 
 [monitor]
+monitor_failed = "MONITOR ã®éå§ã«å¤±æãã¾ãã"
 title = "ライブモニター"
 start = "開始"
 stop = "停止"
@@ -662,6 +663,7 @@ no_data = "「開始」をクリックして Redis コマンドのリアルタ�
 max_records_tip = "最大記録上限 (%{max}) に達しました。古いエントリが削除されています。"
 
 [stream_editor]
+tail_stopped = "ã©ã¤ããã¼ã«åæ­¢"
 col_group = "グループ"
 col_last_delivered_id = "最終配信 ID"
 col_lag = "ラグ"

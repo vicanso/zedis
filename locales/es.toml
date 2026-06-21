@@ -647,6 +647,7 @@ ttl_summary_label = "%{sampled} muestreadas (≈ %{estimated} estimadas) — %{n
 ttl_dominant_label = "Bucket más grande: %{bucket} (%{count} claves)"
 
 [monitor]
+monitor_failed = "No se pudo iniciar MONITOR"
 title = "Monitor en vivo"
 start = "Iniciar"
 stop = "Detener"
@@ -662,6 +663,7 @@ no_data = "Haga clic en \"Iniciar\" para comenzar a monitorear los comandos Redi
 max_records_tip = "Se alcanzó el límite máximo de registros (%{max}), las entradas más antiguas se están descartando."
 
 [stream_editor]
+tail_stopped = "Seguimiento en vivo detenido"
 col_group = "Grupo"
 col_last_delivered_id = "Último ID entregado"
 col_lag = "Retraso"

@@ -648,6 +648,7 @@ ttl_summary_label = "%{sampled} échantillonnées (≈ %{estimated} estimées) �
 ttl_dominant_label = "Plus grand seau : %{bucket} (%{count} clés)"
 
 [monitor]
+monitor_failed = "Ãchec du dÃ©marrage de MONITOR"
 title = "Moniteur en direct"
 start = "Démarrer"
 stop = "Arrêter"
@@ -663,6 +664,7 @@ no_data = "Cliquez sur \"Démarrer\" pour commencer à surveiller les commandes 
 max_records_tip = "Limite maximale d'enregistrements (%{max}) atteinte, les entrées les plus anciennes sont supprimées."
 
 [stream_editor]
+tail_stopped = "Suivi en direct arrÃªtÃ©"
 col_group = "Groupe"
 col_last_delivered_id = "Dernier ID livré"
 col_lag = "Retard"

@@ -18,8 +18,9 @@ use crate::{
     connection::{get_server, open_single_connection},
     helpers::{fast_contains_ignore_case, format_duration},
     states::{
-        KeyType, RedisStreamEntry, RedisValue, ServerEvent, StreamInfoData, ZedisGlobalStore, ZedisServerState,
-        dialog_button_props, escalate_dangerous_body, i18n_common, i18n_kv_table, i18n_stream_editor, tail_read,
+        ConnectionErrorKind, GlobalEvent, KeyType, NotificationAction, RedisStreamEntry, RedisValue, ServerEvent,
+        StreamInfoData, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_common,
+        i18n_kv_table, i18n_status_bar, i18n_stream_editor, tail_read,
     },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
@@ -540,12 +541,25 @@ impl ZedisStreamEditor {
                 return;
             };
 
+            // Open the dedicated tail connection on the foreground task (we
+            // still have `cx` here) so a failure can be surfaced. The old code
+            // opened it inside `background_spawn`, where a failure just ended
+            // the loop silently — the tail button sprang back with no hint why.
+            let mut conn = match open_single_connection(&server, db, false).await {
+                Ok(c) => c,
+                Err(e) => {
+                    let kind = e.connection_kind();
+                    let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
+                        this.tailing = false;
+                        this.tail_task = None;
+                        this.notify_tail_failed(kind, cx);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
             let key_bg = key.clone();
             let bg = cx.background_spawn(async move {
-                let mut conn = match open_single_connection(&server, db, false).await {
-                    Ok(c) => c,
-                    Err(_) => return,
-                };
                 // `$` = only entries that arrive after we subscribe.
                 // A read error ends the while-let (and the loop).
                 let mut last_id = "$".to_string();
@@ -585,6 +599,17 @@ impl ZedisStreamEditor {
         self.tail_task = Some(task);
         self.tailing = true;
         cx.notify();
+    }
+
+    /// Toast that the live tail couldn't start, naming the reason (connection
+    /// timed out / auth failed / …) so the user isn't left wondering why the
+    /// tail button sprang back.
+    fn notify_tail_failed(&self, kind: ConnectionErrorKind, cx: &mut Context<Self>) {
+        let reason = i18n_status_bar(cx, kind.reason_key());
+        let msg: SharedString = format!("{}: {}", i18n_stream_editor(cx, "tail_stopped"), reason).into();
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(msg)));
+        });
     }
 
     /// Rebuilds the two info DataTables from freshly-fetched `StreamInfoData`.

@@ -22,7 +22,10 @@ use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_connection_manager, open_monitor_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_monitor};
+use crate::states::{
+    ConnectionErrorKind, GlobalEvent, NotificationAction, Route, ServerEvent, ZedisGlobalStore, ZedisServerState,
+    i18n_common, i18n_monitor, i18n_status_bar,
+};
 use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, ClipboardItem, Edges, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -478,30 +481,39 @@ impl ZedisMonitor {
                 })
                 .await;
 
-            let Ok(servers) = servers else {
-                let _ = entity.update(cx, |this: &mut ZedisMonitor, cx| {
-                    this.monitoring = false;
-                    cx.notify();
-                });
-                return;
+            let servers = match servers {
+                Ok(servers) => servers,
+                Err(e) => {
+                    let kind = e.connection_kind();
+                    let _ = entity.update(cx, |this: &mut ZedisMonitor, cx| {
+                        this.monitoring = false;
+                        this.notify_monitor_failed(kind, cx);
+                        cx.notify();
+                    });
+                    return;
+                }
             };
 
             // Spawn one background monitor stream per master node.
             // Each sends parsed entries into the shared channel.
+            // Open each node's dedicated MONITOR connection on the foreground
+            // task so a failure can be surfaced. The old code opened inside
+            // background_spawn, where a failed node vanished silently — on a
+            // standalone that meant MONITOR appeared to do nothing at all.
             let mut bg_tasks = Vec::new();
+            let mut fail_kind: Option<ConnectionErrorKind> = None;
             for server in servers {
-                let tx = tx.clone();
                 let node_label = format!("{}:{}", server.host, server.port);
-
+                let monitor = match open_monitor_connection(&server).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!(error = %e, node = %node_label, "failed to start MONITOR");
+                        fail_kind.get_or_insert(e.connection_kind());
+                        continue;
+                    }
+                };
+                let tx = tx.clone();
                 let bg = cx.background_spawn(async move {
-                    let monitor = match open_monitor_connection(&server).await {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!(error = %e, node = %node_label, "failed to start MONITOR");
-                            return;
-                        }
-                    };
-
                     let mut stream = monitor.into_on_message::<String>();
                     while let Some(line) = stream.next().await {
                         if let Some(entry) = parse_monitor_line(&line, &node_label)
@@ -515,6 +527,21 @@ impl ZedisMonitor {
             }
             // Drop the original sender so rx completes when all bg senders drop
             drop(tx);
+
+            // Surface any node that couldn't start; stop entirely if none did.
+            if let Some(kind) = fail_kind {
+                let any_started = !bg_tasks.is_empty();
+                let _ = entity.update(cx, |this: &mut ZedisMonitor, cx| {
+                    this.notify_monitor_failed(kind, cx);
+                    if !any_started {
+                        this.monitoring = false;
+                    }
+                    cx.notify();
+                });
+                if !any_started {
+                    return;
+                }
+            }
 
             // Read entries from channel in batches to avoid per-message UI refreshes.
             // After the first recv().await wakes us, drain all pending entries
@@ -566,6 +593,17 @@ impl ZedisMonitor {
         self.monitor_tasks.clear();
         self.monitoring = false;
         cx.notify();
+    }
+
+    /// Toast that MONITOR couldn't start on one or more nodes, naming the
+    /// reason so a silently-dead monitor doesn't just look like an idle,
+    /// empty stream.
+    fn notify_monitor_failed(&self, kind: ConnectionErrorKind, cx: &mut Context<Self>) {
+        let reason = i18n_status_bar(cx, kind.reason_key());
+        let msg: SharedString = format!("{}: {}", i18n_monitor(cx, "monitor_failed"), reason).into();
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(msg)));
+        });
     }
 
     fn handle_clear(&mut self, cx: &mut Context<Self>) {

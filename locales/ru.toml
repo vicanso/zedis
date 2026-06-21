@@ -647,6 +647,7 @@ ttl_summary_label = "%{sampled} выбрано (≈ %{estimated} оценочн�
 ttl_dominant_label = "Крупнейший сегмент: %{bucket} (%{count} ключей)"
 
 [monitor]
+monitor_failed = "ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ Ð·Ð°Ð¿ÑÑÑÐ¸ÑÑ MONITOR"
 title = "Живой монитор"
 start = "Старт"
 stop = "Стоп"
@@ -662,6 +663,7 @@ no_data = "Нажмите «Старт», чтобы начать монитор
 max_records_tip = "Достигнут максимальный предел записей (%{max}), старые записи удаляются."
 
 [stream_editor]
+tail_stopped = "ÐÐ¸Ð²Ð¾Ðµ Ð¾ÑÑÐ»ÐµÐ¶Ð¸Ð²Ð°Ð½Ð¸Ðµ Ð¾ÑÑÐ°Ð½Ð¾Ð²Ð»ÐµÐ½Ð¾"
 col_group = "Группа"
 col_last_delivered_id = "Последний доставленный ID"
 col_lag = "Отставание"

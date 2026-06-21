@@ -647,6 +647,7 @@ ttl_summary_label = "%{sampled} sampled (≈ %{estimated} estimated) — %{no_tt
 ttl_dominant_label = "Largest bucket: %{bucket} (%{count} keys)"
 
 [monitor]
+monitor_failed = "MONITOR failed to start"
 title = "Live Monitor"
 start = "Start"
 stop = "Stop"
@@ -662,6 +663,7 @@ no_data = "Click \"Start\" to begin monitoring Redis commands in real time."
 max_records_tip = "Reached maximum record limit (%{max}), oldest entries are being discarded."
 
 [stream_editor]
+tail_stopped = "Live tail stopped"
 col_group = "Group"
 col_last_delivered_id = "Last Delivered ID"
 col_lag = "Lag"
