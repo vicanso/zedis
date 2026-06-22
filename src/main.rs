@@ -3,28 +3,30 @@ use crate::connection::{clear_expired_cache, get_servers};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
-    MemuAction, NavAction, PaletteAction, ShortcutsAction, get_default_font_family, get_or_create_config_dir,
-    is_app_store_build, is_development, new_hot_keys, register_extra_languages,
+    MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, download_and_verify,
+    fetch_latest_release, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development,
+    new_hot_keys, open_installer, register_extra_languages,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, SettingsAction,
-    ThemeAction, ZedisAppState, ZedisGlobalStore, save_app_state, update_app_state_and_save,
+    ThemeAction, ZedisAppState, ZedisGlobalStore, i18n_update, save_app_state, update_app_state_and_save,
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, open_about_window,
     open_settings_window,
 };
 use gpui::{
-    App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, Window, WindowAppearance, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
+    WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
     ActiveTheme, Root, Theme, ThemeMode, ThemeRegistry, WindowExt, h_flex, notification::Notification, v_flex,
 };
-use std::{env, str::FromStr, time::Duration};
+use std::{cell::Cell, env, rc::Rc, str::FromStr, time::Duration};
 use sys_locale::get_locale;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
+use zedis_ui::ZedisDialog;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -67,6 +69,13 @@ pub struct Zedis {
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
     _clear_expired_cache: Option<Task<()>>,
+    /// A newer release found by a check, awaiting its prompt. Consumed in
+    /// `render` (which has the `Window` needed to open the dialog).
+    pending_update: Option<UpdateInfo>,
+    /// The in-flight update check, if any — guards against overlapping checks.
+    update_task: Option<Task<()>>,
+    /// The in-flight installer download, if any — guards against re-entry.
+    download_task: Option<Task<()>>,
 }
 
 impl Zedis {
@@ -145,8 +154,90 @@ impl Zedis {
             theme_update_task: None,
             _clear_expired_cache: clear_expired_cache,
             last_bounds: Bounds::default(),
+            pending_update: None,
+            update_task: None,
+            download_task: None,
         }
     }
+
+    /// Kick off a background check for a newer release. A `manual` check always
+    /// reports its outcome (up-to-date / failure toast) and ignores a skipped
+    /// version; the silent startup check stays quiet unless it finds a fresh,
+    /// non-skipped update.
+    fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if self.update_task.is_some() {
+            return;
+        }
+        // Reset the once-per-day throttle on every attempt so a transient
+        // failure doesn't immediately retry on the next launch.
+        update_app_state_and_save(cx, "mark_update_checked", |state, _| state.mark_update_checked());
+        self.update_task = Some(cx.spawn(async move |handle, cx| {
+            // `fetch_latest_release` is blocking (ureq) — keep it off the UI thread.
+            let result = cx.background_spawn(async move { fetch_latest_release() }).await;
+            let _ = handle.update(cx, |this, cx| {
+                this.update_task = None;
+                match result {
+                    Ok(Some(info)) => {
+                        let skipped = cx.global::<ZedisGlobalStore>().read(cx).update_skipped(&info.version);
+                        if manual || !skipped {
+                            this.pending_update = Some(info);
+                        }
+                    }
+                    Ok(None) => {
+                        if manual {
+                            this.pending_notification = Some(Notification::success(i18n_update(cx, "up_to_date")));
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "update check failed");
+                        if manual {
+                            this.pending_notification = Some(Notification::error(i18n_update(cx, "check_failed")));
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+    /// Act on the user's "Download" choice. With a verified manifest asset,
+    /// download + checksum-verify it in the background and hand it to the OS
+    /// installer; without one (API fallback / missing asset) just open the
+    /// release page. A failed download falls back to the page too.
+    fn start_download(&mut self, info: UpdateInfo, cx: &mut Context<Self>) {
+        let Some(asset) = info.asset.clone() else {
+            cx.open_url(&info.page_url);
+            return;
+        };
+        if self.download_task.is_some() {
+            return;
+        }
+        let page_url = info.page_url.clone();
+        let starting = format!("{} {}…", i18n_update(cx, "downloading"), info.version);
+        self.pending_notification = Some(Notification::info(starting));
+        cx.notify();
+        self.download_task = Some(cx.spawn(async move |handle, cx| {
+            // Networking + checksum are blocking — keep them off the UI thread.
+            let result = cx
+                .background_spawn(async move { download_and_verify(&asset).and_then(|path| open_installer(&path)) })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                this.download_task = None;
+                match result {
+                    Ok(()) => {
+                        this.pending_notification = Some(Notification::success(i18n_update(cx, "download_done")));
+                    }
+                    Err(e) => {
+                        error!(error = %e, "update download failed");
+                        this.pending_notification = Some(Notification::error(i18n_update(cx, "download_failed")));
+                        // Fall back to the release page so the user can still get it.
+                        cx.open_url(&page_url);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     fn persist_window_state(&mut self, new_bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
         self.last_bounds = new_bounds;
         let store = cx.global::<ZedisGlobalStore>().clone();
@@ -225,6 +316,61 @@ fn restore_default_themes(cx: &mut App) {
     theme.dark_theme = dark;
 }
 
+/// Open the "update available" dialog on the main window. **Download** opens the
+/// release page in the browser; **Skip this version** records the version so the
+/// silent startup check won't prompt for it again. Closing without choosing
+/// leaves nothing recorded, so the next daily check prompts again.
+fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut Window, cx: &mut App) {
+    const MAX_NOTES: usize = 600;
+    let title = format!("{} {}", i18n_update(cx, "available_title"), info.version);
+    let mut notes = info.notes.clone();
+    if notes.chars().count() > MAX_NOTES {
+        notes = notes.chars().take(MAX_NOTES).collect::<String>();
+        notes.push('…');
+    }
+    let body = if notes.trim().is_empty() {
+        format!(
+            "{}\n{} → {}",
+            i18n_update(cx, "update_body"),
+            info.current,
+            info.version
+        )
+    } else {
+        format!("{}\n\n{}", i18n_update(cx, "update_body"), notes)
+    };
+    let skip_version = info.version.clone();
+    let download_info = info;
+    // Shared flag so the Download path suppresses the skip-on-close below.
+    let downloaded = Rc::new(Cell::new(false));
+    let on_download = downloaded.clone();
+    ZedisDialog::new(title)
+        .message(body)
+        .w(px(520.))
+        .overlay_closable(false)
+        .ok_text(i18n_update(cx, "download"))
+        .cancel_text(i18n_update(cx, "skip_version"))
+        .on_ok(move |_, _window, cx| {
+            on_download.set(true);
+            // Download + verify + open the installer (or open the release page
+            // when there's no verified asset) — see `Zedis::start_download`.
+            if let Some(view) = zedis.upgrade() {
+                view.update(cx, |this, cx| this.start_download(download_info.clone(), cx));
+            }
+            true
+        })
+        .on_close(move |_, _window, cx| {
+            // Only the explicit "Skip this version" (cancel) records a skip; the
+            // Download path set the flag above, so this is a no-op there.
+            if !downloaded.get() {
+                let version = skip_version.clone();
+                update_app_state_and_save(cx, "skip_update_version", move |state, _| {
+                    state.set_skipped_version(version.clone());
+                });
+            }
+        })
+        .open(window, cx);
+}
+
 impl Render for Zedis {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
@@ -235,6 +381,10 @@ impl Render for Zedis {
         }
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
+        }
+        if let Some(info) = self.pending_update.take() {
+            let weak = cx.entity().downgrade();
+            open_update_dialog(info, weak, window, cx);
         }
         if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
             window.set_rem_size(font_size);
@@ -483,6 +633,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: "Zedis".into(),
             items: vec![
                 MenuItem::action("About Zedis", MemuAction::About),
+                MenuItem::action("Check for Updates", UpdateAction::Check),
                 MenuItem::action("Quit", MemuAction::Quit),
             ],
             disabled: false,
@@ -527,6 +678,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             view.update(cx, |zedis, cx| zedis.toggle_shortcuts(cx));
                         }
                     });
+                    // Manual "Check for Updates" (app menu) — focus-independent
+                    // like the handlers above so it works regardless of focus.
+                    let weak_zedis_update = zedis_view.downgrade();
+                    cx.on_action(move |_: &UpdateAction, cx: &mut App| {
+                        if let Some(view) = weak_zedis_update.upgrade() {
+                            view.update(cx, |zedis, cx| zedis.check_for_updates(true, cx));
+                        }
+                    });
+                    // Silent startup check: once per day at most, skippable
+                    // per-version, and only if the user left it enabled.
+                    let auto_due = {
+                        let store = cx.global::<ZedisGlobalStore>().read(cx);
+                        store.auto_update_check() && store.update_check_due()
+                    };
+                    if auto_due {
+                        zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, cx));
+                    }
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;

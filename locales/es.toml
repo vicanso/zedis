@@ -437,6 +437,8 @@ section_redis = "Conexión Redis"
 section_redis_desc = "Establece tiempos de espera para la conexión y respuestas de Redis"
 section_system = "Sistema"
 section_system_desc = "Bandeja del sistema y otras configuraciones del SO"
+auto_update_check = "Buscar actualizaciones"
+auto_update_check_desc = "Buscar nuevas versiones automáticamente al iniciar"
 
 [metrics]
 memory = "Memoria"
@@ -1195,3 +1197,14 @@ clear = "Limpiar"
 matches = "coincidencias"
 search_invalid = "Introduce lon, lat y radio (km) numéricos"
 measure_hint = "⇧ Mayús+clic en dos puntos para medir"
+
+[update]
+available_title = "Nueva versión"
+update_body = "Hay una nueva versión de Zedis disponible."
+download = "Descargar"
+skip_version = "Omitir esta versión"
+up_to_date = "Ya tienes la última versión"
+check_failed = "Error al buscar actualizaciones"
+downloading = "Descargando actualización"
+download_done = "Descargado: abriendo el instalador"
+download_failed = "Error en la descarga"

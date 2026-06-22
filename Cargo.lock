@@ -11452,6 +11452,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_path",
+ "sha2 0.11.0",
  "shlex 2.0.1",
  "simdutf8",
  "smol",

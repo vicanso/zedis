@@ -126,6 +126,21 @@ jobs:
         run: |
           DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
           xcrun stapler staple "$DMG_NAME"
+      - name: checksum (macos)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p meta
+          DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
+          NAME="$(basename "$DMG_NAME")"
+          SHA="$(shasum -a 256 "$DMG_NAME" | awk '{print $1}')"
+          SIZE="$(stat -f%z "$DMG_NAME")"
+          echo "macos ${{ matrix.dmg_suffix }} dmg $NAME $SHA $SIZE" > "meta/macos-${{ matrix.dmg_suffix }}.txt"
+      - name: upload checksum meta (macos)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: meta-macos-${{ matrix.dmg_suffix }}
+          path: meta/macos-${{ matrix.dmg_suffix }}.txt
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -189,6 +204,27 @@ jobs:
           $msiZipName = "zedis-windows-${{ matrix.suffix }}.msi.zip"
           Compress-Archive -Path zedis.msi -Destination $msiZipName
           echo "MSI_ZIP_NAME=$msiZipName" >> $env:GITHUB_ENV
+      - name: checksum (windows)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path meta | Out-Null
+          $rows = @(
+            @{ name = "$env:ZIP_NAME";     kind = "zip" },
+            @{ name = "$env:MSI_ZIP_NAME"; kind = "msi" }
+          )
+          $lines = foreach ($r in $rows) {
+            $sha  = (Get-FileHash $r.name -Algorithm SHA256).Hash.ToLower()
+            $size = (Get-Item $r.name).Length
+            "windows ${{ matrix.suffix }} $($r.kind) $($r.name) $sha $size"
+          }
+          Set-Content -Encoding ascii -Path "meta/windows-${{ matrix.suffix }}.txt" -Value $lines
+      - name: upload checksum meta (windows)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: meta-windows-${{ matrix.suffix }}
+          path: meta/windows-${{ matrix.suffix }}.txt
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -260,6 +296,26 @@ jobs:
           cargo appimage --features mimalloc
           mv target/appimage/zedis.AppImage ./zedis.AppImage
           tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis.AppImage
+      - name: checksum (linux)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p meta
+          : > "meta/linux-${{ matrix.suffix }}.txt"
+          for entry in \
+            "zedis-linux-${{ matrix.suffix }}.tar.gz tarball" \
+            "zedis-${{ matrix.suffix }}.AppImage.tar.gz appimage"; do
+            set -- $entry
+            f="$1"; kind="$2"
+            sha="$(sha256sum "$f" | awk '{print $1}')"
+            size="$(stat -c%s "$f")"
+            echo "linux ${{ matrix.suffix }} $kind $f $sha $size" >> "meta/linux-${{ matrix.suffix }}.txt"
+          done
+      - name: upload checksum meta (linux)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: meta-linux-${{ matrix.suffix }}
+          path: meta/linux-${{ matrix.suffix }}.txt
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -276,3 +332,51 @@ jobs:
               ./*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+  # Aggregate every platform's per-asset hashes into a single SHA256SUMS plus a
+  # latest.json update manifest, and attach both to the tagged release. The
+  # in-app updater fetches latest.json (served from the always-current
+  # https://github.com/vicanso/zedis/releases/latest/download/latest.json),
+  # picks the asset for its os/arch, and verifies the download against SHA256SUMS.
+  checksums:
+    needs: [macos, windows, linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: download checksum meta
+        uses: actions/download-artifact@v4
+        with:
+          pattern: meta-*
+          path: meta
+          merge-multiple: true
+      - name: build SHA256SUMS and latest.json
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          REPO="vicanso/zedis"
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          cat meta/*.txt > all-meta.txt
+          echo "Collected assets:"; cat all-meta.txt
+
+          # SHA256SUMS: "<sha256>  <filename>" (coreutils format, sorted by name)
+          awk '{print $5"  "$4}' all-meta.txt | sort -k2 > SHA256SUMS
+
+          # latest.json: stable-channel manifest consumed by the in-app updater
+          items=""
+          while read -r os arch kind name sha size; do
+            [ -z "${name:-}" ] && continue
+            item=$(printf '{"os":"%s","arch":"%s","kind":"%s","name":"%s","url":"%s/%s","sha256":"%s","size":%s}' \
+              "$os" "$arch" "$kind" "$name" "$BASE" "$name" "$sha" "$size")
+            if [ -z "$items" ]; then items="$item"; else items="$items,$item"; fi
+          done < all-meta.txt
+          printf '{"version":"%s","tag":"%s","notes":"https://github.com/%s/releases/tag/%s","assets":[%s]}' \
+            "$VERSION" "$TAG" "$REPO" "$TAG" "$items" | jq . > latest.json
+
+          echo "--- SHA256SUMS ---"; cat SHA256SUMS
+          echo "--- latest.json ---"; cat latest.json
+      - name: upload checksum assets
+        run: |
+          ./.github/workflows/upload_asset.sh ./SHA256SUMS $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./latest.json $GITHUB_TOKEN

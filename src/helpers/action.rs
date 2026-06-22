@@ -51,6 +51,14 @@ pub enum ShortcutsAction {
     Toggle,
 }
 
+/// In-app update check. `Check` queries GitHub for a newer release; handled by
+/// a global, focus-independent handler in `main.rs`, dispatched from the app
+/// menu "Check for Updates". No keybinding — menu-only.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum UpdateAction {
+    Check,
+}
+
 /// JSONPath query bar. `AcceptCompletion` is bound to `tab` in the
 /// `JsonPathBar` key context: it accepts the highlighted completion
 /// when the menu is open, otherwise it propagates so `tab` keeps its

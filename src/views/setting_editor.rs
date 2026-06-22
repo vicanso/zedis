@@ -66,6 +66,7 @@ pub struct ZedisSettingEditor {
     ai_model_state: Entity<InputState>,
     tray_enabled: bool,
     show_key_tree_ttl: bool,
+    auto_update_check: bool,
     font_size_slider: Entity<SliderState>,
     locale_select: Entity<ZedisSelect>,
     _subscriptions: Vec<Subscription>,
@@ -119,6 +120,7 @@ impl ZedisSettingEditor {
         let key_scan_count = store.key_scan_count();
         let tray_enabled = store.tray_enabled();
         let show_key_tree_ttl = store.show_key_tree_ttl();
+        let auto_update_check = store.auto_update_check();
         let font_rem = store.font_rem_px().unwrap_or(16.0);
         let locale = store.locale().to_string();
         let ai_base_url = store.ai_base_url();
@@ -380,6 +382,7 @@ impl ZedisSettingEditor {
             ai_model_state,
             tray_enabled,
             show_key_tree_ttl,
+            auto_update_check,
             font_size_slider,
             locale_select,
         }
@@ -557,6 +560,19 @@ impl Render for ZedisSettingEditor {
                             })),
                     ))
                 })
+                .child(Self::render_setting_row(
+                    cx,
+                    "auto_update_check",
+                    Switch::new("auto-update-check")
+                        .checked(self.auto_update_check)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.auto_update_check = *checked;
+                            let enabled = *checked;
+                            update_app_state_and_save(cx, "save_auto_update_check", move |state, _| {
+                                state.set_auto_update_check(enabled);
+                            });
+                        })),
+                ))
                 .child(Self::render_setting_row(
                     cx,
                     "config_dir",

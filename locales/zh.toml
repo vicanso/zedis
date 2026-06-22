@@ -436,6 +436,8 @@ section_redis = "Redis 连接"
 section_redis_desc = "设置 Redis 连接和响应超时时间"
 section_system = "系统"
 section_system_desc = "系统托盘及其他系统级配置"
+auto_update_check = "检查更新"
+auto_update_check_desc = "启动时自动检查新版本"
 
 [metrics]
 memory = "内存"
@@ -1194,3 +1196,14 @@ clear = "清除"
 matches = "个匹配"
 search_invalid = "请输入数字经度、纬度、半径（km）"
 measure_hint = "按住 Shift 点选两点测量距离"
+
+[update]
+available_title = "新版本"
+update_body = "Zedis 有新版本可用。"
+download = "下载"
+skip_version = "跳过此版本"
+up_to_date = "已是最新版本"
+check_failed = "检查更新失败"
+downloading = "正在下载更新"
+download_done = "下载完成,正在打开安装包"
+download_failed = "下载失败"

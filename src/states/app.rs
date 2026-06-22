@@ -17,7 +17,7 @@ use crate::connection::{
 };
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir};
+use crate::helpers::{decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts};
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
@@ -279,6 +279,15 @@ pub struct ZedisAppState {
     ai_api_key: Option<String>,
     /// Model name passed to the AI endpoint, e.g. `gpt-4o-mini`.
     ai_model: Option<String>,
+    /// When `true` (default), check GitHub for a newer release on startup,
+    /// throttled to once per day. `false` disables the network check entirely.
+    auto_update_check: Option<bool>,
+    /// Unix seconds of the last update check, used to throttle the startup
+    /// check to once per day.
+    last_update_check: Option<i64>,
+    /// A version the user chose to skip (e.g. `"0.5.0"`). Suppresses the silent
+    /// startup prompt for exactly that version; a manual check ignores it.
+    skipped_version: Option<String>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -581,6 +590,32 @@ impl ZedisAppState {
     /// (endpoint + key) to be usable.
     pub fn ai_configured(&self) -> bool {
         self.ai_base_url.is_some() && self.ai_api_key.is_some()
+    }
+    /// Whether the app checks GitHub for a newer release on startup. Defaults
+    /// to `true`; the user can disable it in Settings.
+    pub fn auto_update_check(&self) -> bool {
+        self.auto_update_check.unwrap_or(true)
+    }
+    pub fn set_auto_update_check(&mut self, enabled: bool) {
+        self.auto_update_check = Some(enabled);
+    }
+    /// Whether a startup update check is due: never run, or more than a day ago.
+    pub fn update_check_due(&self) -> bool {
+        match self.last_update_check {
+            Some(ts) => unix_ts().saturating_sub(ts) >= 24 * 60 * 60,
+            None => true,
+        }
+    }
+    /// Record that an update check just ran, resetting the once-per-day throttle.
+    pub fn mark_update_checked(&mut self) {
+        self.last_update_check = Some(unix_ts());
+    }
+    /// Whether the user chose to skip this exact version.
+    pub fn update_skipped(&self, version: &str) -> bool {
+        self.skipped_version.as_deref() == Some(version)
+    }
+    pub fn set_skipped_version(&mut self, version: String) {
+        self.skipped_version = if version.is_empty() { None } else { Some(version) };
     }
     /// Whether the given server-page group section is collapsed.
     pub fn is_server_group_collapsed(&self, key: &str) -> bool {

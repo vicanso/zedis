@@ -219,3 +219,8 @@ pub fn i18n_lua_scripts<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("lua_scripts.{key}"), locale = locale).into()
 }
+
+pub fn i18n_update<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("update.{key}"), locale = locale).into()
+}

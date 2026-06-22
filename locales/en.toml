@@ -437,6 +437,8 @@ section_redis = "Redis Connection"
 section_redis_desc = "Set timeouts for Redis connection and responses"
 section_system = "System"
 section_system_desc = "System tray and other OS-level settings"
+auto_update_check = "Check for Updates"
+auto_update_check_desc = "Automatically check for new versions on startup"
 
 [metrics]
 memory = "Memory"
@@ -1196,3 +1198,14 @@ clear = "Clear"
 matches = "matches"
 search_invalid = "Enter numeric lon, lat and radius (km)"
 measure_hint = "⇧ Shift-click two points to measure"
+
+[update]
+available_title = "New version"
+update_body = "A new version of Zedis is available."
+download = "Download"
+skip_version = "Skip this version"
+up_to_date = "You are on the latest version"
+check_failed = "Update check failed"
+downloading = "Downloading update"
+download_done = "Downloaded — opening the installer"
+download_failed = "Download failed"

@@ -437,6 +437,8 @@ section_redis = "Подключение Redis"
 section_redis_desc = "Установите тайм-ауты подключения и ответов Redis"
 section_system = "Система"
 section_system_desc = "Системный трей и другие настройки ОС"
+auto_update_check = "Проверять обновления"
+auto_update_check_desc = "Автоматически проверять новые версии при запуске"
 
 [metrics]
 memory = "Память"
@@ -1195,3 +1197,14 @@ clear = "Очистить"
 matches = "совпадений"
 search_invalid = "Введите числовые долготу, широту и радиус (км)"
 measure_hint = "⇧ Shift+клик по двум точкам для измерения"
+
+[update]
+available_title = "Новая версия"
+update_body = "Доступна новая версия Zedis."
+download = "Скачать"
+skip_version = "Пропустить эту версию"
+up_to_date = "Установлена последняя версия"
+check_failed = "Не удалось проверить обновления"
+downloading = "Загрузка обновления"
+download_done = "Загружено, открываю установщик"
+download_failed = "Не удалось загрузить"

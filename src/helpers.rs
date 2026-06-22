@@ -30,6 +30,7 @@ mod tag;
 mod time;
 mod ttl;
 mod ttl_cache;
+mod updater;
 mod validate;
 
 pub use action::*;
@@ -50,6 +51,7 @@ pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
 pub use time::{parse_duration, unix_ts, unix_ts_millis};
 pub use ttl::{TtlChipKind, format_ttl_chip, ttl_chip_kind};
 pub use ttl_cache::*;
+pub use updater::{UpdateInfo, download_and_verify, fetch_latest_release, open_installer};
 pub use validate::*;
 pub fn is_development() -> bool {
     env::var("RUST_ENV").unwrap_or_default() == "dev"

@@ -437,6 +437,8 @@ section_redis = "Redis-Verbindung"
 section_redis_desc = "Legen Sie Timeouts für Redis-Verbindung und -Antworten fest"
 section_system = "System"
 section_system_desc = "Systemtray und andere Betriebssystemeinstellungen"
+auto_update_check = "Nach Updates suchen"
+auto_update_check_desc = "Beim Start automatisch nach neuen Versionen suchen"
 
 [metrics]
 memory = "Speicher"
@@ -1195,3 +1197,14 @@ clear = "Löschen"
 matches = "Treffer"
 search_invalid = "Numerische Länge, Breite und Radius (km) eingeben"
 measure_hint = "⇧ Umschalt+Klick auf zwei Punkte zum Messen"
+
+[update]
+available_title = "Neue Version"
+update_body = "Eine neue Version von Zedis ist verfügbar."
+download = "Herunterladen"
+skip_version = "Diese Version überspringen"
+up_to_date = "Sie verwenden die neueste Version"
+check_failed = "Update-Prüfung fehlgeschlagen"
+downloading = "Update wird heruntergeladen"
+download_done = "Heruntergeladen — Installationsprogramm wird geöffnet"
+download_failed = "Download fehlgeschlagen"

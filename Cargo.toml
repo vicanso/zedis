@@ -95,6 +95,7 @@ ruzstd = "0.8.3"
 schemars = "1.2.1"
 semver = "1.0.28"
 serde = "1.0.228"
+sha2 = "0.11.0"
 serde_json = "1.0.150"
 serde_json_path = "0.7"
 # Pinned to gpui-component's transitive version so the `CompletionProvider`
