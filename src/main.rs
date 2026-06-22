@@ -180,10 +180,21 @@ impl Zedis {
                     Ok(Some(info)) => {
                         let skipped = cx.global::<ZedisGlobalStore>().read(cx).update_skipped(&info.version);
                         if manual || !skipped {
-                            this.pending_update = Some(info);
+                            let version = info.version.clone();
+                            // Light the persistent far-right status-bar chip (its
+                            // click opens the download prompt)...
+                            cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                                state.set_available_update(Some(info), cx);
+                            });
+                            // ...and fire a one-time toast so the user notices it.
+                            this.pending_notification =
+                                Some(Notification::info(format!("{}: v{version}", i18n_update(cx, "found"))));
                         }
                     }
                     Ok(None) => {
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                            state.set_available_update(None, cx);
+                        });
                         if manual {
                             this.pending_notification = Some(Notification::success(i18n_update(cx, "up_to_date")));
                         }
@@ -367,6 +378,10 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
                     state.set_skipped_version(version.clone());
                 });
             }
+            // The user acted on the prompt (download or skip) — clear the chip.
+            cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                state.set_available_update(None, cx);
+            });
         })
         .open(window, cx);
 }
@@ -681,9 +696,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Manual "Check for Updates" (app menu) — focus-independent
                     // like the handlers above so it works regardless of focus.
                     let weak_zedis_update = zedis_view.downgrade();
-                    cx.on_action(move |_: &UpdateAction, cx: &mut App| {
-                        if let Some(view) = weak_zedis_update.upgrade() {
-                            view.update(cx, |zedis, cx| zedis.check_for_updates(true, cx));
+                    cx.on_action(move |e: &UpdateAction, cx: &mut App| {
+                        let Some(view) = weak_zedis_update.upgrade() else {
+                            return;
+                        };
+                        match e {
+                            UpdateAction::Check => {
+                                view.update(cx, |zedis, cx| zedis.check_for_updates(true, cx));
+                            }
+                            // Status-bar chip click: open the download/skip prompt for
+                            // the update we already found.
+                            UpdateAction::OpenPrompt => {
+                                if let Some(info) = cx.global::<ZedisGlobalStore>().read(cx).available_update() {
+                                    view.update(cx, |zedis, cx| {
+                                        zedis.pending_update = Some(info);
+                                        cx.notify();
+                                    });
+                                }
+                            }
                         }
                     });
                     // Silent startup check: once per day at most, skippable

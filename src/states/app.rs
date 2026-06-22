@@ -17,7 +17,7 @@ use crate::connection::{
 };
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts};
+use crate::helpers::{UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts};
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
@@ -223,6 +223,9 @@ pub enum GlobalEvent {
     ServerListUpdated,
     /// Route has been changed.
     RouteChanged(Route),
+    /// Update availability changed (a newer release was found, or the prompt was
+    /// cleared). The status bar re-reads `available_update` from the store.
+    UpdateAvailable,
 }
 
 /// Direction passed to [`ZedisGlobalStore::reorder_server`].
@@ -288,6 +291,11 @@ pub struct ZedisAppState {
     /// A version the user chose to skip (e.g. `"0.5.0"`). Suppresses the silent
     /// startup prompt for exactly that version; a manual check ignores it.
     skipped_version: Option<String>,
+    /// A newer release found by a check, awaiting the user's action. Runtime
+    /// only (never persisted) — it's re-discovered on the next check. Drives
+    /// the status-bar update chip; the chip's click opens the prompt for it.
+    #[serde(skip)]
+    available_update: Option<UpdateInfo>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -616,6 +624,22 @@ impl ZedisAppState {
     }
     pub fn set_skipped_version(&mut self, version: String) {
         self.skipped_version = if version.is_empty() { None } else { Some(version) };
+    }
+    /// The pending available update, if any (full info, for opening the prompt).
+    pub fn available_update(&self) -> Option<UpdateInfo> {
+        self.available_update.clone()
+    }
+    /// Just the version string of the pending update — for the status-bar chip.
+    pub fn available_update_version(&self) -> Option<SharedString> {
+        self.available_update
+            .as_ref()
+            .map(|info| SharedString::from(info.version.clone()))
+    }
+    /// Set (or clear with `None`) the pending update and broadcast it so the
+    /// status-bar chip lights up / clears.
+    pub fn set_available_update(&mut self, info: Option<UpdateInfo>, cx: &mut Context<Self>) {
+        self.available_update = info;
+        cx.emit(GlobalEvent::UpdateAvailable);
     }
     /// Whether the given server-page group section is collapsed.
     pub fn is_server_group_collapsed(&self, key: &str) -> bool {

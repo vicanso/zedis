@@ -56,7 +56,11 @@ pub enum ShortcutsAction {
 /// menu "Check for Updates". No keybinding — menu-only.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum UpdateAction {
+    /// Run an update check now (app menu "Check for Updates").
     Check,
+    /// Open the download/skip prompt for the already-found update (status-bar
+    /// chip click).
+    OpenPrompt,
 }
 
 /// JSONPath query bar. `AcceptCompletion` is bound to `tab` in the
