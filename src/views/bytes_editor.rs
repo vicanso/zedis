@@ -659,7 +659,7 @@ impl ZedisBytesEditor {
             .key_context("JsonPathBar")
             .on_action(cx.listener(|this, _: &JsonPathAction, window, cx| {
                 let accepted = this.jsonpath_input.update(cx, |state, cx| {
-                    state.handle_action_for_context_menu(Box::new(Enter { secondary: false }), window, cx)
+                    state.handle_action_for_context_menu(Box::new(Enter { secondary: false, shift: false }), window, cx)
                 });
                 if accepted {
                     cx.stop_propagation();

@@ -18,7 +18,7 @@ use crate::{
     connection::get_server,
     states::{GlobalEvent, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
 };
-use gpui::{App, Context, Corner, SharedString, Subscription, Window, prelude::*};
+use gpui::{Anchor, App, Context, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
     Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
@@ -198,7 +198,7 @@ impl Render for ZedisTitleBar {
                             .small()
                             .ghost()
                             .dropdown_menu(move |this, _, cx| Self::render_settings_menu(this, cx))
-                            .anchor(Corner::TopRight),
+                            .anchor(Anchor::TopRight),
                     )
                     .child(
                         Button::new("github")

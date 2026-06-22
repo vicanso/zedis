@@ -1427,7 +1427,7 @@ impl RedisClient {
                 next_cursors[idx] = new_cursor;
                 let mut node_keys = Vec::with_capacity(keys_in_node.len());
                 for k in keys_in_node {
-                    node_keys.push(SharedString::new(String::from_utf8_lossy(&k).into_owned()));
+                    node_keys.push(SharedString::new(String::from_utf8_lossy(&k)));
                 }
                 keys_per_node[idx] = node_keys;
             }

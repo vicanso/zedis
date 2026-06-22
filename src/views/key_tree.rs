@@ -33,7 +33,7 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    Action, App, AppContext, Corner, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
+    Action, Anchor, App, AppContext, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
     Task, Window, div, prelude::*, px,
 };
 use gpui_component::{
@@ -1831,7 +1831,7 @@ impl ZedisKeyTree {
         let server_id_for_favorites: SharedString = server_id.clone().into();
         let query_mode_dropdown = DropdownButton::new("dropdown")
             .button(Button::new("key-tree-query-mode-btn").ghost().px_2().icon(icon))
-            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, window, cx| {
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, window, cx| {
                 let favorites = get_favorites_manager()
                     .records(server_id_for_favorites.as_ref())
                     .unwrap_or_default();
@@ -1981,7 +1981,7 @@ impl ZedisKeyTree {
         let more_dropdown = Button::new("key-tree-more-dropdown")
             .outline()
             .icon(Icon::new(IconName::Ellipsis))
-            .dropdown_menu_with_anchor(Corner::TopRight, move |menu, window, cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
                 menu.menu_element_with_icon(
                     Icon::new(CustomIconName::RotateCw),
                     Box::new(KeyTreeAction::RefreshAll),

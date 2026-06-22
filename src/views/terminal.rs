@@ -203,7 +203,7 @@ impl ZedisTerminal {
         // Cmd/Ctrl+Enter in the batch editor runs every line at once.
         subscriptions.push(
             cx.subscribe_in(&batch_input_state, window, |this, _state, event, window, cx| {
-                if let InputEvent::PressEnter { secondary } = event
+                if let InputEvent::PressEnter { secondary, .. } = event
                     && *secondary
                 {
                     this.run_batch(window, cx);

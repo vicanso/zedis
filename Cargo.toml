@@ -113,7 +113,7 @@ time = "0.3.47"
 # (which pulls 30+ parsers) and instead register Lua at startup via the
 # public `LanguageRegistry::register` API. Total cost ≈ one ~500KB
 # parser instead of the bundle's 8-15MB.
-tree-sitter = "0.25.4"
+tree-sitter = "0.26"
 tree-sitter-lua = "0.4.1"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "macros"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [
@@ -144,8 +144,8 @@ tray-icon = "0.19"
 
 [workspace.dependencies]
 indexmap = "2.14.0"
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
     "font-kit",
     "x11",
     "wayland",
@@ -153,7 +153,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
 ] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
-gpui_macros = { git = "https://github.com/zed-industries/zed" }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 # gpui = "0.2.2"
 # gpui-component = "0.5.1"
 # gpui-component-assets = "0.5.1"

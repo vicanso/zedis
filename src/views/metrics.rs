@@ -527,10 +527,10 @@ pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_c
             Bar::new()
                 .data(data)
                 .band_width(band_width)
-                .x(move |d: &(SharedString, f64)| x.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
-                .y0(move |_| height)
-                .y1(move |d: &(SharedString, f64)| y.tick(&d.1))
-                .fill(move |_| fill_color)
+                .cross(move |d: &(SharedString, f64)| x.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
+                .base(move |_| height)
+                .value(move |d: &(SharedString, f64)| y.tick(&d.1))
+                .fill(move |_, _, _| fill_color)
                 .paint(&bounds, window, cx);
         },
     )
