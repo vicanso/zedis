@@ -80,6 +80,7 @@ copied_to_clipboard = "Copiado al portapapeles"
 [sidebar]
 home = "Inicio"
 theme = "Tema"
+language = "Idioma"
 light = "Claro"
 dark = "Oscuro"
 system = "Sistema"

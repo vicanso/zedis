@@ -80,6 +80,7 @@ copied_to_clipboard = "Скопировано в буфер обмена"
 [sidebar]
 home = "Главная"
 theme = "Тема"
+language = "Язык"
 light = "Светлая"
 dark = "Тёмная"
 system = "Системная"

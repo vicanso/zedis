@@ -79,6 +79,7 @@ copied_to_clipboard = "已复制到剪贴板"
 [sidebar]
 home = "主页"
 theme = "主题"
+language = "语言"
 light = "浅色"
 dark = "深色"
 system = "系统默认"

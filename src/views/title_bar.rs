@@ -16,7 +16,10 @@ use crate::helpers::MemuAction;
 use crate::{
     assets::CustomIconName,
     connection::get_server,
-    states::{GlobalEvent, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar},
+    states::{
+        GlobalEvent, LocaleAction, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore,
+        i18n_sidebar,
+    },
 };
 use gpui::{Anchor, App, Context, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
@@ -67,77 +70,80 @@ impl ZedisTitleBar {
             .map(|server| SharedString::from(server.name))
     }
 
-    fn render_settings_menu(this: PopupMenu, cx: &App) -> PopupMenu {
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let theme = store.theme();
-        // A named theme overrides the mode, so none of Light/Dark/System is
-        // checked while one is active.
-        let has_named_theme = store.theme_name().is_some();
-        let light_checked = !has_named_theme && theme == Some(ThemeMode::Light);
-        let dark_checked = !has_named_theme && theme == Some(ThemeMode::Dark);
-        let system_checked = !has_named_theme && theme.is_none();
-
-        let this = this.label(i18n_sidebar(cx, "theme"));
-
-        let this = if light_checked {
-            this.menu_with_check(i18n_sidebar(cx, "light"), true, Box::new(ThemeAction::Light))
-        } else {
-            this.menu_element_with_icon(
-                Icon::new(IconName::Sun),
-                Box::new(ThemeAction::Light),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "light")),
+    fn render_settings_menu(this: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+        // Theme: appearance mode (light / dark / follow-system) followed by the
+        // registered color themes, all in one submenu so the top-level menu
+        // stays short. None of light/dark/system is checked while a named theme
+        // overrides the mode; the registry's built-in default light/dark are
+        // skipped because light/dark already select them.
+        let this = this
+            .submenu_with_icon(
+                Some(Icon::new(CustomIconName::SwatchBook)),
+                i18n_sidebar(cx, "theme"),
+                window,
+                cx,
+                |submenu, _window, cx| {
+                    let store = cx.global::<ZedisGlobalStore>().read(cx);
+                    let has_named_theme = store.theme_name().is_some();
+                    let theme = store.theme();
+                    let current = store.theme_name();
+                    let light_checked = !has_named_theme && theme == Some(ThemeMode::Light);
+                    let dark_checked = !has_named_theme && theme == Some(ThemeMode::Dark);
+                    let system_checked = !has_named_theme && theme.is_none();
+                    let mut submenu = submenu
+                        .menu_element_with_check(light_checked, Box::new(ThemeAction::Light), |_, cx| {
+                            Label::new(i18n_sidebar(cx, "light"))
+                        })
+                        .menu_element_with_check(dark_checked, Box::new(ThemeAction::Dark), |_, cx| {
+                            Label::new(i18n_sidebar(cx, "dark"))
+                        })
+                        .menu_element_with_check(system_checked, Box::new(ThemeAction::System), |_, cx| {
+                            Label::new(i18n_sidebar(cx, "system"))
+                        })
+                        .separator();
+                    let registry = ThemeRegistry::global(cx);
+                    let default_light = registry.default_light_theme().name.clone();
+                    let default_dark = registry.default_dark_theme().name.clone();
+                    for config in registry.sorted_themes() {
+                        let name = config.name.clone();
+                        if name == default_light || name == default_dark {
+                            continue;
+                        }
+                        let checked = current.as_deref() == Some(&*name);
+                        let action = Box::new(SelectThemeAction { name: name.to_string() });
+                        submenu =
+                            submenu.menu_element_with_check(checked, action, move |_, _cx| Label::new(name.clone()));
+                    }
+                    submenu
+                },
             )
-        };
-
-        let this = if dark_checked {
-            this.menu_with_check(i18n_sidebar(cx, "dark"), true, Box::new(ThemeAction::Dark))
-        } else {
-            this.menu_element_with_icon(
-                Icon::new(IconName::Moon),
-                Box::new(ThemeAction::Dark),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "dark")),
-            )
-        };
-
-        let this = if system_checked {
-            this.menu_with_check(i18n_sidebar(cx, "system"), true, Box::new(ThemeAction::System))
-        } else {
-            this.menu_element_with_icon(
-                Icon::new(CustomIconName::SunMoon),
-                Box::new(ThemeAction::System),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "system")),
-            )
-        };
-
-        // Registered color themes, listed in the same group right after
-        // Light/Dark/System (no separator). The registry's built-in default
-        // light/dark are skipped — Light/Dark/System already cover them.
-        // Selecting one applies it and overrides the mode until a mode is
-        // re-picked (which clears the saved theme name).
-        let registry = ThemeRegistry::global(cx);
-        let default_light = registry.default_light_theme().name.clone();
-        let default_dark = registry.default_dark_theme().name.clone();
-        let current_theme_name = store.theme_name();
-        let mut this = this;
-        for config in registry.sorted_themes() {
-            let name = config.name.clone();
-            if name == default_light || name == default_dark {
-                continue;
-            }
-            if current_theme_name.as_deref() == Some(&*name) {
-                this = this.menu_with_check(
-                    name.clone(),
-                    true,
-                    Box::new(SelectThemeAction { name: name.to_string() }),
-                );
-            } else {
-                let action = Box::new(SelectThemeAction { name: name.to_string() });
-                this =
-                    this.menu_element_with_icon(Icon::new(CustomIconName::SwatchBook), action, move |_window, _cx| {
-                        Label::new(name.clone())
-                    });
-            }
-        }
+            // Language: pick the UI locale. Native names so each stays
+            // recognizable regardless of the current language; active one checked.
+            .submenu_with_icon(
+                Some(Icon::new(CustomIconName::Languages)),
+                i18n_sidebar(cx, "language"),
+                window,
+                cx,
+                |submenu, _window, cx| {
+                    let current = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                    let mut submenu = submenu;
+                    for (action, code, name) in [
+                        (LocaleAction::En, "en", "English"),
+                        (LocaleAction::Zh, "zh", "中文"),
+                        (LocaleAction::Ru, "ru", "Русский"),
+                        (LocaleAction::Ja, "ja", "日本語"),
+                        (LocaleAction::Pt, "pt", "Português"),
+                        (LocaleAction::Es, "es", "Español"),
+                        (LocaleAction::De, "de", "Deutsch"),
+                        (LocaleAction::Fr, "fr", "Français"),
+                    ] {
+                        let checked = current == code;
+                        submenu =
+                            submenu.menu_element_with_check(checked, Box::new(action), move |_, _cx| Label::new(name));
+                    }
+                    submenu
+                },
+            );
 
         this.separator()
             .menu_element_with_icon(
@@ -197,7 +203,7 @@ impl Render for ZedisTitleBar {
                             .icon(IconName::Settings2)
                             .small()
                             .ghost()
-                            .dropdown_menu(move |this, _, cx| Self::render_settings_menu(this, cx))
+                            .dropdown_menu(Self::render_settings_menu)
                             .anchor(Anchor::TopRight),
                     )
                     .child(

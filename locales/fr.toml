@@ -80,6 +80,7 @@ copied_to_clipboard = "Copié dans le presse-papiers"
 [sidebar]
 home = "Accueil"
 theme = "Thème"
+language = "Langue"
 light = "Clair"
 dark = "Sombre"
 system = "Système"

@@ -80,6 +80,7 @@ copied_to_clipboard = "クリップボードにコピーしました"
 [sidebar]
 home = "ホーム"
 theme = "テーマ"
+language = "言語"
 light = "ライト"
 dark = "ダーク"
 system = "システム"

@@ -80,6 +80,7 @@ copied_to_clipboard = "In die Zwischenablage kopiert"
 [sidebar]
 home = "Startseite"
 theme = "Design"
+language = "Sprache"
 light = "Hell"
 dark = "Dunkel"
 system = "System"

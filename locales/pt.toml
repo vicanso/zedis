@@ -80,6 +80,7 @@ copied_to_clipboard = "Copiado para a área de transferência"
 [sidebar]
 home = "Início"
 theme = "Tema"
+language = "Idioma"
 light = "Claro"
 dark = "Escuro"
 system = "Sistema"
