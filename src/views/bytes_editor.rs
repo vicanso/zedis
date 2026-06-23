@@ -606,7 +606,10 @@ impl Render for ZedisBytesEditor {
                 let editor = Input::new(&self.editor)
                     .flex_1()
                     .bordered(false)
-                    .disabled(self.readonly)
+                    // 由于gpui-component调整之后，
+                    // 设置disabled之后文字颜色模糊，因此暂时禁用
+                    // TODO 后续如果有优化更调整
+                    // .disabled(self.readonly)
                     .appearance(false)
                     .p_0()
                     .w_full()

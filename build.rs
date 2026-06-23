@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
-use vergen::{BuildBuilder, Emitter};
-use vergen_git2::Git2Builder;
+use vergen::{Build, Emitter};
+use vergen_git2::Git2;
 
 /// Recursively collect all dotted key paths from a TOML table.
 /// e.g. `[common]\nsubmit = "..."` → `"common.submit"`
@@ -70,8 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Re-run this build script whenever any locale file changes
     println!("cargo:rerun-if-changed=locales/");
     check_locales();
-    let build = BuildBuilder::all_build()?;
-    let git2 = Git2Builder::all_git()?;
+    let build = Build::all_build();
+    let git2 = Git2::all_git();
 
     Emitter::default()
         .add_instructions(&build)?

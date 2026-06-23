@@ -15,4 +15,21 @@ ignore = [
     # (stacksafe-macro, and rust-embed -> include-flate-codegen) that we
     # can't swap out, and it has no newer/maintained release to update to.
     "RUSTSEC-2026-0173",
+
+    # rsa "Marvin Attack" timing sidechannel — NO fixed version exists. Pulled
+    # via russh / ssh-key for RSA SSH keys (SSH tunnels); the only way to drop
+    # it is disabling russh's `rsa` feature, which removes RSA key support. The
+    # attack requires a local attacker timing RSA decryption during the SSH
+    # handshake, which is outside our threat model. Risk-accepted until russh
+    # moves off the rsa RC.
+    "RUSTSEC-2023-0071",
+
+    # Unmaintained (informational warnings, not vulnerabilities) — all deep
+    # transitive deps from the pinned gpui / gpui-component / russh trees we
+    # can't swap, none with a maintained drop-in replacement:
+    "RUSTSEC-2025-0052", # async-std       (gpui http_client -> async-tar)
+    "RUSTSEC-2024-0384", # instant         (gpui-component, notify-types)
+    "RUSTSEC-2024-0436", # paste           (gpui-component, metal, ...)
+    "RUSTSEC-2024-0370", # proc-macro-error (build-time-only proc-macro dep)
+    "RUSTSEC-2025-0134", # rustls-pemfile  (rustls ecosystem)
 ]

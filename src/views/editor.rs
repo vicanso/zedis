@@ -556,6 +556,17 @@ impl ZedisEditor {
         });
     }
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // The value editor is no longer `.disabled()` in read-only mode (kept
+        // legible), so the read-only lock has to be enforced here instead — this
+        // hard-blocks every save path (Save button, cmd-s, …) at the source. The
+        // button is disabled, so cmd-s is what reaches here; surface a toast so
+        // the otherwise-silent no-op is explained.
+        if self.readonly {
+            self.server_state.update(cx, |state, cx| {
+                state.emit_warning_notification(i18n_common(cx, "disable_in_readonly"), cx);
+            });
+            return;
+        }
         let server_state = self.server_state.read(cx);
         let is_busy = server_state.value().map(|v| v.is_busy()).unwrap_or(false);
         if is_busy {
@@ -568,6 +579,15 @@ impl ZedisEditor {
             return;
         };
         editor.clone().update(cx, move |state, cx| {
+            // Binary content shown as lossy UTF-8 text can't round-trip, so
+            // saving it would corrupt the value. The editor used to be disabled
+            // for this (now it isn't, to stay legible), so block + explain here.
+            if state.is_readonly() {
+                self.server_state.update(cx, |s, cx| {
+                    s.emit_warning_notification(i18n_common(cx, "disable_in_readonly"), cx);
+                });
+                return;
+            }
             // Hex view mode round-trips through hex text — decode back to
             // raw bytes here and use the bytes save path so we can write
             // arbitrary binary data, not just UTF-8 strings.

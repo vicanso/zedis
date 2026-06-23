@@ -9,14 +9,15 @@ use crate::helpers::{
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, SettingsAction,
-    ThemeAction, ZedisAppState, ZedisGlobalStore, i18n_update, save_app_state, update_app_state_and_save,
+    ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_update, save_app_state,
+    update_app_state_and_save,
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, open_about_window,
     open_settings_window,
 };
 use gpui::{
-    App, Bounds, Entity, Menu, MenuItem, Pixels, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
+    App, Bounds, Entity, Menu, MenuItem, Pixels, Point, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
@@ -249,11 +250,25 @@ impl Zedis {
         }));
     }
 
-    fn persist_window_state(&mut self, new_bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
+    fn persist_window_state(
+        &mut self,
+        new_bounds: Bounds<Pixels>,
+        display: Option<(String, Point<Pixels>)>,
+        cx: &mut Context<Self>,
+    ) {
         self.last_bounds = new_bounds;
         let store = cx.global::<ZedisGlobalStore>().clone();
         let mut value = store.value(cx);
         value.set_bounds(new_bounds);
+        // Anchor the placement to the current display (origin relative to it) so
+        // it survives monitor rearrangement; absolute `bounds` stays as fallback.
+        let placement = display.map(|(display_uuid, screen_origin)| WindowPlacement {
+            display_uuid,
+            bounds: new_bounds - screen_origin,
+        });
+        if let Some(p) = &placement {
+            value.upsert_window_placement(p.clone());
+        }
         let task = cx.spawn(async move |_, cx| {
             // wait 500ms
             cx.background_executor()
@@ -262,6 +277,9 @@ impl Zedis {
 
             store.update(cx, move |state, cx| {
                 state.set_bounds(new_bounds);
+                if let Some(p) = placement {
+                    state.upsert_window_placement(p);
+                }
                 cx.notify();
             });
 
@@ -297,6 +315,91 @@ impl Zedis {
         };
         title_bar.clone().into_any_element()
     }
+}
+
+/// Default window bounds: a 1200×750 window centered on the primary display,
+/// shrunk to fit if the primary display is small.
+fn default_window_bounds(cx: &mut App) -> Bounds<Pixels> {
+    let mut window_size = size(px(1200.), px(750.));
+    if let Some(display) = cx.primary_display() {
+        let ds = display.bounds().size;
+        window_size.width = window_size.width.min(ds.width * 0.85);
+        window_size.height = window_size.height.min(ds.height * 0.85);
+    }
+    Bounds::centered(None, window_size, cx)
+}
+
+/// Resolve the bounds to open the window at, validating any saved placement
+/// against the *current* display layout (monitors may have been unplugged,
+/// resized, or rearranged since last run). Priority:
+/// 1. the display we were last on, matched by uuid → restore relative origin;
+/// 2. otherwise the absolute saved bounds, snapped onto the display they
+///    overlap most (covers old configs / a monitor that's now gone);
+/// 3. otherwise center on the primary display.
+///
+/// In all cases the result is clamped so the window fits and its title bar
+/// stays reachable.
+fn resolve_window_bounds(state: &ZedisAppState, cx: &mut App) -> Bounds<Pixels> {
+    // Shrink to fit the display, then keep the origin (title bar) on-screen.
+    let clamp_to = |mut b: Bounds<Pixels>, screen: Bounds<Pixels>| -> Bounds<Pixels> {
+        b.size = b.size.min(&screen.size);
+        let max_x = screen.origin.x + screen.size.width - b.size.width;
+        let max_y = screen.origin.y + screen.size.height - b.size.height;
+        b.origin.x = b.origin.x.clamp(screen.origin.x, max_x);
+        b.origin.y = b.origin.y.clamp(screen.origin.y, max_y);
+        b
+    };
+
+    // Currently-connected displays keyed by uuid, plus the primary's uuid.
+    let displays: Vec<(String, Bounds<Pixels>)> = cx
+        .displays()
+        .into_iter()
+        .filter_map(|d| Some((d.uuid().ok()?.to_string(), d.bounds())))
+        .collect();
+    let primary_uuid = cx.primary_display().and_then(|d| d.uuid().ok()).map(|u| u.to_string());
+
+    // 1) Restore the saved placement for a currently-connected display — the
+    //    primary display first, else the most-recently-used connected one — so
+    //    each monitor (work / home) keeps its own remembered position.
+    let placement = state
+        .window_placements()
+        .iter()
+        .find(|p| primary_uuid.as_deref() == Some(p.display_uuid.as_str()))
+        .or_else(|| {
+            state
+                .window_placements()
+                .iter()
+                .find(|p| displays.iter().any(|(uuid, _)| uuid == &p.display_uuid))
+        });
+    if let Some(p) = placement
+        && let Some((_, screen)) = displays.iter().find(|(uuid, _)| uuid == &p.display_uuid)
+    {
+        return clamp_to(p.bounds + screen.origin, *screen);
+    }
+
+    // 2) Fallback: snap the absolute saved bounds onto the display they overlap
+    //    most; no overlap (monitor gone / off-screen) -> fall through.
+    if let Some(&saved) = state.bounds() {
+        let area = |screen: &Bounds<Pixels>| {
+            let i = saved.intersect(screen);
+            if i.is_empty() {
+                0.0
+            } else {
+                i.size.width.as_f32() * i.size.height.as_f32()
+            }
+        };
+        if let Some((_, screen)) = displays
+            .iter()
+            .filter(|(_, b)| area(b) > 0.0)
+            .max_by(|(_, a), (_, b)| area(a).total_cmp(&area(b)))
+        {
+            return clamp_to(saved, *screen);
+        }
+    }
+
+    // 3) Nothing usable → center on the primary display.
+    info!("no usable saved window placement; centering on primary display");
+    default_window_bounds(cx)
 }
 
 /// Apply a registry theme by name (e.g. "Ayu Dark") if present, returning
@@ -392,7 +495,12 @@ impl Render for Zedis {
         let notification_layer = Root::render_notification_layer(window, cx);
         let current_bounds = window.bounds();
         if current_bounds != self.last_bounds {
-            self.persist_window_state(current_bounds, cx);
+            // The display the window is currently on, used to anchor the saved
+            // placement to it (so it survives multi-monitor rearrangement).
+            let display = window
+                .display(cx)
+                .and_then(|d| Some((d.uuid().ok()?.to_string(), d.bounds().origin)));
+            self.persist_window_state(current_bounds, display, cx);
         }
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
@@ -602,18 +710,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assets::register_themes(cx);
 
         cx.activate(true);
-        let window_bounds = if let Some(bounds) = app_state.bounds() {
-            info!(bounds = ?bounds, "get window bounds from setting");
-            *bounds
-        } else {
-            let mut window_size = size(px(1200.), px(750.));
-            if let Some(display) = cx.primary_display() {
-                let display_size = display.bounds().size;
-                window_size.width = window_size.width.min(display_size.width * 0.85);
-                window_size.height = window_size.height.min(display_size.height * 0.85);
-            }
-            Bounds::centered(None, window_size, cx)
-        };
+        let window_bounds = resolve_window_bounds(&app_state, cx);
+        info!(bounds = ?window_bounds, "resolved window bounds");
         let app_state = cx.new(|_| app_state);
         let app_store = ZedisGlobalStore::new(app_state);
         // A saved named theme wins; otherwise fall back to the Light/Dark/System

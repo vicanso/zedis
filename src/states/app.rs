@@ -235,12 +235,35 @@ pub enum ReorderDirection {
     Down,
 }
 
+/// Cap on remembered per-display window placements (MRU order). Bounds the
+/// config size for users who connect to many different monitors over time.
+const MAX_WINDOW_PLACEMENTS: usize = 8;
+
+/// A window placement anchored to a specific display, so it survives
+/// multi-monitor rearrangement. `bounds` is the window rectangle **relative to
+/// that display's origin**; `display_uuid` identifies the display across
+/// restarts. Kept per display in [`ZedisAppState::window_placements`]; the
+/// absolute [`ZedisAppState::bounds`] is the fallback (see
+/// `main.rs::resolve_window_bounds`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowPlacement {
+    pub display_uuid: String,
+    pub bounds: Bounds<Pixels>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
     query: Option<HashMap<String, String>>,
     locale: Option<String>,
     bounds: Option<Bounds<Pixels>>,
+    /// Per-display window placements (origin relative to each display), keyed by
+    /// `display_uuid`, most-recently-used first and capped at
+    /// `MAX_WINDOW_PLACEMENTS`. Lets each monitor remember its own last position
+    /// (e.g. work vs home). `bounds` above is the fallback for old configs / a
+    /// display that's gone.
+    #[serde(default)]
+    window_placements: Vec<WindowPlacement>,
     key_tree_width: Pixels,
     theme: Option<String>,
     /// Selected named theme from the registry (e.g. "Ayu Dark"). Takes
@@ -471,6 +494,18 @@ impl ZedisAppState {
 
     pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
         self.bounds = Some(bounds);
+    }
+    pub fn window_placements(&self) -> &[WindowPlacement] {
+        &self.window_placements
+    }
+    /// Upsert a per-display placement: drop any prior entry for the same display,
+    /// move it to the front (most-recently-used), and keep at most
+    /// `MAX_WINDOW_PLACEMENTS` distinct displays.
+    pub fn upsert_window_placement(&mut self, placement: WindowPlacement) {
+        self.window_placements
+            .retain(|p| p.display_uuid != placement.display_uuid);
+        self.window_placements.insert(0, placement);
+        self.window_placements.truncate(MAX_WINDOW_PLACEMENTS);
     }
     pub fn set_theme(&mut self, theme: Option<ThemeMode>) {
         // Picking a Light/Dark/System mode clears any named theme so the mode
