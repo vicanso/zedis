@@ -21,6 +21,9 @@ use serde::Deserialize;
 pub enum MemuAction {
     Quit,
     About,
+    /// Close the window via `cmd-w`, mirroring the red close button. On macOS
+    /// that hides the app (see `on_window_should_close` in `main.rs`).
+    Close,
 }
 
 /// Navigation. `Back` (bound to `escape`) mirrors the "back to editor"
@@ -258,6 +261,7 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
+        KeyBinding::new("cmd-w", MemuAction::Close, None),
         KeyBinding::new("cmd-k", PaletteAction::Toggle, None),
         KeyBinding::new("cmd-/", ShortcutsAction::Toggle, None),
         KeyBinding::new("cmd-s", EditorAction::Save, None),

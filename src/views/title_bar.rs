@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::MemuAction;
+use crate::helpers::{MemuAction, PaletteAction, ShortcutsAction, UpdateAction};
 use crate::{
     assets::CustomIconName,
     connection::get_server,
@@ -27,7 +27,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
-    menu::{DropdownMenu, PopupMenu},
+    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
 };
 
 pub struct ZedisTitleBar {
@@ -77,6 +77,16 @@ impl ZedisTitleBar {
         // overrides the mode; the registry's built-in default light/dark are
         // skipped because light/dark already select them.
         let this = this
+            // Header: app name + version, like Zed's account menu. Disabled so
+            // it reads as a title rather than a clickable row.
+            .item(
+                PopupMenuItem::element(|_window, _cx| {
+                    Label::new(concat!("Zedis v", env!("CARGO_PKG_VERSION"))).font_semibold()
+                })
+                .disabled(true),
+            )
+            .separator()
+            .label(i18n_sidebar(cx, "preferences"))
             .submenu_with_icon(
                 Some(Icon::new(CustomIconName::SwatchBook)),
                 i18n_sidebar(cx, "theme"),
@@ -146,25 +156,59 @@ impl ZedisTitleBar {
             );
 
         this.separator()
-            .menu_element_with_icon(
-                Icon::new(CustomIconName::SwatchBook),
-                Box::new(SettingsAction::Protos),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "proto_settings")),
+            // App actions, shown with their shortcuts (Zed-style flat items).
+            .menu_with_icon(
+                i18n_sidebar(cx, "command_palette"),
+                Icon::new(CustomIconName::Command),
+                Box::new(PaletteAction::Toggle),
             )
-            .menu_element_with_icon(
-                Icon::new(CustomIconName::Binary),
-                Box::new(SettingsAction::Scripts),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "script_settings")),
+            .menu_with_icon(
+                i18n_sidebar(cx, "keyboard_shortcuts"),
+                Icon::new(CustomIconName::Keyboard),
+                Box::new(ShortcutsAction::Toggle),
             )
-            .menu_element_with_icon(
-                Icon::new(IconName::Settings2),
-                Box::new(SettingsAction::Editor),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
+            .separator()
+            // Settings: the configuration sub-views, grouped into one submenu so
+            // the top-level menu stays short.
+            .submenu_with_icon(
+                Some(Icon::new(IconName::Settings2)),
+                i18n_sidebar(cx, "settings"),
+                window,
+                cx,
+                |submenu, _window, _cx| {
+                    submenu
+                        .menu_element_with_icon(
+                            Icon::new(CustomIconName::SwatchBook),
+                            Box::new(SettingsAction::Protos),
+                            move |_window, cx| Label::new(i18n_sidebar(cx, "proto_settings")),
+                        )
+                        .menu_element_with_icon(
+                            Icon::new(CustomIconName::Binary),
+                            Box::new(SettingsAction::Scripts),
+                            move |_window, cx| Label::new(i18n_sidebar(cx, "script_settings")),
+                        )
+                        .menu_element_with_icon(
+                            Icon::new(IconName::Settings2),
+                            Box::new(SettingsAction::Editor),
+                            move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
+                        )
+                },
             )
-            .menu_element_with_icon(
+            .menu_with_icon(
+                i18n_sidebar(cx, "check_updates"),
+                Icon::new(CustomIconName::RefreshCw),
+                Box::new(UpdateAction::Check),
+            )
+            .menu_with_icon(
+                i18n_sidebar(cx, "about"),
                 Icon::new(IconName::Info),
                 Box::new(MemuAction::About),
-                move |_window, cx| Label::new(i18n_sidebar(cx, "about")),
+            )
+            .separator()
+            .menu_with_icon(
+                i18n_sidebar(cx, "quit"),
+                Icon::new(CustomIconName::Power),
+                Box::new(MemuAction::Quit),
             )
     }
 }

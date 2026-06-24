@@ -722,8 +722,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(name) => apply_named_theme(&name, cx),
             None => false,
         };
-        if !applied && let Some(theme) = saved_mode {
-            Theme::change(theme, None, cx);
+        if !applied {
+            // Resolve System mode (no saved name/mode) against the OS appearance
+            // *before* the window opens, so the very first painted frame already
+            // uses the right light/dark theme. Otherwise the default theme shows
+            // for a frame and flashes (e.g. white before a dark theme settles).
+            let mode = match saved_mode {
+                Some(m) => m,
+                None => match cx.window_appearance() {
+                    WindowAppearance::Light => ThemeMode::Light,
+                    _ => ThemeMode::Dark,
+                },
+            };
+            Theme::change(mode, None, cx);
         }
         cx.set_global(app_store);
         #[cfg(not(target_os = "linux"))]
@@ -741,12 +752,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             MemuAction::About => {
                 open_about_window(cx);
             }
+            MemuAction::Close => {
+                // ⌘W mirrors the red close button: on macOS that hides the app
+                // (see on_window_should_close). On other platforms the window
+                // manager closes the window itself, so this is a no-op.
+                #[cfg(target_os = "macos")]
+                cx.hide();
+            }
         });
         cx.set_menus(vec![Menu {
             name: "Zedis".into(),
             items: vec![
                 MenuItem::action("About Zedis", MemuAction::About),
                 MenuItem::action("Check for Updates", UpdateAction::Check),
+                MenuItem::action("Close Window", MemuAction::Close),
                 MenuItem::action("Quit", MemuAction::Quit),
             ],
             disabled: false,
@@ -762,7 +781,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
                     }),
-                    show: true,
+                    // On macOS the window is created hidden and revealed after
+                    // the first themed frame (see on_next_frame below), so there
+                    // is no white flash before the theme background paints.
+                    show: !cfg!(target_os = "macos"),
                     window_min_size: Some(size(px(600.), px(400.))),
                     ..Default::default()
                 },
@@ -772,6 +794,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cx.hide();
                         false
                     });
+                    // Reveal the (hidden) window only after the first frame has
+                    // painted, so the user never sees the default white backing
+                    // before the themed background. Pairs with `show: false`.
+                    #[cfg(target_os = "macos")]
+                    window.on_next_frame(|window, _cx| window.activate_window());
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
                     // Global (focus-independent) ⌘K handler — element
                     // `.on_action` is focus-routed and dies when the

@@ -101,6 +101,10 @@ pub enum CustomIconName {
     Upload,
     GitCompareArrows,
     Languages,
+    Command,
+    Keyboard,
+    RefreshCw,
+    Power,
 }
 
 impl CustomIconName {
@@ -145,6 +149,10 @@ impl CustomIconName {
             CustomIconName::Upload => "icons/upload.svg",
             CustomIconName::GitCompareArrows => "icons/git-compare-arrows.svg",
             CustomIconName::Languages => "icons/languages.svg",
+            CustomIconName::Command => "icons/command.svg",
+            CustomIconName::Keyboard => "icons/keyboard.svg",
+            CustomIconName::RefreshCw => "icons/refresh-cw.svg",
+            CustomIconName::Power => "icons/power.svg",
         }
         .into()
     }
