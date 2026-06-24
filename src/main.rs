@@ -830,11 +830,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 open_about_window(cx);
             }
             MemuAction::Close => {
-                // ⌘W mirrors the red close button: on macOS that hides the app
-                // (see on_window_should_close). On other platforms the window
-                // manager closes the window itself, so this is a no-op.
+                // ⌘W / Ctrl+W mirrors the red close button: on macOS it hides
+                // the app (see on_window_should_close); elsewhere it closes the
+                // active window (which quits the app when it's the last one).
                 #[cfg(target_os = "macos")]
                 cx.hide();
+                #[cfg(not(target_os = "macos"))]
+                if let Some(window) = cx.active_window() {
+                    let _ = window.update(cx, |_, window, _cx| window.remove_window());
+                }
             }
         });
         cx.set_menus(vec![Menu {
@@ -858,10 +862,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
                     }),
-                    // On macOS the window is created hidden and revealed after
-                    // the first themed frame (see on_next_frame below), so there
-                    // is no white flash before the theme background paints.
-                    show: !cfg!(target_os = "macos"),
+                    // Create the window hidden on macOS/Windows and reveal it
+                    // after the first themed frame (see on_next_frame below) so
+                    // there's no white flash before the theme paints. Linux is
+                    // left shown immediately — Wayland can't reliably reveal a
+                    // window that was never mapped.
+                    show: cfg!(target_os = "linux"),
                     window_min_size: Some(size(px(600.), px(400.))),
                     ..Default::default()
                 },
@@ -874,7 +880,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Reveal the (hidden) window only after the first frame has
                     // painted, so the user never sees the default white backing
                     // before the themed background. Pairs with `show: false`.
-                    #[cfg(target_os = "macos")]
+                    #[cfg(not(target_os = "linux"))]
                     window.on_next_frame(|window, _cx| window.activate_window());
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
                     // Global (focus-independent) ⌘K handler — element

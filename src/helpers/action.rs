@@ -261,7 +261,9 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-q", MemuAction::Quit, None),
-        KeyBinding::new("cmd-w", MemuAction::Close, None),
+        // `secondary` = cmd on macOS, ctrl on Linux/Windows — so this is ⌘W /
+        // Ctrl+W on the respective platforms.
+        KeyBinding::new("secondary-w", MemuAction::Close, None),
         KeyBinding::new("cmd-k", PaletteAction::Toggle, None),
         KeyBinding::new("cmd-/", ShortcutsAction::Toggle, None),
         KeyBinding::new("cmd-s", EditorAction::Save, None),
