@@ -21,7 +21,12 @@ use gpui::{
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Root, Theme, ThemeMode, ThemeRegistry, WindowExt, h_flex, notification::Notification, v_flex,
+    ActiveTheme, Root, StyledExt, Theme, ThemeMode, ThemeRegistry, WindowExt,
+    button::{Button, ButtonVariants},
+    h_flex,
+    label::Label,
+    notification::Notification,
+    v_flex,
 };
 use std::{cell::Cell, env, rc::Rc, str::FromStr, time::Duration};
 use sys_locale::get_locale;
@@ -671,6 +676,41 @@ fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
+/// Minimal window shown when the local database can't be opened — most often
+/// because another Zedis instance is already running and holds the lock. We
+/// surface this and exit instead of silently starting a half-broken instance
+/// (tags / search history / proto / script / Lua features would all fail).
+struct DatabaseErrorView;
+
+impl Render for DatabaseErrorView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .p_5()
+            .gap_3()
+            .child(Label::new("Zedis can't open its database").font_semibold())
+            .child(
+                Label::new(
+                    "Another instance of Zedis may already be running and holding the database \
+                     lock, or the database file is inaccessible. Quit the other instance, then \
+                     reopen Zedis.",
+                )
+                .whitespace_normal(),
+            )
+            .child(div().flex_1())
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("quit-db-error")
+                        .label("Quit")
+                        .primary()
+                        .on_click(|_, _window, cx| cx.quit()),
+                ),
+            )
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logger()?;
     // Register tree-sitter languages we want the code editor to
@@ -683,7 +723,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!(error = %e, "get servers fail",);
     }
     if let Err(e) = init_database() {
-        error!(error = %e, "init database fail",);
+        error!(error = %e, "init database failed — another Zedis instance may hold the lock; showing error and exiting");
+        // Don't start a half-broken second instance (the DB is required for
+        // tags / history / proto / script / Lua). Show a clear window and quit.
+        let saved_mode = app_state.theme();
+        app.run(move |cx| {
+            gpui_component::init(cx);
+            // Match the user's chosen mode, or the OS appearance, so the error
+            // window isn't a jarring light flash on a dark system.
+            let mode = match saved_mode {
+                Some(m) => m,
+                None => match cx.window_appearance() {
+                    WindowAppearance::Light => ThemeMode::Light,
+                    _ => ThemeMode::Dark,
+                },
+            };
+            Theme::change(mode, None, cx);
+            cx.activate(true);
+            let bounds = Bounds::centered(None, size(px(460.), px(220.)), cx);
+            let opened = cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(380.), px(180.))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    window.on_window_should_close(cx, |_window, cx| {
+                        cx.quit();
+                        true
+                    });
+                    let view = cx.new(|_| DatabaseErrorView);
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
+            );
+            if opened.is_err() {
+                cx.quit();
+            }
+        });
+        return Ok(());
     }
     let config_dir = if let Ok(dir) = get_or_create_config_dir() {
         dir.to_string_lossy().to_string()
