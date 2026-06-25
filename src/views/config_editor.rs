@@ -25,11 +25,14 @@ use crate::{
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonVariants, DropdownButton},
+    checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, NumberInput},
     label::Label,
+    menu::PopupMenuItem,
     notification::Notification,
+    spinner::Spinner,
     v_flex,
 };
 use redis::cmd;
@@ -49,6 +52,66 @@ struct ConfigDiff {
     rows: Vec<(SharedString, SharedString, SharedString)>,
 }
 
+/// Editing control inferred for a config value. A curated catalog of known
+/// enum parameters (by name) is consulted first; otherwise the type is guessed
+/// from the current value: `yes`/`no` → checkbox, a parseable number → numeric
+/// input, anything else → plain text.
+#[derive(Clone, Copy, PartialEq)]
+enum ConfigKind {
+    /// Known enum parameter — pick from a fixed candidate list (a dropdown).
+    Enum(&'static [&'static str]),
+    Bool,
+    Number,
+    Text,
+}
+
+/// Candidate values for well-known enum config parameters. Curated and kept
+/// version-independent (only options stable across Redis versions); the editor
+/// always also offers the server's current value, so an option added in a newer
+/// Redis is never lost. Parameters not listed fall back to value inference.
+fn config_enum_options(key: &str) -> Option<&'static [&'static str]> {
+    let opts: &[&str] = match key {
+        "maxmemory-policy" => &[
+            "noeviction",
+            "allkeys-lru",
+            "allkeys-lfu",
+            "allkeys-random",
+            "volatile-lru",
+            "volatile-lfu",
+            "volatile-random",
+            "volatile-ttl",
+        ],
+        "appendfsync" => &["everysec", "always", "no"],
+        "loglevel" => &["debug", "verbose", "notice", "warning", "nothing"],
+        "tls-auth-clients" => &["no", "yes", "optional"],
+        "repl-diskless-load" => &["disabled", "on-empty-db", "swapdb"],
+        "sanitize-dump-payload" => &["no", "yes", "clients"],
+        "propagation-error-behavior" => &["ignore", "panic", "panic-on-replicas"],
+        "cluster-preferred-endpoint-type" => &["ip", "hostname", "unknown-endpoint"],
+        "supervised" => &["no", "upstart", "systemd", "auto"],
+        "oom-score-adj" => &["no", "yes", "relative", "absolute"],
+        "acl-pubsub-default" => &["resetchannels", "allchannels"],
+        "syslog-facility" => &[
+            "user", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7",
+        ],
+        // yes/no/local tri-state guards — not plain booleans.
+        "enable-protected-configs" | "enable-debug-command" | "enable-module-command" => &["no", "yes", "local"],
+        _ => return None,
+    };
+    Some(opts)
+}
+
+fn config_kind(key: &str, value: &str) -> ConfigKind {
+    if let Some(opts) = config_enum_options(key) {
+        return ConfigKind::Enum(opts);
+    }
+    match value {
+        "yes" | "no" => ConfigKind::Bool,
+        _ if !value.is_empty() && value.parse::<f64>().is_ok() => ConfigKind::Number,
+        _ => ConfigKind::Text,
+    }
+}
+
 pub struct ZedisConfigEditor {
     server_state: Entity<ZedisServerState>,
     configs: Vec<(SharedString, SharedString)>,
@@ -56,6 +119,12 @@ pub struct ZedisConfigEditor {
     filter: String,
     editing_key: Option<SharedString>,
     edit_state: Entity<InputState>,
+    /// Numeric-only input used when editing a value that parses as a number.
+    number_state: Entity<InputState>,
+    /// Checkbox state used when editing a `yes`/`no` value.
+    editing_bool: bool,
+    /// Current selection used when editing a known enum value (dropdown).
+    editing_enum: SharedString,
     loading: bool,
     /// Set when the `CONFIG GET *` load fails, so the body shows the error
     /// instead of a misleading empty "no data" panel.
@@ -70,6 +139,12 @@ impl ZedisConfigEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter_state = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by key..."));
         let edit_state = cx.new(|cx| InputState::new(window, cx));
+        // Numeric values use a NumberInput (with ↑/↓ steppers) for a numeric
+        // feel, but the input is NOT pattern-restricted — many "numeric-looking"
+        // configs legitimately take spaces / units / multiple segments (e.g.
+        // `save 3600 1 300 100`, `maxmemory 100mb`), so hard-blocking keystrokes
+        // would trap the user. The steppers safely no-op on non-numeric values.
+        let number_state = cx.new(|cx| InputState::new(window, cx));
         let mut subscriptions = Vec::new();
 
         subscriptions.push(cx.subscribe(&filter_state, |this, state, event, cx| {
@@ -94,6 +169,9 @@ impl ZedisConfigEditor {
             filter: String::new(),
             editing_key: None,
             edit_state,
+            number_state,
+            editing_bool: false,
+            editing_enum: SharedString::default(),
             loading: false,
             error: None,
             pending_notification: None,
@@ -286,6 +364,10 @@ impl Render for ZedisConfigEditor {
 
         let editing_key = self.editing_key.clone();
         let edit_state = self.edit_state.clone();
+        let number_state = self.number_state.clone();
+        let editing_bool = self.editing_bool;
+        let editing_enum = self.editing_enum.clone();
+        let self_handle = cx.entity().downgrade();
 
         let stripe_bg = cx.theme().table_even;
         let rows = filtered.into_iter().enumerate().map(|(row_ix, (key, value))| {
@@ -294,11 +376,64 @@ impl Render for ZedisConfigEditor {
 
             if is_editing {
                 let save_key = key.clone();
-                let edit_state_save = edit_state.clone();
+                let kind = config_kind(&key, &value);
+                // Pick the editor control by inferred value type.
+                let editor = match kind {
+                    ConfigKind::Enum(options) => {
+                        // Always include the server's current value, so an option
+                        // from a newer Redis (not in our catalog) is selectable.
+                        let mut opts: Vec<SharedString> = options.iter().map(|s| SharedString::from(*s)).collect();
+                        if !opts.iter().any(|o| o.as_ref() == value.as_ref()) {
+                            opts.insert(0, value.clone());
+                        }
+                        let handle = self_handle.clone();
+                        DropdownButton::new("config-enum-edit")
+                            .small()
+                            .button(
+                                Button::new("config-enum-current")
+                                    .outline()
+                                    .small()
+                                    .label(editing_enum.clone()),
+                            )
+                            .dropdown_menu(move |menu, _w, _cx| {
+                                let mut menu = menu;
+                                for opt in opts.clone() {
+                                    let handle = handle.clone();
+                                    let val = opt.clone();
+                                    menu = menu.item(PopupMenuItem::new(opt.clone()).on_click(move |_, _w, cx| {
+                                        if let Some(this) = handle.upgrade() {
+                                            this.update(cx, |this, cx| {
+                                                this.editing_enum = val.clone();
+                                                cx.notify();
+                                            });
+                                        }
+                                    }));
+                                }
+                                menu
+                            })
+                            .into_any_element()
+                    }
+                    ConfigKind::Bool => Checkbox::new("config-bool-edit")
+                        .checked(editing_bool)
+                        .label(if editing_bool { "yes" } else { "no" })
+                        .on_click(cx.listener(|this, checked: &bool, _w, cx| {
+                            this.editing_bool = *checked;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    ConfigKind::Number => NumberInput::new(&number_state).small().into_any_element(),
+                    ConfigKind::Text => Input::new(&edit_state)
+                        .small()
+                        .font_family(font_family.clone())
+                        .appearance(true)
+                        .into_any_element(),
+                };
                 h_flex()
                     .w_full()
                     .px_3()
                     .py_1()
+                    .min_h(px(34.))
+                    .items_center()
                     .gap_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -309,20 +444,19 @@ impl Render for ZedisConfigEditor {
                             .flex_none()
                             .child(Label::new(key.clone()).text_sm().text_color(cx.theme().foreground)),
                     )
-                    .child(
-                        div().flex_1().child(
-                            Input::new(&edit_state)
-                                .font_family(font_family.clone())
-                                .appearance(true),
-                        ),
-                    )
+                    .child(div().flex_1().child(editor))
                     .child(
                         Button::new("config-save")
                             .small()
                             .primary()
                             .label(i18n_common(cx, "save"))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                let v = edit_state_save.read(cx).value();
+                                let v: SharedString = match kind {
+                                    ConfigKind::Enum(_) => this.editing_enum.clone(),
+                                    ConfigKind::Bool => if this.editing_bool { "yes" } else { "no" }.into(),
+                                    ConfigKind::Number => this.number_state.read(cx).value(),
+                                    ConfigKind::Text => this.edit_state.read(cx).value(),
+                                };
                                 let key = save_key.clone();
                                 let server_id = this.server_state.read(cx).server_id().to_string();
                                 let line = format!("CONFIG SET {} {}", key, v);
@@ -363,11 +497,12 @@ impl Render for ZedisConfigEditor {
             } else {
                 let edit_key = key.clone();
                 let edit_value = value.clone();
-                let edit_state_click = edit_state.clone();
                 h_flex()
                     .w_full()
                     .px_3()
                     .py_1()
+                    .min_h(px(34.))
+                    .items_center()
                     .gap_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -394,9 +529,17 @@ impl Render for ZedisConfigEditor {
                             .tooltip(i18n_config_editor(cx, "edit_tooltip"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.editing_key = Some(edit_key.clone());
-                                edit_state_click.update(cx, |state, cx| {
-                                    state.set_value(edit_value.clone(), window, cx);
-                                });
+                                // Seed the control matching the value's inferred type.
+                                match config_kind(&edit_key, &edit_value) {
+                                    ConfigKind::Enum(_) => this.editing_enum = edit_value.clone(),
+                                    ConfigKind::Bool => this.editing_bool = edit_value.as_ref() == "yes",
+                                    ConfigKind::Number => this.number_state.update(cx, |state, cx| {
+                                        state.set_value(edit_value.clone(), window, cx);
+                                    }),
+                                    ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
+                                        state.set_value(edit_value.clone(), window, cx);
+                                    }),
+                                }
                                 cx.notify();
                             })),
                     )
@@ -432,6 +575,21 @@ impl Render for ZedisConfigEditor {
                             .text_sm()
                             .font_family(font_family.clone()),
                     )
+                    // Inline loading indicator in the header — more noticeable
+                    // than a centered body spinner while `CONFIG GET *` is slow.
+                    .when(self.loading, |this| {
+                        this.child(
+                            h_flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(Spinner::new().with_size(px(14.)).color(cx.theme().muted_foreground))
+                                .child(
+                                    Label::new(i18n_common(cx, "loading"))
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                        )
+                    })
                     .child(div().flex_1())
                     .child(
                         Button::new("config-reload")

@@ -23,7 +23,7 @@ use crate::{
         i18n_sidebar, i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
     },
 };
-use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
+use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -724,7 +724,9 @@ impl ZedisStatusBar {
                             .small()
                             .icon(IconName::Menu)
                             .tooltip(i18n_status_bar(cx, "tools_tooltip"))
-                            .dropdown_menu(move |this, _, cx| {
+                            // Status bar sits at the bottom, so open the menu
+                            // upward (its bottom edge anchored to the button).
+                            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |this, _, cx| {
                                 Self::render_tools_menu(
                                     this,
                                     supports_search,
