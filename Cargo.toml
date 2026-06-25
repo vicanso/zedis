@@ -125,6 +125,7 @@ webpki-roots = "1.0.7"
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
+tracing-appender = "0.2.5"
 url = "2.5.8"
 uuid = "1.23.2"
 zedis-ui = { path = "crates/zedis-ui" }
