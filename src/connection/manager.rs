@@ -507,7 +507,10 @@ impl FromRedisValue for SlowLogEntry {
     }
 }
 
-// TODO 是否在client中保存connection
+// `connection` lives on the (Clone) `RedisClient` on purpose: `RedisAsyncConn`
+// wraps redis multiplexed / cluster connections, which are cheap Arc-shared
+// handles — cloning a `RedisClient` shares the same underlying connection, which
+// is exactly the intended multiplexing behaviour (no per-clone socket).
 #[derive(Clone)]
 pub struct RedisClient {
     access_mode: AccessMode,

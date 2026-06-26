@@ -726,3 +726,53 @@ impl Render for ZedisConfigEditor {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ConfigKind, config_enum_options, config_kind};
+
+    #[test]
+    fn config_kind_infers_from_value() {
+        // yes/no → checkbox.
+        assert!(matches!(config_kind("appendonly", "yes"), ConfigKind::Bool));
+        assert!(matches!(config_kind("appendonly", "no"), ConfigKind::Bool));
+        // Parseable number → numeric input.
+        assert!(matches!(config_kind("maxmemory", "0"), ConfigKind::Number));
+        assert!(matches!(config_kind("databases", "16"), ConfigKind::Number));
+        // Paths / multi-segment / empty → plain text.
+        assert!(matches!(config_kind("dir", "./"), ConfigKind::Text));
+        assert!(matches!(config_kind("save", "3600 1 300 100"), ConfigKind::Text));
+        assert!(matches!(config_kind("requirepass", ""), ConfigKind::Text));
+    }
+
+    #[test]
+    fn config_kind_catalog_wins_over_value() {
+        // Known enum params resolve to Enum even when their value would
+        // otherwise infer as Text (or a number).
+        assert!(matches!(
+            config_kind("maxmemory-policy", "noeviction"),
+            ConfigKind::Enum(_)
+        ));
+        assert!(matches!(config_kind("loglevel", "notice"), ConfigKind::Enum(_)));
+    }
+
+    #[test]
+    fn config_enum_options_lookup() {
+        // Unknown keys fall through (→ value inference).
+        assert!(config_enum_options("definitely-not-a-config").is_none());
+
+        let fsync = config_enum_options("appendfsync").expect("appendfsync is a known enum");
+        assert_eq!(fsync, &["everysec", "always", "no"]);
+
+        // loglevel includes the easy-to-miss `nothing`.
+        let loglevel = config_enum_options("loglevel").expect("loglevel is a known enum");
+        assert!(loglevel.contains(&"nothing"));
+
+        // tls-auth-clients was added after the initial catalog.
+        let tls = config_enum_options("tls-auth-clients").expect("tls-auth-clients is a known enum");
+        assert_eq!(tls, &["no", "yes", "optional"]);
+
+        // All 8 standard eviction policies.
+        assert_eq!(config_enum_options("maxmemory-policy").map(|o| o.len()), Some(8));
+    }
+}

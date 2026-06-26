@@ -200,6 +200,11 @@ impl ZedisTitleBar {
                 Box::new(UpdateAction::Check),
             )
             .menu_with_icon(
+                i18n_sidebar(cx, "open_logs"),
+                Icon::new(CustomIconName::HardDrive),
+                Box::new(MemuAction::OpenLogs),
+            )
+            .menu_with_icon(
                 i18n_sidebar(cx, "about"),
                 Icon::new(IconName::Info),
                 Box::new(MemuAction::About),

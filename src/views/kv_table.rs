@@ -767,7 +767,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 field = field.focus();
                 first = false;
             }
-            // TODO adjust to flex_1
+            // Flexible fields get an explicit height derived from the form
+            // height (rather than `flex_1`) so the editor area has a definite
+            // size inside the form's scroll container.
             if column.flex {
                 field = field.h(px(flex_field_height - 30.));
             }

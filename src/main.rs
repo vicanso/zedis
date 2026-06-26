@@ -4,7 +4,7 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
     MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, download_and_verify,
-    fetch_latest_release, get_default_font_family, get_or_create_config_dir, is_app_store_build, is_development,
+    fetch_latest_release, get_default_font_family, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir,
     new_hot_keys, open_installer, register_extra_languages,
 };
 use crate::states::{
@@ -28,18 +28,9 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
-use std::{
-    cell::Cell,
-    env,
-    path::Path,
-    rc::Rc,
-    str::FromStr,
-    time::{Duration, SystemTime},
-};
+use std::{cell::Cell, rc::Rc, time::Duration};
 use sys_locale::get_locale;
-use tracing::{Level, error, info};
-use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::{error, info};
 use zedis_ui::ZedisDialog;
 
 #[cfg(feature = "mimalloc")]
@@ -724,93 +715,6 @@ impl Render for Zedis {
     }
 }
 
-/// Delete rolling log files older than ~3 months so the logs directory doesn't
-/// grow without bound. Best-effort: any error (unreadable dir, busy file) is
-/// silently ignored — this runs at startup and must never block launch.
-fn prune_old_logs(dir: &Path) {
-    const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
-    let Some(cutoff) = SystemTime::now().checked_sub(MAX_AGE) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // Only touch our own rolling log files (zedis.log.YYYY-MM-DD).
-        let is_log = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("zedis.log"));
-        if !is_log {
-            continue;
-        }
-        if let Ok(modified) = entry.metadata().and_then(|m| m.modified())
-            && modified < cutoff
-        {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
-
-/// Initialise logging to both stdout and a daily-rolling file under
-/// `<config_dir>/logs/zedis.log.<date>`. The returned [`WorkerGuard`] flushes
-/// the non-blocking file writer and MUST be kept alive for the whole run; the
-/// file layer is best-effort (returns `None` if the logs dir can't be created),
-/// in which case logging still goes to stdout.
-fn init_logger() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error>> {
-    let mut level = Level::INFO;
-    if let Ok(log_level) = env::var("RUST_LOG")
-        && let Ok(value) = Level::from_str(log_level.as_str())
-    {
-        level = value;
-    }
-    // Detect the local offset once, up front (before the appender spawns its
-    // worker thread), then reuse it for both layers.
-    let timer = tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339().unwrap_or_else(|_| {
-        tracing_subscriber::fmt::time::OffsetTime::new(
-            time::UtcOffset::from_hms(0, 0, 0).unwrap_or(time::UtcOffset::UTC),
-            time::format_description::well_known::Rfc3339,
-        )
-    });
-
-    let (file_layer, guard) = match get_or_create_config_dir() {
-        Ok(dir) => {
-            let logs_dir = dir.join("logs");
-            if std::fs::create_dir_all(&logs_dir).is_ok() {
-                prune_old_logs(&logs_dir);
-                let appender = tracing_appender::rolling::daily(&logs_dir, "zedis.log");
-                let (non_blocking, guard) = tracing_appender::non_blocking(appender);
-                let layer = tracing_subscriber::fmt::layer()
-                    .with_writer(non_blocking)
-                    .with_ansi(false)
-                    .with_timer(timer.clone());
-                (Some(layer), Some(guard))
-            } else {
-                (None, None)
-            }
-        }
-        Err(e) => {
-            eprintln!("failed to resolve config dir for file logging: {e}");
-            (None, None)
-        }
-    };
-
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stdout)
-        .with_ansi(is_development())
-        .with_timer(timer);
-
-    let subscriber = tracing_subscriber::registry()
-        .with(LevelFilter::from_level(level))
-        .with(stdout_layer);
-    match file_layer {
-        Some(file_layer) => subscriber.with(file_layer).init(),
-        None => subscriber.init(),
-    }
-    Ok(guard)
-}
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
@@ -979,12 +883,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = window.update(cx, |_, window, _cx| window.remove_window());
                 }
             }
+            MemuAction::OpenLogs => match logs_dir() {
+                // `logs_dir` creates the directory, so it exists even before any
+                // log line has been written.
+                Some(logs) => cx.open_with_system(&logs),
+                None => error!("failed to resolve logs directory"),
+            },
         });
         cx.set_menus(vec![Menu {
             name: "Zedis".into(),
             items: vec![
                 MenuItem::action("About Zedis", MemuAction::About),
                 MenuItem::action("Check for Updates", UpdateAction::Check),
+                MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
                 MenuItem::action("Close Window", MemuAction::Close),
                 MenuItem::action("Quit", MemuAction::Quit),
             ],
@@ -1099,4 +1010,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .detach();
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_has_status_bar;
+    use crate::states::Route;
+
+    #[test]
+    fn status_bar_routes_match_content_render() {
+        // Server-agnostic / settings pages have no status bar (and no chip).
+        assert!(!route_has_status_bar(Route::Home));
+        assert!(!route_has_status_bar(Route::Settings));
+        assert!(!route_has_status_bar(Route::Protos));
+        assert!(!route_has_status_bar(Route::Scripts));
+        // Server routes render the status bar.
+        assert!(route_has_status_bar(Route::Editor));
+        assert!(route_has_status_bar(Route::Monitor));
+        assert!(route_has_status_bar(Route::Config));
+    }
 }

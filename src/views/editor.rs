@@ -579,12 +579,14 @@ impl ZedisEditor {
             return;
         };
         editor.clone().update(cx, move |state, cx| {
-            // Binary content shown as lossy UTF-8 text can't round-trip, so
-            // saving it would corrupt the value. The editor used to be disabled
-            // for this (now it isn't, to stay legible), so block + explain here.
+            // We only reach here when the server isn't read-only (that's caught
+            // above), so `is_readonly()` here means the *value* can't be saved
+            // as-is: a binary / truncated / decompressed preview whose editor
+            // text isn't the raw stored bytes. Explain that at save time rather
+            // than with a banner (editor space is tight).
             if state.is_readonly() {
                 self.server_state.update(cx, |s, cx| {
-                    s.emit_warning_notification(i18n_common(cx, "disable_in_readonly"), cx);
+                    s.emit_warning_notification(i18n_editor(cx, "value_readonly"), cx);
                 });
                 return;
             }

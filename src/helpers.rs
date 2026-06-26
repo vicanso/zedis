@@ -24,6 +24,7 @@ mod fs;
 mod fuzzy;
 mod hex;
 mod jsonpath;
+mod logger;
 mod string;
 mod syntax;
 mod tag;
@@ -45,6 +46,7 @@ pub use hex::{bytes_to_hex_text, parse_hex_text};
 pub use jsonpath::{
     JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,
 };
+pub use logger::{init_logger, logs_dir};
 pub use string::*;
 pub use syntax::register_extra_languages;
 pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};

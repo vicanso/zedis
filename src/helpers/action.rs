@@ -24,6 +24,9 @@ pub enum MemuAction {
     /// Close the window via `cmd-w`, mirroring the red close button. On macOS
     /// that hides the app (see `on_window_should_close` in `main.rs`).
     Close,
+    /// Reveal the logs directory (`<config_dir>/logs/`) in the OS file manager,
+    /// so users can grab logs for bug reports.
+    OpenLogs,
 }
 
 /// Navigation. `Back` (bound to `escape`) mirrors the "back to editor"
@@ -146,7 +149,10 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
         }
 
         let symbol = match part {
-            "cmd" => {
+            // `secondary` and `cmd` both render as the platform command key:
+            // ⌘ on macOS, Ctrl elsewhere. Bindings use `secondary` (so they map
+            // to Ctrl on Linux/Windows); display strings may use either.
+            "cmd" | "secondary" => {
                 #[cfg(target_os = "macos")]
                 {
                     "⌘"
@@ -260,33 +266,33 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
 
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("cmd-q", MemuAction::Quit, None),
+        KeyBinding::new("secondary-q", MemuAction::Quit, None),
         // `secondary` = cmd on macOS, ctrl on Linux/Windows — so this is ⌘W /
         // Ctrl+W on the respective platforms.
         KeyBinding::new("secondary-w", MemuAction::Close, None),
-        KeyBinding::new("cmd-k", PaletteAction::Toggle, None),
-        KeyBinding::new("cmd-/", ShortcutsAction::Toggle, None),
-        KeyBinding::new("cmd-s", EditorAction::Save, None),
-        KeyBinding::new("cmd-r", EditorAction::ReloadKeyTree, None),
-        KeyBinding::new("cmd-n", EditorAction::Create, None),
-        KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
-        KeyBinding::new("cmd-j", EditorAction::Cmd, None),
-        KeyBinding::new("cmd-f", EditorAction::Search, None),
+        KeyBinding::new("secondary-k", PaletteAction::Toggle, None),
+        KeyBinding::new("secondary-/", ShortcutsAction::Toggle, None),
+        KeyBinding::new("secondary-s", EditorAction::Save, None),
+        KeyBinding::new("secondary-r", EditorAction::ReloadKeyTree, None),
+        KeyBinding::new("secondary-n", EditorAction::Create, None),
+        KeyBinding::new("secondary-t", EditorAction::UpdateTtl, None),
+        KeyBinding::new("secondary-j", EditorAction::Cmd, None),
+        KeyBinding::new("secondary-f", EditorAction::Search, None),
         // Rename the selected key. ⌘E is free on macOS text inputs (unlike
         // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
         // keys; the rename flow routes through its own dialog with an
         // overwrite confirm, so a stray press is safe.
-        KeyBinding::new("cmd-e", EditorAction::Rename, None),
+        KeyBinding::new("secondary-e", EditorAction::Rename, None),
         // Delete the selected key. A modifier combo (not bare Backspace) so it
         // can't fire while navigating the tree or typing; still routes through
         // the confirm dialog (with PROD escalation), so a stray press is safe.
         // When a text editor is focused it keeps ⌘⌫ for editing — the global
         // delete only fires when no input consumes it.
-        KeyBinding::new("cmd-backspace", EditorAction::Delete, None),
+        KeyBinding::new("secondary-backspace", EditorAction::Delete, None),
         // Key-tree refresh is the primary, high-frequency action so it
         // owns plain `cmd-r` (above); value reload is the rarer one and
         // takes `cmd-shift-r`.
-        KeyBinding::new("cmd-shift-r", EditorAction::Reload, None),
+        KeyBinding::new("secondary-shift-r", EditorAction::Reload, None),
         // Esc on a tool page returns to the editor (mirrors the page's
         // back button). Scoped to the `Workspace` context (the content
         // container) so it never reaches overlays that live outside it —
