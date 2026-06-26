@@ -226,6 +226,9 @@ pub enum GlobalEvent {
     /// Update availability changed (a newer release was found, or the prompt was
     /// cleared). The status bar re-reads `available_update` from the store.
     UpdateAvailable,
+    /// Installer download progress changed (0–100, or cleared). The status bar
+    /// re-reads `download_progress` to show the percentage on the update chip.
+    UpdateDownloadProgress,
 }
 
 /// Direction passed to [`ZedisGlobalStore::reorder_server`].
@@ -319,6 +322,10 @@ pub struct ZedisAppState {
     /// the status-bar update chip; the chip's click opens the prompt for it.
     #[serde(skip)]
     available_update: Option<UpdateInfo>,
+    /// Installer download progress (0–100) while an update is downloading;
+    /// `None` when idle. Runtime only — drives the status-bar chip percentage.
+    #[serde(skip)]
+    download_progress: Option<u8>,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -675,6 +682,16 @@ impl ZedisAppState {
     pub fn set_available_update(&mut self, info: Option<UpdateInfo>, cx: &mut Context<Self>) {
         self.available_update = info;
         cx.emit(GlobalEvent::UpdateAvailable);
+    }
+    /// Current installer download progress (0–100), or `None` when not downloading.
+    pub fn download_progress(&self) -> Option<u8> {
+        self.download_progress
+    }
+    /// Set (or clear with `None`) the download progress and broadcast it so the
+    /// status-bar chip shows the percentage.
+    pub fn set_download_progress(&mut self, progress: Option<u8>, cx: &mut Context<Self>) {
+        self.download_progress = progress;
+        cx.emit(GlobalEvent::UpdateDownloadProgress);
     }
     /// Whether the given server-page group section is collapsed.
     pub fn is_server_group_collapsed(&self, key: &str) -> bool {

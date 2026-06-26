@@ -1208,7 +1208,7 @@ measure_hint = "⇧ Shift-click two points to measure"
 
 [update]
 available_title = "New version"
-update_body = "A new version of Zedis is available."
+update_body = "A new version of Zedis is ready to install."
 download = "Download"
 skip_version = "Skip this version"
 up_to_date = "You are on the latest version"
@@ -1217,3 +1217,4 @@ downloading = "Downloading update"
 download_done = "Downloaded — opening the installer"
 download_failed = "Download failed"
 found = "New version available"
+manual_hint = "Zedis won't update on its own — click the update button in the bottom-right when you're ready to download it."

@@ -235,7 +235,10 @@ impl ZedisStatusBar {
         // (see `render_server_status`), so this just nudges a redraw.
         let global_state = cx.global::<ZedisGlobalStore>().state();
         subscriptions.push(cx.subscribe(&global_state, |_this, _store, event, cx| {
-            if matches!(event, GlobalEvent::UpdateAvailable) {
+            if matches!(
+                event,
+                GlobalEvent::UpdateAvailable | GlobalEvent::UpdateDownloadProgress
+            ) {
                 cx.notify();
             }
         }));
@@ -959,6 +962,8 @@ impl Render for ZedisStatusBar {
         }
         // App-global: a newer release awaiting action lights the far-right chip.
         let update_version = cx.global::<ZedisGlobalStore>().read(cx).available_update_version();
+        // While downloading, the chip shows the percentage instead of the version.
+        let download_progress = cx.global::<ZedisGlobalStore>().read(cx).download_progress();
         h_flex()
             .justify_between()
             .h(STATUS_BAR_HEIGHT)
@@ -992,12 +997,18 @@ impl Render for ZedisStatusBar {
                     .child(self.render_errors(window, cx))
                     .when(update_version.is_some(), |this| {
                         let v = update_version.clone().unwrap_or_default();
+                        let label = match download_progress {
+                            Some(pct) => format!("{pct}%"),
+                            None => format!("v{v}"),
+                        };
                         this.child(
                             Button::new("zedis-status-bar-update")
                                 .ghost()
                                 .small()
                                 .icon(CustomIconName::Download)
-                                .label(format!("v{v}"))
+                                .label(label)
+                                // No prompt while a download is already running.
+                                .disabled(download_progress.is_some())
                                 .tooltip(i18n_status_bar(cx, "update_available"))
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);

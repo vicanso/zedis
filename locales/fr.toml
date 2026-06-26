@@ -1208,7 +1208,7 @@ measure_hint = "⇧ Maj+clic sur deux points pour mesurer"
 
 [update]
 available_title = "Nouvelle version"
-update_body = "Une nouvelle version de Zedis est disponible."
+update_body = "Une nouvelle version de Zedis est prête à être installée."
 download = "Télécharger"
 skip_version = "Ignorer cette version"
 up_to_date = "Vous utilisez la dernière version"
@@ -1217,3 +1217,4 @@ downloading = "Téléchargement de la mise à jour"
 download_done = "Mise à jour téléchargée, ouverture en cours"
 download_failed = "Échec du téléchargement"
 found = "Nouvelle version disponible"
+manual_hint = "Zedis ne se met pas à jour tout seul — cliquez sur le bouton de mise à jour en bas à droite quand vous voulez le télécharger."

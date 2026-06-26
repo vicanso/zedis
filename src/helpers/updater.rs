@@ -32,6 +32,7 @@ use crate::error::Error;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -247,13 +248,18 @@ fn http_get_string(url: &str) -> Result<String> {
 /// Returns the path to the verified file. On a checksum mismatch the partial
 /// file is removed and an error returned — the caller must never open it.
 /// Blocking; run on a background task.
-pub fn download_and_verify(asset: &UpdateAsset) -> Result<PathBuf> {
+/// Download the asset, verify its checksum, and write it to a temp file.
+///
+/// `on_progress(downloaded, total)` is invoked as bytes stream in (`total` is
+/// the asset's advertised size, may be 0 if unknown), so callers can render a
+/// progress indicator. The body is read in chunks and capped at `MAX_DOWNLOAD`.
+pub fn download_and_verify(asset: &UpdateAsset, mut on_progress: impl FnMut(u64, u64)) -> Result<PathBuf> {
     info!(name = %asset.name, size = asset.size, "update: downloading installer");
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
         .build()
         .new_agent();
-    let bytes = agent
+    let resp = agent
         .get(&asset.url)
         .header("User-Agent", USER_AGENT)
         .call()
@@ -262,17 +268,40 @@ pub fn download_and_verify(asset: &UpdateAsset) -> Result<PathBuf> {
             Error::Invalid {
                 message: format!("download failed: {e}"),
             }
-        })?
-        .into_body()
-        .into_with_config()
-        .limit(MAX_DOWNLOAD)
-        .read_to_vec()
-        .map_err(|e| {
+        })?;
+    // Prefer the server's Content-Length for the progress total; the manifest's
+    // `size` is only a fallback (it may be 0 / absent), in which case progress
+    // stays indeterminate.
+    let total = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(asset.size);
+    let mut reader = resp.into_body().into_reader();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.min(MAX_DOWNLOAD) as usize);
+    let mut buf = [0u8; 64 * 1024];
+    on_progress(0, total);
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| {
             error!(url = %asset.url, error = %e, "update: reading download body failed");
             Error::Invalid {
                 message: format!("download read failed: {e}"),
             }
         })?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        if bytes.len() as u64 > MAX_DOWNLOAD {
+            error!(name = %asset.name, "update: download exceeded size cap");
+            return Err(Error::Invalid {
+                message: format!("download too large for {}", asset.name),
+            });
+        }
+        on_progress(bytes.len() as u64, total);
+    }
 
     // Verify the checksum before the bytes ever touch a runnable location.
     if !asset.sha256.is_empty() {

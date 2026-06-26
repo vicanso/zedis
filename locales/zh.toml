@@ -1206,7 +1206,7 @@ measure_hint = "按住 Shift 点选两点测量距离"
 
 [update]
 available_title = "新版本"
-update_body = "Zedis 有新版本可用。"
+update_body = "Zedis 有新版本可以安装啦。"
 download = "下载"
 skip_version = "跳过此版本"
 up_to_date = "已是最新版本"
@@ -1215,3 +1215,4 @@ downloading = "正在下载更新"
 download_done = "下载完成,正在打开安装包"
 download_failed = "下载失败"
 found = "发现新版本"
+manual_hint = "Zedis 不会自动更新，准备好后点击右下角的更新按钮即可下载。"

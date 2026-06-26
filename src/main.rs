@@ -92,6 +92,14 @@ pub struct Zedis {
     download_task: Option<Task<()>>,
 }
 
+/// Routes that render the status bar (and thus the update chip). Mirrors the
+/// match in `ZedisContent::render` — Home / Settings / Protos / Scripts don't
+/// show it. The silent update check only runs on these so its prompt has a
+/// visible chip to point at.
+fn route_has_status_bar(route: Route) -> bool {
+    !matches!(route, Route::Home | Route::Settings | Route::Protos | Route::Scripts)
+}
+
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
@@ -127,6 +135,20 @@ impl Zedis {
                     notification = notification.title(title);
                 }
                 this.pending_notification = Some(notification);
+            }
+            // Run the silent update check the first time the user reaches a
+            // status-bar route, so its prompt has a visible update chip (the
+            // daily throttle keeps this to at most once).
+            if let GlobalEvent::RouteChanged(route) = event
+                && route_has_status_bar(*route)
+            {
+                let auto_due = {
+                    let store = cx.global::<ZedisGlobalStore>().read(cx);
+                    store.auto_update_check() && store.update_check_due()
+                };
+                if auto_due {
+                    this.check_for_updates(false, cx);
+                }
             }
             cx.notify();
         })
@@ -200,9 +222,13 @@ impl Zedis {
                             cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
                                 state.set_available_update(Some(info), cx);
                             });
-                            // ...and fire a one-time toast so the user notices it.
-                            this.pending_notification =
-                                Some(Notification::info(format!("{}: v{version}", i18n_update(cx, "found"))));
+                            // ...and fire a one-time toast so the user notices it,
+                            // spelling out that updating is manual.
+                            this.pending_notification = Some(Notification::info(format!(
+                                "{}: v{version}\n{}",
+                                i18n_update(cx, "found"),
+                                i18n_update(cx, "manual_hint")
+                            )));
                         }
                     }
                     Ok(None) => {
@@ -240,13 +266,50 @@ impl Zedis {
         let starting = format!("{} {}…", i18n_update(cx, "downloading"), info.version);
         self.pending_notification = Some(Notification::info(starting));
         cx.notify();
+
+        // Progress is produced on the background thread and ferried to the UI
+        // through a channel; this foreground drainer publishes it to the global
+        // store, which the status-bar chip reads to show the percentage.
+        let (tx, rx) = smol::channel::unbounded::<u8>();
+        cx.spawn(async move |_, cx| {
+            while let Ok(pct) = rx.recv().await {
+                cx.update(|cx| {
+                    cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                        state.set_download_progress(Some(pct), cx);
+                    });
+                });
+            }
+        })
+        .detach();
+
         self.download_task = Some(cx.spawn(async move |handle, cx| {
             // Networking + checksum are blocking — keep them off the UI thread.
             let result = cx
-                .background_spawn(async move { download_and_verify(&asset).and_then(|path| open_installer(&path)) })
+                .background_spawn(async move {
+                    let mut last_pct = u8::MAX;
+                    let outcome = download_and_verify(&asset, |done, total| {
+                        if total == 0 {
+                            return;
+                        }
+                        // Throttle to integer-percent changes (≤101 updates).
+                        let pct = ((done * 100 / total).min(100)) as u8;
+                        if pct != last_pct {
+                            last_pct = pct;
+                            let _ = tx.try_send(pct);
+                        }
+                    })
+                    .and_then(|path| open_installer(&path));
+                    // Drop the sender so the drainer task ends.
+                    drop(tx);
+                    outcome
+                })
                 .await;
             let _ = handle.update(cx, |this, cx| {
                 this.download_task = None;
+                // Clear the progress chip regardless of outcome.
+                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                    state.set_download_progress(None, cx);
+                });
                 match result {
                     Ok(()) => {
                         this.pending_notification = Some(Notification::success(i18n_update(cx, "download_done")));
@@ -455,6 +518,9 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
         notes = notes.chars().take(MAX_NOTES).collect::<String>();
         notes.push('…');
     }
+    // No manual-update hint here — the dialog's own Download / Skip buttons make
+    // the action obvious. The hint lives on the found toast, where it points at
+    // the status-bar chip.
     let body = if notes.trim().is_empty() {
         format!(
             "{}\n{} → {}",
@@ -486,18 +552,18 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
             true
         })
         .on_close(move |_, _window, cx| {
-            // Only the explicit "Skip this version" (cancel) records a skip; the
-            // Download path set the flag above, so this is a no-op there.
+            // Only the explicit "Skip this version" (cancel) records a skip and
+            // clears the chip; the Download path set the flag above, so it keeps
+            // the chip visible to show the download progress percentage.
             if !downloaded.get() {
                 let version = skip_version.clone();
                 update_app_state_and_save(cx, "skip_update_version", move |state, _| {
                     state.set_skipped_version(version.clone());
                 });
+                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                    state.set_available_update(None, cx);
+                });
             }
-            // The user acted on the prompt (download or skip) — clear the chip.
-            cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                state.set_available_update(None, cx);
-            });
         })
         .open(window, cx);
 }
@@ -998,12 +1064,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                     // Silent startup check: once per day at most, skippable
-                    // per-version, and only if the user left it enabled.
-                    let auto_due = {
+                    // per-version, only if enabled — and only when the initial
+                    // route already shows the status bar (so the update chip is
+                    // visible). Otherwise it's deferred until the user navigates
+                    // to a status-bar route (see the RouteChanged handler).
+                    let (auto_due, route) = {
                         let store = cx.global::<ZedisGlobalStore>().read(cx);
-                        store.auto_update_check() && store.update_check_due()
+                        (store.auto_update_check() && store.update_check_due(), store.route())
                     };
-                    if auto_due {
+                    if auto_due && route_has_status_bar(route) {
                         zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, cx));
                     }
                     cx.new(|cx| Root::new(zedis_view, window, cx))

@@ -1207,7 +1207,7 @@ measure_hint = "⇧ Shift+クリックで2点間を計測"
 
 [update]
 available_title = "新しいバージョン"
-update_body = "Zedis の新しいバージョンが利用可能です。"
+update_body = "Zedis の新しいバージョンをインストールできます。"
 download = "ダウンロード"
 skip_version = "このバージョンをスキップ"
 up_to_date = "最新バージョンを使用しています"
@@ -1216,3 +1216,4 @@ downloading = "アップデートをダウンロード中"
 download_done = "ダウンロード完了、インストーラーを開いています"
 download_failed = "ダウンロードに失敗しました"
 found = "新しいバージョンがあります"
+manual_hint = "Zedis は自動更新されません。準備ができたら右下の更新ボタンを押してダウンロードしてください。"
