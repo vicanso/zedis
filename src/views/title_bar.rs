@@ -18,12 +18,12 @@ use crate::{
     connection::get_server,
     states::{
         GlobalEvent, LocaleAction, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore,
-        i18n_sidebar,
+        i18n_sidebar, i18n_status_bar,
     },
 };
 use gpui::{Anchor, App, Context, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
-    Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
+    Disableable, Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -43,7 +43,11 @@ impl ZedisTitleBar {
         let subscription = cx.subscribe(&global_state, |_this, _global_state, event, cx| {
             if matches!(
                 event,
-                GlobalEvent::ServerSelected(..) | GlobalEvent::ServerListUpdated | GlobalEvent::RouteChanged(..)
+                GlobalEvent::ServerSelected(..)
+                    | GlobalEvent::ServerListUpdated
+                    | GlobalEvent::RouteChanged(..)
+                    | GlobalEvent::UpdateAvailable
+                    | GlobalEvent::UpdateDownloadProgress
             ) {
                 cx.notify();
             }
@@ -223,6 +227,14 @@ impl Render for ZedisTitleBar {
         // right actions container
         let right_actions = h_flex().flex_1().items_center().justify_end().px_2().gap_2().mr_2();
 
+        // App-global: a newer release awaiting action shows a download chip here
+        // (the title bar is always visible, so the update check can run on
+        // startup regardless of route). While downloading it shows the percent.
+        let update_version = cx.global::<ZedisGlobalStore>().read(cx).available_update_version();
+        let download_progress = cx.global::<ZedisGlobalStore>().read(cx).download_progress();
+        // True while re-checking on click — the chip shows a loading spinner.
+        let update_checking = cx.global::<ZedisGlobalStore>().read(cx).update_checking();
+
         // Centered title showing the active server name (empty when none).
         let center =
             h_flex()
@@ -246,6 +258,28 @@ impl Render for ZedisTitleBar {
             // right actions container
             .child(
                 right_actions
+                    .when(update_version.is_some(), |this| {
+                        let v = update_version.clone().unwrap_or_default();
+                        let label = match download_progress {
+                            Some(pct) => format!("{pct}%"),
+                            None => format!("v{v}"),
+                        };
+                        this.child(
+                            Button::new("zedis-titlebar-update")
+                                .ghost()
+                                .small()
+                                .icon(CustomIconName::Download)
+                                .label(label)
+                                // Spinner while re-checking on click; disabled
+                                // during that and while a download is running.
+                                .loading(update_checking)
+                                .disabled(update_checking || download_progress.is_some())
+                                .tooltip(i18n_status_bar(cx, "update_available"))
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);
+                                }),
+                        )
+                    })
                     .child(
                         Button::new("settings")
                             .tooltip(i18n_sidebar(cx, "settings_tooltip"))

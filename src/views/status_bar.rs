@@ -16,9 +16,9 @@ use crate::{
     assets::CustomIconName,
     connection::{RedisClientDescription, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{UpdateAction, humanize_keystroke, resolve_tag_chip},
+    helpers::{humanize_keystroke, resolve_tag_chip},
     states::{
-        ConnectionErrorKind, ConnectionHealth, ErrorMessage, GlobalEvent, ReplicaInfo, Route, ServerEvent, ServerTask,
+        ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask,
         ServerToolsAction, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load,
         i18n_sidebar, i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
     },
@@ -230,18 +230,6 @@ impl ZedisStatusBar {
         // Read only necessary fields to avoid cloning the entire state if it's large
 
         let mut subscriptions = vec![];
-        // Re-render when an update becomes available / is cleared so the update
-        // chip appears/disappears promptly. The state lives in the global store
-        // (see `render_server_status`), so this just nudges a redraw.
-        let global_state = cx.global::<ZedisGlobalStore>().state();
-        subscriptions.push(cx.subscribe(&global_state, |_this, _store, event, cx| {
-            if matches!(
-                event,
-                GlobalEvent::UpdateAvailable | GlobalEvent::UpdateDownloadProgress
-            ) {
-                cx.notify();
-            }
-        }));
         subscriptions.push(cx.subscribe(&server_state, |this, server_state, event, cx| {
             match event {
                 ServerEvent::ServerSelected(server_id) => {
@@ -960,10 +948,6 @@ impl Render for ZedisStatusBar {
                 state.set_items(db_items, window, cx);
             });
         }
-        // App-global: a newer release awaiting action lights the far-right chip.
-        let update_version = cx.global::<ZedisGlobalStore>().read(cx).available_update_version();
-        // While downloading, the chip shows the percentage instead of the version.
-        let download_progress = cx.global::<ZedisGlobalStore>().read(cx).download_progress();
         h_flex()
             .justify_between()
             .h(STATUS_BAR_HEIGHT)
@@ -987,34 +971,8 @@ impl Render for ZedisStatusBar {
                         )
                     }),
             )
-            // Far-right cluster (pushed to the edge by `justify_between`),
-            // separated from the stats. The update chip lives here, showing the
-            // latest version; click opens the download/skip prompt.
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(self.render_errors(window, cx))
-                    .when(update_version.is_some(), |this| {
-                        let v = update_version.clone().unwrap_or_default();
-                        let label = match download_progress {
-                            Some(pct) => format!("{pct}%"),
-                            None => format!("v{v}"),
-                        };
-                        this.child(
-                            Button::new("zedis-status-bar-update")
-                                .ghost()
-                                .small()
-                                .icon(CustomIconName::Download)
-                                .label(label)
-                                // No prompt while a download is already running.
-                                .disabled(download_progress.is_some())
-                                .tooltip(i18n_status_bar(cx, "update_available"))
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);
-                                }),
-                        )
-                    }),
-            )
+            // Far-right cluster (pushed to the edge by `justify_between`):
+            // connection errors. The update chip now lives in the title bar.
+            .child(self.render_errors(window, cx))
     }
 }

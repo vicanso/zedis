@@ -83,14 +83,6 @@ pub struct Zedis {
     download_task: Option<Task<()>>,
 }
 
-/// Routes that render the status bar (and thus the update chip). Mirrors the
-/// match in `ZedisContent::render` — Home / Settings / Protos / Scripts don't
-/// show it. The silent update check only runs on these so its prompt has a
-/// visible chip to point at.
-fn route_has_status_bar(route: Route) -> bool {
-    !matches!(route, Route::Home | Route::Settings | Route::Protos | Route::Scripts)
-}
-
 impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
@@ -126,20 +118,6 @@ impl Zedis {
                     notification = notification.title(title);
                 }
                 this.pending_notification = Some(notification);
-            }
-            // Run the silent update check the first time the user reaches a
-            // status-bar route, so its prompt has a visible update chip (the
-            // daily throttle keeps this to at most once).
-            if let GlobalEvent::RouteChanged(route) = event
-                && route_has_status_bar(*route)
-            {
-                let auto_due = {
-                    let store = cx.global::<ZedisGlobalStore>().read(cx);
-                    store.auto_update_check() && store.update_check_due()
-                };
-                if auto_due {
-                    this.check_for_updates(false, cx);
-                }
             }
             cx.notify();
         })
@@ -191,35 +169,50 @@ impl Zedis {
     /// reports its outcome (up-to-date / failure toast) and ignores a skipped
     /// version; the silent startup check stays quiet unless it finds a fresh,
     /// non-skipped update.
-    fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
+    fn check_for_updates(&mut self, manual: bool, then_prompt: bool, cx: &mut Context<Self>) {
         if self.update_task.is_some() {
             return;
         }
         // Reset the once-per-day throttle on every attempt so a transient
         // failure doesn't immediately retry on the next launch.
         update_app_state_and_save(cx, "mark_update_checked", |state, _| state.mark_update_checked());
+        // Flag the check so the title-bar chip can show a loading spinner.
+        cx.global::<ZedisGlobalStore>()
+            .clone()
+            .update(cx, |state, cx| state.set_update_checking(true, cx));
         self.update_task = Some(cx.spawn(async move |handle, cx| {
             // `fetch_latest_release` is blocking (ureq) — keep it off the UI thread.
             let result = cx.background_spawn(async move { fetch_latest_release() }).await;
             let _ = handle.update(cx, |this, cx| {
                 this.update_task = None;
+                // For a chip click we keep the spinner running until the dialog
+                // actually opens (cleared in `render` after `open_update_dialog`),
+                // so there's no gap between "loading stops" and the prompt
+                // appearing. Every other outcome clears it right here.
+                let mut opened_prompt = false;
                 match result {
                     Ok(Some(info)) => {
                         let skipped = cx.global::<ZedisGlobalStore>().read(cx).update_skipped(&info.version);
                         if manual || !skipped {
                             let version = info.version.clone();
-                            // Light the persistent far-right status-bar chip (its
-                            // click opens the download prompt)...
+                            // Light the persistent title-bar chip...
                             cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                state.set_available_update(Some(info), cx);
+                                state.set_available_update(Some(info.clone()), cx);
                             });
-                            // ...and fire a one-time toast so the user notices it,
-                            // spelling out that updating is manual.
-                            this.pending_notification = Some(Notification::info(format!(
-                                "{}: v{version}\n{}",
-                                i18n_update(cx, "found"),
-                                i18n_update(cx, "manual_hint")
-                            )));
+                            if then_prompt {
+                                // Chip click: open the download/skip dialog with
+                                // the freshly fetched info instead of toasting.
+                                this.pending_update = Some(info);
+                                opened_prompt = true;
+                            } else {
+                                // ...and fire a one-time toast so the user notices
+                                // it, spelling out that updating is manual.
+                                this.pending_notification = Some(Notification::info(format!(
+                                    "{}: v{version}\n{}",
+                                    i18n_update(cx, "found"),
+                                    i18n_update(cx, "manual_hint")
+                                )));
+                            }
                         }
                     }
                     Ok(None) => {
@@ -236,6 +229,13 @@ impl Zedis {
                             this.pending_notification = Some(Notification::error(i18n_update(cx, "check_failed")));
                         }
                     }
+                }
+                // When a prompt is opening, the spinner is cleared in `render`
+                // (right after the dialog opens) to avoid a stop-then-wait gap.
+                if !opened_prompt {
+                    cx.global::<ZedisGlobalStore>()
+                        .clone()
+                        .update(cx, |state, cx| state.set_update_checking(false, cx));
                 }
                 cx.notify();
             });
@@ -578,6 +578,11 @@ impl Render for Zedis {
         if let Some(info) = self.pending_update.take() {
             let weak = cx.entity().downgrade();
             open_update_dialog(info, weak, window, cx);
+            // The prompt is on screen now — stop the chip's loading spinner so it
+            // spins right up until the dialog appears (no stop-then-wait gap).
+            cx.global::<ZedisGlobalStore>()
+                .clone()
+                .update(cx, |state, cx| state.set_update_checking(false, cx));
         }
         if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
             window.set_rem_size(font_size);
@@ -960,31 +965,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         match e {
                             UpdateAction::Check => {
-                                view.update(cx, |zedis, cx| zedis.check_for_updates(true, cx));
+                                view.update(cx, |zedis, cx| zedis.check_for_updates(true, false, cx));
                             }
-                            // Status-bar chip click: open the download/skip prompt for
-                            // the update we already found.
+                            // Title-bar chip click: re-fetch the latest release
+                            // (chip shows a spinner meanwhile) and then open the
+                            // download/skip dialog with the fresh info.
                             UpdateAction::OpenPrompt => {
-                                if let Some(info) = cx.global::<ZedisGlobalStore>().read(cx).available_update() {
-                                    view.update(cx, |zedis, cx| {
-                                        zedis.pending_update = Some(info);
-                                        cx.notify();
-                                    });
-                                }
+                                view.update(cx, |zedis, cx| zedis.check_for_updates(true, true, cx));
                             }
                         }
                     });
                     // Silent startup check: once per day at most, skippable
-                    // per-version, only if enabled — and only when the initial
-                    // route already shows the status bar (so the update chip is
-                    // visible). Otherwise it's deferred until the user navigates
-                    // to a status-bar route (see the RouteChanged handler).
-                    let (auto_due, route) = {
+                    // per-version, only if enabled. The update chip lives in the
+                    // always-visible title bar, so this can run on any route.
+                    let auto_due = {
                         let store = cx.global::<ZedisGlobalStore>().read(cx);
-                        (store.auto_update_check() && store.update_check_due(), store.route())
+                        store.auto_update_check() && store.update_check_due()
                     };
-                    if auto_due && route_has_status_bar(route) {
-                        zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, cx));
+                    if auto_due {
+                        zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, false, cx));
                     }
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
@@ -1010,23 +1009,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .detach();
     });
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::route_has_status_bar;
-    use crate::states::Route;
-
-    #[test]
-    fn status_bar_routes_match_content_render() {
-        // Server-agnostic / settings pages have no status bar (and no chip).
-        assert!(!route_has_status_bar(Route::Home));
-        assert!(!route_has_status_bar(Route::Settings));
-        assert!(!route_has_status_bar(Route::Protos));
-        assert!(!route_has_status_bar(Route::Scripts));
-        // Server routes render the status bar.
-        assert!(route_has_status_bar(Route::Editor));
-        assert!(route_has_status_bar(Route::Monitor));
-        assert!(route_has_status_bar(Route::Config));
-    }
 }

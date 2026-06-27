@@ -326,6 +326,10 @@ pub struct ZedisAppState {
     /// `None` when idle. Runtime only — drives the status-bar chip percentage.
     #[serde(skip)]
     download_progress: Option<u8>,
+    /// True while an update check (network fetch) is in flight. Runtime only —
+    /// drives the title-bar update chip's loading spinner.
+    #[serde(skip)]
+    update_checking: bool,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -667,10 +671,6 @@ impl ZedisAppState {
     pub fn set_skipped_version(&mut self, version: String) {
         self.skipped_version = if version.is_empty() { None } else { Some(version) };
     }
-    /// The pending available update, if any (full info, for opening the prompt).
-    pub fn available_update(&self) -> Option<UpdateInfo> {
-        self.available_update.clone()
-    }
     /// Just the version string of the pending update — for the status-bar chip.
     pub fn available_update_version(&self) -> Option<SharedString> {
         self.available_update
@@ -692,6 +692,16 @@ impl ZedisAppState {
     pub fn set_download_progress(&mut self, progress: Option<u8>, cx: &mut Context<Self>) {
         self.download_progress = progress;
         cx.emit(GlobalEvent::UpdateDownloadProgress);
+    }
+    /// Whether an update check (network fetch) is currently running.
+    pub fn update_checking(&self) -> bool {
+        self.update_checking
+    }
+    /// Set the "checking for updates" flag and broadcast it so the update chip
+    /// can show / clear its loading spinner.
+    pub fn set_update_checking(&mut self, checking: bool, cx: &mut Context<Self>) {
+        self.update_checking = checking;
+        cx.emit(GlobalEvent::UpdateAvailable);
     }
     /// Whether the given server-page group section is collapsed.
     pub fn is_server_group_collapsed(&self, key: &str) -> bool {
