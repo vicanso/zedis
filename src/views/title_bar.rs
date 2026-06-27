@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::{MemuAction, PaletteAction, ShortcutsAction, UpdateAction};
+use crate::helpers::{MemuAction, PaletteAction, ShortcutsAction, UpdateAction, is_app_store_build};
 use crate::{
     assets::CustomIconName,
     connection::get_server,
@@ -198,11 +198,14 @@ impl ZedisTitleBar {
                         )
                 },
             )
-            .menu_with_icon(
-                i18n_sidebar(cx, "check_updates"),
-                Icon::new(CustomIconName::RefreshCw),
-                Box::new(UpdateAction::Check),
-            )
+            // App Store builds update via the App Store — hide the manual check.
+            .when(!is_app_store_build(), |this| {
+                this.menu_with_icon(
+                    i18n_sidebar(cx, "check_updates"),
+                    Icon::new(CustomIconName::RefreshCw),
+                    Box::new(UpdateAction::Check),
+                )
+            })
             .menu_with_icon(
                 i18n_sidebar(cx, "open_logs"),
                 Icon::new(CustomIconName::HardDrive),

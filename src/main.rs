@@ -170,6 +170,11 @@ impl Zedis {
     /// version; the silent startup check stays quiet unless it finds a fresh,
     /// non-skipped update.
     fn check_for_updates(&mut self, manual: bool, then_prompt: bool, cx: &mut Context<Self>) {
+        // App Store builds are updated through the App Store; never self-check or
+        // self-download (Apple forbids it). Guards every trigger at once.
+        if is_app_store_build() {
+            return;
+        }
         if self.update_task.is_some() {
             return;
         }
@@ -895,15 +900,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => error!("failed to resolve logs directory"),
             },
         });
+        let mut menu_items = vec![MenuItem::action("About Zedis", MemuAction::About)];
+        // App Store builds update via the App Store — hide the manual check.
+        if !is_app_store_build() {
+            menu_items.push(MenuItem::action("Check for Updates", UpdateAction::Check));
+        }
+        menu_items.extend([
+            MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
+            MenuItem::action("Close Window", MemuAction::Close),
+            MenuItem::action("Quit", MemuAction::Quit),
+        ]);
         cx.set_menus(vec![Menu {
             name: "Zedis".into(),
-            items: vec![
-                MenuItem::action("About Zedis", MemuAction::About),
-                MenuItem::action("Check for Updates", UpdateAction::Check),
-                MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
-                MenuItem::action("Close Window", MemuAction::Close),
-                MenuItem::action("Quit", MemuAction::Quit),
-            ],
+            items: menu_items,
             disabled: false,
         }]);
 
