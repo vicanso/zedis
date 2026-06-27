@@ -8,13 +8,13 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
-  <a href="https://x.com/tree0507"><img src="https://img.shields.io/twitter/follow/tree0507?style=social" alt="Twitter Follow"></a>
+  <a href="https://x.com/tree_xie"><img src="https://img.shields.io/twitter/follow/tree_xie?style=social" alt="Twitter Follow"></a>
   <img src="https://img.shields.io/github/downloads/vicanso/zedis/total" alt="Downloads">
   <a href="https://www.blazingly.fast"><img src="https://www.blazingly.fast/api/badge.svg?repo=vicanso%2Fzedis" alt="blazingly fast"></a>
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/217cc0a7-cc7e-40d0-ac7e-1ec61c36a02b" autoplay loop muted playsinline width="100%"></video>
+  <video src="https://github.com/user-attachments/assets/36135174-16df-473b-8756-ea5931ec3c4b" autoplay loop muted playsinline width="100%"></video>
 </p>
 
 ---

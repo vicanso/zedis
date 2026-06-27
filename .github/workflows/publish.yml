@@ -85,12 +85,32 @@ jobs:
           CERT_NAME: ${{ secrets.MACOS_CERTIFICATE_NAME }}
         run: |
           echo "Signing App with identity: $CERT_NAME"
+          APP="target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
           # --options runtime: enable Hardened Runtime (required for notarization)
           # --entitlements: specify entitlement file
-          codesign --force --deep --verbose --options runtime --timestamp \
-            --entitlements Entitlements.plist \
-            --sign "$CERT_NAME" \
-            "target/${{ matrix.target }}/release/bundle/osx/${{ env.APP_NAME }}.app"
+          # --timestamp contacts Apple's timestamp server, which is occasionally
+          # flaky ("A timestamp was expected but was not found"); retry before
+          # failing the whole release.
+          for attempt in 1 2 3 4 5; do
+            if codesign --force --deep --verbose --options runtime --timestamp \
+              --entitlements Entitlements.plist \
+              --sign "$CERT_NAME" \
+              "$APP"; then
+              echo "codesign succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "codesign still failing after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "codesign attempt $attempt failed (timestamp server?); retrying in 15s…"
+            sleep 15
+          done
+          # Fail fast if no secure timestamp was embedded (notarization needs it).
+          if ! codesign -dvv "$APP" 2>&1 | grep -q "^Timestamp="; then
+            echo "no secure timestamp embedded in the signature" >&2
+            exit 1
+          fi
       - name: create dmg
         run: |
           mkdir -p release
