@@ -141,7 +141,7 @@ ureq = { version = "3", default-features = false, features = [
 ] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-tray-icon = "0.19"
+tray-icon = "0.24.1"
 
 [workspace.dependencies]
 indexmap = "2.14.0"
