@@ -114,11 +114,16 @@ yay -S zedis-bin
 
 ### Cargo（跨平台源码编译）
 
+> **说明：** Zedis 依赖的是 GPUI 的未发布（git）版本，而 crates.io 不允许带 git 依赖发布，
+> 因此**最新版本无法发布到 crates.io**，那里的版本可能滞后。想用最新版，建议用上面的
+> Homebrew / Scoop / AUR 安装，或[下载发布版](https://github.com/vicanso/zedis/releases)；
+> 要源码编译请用下面的 `--git` 命令。
+
 ```bash
-# 最新发布版（来自 crates.io）
+# 来自 crates.io —— 可能是较旧的版本（见上方说明）
 cargo install --locked zedis-gui
 
-# 或直接从 GitHub 编译最新提交
+# 最新版：直接从 GitHub 源码编译（会解析 git 依赖）
 cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
 

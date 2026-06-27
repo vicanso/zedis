@@ -199,16 +199,30 @@ impl ZedisKvFetcher for ZedisHashValues {
     }
 
     /// Adds a new field-value pair to the HASH.
+    ///
+    /// `values[0]` = field, `values[1]` = value, `values[2]` = optional TTL
+    /// seconds (present only on Redis 7.4+, empty = no expiry).
     fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
-        // Validate that both field and value were provided
-        if values.len() != 2 {
+        let Some(field) = values.first().cloned() else {
             return;
-        }
+        };
+        let Some(value) = values.get(1).cloned() else {
+            return;
+        };
+        // Optional per-field TTL; empty / absent means "no expiry".
+        let ttl: Option<i64> = values.get(2).and_then(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                use crate::helpers::parse_duration;
+                parse_duration(s).ok().map(|d| d.as_secs() as i64)
+            }
+        });
 
         let server_state = self.server_state.clone();
-        // Execute the add operation on server state
         server_state.update(cx, |this, cx| {
-            this.add_hash_value(values[0].clone(), values[1].clone(), cx);
+            this.add_hash_value(field, value, ttl, cx);
         });
     }
 }
@@ -232,8 +246,9 @@ impl ZedisHashEditor {
             KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
         ];
         if supports_field_ttl {
-            // TTL column: fixed 90px, shows seconds remaining (empty = no expiry)
-            columns.push(KvTableColumn::new("TTL(s)", Some(120.)));
+            // TTL column: shows seconds remaining (empty = no expiry). Optional
+            // so the add/edit form never forces a TTL.
+            columns.push(KvTableColumn::new("TTL(s)", Some(120.)).optional());
         }
 
         let table_state = cx.new(|cx| ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx));

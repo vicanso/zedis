@@ -229,7 +229,13 @@ impl ZedisServerState {
     /// * `field` - The field name to add
     /// * `value` - The value to set for the field
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn add_hash_value(&mut self, field: SharedString, value: SharedString, cx: &mut Context<Self>) {
+    pub fn add_hash_value(
+        &mut self,
+        field: SharedString,
+        value: SharedString,
+        ttl: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
         let field_clone = field.clone();
         let value_clone = value.clone();
 
@@ -244,6 +250,19 @@ impl ZedisServerState {
                     .arg(value.as_str())
                     .query_async(&mut conn)
                     .await?;
+                // Apply an optional per-field TTL (Redis 7.4+, HEXPIRE).
+                if let Some(secs) = ttl
+                    && secs > 0
+                {
+                    let _: Vec<i64> = cmd("HEXPIRE")
+                        .arg(&key)
+                        .arg(secs)
+                        .arg("FIELDS")
+                        .arg(1)
+                        .arg(field.as_str())
+                        .query_async(&mut conn)
+                        .await?;
+                }
                 Ok(count)
             },
             move |this, count, cx| {
@@ -252,6 +271,11 @@ impl ZedisServerState {
                     hash.size += count;
                     // Optimistically append if we are at the end of the scan
                     if hash.done && !hash.values.iter().any(|(f, _)| f == &field_clone) {
+                        if let Some(secs) = ttl
+                            && secs > 0
+                        {
+                            hash.field_ttls.insert(field_clone.clone(), secs);
+                        }
                         hash.values.push((field_clone, value_clone));
                     }
                     if hash.size > SUCCESS_NOTIFY_THRESHOLD {

@@ -116,11 +116,17 @@ yay -S zedis-bin
 
 ### Cargo (Cross-Platform via Source)
 
+> **Note:** Zedis depends on an unreleased (git) version of GPUI, which crates.io
+> doesn't allow — so the **latest** version can't be published to crates.io, and
+> the crates.io build may lag behind. For the newest version, prefer Homebrew /
+> Scoop / the AUR above or a [release download](https://github.com/vicanso/zedis/releases);
+> to build from source, use the `--git` command below.
+
 ```bash
-# Latest published release (from crates.io)
+# From crates.io — may be an older version (see note above)
 cargo install --locked zedis-gui
 
-# Or build the latest commit straight from GitHub
+# Latest: build straight from GitHub (resolves the git dependencies)
 cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
 

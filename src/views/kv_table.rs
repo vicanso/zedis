@@ -760,7 +760,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let mut field = ZedisFormField::new(column.name.clone(), column.name.clone())
                 .focus()
                 .font_family(get_font_family());
-            if self.fetcher.fields_required() {
+            if self.fetcher.fields_required() && !column.optional {
                 field = field.required();
             }
             if first {

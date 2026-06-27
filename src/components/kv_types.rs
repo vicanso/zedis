@@ -66,6 +66,9 @@ pub struct KvTableColumn {
     pub align: Option<TextAlign>,
     /// Whether the column is auto-created
     pub auto_created: bool,
+    /// Whether this column is optional in the add/edit form — i.e. NOT marked
+    /// required even when the fetcher requires fields (e.g. per-field TTL).
+    pub optional: bool,
 }
 
 impl KvTableColumn {
@@ -93,6 +96,12 @@ impl KvTableColumn {
     }
     pub fn field_type(mut self, field_type: ZedisFormFieldType) -> Self {
         self.field_type = Some(field_type);
+        self
+    }
+    /// Mark this column optional so its form field isn't forced required even
+    /// when the fetcher requires fields (e.g. the per-field TTL column).
+    pub fn optional(mut self) -> Self {
+        self.optional = true;
         self
     }
 }
