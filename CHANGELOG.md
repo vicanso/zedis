@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.6](https://github.com/vicanso/zedis/compare/v0.4.4..v0.4.6) - 2026-06-27
+
+### ⛰️  Features
+
+- *(config)* Loading indicator + type-aware editing ([#97](https://github.com/orhun/git-cliff/issues/97)) - ([f2730e9](https://github.com/vicanso/zedis/commit/f2730e9b35242f5c4bb1bcd7d7cb4d70ce39540e))
+- *(startup)* Show a clear error and exit when the database is locked - ([16de150](https://github.com/vicanso/zedis/commit/16de150a2a8267ee6199a744bc60f3752b99017f))
+- *(updater)* Add download progress and refine update logic - ([2e58908](https://github.com/vicanso/zedis/commit/2e58908a736663abf39d8a64350196efc59d5dba))
+- *(window)* Remember window position per display (uuid-anchored) - ([74272bc](https://github.com/vicanso/zedis/commit/74272bc1aa7bc24324bbab414bd19bcb07712ac9))
+- Add tracing appender log - ([27cbb09](https://github.com/vicanso/zedis/commit/27cbb09496d6cc99555d6f5c1db60e3ca390e37f))
+- In-app update check with assisted install - ([45b6ec7](https://github.com/vicanso/zedis/commit/45b6ec77f87e36c3d8533a89a7046c0df8d152db))
+- One-click reconnect + ⌘E rename-key shortcut - ([d8c1831](https://github.com/vicanso/zedis/commit/d8c1831842623f9ba71a2c265e929cadf4c01ea8))
+
+### 🐛 Bug Fixes
+
+- *(hash)* Allow adding a field without a TTL (and actually save it) - ([d8af45c](https://github.com/vicanso/zedis/commit/d8af45ccaf135b7f78a22e9ffc85dd585017ae77))
+
+### 🚜 Refactor
+
+- *(settings)* Nest theme & language into submenus - ([19930e6](https://github.com/vicanso/zedis/commit/19930e64aa9189b57cde780e4bb33b0290e10ae4))
+- *(ui)* Zed-style settings menu + ⌘W close + startup flash fix - ([fb435d7](https://github.com/vicanso/zedis/commit/fb435d7760ceefdc4ff6f8462583ec23eb7cdd0d))
+- *(window)* Cross-platform ⌘W close + extend startup flash fix to Windows - ([8b60b64](https://github.com/vicanso/zedis/commit/8b60b644aca284a14a9992491abd6104ac2cf9e8))
+- Adjust file logging, cross-platform shortcuts & config-editor polish - ([f222e05](https://github.com/vicanso/zedis/commit/f222e0557e13b3132b3432daad06a8dc06274f50))
+- Surface available updates in the status bar - ([f5c5b7a](https://github.com/vicanso/zedis/commit/f5c5b7a8f1f8cc0666c63356033b3beeec5f5c4b))
+- Surface live-tail / MONITOR connection failures - ([9682a37](https://github.com/vicanso/zedis/commit/9682a373ded44b3ce00c703a70f26789875916e0))
+- Status-bar reconnect with failure reason + ⌘E rename shortcut - ([7f6eac1](https://github.com/vicanso/zedis/commit/7f6eac11597508ad6f60825dadd1bb7267276058))
+
+### 📚 Documentation
+
+- Update readme - ([8b4ee24](https://github.com/vicanso/zedis/commit/8b4ee24b57672cd4aa9a4563aa262ded4d68ea9a))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update tray lib - ([cc8f238](https://github.com/vicanso/zedis/commit/cc8f2381919761094d6c60b1cd5ee2a09ed60cdf))
+- Version 0.4.5 - ([dea9e42](https://github.com/vicanso/zedis/commit/dea9e420f7eff68e7038da110efc4420f57bbae5))
+
+### Build
+
+- *(app-store)* Patch gpui_platform/gpui_macros, not just gpui - ([14eba6d](https://github.com/vicanso/zedis/commit/14eba6d3ec724e3fc006eb8206cc1bf3a3b12183))
+
 ## [0.4.5](https://github.com/vicanso/zedis/compare/v0.4.4..v0.4.5) - 2026-06-26
 
 ### ⛰️  Features
