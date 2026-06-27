@@ -11,9 +11,15 @@ FILE="Cargo.toml"
 BINARY_PATH="$HOME/cargo-target/release/bundle/osx/Zedis.app/Contents/MacOS/Zedis"
 
 # Patch 配置
+# CGSSetWindowBackgroundBlurRadius(私有 API)在 gpui_macos crate 里(经
+# gpui_platform 间接引入),不在 gpui。只 patch gpui 不会替换它,符号仍会从
+# git rev 编译进来。因此必须同时 patch gpui_platform(它会带上本地、已注释掉
+# 该调用的 gpui_macos)和 gpui_macros,让整个 zed 依赖都走本地 workspace。
 PATCH_BLOCK='
 [patch."https://github.com/zed-industries/zed"]
 gpui = { path = "../zed/crates/gpui" }
+gpui_platform = { path = "../zed/crates/gpui_platform" }
+gpui_macros = { path = "../zed/crates/gpui_macros" }
 [patch.crates-io]
 gpui = { path = "../zed/crates/gpui" }
 '
