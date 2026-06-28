@@ -311,6 +311,7 @@ conn_reason_auth = "ÐÑÐ¸Ð±ÐºÐ° Ð°ÑÑÐµÐ½ÑÐ¸ÑÐ�
 conn_reason_permission = "ÐÐµÐ´Ð¾ÑÑÐ°ÑÐ¾ÑÐ½Ð¾ Ð¿ÑÐ°Ð²"
 conn_reason_timeout = "Ð¢Ð°Ð¹Ð¼-Ð°ÑÑ ÑÐ¾ÐµÐ´Ð¸Ð½ÐµÐ½Ð¸Ñ"
 conn_reason_network = "Ð£Ð·ÐµÐ» Ð½ÐµÐ´Ð¾ÑÑÑÐ¿ÐµÐ½"
+conn_reason_tls = "Возможно, нужен TLS"
 conn_reason_tunnel = "Ð¡Ð±Ð¾Ð¹ SSH-ÑÑÐ½Ð½ÐµÐ»Ñ"
 group_observability = "Наблюдаемость"
 group_scripting = "Запросы и скрипты"

@@ -75,6 +75,9 @@ pub enum ConnectionErrorKind {
     Timeout,
     /// Host refused the connection, dropped it, or is unreachable.
     Network,
+    /// The link was dropped on a plaintext connection — the endpoint likely
+    /// requires TLS (e.g. Upstash on :6379). Points the user at the TLS toggle.
+    Tls,
     /// The SSH tunnel itself failed to establish.
     Tunnel,
 }
@@ -90,6 +93,7 @@ impl ConnectionErrorKind {
             ConnectionErrorKind::Permission => "conn_reason_permission",
             ConnectionErrorKind::Timeout => "conn_reason_timeout",
             ConnectionErrorKind::Network => "conn_reason_network",
+            ConnectionErrorKind::Tls => "conn_reason_tls",
             ConnectionErrorKind::Tunnel => "conn_reason_tunnel",
             ConnectionErrorKind::Unknown => "conn_offline",
         }
@@ -125,6 +129,33 @@ impl Error {
             Error::Io { .. } => K::Network,
             Error::Ssh { .. } | Error::Key { .. } => K::Tunnel,
             _ => K::Unknown,
+        }
+    }
+
+    /// Like [`Self::connection_kind`], but reports [`ConnectionErrorKind::Tls`]
+    /// when the link was *dropped* on a plaintext connection — a handshake that
+    /// gets accepted then reset on `:6379` usually means the endpoint requires
+    /// TLS. Only applies when TLS is not already enabled.
+    pub fn connection_kind_tls_aware(&self, tls_enabled: bool) -> ConnectionErrorKind {
+        let kind = self.connection_kind();
+        if kind == ConnectionErrorKind::Network && !tls_enabled && self.is_connection_dropped() {
+            return ConnectionErrorKind::Tls;
+        }
+        kind
+    }
+
+    /// Whether the connection was accepted and then dropped (broken pipe /
+    /// reset / unexpected EOF), as opposed to refused outright.
+    fn is_connection_dropped(&self) -> bool {
+        match self {
+            Error::Redis { source } => source.is_connection_dropped(),
+            Error::Io { source } => matches!(
+                source.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::UnexpectedEof
+            ),
+            _ => false,
         }
     }
 }

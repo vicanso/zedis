@@ -310,6 +310,7 @@ conn_reason_auth = "è®¤è¯å¤±è´¥"
 conn_reason_permission = "æéä¸è¶³"
 conn_reason_timeout = "è¿æ¥è¶æ¶"
 conn_reason_network = "ç½ç»ä¸å¯è¾¾"
+conn_reason_tls = "可能需要启用 TLS"
 conn_reason_tunnel = "SSH é§éå¤±è´¥"
 group_observability = "可观测"
 group_scripting = "查询与脚本"

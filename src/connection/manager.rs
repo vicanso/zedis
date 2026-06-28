@@ -1531,13 +1531,19 @@ pub struct ConnectionManager {
 /// # Returns
 /// * `ServerType` - The type of the Redis server.
 async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerType> {
-    // Check if it's a Sentinel
-    // Note: `ROLE` command might not exist on old Redis versions, consider fallback if needed.
-    // Assuming modern Redis here.
-    let role: Role = cmd("ROLE").query_async(&mut conn).await?;
-
-    if let Role::Sentinel { .. } = role {
-        return Ok(ServerType::Sentinel);
+    // Check if it's a Sentinel. `ROLE` is missing on some managed / old servers
+    // (e.g. Upstash, which answers "command not available"). Treat that as
+    // "not a sentinel" and fall through to the INFO check rather than failing
+    // detection outright — only a genuine error is propagated.
+    match cmd("ROLE").query_async::<Role>(&mut conn).await {
+        Ok(Role::Sentinel { .. }) => return Ok(ServerType::Sentinel),
+        Ok(_) => {}
+        Err(e) if is_ignorable_server_error(&e.to_string()) => {
+            // Visible at the default INFO level (fires once per connection, not
+            // per heartbeat), so a restricted server is still diagnosable.
+            info!("ROLE command unavailable, assuming non-sentinel: {e}");
+        }
+        Err(e) => return Err(e.into()),
     }
 
     // Check if Cluster mode is enabled via INFO command
@@ -1711,7 +1717,9 @@ impl ConnectionManager {
                         if !is_ignorable_server_error(&e.to_string()) {
                             return Err(e);
                         }
-                        error!("detect server type failed: {e:?}, use standalone mode");
+                        // Expected on restricted servers (Upstash etc.) — not an
+                        // error, but logged at INFO so it stays visible by default.
+                        info!("server type detection unsupported, using standalone mode: {e:?}");
                         (conn, ServerType::Standalone)
                     }
                 }

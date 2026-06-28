@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::get_connection_manager;
+use crate::connection::{get_connection_manager, get_server};
 use crate::helpers::{unix_ts, unix_ts_millis};
 use crate::states::{ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState};
 use gpui::SharedString;
@@ -556,8 +556,12 @@ impl ZedisServerState {
                     error!(error = %e, "Ping failed, client connection removed");
                     // Remember *why* so the offline tooltip can name it. Set
                     // before note_ping_result, which emits the health
-                    // transition the status bar reads.
-                    this.last_connection_error = e.connection_kind();
+                    // transition the status bar reads. TLS-aware so a dropped
+                    // plaintext link points the user at the TLS toggle.
+                    let tls_enabled = get_server(&server_id_clone)
+                        .map(|s| s.tls.unwrap_or(false))
+                        .unwrap_or(false);
+                    this.last_connection_error = e.connection_kind_tls_aware(tls_enabled);
                     this.note_ping_result(false, cx);
                 }
             },
