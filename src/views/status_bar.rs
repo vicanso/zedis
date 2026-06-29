@@ -23,7 +23,7 @@ use crate::{
         i18n_sidebar, i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
     },
 };
-use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
+use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -56,7 +56,8 @@ fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (S
     let ms = latency.as_millis();
     let theme = cx.theme();
     let color = match ms {
-        0..50 => theme.green,
+        // Healthy latency uses the same green as the "Connected" dot (#69b083).
+        0..50 => rgb(0x69b083).into(),
         50..500 => theme.yellow,
         _ => theme.red,
     };
@@ -72,6 +73,18 @@ fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (S
 #[inline]
 fn format_nodes(nodes: (usize, usize), version: &str) -> SharedString {
     format!("{} / {} (v{})", nodes.0, nodes.1, version).into()
+}
+
+/// The design's recessive status-bar text color (t2): `#878d97` dark /
+/// `#686d76` light. gpui-component's `Label` always paints `theme.foreground`
+/// (it does not inherit the parent's `text_color`), so each value label sets
+/// this explicitly to read as muted instead of bright.
+fn status_text_color(is_dark: bool) -> Hsla {
+    if is_dark {
+        rgb(0x878d97).into()
+    } else {
+        rgb(0x686d76).into()
+    }
 }
 
 /// Compact human form for replication lag in bytes.
@@ -634,38 +647,7 @@ impl ZedisStatusBar {
         let supports_acl = server_state.supports_acl;
         let supports_functions = server_state.supports_functions;
         let supports_topology = server_state.supports_topology;
-        // Live-connection dot beside the latency chip. Colors mirror the
-        // latency palette next to it (green/yellow/red) so the row reads as one
-        // health cluster; muted = no heartbeat result yet.
-        let (health_color, health_label) = match server_state.health {
-            ConnectionHealth::Connected => (cx.theme().green, i18n_status_bar(cx, "conn_connected")),
-            ConnectionHealth::Reconnecting => (cx.theme().yellow, i18n_status_bar(cx, "conn_reconnecting")),
-            ConnectionHealth::Offline => (cx.theme().red, i18n_status_bar(cx, "conn_offline")),
-            ConnectionHealth::Unknown => (cx.theme().muted_foreground, i18n_status_bar(cx, "conn_connecting")),
-        };
-        // When the link is down the dot doubles as a one-click reconnect
-        // affordance. The heartbeat alone leaves `server_status` Idle, so a
-        // plain re-select would no-op — `reconnect()` forces the reload.
-        let is_link_down = matches!(
-            server_state.health,
-            ConnectionHealth::Offline | ConnectionHealth::Reconnecting
-        );
-        let health_tooltip = if is_link_down {
-            // Name the failure ("Connection timed out · click to reconnect")
-            // when we classified it; fall back to a bare "Offline" otherwise.
-            let hint = i18n_status_bar(cx, "conn_reconnect_hint");
-            let reason = i18n_status_bar(cx, server_state.last_connection_error.reason_key());
-            format!("{reason} · {hint}").into()
-        } else {
-            health_label
-        };
-        // When the link is down the cached latency is stale and misleading
-        // (a green "5ms" beside a red dot), so blank it to a muted "--".
-        let (latency_text, latency_color) = if server_state.health == ConnectionHealth::Offline {
-            (SharedString::from("--"), cx.theme().muted_foreground)
-        } else {
-            server_state.latency.clone()
-        };
+        let status_text = status_text_color(cx.theme().is_dark());
         ZedisDivider::new()
             .child(
                 h_flex()
@@ -686,7 +668,7 @@ impl ZedisStatusBar {
                             .ghost()
                             .small()
                             .tooltip(terminal_tooltip)
-                            .icon(IconName::SquareTerminal)
+                            .icon(Icon::new(IconName::SquareTerminal).text_color(status_text))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.server_state.update(cx, |state, cx| {
                                     state.toggle_terminal(cx);
@@ -694,15 +676,22 @@ impl ZedisStatusBar {
                             })),
                     )
                     .when(self.databases > 1, |this| {
-                        this.child(Select::new(&self.db_state).mt_1().small())
+                        // `appearance(false)`: drop the bordered input chrome so it
+                        // reads as plain "DB N ▾" text that inherits the muted
+                        // status-bar color (matches the design), not a bright box.
+                        this.child(Select::new(&self.db_state).small().appearance(false))
                     })
                     .child(
                         Button::new("zedis-status-bar-server-toggle-readonly")
                             .ghost()
                             .small()
                             .tooltip(readonly_tooltip)
-                            .when(self.readonly, |this| this.icon(Icon::new(CustomIconName::Lock)))
-                            .when(!self.readonly, |this| this.icon(Icon::new(CustomIconName::LockOpen)))
+                            .when(self.readonly, |this| {
+                                this.icon(Icon::new(CustomIconName::Lock).text_color(status_text))
+                            })
+                            .when(!self.readonly, |this| {
+                                this.icon(Icon::new(CustomIconName::LockOpen).text_color(status_text))
+                            })
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.server_state.update(cx, |state, cx| {
                                     state.toggle_readonly(cx);
@@ -713,7 +702,7 @@ impl ZedisStatusBar {
                         Button::new("zedis-status-bar-tools")
                             .ghost()
                             .small()
-                            .icon(IconName::Menu)
+                            .icon(Icon::new(IconName::Menu).text_color(status_text))
                             .tooltip(i18n_status_bar(cx, "tools_tooltip"))
                             // Status bar sits at the bottom, so open the menu
                             // upward (its bottom edge anchored to the button).
@@ -744,24 +733,82 @@ impl ZedisStatusBar {
                                 i18n_status_bar(cx, "scan_more_keys")
                             })
                             .mr_1()
-                            .icon(CustomIconName::ChevronsDown)
+                            .icon(Icon::new(CustomIconName::ChevronsDown).text_color(status_text))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.server_state.update(cx, |state, cx| {
                                     state.scan_next(cx);
                                 });
                             })),
                     )
-                    .child(Label::new(server_state.size.clone()).mr_2())
+                    .child(Label::new(server_state.size.clone()).text_color(status_text).mr_2())
                     .child(
                         div()
                             .child(
                                 h_flex()
-                                    .child(Icon::new(CustomIconName::Network).text_color(cx.theme().primary).mr_1())
-                                    .child(Label::new(server_state.nodes.clone())),
+                                    .child(Icon::new(CustomIconName::Network).text_color(status_text).mr_1())
+                                    .child(Label::new(server_state.nodes.clone()).text_color(status_text)),
                             )
                             .id("zedis-servers")
                             .tooltip(move |window, cx| Tooltip::new(nodes_description.clone()).build(window, cx)),
                     ),
+            )
+    }
+    /// Render the right-hand telemetry cluster: a "Connected" health indicator
+    /// (with one-click reconnect when the link is down) followed by the live
+    /// metric chips — latency / memory / clients / slow log.
+    fn render_telemetry(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_state = &self.state.server_state;
+        // Health dot + label. Colors mirror the latency palette so the cluster
+        // reads as one health unit; muted = no heartbeat result yet.
+        let (health_color, health_label) = match server_state.health {
+            ConnectionHealth::Connected => (rgb(0x69b083).into(), i18n_status_bar(cx, "conn_connected")),
+            ConnectionHealth::Reconnecting => (cx.theme().yellow, i18n_status_bar(cx, "conn_reconnecting")),
+            ConnectionHealth::Offline => (cx.theme().red, i18n_status_bar(cx, "conn_offline")),
+            ConnectionHealth::Unknown => (cx.theme().muted_foreground, i18n_status_bar(cx, "conn_connecting")),
+        };
+        // When the link is down the dot doubles as a one-click reconnect
+        // affordance. The heartbeat alone leaves `server_status` Idle, so a
+        // plain re-select would no-op — `reconnect()` forces the reload.
+        let is_link_down = matches!(
+            server_state.health,
+            ConnectionHealth::Offline | ConnectionHealth::Reconnecting
+        );
+        let health_tooltip = if is_link_down {
+            let hint = i18n_status_bar(cx, "conn_reconnect_hint");
+            let reason = i18n_status_bar(cx, server_state.last_connection_error.reason_key());
+            format!("{reason} · {hint}").into()
+        } else {
+            health_label.clone()
+        };
+        // When the link is down the cached latency is stale and misleading
+        // (a green "5ms" beside a red dot), so blank it to a muted "--".
+        let (latency_text, latency_color) = if server_state.health == ConnectionHealth::Offline {
+            (SharedString::from("--"), cx.theme().muted_foreground)
+        } else {
+            server_state.latency.clone()
+        };
+        let status_text = status_text_color(cx.theme().is_dark());
+        ZedisDivider::new()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("zedis-conn-health")
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(health_color)
+                            .when(is_link_down, |this| {
+                                this.cursor_pointer().on_click(cx.listener(|this, _, _window, cx| {
+                                    this.server_state.update(cx, |state, cx| {
+                                        state.reconnect(cx);
+                                    });
+                                }))
+                            })
+                            .tooltip(move |window, cx| Tooltip::new(health_tooltip.clone()).build(window, cx)),
+                    )
+                    .child(Label::new(health_label).text_color(status_text)),
             )
             .child(
                 h_flex()
@@ -771,25 +818,10 @@ impl ZedisStatusBar {
                         h_flex()
                             .gap_2()
                             .child(
-                                div()
-                                    .id("zedis-conn-health")
-                                    .size(px(8.))
-                                    .rounded_full()
-                                    .bg(health_color)
-                                    .when(is_link_down, |this| {
-                                        this.cursor_pointer().on_click(cx.listener(|this, _, _window, cx| {
-                                            this.server_state.update(cx, |state, cx| {
-                                                state.reconnect(cx);
-                                            });
-                                        }))
-                                    })
-                                    .tooltip(move |window, cx| Tooltip::new(health_tooltip.clone()).build(window, cx)),
-                            )
-                            .child(
                                 Button::new("zedis-status-bar-server-metrics")
                                     .ghost()
                                     .small()
-                                    .icon(CustomIconName::Activity)
+                                    .icon(Icon::new(CustomIconName::Activity).text_color(status_text))
                                     .tooltip(i18n_status_bar(cx, "toggle_metrics_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
@@ -806,7 +838,7 @@ impl ZedisStatusBar {
                                 Button::new("zedis-status-bar-server-memory-analysis")
                                     .ghost()
                                     .small()
-                                    .icon(CustomIconName::MemoryStick)
+                                    .icon(Icon::new(CustomIconName::MemoryStick).text_color(status_text))
                                     .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
@@ -814,7 +846,7 @@ impl ZedisStatusBar {
                                         });
                                     })),
                             )
-                            .child(Label::new(server_state.used_memory.clone())),
+                            .child(Label::new(server_state.used_memory.clone()).text_color(status_text)),
                     )
                     .child(
                         h_flex()
@@ -823,7 +855,7 @@ impl ZedisStatusBar {
                                 Button::new("zedis-status-bar-clients")
                                     .ghost()
                                     .small()
-                                    .icon(Icon::new(CustomIconName::AudioWaveform))
+                                    .icon(Icon::new(CustomIconName::AudioWaveform).text_color(status_text))
                                     .tooltip(i18n_status_bar(cx, "toggle_clients_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
@@ -831,7 +863,7 @@ impl ZedisStatusBar {
                                         });
                                     })),
                             )
-                            .child(Label::new(server_state.clients.clone())),
+                            .child(Label::new(server_state.clients.clone()).text_color(status_text)),
                     )
                     .child(
                         h_flex()
@@ -840,7 +872,7 @@ impl ZedisStatusBar {
                                 Button::new("zedis-status-bar-server-slow-logs")
                                     .ghost()
                                     .small()
-                                    .icon(CustomIconName::Snail)
+                                    .icon(Icon::new(CustomIconName::Snail).text_color(status_text))
                                     .tooltip(i18n_status_bar(cx, "toggle_slowlog_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
@@ -848,14 +880,19 @@ impl ZedisStatusBar {
                                         });
                                     })),
                             )
-                            .child(Label::new(server_state.slow_log_tips.clone())),
+                            .child(Label::new(server_state.slow_log_tips.clone()).text_color(status_text)),
                     ),
             )
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
+        // Custom variant (transparent bg, muted foreground) so the label + check
+        // read in the same recessive status-bar color as everything else — a
+        // plain `.ghost()` paints them at the brighter `secondary_foreground`.
+        let status_text = status_text_color(cx.theme().is_dark());
         Button::new("soft-wrap")
             .ghost()
+            .text_color(status_text)
             .xsmall()
             .when(server_state.soft_wrap, |this| this.icon(IconName::Check))
             .tooltip(i18n_status_bar(cx, "soft_wrap_tooltip"))
@@ -948,19 +985,27 @@ impl Render for ZedisStatusBar {
                 state.set_items(db_items, window, cx);
             });
         }
+        let status_text = status_text_color(cx.theme().is_dark());
         h_flex()
-            .justify_between()
+            .items_center()
+            .w_full()
             .h(STATUS_BAR_HEIGHT)
             .text_sm()
             .py_1p5()
             .px_4()
-            .gap_2()
+            .gap_4()
             .border_t_1()
             .border_color(cx.theme().border)
-            .text_color(cx.theme().muted_foreground)
+            .text_color(status_text)
+            // Left: connection context (env tag · DB · readonly · tools | keyspace).
+            .child(self.render_server_status(window, cx))
+            // Middle: flexible spacer; also right-aligns any error text and
+            // pushes the telemetry cluster to the far right (matches the design).
+            .child(self.render_errors(window, cx))
+            // Right: telemetry (Connected · metrics) + editor settings.
             .child(
                 ZedisDivider::new()
-                    .child(self.render_server_status(window, cx))
+                    .child(self.render_telemetry(window, cx))
                     .child(self.render_editor_settings(window, cx))
                     .when(self.state.data_format.is_some(), |this| {
                         this.child(
@@ -971,8 +1016,5 @@ impl Render for ZedisStatusBar {
                         )
                     }),
             )
-            // Far-right cluster (pushed to the edge by `justify_between`):
-            // connection errors. The update chip now lives in the title bar.
-            .child(self.render_errors(window, cx))
     }
 }

@@ -593,6 +593,14 @@ impl Render for Zedis {
             window.set_rem_size(font_size);
         }
 
+        // The status bar spans the full window width as a bottom row (beneath the
+        // sidebar + content), so it's rendered here at the root rather than inside
+        // the content column. Shown only on server routes (mirrors content.rs's
+        // route match, where Home/Settings/Protos/Scripts have no status bar).
+        let route = cx.global::<ZedisGlobalStore>().read(cx).route();
+        let show_status_bar = !matches!(route, Route::Home | Route::Settings | Route::Protos | Route::Scripts);
+        let status_bar = self.content.read(cx).status_bar();
+
         let content = v_flex()
             .id(PKG_NAME)
             .font_family(get_default_font_family())
@@ -601,13 +609,21 @@ impl Render for Zedis {
             .child(
                 h_flex()
                     .id(PKG_NAME)
+                    // Body row takes the remaining height (between title bar and
+                    // the full-width status bar below); `min_h_0` lets its
+                    // scrollable children shrink instead of forcing overflow.
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
                     .bg(cx.theme().background)
-                    .size_full()
                     .child(div().w(SIDEBAR_WIDTH).flex_none().h_full().child(self.sidebar.clone()))
                     .child(self.content.clone())
                     .children(dialog_layer)
                     .children(notification_layer),
             )
+            // Full-width status bar beneath the sidebar + content. Server routes
+            // only; the sidebar above stops at this row's top edge.
+            .when(show_status_bar, |this| this.child(status_bar))
             // Command palette overlays everything (absolute, full-size
             // when open; zero-footprint when closed).
             .child(self.command_palette.clone())

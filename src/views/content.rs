@@ -154,6 +154,13 @@ impl ZedisContent {
         self.server_state.clone()
     }
 
+    /// The status bar entity, so the root layout (`main.rs`) can render it as a
+    /// full-width row beneath the sidebar + content instead of inside this
+    /// content column.
+    pub fn status_bar(&self) -> Entity<ZedisStatusBar> {
+        self.status_bar.clone()
+    }
+
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -632,7 +639,6 @@ impl Render for ZedisContent {
                             ),
                         )
                     })
-                    .child(self.status_bar.clone())
                     .on_action(cx.listener(move |this, event: &EditorAction, _window, cx| match event {
                         EditorAction::UpdateTtl
                         | EditorAction::Reload
