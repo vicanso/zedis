@@ -19,7 +19,7 @@ use crate::{
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
-        EditorAction, TtlChipKind, build_csv, format_ttl_chip, get_font_family, humanize_keystroke, parse_duration,
+        EditorAction, build_csv, format_ttl_chip, get_font_family, humanize_keystroke, parse_duration,
         theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
@@ -34,7 +34,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use gpui::{
     Action, Anchor, App, AppContext, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
-    Task, Window, div, prelude::*, px,
+    Task, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt,
@@ -69,8 +69,10 @@ const TTL_CHIP_WIDTH: f32 = 34.0;
 /// absolutely positioned in this fixed slot at the row's right edge (out of
 /// flow → no reserved width); the TTL chip hides on hover so they don't overlap.
 const INLINE_DELETE_WIDTH: f32 = 28.0;
-const STRIPE_BACKGROUND_ALPHA_DARK: f32 = 0.1; // Odd row background alpha for dark theme
-const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for light theme
+/// Fixed width of the leaf type-badge column, in pixels. Holds the compact
+/// type codes (`STR` / `STRM` / `ZSET`, max 4 chars at 10px) so the key names
+/// line up in a column regardless of their type (matches the design).
+const TYPE_BADGE_COL_WIDTH: f32 = 36.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
 enum KeyTreeAction {
@@ -174,6 +176,11 @@ struct KeyTreeItem {
     expanded: bool,
     children_count: usize,
     is_folder: bool,
+    /// Zebra stripe flag for leaf rows: true on every second leaf within a
+    /// parent folder (2nd, 4th, …) so the key list reads as banded rows. The
+    /// count restarts under each folder; always false for folders / synthetic
+    /// rows.
+    stripe: bool,
     /// Remaining TTL in seconds for leaf items (`-1` = no expiry, `-2`
     /// = unknown/missing). `None` for folder nodes — folders don't have
     /// a meaningful aggregate TTL at the tree level.
@@ -484,7 +491,15 @@ fn new_key_tree_items(
         if let Some(mut children) = map.remove(parent_id) {
             children.sort_unstable_by(|a, b| b.is_folder.cmp(&a.is_folder).then_with(|| a.label.cmp(&b.label)));
 
-            for child in children {
+            // Zebra index restarts under each parent: among this parent's leaf
+            // (non-folder) children, every second one (2nd, 4th, …) is striped.
+            // Folders are skipped and don't advance the count.
+            let mut leaf_ix = 0usize;
+            for mut child in children {
+                if !child.is_folder {
+                    child.stripe = leaf_ix % 2 == 1;
+                    leaf_ix += 1;
+                }
                 let child_id = child.id.to_string();
                 result.push(child);
                 build_sorted_list(&child_id, map, result);
@@ -560,10 +575,14 @@ fn append_load_more_rows(
 
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
-    selected_index: Option<IndexPath>,
     enabled_multiple_selection: bool,
     selected_items: AHashSet<SharedString>,
     readonly: bool,
+    /// Read in `render_item` to highlight the row whose key is the editor's
+    /// active key. Keyed off the persistent `ZedisServerState::key()` instead
+    /// of the list's transient selected index (reset on every tree rebuild —
+    /// which made the highlight vanish a moment after selecting).
+    server_state: Entity<ZedisServerState>,
 }
 
 impl KeyTreeDelegate {
@@ -589,7 +608,10 @@ impl ListDelegate for KeyTreeDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let yellow = cx.theme().colors.yellow;
+        // Folder icons use a calm neutral instead of a loud yellow — the folder
+        // name (brighter) already carries the emphasis and the design keeps the
+        // tree quiet.
+        let folder_icon_color = cx.theme().foreground.alpha(0.7);
         let entry = self.items.get(ix.row)?;
         // Synthetic "Load more" row for an incomplete folder scan — a simple
         // clickable line indented to the folder's child level. The list's
@@ -612,59 +634,94 @@ impl ListDelegate for KeyTreeDelegate {
             );
         }
         let icon = if !entry.is_folder {
-            // Key item: Show type badge (String, List, etc.)
-            KeyTypeBadge::new(entry.key_type).into_any_element()
+            // Key item: plain type label in a fixed-width column so the key
+            // names line up regardless of type (design). The left margin opens
+            // a gap between the folder guide line and the type label without
+            // touching the per-level indent or the type→name spacing.
+            div()
+                .flex_none()
+                .ml(px(8.))
+                .w(px(TYPE_BADGE_COL_WIDTH))
+                .child(KeyTypeBadge::new(entry.key_type).plain(true))
+                .into_any_element()
         } else if entry.expanded {
             // Expanded folder: Show open folder icon
-            Icon::new(IconName::FolderOpen).text_color(yellow).into_any_element()
+            Icon::new(IconName::FolderOpen)
+                .text_color(folder_icon_color)
+                .into_any_element()
         } else {
             // Collapsed folder: Show closed folder icon
-            Icon::new(IconName::Folder).text_color(yellow).into_any_element()
+            Icon::new(IconName::Folder)
+                .text_color(folder_icon_color)
+                .into_any_element()
         };
 
-        let even_bg = cx.theme().background;
         let is_dark = cx.theme().is_dark();
-
-        // Zebra striping for better readability
-        let odd_bg = if is_dark {
-            Hsla::white().alpha(STRIPE_BACKGROUND_ALPHA_DARK)
-        } else {
-            Hsla::black().alpha(STRIPE_BACKGROUND_ALPHA_LIGHT)
-        };
         let is_folder = entry.is_folder;
         let is_scanning = entry.is_scanning;
+
+        // Selection — highlight the row whose key is the editor's active key,
+        // keyed off the persistent server-state key so it survives tree
+        // rebuilds (the list's selected index is cleared on every rebuild,
+        // which made the accent vanish moments after selecting). Gated to leaf
+        // keys: folders toggle expand/collapse on click, never "select".
+        let is_selected_row = !is_folder && self.server_state.read(cx).key().as_ref() == Some(&entry.id);
+        // Theme-neutral selection fill (~10% foreground), the same recipe the
+        // sidebar uses so the highlight reads on any theme.
+        let selected_row_bg = cx.theme().foreground.alpha(0.1);
+        // Faint zebra stripe fill for banded leaf rows. Dark needs a higher
+        // alpha than light — white-on-dark reads weaker than black-on-light at
+        // the same opacity.
+        let stripe_bg = if is_dark {
+            Hsla::white().alpha(0.06)
+        } else {
+            Hsla::black().alpha(0.03)
+        };
+        // Selection accent (#6b95c4, both themes) for the left bar.
+        let accent_color: Hsla = rgb(0x6b95c4).into();
 
         let label_color = if is_folder {
             cx.theme().foreground.alpha(0.85)
         } else {
             cx.theme().foreground
         };
-        // TTL chip — rendered on every leaf row that has a known TTL value.
-        // Perm (`-1`) ⇒ muted gray ∞, any live TTL ⇒ theme green. Missing
-        // (`-2`, race between SCAN and TTL) renders nothing. Gated by the
-        // user setting; when off the SCAN loop also skipped the TTL command
-        // (see `RedisClient::scan`).
+        // Row label — built up front so the builder chain below just drops it
+        // in. No weight change on selection (a font-weight swap re-rasterizes
+        // the glyphs and reads as a flicker); the accent bar + fill mark it.
+        let row_label = Label::new(entry.label.clone()).text_color(label_color).text_ellipsis();
+        // TTL text — rendered on every leaf row that has a known TTL value.
+        // `< 1h` ⇒ warm amber accent, everything else (comfortably live, or
+        // perm `-1` ∞) ⇒ muted gray. Missing (`-2`, race between SCAN and TTL)
+        // renders nothing. Gated by the user setting; when off the SCAN loop
+        // also skipped the TTL command (see `RedisClient::scan`).
         let show_ttl = cx.global::<ZedisGlobalStore>().read(cx).show_key_tree_ttl();
         let ttl_chip: Option<(SharedString, Hsla)> = if is_folder || !show_ttl {
             None
         } else {
             entry.ttl_secs.and_then(|secs| {
-                let kind = ttl_chip_kind(secs)?;
+                // `ttl_chip_kind` is the "render a chip?" gate (None ⇒ the -2
+                // SCAN/TTL race ⇒ no chip); the colour below is keyed off the
+                // raw seconds so the warning window is exactly "< 1h".
+                ttl_chip_kind(secs)?;
                 let label = format_ttl_chip(secs)?;
-                let color = match kind {
-                    TtlChipKind::Perm => cx.theme().muted_foreground,
-                    TtlChipKind::Expiring => cx.theme().red,
-                    TtlChipKind::Live => cx.theme().green,
+                // Three-tier TTL colour (design): seconds left (< 1m) ⇒ red
+                // (about to vanish), minutes left (< 1h) ⇒ warm amber (#cba26a),
+                // anything calmer (≥ 1h) or perm ∞ (secs == -1) ⇒ muted.
+                let amber: Hsla = rgb(0xcba26a).into();
+                let color = if (0..60).contains(&secs) {
+                    cx.theme().red
+                } else if (60..3600).contains(&secs) {
+                    amber
+                } else {
+                    cx.theme().muted_foreground
                 };
                 Some((label, color))
             })
         };
 
-        let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
         // Full-bleed hover fill applied on the content div below. In dark a grey
-        // tint blends into the odd-row stripe, so use a saturated blue that
-        // stands out against both stripe colours. In light the native
-        // `list_hover` already reads fine — leave it unchanged there.
+        // tint blends into the row, so use a saturated blue that stands out; in
+        // light the native `list_hover` already reads fine — leave it there.
         let hover_bg = if is_dark {
             cx.theme().blue.alpha(0.3)
         } else {
@@ -685,7 +742,13 @@ impl ListDelegate for KeyTreeDelegate {
         // left-edge bar) and the note (for hover tooltip) below, and
         // theming reads can't borrow `cx` across the chain.
         let tag_color = entry.tag.map(|c| theme_color_for_tag(c, cx));
-        let row_border = tag_color.unwrap_or(gpui::transparent_black());
+        // Left bar: the selection accent wins on the active row; otherwise it
+        // carries the tag colour (transparent when untagged → identical height).
+        let row_border = if is_selected_row {
+            accent_color
+        } else {
+            tag_color.unwrap_or(gpui::transparent_black())
+        };
         let note = entry.note.clone();
         let has_note = !note.is_empty();
         let edit_tag_id = entry.id.clone();
@@ -698,6 +761,30 @@ impl ListDelegate for KeyTreeDelegate {
         // on hover of the whole row. Rows without a chip fall back to row-hover.
         let has_ttl_chip = ttl_chip.is_some();
         let delete_tooltip = i18n_key_tree(cx, "delete_key_tooltip");
+        // Dashed tree connectors: one vertical guide per ancestor level so the
+        // children under an expanded folder read as a connected group. Each
+        // segment bridges the row's `mb_1` gap (bottom −4px) to meet the row
+        // below into a continuous dashed line. Top-level rows (depth 0) have
+        // none.
+        let guide_color = cx.theme().muted_foreground.alpha(0.5);
+        let guides: Vec<gpui::AnyElement> = (1..=entry.depth)
+            .map(|level| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom(px(-4.))
+                    // Centered on the ancestor folder's icon (one indent level
+                    // left of the child content) so the line drops from the
+                    // folder; the wider TREE_INDENT_BASE leaves the gap before
+                    // the child's type label.
+                    .left(px((level - 1) as f32 * TREE_INDENT_BASE + TREE_INDENT_OFFSET + 8.0))
+                    .w_0()
+                    .border_l_1()
+                    .border_dashed()
+                    .border_color(guide_color)
+                    .into_any_element()
+            })
+            .collect();
         Some(
             ListItem::new(ix)
                 .font_family(get_font_family())
@@ -708,22 +795,33 @@ impl ListDelegate for KeyTreeDelegate {
                 .py_0()
                 .px_0()
                 .mb_1()
-                // 4px left bar carries the tag colour; transparent when
-                // untagged keeps row height identical to non-tagged
-                // rows (no jitter when tagging/untagging).
-                .border_l_4()
-                .border_color(row_border)
                 .child(
                     div()
                         // Hover group so the inline delete button (below)
                         // can reveal itself only while this row is hovered.
                         .group("ktree-row")
+                        // Positioning context for the absolute dashed guides.
+                        .relative()
                         .w_full()
                         .py_2()
                         .px_2()
                         .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
-                        .bg(bg)
+                        // Extra right padding so the floating scrollbar (16px
+                        // track) doesn't cover the right-aligned TTL / inline
+                        // delete button.
+                        .pr(px(14.))
+                        // 3px left bar carries the selection accent (or the tag
+                        // colour); transparent when neither, so row height never
+                        // jitters.
+                        .border_l_3()
+                        .border_color(row_border)
+                        // Zebra: every second leaf under a folder gets a faint
+                        // stripe; the selected row's fill overrides it, and
+                        // hover overrides both.
+                        .when(entry.stripe, |this| this.bg(stripe_bg))
+                        .when(is_selected_row, |this| this.bg(selected_row_bg))
                         .hover(|s| s.bg(hover_bg))
+                        .children(guides)
                         .context_menu(move |mut menu, _window, cx| {
                             let id = id.clone();
                             let multi_selection_count = if selected { selected_items_count } else { 0 };
@@ -860,7 +958,7 @@ impl ListDelegate for KeyTreeDelegate {
                                                 gpui_component::tooltip::Tooltip::new(note.clone()).build(window, cx)
                                             })
                                         })
-                                        .child(Label::new(entry.label.clone()).text_color(label_color).text_ellipsis()),
+                                        .child(row_label),
                                 )
                                 .when(show_check_icon, |this| {
                                     let check_icon = if selected {
@@ -871,11 +969,6 @@ impl ListDelegate for KeyTreeDelegate {
                                     this.child(Icon::new(check_icon))
                                 })
                                 .when_some(ttl_chip, |this, (chip_label, chip_color)| {
-                                    // Soft-tinted chip: low-alpha fill + opaque text.
-                                    let mut bg = chip_color;
-                                    bg.fade_out(0.85);
-                                    let mut border = chip_color;
-                                    border.fade_out(0.65);
                                     this.child(
                                         div()
                                             // Hover scope limited to this chip slot
@@ -888,15 +981,14 @@ impl ListDelegate for KeyTreeDelegate {
                                             .flex_none()
                                             .child(
                                                 div().group_hover("ktree-ttl", |s| s.invisible()).child(
+                                                    // Plain TTL text (no chip chrome) —
+                                                    // calm and right-aligned, matching
+                                                    // the design.
                                                     Label::new(chip_label)
                                                         .text_size(px(10.))
                                                         .w(px(TTL_CHIP_WIDTH))
-                                                        .text_center()
+                                                        .text_right()
                                                         .text_color(chip_color)
-                                                        .bg(bg)
-                                                        .border_1()
-                                                        .border_color(border)
-                                                        .rounded_sm()
                                                         .flex_none(),
                                                 ),
                                             )
@@ -997,7 +1089,6 @@ impl ListDelegate for KeyTreeDelegate {
                 self.selected_items.insert(id.clone());
             }
         }
-        self.selected_index = ix;
     }
 }
 
@@ -1139,9 +1230,9 @@ impl ZedisKeyTree {
         let delegate = KeyTreeDelegate {
             items: Vec::new(),
             enabled_multiple_selection: false,
-            selected_index: None,
             selected_items: AHashSet::with_capacity(5),
             readonly,
+            server_state: server_state.clone(),
         };
         let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
         subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| match event {
@@ -1381,7 +1472,6 @@ impl ZedisKeyTree {
                 });
                 handle.update(cx, |this, cx| {
                     this.delegate_mut().selected_items.clear();
-                    this.delegate_mut().selected_index = None;
                     this.delegate_mut().items = result;
                     this.delegate_mut().readonly = readonly;
                     cx.notify();
@@ -1966,7 +2056,6 @@ impl ZedisKeyTree {
             .w_full()
             .flex_1()
             .px_0()
-            .mr_2()
             .prefix(query_mode_dropdown)
             .suffix(search_btn)
             .cleanable(true);

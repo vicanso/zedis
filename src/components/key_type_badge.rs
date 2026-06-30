@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::states::KeyType;
-use gpui::{App, IntoElement, RenderOnce, Styled, Window, div, px};
+use gpui::{App, FontWeight, IntoElement, RenderOnce, Styled, Window, div, px};
 use gpui_component::label::Label;
 
 // Constants for key type badge styling
@@ -23,11 +23,21 @@ const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type
 #[derive(IntoElement)]
 pub struct KeyTypeBadge {
     key_type: KeyType,
+    /// Plain colored text (no pill chrome) using the spelled-out type name —
+    /// the key-tree style from the design. Default `false` keeps the filled
+    /// pill (with the compact `as_str` code) used in the editor header.
+    plain: bool,
 }
 
 impl KeyTypeBadge {
     pub fn new(key_type: KeyType) -> Self {
-        Self { key_type }
+        Self { key_type, plain: false }
+    }
+
+    /// Render as plain colored uppercase text instead of a filled pill.
+    pub fn plain(mut self, plain: bool) -> Self {
+        self.plain = plain;
+        self
     }
 }
 
@@ -38,6 +48,20 @@ impl RenderOnce for KeyTypeBadge {
         }
 
         let color = self.key_type.color();
+
+        if self.plain {
+            // Plain colored uppercase text (compact `as_str` codes — STR / STRM
+            // / VEC) — the design renders types as a quiet colored label, not a
+            // pill.
+            return Label::new(self.key_type.as_str())
+                .text_size(px(10.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .flex_none()
+                .whitespace_nowrap()
+                .text_color(color)
+                .into_any_element();
+        }
+
         let mut bg = color;
         bg.fade_out(KEY_TYPE_FADE_ALPHA);
         let mut border = color;
