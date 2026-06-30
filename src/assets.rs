@@ -62,6 +62,7 @@ pub fn register_themes(cx: &mut App) {
 }
 
 pub enum CustomIconName {
+    Database,
     DatabaseZap,
     FileXCorner,
     FilePenLine,
@@ -110,6 +111,7 @@ pub enum CustomIconName {
 impl CustomIconName {
     pub fn path(self) -> SharedString {
         match self {
+            CustomIconName::Database => "icons/database.svg",
             CustomIconName::DatabaseZap => "icons/database-zap.svg",
             CustomIconName::FileXCorner => "icons/file-x-corner.svg",
             CustomIconName::FilePenLine => "icons/file-pen-line.svg",

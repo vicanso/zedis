@@ -300,6 +300,9 @@ pub struct ZedisAppState {
     /// bucket). A renamed/deleted group simply leaves a harmless
     /// stale string here that no section ever matches.
     collapsed_server_groups: Option<Vec<String>>,
+    /// Whether the navigation sidebar is collapsed to an icon-only rail.
+    #[serde(default)]
+    sidebar_collapsed: Option<bool>,
     /// Base URL of the OpenAI-compatible endpoint used by the AI
     /// memory-analysis feature, e.g. `https://api.openai.com/v1`.
     ai_base_url: Option<String>,
@@ -602,6 +605,13 @@ impl ZedisAppState {
     }
     pub fn set_show_key_tree_ttl(&mut self, enabled: bool) {
         self.show_key_tree_ttl = Some(enabled);
+    }
+    /// Whether the navigation sidebar is collapsed to an icon-only rail.
+    pub fn sidebar_collapsed(&self) -> bool {
+        self.sidebar_collapsed.unwrap_or(false)
+    }
+    pub fn toggle_sidebar_collapsed(&mut self) {
+        self.sidebar_collapsed = Some(!self.sidebar_collapsed());
     }
     /// Base URL of the OpenAI-compatible AI endpoint (without trailing
     /// slash normalization — that happens at request time). Empty when

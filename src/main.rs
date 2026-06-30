@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{clear_expired_cache, get_servers};
-use crate::constants::SIDEBAR_WIDTH;
+use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
     MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, download_and_verify,
@@ -600,6 +600,13 @@ impl Render for Zedis {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
         let show_status_bar = !matches!(route, Route::Home | Route::Settings | Route::Protos | Route::Scripts);
         let status_bar = self.content.read(cx).status_bar();
+        // Sidebar collapses to a narrow icon-only rail; the toggle saves state +
+        // refreshes windows, so this re-reads the width on the next render.
+        let sidebar_width = if cx.global::<ZedisGlobalStore>().read(cx).sidebar_collapsed() {
+            SIDEBAR_COLLAPSED_WIDTH
+        } else {
+            SIDEBAR_WIDTH
+        };
 
         let content = v_flex()
             .id(PKG_NAME)
@@ -616,7 +623,7 @@ impl Render for Zedis {
                     .min_h_0()
                     .w_full()
                     .bg(cx.theme().background)
-                    .child(div().w(SIDEBAR_WIDTH).flex_none().h_full().child(self.sidebar.clone()))
+                    .child(div().w(sidebar_width).flex_none().h_full().child(self.sidebar.clone()))
                     .child(self.content.clone())
                     .children(dialog_layer)
                     .children(notification_layer),

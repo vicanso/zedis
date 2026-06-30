@@ -36,9 +36,8 @@ fn canonical_tag_key(key: Option<&str>) -> Option<&'static str> {
 }
 
 /// Resolve a preset tag color key to a single vivid HSLA — used for the
-/// small sidebar dot and the status-bar chip, where one color reads
-/// fine on both light and dark backgrounds. Chips that need contrast
-/// (cards) use [`resolve_tag_chip`] instead.
+/// small sidebar dot, where one color reads fine on both light and dark
+/// backgrounds. Chips that need contrast (cards) use [`resolve_tag_chip`].
 ///
 /// Returns `None` for none/empty. Legacy keys alias to the nearest new
 /// color; unknown keys fall back to slate.
