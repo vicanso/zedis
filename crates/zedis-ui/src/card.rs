@@ -250,7 +250,24 @@ impl RenderOnce for ZedisCard {
         let hover_only_actions = self.hover_only_actions;
         // Construct the header row: Icon + Title + Spacer + Actions
         let header = h_flex()
-            .when_some(self.icon, |this, icon| this.child(icon))
+            // Leading icon sits in a bordered, subtly-filled rounded square
+            // (design) so it reads as a distinct "avatar" rather than a loose
+            // glyph.
+            .when_some(self.icon, |this, icon| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(36.))
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
+                        .child(icon),
+                )
+            })
             .when_some(self.title, |this, title| {
                 let subtitle = self.subtitle.clone();
                 let subtitle_font = self.subtitle_font.clone();
@@ -354,6 +371,9 @@ impl RenderOnce for ZedisCard {
         // description ends up cramped against its neighbors).
         let body = v_flex()
             .w_full()
+            // Floor every card at ~2 body lines so sparse cards (no description)
+            // still read as substantial blocks, matching the design.
+            .min_h(px(112.))
             .gap_2()
             .child(header)
             // Always render the description slot — fall back to a
@@ -383,10 +403,12 @@ impl RenderOnce for ZedisCard {
             // as a distinct region. No top margin — the v_flex gap
             // already provides separation from the description.
             .when_some(self.footer, |this, footer| {
-                // pt_3 matches the card's `.py_3()` bottom inset so the
-                // date sits with equal whitespace above (divider→text)
-                // and below (text→card edge).
-                this.child(div().pt_3().border_t_1().border_color(cx.theme().border).child(footer))
+                // A flex spacer pushes the footer to the card's lower edge so
+                // the date stays pinned even when min_h leaves slack. pt_3
+                // matches the card's `.py_3()` bottom inset so the date sits
+                // with equal whitespace above (divider→text) and below.
+                this.child(div().flex_1())
+                    .child(div().pt_3().border_t_1().border_color(cx.theme().border).child(footer))
             });
 
         let card = ListItem::new(self.id)

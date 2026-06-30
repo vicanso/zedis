@@ -23,8 +23,11 @@ use crate::states::{
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
 };
 use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global};
-use gpui::{ClipboardItem, ExternalPaths, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{
+    Action, Anchor, ClipboardItem, Entity, ExternalPaths, SharedString, Subscription, Window, div, prelude::*, px,
+};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::DropdownMenu;
 use gpui_component::notification::Notification;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
@@ -35,6 +38,8 @@ use gpui_component::{
 use gpui_component::{h_flex, v_flex};
 use redis::cmd;
 use rust_i18n::t;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::rc::Rc;
 use substring::Substring;
@@ -51,6 +56,16 @@ const UPDATED_AT_SUBSTRING_LENGTH: usize = 10; // Length of date string to displ
 const THEME_LIGHTEN_AMOUNT_DARK: f32 = 1.0;
 const THEME_DARKEN_AMOUNT_LIGHT: f32 = 0.02;
 
+/// Per-card secondary actions dispatched from the footer "⋯" dropdown. The
+/// payload is the server id; the handlers (registered on the view's render
+/// root) look the server up / route to the existing dialog + reorder methods.
+/// Edit stays a direct footer button (no dispatch needed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+enum ServersCardAction {
+    Export(SharedString),
+    Delete(SharedString),
+}
+
 /// Server management view component
 ///
 /// Displays a grid of server cards with:
@@ -62,6 +77,9 @@ const THEME_DARKEN_AMOUNT_LIGHT: f32 = 0.02;
 /// Uses a responsive grid layout that adjusts columns based on viewport width.
 pub struct ZedisServers {
     should_popup_new_server: bool,
+    /// Toolbar search box — live-filters the card grid by name / host /
+    /// description.
+    search_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
     /// Live subscription on the import dialog's text input — replaced each
     /// time the dialog opens so a pasted file path is read back into the box.
@@ -104,8 +122,24 @@ impl ZedisServers {
             });
         }
 
+        // Toolbar search box — re-render the grid on each change so the
+        // filter is live.
+        let search_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_servers(cx, "search_placeholder"))
+        });
+        subscriptions.push(
+            cx.subscribe_in(&search_state, window, |_this, _state, event, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+        );
+
         Self {
             should_popup_new_server: false,
+            search_state,
             _subscriptions: subscriptions,
             import_input_sub: None,
         }
@@ -982,12 +1016,37 @@ fn import_error_message(cx: &gpui::App, err: &ImportError) -> SharedString {
     }
 }
 
+/// Format a stored `updated_at` (`Local::now().to_string()`, so it begins with
+/// `YYYY-MM-DD`) as a localized relative time for the card footer — "Today" /
+/// "3d ago" / "2mo ago" / "1y ago". Falls back to the raw string if the date
+/// can't be parsed. Date-only granularity (no time-of-day) keeps it robust to
+/// the `T`-vs-space separator and avoids timezone parsing.
+fn format_updated_relative(updated_at: &str, locale: &str) -> String {
+    use chrono::{Local, NaiveDate};
+    let Some(date_str) = updated_at.get(..10) else {
+        return updated_at.to_string();
+    };
+    let Ok(then) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+        return updated_at.to_string();
+    };
+    let days = (Local::now().date_naive() - then).num_days().max(0);
+    if days == 0 {
+        t!("servers.relative_today", locale = locale).to_string()
+    } else if days < 30 {
+        t!("servers.relative_days", count = days as usize, locale = locale).to_string()
+    } else if days < 365 {
+        t!("servers.relative_months", count = (days / 30) as usize, locale = locale).to_string()
+    } else {
+        t!("servers.relative_years", count = (days / 365) as usize, locale = locale).to_string()
+    }
+}
+
 impl Render for ZedisServers {
     /// Main render method - displays responsive grid of server cards
     ///
     /// Layout adapts based on viewport width:
     /// - < 800px: 1 column
-    /// - 800-1200px: 2 columns  
+    /// - 800-1200px: 2 columns
     /// - > 1200px: 3 columns
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = window.viewport_size().width;
@@ -1029,8 +1088,6 @@ impl Render for ZedisServers {
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let subtitle_font = get_font_family();
         let update_tooltip = i18n_servers(cx, "update_tooltip");
-        let remove_tooltip = i18n_servers(cx, "remove_tooltip");
-        let export_tooltip = i18n_servers(cx, "export_tooltip");
         let move_up_tooltip = i18n_servers(cx, "move_up_tooltip");
         let move_down_tooltip = i18n_servers(cx, "move_down_tooltip");
         let ungrouped_label = i18n_servers(cx, "ungrouped_label");
@@ -1039,8 +1096,24 @@ impl Render for ZedisServers {
         // `get_servers()` already returns them in canonical sort order
         // (group A→Z, then sort_order ASC, ungrouped last). We just
         // need to find the boundaries.
+        // Toolbar search filter — match name / host / description (case
+        // insensitive). Empty groups simply don't get built, so they vanish
+        // while filtering.
+        let query = self.search_state.read(cx).value().trim().to_lowercase();
         let mut groups: Vec<(Option<String>, Vec<RedisServer>)> = Vec::new();
         for server in &all_servers {
+            if !query.is_empty()
+                && !server.name.to_lowercase().contains(&query)
+                && !server.host.to_lowercase().contains(&query)
+                && !server
+                    .description
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&query)
+            {
+                continue;
+            }
             let g = server
                 .group
                 .as_deref()
@@ -1087,8 +1160,8 @@ impl Render for ZedisServers {
 
                         let select_server_id = server.id.clone();
                         let update_server = server.clone();
-                        let export_server = server.clone();
-                        let remove_server_id = server.id.clone();
+                        // Server id carried by the footer "⋯" dropdown actions.
+                        let more_server_id: SharedString = server.id.clone().into();
                         let move_up_id = server.id.clone();
                         let move_down_id = server.id.clone();
 
@@ -1098,6 +1171,13 @@ impl Render for ZedisServers {
                         } else {
                             String::new()
                         };
+                        // Footer shows a localized relative time ("28d ago"); the
+                        // absolute date stays in the hover tooltip.
+                        let updated_relative = server
+                            .updated_at
+                            .as_deref()
+                            .map(|s| format_updated_relative(s, &locale))
+                            .unwrap_or_default();
                         let title = server.name.clone();
                         let tag_label = server.tag_label().unwrap_or_default().to_string();
                         let tag_chip = resolve_tag_chip(server.tag_color.as_deref(), dark);
@@ -1108,9 +1188,8 @@ impl Render for ZedisServers {
                             t!("servers.updated_at_label", date = updated_at, locale = locale).to_string()
                         };
 
-                        // ↑/↓ live in hover_only_actions so they don't add
-                        // visual weight at rest. Skip rendering them when
-                        // the group has only one member — nothing to swap with.
+                        // Reorder ↑/↓ stay top-right, hover-only (design); skip
+                        // entirely when the group has a single member.
                         let mut hover_actions: Vec<Button> = Vec::new();
                         if !single_in_group {
                             hover_actions.push(
@@ -1146,48 +1225,77 @@ impl Render for ZedisServers {
                                     })),
                             );
                         }
-                        // Export sits with the hover-only block — it's a
-                        // share/copy operation that's used much less
-                        // often than Edit, so giving it visual weight at
-                        // rest competes with the more common actions for
-                        // attention.
-                        hover_actions.push(
-                            Button::new(("servers-card-action-export", index))
-                                .ghost()
-                                .tooltip(export_tooltip.clone())
-                                .icon(IconName::ExternalLink)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.export_server_dialog(&export_server, window, cx);
-                                })),
-                        );
-                        // Delete is hover-only too: a destructive action
-                        // shouldn't sit in the resting state right beside
-                        // Edit, where it invites misclicks. It still
-                        // routes through the confirm dialog (with PROD
-                        // escalation) when clicked, and the cmd-backspace
-                        // shortcut deletes the selected key elsewhere.
-                        hover_actions.push(
-                            Button::new(("servers-card-action-delete", index))
-                                .ghost()
-                                .tooltip(remove_tooltip.clone())
-                                .icon(CustomIconName::FileXCorner)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.remove_server(window, cx, &remove_server_id);
-                                })),
-                        );
-                        let mut actions: Vec<Button> = Vec::new();
-                        actions.push(
-                            Button::new(("servers-card-action-select", index))
-                                .ghost()
-                                .tooltip(update_tooltip.clone())
-                                .icon(CustomIconName::FilePenLine)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.add_or_update_server_dialog(&update_server, window, cx);
-                                })),
-                        );
+
+                        // Footer (design): relative update time on the left;
+                        // edit + a "⋯" dropdown (export / delete) on the right.
+                        // Built here so the ZedisCard call just drops it into the
+                        // footer slot.
+                        let footer = {
+                            let muted = cx.theme().muted_foreground;
+                            let tip = updated_label.clone();
+                            let has_time = !updated_at.is_empty();
+                            let edit_server = update_server.clone();
+                            let more_id = more_server_id.clone();
+                            h_flex()
+                                .id(("servers-card-footer", index))
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    h_flex()
+                                        .id(("servers-card-updated", index))
+                                        .items_center()
+                                        .gap_1()
+                                        .when(has_time, |this| {
+                                            this.child(Icon::new(CustomIconName::Clock3).xsmall().text_color(muted))
+                                                .child(Label::new(updated_relative.clone()).text_xs().text_color(muted))
+                                                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                        }),
+                                )
+                                .child(
+                                    // Footer actions own their clicks so they
+                                    // don't bubble to the card's connect-on-click.
+                                    h_flex()
+                                        .id(("servers-card-footer-actions", index))
+                                        .items_center()
+                                        .gap_1()
+                                        .on_click(|_, _, cx| cx.stop_propagation())
+                                        .child(
+                                            Button::new(("servers-card-edit", index))
+                                                .ghost()
+                                                .xsmall()
+                                                .tooltip(update_tooltip.clone())
+                                                .icon(CustomIconName::FilePenLine)
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.add_or_update_server_dialog(&edit_server, window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new(("servers-card-more", index))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Ellipsis)
+                                                .dropdown_menu_with_anchor(
+                                                    Anchor::TopRight,
+                                                    move |menu, _window, _cx| {
+                                                        let exp_id = more_id.clone();
+                                                        let del_id = more_id.clone();
+                                                        menu.menu_element_with_icon(
+                                                            Icon::new(IconName::ExternalLink),
+                                                            Box::new(ServersCardAction::Export(exp_id)),
+                                                            |_, cx| Label::new(i18n_servers(cx, "export_tooltip")),
+                                                        )
+                                                        .menu_element_with_icon(
+                                                            Icon::new(CustomIconName::FileXCorner),
+                                                            Box::new(ServersCardAction::Delete(del_id)),
+                                                            |_, cx| Label::new(i18n_servers(cx, "remove_tooltip")),
+                                                        )
+                                                    },
+                                                ),
+                                        ),
+                                )
+                        };
 
                         let handle_select_server = cx.listener(move |_this, _, _, cx| {
                             let select_server_id = select_server_id.clone();
@@ -1201,7 +1309,7 @@ impl Render for ZedisServers {
                         });
 
                         ZedisCard::new(("servers-card", index))
-                            .icon(Icon::new(CustomIconName::DatabaseZap))
+                            .icon(Icon::new(CustomIconName::Database))
                             .title(title)
                             .subtitle(subtitle)
                             .subtitle_font(subtitle_font.clone())
@@ -1210,23 +1318,8 @@ impl Render for ZedisServers {
                             .when(!description.is_empty(), |this| {
                                 this.description(description.to_string())
                             })
-                            .when(!updated_at.is_empty(), |this| {
-                                let muted = cx.theme().muted_foreground;
-                                let tip = updated_label.clone();
-                                this.footer(
-                                    h_flex()
-                                        .id(("card-updated", index))
-                                        .w_full()
-                                        .justify_end()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(Icon::new(CustomIconName::Clock3).xsmall().text_color(muted))
-                                        .child(Label::new(updated_at.clone()).text_xs().text_color(muted))
-                                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
-                                )
-                            })
                             .when(!hover_actions.is_empty(), |this| this.hover_only_actions(hover_actions))
-                            .actions(actions)
+                            .footer(footer)
                             .on_click(Box::new(handle_select_server))
                             .into_any_element()
                     })
@@ -1253,7 +1346,7 @@ impl Render for ZedisServers {
                             .items_center()
                             .gap_2()
                             .pt_2()
-                            .pl_2()
+                            .px_2()
                             .cursor_pointer()
                             .child(Icon::new(chevron).text_color(cx.theme().muted_foreground))
                             .child(Label::new(group_name).text_sm().text_color(cx.theme().muted_foreground))
@@ -1268,6 +1361,9 @@ impl Render for ZedisServers {
                                         .text_color(cx.theme().muted_foreground),
                                 ),
                             )
+                            // Divider line trailing the group label out to the
+                            // right edge (design).
+                            .child(div().flex_1().h_px().bg(cx.theme().border))
                             .on_click(cx.listener(move |_this, _, _window, cx| {
                                 let key = toggle_key.clone();
                                 update_app_state_and_save(cx, "toggle_server_group_collapsed", move |state, _| {
@@ -1282,62 +1378,105 @@ impl Render for ZedisServers {
             );
         }
 
-        // Tail row: Add + Import cards. Live below the last group so
-        // they're never visually nested under one team's section.
-        let tail = div()
-            .grid()
-            .grid_cols(cols)
-            .gap_1()
+        // Top toolbar (design): "Connections" + total-count badge on the left,
+        // a live search box in the middle, and the New / Import / Export
+        // actions on the right — the old bottom action cards moved up here.
+        let muted_fg = cx.theme().muted_foreground;
+        let toolbar = h_flex()
             .w_full()
+            .items_center()
+            .gap_3()
+            .pt_1()
+            .px_2()
+            .pb_3()
+            // Full-width divider under the toolbar (design).
+            .border_b_1()
+            .border_color(cx.theme().border)
             .child(
-                ZedisCard::new("servers-card-add")
-                    .action()
-                    .icon(IconName::Plus)
-                    .title(i18n_servers(cx, "add_server_title"))
-                    .bg(bg)
-                    .description(i18n_servers(cx, "add_server_description"))
-                    .on_click(Box::new(cx.listener(move |this, _, window, cx| {
-                        this.add_or_update_server_dialog(
-                            &RedisServer {
-                                port: DEFAULT_REDIS_PORT,
-                                ..Default::default()
-                            },
-                            window,
-                            cx,
-                        );
-                    }))),
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_none()
+                    .child(
+                        Label::new(i18n_servers(cx, "connections"))
+                            .font_semibold()
+                            .text_color(cx.theme().foreground),
+                    )
+                    .child(
+                        div().px_1p5().rounded_full().bg(cx.theme().muted).child(
+                            Label::new(SharedString::from(all_servers.len().to_string()))
+                                .text_xs()
+                                .text_color(muted_fg),
+                        ),
+                    ),
             )
             .child(
-                ZedisCard::new("servers-card-import")
-                    .action()
-                    .icon(IconName::Asterisk)
-                    .title(i18n_servers(cx, "import_card_title"))
-                    .bg(bg)
-                    .description(i18n_servers(cx, "import_card_description"))
-                    .on_click(Box::new(cx.listener(move |this, _, window, cx| {
-                        this.import_server_dialog(window, cx);
-                    }))),
+                Input::new(&self.search_state)
+                    .w(px(200.))
+                    .h(px(32.))
+                    .prefix(Icon::new(IconName::Search).text_color(muted_fg)),
             )
-            // Export card — only when there's something to export.
-            .when(!all_servers.is_empty(), |this| {
-                this.child(
-                    ZedisCard::new("servers-card-export")
-                        .action()
-                        .icon(IconName::ExternalLink)
-                        .title(i18n_servers(cx, "export_servers_title"))
-                        .bg(bg)
-                        .description(i18n_servers(cx, "export_servers_card_description"))
-                        .on_click(Box::new(cx.listener(move |this, _, window, cx| {
-                            this.export_servers_dialog(window, cx);
-                        }))),
-                )
-            });
+            // Spacer pushes the action buttons to the right edge while the
+            // search box keeps a fixed 200px width.
+            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_none()
+                    .child(
+                        Button::new("servers-toolbar-add")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(i18n_servers(cx, "toolbar_new"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_or_update_server_dialog(
+                                    &RedisServer {
+                                        port: DEFAULT_REDIS_PORT,
+                                        ..Default::default()
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("servers-toolbar-import")
+                            .outline()
+                            .icon(IconName::Asterisk)
+                            .label(i18n_servers(cx, "toolbar_import"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.import_server_dialog(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("servers-toolbar-export")
+                            .outline()
+                            .icon(IconName::ExternalLink)
+                            .label(i18n_servers(cx, "toolbar_export"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.export_servers_dialog(window, cx);
+                            })),
+                    ),
+            );
 
         gpui_component::v_flex()
             .gap_4()
             .w_full()
+            // Footer "⋯" dropdown actions are dispatched here.
+            .on_action(cx.listener(|this, e: &ServersCardAction, window, cx| match e {
+                ServersCardAction::Export(id) => {
+                    if let Ok(servers) = get_servers()
+                        && let Some(server) = servers.iter().find(|s| s.id == id.as_ref())
+                    {
+                        let server = server.clone();
+                        this.export_server_dialog(&server, window, cx);
+                    }
+                }
+                ServersCardAction::Delete(id) => this.remove_server(window, cx, id.as_ref()),
+            }))
+            .child(toolbar)
             .children(sections)
-            .child(tail)
             .into_any_element()
     }
 }
