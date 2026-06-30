@@ -24,7 +24,7 @@ use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, im
 use gpui::{div, hsla, prelude::*};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::highlighter::Language;
-use gpui_component::input::{CompletionProvider, Enter, Input, InputEvent, InputState, TabSize};
+use gpui_component::input::{CompletionProvider, Enter, Input, InputEvent, InputState, Redo, TabSize, Undo};
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{ActiveTheme, IconName, IndexPath, Sizable, h_flex, v_flex};
@@ -61,6 +61,13 @@ pub struct ZedisBytesEditor {
 
     /// Flag indicating if the value has been modified from original
     value_modified: bool,
+
+    /// Whether the value editor currently has an undoable / redoable edit.
+    /// Tracked by hand because `InputState` exposes no `can_undo`/`can_redo`
+    /// (its history is `pub(super)`): set from user edits and the toolbar
+    /// undo/redo buttons, cleared when a new value loads.
+    can_undo: bool,
+    can_redo: bool,
 
     /// State for hex viewer list
     hex_viewer_state: Option<Entity<ListState<HexViewerListDelegate>>>,
@@ -338,6 +345,11 @@ impl ZedisBytesEditor {
                 let original = this.data.to_string().unwrap_or_default();
 
                 this.value_modified = original != value.as_str();
+                // A genuine user edit (undo/redo and programmatic loads are
+                // silent, so they never reach here): an undo is now possible
+                // and whatever redo stack the editor had is cleared.
+                this.can_undo = true;
+                this.can_redo = false;
                 cx.notify();
             }
         }));
@@ -388,6 +400,8 @@ impl ZedisBytesEditor {
 
         let mut this = Self {
             value_modified: false,
+            can_undo: false,
+            can_redo: false,
             soft_wrap,
             soft_wrap_changed: false,
             data: ByteEditorData::Text(SharedString::default()),
@@ -449,8 +463,10 @@ impl ZedisBytesEditor {
             return;
         }
 
-        // Reset modification flag since we're loading a new value
+        // Reset modification + undo/redo flags since we're loading a new value
         self.value_modified = false;
+        self.can_undo = false;
+        self.can_redo = false;
         let readonly = server_state.readonly();
 
         let redis_bytes_value = value.and_then(|v| v.bytes_value());
@@ -536,6 +552,40 @@ impl ZedisBytesEditor {
         self.editor.read(cx).value()
     }
 
+    /// Whether the value editor has an edit that [`Self::undo`] could revert.
+    pub fn can_undo(&self) -> bool {
+        self.can_undo
+    }
+
+    /// Whether the value editor has an undone edit that [`Self::redo`] could
+    /// reapply.
+    pub fn can_redo(&self) -> bool {
+        self.can_redo
+    }
+
+    /// Undo the last edit in the value editor. `InputState`'s undo/redo are
+    /// reachable only through their actions (they're `pub(super)`), so we focus
+    /// the editor input and dispatch the `Undo` action its element already
+    /// handles — exactly what ⌘Z does. The dispatch is deferred and silent (no
+    /// `Change` event), so we flag redo as available here instead of observing
+    /// the result; `can_undo` only clears on the next value load, so an undo
+    /// left enabled at the bottom of the stack is a harmless no-op.
+    pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |state, cx| state.focus(window, cx));
+        window.dispatch_action(Box::new(Undo), cx);
+        self.can_redo = true;
+        cx.notify();
+    }
+
+    /// Redo the last undone edit in the value editor — the ⌘⇧Z counterpart of
+    /// [`Self::undo`].
+    pub fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |state, cx| state.focus(window, cx));
+        window.dispatch_action(Box::new(Redo), cx);
+        self.can_undo = true;
+        cx.notify();
+    }
+
     /// Replace the editor's current text with `bytes`, rendered according to
     /// the active view mode. Used by the value-history rollback UI: the user
     /// picks an old version, we surface it in the editor, and the existing
@@ -561,6 +611,10 @@ impl ZedisBytesEditor {
             state.set_value(text, window, cx);
         });
         self.value_modified = true;
+        // A restore uses `set_value` (history-ignored), so the editor can't
+        // undo it — keep both flags off.
+        self.can_undo = false;
+        self.can_redo = false;
         cx.notify();
     }
 }

@@ -208,6 +208,8 @@ empty_add = "Add connection"
 empty_import = "Import connections"
 
 [editor]
+undo = "Undo"
+redo = "Redo"
 value_readonly = "Read-only preview (binary, or truncated/decompressed value) — can't save. For truncated values, raise the max truncate length in Settings."
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"
 reload_key_tooltip = "Reload key value"

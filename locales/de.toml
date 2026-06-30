@@ -208,6 +208,8 @@ empty_add = "Verbindung hinzufügen"
 empty_import = "Verbindungen importieren"
 
 [editor]
+undo = "Rückgängig"
+redo = "Wiederherstellen"
 value_readonly = "Schreibgeschützte Vorschau (binär oder gekürzter/dekomprimierter Wert) – kann nicht gespeichert werden. Bei gekürzten Werten die maximale Kürzungslänge in den Einstellungen erhöhen."
 delete_key_prompt = "Möchten Sie diesen Schlüssel wirklich löschen: %{key}?"
 reload_key_tooltip = "Schlüsselwert neu laden"

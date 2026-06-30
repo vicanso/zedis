@@ -30,10 +30,12 @@ use crate::{
         ZedisZsetEditor, bitmap_eligible, export_to_file, looks_like_bitmap, looks_like_hll, zset_looks_geo,
     },
 };
-use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{
+    ClipboardItem, Entity, FontWeight, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px,
+};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
-    button::{Button, DropdownButton},
+    button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -535,6 +537,20 @@ impl ZedisEditor {
         });
     }
 
+    /// Forward a text undo to the value editor (toolbar undo button / ⌘Z).
+    fn undo_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(bytes_editor) = self.bytes_editor.clone() {
+            bytes_editor.update(cx, |state, cx| state.undo(window, cx));
+        }
+    }
+
+    /// Forward a text redo to the value editor (toolbar redo button / ⌘⇧Z).
+    fn redo_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(bytes_editor) = self.bytes_editor.clone() {
+            bytes_editor.update(cx, |state, cx| state.redo(window, cx));
+        }
+    }
+
     /// Pull entry `idx` out of the current key's history and push its bytes
     /// into the bytes editor. The user then reviews and Saves as usual —
     /// we don't auto-SET so binary or sensitive rollbacks stay deliberate.
@@ -1022,12 +1038,16 @@ impl ZedisEditor {
 
         // Show loading only if busy and not recently selected (avoid flashing)
         let should_show_loading = is_busy && !self.is_selected_key_recently();
-        // Add size label if available
+        // Add size display (icon + value) if available. The design drops the
+        // "Size :" label prefix in favour of a quiet hard-drive glyph.
         if !size.is_empty() {
-            let size_label = i18n_common(cx, "size");
+            let muted = cx.theme().muted_foreground;
             btns.push(
-                Label::new(format!("{size_label} : {size}"))
-                    .text_sm()
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(Icon::new(CustomIconName::HardDrive).xsmall().text_color(muted))
+                    .child(Label::new(size).text_sm().text_color(muted))
                     .into_any_element(),
             );
         }
@@ -1037,6 +1057,8 @@ impl ZedisEditor {
             let state = bytes_editor.read(cx);
             let value_modified = state.is_value_modified();
             let readonly = state.is_readonly();
+            let can_undo = state.can_undo();
+            let can_redo = state.can_redo();
             let tooltip = if self.readonly {
                 i18n_common(cx, "disable_in_readonly")
             } else if readonly {
@@ -1053,62 +1075,53 @@ impl ZedisEditor {
             btns.push(
                 Button::new("zedis-editor-save-key")
                     .disabled(self.readonly || !value_modified || should_show_loading)
-                    .outline()
+                    .primary()
                     .label(i18n_common(cx, "save"))
                     .tooltip(tooltip)
-                    .icon(CustomIconName::FileCheckCorner)
+                    .icon(CustomIconName::Save)
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.save(window, cx);
                     }))
                     .into_any_element(),
             );
 
-            // History dropdown: only meaningful for editable string values.
-            // Snapshot `(timestamp, size)` tuples here so the menu builder
-            // (which is `Fn`, not `FnMut`) can render without re-borrowing
-            // server state on each menu open.
-            if !readonly && !self.readonly {
-                let history_snapshot: Vec<(i64, usize)> = server_state
-                    .value_history_for(&key)
-                    .map(|deque| deque.iter().map(|e| (e.at, e.size())).collect())
-                    .unwrap_or_default();
-                let count = history_snapshot.len();
-                let label = i18n_editor(cx, "history_label");
-                let empty_label = i18n_editor(cx, "history_empty");
-                let tooltip = if count == 0 {
-                    empty_label.clone()
-                } else {
-                    format!("{label} ({count})").into()
-                };
-
-                btns.push(
-                    Button::new("zedis-editor-history")
-                        .outline()
-                        .disabled(count == 0 || should_show_loading)
-                        .icon(IconName::Undo)
-                        .tooltip(tooltip)
-                        .dropdown_menu(move |menu, _window, _cx| {
-                            let mut menu = menu;
-                            if history_snapshot.is_empty() {
-                                return menu;
-                            }
-                            let now = unix_ts();
-                            for (idx, (at, size)) in history_snapshot.iter().enumerate() {
-                                let secs_ago = (now - at).max(0) as u64;
-                                let rel = format_duration(Duration::from_secs(secs_ago));
-                                let size_str = format_size(*size as u64, DECIMAL);
-                                let label = format!("{rel} • {size_str}");
-                                let idx_u32 = idx as u32;
-                                menu = menu
-                                    .menu_element(Box::new(EditorAction::LoadHistory(idx_u32)), move |_w, _cx| {
-                                        Label::new(label.clone())
-                                    });
-                            }
-                            menu
-                        })
-                        .into_any_element(),
-                );
-            }
+            // Undo / redo for the value editor's text edits. The editor only
+            // surfaces these through actions, so the buttons focus the input
+            // and dispatch them (see `ZedisBytesEditor::undo`). Disabled in
+            // read-only mode; clicking with nothing to undo is a harmless no-op
+            // (the editor exposes no `can_undo`). The saved-version history
+            // moved into the "…" menu to match the design.
+            let edit_disabled = self.readonly || readonly || should_show_loading;
+            btns.push(
+                Button::new("zedis-editor-undo")
+                    .ghost()
+                    .disabled(edit_disabled || !can_undo)
+                    .icon(IconName::Undo)
+                    .tooltip(format!("{} ({})", i18n_editor(cx, "undo"), humanize_keystroke("cmd-z")))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.undo_value(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            btns.push(
+                Button::new("zedis-editor-redo")
+                    .ghost()
+                    .disabled(edit_disabled || !can_redo)
+                    .icon(IconName::Redo)
+                    .tooltip(format!(
+                        "{} ({})",
+                        i18n_editor(cx, "redo"),
+                        humanize_keystroke("cmd-shift-z")
+                    ))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.redo_value(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            // Thin rule splitting the value-edit cluster (save / undo / redo)
+            // from the key-meta actions (TTL / reload / more), per the design.
+            let divider = cx.theme().border;
+            btns.push(div().w(px(1.)).h(px(16.)).flex_none().bg(divider).into_any_element());
         }
 
         // Add TTL button (or input field when in edit mode)
@@ -1139,7 +1152,6 @@ impl ZedisEditor {
                 };
                 Button::new("zedis-editor-ttl-btn")
                     .outline()
-                    .w(px(TTL_INPUT_MAX_WIDTH))
                     .disabled(self.readonly || should_show_loading)
                     .tooltip(ttl_tooltip)
                     .label(ttl.clone())
@@ -1164,7 +1176,7 @@ impl ZedisEditor {
             DropdownButton::new("zedis-editor-reload-key")
                 .button(
                     Button::new("zedis-editor-reload-now")
-                        .outline()
+                        .ghost()
                         .disabled(should_show_loading)
                         .when(auto_refresh_interval_sec > 0, |this| {
                             this.label(format!("{}s", auto_refresh_interval_sec))
@@ -1227,7 +1239,7 @@ impl ZedisEditor {
         if rename_item || copy_item || bitmap_item || export_item || import_item || diff_item || delete_item {
             btns.push(
                 Button::new("zedis-editor-more")
-                    .outline()
+                    .ghost()
                     .disabled(should_show_loading)
                     .tooltip(i18n_editor(cx, "more_actions"))
                     .icon(IconName::Ellipsis)
@@ -1252,6 +1264,35 @@ impl ZedisEditor {
                                 CustomIconName::Upload,
                                 Box::new(EditorAction::ImportValue),
                                 move |_, cx| Label::new(i18n_editor(cx, "import_value_tooltip")),
+                            );
+                        }
+                        // Restore submenu: pull any saved version back into the
+                        // editor (was the toolbar history dropdown; moved here so
+                        // the top bar matches the design). Same version data as
+                        // the diff submenu below, different action.
+                        if diff_item {
+                            let snap = diff_history.clone();
+                            menu = menu.submenu_with_icon(
+                                Some(Icon::new(IconName::Undo)),
+                                i18n_editor(cx, "history_label"),
+                                window,
+                                cx,
+                                move |submenu, _window, _cx| {
+                                    let mut submenu = submenu;
+                                    let now = unix_ts();
+                                    for (idx, (at, size)) in snap.iter().enumerate() {
+                                        let secs_ago = (now - at).max(0) as u64;
+                                        let rel = format_duration(Duration::from_secs(secs_ago));
+                                        let size_str = format_size(*size as u64, DECIMAL);
+                                        let label = format!("v{} • {} • {}", idx + 1, rel, size_str);
+                                        let idx_u32 = idx as u32;
+                                        submenu = submenu.menu_element(
+                                            Box::new(EditorAction::LoadHistory(idx_u32)),
+                                            move |_w, _cx| Label::new(label.clone()),
+                                        );
+                                    }
+                                    submenu
+                                },
                             );
                         }
                         // Diff submenu: pick any saved version to compare the
@@ -1349,50 +1390,62 @@ impl ZedisEditor {
             .gap_2()
             .w_full()
             .child(
-                // Copy key button
-                Button::new("zedis-editor-copy-key")
-                    .outline()
-                    .tooltip(i18n_editor(cx, "copy_key_tooltip"))
-                    .loading(should_show_loading)
-                    .icon(IconName::Copy)
-                    .on_click(cx.listener(move |_this, _event, window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));
-                        window.push_notification(Notification::info(i18n_editor(cx, "copied_key_to_clipboard")), cx);
-                    })),
-            )
-            .child(
-                Button::new("zedis-editor-favorite-key")
-                    .outline()
-                    .tooltip(favorite_tooltip)
-                    .icon(favorite_icon)
-                    .on_click(cx.listener(move |_this, _event, _window, cx| {
-                        let server_id = _this.server_state.read(cx).server_id().to_string();
-                        let key = favorite_key.clone();
-                        let is_favorited = is_favorited;
-                        cx.spawn(async move |_, cx| {
-                            let _ = cx
-                                .background_spawn(async move {
-                                    let manager = get_favorites_manager();
-                                    if is_favorited {
-                                        let _ = manager.remove_record(&server_id, key.as_ref());
-                                    } else {
-                                        let _ = manager.add_record(&server_id, key.as_ref());
-                                    }
+                // Copy + favourite share a tight 2px group so the pair reads as
+                // one cluster (matching the design), independent of the
+                // toolbar's wider `gap_2` between sections.
+                h_flex()
+                    .items_center()
+                    .gap_0p5()
+                    .child(
+                        // Copy key button
+                        Button::new("zedis-editor-copy-key")
+                            .ghost()
+                            .tooltip(i18n_editor(cx, "copy_key_tooltip"))
+                            .loading(should_show_loading)
+                            .icon(IconName::Copy)
+                            .on_click(cx.listener(move |_this, _event, window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(content.to_string()));
+                                window.push_notification(
+                                    Notification::info(i18n_editor(cx, "copied_key_to_clipboard")),
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("zedis-editor-favorite-key")
+                            .ghost()
+                            .tooltip(favorite_tooltip)
+                            .icon(favorite_icon)
+                            .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                let server_id = _this.server_state.read(cx).server_id().to_string();
+                                let key = favorite_key.clone();
+                                let is_favorited = is_favorited;
+                                cx.spawn(async move |_, cx| {
+                                    let _ = cx
+                                        .background_spawn(async move {
+                                            let manager = get_favorites_manager();
+                                            if is_favorited {
+                                                let _ = manager.remove_record(&server_id, key.as_ref());
+                                            } else {
+                                                let _ = manager.add_record(&server_id, key.as_ref());
+                                            }
+                                        })
+                                        .await;
                                 })
-                                .await;
-                        })
-                        .detach();
-                        cx.notify();
-                    })),
+                                .detach();
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(KeyTypeBadge::new(key_type).into_any_element())
             .child(
                 // Key name display - w_0 prevents long keys from breaking layout
-                div()
-                    .flex_1()
-                    .w_0()
-                    .overflow_hidden()
-                    .child(Label::new(key).text_ellipsis().whitespace_nowrap()),
+                div().flex_1().w_0().overflow_hidden().child(
+                    Label::new(key)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_ellipsis()
+                        .whitespace_nowrap(),
+                ),
             )
             .children(btns)
     }

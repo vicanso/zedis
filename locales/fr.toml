@@ -208,6 +208,8 @@ empty_add = "Ajouter une connexion"
 empty_import = "Importer des connexions"
 
 [editor]
+undo = "Annuler"
+redo = "Rétablir"
 value_readonly = "Aperçu en lecture seule (binaire ou valeur tronquée/décompressée) — impossible d'enregistrer. Pour les valeurs tronquées, augmentez la longueur de troncature maximale dans les Paramètres."
 delete_key_prompt = "Voulez-vous vraiment supprimer cette clé : %{key} ?"
 reload_key_tooltip = "Recharger la valeur de la clé"

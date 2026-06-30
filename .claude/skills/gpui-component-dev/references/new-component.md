@@ -1,7 +1,6 @@
----
-name: new-component
-description: Create new GPUI components. Use when building components, writing UI elements, or creating new component implementations.
----
+# Creating New Components
+
+**Contents:** [Instructions](#instructions) · [Component Types](#component-types) · [Implementation Steps](#implementation-steps) · [Common Patterns](#common-patterns)
 
 ## Instructions
 

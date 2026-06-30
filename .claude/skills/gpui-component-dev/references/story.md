@@ -1,7 +1,3 @@
----
-name: generate-component-story
-description: Create story examples for components. Use when writing stories, creating examples, or demonstrating component usage.
----
 
 ## Instructions
 

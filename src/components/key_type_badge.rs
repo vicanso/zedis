@@ -18,7 +18,6 @@ use gpui_component::label::Label;
 
 // Constants for key type badge styling
 const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges
-const KEY_TYPE_BORDER_FADE_ALPHA: f32 = 0.5; // Border transparency for key type badges
 
 #[derive(IntoElement)]
 pub struct KeyTypeBadge {
@@ -62,10 +61,12 @@ impl RenderOnce for KeyTypeBadge {
                 .into_any_element();
         }
 
+        // The border reuses the background's faded tint so the badge reads as a
+        // single soft-filled pill (matching the design) instead of a filled
+        // chip ringed by a brighter outline.
         let mut bg = color;
         bg.fade_out(KEY_TYPE_FADE_ALPHA);
-        let mut border = color;
-        border.fade_out(KEY_TYPE_BORDER_FADE_ALPHA);
+        let border = bg;
 
         Label::new(self.key_type.as_str())
             .text_size(px(10.))

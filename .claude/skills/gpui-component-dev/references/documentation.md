@@ -1,7 +1,3 @@
----
-name: generate-component-documentation
-description: Generate documentation for new components. Use when writing docs, documenting components, or creating component documentation.
----
 
 ## Instructions
 
