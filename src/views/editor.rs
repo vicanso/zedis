@@ -315,7 +315,15 @@ impl ZedisEditor {
                     cx.notify();
                 }
                 ServerEvent::ServerInfoUpdated => {
+                    // Read-only toggled — refresh the flag and re-render so the
+                    // toolbar (Save / TTL disabled state, the size lock glyph)
+                    // reflects it immediately instead of on the next paint. The
+                    // bitmap editor caches read-only at construction, so drop it
+                    // here to force a rebuild with the new flag on the next
+                    // render (the kv-table editors re-read it themselves).
                     this.readonly = server_state.read(cx).readonly();
+                    this.bitmap_editor.take();
+                    cx.notify();
                 }
                 ServerEvent::EditionActionTriggered(action) => match action {
                     EditorAction::UpdateTtl => {

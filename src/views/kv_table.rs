@@ -116,6 +116,10 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     readonly: bool,
     /// Supported operations mode (add, update, remove, filter)
     mode: KvTableMode,
+    /// The mode this table was configured with, before read-only is applied —
+    /// kept so a live read-only toggle restores the intended affordances rather
+    /// than always falling back to `ALL`.
+    base_mode: KvTableMode,
     /// The row index that is being edited
     edit_row: Option<usize>,
     /// The original values of the row that is being edited
@@ -273,6 +277,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         state.delegate_mut().set_fetcher(fetcher);
                     });
                 }
+                // Read-only was toggled from the status bar — recompute the
+                // effective mode from the configured base mode so the edit /
+                // add / remove affordances update live, instead of only after
+                // the editor is recreated on a type switch.
+                ServerEvent::ServerInfoUpdated => {
+                    let readonly = server_state.read(cx).readonly();
+                    if readonly != this.readonly {
+                        this.readonly = readonly;
+                        this.mode = if readonly { KvTableMode::empty() } else { this.base_mode };
+                        // Locking mid-edit: close any in-progress row editor.
+                        this.edit_row = None;
+                        this.editor_form = None;
+                        cx.notify();
+                    }
+                }
                 // Clear search when key selection changes
                 ServerEvent::KeySelected(_) => {
                     this.edit_row = None;
@@ -370,6 +389,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             value_states,
             readonly,
             mode,
+            base_mode: KvTableMode::ALL,
             fetcher,
             server_state,
             columns,
@@ -465,12 +485,10 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     ///     .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER);
     /// ```
     pub fn mode(mut self, mode: KvTableMode) -> Self {
-        // If readonly, mode is always empty
-        if self.readonly {
-            self.mode = KvTableMode::empty();
-        } else {
-            self.mode = mode;
-        }
+        // Remember the intended mode so a later read-only toggle can restore it.
+        self.base_mode = mode;
+        // If readonly, the effective mode is always empty.
+        self.mode = if self.readonly { KvTableMode::empty() } else { mode };
         self
     }
 
