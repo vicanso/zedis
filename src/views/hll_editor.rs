@@ -27,6 +27,7 @@
 //! user can watch the estimate move; that is the only mutation — the raw
 //! sketch bytes are never editable.
 
+use crate::helpers::get_mono_font_family;
 use crate::{
     connection::get_connection_manager,
     error::Error,
@@ -254,6 +255,7 @@ impl Render for ZedisHllEditor {
 
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .gap_3()
             .p_3()
             .child(header)

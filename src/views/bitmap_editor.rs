@@ -27,6 +27,7 @@
 //! / `BITPOS`, and a thin `BITFIELD` box runs raw sub-commands. The grid
 //! is capped at [`CAP_BITS`]; `BITCOUNT` / `BITPOS` stay whole-key.
 
+use crate::helpers::get_mono_font_family;
 use crate::{
     connection::get_connection_manager,
     error::Error,
@@ -576,6 +577,7 @@ impl Render for ZedisBitmapEditor {
 
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .gap_3()
             .p_3()
             .child(header)

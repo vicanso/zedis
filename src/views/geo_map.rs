@@ -27,6 +27,7 @@
 //! and a side list that cross-highlights with the canvas. Invalid /
 //! non-geo members are listed separately. Capped at [`GEO_CAP`] points.
 
+use crate::helpers::get_mono_font_family;
 use crate::{
     connection::get_connection_manager,
     error::Error,
@@ -931,6 +932,7 @@ impl Render for ZedisGeoMap {
         let has_points = self.data.as_ref().is_some_and(|d| !d.points.is_empty());
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .gap_3()
             .p_3()
             .child(header)

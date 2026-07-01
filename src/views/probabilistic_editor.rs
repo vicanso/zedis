@@ -27,6 +27,7 @@
 //! adds min / max / p50 / p90 / p99 (`TDIGEST.MIN` / `MAX` /
 //! `QUANTILE`). The viewer is read-only.
 
+use crate::helpers::get_mono_font_family;
 use crate::{
     connection::get_connection_manager,
     error::Error,
@@ -246,7 +247,13 @@ impl Render for ZedisProbabilisticEditor {
                 .into_any_element()
         };
 
-        v_flex().size_full().gap_3().p_3().child(header).child(body)
+        v_flex()
+            .size_full()
+            .font_family(get_mono_font_family())
+            .gap_3()
+            .p_3()
+            .child(header)
+            .child(body)
     }
 }
 

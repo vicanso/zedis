@@ -19,6 +19,7 @@
 /// with timestamp, channel, and message columns.
 use crate::connection::get_connection_manager;
 use crate::error::Error;
+use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
 use chrono::Local;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -521,6 +522,7 @@ impl Render for ZedisPubsubEditor {
 
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .overflow_hidden()
             .child(self.render_subscribe_bar(window, cx))
             .child(
