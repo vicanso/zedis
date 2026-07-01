@@ -40,6 +40,7 @@
 use crate::connection::{get_connection_manager, get_server};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
+use crate::helpers::get_mono_font_family;
 use crate::states::{
     Route, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
@@ -905,7 +906,7 @@ impl Render for ZedisKeyspaceNotifications {
             self.refresh_notify_flags(cx);
         }
 
-        let mut body = v_flex().size_full();
+        let mut body = v_flex().size_full().font_family(get_mono_font_family());
         body = body.child(self.render_header(cx));
         if let Some(banner) = self.render_config_banner(cx) {
             body = body.child(banner);

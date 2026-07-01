@@ -35,7 +35,7 @@
 //! are deliberately left for later.)
 
 use crate::connection::{MatchLocation, ValueMatch, ValueSearchRound, get_connection_manager};
-use crate::helpers::build_csv;
+use crate::helpers::{build_csv, get_mono_font_family};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_value_search};
 use crate::views::export_to_file;
 use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
@@ -521,6 +521,7 @@ impl Render for ZedisValueSearch {
         let border = cx.theme().border;
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .child(
                 h_flex()
                     .items_center()

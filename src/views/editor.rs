@@ -18,7 +18,7 @@ use crate::{
     connection::{ConflictMode, RestoreStatus, copy_key, get_connection_manager, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
-    helpers::{EditorAction, format_duration, humanize_keystroke, unix_ts, validate_ttl},
+    helpers::{EditorAction, format_duration, get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl},
     states::{
         DataFormat, KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
         escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
@@ -30,9 +30,7 @@ use crate::{
         ZedisZsetEditor, bitmap_eligible, export_to_file, looks_like_bitmap, looks_like_hll, zset_looks_geo,
     },
 };
-use gpui::{
-    ClipboardItem, Entity, FontWeight, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px,
-};
+use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
@@ -537,20 +535,6 @@ impl ZedisEditor {
         });
     }
 
-    /// Forward a text undo to the value editor (toolbar undo button / ⌘Z).
-    fn undo_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(bytes_editor) = self.bytes_editor.clone() {
-            bytes_editor.update(cx, |state, cx| state.undo(window, cx));
-        }
-    }
-
-    /// Forward a text redo to the value editor (toolbar redo button / ⌘⇧Z).
-    fn redo_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(bytes_editor) = self.bytes_editor.clone() {
-            bytes_editor.update(cx, |state, cx| state.redo(window, cx));
-        }
-    }
-
     /// Pull entry `idx` out of the current key's history and push its bytes
     /// into the bytes editor. The user then reviews and Saves as usual —
     /// we don't auto-SET so binary or sensitive rollbacks stay deliberate.
@@ -1038,27 +1022,36 @@ impl ZedisEditor {
 
         // Show loading only if busy and not recently selected (avoid flashing)
         let should_show_loading = is_busy && !self.is_selected_key_recently();
-        // Add size display (icon + value) if available. The design drops the
-        // "Size :" label prefix in favour of a quiet hard-drive glyph.
-        if !size.is_empty() {
+        // Size display, rendered just after the key name (per the design): the
+        // value alone, prefixed with a lock glyph only when the value is
+        // read-only (read-only connection or non-editable binary). Built here,
+        // placed in the header row below.
+        let size_el = (!size.is_empty()).then(|| {
             let muted = cx.theme().muted_foreground;
-            btns.push(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(Icon::new(CustomIconName::HardDrive).xsmall().text_color(muted))
-                    .child(Label::new(size).text_sm().text_color(muted))
-                    .into_any_element(),
-            );
-        }
+            let value_readonly = self.readonly
+                || self
+                    .bytes_editor
+                    .as_ref()
+                    .map(|editor| editor.read(cx).is_readonly())
+                    .unwrap_or(false);
+            let mut row = h_flex().flex_none().items_center().gap_1();
+            if value_readonly {
+                row = row.child(Icon::new(CustomIconName::Lock).xsmall().text_color(muted));
+            }
+            row.child(
+                Label::new(size)
+                    .text_sm()
+                    .font_family(get_mono_font_family())
+                    .text_color(muted),
+            )
+            .into_any_element()
+        });
 
         // Add save button for string editor if value is modified
         if let Some(bytes_editor) = &self.bytes_editor {
             let state = bytes_editor.read(cx);
             let value_modified = state.is_value_modified();
             let readonly = state.is_readonly();
-            let can_undo = state.can_undo();
-            let can_redo = state.can_redo();
             let tooltip = if self.readonly {
                 i18n_common(cx, "disable_in_readonly")
             } else if readonly {
@@ -1084,44 +1077,6 @@ impl ZedisEditor {
                     }))
                     .into_any_element(),
             );
-
-            // Undo / redo for the value editor's text edits. The editor only
-            // surfaces these through actions, so the buttons focus the input
-            // and dispatch them (see `ZedisBytesEditor::undo`). Disabled in
-            // read-only mode; clicking with nothing to undo is a harmless no-op
-            // (the editor exposes no `can_undo`). The saved-version history
-            // moved into the "…" menu to match the design.
-            let edit_disabled = self.readonly || readonly || should_show_loading;
-            btns.push(
-                Button::new("zedis-editor-undo")
-                    .ghost()
-                    .disabled(edit_disabled || !can_undo)
-                    .icon(IconName::Undo)
-                    .tooltip(format!("{} ({})", i18n_editor(cx, "undo"), humanize_keystroke("cmd-z")))
-                    .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.undo_value(window, cx);
-                    }))
-                    .into_any_element(),
-            );
-            btns.push(
-                Button::new("zedis-editor-redo")
-                    .ghost()
-                    .disabled(edit_disabled || !can_redo)
-                    .icon(IconName::Redo)
-                    .tooltip(format!(
-                        "{} ({})",
-                        i18n_editor(cx, "redo"),
-                        humanize_keystroke("cmd-shift-z")
-                    ))
-                    .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.redo_value(window, cx);
-                    }))
-                    .into_any_element(),
-            );
-            // Thin rule splitting the value-edit cluster (save / undo / redo)
-            // from the key-meta actions (TTL / reload / more), per the design.
-            let divider = cx.theme().border;
-            btns.push(div().w(px(1.)).h(px(16.)).flex_none().bg(divider).into_any_element());
         }
 
         // Add TTL button (or input field when in edit mode)
@@ -1152,6 +1107,7 @@ impl ZedisEditor {
                 };
                 Button::new("zedis-editor-ttl-btn")
                     .outline()
+                    .font_family(get_mono_font_family())
                     .disabled(self.readonly || should_show_loading)
                     .tooltip(ttl_tooltip)
                     .label(ttl.clone())
@@ -1267,9 +1223,9 @@ impl ZedisEditor {
                             );
                         }
                         // Restore submenu: pull any saved version back into the
-                        // editor (was the toolbar history dropdown; moved here so
-                        // the top bar matches the design). Same version data as
-                        // the diff submenu below, different action.
+                        // editor (the value-history dropdown, moved off the
+                        // toolbar into "more actions"). Same version data as the
+                        // diff submenu below, different action.
                         if diff_item {
                             let snap = diff_history.clone();
                             menu = menu.submenu_with_icon(
@@ -1439,14 +1395,21 @@ impl ZedisEditor {
             )
             .child(KeyTypeBadge::new(key_type).into_any_element())
             .child(
-                // Key name display - w_0 prevents long keys from breaking layout
-                div().flex_1().w_0().overflow_hidden().child(
+                // Key name — hugs its content and truncates when long (`min_w_0`
+                // + ellipsis) instead of growing, so the size can sit right
+                // after it; the flex spacer below pushes the actions right.
+                div().min_w_0().overflow_hidden().child(
                     Label::new(key)
-                        .font_weight(FontWeight::SEMIBOLD)
+                        // Monospace so the key reads like the identifier it is.
+                        // Bold felt too heavy and Menlo ships no lighter emphasis
+                        // face (only Regular/Bold), so we keep the regular weight.
+                        .font_family(get_mono_font_family())
                         .text_ellipsis()
                         .whitespace_nowrap(),
                 ),
             )
+            .children(size_el)
+            .child(div().flex_1())
             .children(btns)
     }
     /// Probe whether the current sorted set holds GEO data (via `GEOPOS`

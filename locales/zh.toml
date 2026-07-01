@@ -208,8 +208,6 @@ empty_add = "添加连接"
 empty_import = "导入连接"
 
 [editor]
-undo = "撤销"
-redo = "重做"
 value_readonly = "只读预览(二进制,或已截断/解压的值),无法保存。若因截断,可在设置中调大最大截断长度。"
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
 reload_key_tooltip = "重新加载键值"

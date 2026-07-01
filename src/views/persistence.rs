@@ -28,7 +28,7 @@
 //! servers get an extra warning appended).
 
 use crate::connection::get_server;
-use crate::helpers::{format_duration, unix_ts};
+use crate::helpers::{format_duration, get_mono_font_family, unix_ts};
 use crate::states::{
     RedisMetrics, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
     i18n_common, i18n_persistence,
@@ -453,7 +453,10 @@ impl Render for ZedisPersistence {
                 .into_any_element();
         };
 
-        let mut body = v_flex().size_full().overflow_y_scrollbar();
+        let mut body = v_flex()
+            .size_full()
+            .font_family(get_mono_font_family())
+            .overflow_y_scrollbar();
         body = body.child(self.render_header(cx));
         if m.loading {
             body = body.child(self.render_loading_banner(cx));

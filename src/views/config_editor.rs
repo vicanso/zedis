@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     connection::{DangerKind, get_connection_manager, get_server, get_servers},
     error::Error,
-    helpers::get_font_family,
+    helpers::get_mono_font_family,
     states::{
         Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_config_editor,
     },
@@ -352,7 +352,7 @@ impl Render for ZedisConfigEditor {
             window.push_notification(notification, cx);
         }
 
-        let font_family: SharedString = get_font_family().into();
+        let font_family: SharedString = get_mono_font_family().into();
         let filter = self.filter.to_lowercase();
 
         let filtered: Vec<(SharedString, SharedString)> = self

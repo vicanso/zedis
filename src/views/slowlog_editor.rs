@@ -23,7 +23,7 @@ use crate::connection::{
     latency_monitor_threshold, latency_reset, list_commands,
 };
 use crate::error::Error;
-use crate::helpers::{SlowlogAction, build_csv};
+use crate::helpers::{SlowlogAction, build_csv, get_mono_font_family};
 use crate::states::{
     Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_slowlog_editor,
 };
@@ -1217,6 +1217,8 @@ impl gpui::Render for ZedisSlowlogEditor {
         v_flex()
             .size_full()
             .overflow_hidden()
+            // Monospace cascades to the logged commands, durations and timestamps.
+            .font_family(get_mono_font_family())
             // Toolbar
             .child(
                 h_flex()

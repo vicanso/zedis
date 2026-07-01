@@ -17,7 +17,7 @@ use crate::connection::{
     ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
 };
 use crate::error::Error;
-use crate::helpers::{get_font_family, resolve_path, resolve_tag_chip};
+use crate::helpers::{get_mono_font_family, resolve_path, resolve_tag_chip};
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
@@ -1086,7 +1086,7 @@ impl Render for ZedisServers {
 
         let dark = cx.theme().is_dark();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let subtitle_font = get_font_family();
+        let subtitle_font = get_mono_font_family();
         let update_tooltip = i18n_servers(cx, "update_tooltip");
         let move_up_tooltip = i18n_servers(cx, "move_up_tooltip");
         let move_down_tooltip = i18n_servers(cx, "move_down_tooltip");

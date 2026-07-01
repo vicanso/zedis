@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     connection::{RedisClientDescription, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{humanize_keystroke, resolve_tag_chip},
+    helpers::{get_mono_font_family, humanize_keystroke, resolve_tag_chip},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask,
         ServerToolsAction, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load,
@@ -991,6 +991,9 @@ impl Render for ZedisStatusBar {
             .w_full()
             .h(STATUS_BAR_HEIGHT)
             .text_sm()
+            // Monospace for the whole bar — cascades to every child label /
+            // button / select text (icons are SVGs, unaffected).
+            .font_family(get_mono_font_family())
             .py_1p5()
             .px_4()
             .gap_4()

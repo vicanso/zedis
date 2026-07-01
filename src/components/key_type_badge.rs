@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::get_mono_font_family;
 use crate::states::KeyType;
 use gpui::{App, FontWeight, IntoElement, RenderOnce, Styled, Window, div, px};
 use gpui_component::label::Label;
@@ -70,6 +71,12 @@ impl RenderOnce for KeyTypeBadge {
 
         Label::new(self.key_type.as_str())
             .text_size(px(10.))
+            // Render in a concrete font (the app monospace) so the weight below
+            // actually renders bold: the default `.AppleSystemUIFont` resolves
+            // heavy weights poorly, while a real family (Menlo/Cascadia) has a
+            // proper Bold face — the same reason the key-tree badge looks bold.
+            .font_family(get_mono_font_family())
+            .font_weight(FontWeight::BOLD)
             // The width hugs the text instead of being fixed: `flex_none`
             // keeps the badge from being squeezed in the tight title /
             // key-tree rows, `whitespace_nowrap` keeps it on a single line,

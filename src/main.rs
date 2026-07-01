@@ -859,6 +859,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
+        // Register the bundled JetBrains Mono faces (assets/fonts/*.ttf) so the
+        // monospace family (`get_mono_font_family()`) renders real Regular / Bold
+        // weights on every platform instead of leaning on whatever the OS ships
+        // — see the "Bold needs a concrete font family" gotcha in CLAUDE.md.
+        let fonts = ["fonts/JetBrainsMono-Regular.ttf", "fonts/JetBrainsMono-Bold.ttf"]
+            .into_iter()
+            .filter_map(|p| assets::Assets::get(p).map(|f| f.data))
+            .collect();
+        if let Err(e) = cx.text_system().add_fonts(fonts) {
+            error!(error = %e, "failed to register bundled fonts");
+        }
         // Register the embedded color themes so they appear in the theme menu.
         assets::register_themes(cx);
 

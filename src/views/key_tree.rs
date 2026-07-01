@@ -19,7 +19,7 @@ use crate::{
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
-        EditorAction, build_csv, format_ttl_chip, get_font_family, humanize_keystroke, parse_duration,
+        EditorAction, build_csv, format_ttl_chip, get_mono_font_family, humanize_keystroke, parse_duration,
         theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
@@ -787,7 +787,7 @@ impl ListDelegate for KeyTreeDelegate {
             .collect();
         Some(
             ListItem::new(ix)
-                .font_family(get_font_family())
+                .font_family(get_mono_font_family())
                 .w_full()
                 // Padding/background/hover live on the content div below so the
                 // hover fill is full-bleed and high-contrast; zero ListItem's
@@ -1001,7 +1001,11 @@ impl ListDelegate for KeyTreeDelegate {
                                                         .inset_0()
                                                         .flex()
                                                         .items_center()
-                                                        .justify_center()
+                                                        // Right-align so the small X hugs the
+                                                        // right edge of the (wider) TTL slot
+                                                        // instead of floating centred with a
+                                                        // big gap to its right.
+                                                        .justify_end()
                                                         .invisible()
                                                         .group_hover("ktree-ttl", |s| s.visible())
                                                         .child(
@@ -1053,7 +1057,9 @@ impl ListDelegate for KeyTreeDelegate {
                                             .w(px(INLINE_DELETE_WIDTH))
                                             .flex()
                                             .items_center()
-                                            .justify_center()
+                                            // Right-align the X to the slot's right edge so it
+                                            // doesn't sit centred with a big gap to its right.
+                                            .justify_end()
                                             .invisible()
                                             .group_hover("ktree-row", |s| s.visible())
                                             .child(

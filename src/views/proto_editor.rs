@@ -16,7 +16,7 @@ use crate::assets::CustomIconName;
 use crate::connection::get_servers;
 use crate::db::{ProtoConfig, ProtoManager};
 use crate::error::Error;
-use crate::helpers::get_font_family;
+use crate::helpers::get_mono_font_family;
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_proto_editor;
 use crate::states::{ZedisServerState, dialog_button_props};
@@ -631,7 +631,11 @@ impl ZedisProtoEditor {
                             .col_span(2)
                             .label(i18n_proto_editor(cx, "content"))
                             .required(true)
-                            .child(Input::new(&self.content_state).w_full().font_family(get_font_family())),
+                            .child(
+                                Input::new(&self.content_state)
+                                    .w_full()
+                                    .font_family(get_mono_font_family()),
+                            ),
                     )
                     .child(
                         field()

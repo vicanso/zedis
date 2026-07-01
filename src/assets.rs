@@ -11,6 +11,7 @@ use std::borrow::Cow;
 #[include = "commands.json"]
 #[include = "icon.png"]
 #[include = "themes/*.json"]
+#[include = "fonts/*.ttf"]
 pub struct Assets;
 
 impl AssetSource for Assets {

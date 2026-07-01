@@ -26,7 +26,7 @@
 //! to editing; the diff view's purpose is *understanding the change*,
 //! not making one.
 
-use crate::helpers::{DiffOp, ValueDiffAction, format_duration, get_font_family, line_diff, unix_ts};
+use crate::helpers::{DiffOp, ValueDiffAction, format_duration, get_mono_font_family, line_diff, unix_ts};
 use crate::states::{ZedisGlobalStore, i18n_editor, json_merge_diff};
 // Sibling-relative path: `editor` is a private child of `views`, so
 // the crate-rooted path doesn't resolve. As siblings under the same
@@ -200,7 +200,12 @@ impl ZedisValueDiff {
                             .text_color(theme.muted_foreground)
                             .mx_1(),
                     )
-                    .child(Label::new(line_text).text_xs().font_family(get_font_family()).flex_1())
+                    .child(
+                        Label::new(line_text)
+                            .text_xs()
+                            .font_family(get_mono_font_family())
+                            .flex_1(),
+                    )
                     .into_any_element(),
             );
         }
@@ -268,7 +273,7 @@ impl ZedisValueDiff {
                         .child(
                             Label::new(body)
                                 .text_xs()
-                                .font_family(get_font_family())
+                                .font_family(get_mono_font_family())
                                 .whitespace_normal(),
                         ),
                 )

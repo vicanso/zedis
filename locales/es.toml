@@ -208,8 +208,6 @@ empty_add = "Añadir conexión"
 empty_import = "Importar conexiones"
 
 [editor]
-undo = "Deshacer"
-redo = "Rehacer"
 value_readonly = "Vista previa de solo lectura (binario o valor truncado/descomprimido): no se puede guardar. Para valores truncados, aumenta la longitud máxima de truncado en Ajustes."
 delete_key_prompt = "¿Está seguro de que desea eliminar esta clave: %{key}?"
 reload_key_tooltip = "Recargar valor de la clave"

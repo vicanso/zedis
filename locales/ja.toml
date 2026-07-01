@@ -208,8 +208,6 @@ empty_add = "接続を追加"
 empty_import = "接続をインポート"
 
 [editor]
-undo = "元に戻す"
-redo = "やり直し"
 value_readonly = "読み取り専用プレビュー(バイナリ、または切り詰め/解凍された値)のため保存できません。切り詰めの場合は設定で最大切り詰め長を増やしてください。"
 delete_key_prompt = "このキーを削除しますか: %{key}?"
 reload_key_tooltip = "キー値を再読み込み"

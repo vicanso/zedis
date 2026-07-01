@@ -14,14 +14,12 @@
 
 use gpui::SharedString;
 
-pub fn get_font_family() -> String {
-    if cfg!(target_os = "macos") {
-        "Menlo".to_string()
-    } else if cfg!(target_os = "windows") {
-        "Cascadia Code".to_string()
-    } else {
-        "monospace".to_string()
-    }
+pub fn get_mono_font_family() -> String {
+    // Bundled and registered at startup via `add_fonts` (see `main.rs` +
+    // `assets/fonts/JetBrainsMono-*.ttf`), so it renders identically on every
+    // platform with real Regular/Bold faces — unlike the OS monospace
+    // fonts we used before, whose weight resolution varied.
+    "JetBrains Mono".to_string()
 }
 
 pub fn get_default_font_family() -> SharedString {

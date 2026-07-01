@@ -34,6 +34,7 @@ use crate::{
         ft_info, ft_list, ft_search, get_connection_manager,
     },
     error::Error,
+    helpers::get_mono_font_family,
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_search},
 };
 use gpui::{Action, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -897,6 +898,7 @@ impl gpui::Render for ZedisSearchManager {
         v_flex()
             .size_full()
             .overflow_hidden()
+            .font_family(get_mono_font_family())
             .child(header)
             .child(div().flex_1().w_full().min_h_0().overflow_hidden().child(body))
             .into_any_element()

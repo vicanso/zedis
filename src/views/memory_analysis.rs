@@ -21,7 +21,7 @@ use crate::assets::CustomIconName;
 use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{AiEndpoint, analyze_report, format_duration};
+use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis};
 use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
@@ -2389,6 +2389,7 @@ impl gpui::Render for ZedisMemoryAnalysis {
         v_flex()
             .size_full()
             .overflow_hidden()
+            .font_family(get_mono_font_family())
             .gap_2()
             // ── Toolbar: single row, horizontal-scroll on overflow ──
             // The h_flex is itself the scroll viewport (mirrors gpui-component's

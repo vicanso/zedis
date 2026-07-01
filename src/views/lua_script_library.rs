@@ -25,7 +25,7 @@ use crate::{
     connection::{ScriptRunOutcome, get_connection_manager, run_script},
     db::{LuaScript, LuaScriptManager},
     error::Error,
-    helpers::{get_font_family, unix_ts},
+    helpers::{get_mono_font_family, unix_ts},
     states::{
         Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_lua_scripts,
     },
@@ -640,7 +640,7 @@ impl ZedisLuaScriptLibrary {
                             .disabled(true)
                             .h_full()
                             .w_full()
-                            .font_family(get_font_family()),
+                            .font_family(get_mono_font_family()),
                     )
                     .into_any_element()
             })
@@ -680,7 +680,7 @@ impl ZedisLuaScriptLibrary {
                                 .bg(cx.theme().muted.opacity(0.4))
                                 .child(
                                     Label::new(SharedString::from(res.formatted))
-                                        .font_family(get_font_family())
+                                        .font_family(get_mono_font_family())
                                         .text_xs()
                                         .whitespace_normal()
                                         .text_color(foreground),
@@ -755,7 +755,7 @@ impl ZedisLuaScriptLibrary {
                     )
                     .child(
                         Label::new(sha_short)
-                            .font_family(get_font_family())
+                            .font_family(get_mono_font_family())
                             .text_xs()
                             .text_color(muted),
                     )
@@ -869,7 +869,7 @@ impl ZedisLuaScriptLibrary {
                                     .bordered(false)
                                     .focus_bordered(false)
                                     .h_full()
-                                    .font_family(get_font_family()),
+                                    .font_family(get_mono_font_family()),
                             ),
                     ),
             )

@@ -21,7 +21,7 @@ use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_connection_manager, open_single_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::format_duration;
+use crate::helpers::{format_duration, get_mono_font_family};
 use crate::states::{
     Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
     i18n_clients_manager, i18n_common,
@@ -719,6 +719,8 @@ impl gpui::Render for ZedisClientsManager {
         v_flex()
             .size_full()
             .overflow_hidden()
+            // Monospace cascades to client addresses, IDs and last-command text.
+            .font_family(get_mono_font_family())
             // Toolbar
             .child(
                 h_flex()

@@ -22,6 +22,7 @@ use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_connection_manager, open_monitor_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
+use crate::helpers::get_mono_font_family;
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, Route, ServerEvent, ZedisGlobalStore, ZedisServerState,
     i18n_common, i18n_monitor, i18n_status_bar,
@@ -630,6 +631,8 @@ impl Render for ZedisMonitor {
         v_flex()
             .size_full()
             .overflow_hidden()
+            // Monospace cascades to the command stream + filter/toolbar text.
+            .font_family(get_mono_font_family())
             // Toolbar
             .child(
                 h_flex()

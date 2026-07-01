@@ -23,6 +23,7 @@
 
 use crate::connection::{CommandStat, get_connection_manager};
 use crate::error::Error;
+use crate::helpers::get_mono_font_family;
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_server_load};
 use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::{
@@ -342,6 +343,7 @@ impl Render for ZedisServerLoad {
         let body = self.render_table(cx);
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .child(
                 h_flex()
                     .items_center()

@@ -208,8 +208,6 @@ empty_add = "Adicionar conexão"
 empty_import = "Importar conexões"
 
 [editor]
-undo = "Desfazer"
-redo = "Refazer"
 value_readonly = "Pré-visualização somente leitura (binário ou valor truncado/descomprimido) — não é possível salvar. Para valores truncados, aumente o comprimento máximo de truncamento nas Configurações."
 delete_key_prompt = "Tem certeza que deseja excluir esta chave: %{key}?"
 reload_key_tooltip = "Recarregar valor da chave"

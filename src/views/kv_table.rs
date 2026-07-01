@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT};
-use crate::helpers::get_font_family;
+use crate::helpers::get_mono_font_family;
 use crate::{
     assets::CustomIconName,
     components::{INDEX_COLUMN_NAME, KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvDelegate, ZedisKvFetcher},
@@ -759,7 +759,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
             let mut field = ZedisFormField::new(column.name.clone(), column.name.clone())
                 .focus()
-                .font_family(get_font_family());
+                .font_family(get_mono_font_family());
             if self.fetcher.fields_required() && !column.optional {
                 field = field.required();
             }

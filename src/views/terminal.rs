@@ -19,7 +19,7 @@ use crate::{
     },
     db::get_cmd_history_manager,
     error::Error,
-    helpers::{get_font_family, redis_value_to_string, starts_with_ignore_ascii_case},
+    helpers::{get_mono_font_family, redis_value_to_string, starts_with_ignore_ascii_case},
     states::{ServerEvent, ZedisServerState},
     views::confirm_dangerous_command,
 };
@@ -461,7 +461,7 @@ impl Render for ZedisTerminal {
             self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
         }
 
-        let font_family: SharedString = get_font_family().into();
+        let font_family: SharedString = get_mono_font_family().into();
 
         let handle_cmd_arrow = |this: &mut Self, is_up: bool, window: &mut Window, cx: &mut Context<Self>| {
             let input = this.cmd_input_state.read(cx).value();

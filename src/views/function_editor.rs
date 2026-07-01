@@ -24,7 +24,7 @@ use crate::{
     assets::CustomIconName,
     connection::{FunctionLibrary, function_delete, function_list, function_load, get_connection_manager},
     error::Error,
-    helpers::get_font_family,
+    helpers::get_mono_font_family,
     states::{
         Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
         i18n_common, i18n_functions,
@@ -483,7 +483,7 @@ impl ZedisFunctionEditor {
                     .child(
                         Label::new(pill_name)
                             .text_sm()
-                            .font_family(get_font_family())
+                            .font_family(get_mono_font_family())
                             .text_color(foreground),
                     )
                     .when_some(flags_text, |this, text| {
@@ -533,7 +533,7 @@ impl ZedisFunctionEditor {
                                 .disabled(true)
                                 .h_full()
                                 .w_full()
-                                .font_family(get_font_family()),
+                                .font_family(get_mono_font_family()),
                         )
                         .into_any_element(),
                 )
@@ -672,7 +672,7 @@ impl ZedisFunctionEditor {
                             .bordered(false)
                             .focus_bordered(false)
                             .h_full()
-                            .font_family(get_font_family()),
+                            .font_family(get_mono_font_family()),
                     ),
             )
             .child(

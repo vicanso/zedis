@@ -39,6 +39,7 @@
 //! out of scope — the visual slot editor is a substantial side
 //! project the maintainer chose not to pursue.
 
+use crate::helpers::get_mono_font_family;
 use crate::states::{ServerEvent, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_topology};
 use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*};
 use gpui_component::{
@@ -618,6 +619,7 @@ impl Render for ZedisTopology {
 
         v_flex()
             .size_full()
+            .font_family(get_mono_font_family())
             .p_4()
             .gap_3()
             .child(Label::new(title).text_lg().font_bold())

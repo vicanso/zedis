@@ -22,6 +22,7 @@ use crate::{
     assets::CustomIconName,
     connection::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, get_connection_manager},
     error::Error,
+    helpers::get_mono_font_family,
     states::{
         Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_acl,
         i18n_common,
@@ -491,6 +492,7 @@ impl gpui::Render for ZedisAclManager {
         v_flex()
             .size_full()
             .overflow_hidden()
+            .font_family(get_mono_font_family())
             .child(header)
             .child(div().flex_1().w_full().min_h_0().overflow_y_scrollbar().child(body))
             .into_any_element()

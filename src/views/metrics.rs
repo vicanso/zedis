@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::connection::get_server;
+use crate::helpers::get_mono_font_family;
 use crate::states::{RedisMetrics, get_metrics_cache};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_metrics};
 use chrono::{Local, LocalResult, TimeZone};
@@ -873,6 +874,7 @@ impl Render for ZedisMetrics {
         let has_chart_data = !self.metrics_chart_data.dates.is_empty();
         div()
             .size_full()
+            .font_family(get_mono_font_family())
             .p_2()
             .child(
                 div()
