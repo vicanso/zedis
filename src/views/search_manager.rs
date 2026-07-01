@@ -35,7 +35,10 @@ use crate::{
     },
     error::Error,
     helpers::get_mono_font_family,
-    states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_search},
+    states::{
+        Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
+        i18n_search,
+    },
 };
 use gpui::{Action, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
@@ -939,7 +942,7 @@ impl ZedisSearchManager {
                             .tooltip(i18n_common(cx, "back_to_editor"))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                    store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
                                 });
                             }),
                     )

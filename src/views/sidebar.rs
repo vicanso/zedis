@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     connection::get_servers,
     helpers::resolve_tag_color,
-    states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
+    states::{GlobalEvent, Route, ServerView, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
 };
 use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*, px, rgb};
 use gpui_component::scroll::ScrollableElement;
@@ -181,7 +181,7 @@ impl ZedisSidebar {
     /// user can re-expand) but skips all of its server rows.
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let current_server_id = self.state.server_id.clone();
-        // The config editor (`Route::Config`) operates on the active server, so
+        // The config editor (`Route::Server(ServerView::Config)`) operates on the active server, so
         // it keeps that server row highlighted; only the Protos / Scripts
         // managers drop the server-row selection.
         let is_match_route = !matches!(
@@ -536,7 +536,7 @@ impl ZedisSidebar {
                         }
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| {
-                                state.go_to(Route::Editor, cx);
+                                state.go_to(Route::Server(ServerView::Editor), cx);
                                 let id = server_id.to_string();
                                 let db = state.last_db_for(&id);
                                 state.set_selected_server((id, db), cx);

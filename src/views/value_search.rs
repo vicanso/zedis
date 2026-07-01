@@ -36,7 +36,7 @@
 
 use crate::connection::{MatchLocation, ValueMatch, ValueSearchRound, get_connection_manager};
 use crate::helpers::{build_csv, get_mono_font_family};
-use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_value_search};
+use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_value_search};
 use crate::views::export_to_file;
 use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::{
@@ -291,7 +291,7 @@ impl ZedisValueSearch {
         self.server_state.update(cx, |state, cx| state.select_key(key, cx));
         cx.global::<ZedisGlobalStore>()
             .clone()
-            .update(cx, |state, cx| state.go_to(Route::Editor, cx));
+            .update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
     }
 
     /// Export the current hits to a CSV (`key`, `type`, where it matched).
@@ -538,7 +538,7 @@ impl Render for ZedisValueSearch {
                             .tooltip(i18n_common(cx, "back_to_editor"))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                    store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
                                 });
                             }),
                     )

@@ -30,8 +30,8 @@
 use crate::connection::get_server;
 use crate::helpers::{format_duration, get_mono_font_family, unix_ts};
 use crate::states::{
-    RedisMetrics, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
-    i18n_common, i18n_persistence,
+    RedisMetrics, Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props,
+    escalate_dangerous_body, i18n_common, i18n_persistence,
 };
 use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -115,7 +115,7 @@ impl ZedisPersistence {
                             .tooltip(i18n_common(cx, "back_to_editor"))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                    store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
                                 });
                             }),
                     )

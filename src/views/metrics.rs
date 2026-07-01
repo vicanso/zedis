@@ -14,7 +14,7 @@
 
 use crate::connection::get_server;
 use crate::helpers::get_mono_font_family;
-use crate::states::{RedisMetrics, get_metrics_cache};
+use crate::states::{RedisMetrics, ServerView, get_metrics_cache};
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_metrics};
 use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
@@ -903,7 +903,9 @@ impl Render for ZedisMetrics {
                                             .tooltip(i18n_common(cx, "back_to_editor"))
                                             .on_click(|_, _w, cx| {
                                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                                    store.update(cx, |state, cx| {
+                                                        state.go_to(Route::Server(ServerView::Editor), cx)
+                                                    });
                                                 });
                                             }),
                                     )

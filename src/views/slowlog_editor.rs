@@ -25,7 +25,8 @@ use crate::connection::{
 use crate::error::Error;
 use crate::helpers::{SlowlogAction, build_csv, get_mono_font_family};
 use crate::states::{
-    Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_slowlog_editor,
+    Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
+    i18n_slowlog_editor,
 };
 use crate::views::export_to_file;
 use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
@@ -1239,7 +1240,9 @@ impl gpui::Render for ZedisSlowlogEditor {
                                     .tooltip(i18n_common(cx, "back_to_editor"))
                                     .on_click(|_, _w, cx| {
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                            store.update(cx, |state, cx| {
+                                                state.go_to(Route::Server(ServerView::Editor), cx)
+                                            });
                                         });
                                     }),
                             )

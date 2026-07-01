@@ -14,7 +14,9 @@
 
 use crate::{
     helpers::{EditorAction, get_key_tree_widths},
-    states::{GlobalEvent, Route, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state},
+    states::{
+        GlobalEvent, Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state,
+    },
     views::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
         ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
@@ -38,7 +40,7 @@ const SERVERS_MARGIN: f32 = 8.0;
 ///
 /// Manages the application's main views and routing:
 /// - Server list view (Route::Home): Display and manage Redis server connections
-/// - Editor view (Route::Editor): Display key tree and value editor for selected server
+/// - Editor view (Route::Server(ServerView::Editor)): Display key tree and value editor for selected server
 ///
 /// Views are lazily initialized and cached for performance, but cleared when
 /// no longer needed to conserve memory.
@@ -88,12 +90,12 @@ impl ZedisContent {
         if route != Route::Home {
             self.servers.take();
         }
-        if route != Route::Editor && route != Route::Metrics {
+        if route != Route::Server(ServerView::Editor) && route != Route::Server(ServerView::Metrics) {
             self.key_tree.take();
             self.value_editor.take();
             self.terminal.take();
         }
-        if route != Route::Metrics {
+        if route != Route::Server(ServerView::Metrics) {
             self.metrics.take();
         }
         if route != Route::Protos {
@@ -102,46 +104,46 @@ impl ZedisContent {
         if route != Route::Scripts {
             self.script_editor.take();
         }
-        if route != Route::Slowlog {
+        if route != Route::Server(ServerView::Slowlog) {
             self.slowlog_editor.take();
         }
-        if route != Route::MemoryAnalysis {
+        if route != Route::Server(ServerView::MemoryAnalysis) {
             self.memory_analysis.take();
         }
-        if route != Route::ServerLoad {
+        if route != Route::Server(ServerView::ServerLoad) {
             self.server_load.take();
         }
-        if route != Route::ValueSearch {
+        if route != Route::Server(ServerView::ValueSearch) {
             self.value_search.take();
         }
-        if route != Route::Clients {
+        if route != Route::Server(ServerView::Clients) {
             self.clients_manager.take();
         }
-        if route != Route::Monitor {
+        if route != Route::Server(ServerView::Monitor) {
             self.monitor.take();
         }
-        if route != Route::Config {
+        if route != Route::Server(ServerView::Config) {
             self.config_editor.take();
         }
-        if route != Route::Acl {
+        if route != Route::Server(ServerView::Acl) {
             self.acl_manager.take();
         }
-        if route != Route::Search {
+        if route != Route::Server(ServerView::Search) {
             self.search_manager.take();
         }
-        if route != Route::Functions {
+        if route != Route::Server(ServerView::Functions) {
             self.function_editor.take();
         }
-        if route != Route::LuaScripts {
+        if route != Route::Server(ServerView::LuaScripts) {
             self.lua_script_library.take();
         }
-        if route != Route::Persistence {
+        if route != Route::Server(ServerView::Persistence) {
             self.persistence.take();
         }
-        if route != Route::KeyspaceNotifications {
+        if route != Route::Server(ServerView::KeyspaceNotifications) {
             self.keyspace_notifications.take();
         }
-        if route != Route::Topology {
+        if route != Route::Server(ServerView::Topology) {
             self.topology.take();
         }
     }
@@ -572,21 +574,21 @@ impl Render for ZedisContent {
             Route::Scripts => base.child(self.render_script_editor(window, cx)).into_any_element(),
             _ => {
                 let is_busy = self.server_state.read(cx).is_busy();
-                let is_metrics = route == Route::Metrics;
-                let is_slowlog = route == Route::Slowlog;
-                let is_memory_analysis = route == Route::MemoryAnalysis;
-                let is_clients = route == Route::Clients;
-                let is_monitor = route == Route::Monitor;
-                let is_config = route == Route::Config;
-                let is_acl = route == Route::Acl;
-                let is_search = route == Route::Search;
-                let is_functions = route == Route::Functions;
-                let is_lua_scripts = route == Route::LuaScripts;
-                let is_persistence = route == Route::Persistence;
-                let is_keyspace_notifications = route == Route::KeyspaceNotifications;
-                let is_topology = route == Route::Topology;
-                let is_server_load = route == Route::ServerLoad;
-                let is_value_search = route == Route::ValueSearch;
+                let is_metrics = route == Route::Server(ServerView::Metrics);
+                let is_slowlog = route == Route::Server(ServerView::Slowlog);
+                let is_memory_analysis = route == Route::Server(ServerView::MemoryAnalysis);
+                let is_clients = route == Route::Server(ServerView::Clients);
+                let is_monitor = route == Route::Server(ServerView::Monitor);
+                let is_config = route == Route::Server(ServerView::Config);
+                let is_acl = route == Route::Server(ServerView::Acl);
+                let is_search = route == Route::Server(ServerView::Search);
+                let is_functions = route == Route::Server(ServerView::Functions);
+                let is_lua_scripts = route == Route::Server(ServerView::LuaScripts);
+                let is_persistence = route == Route::Server(ServerView::Persistence);
+                let is_keyspace_notifications = route == Route::Server(ServerView::KeyspaceNotifications);
+                let is_topology = route == Route::Server(ServerView::Topology);
+                let is_server_load = route == Route::Server(ServerView::ServerLoad);
+                let is_value_search = route == Route::Server(ServerView::ValueSearch);
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {

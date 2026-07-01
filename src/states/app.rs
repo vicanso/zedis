@@ -34,14 +34,31 @@ use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Top-level navigation target. App-scoped pages (`Home` / `Settings` /
+/// `Protos` / `Scripts`) stand alone; everything that operates on the selected
+/// connection lives under `Server(..)`, so a connection-scoped page can't be
+/// represented without acknowledging it needs a server. The `(id, db)` context
+/// itself still lives in `ZedisAppState::selected_server`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+// Persist as a stable lowercase name (`home` / `metrics` / `editor` / …) rather
+// than serde's default nested repr for `Server(..)`. Keeps zedis.toml readable,
+// migrates old flat `route = "Editor"` for free (it lowercases to the same
+// token), and is the addressable form deep links will reuse.
+#[serde(into = "String", from = "String")]
 pub enum Route {
     #[default]
     Home,
-    Editor,
     Settings,
     Protos,
     Scripts,
+    Server(ServerView),
+}
+
+/// A connection-scoped page, rendered against the active `selected_server`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub enum ServerView {
+    #[default]
+    Editor,
     Metrics,
     Slowlog,
     MemoryAnalysis,
@@ -57,6 +74,92 @@ pub enum Route {
     Topology,
     ServerLoad,
     ValueSearch,
+}
+
+impl Route {
+    /// Stable lowercase name used for persistence (and, later, deep links).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Route::Home => "home",
+            Route::Settings => "settings",
+            Route::Protos => "protos",
+            Route::Scripts => "scripts",
+            Route::Server(view) => view.as_str(),
+        }
+    }
+    /// Parse a route name (case-insensitive). Accepts the app-level names and
+    /// the `ServerView` names — including the legacy flat variant names an
+    /// older zedis.toml stored (they lowercase to the same tokens), so
+    /// persisted routes migrate silently. `None` for anything unrecognized.
+    pub fn from_name(s: &str) -> Option<Route> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "home" => Route::Home,
+            "settings" => Route::Settings,
+            "protos" => Route::Protos,
+            "scripts" => Route::Scripts,
+            other => Route::Server(ServerView::from_name(other)?),
+        })
+    }
+}
+
+impl ServerView {
+    /// Stable lowercase name (matches the lowercased legacy variant name).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ServerView::Editor => "editor",
+            ServerView::Metrics => "metrics",
+            ServerView::Slowlog => "slowlog",
+            ServerView::MemoryAnalysis => "memoryanalysis",
+            ServerView::Clients => "clients",
+            ServerView::Monitor => "monitor",
+            ServerView::Config => "config",
+            ServerView::Acl => "acl",
+            ServerView::Search => "search",
+            ServerView::Functions => "functions",
+            ServerView::LuaScripts => "luascripts",
+            ServerView::Persistence => "persistence",
+            ServerView::KeyspaceNotifications => "keyspacenotifications",
+            ServerView::Topology => "topology",
+            ServerView::ServerLoad => "serverload",
+            ServerView::ValueSearch => "valuesearch",
+        }
+    }
+    /// Parse a connection-scoped view name (expects an already-lowercased str).
+    pub fn from_name(s: &str) -> Option<ServerView> {
+        Some(match s {
+            "editor" => ServerView::Editor,
+            "metrics" => ServerView::Metrics,
+            "slowlog" => ServerView::Slowlog,
+            "memoryanalysis" => ServerView::MemoryAnalysis,
+            "clients" => ServerView::Clients,
+            "monitor" => ServerView::Monitor,
+            "config" => ServerView::Config,
+            "acl" => ServerView::Acl,
+            "search" => ServerView::Search,
+            "functions" => ServerView::Functions,
+            "luascripts" => ServerView::LuaScripts,
+            "persistence" => ServerView::Persistence,
+            "keyspacenotifications" => ServerView::KeyspaceNotifications,
+            "topology" => ServerView::Topology,
+            "serverload" => ServerView::ServerLoad,
+            "valuesearch" => ServerView::ValueSearch,
+            _ => return None,
+        })
+    }
+}
+
+impl From<Route> for String {
+    fn from(route: Route) -> Self {
+        route.as_str().to_string()
+    }
+}
+
+impl From<String> for Route {
+    // Infallible so a corrupt / unknown persisted route degrades to Home rather
+    // than failing the whole config load.
+    fn from(value: String) -> Self {
+        Route::from_name(&value).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -256,7 +359,14 @@ pub struct WindowPlacement {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
+    // Persisted (as a flat lowercase name, see `Route`'s serde into/from) so the
+    // app reopens on the last route. `default` covers configs that predate route
+    // persistence (missing key ⇒ Home). `try_new` validates a restored server
+    // view against the remembered connection before honoring it.
+    #[serde(default)]
     route: Route,
+    // Runtime-only: a stale "open key X" param shouldn't survive a restart.
+    #[serde(skip)]
     query: Option<HashMap<String, String>>,
     locale: Option<String>,
     bounds: Option<Bounds<Pixels>>,
@@ -401,7 +511,19 @@ impl ZedisAppState {
                 state.locale = Some("en".to_string());
             }
         }
-        state.route = Route::Home;
+        // Restore the persisted route, but only honor a connection-scoped view
+        // when the remembered server still exists — otherwise open Home so we
+        // never render a server page against a missing / deleted connection.
+        if let Route::Server(_) = state.route {
+            let server_ok = state
+                .selected_server
+                .as_ref()
+                .map(|(id, _)| get_server(id).is_ok())
+                .unwrap_or(false);
+            if !server_ok {
+                state.route = Route::Home;
+            }
+        }
 
         if let Some(redis_connection_timeout) = state.redis_connection_timeout {
             set_redis_connection_timeout(redis_connection_timeout);
@@ -433,6 +555,18 @@ impl ZedisAppState {
     pub fn bounds(&self) -> Option<&Bounds<Pixels>> {
         self.bounds.as_ref()
     }
+    /// Persist navigation state in the background so the app reopens on the last
+    /// route (only the route lands on disk — `query` is serde-skipped).
+    fn persist_nav(&self, cx: &mut Context<Self>) {
+        let snapshot = self.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = save_app_state(&snapshot) {
+                    error!(error = %e, "failed to persist route");
+                }
+            })
+            .detach();
+    }
     fn go_to_with_query(&mut self, route: Route, query: Option<HashMap<String, String>>, cx: &mut Context<Self>) {
         if self.route == route && self.query == query {
             return;
@@ -441,6 +575,7 @@ impl ZedisAppState {
         self.route = route;
         cx.emit(GlobalEvent::RouteChanged(route));
         cx.notify();
+        self.persist_nav(cx);
     }
     pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         self.go_to_with_query(route, None, cx);
@@ -456,6 +591,7 @@ impl ZedisAppState {
         self.route = route;
         cx.emit(GlobalEvent::RouteChanged(route));
         cx.notify();
+        self.persist_nav(cx);
     }
     /// Effective UI font size in rem px: the slider value if set, else the
     /// legacy `font_size` enum's pixels, else `None` (gpui's 16px default).

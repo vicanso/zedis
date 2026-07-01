@@ -8,8 +8,8 @@ use crate::helpers::{
     new_hot_keys, open_installer, register_extra_languages,
 };
 use crate::states::{
-    GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, SettingsAction,
-    ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_update, save_app_state,
+    GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
+    SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_update, save_app_state,
     update_app_state_and_save,
 };
 use crate::views::{
@@ -714,21 +714,21 @@ impl Render for Zedis {
             }))
             .on_action(cx.listener(move |_this, e: &ServerToolsAction, _window, cx| {
                 let target = match e {
-                    ServerToolsAction::Monitor => Route::Monitor,
-                    ServerToolsAction::Config => Route::Config,
-                    ServerToolsAction::Acl => Route::Acl,
-                    ServerToolsAction::Search => Route::Search,
-                    ServerToolsAction::Functions => Route::Functions,
-                    ServerToolsAction::LuaScripts => Route::LuaScripts,
-                    ServerToolsAction::Persistence => Route::Persistence,
-                    ServerToolsAction::KeyspaceNotifications => Route::KeyspaceNotifications,
-                    ServerToolsAction::Topology => Route::Topology,
-                    ServerToolsAction::ServerLoad => Route::ServerLoad,
-                    ServerToolsAction::ValueSearch => Route::ValueSearch,
+                    ServerToolsAction::Monitor => Route::Server(ServerView::Monitor),
+                    ServerToolsAction::Config => Route::Server(ServerView::Config),
+                    ServerToolsAction::Acl => Route::Server(ServerView::Acl),
+                    ServerToolsAction::Search => Route::Server(ServerView::Search),
+                    ServerToolsAction::Functions => Route::Server(ServerView::Functions),
+                    ServerToolsAction::LuaScripts => Route::Server(ServerView::LuaScripts),
+                    ServerToolsAction::Persistence => Route::Server(ServerView::Persistence),
+                    ServerToolsAction::KeyspaceNotifications => Route::Server(ServerView::KeyspaceNotifications),
+                    ServerToolsAction::Topology => Route::Server(ServerView::Topology),
+                    ServerToolsAction::ServerLoad => Route::Server(ServerView::ServerLoad),
+                    ServerToolsAction::ValueSearch => Route::Server(ServerView::ValueSearch),
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
-                        state.toggle_route((target, Route::Editor), cx);
+                        state.toggle_route((target, Route::Server(ServerView::Editor)), cx);
                     });
                 });
             }))
@@ -739,8 +739,11 @@ impl Render for Zedis {
             .on_action(cx.listener(|_this, _e: &NavAction, _window, cx| {
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
-                        if !matches!(state.route(), Route::Home | Route::Editor | Route::Settings) {
-                            state.go_to(Route::Editor, cx);
+                        if !matches!(
+                            state.route(),
+                            Route::Home | Route::Server(ServerView::Editor) | Route::Settings
+                        ) {
+                            state.go_to(Route::Server(ServerView::Editor), cx);
                         }
                     });
                 });
@@ -981,6 +984,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     #[cfg(not(target_os = "linux"))]
                     window.on_next_frame(|window, _cx| window.activate_window());
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
+                    // Restore a connection-scoped route: now that the views are
+                    // subscribed, re-select the remembered server so the emitted
+                    // ServerSelected loads the connection (content) and highlights
+                    // its row (sidebar). `try_new` already fell back to Home when
+                    // the server was gone, so a `Server(..)` route here is valid.
+                    {
+                        let store = cx.global::<ZedisGlobalStore>().clone();
+                        store.update(cx, |state, cx| {
+                            if let (Route::Server(_), Some((id, db))) =
+                                (state.route(), state.selected_server().cloned())
+                            {
+                                state.set_selected_server((id, db), cx);
+                            }
+                        });
+                    }
                     // Global (focus-independent) ⌘K handler — element
                     // `.on_action` is focus-routed and dies when the
                     // palette closes and orphans its focus handle.

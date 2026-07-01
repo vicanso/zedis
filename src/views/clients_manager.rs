@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Redis Client Management viewer.
-///
-/// Displays a sortable table of connected clients fetched via `CLIENT LIST`.
-/// Supports sorting by IP, connected time, and idle time, and allows
-/// killing individual client connections via `CLIENT KILL ID`.
 use crate::assets::CustomIconName;
 use crate::connection::{RedisServer, get_connection_manager, open_single_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{format_duration, get_mono_font_family};
+/// Redis Client Management viewer.
+///
+/// Displays a sortable table of connected clients fetched via `CLIENT LIST`.
+/// Supports sorting by IP, connected time, and idle time, and allows
+/// killing individual client connections via `CLIENT KILL ID`.
 use crate::states::{
-    Route, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+    Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
     i18n_clients_manager, i18n_common,
 };
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -742,7 +742,9 @@ impl gpui::Render for ZedisClientsManager {
                                     .tooltip(i18n_common(cx, "back_to_editor"))
                                     .on_click(|_, _w, cx| {
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                            store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                            store.update(cx, |state, cx| {
+                                                state.go_to(Route::Server(ServerView::Editor), cx)
+                                            });
                                         });
                                     }),
                             )

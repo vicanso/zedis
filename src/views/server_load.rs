@@ -24,7 +24,7 @@
 use crate::connection::{CommandStat, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
-use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_server_load};
+use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_server_load};
 use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt,
@@ -360,7 +360,7 @@ impl Render for ZedisServerLoad {
                             .tooltip(i18n_common(cx, "back_to_editor"))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                                    store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
                                 });
                             }),
                     )

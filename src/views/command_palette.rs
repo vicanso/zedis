@@ -20,7 +20,7 @@
 use crate::connection::get_servers;
 use crate::db::get_favorites_manager;
 use crate::helpers::{ShortcutsAction, fuzzy_score};
-use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
+use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
@@ -215,19 +215,22 @@ impl ZedisCommandPalette {
                 // (i18n key, route) — order defines empty-query display order.
                 let commands: [(&str, Route); 15] = [
                     ("cmd_home", Route::Home),
-                    ("cmd_editor", Route::Editor),
-                    ("cmd_metrics", Route::Metrics),
-                    ("cmd_performance", Route::Slowlog),
-                    ("cmd_memory", Route::MemoryAnalysis),
-                    ("cmd_clients", Route::Clients),
-                    ("cmd_monitor", Route::Monitor),
-                    ("cmd_persistence", Route::Persistence),
-                    ("cmd_keyspace_notifications", Route::KeyspaceNotifications),
-                    ("cmd_config", Route::Config),
-                    ("cmd_acl", Route::Acl),
-                    ("cmd_search", Route::Search),
-                    ("cmd_functions", Route::Functions),
-                    ("cmd_lua_scripts", Route::LuaScripts),
+                    ("cmd_editor", Route::Server(ServerView::Editor)),
+                    ("cmd_metrics", Route::Server(ServerView::Metrics)),
+                    ("cmd_performance", Route::Server(ServerView::Slowlog)),
+                    ("cmd_memory", Route::Server(ServerView::MemoryAnalysis)),
+                    ("cmd_clients", Route::Server(ServerView::Clients)),
+                    ("cmd_monitor", Route::Server(ServerView::Monitor)),
+                    ("cmd_persistence", Route::Server(ServerView::Persistence)),
+                    (
+                        "cmd_keyspace_notifications",
+                        Route::Server(ServerView::KeyspaceNotifications),
+                    ),
+                    ("cmd_config", Route::Server(ServerView::Config)),
+                    ("cmd_acl", Route::Server(ServerView::Acl)),
+                    ("cmd_search", Route::Server(ServerView::Search)),
+                    ("cmd_functions", Route::Server(ServerView::Functions)),
+                    ("cmd_lua_scripts", Route::Server(ServerView::LuaScripts)),
                     ("cmd_settings", Route::Settings),
                 ];
                 for (key, route) in commands {
@@ -332,7 +335,7 @@ impl ZedisCommandPalette {
             let key = key.clone();
             self.server_state.update(cx, |state, cx| state.select_key(key, cx));
             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                store.update(cx, |state, cx| state.go_to(Route::Editor, cx));
+                store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
             });
             self.close(window, cx);
             return;
@@ -340,7 +343,7 @@ impl ZedisCommandPalette {
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
                 PaletteCommand::Server(id) => {
-                    state.go_to(Route::Editor, cx);
+                    state.go_to(Route::Server(ServerView::Editor), cx);
                     let db = state.last_db_for(&id);
                     state.set_selected_server((id, db), cx);
                 }
