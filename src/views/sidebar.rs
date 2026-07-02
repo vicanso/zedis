@@ -380,7 +380,11 @@ impl ZedisSidebar {
                 rows.push(div().mx_2().h_px().my_1().bg(divider_color).into_any_element());
             }
 
-            if is_collapsed {
+            // Per-group collapse only applies to the expanded sidebar: the icon
+            // rail hides group headers, so a skipped group would be an
+            // unexplained blank between dividers with no way to re-expand it.
+            // The rail always shows every server's monogram.
+            if is_collapsed && !sidebar_collapsed {
                 continue;
             }
 

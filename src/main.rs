@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use crate::connection::{clear_expired_cache, get_servers};
+use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
 use crate::helpers::{
@@ -30,7 +30,7 @@ use gpui_component::{
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
 use sys_locale::get_locale;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use zedis_ui::ZedisDialog;
 
 #[cfg(feature = "mimalloc")]
@@ -789,6 +789,32 @@ impl Render for DatabaseErrorView {
     }
 }
 
+/// Startup route override from the command line: `--route <name>` or
+/// `--route=<name>`, where `<name>` is a `Route::from_name` token (`home`,
+/// `editor`, `metrics`, …). Built for the screenshot-comparison workflow
+/// (launch straight into a view, capture the window) and doubles as the
+/// deep-link MVP. Unrecognized names log a warning and are ignored.
+fn cli_route_override() -> Option<Route> {
+    let mut args = std::env::args().skip(1);
+    let mut raw: Option<String> = None;
+    while let Some(arg) = args.next() {
+        if arg == "--route" {
+            raw = args.next();
+            break;
+        }
+        if let Some(value) = arg.strip_prefix("--route=") {
+            raw = Some(value.to_string());
+            break;
+        }
+    }
+    let raw = raw?;
+    let route = Route::from_name(&raw);
+    if route.is_none() {
+        warn!(route = %raw, "unrecognized --route value; ignoring");
+    }
+    route
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Held for the whole run so the non-blocking file logger keeps flushing.
     let _log_guard = init_logger()?;
@@ -992,6 +1018,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         let store = cx.global::<ZedisGlobalStore>().clone();
                         store.update(cx, |state, cx| {
+                            // `--route <name>` overrides the restored route —
+                            // screenshot tooling / deep-link MVP. A connection-
+                            // scoped target without a valid remembered server
+                            // falls back to Home instead of rendering a server
+                            // page with no connection.
+                            if let Some(mut route) = cli_route_override() {
+                                if matches!(route, Route::Server(_)) {
+                                    let server_ok = state
+                                        .selected_server()
+                                        .map(|(id, _)| get_server(id).is_ok())
+                                        .unwrap_or(false);
+                                    if !server_ok {
+                                        warn!("--route targets a server view but no valid server is remembered; opening Home");
+                                        route = Route::Home;
+                                    }
+                                }
+                                state.go_to(route, cx);
+                            }
                             if let (Route::Server(_), Some((id, db))) =
                                 (state.route(), state.selected_server().cloned())
                             {

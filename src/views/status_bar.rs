@@ -37,11 +37,26 @@ use std::{sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
 
+/// Groups a count into thousands (`500000` → `"500,000"`) — six-digit DBSIZE
+/// values are unreadable without it. Hand-rolled to keep the dependency
+/// surface lean (no `num-format` for one call site).
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Formats the database size and scan count string "count/total".
 #[inline]
 fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
     if let Some(dbsize) = dbsize {
-        format!("{scan_count}/{dbsize}")
+        format!("{}/{}", group_thousands(scan_count as u64), group_thousands(dbsize))
     } else {
         "--".to_string()
     }
@@ -1034,5 +1049,26 @@ impl Render for ZedisStatusBar {
                         )
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_thousands_inserts_separators() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(10_535), "10,535");
+        assert_eq!(group_thousands(500_000), "500,000");
+        assert_eq!(group_thousands(1_234_567_890), "1,234,567,890");
+    }
+
+    #[test]
+    fn format_size_groups_both_counts() {
+        assert_eq!(format_size(Some(500_000), 10_535).as_ref(), "10,535/500,000");
+        assert_eq!(format_size(None, 10_535).as_ref(), "--");
     }
 }

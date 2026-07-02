@@ -172,6 +172,10 @@ struct KeyTreeItem {
     id: SharedString,
     label: SharedString,
     depth: usize,
+    /// Index of the nearest ancestor folder row in the flattened items list
+    /// (`None` for top-level rows). Filled by `fill_parent_indices` after the
+    /// tree is built; powers the sticky-ancestor overlay's O(depth) walk.
+    parent_ix: Option<usize>,
     key_type: KeyType,
     expanded: bool,
     children_count: usize,
@@ -581,6 +585,37 @@ fn append_load_more_rows(
     result
 }
 
+/// True when a folder's subtree ends inside `items[from..limit]` — i.e. a row
+/// at or above the folder's own depth shows up — or the list itself runs out
+/// before `limit` (nothing left to scroll to). Used to trim sticky entries:
+/// when you can already see where a folder ends, pinning its name adds no
+/// context and just covers rows.
+fn subtree_ends_before(items: &[KeyTreeItem], from: usize, folder_depth: usize, limit: usize) -> bool {
+    let limit = limit.min(items.len());
+    for item in &items[from..limit] {
+        if item.depth <= folder_depth {
+            return true;
+        }
+    }
+    limit == items.len()
+}
+
+/// Fills each row's `parent_ix` with the index of its nearest ancestor folder,
+/// walking the flattened depth-first list once with a depth stack. O(n).
+fn fill_parent_indices(items: &mut [KeyTreeItem]) {
+    let mut stack: Vec<usize> = Vec::new();
+    for i in 0..items.len() {
+        let depth = items[i].depth;
+        while stack.last().is_some_and(|&top| items[top].depth >= depth) {
+            stack.pop();
+        }
+        items[i].parent_ix = stack.last().copied();
+        if items[i].is_folder {
+            stack.push(i);
+        }
+    }
+}
+
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
     enabled_multiple_selection: bool,
@@ -657,9 +692,11 @@ impl ListDelegate for KeyTreeDelegate {
                 .child(KeyTypeBadge::new(entry.key_type).plain(true))
                 .into_any_element()
         } else if entry.expanded {
-            // Expanded folder: Show open folder icon
+            // Expanded folder: open icon, one brightness step up (paired with
+            // the brighter label below) so open folders are scannable among
+            // collapsed siblings without adding a chevron column.
             Icon::new(IconName::FolderOpen)
-                .text_color(folder_icon_color)
+                .text_color(cx.theme().foreground.alpha(0.9))
                 .into_any_element()
         } else {
             // Collapsed folder: Show closed folder icon
@@ -692,7 +729,10 @@ impl ListDelegate for KeyTreeDelegate {
         // Selection accent (#6b95c4, both themes) for the left bar.
         let accent_color: Hsla = rgb(0x6b95c4).into();
 
-        let label_color = if is_folder {
+        // Folders sit one brightness step below leaves; an *expanded* folder
+        // steps back up to full foreground (with its open icon, see above) so
+        // "which folders are open" reads at a glance.
+        let label_color = if is_folder && !entry.expanded {
             cx.theme().foreground.alpha(0.85)
         } else {
             cx.theme().foreground
@@ -700,7 +740,13 @@ impl ListDelegate for KeyTreeDelegate {
         // Row label — built up front so the builder chain below just drops it
         // in. No weight change on selection (a font-weight swap re-rasterizes
         // the glyphs and reads as a flicker); the accent bar + fill mark it.
-        let row_label = Label::new(entry.label.clone()).text_color(label_color).text_ellipsis();
+        // `whitespace_nowrap` is what makes `text_ellipsis` actually truncate:
+        // without it a long folder name wraps to a second line instead
+        // (same pairing as the editor-header key name).
+        let row_label = Label::new(entry.label.clone())
+            .text_color(label_color)
+            .text_ellipsis()
+            .whitespace_nowrap();
         // TTL text — rendered on every leaf row that has a known TTL value.
         // `< 1h` ⇒ warm amber accent, everything else (comfortably live, or
         // perm `-1` ∞) ⇒ muted gray. Missing (`-2`, race between SCAN and TTL)
@@ -1471,7 +1517,8 @@ impl ZedisKeyTree {
                             }
                         }
                     }
-                    let items = append_load_more_rows(items, &incomplete_prefixes, &load_more_label);
+                    let mut items = append_load_more_rows(items, &incomplete_prefixes, &load_more_label);
+                    fill_parent_indices(&mut items);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
                 });
@@ -1887,6 +1934,58 @@ impl ZedisKeyTree {
         }
     }
 
+    /// Ancestor-folder chain of the first visible row — `(item index, label,
+    /// depth)`, shallowest first — for the sticky overlay. Empty when the list
+    /// is at the top / unmeasured, or the top row is top-level.
+    ///
+    /// The first visible index is derived from the scroll offset and a
+    /// self-calibrated row pitch (content height ÷ row count — the List
+    /// contract guarantees uniform row heights), so no height constant can
+    /// drift out of sync with the row styling.
+    fn sticky_ancestors(&self, cx: &App) -> Vec<(usize, SharedString, usize)> {
+        let state = self.key_tree_list_state.read(cx);
+        let items = &state.delegate().items;
+        if items.is_empty() {
+            return Vec::new();
+        }
+        let handle = state.scroll_handle().base_handle();
+        let scrolled = -handle.offset().y.as_f32();
+        let viewport_h = handle.bounds().size.height.as_f32();
+        if scrolled <= 0.0 || viewport_h <= 0.0 {
+            return Vec::new();
+        }
+        let content_h = handle.max_offset().y.as_f32() + viewport_h;
+        let row_h = content_h / items.len() as f32;
+        if row_h <= 0.0 {
+            return Vec::new();
+        }
+        let first_visible = ((scrolled / row_h) as usize).min(items.len() - 1);
+        // The breadcrumb overlay covers roughly one row at the top, so the row
+        // it must describe is the one just below it — anchoring on the covered
+        // row makes the sticky switch a row late and linger at boundaries.
+        let anchor = (first_visible + 1).min(items.len() - 1);
+        let mut chain: Vec<(usize, SharedString, usize)> = Vec::new();
+        let mut cur = items[anchor].parent_ix;
+        while let Some(ix) = cur {
+            chain.push((ix, items[ix].label.clone(), items[ix].depth));
+            cur = items[ix].parent_ix;
+        }
+        chain.reverse();
+        // Trim (deepest first) every entry whose subtree end is already on
+        // screen below the overlay — a folder that fits in the viewport would
+        // otherwise flash a sticky row while scrolling past it. If the deepest
+        // survivor extends beyond the viewport, its ancestors necessarily do.
+        let viewport_rows = (viewport_h / row_h).ceil() as usize;
+        while let Some((_, _, depth)) = chain.last() {
+            if subtree_ends_before(items, anchor, *depth, first_visible + viewport_rows) {
+                chain.pop();
+            } else {
+                break;
+            }
+        }
+        chain
+    }
+
     /// Render the tree view or empty state message
     ///
     /// Displays:
@@ -1898,12 +1997,76 @@ impl ZedisKeyTree {
             return status_view.into_any_element();
         }
 
+        let sticky = self.sticky_ancestors(cx);
+        let border_color = cx.theme().border;
+        let sticky_bg = cx.theme().sidebar;
+        let icon_color = cx.theme().foreground.alpha(0.9);
+        let label_color = cx.theme().foreground;
+
         div()
             .p_1()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .h_full()
+            // Positioning context for the sticky-ancestor overlay below.
+            .relative()
+            // Wheel/trackpad scrolling repaints the list without notifying its
+            // entity, so nudge a re-render here to keep the sticky overlay in
+            // step (scrollbar drags & keyboard nav land on existing notifies).
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .child(List::new(&self.key_tree_list_state))
+            .when(!sticky.is_empty(), |this| {
+                // Pinned ancestor path as ONE breadcrumb row — the chain joined
+                // with the key separator ("bench:gui:v1:hash") instead of one
+                // row per level, so deep nesting doesn't eat the viewport.
+                // Clicking jumps to the deepest pinned folder (the subtree the
+                // top of the viewport is inside).
+                let separator = cx.global::<ZedisGlobalStore>().read(cx).key_separator().to_string();
+                let deep_ix = sticky.last().map(|(ix, _, _)| *ix).unwrap_or_default();
+                let path: SharedString = sticky
+                    .iter()
+                    .map(|(_, label, _)| label.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(separator.as_str())
+                    .into();
+                this.child(
+                    h_flex()
+                        .id("ktree-sticky-path")
+                        .absolute()
+                        // Anchor at the container's very top and re-create the
+                        // `p_1` inset as own top padding — anchoring at top(4px)
+                        // left a sliver of the scrolled rows peeking above the
+                        // overlay (1px flicker while scrolling).
+                        .top_0()
+                        .left(px(4.))
+                        .right(px(4.))
+                        .pt(px(12.))
+                        .pb_2()
+                        .px_2()
+                        // Root indent + 3px for the rows' selection border so
+                        // the icon lines up with top-level rows.
+                        .pl(px(TREE_INDENT_OFFSET + 3.))
+                        .gap_2()
+                        .items_center()
+                        .cursor_pointer()
+                        .font_family(get_mono_font_family())
+                        .bg(sticky_bg)
+                        .border_b_1()
+                        .border_color(border_color)
+                        .child(Icon::new(IconName::FolderOpen).text_color(icon_color))
+                        .child(
+                            Label::new(path)
+                                .text_color(label_color)
+                                .text_ellipsis()
+                                .whitespace_nowrap(),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.key_tree_list_state.update(cx, |state, cx| {
+                                state.scroll_to_item(IndexPath::new(deep_ix), ScrollStrategy::Top, window, cx);
+                            });
+                        })),
+                )
+            })
             .into_any_element()
     }
     /// Render the search/filter input bar with query mode selector
@@ -2702,5 +2865,41 @@ mod load_more_tests {
         assert_eq!(rows[1].load_more_prefix.as_deref(), Some("bench:"));
         assert_eq!(rows[1].label.as_ref(), "Load more · bench");
         assert_eq!(rows[1].depth, 1);
+    }
+
+    /// Each row's `parent_ix` points at its nearest ancestor folder; siblings
+    /// after a nested subtree pop back to the right ancestor.
+    #[test]
+    fn parent_indices_follow_depth_stack() {
+        let mut items = vec![
+            folder("bench", "bench", 0),
+            folder("bench:rank", "rank", 1),
+            leaf("bench:rank:1", 2),
+            leaf("bench:x", 1),
+            folder("other", "other", 0),
+            leaf("other:1", 1),
+        ];
+        fill_parent_indices(&mut items);
+        let parents: Vec<Option<usize>> = items.iter().map(|i| i.parent_ix).collect();
+        assert_eq!(parents, vec![None, Some(0), Some(1), Some(0), None, Some(4)]);
+    }
+
+    /// Sticky trimming: a folder whose subtree ends within the visible window
+    /// (or at the end of the list) should not pin.
+    #[test]
+    fn subtree_end_visibility() {
+        let items = vec![
+            folder("bench", "bench", 0),
+            leaf("bench:1", 1),
+            leaf("bench:2", 1),
+            folder("other", "other", 0), // ends bench's subtree at index 3
+            leaf("other:1", 1),
+        ];
+        // Scanning from bench's first child with the boundary in range → ends.
+        assert!(subtree_ends_before(&items, 1, 0, 4));
+        // Boundary (index 3) outside the window → subtree continues off-screen.
+        assert!(!subtree_ends_before(&items, 1, 0, 3));
+        // Window running past the end of the list counts as "end visible".
+        assert!(subtree_ends_before(&items, 4, 0, 10));
     }
 }
