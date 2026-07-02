@@ -545,7 +545,10 @@ fn append_load_more_rows(
         }
         let row = KeyTreeItem {
             id: SharedString::from(format!("{prefix}\u{1}load_more")),
-            label: label.clone(),
+            // Suffix the folder name so stacked rows from nested incomplete
+            // folders ("bench:" and a deeper "…:rank:" both ending at the same
+            // list position) are tellable apart.
+            label: SharedString::from(format!("{label} · {}", item.label)),
             depth: item.depth + 1,
             load_more_prefix: Some(prefix),
             ..Default::default()
@@ -557,15 +560,20 @@ fn append_load_more_rows(
     }
     let mut result: Vec<KeyTreeItem> = Vec::with_capacity(len + inserts.len());
     for (i, item) in items.into_iter().enumerate() {
-        for (end, row) in inserts.iter() {
+        // Nested folders share their subtree-end index with their ancestors;
+        // the deeper row was generated later, and must be emitted first so it
+        // sits inside the parent's subtree (right under its own folder's
+        // children) with the ancestor's row below it.
+        for (end, row) in inserts.iter().rev() {
             if *end == i {
                 result.push(row.clone());
             }
         }
         result.push(item);
     }
-    // Folders whose subtree runs to the very end of the list.
-    for (end, row) in inserts {
+    // Folders whose subtree runs to the very end of the list — reversed for
+    // the same deepest-first ordering as above.
+    for (end, row) in inserts.into_iter().rev() {
         if end == len {
             result.push(row);
         }
@@ -626,10 +634,14 @@ impl ListDelegate for KeyTreeDelegate {
                         .w_full()
                         .gap_2()
                         .items_center()
-                        .justify_center()
+                        // Indent to the folder's child level (same formula as
+                        // normal rows) so the row visually belongs to its
+                        // folder — centering it made nested folders' stacked
+                        // "Load more" rows indistinguishable.
+                        .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                         .text_color(primary)
                         .child(Icon::new(CustomIconName::ChevronsDown))
-                        .child(Label::new(label).text_sm().text_color(primary)),
+                        .child(Label::new(label).text_sm().text_color(primary).text_ellipsis()),
                 ),
             );
         }
@@ -2642,5 +2654,53 @@ impl Render for ZedisKeyTree {
                     cx.propagate();
                 }
             }))
+    }
+}
+
+#[cfg(test)]
+mod load_more_tests {
+    use super::*;
+
+    fn folder(id: &str, label: &str, depth: usize) -> KeyTreeItem {
+        KeyTreeItem {
+            id: id.into(),
+            label: label.into(),
+            depth,
+            is_folder: true,
+            expanded: true,
+            ..Default::default()
+        }
+    }
+    fn leaf(id: &str, depth: usize) -> KeyTreeItem {
+        KeyTreeItem {
+            id: id.into(),
+            label: id.into(),
+            depth,
+            ..Default::default()
+        }
+    }
+
+    /// Nested incomplete folders whose subtrees end at the same (tail)
+    /// position: the deeper folder's row must come first, right under its own
+    /// children, with the ancestor's row below it — and each row's label names
+    /// its folder.
+    #[test]
+    fn nested_tail_rows_are_deepest_first_and_named() {
+        let items = vec![
+            folder("bench", "bench", 0),
+            folder("bench:rank", "rank", 1),
+            leaf("bench:rank:1", 2),
+        ];
+        let incomplete: AHashSet<SharedString> = ["bench:".into(), "bench:rank:".into()].into_iter().collect();
+        let label = SharedString::from("Load more");
+        let out = append_load_more_rows(items, &incomplete, &label);
+        let rows: Vec<_> = out.iter().filter(|i| i.load_more_prefix.is_some()).collect();
+        assert_eq!(rows.len(), 2, "one row per incomplete expanded folder");
+        assert_eq!(rows[0].load_more_prefix.as_deref(), Some("bench:rank:"));
+        assert_eq!(rows[0].label.as_ref(), "Load more · rank");
+        assert_eq!(rows[0].depth, 2);
+        assert_eq!(rows[1].load_more_prefix.as_deref(), Some("bench:"));
+        assert_eq!(rows[1].label.as_ref(), "Load more · bench");
+        assert_eq!(rows[1].depth, 1);
     }
 }
