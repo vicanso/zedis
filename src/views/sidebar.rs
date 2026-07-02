@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     connection::get_servers,
     helpers::resolve_tag_color,
-    states::{GlobalEvent, Route, ServerView, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
+    states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
 };
 use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*, px, rgb};
 use gpui_component::scroll::ScrollableElement;
@@ -540,10 +540,9 @@ impl ZedisSidebar {
                         }
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| {
-                                state.go_to(Route::Server(ServerView::Editor), cx);
                                 let id = server_id.to_string();
                                 let db = state.last_db_for(&id);
-                                state.set_selected_server((id, db), cx);
+                                state.connect_server(id, db, cx);
                             });
                         });
                     });

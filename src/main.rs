@@ -598,7 +598,7 @@ impl Render for Zedis {
         // the content column. Shown only on server routes (mirrors content.rs's
         // route match, where Home/Settings/Protos/Scripts have no status bar).
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
-        let show_status_bar = !matches!(route, Route::Home | Route::Settings | Route::Protos | Route::Scripts);
+        let show_status_bar = route.is_server();
         let status_bar = self.content.read(cx).status_bar();
         // Sidebar collapses to a narrow icon-only rail; the toggle saves state +
         // refreshes windows, so this re-reads the width on the next render.
@@ -714,21 +714,21 @@ impl Render for Zedis {
             }))
             .on_action(cx.listener(move |_this, e: &ServerToolsAction, _window, cx| {
                 let target = match e {
-                    ServerToolsAction::Monitor => Route::Server(ServerView::Monitor),
-                    ServerToolsAction::Config => Route::Server(ServerView::Config),
-                    ServerToolsAction::Acl => Route::Server(ServerView::Acl),
-                    ServerToolsAction::Search => Route::Server(ServerView::Search),
-                    ServerToolsAction::Functions => Route::Server(ServerView::Functions),
-                    ServerToolsAction::LuaScripts => Route::Server(ServerView::LuaScripts),
-                    ServerToolsAction::Persistence => Route::Server(ServerView::Persistence),
-                    ServerToolsAction::KeyspaceNotifications => Route::Server(ServerView::KeyspaceNotifications),
-                    ServerToolsAction::Topology => Route::Server(ServerView::Topology),
-                    ServerToolsAction::ServerLoad => Route::Server(ServerView::ServerLoad),
-                    ServerToolsAction::ValueSearch => Route::Server(ServerView::ValueSearch),
+                    ServerToolsAction::Monitor => ServerView::Monitor,
+                    ServerToolsAction::Config => ServerView::Config,
+                    ServerToolsAction::Acl => ServerView::Acl,
+                    ServerToolsAction::Search => ServerView::Search,
+                    ServerToolsAction::Functions => ServerView::Functions,
+                    ServerToolsAction::LuaScripts => ServerView::LuaScripts,
+                    ServerToolsAction::Persistence => ServerView::Persistence,
+                    ServerToolsAction::KeyspaceNotifications => ServerView::KeyspaceNotifications,
+                    ServerToolsAction::Topology => ServerView::Topology,
+                    ServerToolsAction::ServerLoad => ServerView::ServerLoad,
+                    ServerToolsAction::ValueSearch => ServerView::ValueSearch,
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
-                        state.toggle_route((target, Route::Server(ServerView::Editor)), cx);
+                        state.toggle_view(target, cx);
                     });
                 });
             }))
@@ -741,9 +741,14 @@ impl Render for Zedis {
                     store.update(cx, |state, cx| {
                         if !matches!(
                             state.route(),
-                            Route::Home | Route::Server(ServerView::Editor) | Route::Settings
+                            Route::Home
+                                | Route::Settings
+                                | Route::Server {
+                                    view: ServerView::Editor,
+                                    ..
+                                }
                         ) {
-                            state.go_to(Route::Server(ServerView::Editor), cx);
+                            state.go_to_view(ServerView::Editor, cx);
                         }
                     });
                 });
@@ -804,17 +809,29 @@ fn cli_arg_value(flag: &str) -> Option<String> {
     None
 }
 
-/// Startup view override: `--route <name>`, a `Route::from_name` token
-/// (`home`, `editor`, `metrics`, …). Together with `--server` / `--db` this is
-/// the deep-link MVP behind the screenshot-comparison workflow. Unrecognized
-/// names log a warning and are ignored.
-fn cli_route_override() -> Option<Route> {
+/// A parsed `--route <name>` target: app-level routes stand alone, while a
+/// server view still needs the `(id, db)` the startup composer resolves.
+enum CliRoute {
+    App(Route),
+    View(ServerView),
+}
+
+/// Startup view override: `--route <name>` (`home`, `editor`, `metrics`, …).
+/// Together with `--server` / `--db` this is the deep-link MVP behind the
+/// screenshot-comparison workflow. Unrecognized names log a warning and are
+/// ignored.
+fn cli_route_override() -> Option<CliRoute> {
     let raw = cli_arg_value("--route")?;
-    let route = Route::from_name(&raw);
-    if route.is_none() {
-        warn!(route = %raw, "unrecognized --route value; ignoring");
+    if let Some(route) = Route::app_from_name(&raw) {
+        return Some(CliRoute::App(route));
     }
-    route
+    match ServerView::from_name(raw.trim().to_ascii_lowercase().as_str()) {
+        Some(view) => Some(CliRoute::View(view)),
+        None => {
+            warn!(route = %raw, "unrecognized --route value; ignoring");
+            None
+        }
+    }
 }
 
 /// Startup connection override: `--server <id|name>`, resolved to a server id
@@ -1067,20 +1084,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // Target view: explicit --route wins; a bare
                             // --server implies the editor (a deep link should
                             // land on that server, not whatever page was
-                            // persisted); otherwise the restored route.
-                            let mut route = match (cli_route_override(), cli_server.is_some()) {
-                                (Some(route), _) => route,
-                                (None, true) => Route::Server(ServerView::Editor),
-                                (None, false) => state.route(),
+                            // persisted); otherwise the restored route's view.
+                            let view = match (cli_route_override(), cli_server.is_some()) {
+                                (Some(CliRoute::App(route)), _) => {
+                                    state.activate(route, cx);
+                                    return;
+                                }
+                                (Some(CliRoute::View(view)), _) => Some(view),
+                                (None, true) => Some(ServerView::Editor),
+                                (None, false) => state.route().server_view(),
                             };
-                            if matches!(route, Route::Server(_)) && target.is_none() {
-                                warn!("server view requested but no valid server available; opening Home");
-                                route = Route::Home;
-                            }
-                            state.go_to(route, cx);
-                            if let (Route::Server(_), Some((id, db))) = (state.route(), target) {
-                                state.set_selected_server((id, db), cx);
-                            }
+                            let route = match (view, target) {
+                                (Some(view), Some((id, db))) => Route::Server {
+                                    id: id.into(),
+                                    db,
+                                    view,
+                                },
+                                (Some(_), None) => {
+                                    warn!("server view requested but no valid server available; opening Home");
+                                    Route::Home
+                                }
+                                // Restored app-level route (or Home).
+                                (None, _) => state.route(),
+                            };
+                            state.activate(route, cx);
                         });
                     }
                     // Global (focus-independent) ⌘K handler — element

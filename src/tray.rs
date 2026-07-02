@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::connection::{RedisServer, get_servers};
+use crate::states::Route;
 use crate::states::{RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
-use crate::states::{Route, ServerView};
 use gpui::{App, BorrowAppContext, Context};
 use rust_i18n::t;
 use std::cell::RefCell;
@@ -303,9 +303,8 @@ pub fn init_tray(cx: &mut App) {
                                             store.update(
                                                 cx,
                                                 |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
-                                                    state.go_to(Route::Server(ServerView::Editor), cx);
                                                     let db = state.last_db_for(&server_id);
-                                                    state.set_selected_server((server_id.clone(), db), cx);
+                                                    state.connect_server(server_id.clone(), db, cx);
                                                 },
                                             );
                                         },

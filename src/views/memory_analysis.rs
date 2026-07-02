@@ -23,7 +23,7 @@ use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
 /// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
 use crate::states::{
-    Route, ServerView, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis,
+    ServerView, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis,
 };
 use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
@@ -2380,7 +2380,7 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .tooltip(i18n_common(cx, "back_to_editor"))
                     .on_click(|_, _w, cx| {
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                            store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
+                            store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
                         });
                     }),
             )

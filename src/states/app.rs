@@ -31,29 +31,27 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use sys_locale::get_locale;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Top-level navigation target. App-scoped pages (`Home` / `Settings` /
-/// `Protos` / `Scripts`) stand alone; everything that operates on the selected
-/// connection lives under `Server(..)`, so a connection-scoped page can't be
-/// represented without acknowledging it needs a server. The `(id, db)` context
-/// itself still lives in `ZedisAppState::selected_server`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-// Persist as a stable lowercase name (`home` / `metrics` / `editor` / …) rather
-// than serde's default nested repr for `Server(..)`. Keeps zedis.toml readable,
-// migrates old flat `route = "Editor"` for free (it lowercases to the same
-// token), and is the addressable form deep links will reuse.
-#[serde(into = "String", from = "String")]
+/// Top-level navigation target — the runtime single source of truth for
+/// "where am I", including the active connection: a connection-scoped page is
+/// only representable together with its `(id, db)`. App-scoped pages
+/// (`Home` / `Settings` / `Protos` / `Scripts`) stand alone.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum Route {
     #[default]
     Home,
     Settings,
     Protos,
     Scripts,
-    Server(ServerView),
+    Server {
+        id: SharedString,
+        db: usize,
+        view: ServerView,
+    },
 }
 
 /// A connection-scoped page, rendered against the active `selected_server`.
@@ -86,21 +84,37 @@ impl Route {
             Route::Settings => "settings",
             Route::Protos => "protos",
             Route::Scripts => "scripts",
-            Route::Server(view) => view.as_str(),
+            Route::Server { view, .. } => view.as_str(),
         }
     }
-    /// Parse a route name (case-insensitive). Accepts the app-level names and
-    /// the `ServerView` names — including the legacy flat variant names an
-    /// older zedis.toml stored (they lowercase to the same tokens), so
-    /// persisted routes migrate silently. `None` for anything unrecognized.
-    pub fn from_name(s: &str) -> Option<Route> {
+    /// Parse an app-level route name (case-insensitive). Connection-scoped
+    /// names go through `ServerView::from_name` instead — they can't stand
+    /// alone as a `Route` without an `(id, db)`.
+    pub fn app_from_name(s: &str) -> Option<Route> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "home" => Route::Home,
             "settings" => Route::Settings,
             "protos" => Route::Protos,
             "scripts" => Route::Scripts,
-            other => Route::Server(ServerView::from_name(other)?),
+            _ => return None,
         })
+    }
+    /// The connection-scoped view, if this is a server route.
+    pub fn server_view(&self) -> Option<ServerView> {
+        match self {
+            Route::Server { view, .. } => Some(*view),
+            _ => None,
+        }
+    }
+    /// The `(id, db)` this route renders against, if it is a server route.
+    pub fn server(&self) -> Option<(SharedString, usize)> {
+        match self {
+            Route::Server { id, db, .. } => Some((id.clone(), *db)),
+            _ => None,
+        }
+    }
+    pub fn is_server(&self) -> bool {
+        matches!(self, Route::Server { .. })
     }
 }
 
@@ -147,20 +161,6 @@ impl ServerView {
             "valuesearch" => ServerView::ValueSearch,
             _ => return None,
         })
-    }
-}
-
-impl From<Route> for String {
-    fn from(route: Route) -> Self {
-        route.as_str().to_string()
-    }
-}
-
-impl From<String> for Route {
-    // Infallible so a corrupt / unknown persisted route degrades to Home rather
-    // than failing the whole config load.
-    fn from(value: String) -> Self {
-        Route::from_name(&value).unwrap_or_default()
     }
 }
 
@@ -365,12 +365,17 @@ pub struct WindowPlacement {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
-    // Persisted (as a flat lowercase name, see `Route`'s serde into/from) so the
-    // app reopens on the last route. `default` covers configs that predate route
-    // persistence (missing key ⇒ Home). `try_new` validates a restored server
-    // view against the remembered connection before honoring it.
-    #[serde(default)]
+    // Runtime route — the single source of truth for "where am I", including
+    // the `(id, db)` of connection-scoped views. Reassembled by `try_new` from
+    // `route_token` + the `selected_server` snapshot below, so the on-disk
+    // format is unchanged from before the (id, db) fold-in.
+    #[serde(skip)]
     route: Route,
+    /// Persisted flat route name (`"metrics"`, `"home"`, …) — same key and
+    /// format the pre-fold config used. Kept in lockstep with `route` by the
+    /// navigation core.
+    #[serde(rename = "route", default)]
+    route_token: String,
     // Runtime-only: a stale "open key X" param shouldn't survive a restart.
     #[serde(skip)]
     query: Option<HashMap<String, String>>,
@@ -400,6 +405,10 @@ pub struct ZedisAppState {
     max_truncate_length: Option<usize>,
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
+    /// Last-active connection snapshot. `route` is the runtime truth for the
+    /// current view's connection; this survives app-level detours (Settings /
+    /// Protos) and restarts, so back-navigation and startup restore know which
+    /// server to return to.
     selected_server: Option<(String, usize)>,
     /// Per-server last-viewed database, so connecting reopens the DB the user
     /// left it on instead of always DB 0. Keyed by server id.
@@ -517,19 +526,25 @@ impl ZedisAppState {
                 state.locale = Some("en".to_string());
             }
         }
-        // Restore the persisted route, but only honor a connection-scoped view
-        // when the remembered server still exists — otherwise open Home so we
-        // never render a server page against a missing / deleted connection.
-        if let Route::Server(_) = state.route {
-            let server_ok = state
-                .selected_server
-                .as_ref()
-                .map(|(id, _)| get_server(id).is_ok())
-                .unwrap_or(false);
-            if !server_ok {
-                state.route = Route::Home;
+        // Reassemble the runtime route from the persisted flat token plus the
+        // last-connection snapshot; a connection-scoped view whose remembered
+        // server is gone (or absent) opens Home instead.
+        state.route = match Route::app_from_name(&state.route_token) {
+            Some(route) => route,
+            None => {
+                let view = ServerView::from_name(state.route_token.trim().to_ascii_lowercase().as_str());
+                let conn = state.selected_server.as_ref().filter(|(id, _)| get_server(id).is_ok());
+                match (view, conn) {
+                    (Some(view), Some((id, db))) => Route::Server {
+                        id: SharedString::from(id.clone()),
+                        db: *db,
+                        view,
+                    },
+                    _ => Route::Home,
+                }
             }
-        }
+        };
+        state.route_token = state.route.as_str().to_string();
 
         if let Some(redis_connection_timeout) = state.redis_connection_timeout {
             set_redis_connection_timeout(redis_connection_timeout);
@@ -556,7 +571,7 @@ impl ZedisAppState {
         self.key_tree_width = width;
     }
     pub fn route(&self) -> Route {
-        self.route
+        self.route.clone()
     }
     pub fn bounds(&self) -> Option<&Bounds<Pixels>> {
         self.bounds.as_ref()
@@ -578,10 +593,30 @@ impl ZedisAppState {
             return;
         }
         self.query = query;
-        self.route = route;
-        cx.emit(GlobalEvent::RouteChanged(route));
+        self.apply_route(route, cx);
         cx.notify();
         self.persist_nav(cx);
+    }
+    /// The single mutation point for `route`: keeps the persisted token and the
+    /// last-connection snapshot in lockstep, and emits `RouteChanged` (always)
+    /// plus `ServerSelected` (only when the connection actually changed, so
+    /// returning to the same server from an app page doesn't reload it).
+    fn apply_route(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.route_token = route.as_str().to_string();
+        self.route = route.clone();
+        if let Some((id, db)) = route.server() {
+            let changed = self
+                .selected_server
+                .as_ref()
+                .map(|(sid, sdb)| sid.as_str() != id.as_ref() || *sdb != db)
+                .unwrap_or(true);
+            if changed {
+                self.last_db.insert(id.to_string(), db);
+                self.selected_server = Some((id.to_string(), db));
+                cx.emit(GlobalEvent::ServerSelected(id, db));
+            }
+        }
+        cx.emit(GlobalEvent::RouteChanged(route));
     }
     pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         self.go_to_with_query(route, None, cx);
@@ -592,9 +627,41 @@ impl ZedisAppState {
     pub fn get_route_query(&self) -> Option<&HashMap<String, String>> {
         self.query.as_ref()
     }
-    pub fn toggle_route(&mut self, routes: (Route, Route), cx: &mut Context<Self>) {
-        let route = if self.route == routes.0 { routes.1 } else { routes.0 };
-        self.route = route;
+    /// Switch to a connection-scoped view, keeping the current connection — or,
+    /// from an app page (Settings / Protos / …), the last-active one. No-op
+    /// (with a warning) when no valid connection is known.
+    pub fn go_to_view(&mut self, view: ServerView, cx: &mut Context<Self>) {
+        let conn = self.route.server().or_else(|| {
+            self.selected_server
+                .as_ref()
+                .filter(|(id, _)| get_server(id).is_ok())
+                .map(|(id, db)| (SharedString::from(id.clone()), *db))
+        });
+        let Some((id, db)) = conn else {
+            warn!(view = view.as_str(), "no active server for view; ignoring");
+            return;
+        };
+        self.go_to(Route::Server { id, db, view }, cx);
+    }
+    /// Toggle between a server view and the editor (the status-bar chips).
+    pub fn toggle_view(&mut self, view: ServerView, cx: &mut Context<Self>) {
+        if self.route.server_view() == Some(view) {
+            self.go_to_view(ServerView::Editor, cx);
+        } else {
+            self.go_to_view(view, cx);
+        }
+    }
+    /// Startup activation: (re)apply `route` once the views have subscribed,
+    /// always announcing a server route's connection — `try_new` assembled the
+    /// route silently, before any subscriber existed.
+    pub fn activate(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.route_token = route.as_str().to_string();
+        self.route = route.clone();
+        if let Some((id, db)) = route.server() {
+            self.last_db.insert(id.to_string(), db);
+            self.selected_server = Some((id.to_string(), db));
+            cx.emit(GlobalEvent::ServerSelected(id, db));
+        }
         cx.emit(GlobalEvent::RouteChanged(route));
         cx.notify();
         self.persist_nav(cx);
@@ -878,28 +945,45 @@ impl ZedisAppState {
     pub fn last_db_for(&self, server_id: &str) -> usize {
         self.last_db.get(server_id).copied().unwrap_or(0)
     }
+    /// Drop the active connection (Home click): clear the snapshot, announce
+    /// the empty selection, and route to Home.
     pub fn clear_selected_server(&mut self, cx: &mut Context<Self>) {
         self.selected_server = None;
         cx.emit(GlobalEvent::ServerSelected(SharedString::default(), 0));
+        self.go_to(Route::Home, cx);
     }
+    /// Connect to a server, landing on the editor — the sidebar / server-card
+    /// / palette / tray entry points. The status-bar DB switch, which keeps
+    /// the current view, goes through `set_selected_server` instead.
+    pub fn connect_server(&mut self, id: String, db: usize, cx: &mut Context<Self>) {
+        self.go_to(
+            Route::Server {
+                id: id.into(),
+                db,
+                view: ServerView::Editor,
+            },
+            cx,
+        );
+    }
+    /// Activate a connection: routes to it, keeping the current server view
+    /// when one is active (the status-bar DB switch) and falling back to the
+    /// editor otherwise (sidebar / server-card / tray connects). Route
+    /// transition, snapshot, `last_db` and persistence all flow through
+    /// `apply_route`.
     pub fn set_selected_server(&mut self, selected_server: (String, usize), cx: &mut Context<Self>) {
-        let (server_id, db) = selected_server.clone();
-        // Remember the DB per server so a later reconnect reopens it here.
-        if !server_id.is_empty() {
-            self.last_db.insert(server_id.clone(), db);
+        let (server_id, db) = selected_server;
+        if server_id.is_empty() {
+            return self.clear_selected_server(cx);
         }
-        cx.emit(GlobalEvent::ServerSelected(server_id.into(), db));
-        self.selected_server = Some(selected_server);
-        // Selection goes through a plain `store.update` (no autosave), so the
-        // remembered DB would be lost on restart. Persist the state explicitly.
-        let snapshot = self.clone();
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = save_app_state(&snapshot) {
-                    error!(error = %e, "failed to persist last selected db");
-                }
-            })
-            .detach();
+        let view = self.route.server_view().unwrap_or(ServerView::Editor);
+        self.go_to(
+            Route::Server {
+                id: server_id.into(),
+                db,
+                view,
+            },
+            cx,
+        );
     }
     pub fn remove_server(&mut self, id: &str, cx: &mut Context<Self>) {
         let id = id.to_string();

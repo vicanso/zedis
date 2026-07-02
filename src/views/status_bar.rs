@@ -18,9 +18,9 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
     states::{
-        ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask,
-        ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option,
-        i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
+        ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, ServerEvent, ServerTask, ServerToolsAction,
+        ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar,
+        i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
     },
 };
 use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
@@ -831,10 +831,7 @@ impl ZedisStatusBar {
                                     .tooltip(i18n_status_bar(cx, "toggle_metrics_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_route(
-                                                (Route::Server(ServerView::Metrics), Route::Server(ServerView::Editor)),
-                                                cx,
-                                            );
+                                            state.toggle_view(ServerView::Metrics, cx);
                                         });
                                     })),
                             )
@@ -851,13 +848,7 @@ impl ZedisStatusBar {
                                     .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_route(
-                                                (
-                                                    Route::Server(ServerView::MemoryAnalysis),
-                                                    Route::Server(ServerView::Editor),
-                                                ),
-                                                cx,
-                                            );
+                                            state.toggle_view(ServerView::MemoryAnalysis, cx);
                                         });
                                     })),
                             )
@@ -874,10 +865,7 @@ impl ZedisStatusBar {
                                     .tooltip(i18n_status_bar(cx, "toggle_clients_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_route(
-                                                (Route::Server(ServerView::Clients), Route::Server(ServerView::Editor)),
-                                                cx,
-                                            );
+                                            state.toggle_view(ServerView::Clients, cx);
                                         });
                                     })),
                             )
@@ -894,10 +882,7 @@ impl ZedisStatusBar {
                                     .tooltip(i18n_status_bar(cx, "toggle_slowlog_tooltip"))
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_route(
-                                                (Route::Server(ServerView::Slowlog), Route::Server(ServerView::Editor)),
-                                                cx,
-                                            );
+                                            state.toggle_view(ServerView::Slowlog, cx);
                                         });
                                     })),
                             )

@@ -212,34 +212,36 @@ impl ZedisCommandPalette {
 
             // `>` — navigation commands / pages, then the shortcuts reference.
             Scope::Commands => {
-                // (i18n key, route) — order defines empty-query display order.
-                let commands: [(&str, Route); 15] = [
-                    ("cmd_home", Route::Home),
-                    ("cmd_editor", Route::Server(ServerView::Editor)),
-                    ("cmd_metrics", Route::Server(ServerView::Metrics)),
-                    ("cmd_performance", Route::Server(ServerView::Slowlog)),
-                    ("cmd_memory", Route::Server(ServerView::MemoryAnalysis)),
-                    ("cmd_clients", Route::Server(ServerView::Clients)),
-                    ("cmd_monitor", Route::Server(ServerView::Monitor)),
-                    ("cmd_persistence", Route::Server(ServerView::Persistence)),
+                // Server views are offered against the current connection —
+                // `None` (not on a server route) hides them, replacing the old
+                // `needs_server` gate.
+                let conn = current_route.server();
+                let view_route = |view: ServerView| conn.clone().map(|(id, db)| Route::Server { id, db, view });
+                // (i18n key, target) — order defines empty-query display order.
+                let commands: [(&str, Option<Route>); 15] = [
+                    ("cmd_home", Some(Route::Home)),
+                    ("cmd_editor", view_route(ServerView::Editor)),
+                    ("cmd_metrics", view_route(ServerView::Metrics)),
+                    ("cmd_performance", view_route(ServerView::Slowlog)),
+                    ("cmd_memory", view_route(ServerView::MemoryAnalysis)),
+                    ("cmd_clients", view_route(ServerView::Clients)),
+                    ("cmd_monitor", view_route(ServerView::Monitor)),
+                    ("cmd_persistence", view_route(ServerView::Persistence)),
                     (
                         "cmd_keyspace_notifications",
-                        Route::Server(ServerView::KeyspaceNotifications),
+                        view_route(ServerView::KeyspaceNotifications),
                     ),
-                    ("cmd_config", Route::Server(ServerView::Config)),
-                    ("cmd_acl", Route::Server(ServerView::Acl)),
-                    ("cmd_search", Route::Server(ServerView::Search)),
-                    ("cmd_functions", Route::Server(ServerView::Functions)),
-                    ("cmd_lua_scripts", Route::Server(ServerView::LuaScripts)),
-                    ("cmd_settings", Route::Settings),
+                    ("cmd_config", view_route(ServerView::Config)),
+                    ("cmd_acl", view_route(ServerView::Acl)),
+                    ("cmd_search", view_route(ServerView::Search)),
+                    ("cmd_functions", view_route(ServerView::Functions)),
+                    ("cmd_lua_scripts", view_route(ServerView::LuaScripts)),
+                    ("cmd_settings", Some(Route::Settings)),
                 ];
                 for (key, route) in commands {
+                    let Some(route) = route else { continue };
                     // Don't offer to navigate to the page we're already on.
                     if route == current_route {
-                        continue;
-                    }
-                    let needs_server = !matches!(route, Route::Home | Route::Settings);
-                    if needs_server && !in_server_context {
                         continue;
                     }
                     let label = i18n_command_palette(cx, key);
@@ -335,7 +337,7 @@ impl ZedisCommandPalette {
             let key = key.clone();
             self.server_state.update(cx, |state, cx| state.select_key(key, cx));
             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
+                store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
             });
             self.close(window, cx);
             return;
@@ -343,18 +345,18 @@ impl ZedisCommandPalette {
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
                 PaletteCommand::Server(id) => {
-                    state.go_to(Route::Server(ServerView::Editor), cx);
                     let db = state.last_db_for(&id);
-                    state.set_selected_server((id, db), cx);
+                    state.connect_server(id, db, cx);
                 }
                 PaletteCommand::Route(route) => {
-                    state.go_to(route, cx);
-                    // Mirror the sidebar Home button: returning to Home
-                    // leaves the server context, so clear the selected
-                    // connection — otherwise the sidebar keeps the old
-                    // server row highlighted instead of Home.
+                    // Mirror the sidebar Home button: returning to Home leaves
+                    // the server context, so clear the selected connection
+                    // (which itself routes Home) — otherwise the sidebar keeps
+                    // the old server row highlighted instead of Home.
                     if route == Route::Home {
                         state.clear_selected_server(cx);
+                    } else {
+                        state.go_to(route, cx);
                     }
                 }
                 // Handled above (early return); arms kept for exhaustiveness.

@@ -24,8 +24,8 @@ use crate::helpers::get_mono_font_family;
 /// scrollable table.  Supports keyword and command-type filtering.
 /// The buffer is capped at `MAX_RECORDS` entries.
 use crate::states::{
-    ConnectionErrorKind, GlobalEvent, NotificationAction, Route, ServerEvent, ServerView, ZedisGlobalStore,
-    ZedisServerState, i18n_common, i18n_monitor, i18n_status_bar,
+    ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
+    i18n_common, i18n_monitor, i18n_status_bar,
 };
 use chrono::Local;
 use futures::StreamExt;
@@ -653,9 +653,7 @@ impl Render for ZedisMonitor {
                                     .tooltip(i18n_common(cx, "back_to_editor"))
                                     .on_click(|_, _w, cx| {
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                            store.update(cx, |state, cx| {
-                                                state.go_to(Route::Server(ServerView::Editor), cx)
-                                            });
+                                            store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
                                         });
                                     }),
                             )

@@ -42,8 +42,7 @@ use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    Route, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
-    i18n_keyspace_notifications,
+    ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
 use ahash::AHashSet;
 use chrono::Local;
@@ -744,7 +743,7 @@ impl ZedisKeyspaceNotifications {
                             .tooltip(i18n_common(cx, "back_to_editor"))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| state.go_to(Route::Server(ServerView::Editor), cx));
+                                    store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
                                 });
                             }),
                     )

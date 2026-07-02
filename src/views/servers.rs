@@ -19,7 +19,7 @@ use crate::connection::{
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, resolve_path, resolve_tag_chip};
 use crate::states::{
-    GlobalEvent, NotificationAction, ReorderDirection, Route, ServerView, ZedisGlobalStore, dialog_button_props,
+    GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
 };
 use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global};
@@ -1301,9 +1301,8 @@ impl Render for ZedisServers {
                             let select_server_id = select_server_id.clone();
                             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                 store.update(cx, |state, cx| {
-                                    state.go_to(Route::Server(ServerView::Editor), cx);
                                     let db = state.last_db_for(&select_server_id);
-                                    state.set_selected_server((select_server_id.clone(), db), cx);
+                                    state.connect_server(select_server_id.clone(), db, cx);
                                 });
                             });
                         });
