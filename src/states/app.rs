@@ -17,7 +17,9 @@ use crate::connection::{
 };
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts};
+use crate::helpers::{
+    UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, is_development, unix_ts,
+};
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
@@ -247,7 +249,11 @@ const DARK_THEME_MODE: &str = "dark";
 
 fn get_or_create_server_config() -> Result<PathBuf> {
     let config_dir = get_or_create_config_dir()?;
-    let path = config_dir.join("zedis.toml");
+    let path = if is_development() {
+        config_dir.join("zedis-dev.toml")
+    } else {
+        config_dir.join("zedis.toml")
+    };
     if path.exists() {
         return Ok(path);
     }

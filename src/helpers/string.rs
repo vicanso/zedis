@@ -261,10 +261,34 @@ pub fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     }
 }
 
+/// Groups a count into thousands (`500000` → `"500,000"`) — six-digit key /
+/// client / slowlog counts are unreadable without it. Hand-rolled to keep the
+/// dependency surface lean (no `num-format` for a formatting one-liner).
+pub fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::format_duration;
+    use super::{format_duration, group_thousands};
     use std::time::Duration;
+
+    #[test]
+    fn group_thousands_inserts_separators() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(500_000), "500,000");
+        assert_eq!(group_thousands(1_234_567_890), "1,234,567,890");
+    }
 
     #[test]
     fn format_duration_floors_to_one_decimal_and_never_rounds_up() {

@@ -16,7 +16,7 @@ use crate::assets::CustomIconName;
 use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family};
+use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands};
 /// Redis Memory Analysis viewer.
 ///
 /// Samples keys from the database, groups by prefix and displays two tables:
@@ -2253,8 +2253,8 @@ impl ZedisMemoryAnalysis {
             };
             rust_i18n::t!(
                 "memory_analysis.ttl_summary_label",
-                sampled = total.to_string(),
-                estimated = estimated.to_string(),
+                sampled = group_thousands(total),
+                estimated = group_thousands(estimated),
                 no_ttl_pct = format!("{no_ttl_pct:.1}"),
                 locale = locale
             )
@@ -2276,7 +2276,7 @@ impl ZedisMemoryAnalysis {
                     rust_i18n::t!(
                         "memory_analysis.ttl_dominant_label",
                         bucket = bucket_name.as_ref(),
-                        count = count.to_string(),
+                        count = group_thousands(*count),
                         locale = locale
                     )
                     .to_string()

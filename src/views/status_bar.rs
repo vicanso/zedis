@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     connection::{RedisClientDescription, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{get_mono_font_family, humanize_keystroke, resolve_tag_chip},
+    helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, Route, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option,
@@ -36,21 +36,6 @@ use gpui_component::{
 use std::{sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
-
-/// Groups a count into thousands (`500000` → `"500,000"`) — six-digit DBSIZE
-/// values are unreadable without it. Hand-rolled to keep the dependency
-/// surface lean (no `num-format` for one call site).
-fn group_thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
-}
 
 /// Formats the database size and scan count string "count/total".
 #[inline]
@@ -434,7 +419,8 @@ impl ZedisStatusBar {
         } else {
             format!(
                 "{} / {}",
-                redis_info.metrics.blocked_clients, redis_info.metrics.connected_clients
+                group_thousands(redis_info.metrics.blocked_clients),
+                group_thousands(redis_info.metrics.connected_clients)
             )
         };
         let used_memory = if redis_info.metrics.used_memory == 0 {
@@ -446,7 +432,12 @@ impl ZedisStatusBar {
             )
         };
 
-        let slow_log_tips = format!("{} / {}", state.last_slow_log_count(), state.slow_logs().len()).into();
+        let slow_log_tips = format!(
+            "{} / {}",
+            group_thousands(state.last_slow_log_count() as u64),
+            group_thousands(state.slow_logs().len() as u64)
+        )
+        .into();
         let tag = self.state.server_state.tag.clone();
         let tag_color_key = self.state.server_state.tag_color_key.clone();
         let supports_search = state.supports_search();
@@ -1055,16 +1046,6 @@ impl Render for ZedisStatusBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn group_thousands_inserts_separators() {
-        assert_eq!(group_thousands(0), "0");
-        assert_eq!(group_thousands(999), "999");
-        assert_eq!(group_thousands(1_000), "1,000");
-        assert_eq!(group_thousands(10_535), "10,535");
-        assert_eq!(group_thousands(500_000), "500,000");
-        assert_eq!(group_thousands(1_234_567_890), "1,234,567,890");
-    }
 
     #[test]
     fn format_size_groups_both_counts() {

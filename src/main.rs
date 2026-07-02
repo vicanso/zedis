@@ -789,30 +789,61 @@ impl Render for DatabaseErrorView {
     }
 }
 
-/// Startup route override from the command line: `--route <name>` or
-/// `--route=<name>`, where `<name>` is a `Route::from_name` token (`home`,
-/// `editor`, `metrics`, …). Built for the screenshot-comparison workflow
-/// (launch straight into a view, capture the window) and doubles as the
-/// deep-link MVP. Unrecognized names log a warning and are ignored.
-fn cli_route_override() -> Option<Route> {
+/// Value of a `--flag <value>` / `--flag=<value>` command-line argument.
+fn cli_arg_value(flag: &str) -> Option<String> {
     let mut args = std::env::args().skip(1);
-    let mut raw: Option<String> = None;
     while let Some(arg) = args.next() {
-        if arg == "--route" {
-            raw = args.next();
-            break;
+        if arg == flag {
+            return args.next();
         }
-        if let Some(value) = arg.strip_prefix("--route=") {
-            raw = Some(value.to_string());
-            break;
+        // `strip_prefix('=')` keeps `--db` from matching `--database=x`.
+        if let Some(value) = arg.strip_prefix(flag).and_then(|rest| rest.strip_prefix('=')) {
+            return Some(value.to_string());
         }
     }
-    let raw = raw?;
+    None
+}
+
+/// Startup view override: `--route <name>`, a `Route::from_name` token
+/// (`home`, `editor`, `metrics`, …). Together with `--server` / `--db` this is
+/// the deep-link MVP behind the screenshot-comparison workflow. Unrecognized
+/// names log a warning and are ignored.
+fn cli_route_override() -> Option<Route> {
+    let raw = cli_arg_value("--route")?;
     let route = Route::from_name(&raw);
     if route.is_none() {
         warn!(route = %raw, "unrecognized --route value; ignoring");
     }
     route
+}
+
+/// Startup connection override: `--server <id|name>`, resolved to a server id
+/// — exact id first, then exact name, then case-insensitive name.
+fn cli_server_override() -> Option<String> {
+    let raw = cli_arg_value("--server")?;
+    let Ok(servers) = get_servers() else {
+        warn!("server config unavailable; ignoring --server");
+        return None;
+    };
+    let found = servers
+        .iter()
+        .find(|s| s.id == raw)
+        .or_else(|| servers.iter().find(|s| s.name == raw))
+        .or_else(|| servers.iter().find(|s| s.name.eq_ignore_ascii_case(&raw)));
+    if found.is_none() {
+        warn!(server = %raw, "no server matches --server by id or name; ignoring");
+    }
+    found.map(|s| s.id.clone())
+}
+
+/// Startup database override: `--db <n>`.
+fn cli_db_override() -> Option<usize> {
+    let raw = cli_arg_value("--db")?;
+    let db = raw.parse::<usize>().ok();
+    if db.is_none() {
+        warn!(db = %raw, "invalid --db value; ignoring");
+    }
+    db
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1010,35 +1041,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     #[cfg(not(target_os = "linux"))]
                     window.on_next_frame(|window, _cx| window.activate_window());
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
-                    // Restore a connection-scoped route: now that the views are
-                    // subscribed, re-select the remembered server so the emitted
-                    // ServerSelected loads the connection (content) and highlights
-                    // its row (sidebar). `try_new` already fell back to Home when
-                    // the server was gone, so a `Server(..)` route here is valid.
+                    // Activate the target connection + view now that the views
+                    // are subscribed. Deep-link launch args (`--server
+                    // <id|name>`, `--db <n>`, `--route <view>`) override the
+                    // remembered state piecewise; with no args this restores
+                    // the last session. The re-select makes the emitted
+                    // ServerSelected load the connection (content) and
+                    // highlight its sidebar row.
                     {
                         let store = cx.global::<ZedisGlobalStore>().clone();
                         store.update(cx, |state, cx| {
-                            // `--route <name>` overrides the restored route —
-                            // screenshot tooling / deep-link MVP. A connection-
-                            // scoped target without a valid remembered server
-                            // falls back to Home instead of rendering a server
-                            // page with no connection.
-                            if let Some(mut route) = cli_route_override() {
-                                if matches!(route, Route::Server(_)) {
-                                    let server_ok = state
-                                        .selected_server()
-                                        .map(|(id, _)| get_server(id).is_ok())
-                                        .unwrap_or(false);
-                                    if !server_ok {
-                                        warn!("--route targets a server view but no valid server is remembered; opening Home");
-                                        route = Route::Home;
-                                    }
-                                }
-                                state.go_to(route, cx);
+                            let cli_server = cli_server_override();
+                            let cli_db = cli_db_override();
+                            // Target connection: the CLI server wins; else the
+                            // remembered one, validated (it may have been
+                            // deleted since the last run).
+                            let target: Option<(String, usize)> = match &cli_server {
+                                Some(id) => Some((id.clone(), cli_db.unwrap_or_else(|| state.last_db_for(id)))),
+                                None => state
+                                    .selected_server()
+                                    .cloned()
+                                    .filter(|(id, _)| get_server(id).is_ok())
+                                    .map(|(id, db)| (id, cli_db.unwrap_or(db))),
+                            };
+                            // Target view: explicit --route wins; a bare
+                            // --server implies the editor (a deep link should
+                            // land on that server, not whatever page was
+                            // persisted); otherwise the restored route.
+                            let mut route = match (cli_route_override(), cli_server.is_some()) {
+                                (Some(route), _) => route,
+                                (None, true) => Route::Server(ServerView::Editor),
+                                (None, false) => state.route(),
+                            };
+                            if matches!(route, Route::Server(_)) && target.is_none() {
+                                warn!("server view requested but no valid server available; opening Home");
+                                route = Route::Home;
                             }
-                            if let (Route::Server(_), Some((id, db))) =
-                                (state.route(), state.selected_server().cloned())
-                            {
+                            state.go_to(route, cx);
+                            if let (Route::Server(_), Some((id, db))) = (state.route(), target) {
                                 state.set_selected_server((id, db), cx);
                             }
                         });

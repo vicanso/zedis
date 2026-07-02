@@ -16,6 +16,7 @@ use crate::assets::CustomIconName;
 use crate::connection::get_servers;
 use crate::db::{MatchMode, ScriptConfig, ScriptManager};
 use crate::error::Error;
+use crate::helpers::get_mono_font_family;
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_script_editor;
 use crate::states::{ZedisServerState, dialog_button_props};
@@ -497,7 +498,7 @@ impl ZedisScriptEditor {
                         field()
                             .label(i18n_script_editor(cx, "match_pattern"))
                             .required(true)
-                            .child(Input::new(&self.match_pattern_state)),
+                            .child(Input::new(&self.match_pattern_state).font_family(get_mono_font_family())),
                     )
                     .child(
                         field().label(i18n_script_editor(cx, "mode")).required(true).child(
@@ -516,7 +517,12 @@ impl ZedisScriptEditor {
                             .label(i18n_script_editor(cx, "shell_command"))
                             .required(true)
                             .description(i18n_script_editor(cx, "shell_command_hint"))
-                            .child(Input::new(&self.shell_command_state).w_full()),
+                            .child(
+                                Input::new(&self.shell_command_state)
+                                    .w_full()
+                                    // Shell command text reads like code — mono.
+                                    .font_family(get_mono_font_family()),
+                            ),
                     ),
             )
             .when(!self.field_errors.read(cx).is_empty(), |this| {

@@ -4,6 +4,7 @@
 #
 # Usage:
 #   scripts/screenshot.sh <route> [output.png] [wait_seconds] [--release]
+#                         [--server=<id|name>] [--db=<n>]
 #
 #   <route>        A `Route::from_name` token: home, settings, protos, scripts,
 #                  editor, metrics, slowlog, memoryanalysis, clients, monitor,
@@ -25,8 +26,14 @@ ROUTE="${1:?usage: scripts/screenshot.sh <route> [output.png] [wait_seconds] [--
 OUT="${2:-screenshots/${ROUTE}.png}"
 WAIT="${3:-5}"
 PROFILE="debug"
+EXTRA_ARGS=()
 for arg in "$@"; do
-  [ "$arg" = "--release" ] && PROFILE="release"
+  case "$arg" in
+    --release) PROFILE="release" ;;
+    # Deep-link passthrough (single-token `--flag=value` form only, so the
+    # positional args above stay unambiguous).
+    --server=* | --db=*) EXTRA_ARGS+=("$arg") ;;
+  esac
 done
 
 cd "$(dirname "$0")/.."
@@ -55,7 +62,9 @@ fi
 
 mkdir -p "$(dirname "$OUT")"
 
-"$BIN" --route "$ROUTE" &
+# `${arr[@]+...}` guard: empty-array expansion under `set -u` errors on the
+# macOS system bash (3.2).
+"$BIN" --route "$ROUTE" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} &
 APP_PID=$!
 cleanup() { kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; }
 trap cleanup EXIT

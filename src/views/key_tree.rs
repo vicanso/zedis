@@ -19,8 +19,8 @@ use crate::{
     constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
-        EditorAction, build_csv, format_ttl_chip, get_mono_font_family, humanize_keystroke, parse_duration,
-        theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
+        EditorAction, build_csv, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
+        parse_duration, theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
         KeyType, KeyTypeFilter, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
@@ -555,6 +555,10 @@ fn append_load_more_rows(
             label: SharedString::from(format!("{label} · {}", item.label)),
             depth: item.depth + 1,
             load_more_prefix: Some(prefix),
+            // Loaded-so-far count, rendered right-aligned exactly like the
+            // folder rows' own count — same column, same meaning, so no
+            // localized wording ("300 loaded") is needed.
+            children_count: item.children_count,
             ..Default::default()
         };
         inserts.push((end, row));
@@ -662,6 +666,8 @@ impl ListDelegate for KeyTreeDelegate {
         // `select_item_by_index`).
         if entry.load_more_prefix.is_some() {
             let primary = cx.theme().primary;
+            let muted = cx.theme().muted_foreground;
+            let loaded_count = entry.children_count;
             let label = entry.label.clone();
             return Some(
                 ListItem::new(ix).w_full().py_2().px_2().child(
@@ -676,7 +682,16 @@ impl ListDelegate for KeyTreeDelegate {
                         .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                         .text_color(primary)
                         .child(Icon::new(CustomIconName::ChevronsDown))
-                        .child(Label::new(label).text_sm().text_color(primary).text_ellipsis()),
+                        .child(Label::new(label).text_sm().text_color(primary).text_ellipsis())
+                        // Loaded-so-far count at the right edge, mirroring the
+                        // folder rows' count column (bare number, no wording).
+                        .when(loaded_count > 0, |this| {
+                            this.child(div().flex_1()).child(
+                                Label::new(group_thousands(loaded_count as u64))
+                                    .text_sm()
+                                    .text_color(muted),
+                            )
+                        }),
                 ),
             );
         }
@@ -1005,16 +1020,19 @@ impl ListDelegate for KeyTreeDelegate {
                                         .id(("ktree-label", ix.row))
                                         .flex_1()
                                         .min_w_0()
-                                        // Note tooltip on hover — only attached when
-                                        // there's actually a note, otherwise we'd
-                                        // get a useless empty tooltip on every row.
-                                        // The lambda owns its `note` clone so the
-                                        // tooltip survives label re-layout.
-                                        .when(has_note, |this| {
-                                            let note = note.clone();
-                                            this.tooltip(move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(note.clone()).build(window, cx)
-                                            })
+                                        // Hover tooltip: the full key / prefix path —
+                                        // the visible label is only the last segment
+                                        // and may be ellipsized — plus the annotation
+                                        // note (second line) when one is set.
+                                        .tooltip({
+                                            let text: SharedString = if has_note {
+                                                format!("{}\n{}", entry.id, note).into()
+                                            } else {
+                                                entry.id.clone()
+                                            };
+                                            move |window, cx| {
+                                                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                                            }
                                         })
                                         .child(row_label),
                                 )
@@ -1093,7 +1111,7 @@ impl ListDelegate for KeyTreeDelegate {
                                 })
                                 .when(entry.is_folder, |this| {
                                     this.child(
-                                        Label::new(entry.children_count.to_string())
+                                        Label::new(group_thousands(entry.children_count as u64))
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground),
                                     )
@@ -1188,6 +1206,11 @@ pub struct ZedisKeyTree {
 
     /// Whether to enter add key mode
     should_enter_add_key_mode: Option<bool>,
+
+    /// Scroll offset seen by the last list-state notify, so the observer below
+    /// only re-renders (→ sticky breadcrumb recompute) when the viewport
+    /// actually moved — guarding against notify/render ping-pong.
+    last_observed_scroll_y: f32,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -1308,6 +1331,18 @@ impl ZedisKeyTree {
             }
             _ => {}
         }));
+        // Programmatic scrolls (keyboard navigation, the sticky-breadcrumb /
+        // scroll_to_item jumps) notify the list state without any wheel event
+        // reaching the container, which would leave the sticky breadcrumb
+        // stale. Re-render when the offset actually moved; the comparison
+        // keeps unrelated list notifies from ping-ponging renders.
+        subscriptions.push(cx.observe(&key_tree_list_state, |this, state, cx| {
+            let y = state.read(cx).scroll_handle().base_handle().offset().y.as_f32();
+            if (y - this.last_observed_scroll_y).abs() > f32::EPSILON {
+                this.last_observed_scroll_y = y;
+                cx.notify();
+            }
+        }));
 
         let mut this = Self {
             focus_handle,
@@ -1324,6 +1359,7 @@ impl ZedisKeyTree {
             server_state,
             should_enter_add_key_mode: None,
             auto_refresh_task: None,
+            last_observed_scroll_y: 0.0,
             _subscriptions: subscriptions,
         };
 
@@ -2849,11 +2885,9 @@ mod load_more_tests {
     /// its folder.
     #[test]
     fn nested_tail_rows_are_deepest_first_and_named() {
-        let items = vec![
-            folder("bench", "bench", 0),
-            folder("bench:rank", "rank", 1),
-            leaf("bench:rank:1", 2),
-        ];
+        let mut rank = folder("bench:rank", "rank", 1);
+        rank.children_count = 300;
+        let items = vec![folder("bench", "bench", 0), rank, leaf("bench:rank:1", 2)];
         let incomplete: AHashSet<SharedString> = ["bench:".into(), "bench:rank:".into()].into_iter().collect();
         let label = SharedString::from("Load more");
         let out = append_load_more_rows(items, &incomplete, &label);
@@ -2862,6 +2896,7 @@ mod load_more_tests {
         assert_eq!(rows[0].load_more_prefix.as_deref(), Some("bench:rank:"));
         assert_eq!(rows[0].label.as_ref(), "Load more · rank");
         assert_eq!(rows[0].depth, 2);
+        assert_eq!(rows[0].children_count, 300, "loaded count carried onto the row");
         assert_eq!(rows[1].load_more_prefix.as_deref(), Some("bench:"));
         assert_eq!(rows[1].label.as_ref(), "Load more · bench");
         assert_eq!(rows[1].depth, 1);
