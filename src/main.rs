@@ -1037,12 +1037,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
                     }),
-                    // Create the window hidden on macOS/Windows and reveal it
-                    // after the first themed frame (see on_next_frame below) so
-                    // there's no white flash before the theme paints. Linux is
-                    // left shown immediately — Wayland can't reliably reveal a
-                    // window that was never mapped.
-                    show: cfg!(target_os = "linux"),
+                    // macOS only: create the window hidden and reveal it after
+                    // the first themed frame (see on_next_frame below) so
+                    // there's no white flash before the theme paints. Windows
+                    // must be shown immediately — its frames are driven by
+                    // WM_PAINT, which hidden windows never receive, so the
+                    // "reveal on first frame" deadlocks and the window never
+                    // appears (the 0.4.5/0.4.6 auto-hide bug). Its backing is
+                    // a black brush, so there's no white flash to hide anyway.
+                    // Linux too — Wayland can't reliably reveal a window that
+                    // was never mapped.
+                    show: cfg!(not(target_os = "macos")),
                     window_min_size: Some(size(px(600.), px(400.))),
                     ..Default::default()
                 },
@@ -1055,7 +1060,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Reveal the (hidden) window only after the first frame has
                     // painted, so the user never sees the default white backing
                     // before the themed background. Pairs with `show: false`.
-                    #[cfg(not(target_os = "linux"))]
+                    // macOS only: it paints hidden windows; Windows/Linux never
+                    // deliver a frame to an unmapped window, so this callback
+                    // would never fire there (see the `show:` comment above).
+                    #[cfg(target_os = "macos")]
                     window.on_next_frame(|window, _cx| window.activate_window());
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
                     // Activate the target connection + view now that the views
