@@ -65,8 +65,7 @@ struct CmdRow {
 }
 
 pub struct ZedisServerLoad {
-    server_id: String,
-    db: usize,
+    server_state: Entity<ZedisServerState>,
     cmd_rows: Vec<CmdRow>,
     cmd_error: Option<SharedString>,
     /// Previous sample (command → (calls, usec)) for delta computation.
@@ -80,12 +79,8 @@ pub struct ZedisServerLoad {
 
 impl ZedisServerLoad {
     pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = server_state.read(cx);
-        let server_id = state.server_id().to_string();
-        let db = state.db();
         let mut this = Self {
-            server_id,
-            db,
+            server_state,
             cmd_rows: Vec::new(),
             cmd_error: None,
             prev: HashMap::new(),
@@ -100,16 +95,28 @@ impl ZedisServerLoad {
     }
 
     fn start_polling(&mut self, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
         self.poll_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                let result = fetch_command_stats(server_id.clone(), db).await;
-                if this
-                    .update(cx, |this, cx| this.apply_command_stats(result, cx))
-                    .is_err()
-                {
-                    break; // view dropped
+                // Read the connection live each poll — a restored `serverload`
+                // route starts this view before ServerSelected wires up the
+                // server, so a cached id would be empty ("Redis config not
+                // found"). Skip a tick while no server is active; the next one
+                // picks it up once the connection is ready.
+                let conn = match this.update(cx, |this, cx| {
+                    let s = this.server_state.read(cx);
+                    (s.server_id().to_string(), s.db())
+                }) {
+                    Ok(c) => c,
+                    Err(_) => break, // view dropped
+                };
+                if !conn.0.is_empty() {
+                    let result = fetch_command_stats(conn.0, conn.1).await;
+                    if this
+                        .update(cx, |this, cx| this.apply_command_stats(result, cx))
+                        .is_err()
+                    {
+                        break; // view dropped
+                    }
                 }
                 cx.background_executor().timer(Duration::from_secs(POLL_SECS)).await;
             }

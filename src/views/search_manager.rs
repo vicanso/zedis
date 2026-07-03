@@ -47,6 +47,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     scroll::ScrollableElement,
+    spinner::Spinner,
     v_flex,
 };
 use schemars::JsonSchema;
@@ -1052,7 +1053,7 @@ impl ZedisSearchManager {
                         .gap_2()
                         .child(Label::new(i18n_search(cx, "schema_label")).text_sm().text_color(muted))
                         .when(!key_type.is_empty(), |this| {
-                            this.child(self.chip(key_type, cx.theme().muted, cx).into_any_element())
+                            this.child(self.chip(key_type, cx.theme().muted_foreground, cx).into_any_element())
                         })
                         .when(!prefixes.is_empty(), |this| {
                             // Quote each prefix so the trailing colon
@@ -1152,7 +1153,7 @@ impl ZedisSearchManager {
             FieldKind::Tag => cx.theme().yellow,
             FieldKind::Geo | FieldKind::GeoShape => cx.theme().cyan,
             FieldKind::Vector => cx.theme().magenta,
-            FieldKind::Unknown(_) => cx.theme().muted,
+            FieldKind::Unknown(_) => cx.theme().muted_foreground,
         };
         let mut flag_chips: Vec<gpui::AnyElement> = Vec::new();
         if field.sortable {
@@ -1745,9 +1746,17 @@ impl ZedisSearchManager {
                 .into_any_element();
         }
         if self.running_query && self.last_result.is_none() {
+            // Spinner + text, matching the config editor's loading treatment —
+            // a bare gray label is easy to miss during a slow FT.SEARCH.
             return div()
                 .p_4()
-                .child(Label::new(i18n_common(cx, "loading")).text_color(muted))
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(Spinner::new().with_size(px(14.)).color(muted))
+                        .child(Label::new(i18n_common(cx, "loading")).text_color(muted)),
+                )
                 .into_any_element();
         }
         match &self.last_result {

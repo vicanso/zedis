@@ -88,8 +88,6 @@ enum Preview {
 
 pub struct ZedisValueSearch {
     server_state: Entity<ZedisServerState>,
-    server_id: String,
-    db: usize,
     prefix_input: Entity<InputState>,
     query_input: Entity<InputState>,
     running: bool,
@@ -112,17 +110,12 @@ pub struct ZedisValueSearch {
 
 impl ZedisValueSearch {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = server_state.read(cx);
-        let server_id = state.server_id().to_string();
-        let db = state.db();
         let prefix_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_value_search(cx, "prefix_placeholder")));
         let query_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_value_search(cx, "query_placeholder")));
         Self {
             server_state,
-            server_id,
-            db,
             prefix_input,
             query_input,
             running: false,
@@ -174,8 +167,12 @@ impl ZedisValueSearch {
         self.running = true;
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        // Read the connection live at search time, not at construction — a
+        // restored `valuesearch` route recreates this view before
+        // ServerSelected wires up the server, so a cached id would be empty
+        // ("Redis config not found"). By search time the connection is ready.
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
         self.task = Some(cx.spawn(async move |this, cx| {
             let client = match get_connection_manager().get_client(&server_id, db).await {
                 Ok(c) => c,
@@ -268,8 +265,8 @@ impl ZedisValueSearch {
         self.selected = Some(key.clone());
         self.preview = Some(Preview::Loading);
         cx.notify();
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
         self.preview_task = Some(cx.spawn(async move |this, cx| {
             let fetched = async {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
@@ -352,6 +349,7 @@ impl ZedisValueSearch {
         // scan row-by-row.
         let stripe = cx.theme().muted.opacity(0.5);
         let active = cx.theme().list_active;
+        let hover = cx.theme().table_hover;
         let selected = self.selected.clone();
         let mut list = v_flex().w_full();
         for (ix, vm) in self.matches.iter().enumerate() {
@@ -381,6 +379,9 @@ impl ZedisValueSearch {
                     .cursor_pointer()
                     .when(is_stripe && !is_selected, |this| this.bg(stripe))
                     .when(is_selected, |this| this.bg(active))
+                    // Row-hover highlight for the pointer's current match; the
+                    // selected row keeps its `active` fill (no hover override).
+                    .when(!is_selected, |this| this.hover(move |s| s.bg(hover)))
                     .on_click(cx.listener(move |this, _, _w, cx| this.select_result(key_click.clone(), cx)))
                     .child(content),
             );

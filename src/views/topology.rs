@@ -139,6 +139,7 @@ impl ZedisTopology {
     fn render_cluster_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let desc = self.server_state.read(cx).nodes_description();
         let muted = cx.theme().muted_foreground;
+        let hover = cx.theme().table_hover;
         let failover_label = i18n_topology(cx, "failover_button");
         let force_failover_label = i18n_topology(cx, "force_failover_button");
         let forget_label = i18n_topology(cx, "forget_button");
@@ -221,8 +222,10 @@ impl ZedisTopology {
             let m_role = master.master.role_marker.clone();
             let m_annot = master.master.annotation.clone();
             let mut master_row = h_flex()
+                .id(SharedString::from(format!("topo-mrow-{m_addr}")))
                 .items_center()
                 .gap_2()
+                .hover(move |s| s.bg(hover))
                 .child(Label::new(m_addr.clone()).font_semibold())
                 .child(Label::new(m_role).text_xs().text_color(muted))
                 .child(Label::new(m_annot).text_xs().text_color(muted))
@@ -255,9 +258,11 @@ impl ZedisTopology {
                 let failover_target = r_addr.clone();
                 let force_failover_target = r_addr.clone();
                 let mut replica_row = h_flex()
+                    .id(SharedString::from(format!("topo-rrow-{r_addr}")))
                     .items_center()
                     .gap_2()
                     .pl_6()
+                    .hover(move |s| s.bg(hover))
                     .child(Label::new(r_addr.clone()).text_color(muted))
                     .child(Label::new(r_role).text_xs().text_color(muted))
                     .child(Label::new(r_annot).text_xs().text_color(muted))
@@ -316,6 +321,7 @@ impl ZedisTopology {
     fn render_sentinel_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let desc = self.server_state.read(cx).nodes_description();
         let muted = cx.theme().muted_foreground;
+        let hover = cx.theme().table_hover;
 
         if desc.topology.is_empty() {
             return Label::new(i18n_topology(cx, "sentinel_placeholder"))
@@ -338,8 +344,10 @@ impl ZedisTopology {
             let m_role = master.master.role_marker.clone();
             let m_annot = master.master.annotation.clone();
             let mut master_row = h_flex()
+                .id(SharedString::from(format!("topo-snt-mrow-{m_addr}")))
                 .items_center()
                 .gap_2()
+                .hover(move |s| s.bg(hover))
                 .child(Label::new(m_addr).font_semibold())
                 .child(Label::new(m_role).text_xs().text_color(muted))
                 .child(Label::new(m_annot).text_xs().text_color(muted))
@@ -382,9 +390,11 @@ impl ZedisTopology {
             for replica in master.replicas.iter() {
                 rows.push(
                     h_flex()
+                        .id(SharedString::from(format!("topo-snt-rrow-{}", replica.addr)))
                         .items_center()
                         .gap_2()
                         .pl_6()
+                        .hover(move |s| s.bg(hover))
                         .child(Label::new(replica.addr.clone()).text_color(muted))
                         .child(Label::new(replica.role_marker.clone()).text_xs().text_color(muted))
                         .child(Label::new(replica.annotation.clone()).text_xs().text_color(muted))
