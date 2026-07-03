@@ -107,6 +107,10 @@ yes = "Да"
 no = "Нет"
 
 [servers]
+export_passphrase_placeholder = "Пароль (необязательно) — зашифровать экспорт как токен обмена"
+import_passphrase_placeholder = "Пароль токена обмена"
+import_passphrase_hint = "Обнаружен зашифрованный токен обмена — введите пароль для импорта"
+share_decrypt_failed = "Неверный пароль или повреждённый токен обмена"
 toolbar_new = "Создать"
 toolbar_import = "Импорт"
 toolbar_export = "Экспорт"

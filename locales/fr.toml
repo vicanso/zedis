@@ -107,6 +107,10 @@ yes = "Oui"
 no = "Non"
 
 [servers]
+export_passphrase_placeholder = "Phrase secrète (optionnelle) — chiffre l'export en jeton de partage"
+import_passphrase_placeholder = "Phrase secrète du jeton de partage"
+import_passphrase_hint = "Jeton de partage chiffré détecté — saisissez sa phrase secrète pour importer"
+share_decrypt_failed = "Phrase secrète incorrecte ou jeton corrompu"
 toolbar_new = "Nouveau"
 toolbar_import = "Importer"
 toolbar_export = "Exporter"

@@ -107,6 +107,10 @@ yes = "Sim"
 no = "Não"
 
 [servers]
+export_passphrase_placeholder = "Senha (opcional) — criptografa a exportação como token de compartilhamento"
+import_passphrase_placeholder = "Senha do token de compartilhamento"
+import_passphrase_hint = "Token de compartilhamento criptografado detectado — digite a senha para importar"
+share_decrypt_failed = "Senha incorreta ou token corrompido"
 toolbar_new = "Novo"
 toolbar_import = "Importar"
 toolbar_export = "Exportar"

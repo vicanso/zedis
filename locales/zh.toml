@@ -107,6 +107,10 @@ no = "否"
 
 
 [servers]
+export_passphrase_placeholder = "口令（可选）——将导出加密为分享码"
+import_passphrase_placeholder = "分享码口令"
+import_passphrase_hint = "检测到加密分享码——输入口令后导入"
+share_decrypt_failed = "口令错误或分享码已损坏"
 toolbar_new = "新建"
 toolbar_import = "导入"
 toolbar_export = "导出"

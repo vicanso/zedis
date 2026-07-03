@@ -34,7 +34,11 @@ path = "src/main.rs"
 members = ["crates/*", "zedis-cmd-builder"]
 
 [dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.0"
+# Passphrase KDF for encrypted share tokens. Pinned to the exact prerelease
+# already in the tree transitively (ssh-key), so promoting it to a direct
+# dependency adds no binary weight.
+argon2 = "0.6.0-rc.8"
 ahash = "0.8.12"
 anyhow = "1.0.102"
 arc-swap = "1.9.1"
@@ -178,6 +182,35 @@ codegen-units = 1
 lto = true
 strip = true
 panic = "abort"
+
+# Cold, one-shot decoder crates get size-optimized codegen: they run rarely
+# (decoding an image value when one is viewed, parsing an SVG icon once before
+# gpui caches it) or never (exr — pulled in by gpui's image features but no
+# EXR ever reaches Zedis), so `opt-level = "s"` shrinks .text without touching
+# any hot path. Rendering/shaping/network/proto crates deliberately stay at
+# the default opt-level.
+[profile.release.package.exr]
+opt-level = "s"
+[profile.release.package.gif]
+opt-level = "s"
+[profile.release.package.image]
+opt-level = "s"
+[profile.release.package.image-webp]
+opt-level = "s"
+[profile.release.package.png]
+opt-level = "s"
+[profile.release.package.qoi]
+opt-level = "s"
+[profile.release.package.tiff]
+opt-level = "s"
+[profile.release.package.zune-jpeg]
+opt-level = "s"
+[profile.release.package.zune-core]
+opt-level = "s"
+[profile.release.package.fdeflate]
+opt-level = "s"
+[profile.release.package.usvg]
+opt-level = "s"
 
 [package.metadata.bundle]
 name = "Zedis"

@@ -107,6 +107,10 @@ yes = "はい"
 no = "いいえ"
 
 [servers]
+export_passphrase_placeholder = "パスフレーズ（任意）— エクスポートを共有トークンとして暗号化"
+import_passphrase_placeholder = "共有トークンのパスフレーズ"
+import_passphrase_hint = "暗号化された共有トークンを検出 — インポートにはパスフレーズを入力"
+share_decrypt_failed = "パスフレーズが違うか、共有トークンが破損しています"
 toolbar_new = "新規"
 toolbar_import = "インポート"
 toolbar_export = "エクスポート"

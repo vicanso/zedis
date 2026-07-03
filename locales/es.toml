@@ -107,6 +107,10 @@ yes = "Sí"
 no = "No"
 
 [servers]
+export_passphrase_placeholder = "Contraseña (opcional): cifra la exportación como token para compartir"
+import_passphrase_placeholder = "Contraseña del token compartido"
+import_passphrase_hint = "Token compartido cifrado detectado: introduce su contraseña para importar"
+share_decrypt_failed = "Contraseña incorrecta o token dañado"
 toolbar_new = "Nuevo"
 toolbar_import = "Importar"
 toolbar_export = "Exportar"

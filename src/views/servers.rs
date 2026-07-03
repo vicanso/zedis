@@ -17,7 +17,7 @@ use crate::connection::{
     ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
 };
 use crate::error::Error;
-use crate::helpers::{get_mono_font_family, resolve_path, resolve_tag_chip};
+use crate::helpers::{decrypt_share, get_mono_font_family, is_share_token, resolve_path, resolve_tag_chip};
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
@@ -706,18 +706,23 @@ impl ZedisServers {
             )
             .child(move || view_child.clone())
             .on_ok(move |_, window, cx| {
-                let selected = view_ok.read(cx).selected_servers();
-                if selected.is_empty() {
-                    // Keep the dialog open until at least one is ticked.
+                // Plain JSON — or an encrypted share token when a passphrase
+                // was set in the body. `None` ⇒ nothing ticked; keep the
+                // dialog open until at least one is.
+                let Some(payload) = view_ok.read(cx).export_payload(cx) else {
                     window.push_notification(Notification::warning(select_none_label.clone()), cx);
                     return false;
-                }
-                // Save the selection to a file (default ~/Downloads,
-                // timestamped). Copy to clipboard is the body action.
-                let include_secrets = view_ok.read(cx).include_secrets();
-                let json = RedisServer::to_export_json_many(&selected, include_secrets).unwrap_or_default();
+                };
+                // Save to a file (default ~/Downloads, timestamped). Copy to
+                // clipboard is the body action.
                 let name = export_filename("servers");
-                export_to_file_global(cx, json.into_bytes(), &name, save_success.clone(), save_error.clone());
+                export_to_file_global(
+                    cx,
+                    payload.into_bytes(),
+                    &name,
+                    save_success.clone(),
+                    save_error.clone(),
+                );
                 true
             })
             .open(window, cx);
@@ -760,10 +765,18 @@ impl ZedisServers {
                 }
             }
         }));
-        let hint = i18n_servers(cx, "import_hint");
+        let pass_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(i18n_servers(cx, "import_passphrase_placeholder"))
+        });
+        // The body is its own view so it re-renders on input changes: the
+        // passphrase row reveals itself only when the pasted content is an
+        // encrypted share token (plain JSON imports look exactly as before).
+        let body_view = cx.new(|cx| ImportServersBody::new(json_state.clone(), pass_state.clone(), cx));
         let bad_json_label = i18n_servers(cx, "import_error_prefix");
-        let body_json = json_state.clone();
         let submit_json = json_state.clone();
+        let submit_pass = pass_state;
 
         ZedisDialog::new(i18n_servers(cx, "import_title"))
             .w(px(620.))
@@ -774,48 +787,7 @@ impl ZedisServers {
                     .ok_text(i18n_servers(cx, "import_submit"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    // Drop a file onto the dialog to load it — dropping carries
-                    // the full path (unlike a copy-paste, which is often just
-                    // the filename). Reuses the .json / size-cap read.
-                    .on_drop::<ExternalPaths>({
-                        let drop_state = body_json.clone();
-                        move |dropped, window, cx| {
-                            let Some(path) = dropped.paths().first() else {
-                                return;
-                            };
-                            let path_str = path.to_string_lossy().to_string();
-                            match resolve_import_input(&path_str) {
-                                // A .json file was read — its contents differ from the path.
-                                Ok(content) if content != path_str => {
-                                    drop_state.update(cx, |s, cx| s.set_value(SharedString::from(content), window, cx));
-                                }
-                                // Dropped a non-.json file — only JSON exports are read.
-                                Ok(_) => {
-                                    window.push_notification(
-                                        Notification::warning(i18n_servers(cx, "import_drop_only_json")),
-                                        cx,
-                                    );
-                                }
-                                Err(e) => {
-                                    window.push_notification(
-                                        Notification::error(SharedString::from(format!(
-                                            "{}: {}",
-                                            i18n_servers(cx, "import_error_prefix"),
-                                            import_file_error_message(cx, &e)
-                                        ))),
-                                        cx,
-                                    );
-                                }
-                            }
-                        }
-                    })
-                    .child(Label::new(hint.clone()).text_xs())
-                    .child(Input::new(&body_json).appearance(true))
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, window, cx| {
                 let raw = submit_json.read(cx).value().to_string();
                 // If the pasted text is a path to an existing file, read it
@@ -832,6 +804,19 @@ impl ZedisServers {
                         );
                         return false;
                     }
+                };
+                // Encrypted share token → decrypt with the body's passphrase
+                // before handing off to the unchanged JSON import path.
+                let value = if is_share_token(&value) {
+                    match decrypt_share(&value, submit_pass.read(cx).value().as_ref()) {
+                        Ok(json) => json,
+                        Err(_) => {
+                            window.push_notification(Notification::error(i18n_servers(cx, "share_decrypt_failed")), cx);
+                            return false;
+                        }
+                    }
+                } else {
+                    value
                 };
                 match RedisServer::from_import_multi(&value) {
                     Ok(servers) => {
@@ -936,6 +921,79 @@ impl ZedisServers {
                             })),
                     ),
             )
+    }
+}
+
+/// Body of the paste-to-import dialog, hoisted into its own view so it can
+/// re-render on input changes: the passphrase row reveals itself only when
+/// the pasted content is an encrypted share token; plain-JSON imports render
+/// exactly as before.
+struct ImportServersBody {
+    json_state: Entity<InputState>,
+    pass_state: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl ImportServersBody {
+    fn new(json_state: Entity<InputState>, pass_state: Entity<InputState>, cx: &mut Context<Self>) -> Self {
+        // Re-render whenever the pasted content changes so the passphrase row
+        // appears the moment a share token lands in the box.
+        let sub = cx.subscribe(&json_state, |_, _, _: &InputEvent, cx| cx.notify());
+        Self {
+            json_state,
+            pass_state,
+            _subscriptions: vec![sub],
+        }
+    }
+}
+
+impl Render for ImportServersBody {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let needs_pass = is_share_token(self.json_state.read(cx).value().as_ref());
+        let hint_color = cx.theme().yellow;
+        let drop_state = self.json_state.clone();
+        gpui_component::v_flex()
+            .gap_2()
+            .w_full()
+            // Drop a file onto the dialog to load it — dropping carries
+            // the full path (unlike a copy-paste, which is often just
+            // the filename). Reuses the .json / size-cap read.
+            .on_drop::<ExternalPaths>(move |dropped, window, cx| {
+                let Some(path) = dropped.paths().first() else {
+                    return;
+                };
+                let path_str = path.to_string_lossy().to_string();
+                match resolve_import_input(&path_str) {
+                    // A .json file was read — its contents differ from the path.
+                    Ok(content) if content != path_str => {
+                        drop_state.update(cx, |s, cx| s.set_value(SharedString::from(content), window, cx));
+                    }
+                    // Dropped a non-.json file — only JSON exports are read.
+                    Ok(_) => {
+                        window.push_notification(Notification::warning(i18n_servers(cx, "import_drop_only_json")), cx);
+                    }
+                    Err(e) => {
+                        window.push_notification(
+                            Notification::error(SharedString::from(format!(
+                                "{}: {}",
+                                i18n_servers(cx, "import_error_prefix"),
+                                import_file_error_message(cx, &e)
+                            ))),
+                            cx,
+                        );
+                    }
+                }
+            })
+            .child(Label::new(i18n_servers(cx, "import_hint")).text_xs())
+            .child(Input::new(&self.json_state).appearance(true))
+            .when(needs_pass, |this| {
+                this.child(
+                    Label::new(i18n_servers(cx, "import_passphrase_hint"))
+                        .text_xs()
+                        .text_color(hint_color),
+                )
+                .child(Input::new(&self.pass_state).appearance(true))
+            })
     }
 }
 

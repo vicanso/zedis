@@ -21,13 +21,15 @@
 //! [`zedis_ui::ZedisDialog`] and reads the selection on OK.
 
 use crate::connection::{RedisServer, get_servers};
+use crate::helpers::encrypt_share;
 use crate::states::{ZedisGlobalStore, i18n_servers};
-use gpui::{ClipboardItem, SharedString, Window, prelude::*, px};
+use gpui::{App, ClipboardItem, Entity, SharedString, Window, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
+    input::{Input, InputState},
     label::Label,
     notification::Notification,
     v_flex,
@@ -42,17 +44,27 @@ pub struct ZedisExportServersDialog {
     selected: HashSet<String>,
     /// Include credential fields in the exported JSON.
     include_secrets: bool,
+    /// Optional passphrase. Non-empty ⇒ the export is emitted as an encrypted
+    /// share token (`ZEDIS1.…`) instead of plain JSON; empty keeps the
+    /// original plain-JSON export unchanged.
+    passphrase_state: Entity<InputState>,
 }
 
 impl ZedisExportServersDialog {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let servers = get_servers().unwrap_or_default();
         // Default to everything selected — the common "export my setup" intent.
         let selected = servers.iter().map(|s| s.id.clone()).collect();
+        let passphrase_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(i18n_servers(cx, "export_passphrase_placeholder"))
+        });
         Self {
             servers,
             selected,
             include_secrets: false,
+            passphrase_state,
         }
     }
 
@@ -65,20 +77,32 @@ impl ZedisExportServersDialog {
             .collect()
     }
 
-    pub fn include_secrets(&self) -> bool {
-        self.include_secrets
+    /// The export payload for the current selection: plain JSON, or — when a
+    /// passphrase is set — an encrypted share token any machine can open with
+    /// that passphrase. `None` when nothing is ticked (or serialization /
+    /// encryption fails).
+    pub fn export_payload(&self, cx: &App) -> Option<String> {
+        let selected = self.selected_servers();
+        if selected.is_empty() {
+            return None;
+        }
+        let json = RedisServer::to_export_json_many(&selected, self.include_secrets).ok()?;
+        let passphrase = self.passphrase_state.read(cx).value().to_string();
+        if passphrase.is_empty() {
+            Some(json)
+        } else {
+            encrypt_share(&json, &passphrase).ok()
+        }
     }
 
     /// Copy the ticked servers as a JSON array to the clipboard. No-op when
     /// nothing is ticked. (Save to file is the dialog's primary OK action.)
     fn copy_to_clipboard(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let selected = self.selected_servers();
-        if selected.is_empty() {
+        let count = self.selected_servers().len();
+        let Some(payload) = self.export_payload(cx) else {
             return;
-        }
-        let count = selected.len();
-        let json = RedisServer::to_export_json_many(&selected, self.include_secrets).unwrap_or_default();
-        cx.write_to_clipboard(ClipboardItem::new_string(json));
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(payload));
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         window.push_notification(
             Notification::success(SharedString::from(
@@ -156,6 +180,9 @@ impl Render for ZedisExportServersDialog {
                     .text_color(muted),
             )
             .child(h_flex().gap_2().child(secrets_btn).child(copy_btn))
+            // Optional share passphrase: filled ⇒ the export (copy and save
+            // alike) becomes an encrypted `ZEDIS1.…` token instead of JSON.
+            .child(Input::new(&self.passphrase_state).appearance(true).w_full())
             .when(include_on, |this| {
                 this.child(
                     Label::new(i18n_servers(cx, "export_secrets_warning"))

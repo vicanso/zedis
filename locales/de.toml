@@ -107,6 +107,10 @@ yes = "Ja"
 no = "Nein"
 
 [servers]
+export_passphrase_placeholder = "Passphrase (optional) — Export als Freigabe-Token verschlüsseln"
+import_passphrase_placeholder = "Passphrase des Freigabe-Tokens"
+import_passphrase_hint = "Verschlüsseltes Freigabe-Token erkannt — Passphrase zum Import eingeben"
+share_decrypt_failed = "Falsche Passphrase oder beschädigtes Freigabe-Token"
 toolbar_new = "Neu"
 toolbar_import = "Import"
 toolbar_export = "Export"
