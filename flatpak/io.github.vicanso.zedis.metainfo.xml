@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.vicanso.zedis</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+
+  <name>Zedis</name>
+  <summary>GPU-accelerated Redis GUI client</summary>
+
+  <developer id="io.github.vicanso">
+    <name>Tree Xie</name>
+  </developer>
+
+  <description>
+    <p>
+      Zedis is a native, high-performance Redis GUI client built in Rust with
+      GPUI, the rendering engine behind the Zed editor. Every pixel is drawn on
+      the GPU: browsing millions of keys stays at 60+ FPS with a minimal memory
+      footprint — no Electron involved.
+    </p>
+    <p>
+      It understands your data: values are auto-decompressed (LZ4, Snappy,
+      GZIP, ZSTD) and decoded as JSON/JSONPath, Protobuf, MessagePack,
+      timestamps, images or hex, with purpose-built viewers for every Redis
+      type and module — Streams with live tail, Vector Set with KNN search,
+      Geo maps, Bloom/Cuckoo filters, Time Series, RediSearch and more.
+    </p>
+    <p>Highlights:</p>
+    <ul>
+      <li>Real-time observability: live metrics, memory analyzer with recommendations, Slow Log, MONITOR and value search</li>
+      <li>Connect to anything: TLS/SSL, SSH tunnels, Cluster and Sentinel</li>
+      <li>Privacy-first: connection metadata stays in a local file, secrets are encrypted, no telemetry</li>
+      <li>Power-user tools: command palette, redis-cli with completion, batch mode, cross-server copy and diff</li>
+      <li>8 interface languages, light and dark themes</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.vicanso.zedis.desktop</launchable>
+
+  <url type="homepage">https://github.com/vicanso/zedis</url>
+  <url type="bugtracker">https://github.com/vicanso/zedis/issues</url>
+  <url type="vcs-browser">https://github.com/vicanso/zedis</url>
+
+  <categories>
+    <category>Development</category>
+    <category>Database</category>
+  </categories>
+
+  <keywords>
+    <keyword>redis</keyword>
+    <keyword>valkey</keyword>
+    <keyword>database</keyword>
+    <keyword>gui</keyword>
+    <keyword>client</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Key browser with namespace tree and syntax-highlighted value editor</caption>
+      <image>https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa</image>
+    </screenshot>
+    <screenshot>
+      <caption>Memory analyzer with Top-N table, TTL histogram and recommendations</caption>
+      <image>https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0</image>
+    </screenshot>
+    <screenshot>
+      <caption>Real-time server metrics</caption>
+      <image>https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21</image>
+    </screenshot>
+  </screenshots>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.4.6" date="2026-06-27">
+      <url>https://github.com/vicanso/zedis/releases/tag/v0.4.6</url>
+    </release>
+  </releases>
+</component>

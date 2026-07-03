@@ -213,13 +213,20 @@ jobs:
           cargo wix --nocapture --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/wix/*
           mv target/wix/zedis-*.msi ./zedis.msi
-      - name: zip
+      - name: package
         shell: powershell
         run: |
           ls .
           $zipName = "zedis-windows-${{ matrix.suffix }}.zip"
           Compress-Archive -Path zedis.exe -Destination $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+          # Bare .msi: consumed by winget (InstallerUrl) and by the in-app
+          # updater, which hands the download to `start` — a zip there would
+          # open Explorer instead of running the installer.
+          $msiName = "zedis-windows-${{ matrix.suffix }}.msi"
+          Copy-Item zedis.msi $msiName
+          echo "MSI_NAME=$msiName" >> $env:GITHUB_ENV
 
           $msiZipName = "zedis-windows-${{ matrix.suffix }}.msi.zip"
           Compress-Archive -Path zedis.msi -Destination $msiZipName
@@ -229,9 +236,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path meta | Out-Null
+          # kind "msi" must stay on the bare installer: the in-app updater
+          # picks kind == "msi" on Windows and runs the file directly.
           $rows = @(
             @{ name = "$env:ZIP_NAME";     kind = "zip" },
-            @{ name = "$env:MSI_ZIP_NAME"; kind = "msi" }
+            @{ name = "$env:MSI_NAME";     kind = "msi" },
+            @{ name = "$env:MSI_ZIP_NAME"; kind = "msizip" }
           )
           $lines = foreach ($r in $rows) {
             $sha  = (Get-FileHash $r.name -Algorithm SHA256).Hash.ToLower()
@@ -250,6 +260,7 @@ jobs:
         shell: bash
         run: |
           ./.github/workflows/upload_asset.sh ./${{ env.ZIP_NAME }} $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./${{ env.MSI_NAME }} $GITHUB_TOKEN
           ./.github/workflows/upload_asset.sh ./${{ env.MSI_ZIP_NAME }} $GITHUB_TOKEN
       - name: Release Nightly Assets
         uses: softprops/action-gh-release@v2
@@ -260,6 +271,7 @@ jobs:
             prerelease: true  
             files: |
               ${{ env.ZIP_NAME }}
+              ${{ env.MSI_NAME }}
               ${{ env.MSI_ZIP_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

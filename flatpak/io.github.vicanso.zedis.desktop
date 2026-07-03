@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Zedis
+Comment=GPU-accelerated Redis GUI client
+Exec=zedis
+Icon=io.github.vicanso.zedis
+Type=Application
+Terminal=false
+Categories=Development;Database;
+Keywords=redis;valkey;database;gui;client;

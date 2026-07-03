@@ -1,29 +1,39 @@
 #!/bin/bash
 set -e
 
-# 定义下载地址
+# Generate flatpak/cargo-sources.json — the offline crate mirror Flathub
+# builds require (their builders have no network access).
+#
+# Usage:
+#   ./scripts/gen-flatpak-sources.sh           # from the working-tree Cargo.lock
+#   ./scripts/gen-flatpak-sources.sh v0.4.7    # from that tag's Cargo.lock
+
 GENERATOR_URL="https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py"
-OUTPUT_FILE="build-aux/flatpak/cargo-sources.json"
+OUTPUT_FILE="flatpak/cargo-sources.json"
+TAG="${1:-}"
+
+cd "$(dirname "$0")/.."
+
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
+
+LOCKFILE=Cargo.lock
+if [ -n "$TAG" ]; then
+  # Use the lockfile exactly as it was at the release tag, so the generated
+  # sources match what the manifest's git source will build.
+  LOCKFILE="$WORKDIR/Cargo.lock"
+  git show "$TAG:Cargo.lock" > "$LOCKFILE"
+  echo "Using Cargo.lock from $TAG"
+fi
 
 echo "Downloading generator..."
-# 下载脚本到临时文件
-curl -sfL "$GENERATOR_URL" -o /tmp/flatpak-cargo-generator.py
+curl -sfL "$GENERATOR_URL" -o "$WORKDIR/flatpak-cargo-generator.py"
 
-echo "Generating cargo sources..."
-
-# 1. 创建一个名为 .venv 的虚拟环境
-python3 -m venv .venv
-
-# 2. 激活环境 (激活后你的命令行前面会出现 (.venv) 字样)
-source .venv/bin/activate
-
-# 3. 在这个隔离环境里安装依赖 (不会报错了)
-pip install aiohttp toml tomlkit
-
-# 运行生成器，指向 Cargo.lock，输出到指定位置
-python3 /tmp/flatpak-cargo-generator.py Cargo.lock -o "$OUTPUT_FILE"
-
+echo "Generating cargo sources (this walks every crate in the lockfile)..."
+python3 -m venv "$WORKDIR/venv"
+source "$WORKDIR/venv/bin/activate"
+pip install --quiet aiohttp toml tomlkit
+python3 "$WORKDIR/flatpak-cargo-generator.py" "$LOCKFILE" -o "$OUTPUT_FILE"
 deactivate
-rm -rf .venv
 
 echo "Done! Generated $OUTPUT_FILE"

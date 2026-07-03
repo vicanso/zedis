@@ -1,33 +1,51 @@
+# Flathub manifest for Zedis. See flatpak/README.md for how to (re)generate
+# cargo-sources.json and test a local build before submitting to Flathub.
 app-id: io.github.vicanso.zedis
 runtime: org.freedesktop.Platform
-runtime-version: '23.08' # 或者是最新的稳定版
+runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
+sdk-extensions:
+  # Flathub builds are network-isolated; the freedesktop SDK has no Rust
+  # toolchain of its own.
+  - org.freedesktop.Sdk.Extension.rust-stable
 command: zedis
 finish-args:
-  # 允许访问网络 (Redis 需要)
+  # Redis connections
   - --share=network
-  # 允许访问 X11/Wayland (GUI 需要)
+  # GUI (Wayland with X11 fallback)
   - --socket=fallback-x11
   - --socket=wayland
-  # 允许 GPU 加速 (GPUI 必须！)
+  # GPU acceleration — required by GPUI
   - --device=dri
-  # 允许访问用户配置目录 (保存连接信息)
+  # Connection metadata / preferences (zedis.toml, redis-servers.toml)
   - --filesystem=xdg-config/zedis:create
+  # NOTE: SSH tunnels that authenticate with a key under ~/.ssh need read
+  # access the sandbox does not grant by default; users can add it with
+  # `flatpak override --user --filesystem=~/.ssh:ro io.github.vicanso.zedis`
+  # (or Flatseal). Deliberately not requested here to keep the default
+  # sandbox tight.
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/zedis/cargo
 
 modules:
   - name: zedis
     buildsystem: simple
     build-commands:
-      # 这里是把编译好的二进制拷贝到 /app/bin
-      - cargo build --release --offline --features mimalloc
-      - install -D target/release/zedis /app/bin/zedis
-      # 安装图标和 desktop 文件
-      - install -D assets/linux/zedis.desktop /app/share/applications/io.github.vicanso.zedis.desktop
-      - install -D assets/linux/zedis.png /app/share/icons/hicolor/512x512/apps/io.github.vicanso.zedis.png
-      - install -D -m0644 io.github.vicanso.zedis.metainfo.xml /app/share/metainfo/io.github.vicanso.zedis.metainfo.xml
+      - cargo --offline build --release --features mimalloc
+      - install -Dm755 target/release/zedis /app/bin/zedis
+      - install -Dm644 flatpak/io.github.vicanso.zedis.desktop /app/share/applications/io.github.vicanso.zedis.desktop
+      - install -Dm644 assets/icon.png /app/share/icons/hicolor/512x512/apps/io.github.vicanso.zedis.png
+      - install -Dm644 flatpak/io.github.vicanso.zedis.metainfo.xml /app/share/metainfo/io.github.vicanso.zedis.metainfo.xml
     sources:
-      # 1. 包含生成的 cargo 依赖源
+      # Offline mirror of every crate in Cargo.lock (including git deps such
+      # as GPUI) — regenerate with flatpak-cargo-generator, see README.md.
       - cargo-sources.json
-      # 2. 包含你的源代码
-      - type: dir
-        path: .
+      # Pin to the first release tag that contains the flatpak/ files.
+      # Fill in the commit with: git rev-parse v0.4.7^{}
+      - type: git
+        url: https://github.com/vicanso/zedis.git
+        tag: v0.4.7
+        commit: TODO-fill-in-tag-commit-hash
