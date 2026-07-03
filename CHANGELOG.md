@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.5.0](https://github.com/vicanso/zedis/compare/v0.4.6..v0.5.0) - 2026-07-03
+
+### ⛰️  Features
+
+- *(key-tree)* Sticky ancestor breadcrumb and large-tree polish - ([ea27724](https://github.com/vicanso/zedis/commit/ea277240a0cf6d4856524c8abf5c45d6c10f2a4d))
+- *(servers)* Passphrase-encrypted share tokens for config export/import - ([4d849aa](https://github.com/vicanso/zedis/commit/4d849aa6995f561ee3fb3ad76acfb6d8b26b17dd))
+- *(status-bar)* Full-width bottom bar with design-aligned styling - ([7dad4ac](https://github.com/vicanso/zedis/commit/7dad4acadbf46d86a74bb021a9713f674256b745))
+- Bundle a monospace font across data views and restructure + persist routing - ([c57ca19](https://github.com/vicanso/zedis/commit/c57ca191fda4e034764ff45fc631a85b28c189b7))
+
+### 🐛 Bug Fixes
+
+- *(editor)* Honor the read-only toggle on already-open value editors - ([cbcd50d](https://github.com/vicanso/zedis/commit/cbcd50da83f56e8b51c07273b69257677471eebe))
+- *(key-tree)* Attribute and order nested "Load more" rows - ([6467bed](https://github.com/vicanso/zedis/commit/6467bed2b665db146943820b18f3ba185c45db7e))
+- *(views)* Guard config load on empty server, brighten RediSearch schema text - ([4965a96](https://github.com/vicanso/zedis/commit/4965a96e11c97babd4d1a89b47a3f887da517b2e))
+
+### 🚜 Refactor
+
+- *(connection)* Hint at TLS on dropped links + handle servers without ROLE - ([29a619e](https://github.com/vicanso/zedis/commit/29a619e70a4bc234abd83c1d2446dd67172f64b6))
+- *(editor)* Redesign value-editor toolbar and add undo/redo - ([940bf7d](https://github.com/vicanso/zedis/commit/940bf7d7196a33808ebc4d3f127b03a8cbe378dd))
+- *(key-tree)* Restyle rows to match the design mockup - ([60049c3](https://github.com/vicanso/zedis/commit/60049c3e1d8199c66eb63db69beaadbcb0fb7927))
+- *(servers)* Redesign the dashboard — toolbar, search, and footer actions - ([3fb20a7](https://github.com/vicanso/zedis/commit/3fb20a7534d9779559d1976eda58c137ee6bc602))
+- *(sidebar)* Redesign server rail with database icons and a collapsible icon-only mode - ([79f5ca5](https://github.com/vicanso/zedis/commit/79f5ca50f9735648729bdafa9203e07c64fe9d4f))
+- *(ui)* Apply monospace font to editor, status bar, key-tree, value editors and data panels - ([0fbd699](https://github.com/vicanso/zedis/commit/0fbd699c4c8a05aaa086a257012e72e671b09484))
+- *(ui)* Bundle JetBrains Mono and apply it across data views - ([a584a4f](https://github.com/vicanso/zedis/commit/a584a4fcd2448a2ee0522b26965fd94700194362))
+- *(updater)* Disable in-app update check for App Store builds - ([45efbaf](https://github.com/vicanso/zedis/commit/45efbaf2623cc65d29199fa93bf34b584b7244a6))
+- *(updater)* Move update chip to the title bar with click-to-recheck - ([267aff5](https://github.com/vicanso/zedis/commit/267aff5fe4e8d81e86f358c67445c07f7a3c3294))
+- Adjust spinner for views - ([b4ebf24](https://github.com/vicanso/zedis/commit/b4ebf240c4d819e0002f6752bea4439b668ac232))
+- Adjust route server schema - ([045d8a1](https://github.com/vicanso/zedis/commit/045d8a1eba299c379fc73599467542a65436aa03))
+- Key-tree hover/progress polish, grouped counts - ([d7ff119](https://github.com/vicanso/zedis/commit/d7ff119c6ab9a89488daab0c04fd8cdf4d411481))
+
+### ⚙️ Miscellaneous Tasks
+
+- Add script for flatpak and widget - ([d7b88c3](https://github.com/vicanso/zedis/commit/d7b88c38c361ed655f621b44fb8ee1b45544bb71))
+
 ## [0.4.6](https://github.com/vicanso/zedis/compare/v0.4.4..v0.4.6) - 2026-06-27
 
 ### ⛰️  Features

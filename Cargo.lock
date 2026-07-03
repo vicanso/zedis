@@ -11287,7 +11287,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-gui"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "ahash",
