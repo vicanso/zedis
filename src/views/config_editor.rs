@@ -127,6 +127,10 @@ pub struct ZedisConfigEditor {
     /// Current selection used when editing a known enum value (dropdown).
     editing_enum: SharedString,
     loading: bool,
+    /// True while a cross-server compare fetches the target's `CONFIG GET *`,
+    /// so the header shows the same spinner as the initial load (the fetch can
+    /// be slow against a remote / cluster target).
+    comparing: bool,
     /// Set when the `CONFIG GET *` load fails, so the body shows the error
     /// instead of a misleading empty "no data" panel.
     error: Option<SharedString>,
@@ -174,6 +178,7 @@ impl ZedisConfigEditor {
             editing_bool: false,
             editing_enum: SharedString::default(),
             loading: false,
+            comparing: false,
             error: None,
             pending_notification: None,
             diff: None,
@@ -187,10 +192,17 @@ impl ZedisConfigEditor {
         if self.loading {
             return;
         }
-        self.loading = true;
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
+        // No active connection yet — e.g. a restored `config` route recreated
+        // this view before `ServerSelected` wired up the server. Querying with
+        // an empty id would hit `get_server("")` → "Redis config not found".
+        // The ServerSelected subscription reloads once the connection is ready.
+        if server_id.is_empty() {
+            return;
+        }
+        self.loading = true;
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
@@ -295,6 +307,9 @@ impl ZedisConfigEditor {
 
     /// Fetch `CONFIG GET *` from the target and store the differing parameters.
     fn run_compare(&mut self, target_id: SharedString, target_db: usize, cx: &mut Context<Self>) {
+        // Show the header spinner immediately; the target fetch below is async.
+        self.comparing = true;
+        cx.notify();
         let local = self.configs.clone();
         let local_id = self.server_state.read(cx).server_id().to_string();
         let local_label: SharedString = get_server(&local_id)
@@ -310,31 +325,34 @@ impl ZedisConfigEditor {
                 Ok::<HashMap<String, String>, Error>(map)
             });
             let result = task.await;
-            let _ = handle.update(cx, |this, cx| match result {
-                Ok(other_map) => {
-                    let mut local_map: HashMap<String, String> =
-                        local.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-                    let mut keys: BTreeSet<String> = local_map.keys().cloned().collect();
-                    keys.extend(other_map.keys().cloned());
-                    let mut rows: Vec<(SharedString, SharedString, SharedString)> = Vec::new();
-                    for key in keys {
-                        let lv = local_map.remove(&key).unwrap_or_default();
-                        let ov = other_map.get(&key).cloned().unwrap_or_default();
-                        if lv != ov {
-                            rows.push((key.into(), lv.into(), ov.into()));
+            let _ = handle.update(cx, |this, cx| {
+                this.comparing = false;
+                match result {
+                    Ok(other_map) => {
+                        let mut local_map: HashMap<String, String> =
+                            local.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                        let mut keys: BTreeSet<String> = local_map.keys().cloned().collect();
+                        keys.extend(other_map.keys().cloned());
+                        let mut rows: Vec<(SharedString, SharedString, SharedString)> = Vec::new();
+                        for key in keys {
+                            let lv = local_map.remove(&key).unwrap_or_default();
+                            let ov = other_map.get(&key).cloned().unwrap_or_default();
+                            if lv != ov {
+                                rows.push((key.into(), lv.into(), ov.into()));
+                            }
                         }
+                        this.diff = Some(ConfigDiff {
+                            local_label,
+                            other_label,
+                            rows,
+                        });
+                        cx.notify();
                     }
-                    this.diff = Some(ConfigDiff {
-                        local_label,
-                        other_label,
-                        rows,
-                    });
-                    cx.notify();
-                }
-                Err(e) => {
-                    let msg: SharedString = format!("{}: {e}", i18n_config_editor(cx, "compare_failed")).into();
-                    this.pending_notification = Some(Notification::error(msg));
-                    cx.notify();
+                    Err(e) => {
+                        let msg: SharedString = format!("{}: {e}", i18n_config_editor(cx, "compare_failed")).into();
+                        this.pending_notification = Some(Notification::error(msg));
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -498,7 +516,11 @@ impl Render for ZedisConfigEditor {
             } else {
                 let edit_key = key.clone();
                 let edit_value = value.clone();
+                // Row-hover highlight so the pointer's current row is obvious
+                // in this dense list — the `.id()` makes the div stateful (a
+                // prerequisite for `.hover`); it overrides the zebra stripe.
                 h_flex()
+                    .id(("config-row", row_ix))
                     .w_full()
                     .px_3()
                     .py_1()
@@ -508,6 +530,7 @@ impl Render for ZedisConfigEditor {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .when(is_stripe, |this| this.bg(stripe_bg))
+                    .hover(|this| this.bg(cx.theme().table_hover))
                     .child(
                         div()
                             .w(px(280.0))
@@ -577,8 +600,9 @@ impl Render for ZedisConfigEditor {
                             .font_family(font_family.clone()),
                     )
                     // Inline loading indicator in the header — more noticeable
-                    // than a centered body spinner while `CONFIG GET *` is slow.
-                    .when(self.loading, |this| {
+                    // than a centered body spinner while `CONFIG GET *` is slow
+                    // (covers both the initial load and a cross-server compare).
+                    .when(self.loading || self.comparing, |this| {
                         this.child(
                             h_flex()
                                 .items_center()
@@ -626,6 +650,7 @@ impl Render for ZedisConfigEditor {
                 let border = cx.theme().border;
                 let muted = cx.theme().muted_foreground;
                 let fg = cx.theme().foreground;
+                let hover_bg = cx.theme().table_hover;
                 let filter = self.filter.to_lowercase();
                 let filtered_diff: Vec<&(SharedString, SharedString, SharedString)> = diff
                     .rows
@@ -667,6 +692,7 @@ impl Render for ZedisConfigEditor {
                     let diff_rows = filtered_diff.into_iter().enumerate().map(move |(i, (key, lv, ov))| {
                         let is_stripe = i % 2 != 0;
                         h_flex()
+                            .id(("config-diff-row", i))
                             .w_full()
                             .px_3()
                             .py_1()
@@ -674,6 +700,7 @@ impl Render for ZedisConfigEditor {
                             .border_b_1()
                             .border_color(border)
                             .when(is_stripe, |this| this.bg(stripe_bg))
+                            .hover(move |this| this.bg(hover_bg))
                             .child(
                                 div()
                                     .w(px(280.0))

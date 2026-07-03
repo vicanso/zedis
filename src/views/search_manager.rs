@@ -1156,19 +1156,31 @@ impl ZedisSearchManager {
         };
         let mut flag_chips: Vec<gpui::AnyElement> = Vec::new();
         if field.sortable {
-            flag_chips.push(self.chip("SORTABLE".into(), cx.theme().muted, cx).into_any_element());
+            flag_chips.push(
+                self.chip("SORTABLE".into(), cx.theme().muted_foreground, cx)
+                    .into_any_element(),
+            );
         }
         if field.no_stem {
-            flag_chips.push(self.chip("NOSTEM".into(), cx.theme().muted, cx).into_any_element());
+            flag_chips.push(
+                self.chip("NOSTEM".into(), cx.theme().muted_foreground, cx)
+                    .into_any_element(),
+            );
         }
         if field.no_index {
-            flag_chips.push(self.chip("NOINDEX".into(), cx.theme().muted, cx).into_any_element());
+            flag_chips.push(
+                self.chip("NOINDEX".into(), cx.theme().muted_foreground, cx)
+                    .into_any_element(),
+            );
         }
+        // Attribute text (weight= / sep=) reads as secondary but must stay
+        // legible on the dark schema panel — `muted_foreground` was too faint.
+        let attr_color = cx.theme().foreground.opacity(0.7);
         if let Some(w) = field.weight {
             flag_chips.push(
                 Label::new(format!("weight={w}"))
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_color(attr_color)
                     .into_any_element(),
             );
         }
@@ -1176,7 +1188,7 @@ impl ZedisSearchManager {
             flag_chips.push(
                 Label::new(format!("sep={sep}"))
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_color(attr_color)
                     .into_any_element(),
             );
         }
