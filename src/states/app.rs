@@ -955,7 +955,17 @@ impl ZedisAppState {
     /// Connect to a server, landing on the editor — the sidebar / server-card
     /// / palette / tray entry points. The status-bar DB switch, which keeps
     /// the current view, goes through `set_selected_server` instead.
+    ///
+    /// These entry points mean "(re)connect", not just "navigate", so the
+    /// selection is announced *unconditionally* before routing. `apply_route`'s
+    /// dedupe compares against the persisted `selected_server` snapshot, which
+    /// after a restart can point at this server while nothing is loaded in the
+    /// session yet — relying on it alone would skip the `ServerSelected` that
+    /// actually loads the connection (the "tray click does nothing" bug).
     pub fn connect_server(&mut self, id: String, db: usize, cx: &mut Context<Self>) {
+        self.last_db.insert(id.clone(), db);
+        self.selected_server = Some((id.clone(), db));
+        cx.emit(GlobalEvent::ServerSelected(id.clone().into(), db));
         self.go_to(
             Route::Server {
                 id: id.into(),

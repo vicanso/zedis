@@ -287,10 +287,13 @@ pub fn init_tray(cx: &mut App) {
                                             store.update(
                                                 cx,
                                                 |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
+                                                    // Clear first: clear_selected_server routes Home
+                                                    // with no query, so calling it afterwards would
+                                                    // wipe the `new=true` that opens the dialog.
+                                                    state.clear_selected_server(cx);
                                                     let mut query = HashMap::new();
                                                     query.insert("new".to_string(), "true".to_string());
                                                     state.go_with_query(Route::Home, query, cx);
-                                                    state.clear_selected_server(cx);
                                                 },
                                             );
                                         },
