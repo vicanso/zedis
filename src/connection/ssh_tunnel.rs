@@ -18,10 +18,11 @@ use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
 use crate::helpers::{TtlCache, get_home_dir, get_or_create_config_dir, resolve_path};
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
+use russh::AgentAuthError;
 use russh::client::AuthResult;
 use russh::client::{Handle, Handler};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::ssh_key::PublicKey;
+use russh::keys::ssh_key::{HashAlg, PublicKey};
 use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
 use rustls::pki_types::ServerName;
 use rustls_pki_types::pem::PemObject;
@@ -366,84 +367,40 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
     // Establish SSH connection
     let mut session = russh::client::connect(config, (host, port), handler).await?;
 
+    // Also keys the "last successful agent key" memory (see
+    // `remember_agent_fingerprint`), matching the session-cache id.
+    let cache_id = format!("{user}@{addr}");
+
     // Authenticate using provided credentials
     let auth_res = if !key.is_empty() {
-        let key_pair = if is_pem_format(key) {
-            // Decode key from string content
-            decode_secret_key(key, None)?
+        if let Some(target) = try_parse_public_key(key) {
+            // The key field holds a *public* key (a `.pub` path or pasted
+            // content): OpenSSH `IdentityFile xxx.pub` semantics — ask the
+            // agent to sign with exactly that key and try nothing else, so a
+            // many-keyed agent can never trip the server's MaxAuthTries.
+            debug!(user, "ssh agent authentication (pinned public key)");
+            authenticate_via_agent(&mut session, user, &cache_id, Some(target)).await?
         } else {
-            let key = resolve_path(key);
-            // Load key from file path
-            load_secret_key(key, None)?
-        };
-        let key = Arc::new(key_pair);
-        let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
-        debug!(user, "public key authentication");
-        session.authenticate_publickey(user, key_with_alg).await?
+            let key_pair = if is_pem_format(key) {
+                // Decode key from string content
+                decode_secret_key(key, None)?
+            } else {
+                let key = resolve_path(key);
+                // Load key from file path
+                load_secret_key(key, None)?
+            };
+            let key = Arc::new(key_pair);
+            let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
+            debug!(user, "public key authentication");
+            session.authenticate_publickey(user, key_with_alg).await?
+        }
     } else if !password.is_empty() {
         debug!(user, "password authentication");
         // Password authentication
         session.authenticate_password(user, password).await?
     } else {
-        #[cfg(not(unix))]
-        {
-            return Err(Error::Invalid {
-                message: "Ssh agent is not supported on this platform".to_string(),
-            });
-        }
-        #[cfg(unix)]
-        {
-            debug!(user, "ssh agent authentication");
-            let mut agent = AgentClient::connect_env().await.map_err(|e| Error::Invalid {
-                message: format!("Failed to connect to ssh agent: {e:?}"),
-            })?;
-            let identities = agent.request_identities().await.map_err(|e| Error::Invalid {
-                message: format!("Failed to request identities from ssh agent: {e:?}"),
-            })?;
-            let mut authenticated = false;
-            let mut auth_result = None;
-            let mut hash_alg = None;
-            let mut is_detect_hash_alg = false;
-            for key in identities {
-                let public_key = key.public_key().into_owned();
-                if !is_detect_hash_alg && public_key.algorithm().is_rsa() {
-                    hash_alg = session.best_supported_rsa_hash().await.unwrap_or(None).flatten();
-                    is_detect_hash_alg = true;
-                }
-                match session
-                    .authenticate_publickey_with(user, public_key, hash_alg, &mut agent)
-                    .await
-                {
-                    Ok(AuthResult::Success) => {
-                        authenticated = true;
-                        break;
-                    }
-                    Ok(AuthResult::Failure {
-                        remaining_methods,
-                        partial_success,
-                    }) => {
-                        auth_result = Some(AuthResult::Failure {
-                            remaining_methods,
-                            partial_success,
-                        });
-                        continue;
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Error authenticating with agent key");
-                        continue;
-                    }
-                }
-            }
-            if authenticated {
-                AuthResult::Success
-            } else if let Some(auth_result) = auth_result {
-                auth_result
-            } else {
-                return Err(Error::Invalid {
-                    message: "Ssh authentication failed".to_string(),
-                });
-            }
-        }
+        debug!(user, "ssh agent authentication");
+        authenticate_via_agent(&mut session, user, &cache_id, None).await?
     };
 
     // Verify authentication succeeded
@@ -454,6 +411,187 @@ async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> R
     }
 
     Ok(session)
+}
+
+/// Interpret the configured ssh key value as a *public* key when possible:
+/// pasted OpenSSH public-key content (`ssh-ed25519 AAAA… comment`) or a path
+/// to a `.pub` file. Anything else (PEM/OpenSSH private key content, private
+/// key paths, garbage) returns `None` so the caller keeps the existing
+/// private-key flow — existing configs are untouched.
+fn try_parse_public_key(key: &str) -> Option<PublicKey> {
+    let trimmed = key.trim();
+    if let Ok(public_key) = PublicKey::from_openssh(trimmed) {
+        return Some(public_key);
+    }
+    if is_pem_format(trimmed) {
+        // Pasted private-key content — not a path, don't touch the fs.
+        return None;
+    }
+    let content = std::fs::read_to_string(resolve_path(trimmed)).ok()?;
+    PublicKey::from_openssh(content.trim()).ok()
+}
+
+/// The error for a session whose event loop died mid-authentication (the
+/// server closed the connection). Points the user at the `.pub` escape hatch
+/// since "too many keys in the agent" is the usual trigger.
+fn dead_session_error() -> Error {
+    Error::Invalid {
+        message: "Ssh server closed the connection during agent authentication (usually MaxAuthTries \
+                  exceeded because the agent holds many keys). Set the connection's SSH key to the \
+                  matching public key file (e.g. ~/.ssh/id_ed25519.pub) so only that key is offered."
+            .to_string(),
+    }
+}
+
+/// Authenticate through the ssh-agent; the private key never leaves the agent.
+///
+/// With `pinned` (a configured `.pub`), only the matching agent identity is
+/// tried — mirroring OpenSSH's `IdentityFile xxx.pub` + agent semantics.
+/// Without it every agent identity is tried, but the key that last succeeded
+/// for `cache_id` is moved to the front so repeat connections authenticate on
+/// the first attempt instead of re-burning the server's MaxAuthTries budget.
+async fn authenticate_via_agent(
+    session: &mut SshHandle,
+    user: &str,
+    cache_id: &str,
+    pinned: Option<PublicKey>,
+) -> Result<AuthResult> {
+    #[cfg(not(unix))]
+    {
+        let _ = (session, user, cache_id, pinned);
+        Err(Error::Invalid {
+            message: "Ssh agent is not supported on this platform".to_string(),
+        })
+    }
+    #[cfg(unix)]
+    {
+        let mut agent = AgentClient::connect_env().await.map_err(|e| Error::Invalid {
+            message: format!("Failed to connect to ssh agent: {e:?}"),
+        })?;
+        let identities = agent.request_identities().await.map_err(|e| Error::Invalid {
+            message: format!("Failed to request identities from ssh agent: {e:?}"),
+        })?;
+        let mut candidates: Vec<PublicKey> = identities.iter().map(|key| key.public_key().into_owned()).collect();
+
+        if let Some(target) = &pinned {
+            // Comment differs between the `.pub` file and the agent — compare
+            // key material only.
+            candidates.retain(|key| key.key_data() == target.key_data());
+            if candidates.is_empty() {
+                return Err(Error::Invalid {
+                    message: format!(
+                        "Ssh agent has no key matching the configured public key {} (list loaded keys with `ssh-add -l`)",
+                        target.fingerprint(HashAlg::Sha256)
+                    ),
+                });
+            }
+        } else if let Some(fingerprint) = remembered_agent_fingerprint(cache_id)
+            && let Some(pos) = candidates
+                .iter()
+                .position(|key| key.fingerprint(HashAlg::Sha256).to_string() == fingerprint)
+            && pos > 0
+        {
+            let remembered = candidates.remove(pos);
+            candidates.insert(0, remembered);
+        }
+
+        if candidates.is_empty() {
+            return Err(Error::Invalid {
+                message: "Ssh agent holds no identities (add one with `ssh-add`)".to_string(),
+            });
+        }
+
+        let mut last_failure = None;
+        let mut hash_alg = None;
+        let mut is_detect_hash_alg = false;
+        for public_key in candidates {
+            if !is_detect_hash_alg && public_key.algorithm().is_rsa() {
+                hash_alg = session.best_supported_rsa_hash().await.unwrap_or(None).flatten();
+                is_detect_hash_alg = true;
+            }
+            match session
+                .authenticate_publickey_with(user, public_key.clone(), hash_alg, &mut agent)
+                .await
+            {
+                Ok(AuthResult::Success) => {
+                    remember_agent_fingerprint(cache_id, &public_key.fingerprint(HashAlg::Sha256).to_string());
+                    return Ok(AuthResult::Success);
+                }
+                Ok(AuthResult::Failure {
+                    remaining_methods,
+                    partial_success,
+                }) => {
+                    // An empty method set is russh's synthetic reply after the
+                    // session event loop already died (server disconnected) —
+                    // not a real server response. Stop instead of burning the
+                    // remaining keys on a dead session.
+                    if remaining_methods.is_empty() {
+                        return Err(dead_session_error());
+                    }
+                    last_failure = Some(AuthResult::Failure {
+                        remaining_methods,
+                        partial_success,
+                    });
+                }
+                // Session event loop unreachable: the server closed the
+                // connection (typically MaxAuthTries). Every remaining key
+                // would fail the same way — stop with a useful error.
+                Err(AgentAuthError::Send(_)) => return Err(dead_session_error()),
+                Err(e) => {
+                    // Agent-side failure for this key (e.g. it refused to
+                    // sign); the session is still alive, keep trying.
+                    error!(error = %e, "Error authenticating with agent key");
+                }
+            }
+        }
+        last_failure.ok_or_else(|| Error::Invalid {
+            message: "Ssh authentication failed".to_string(),
+        })
+    }
+}
+
+/// File remembering which agent key last authenticated each `user@addr`
+/// (public SHA256 fingerprints only — no secrets). Lives in the config dir
+/// next to Zedis's known_hosts; one `<id> <fingerprint>` pair per line.
+#[cfg(unix)]
+fn agent_key_memory_path() -> Option<std::path::PathBuf> {
+    get_or_create_config_dir().ok().map(|dir| dir.join("ssh_agent_keys"))
+}
+
+/// SHA256 fingerprint of the agent key that last succeeded for `cache_id`.
+#[cfg(unix)]
+fn remembered_agent_fingerprint(cache_id: &str) -> Option<String> {
+    let content = std::fs::read_to_string(agent_key_memory_path()?).ok()?;
+    content.lines().find_map(|line| {
+        let (id, fingerprint) = line.trim().split_once(' ')?;
+        (id == cache_id).then(|| fingerprint.trim().to_string())
+    })
+}
+
+/// Record `fingerprint` as the working agent key for `cache_id` (upsert).
+/// Best-effort: a write failure only costs the fast path next time.
+#[cfg(unix)]
+fn remember_agent_fingerprint(cache_id: &str, fingerprint: &str) {
+    if remembered_agent_fingerprint(cache_id).as_deref() == Some(fingerprint) {
+        return;
+    }
+    let Some(path) = agent_key_memory_path() else {
+        return;
+    };
+    let mut lines: Vec<String> = std::fs::read_to_string(&path)
+        .map(|content| {
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && line.split_once(' ').is_none_or(|(id, _)| id != cache_id))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    lines.push(format!("{cache_id} {fingerprint}"));
+    if let Err(e) = std::fs::write(&path, lines.join("\n") + "\n") {
+        error!(error = %e, "failed to record ssh agent key fingerprint");
+    }
 }
 
 /// A rustls `ServerCertVerifier` that accepts any server certificate.
@@ -631,4 +769,43 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
 /// Clears expired SSH sessions from the cache.
 pub fn clear_expired_ssh_sessions() -> (usize, usize) {
     SSH_SESSION.clear_expired()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Throwaway key generated for this test — never used anywhere.
+    const SAMPLE_PUB: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII32jQOkordvaQmkre2sGOqkzt4jSxZbSS5/axMDPpQK zedis-test";
+
+    #[test]
+    fn parse_public_key_accepts_pasted_content() {
+        let parsed = try_parse_public_key(SAMPLE_PUB).expect("valid public key content");
+        assert_eq!(parsed.comment().to_string(), "zedis-test");
+        // Surrounding whitespace must not matter.
+        assert!(try_parse_public_key(&format!("  {SAMPLE_PUB}\n")).is_some());
+    }
+
+    #[test]
+    fn parse_public_key_accepts_pub_file_path() {
+        let dir = std::env::temp_dir().join("zedis-ssh-tunnel-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("testkey.pub");
+        std::fs::write(&path, format!("{SAMPLE_PUB}\n")).expect("write pub file");
+        let parsed = try_parse_public_key(&path.to_string_lossy()).expect("valid .pub path");
+        assert!(parsed.algorithm().to_string().contains("ed25519"));
+    }
+
+    #[test]
+    fn parse_public_key_rejects_private_material() {
+        // Pasted PEM private key must fall through to the private-key flow.
+        assert!(
+            try_parse_public_key("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----")
+                .is_none()
+        );
+        // Nonexistent path / garbage content.
+        assert!(try_parse_public_key("~/.ssh/definitely-missing-key").is_none());
+        assert!(try_parse_public_key("not a key at all").is_none());
+    }
 }
