@@ -30,4 +30,4 @@ bloat:
 	cargo bloat --release --crates --bin zedis
 
 version:
-	git cliff --unreleased --tag v0.5.0 --prepend CHANGELOG.md
+	git cliff --unreleased --tag v0.5.1 --prepend CHANGELOG.md
