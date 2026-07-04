@@ -2,7 +2,7 @@ name: "Publish"
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
-    # branches: [main]
+    branches: [main]
 
 env:
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -66,10 +66,10 @@ jobs:
           # import certificate
           echo "$p12_certificate" | base64 --decode > certificate.p12
           security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$p12_password" -T /usr/bin/codesign
-          
+
           # prevent system popup asking for password
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
-          
+
           # set as default keychain
           security list-keychains -d user -s "$KEYCHAIN_PATH"
       - name: rust cache
@@ -167,14 +167,17 @@ jobs:
           DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
           ./.github/workflows/upload_asset.sh "$DMG_NAME" $GITHUB_TOKEN
       - name: Release Nightly Assets
+        # main pushes only — a tag push must not overwrite the nightly
+        # release with stable-build artifacts.
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-            tag_name: nightly
-            name: "Development Build (Nightly)"
-            body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
-            prerelease: true  
-            files: |
-              ./release/*.dmg
+          tag_name: nightly
+          name: "Development Build (Nightly)"
+          body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
+          prerelease: true
+          files: |
+            ./release/*.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
@@ -263,16 +266,19 @@ jobs:
           ./.github/workflows/upload_asset.sh ./${{ env.MSI_NAME }} $GITHUB_TOKEN
           ./.github/workflows/upload_asset.sh ./${{ env.MSI_ZIP_NAME }} $GITHUB_TOKEN
       - name: Release Nightly Assets
+        # main pushes only — a tag push must not overwrite the nightly
+        # release with stable-build artifacts.
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-            tag_name: nightly
-            name: "Development Build (Nightly)"
-            body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
-            prerelease: true  
-            files: |
-              ${{ env.ZIP_NAME }}
-              ${{ env.MSI_NAME }}
-              ${{ env.MSI_ZIP_NAME }}
+          tag_name: nightly
+          name: "Development Build (Nightly)"
+          body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
+          prerelease: true
+          files: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.MSI_NAME }}
+            ${{ env.MSI_ZIP_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   linux:
@@ -287,7 +293,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             suffix: x86_64
             appimagetool: appimagetool-x86_64.AppImage
-            
+
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             suffix: aarch64
@@ -354,14 +360,17 @@ jobs:
           ./.github/workflows/upload_asset.sh ./zedis-linux-${{ matrix.suffix }}.tar.gz $GITHUB_TOKEN
           ./.github/workflows/upload_asset.sh ./zedis-${{ matrix.suffix }}.AppImage.tar.gz $GITHUB_TOKEN
       - name: Release Nightly Assets
+        # main pushes only — a tag push must not overwrite the nightly
+        # release with stable-build artifacts.
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-            tag_name: nightly
-            name: "Development Build (Nightly)"
-            body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
-            prerelease: true  
-            files: |
-              ./*.tar.gz
+          tag_name: nightly
+          name: "Development Build (Nightly)"
+          body: "This is a rolling build from the latest main branch. Build date: ${{ needs.prepare_vars.outputs.build_date }}"
+          prerelease: true
+          files: |
+            ./*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
