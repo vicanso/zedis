@@ -2,7 +2,12 @@ name: "Publish"
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
-    branches: [main]
+  schedule:
+    # Daily nightly at 18:00 UTC (02:00 Beijing). Skipped when main has no
+    # new commits since the last nightly — see the gate in prepare_vars.
+    - cron: "0 18 * * *"
+  # Manual nightly (always builds, even without new commits).
+  workflow_dispatch:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -15,16 +20,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       build_date: ${{ steps.date.outputs.date }}
+      should_build: ${{ steps.gate.outputs.should_build }}
     steps:
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_OUTPUT
       - uses: actions/checkout@v6
+      - name: Skip scheduled run when main has no new commits
+        id: gate
+        run: |
+          should_build=true
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # The nightly tag records the commit the previous nightly was
+            # built from (softprops/action-gh-release tags it on publish).
+            nightly_sha=$(gh api "repos/${{ github.repository }}/git/refs/tags/nightly" -q .object.sha 2>/dev/null || echo "")
+            if [ "$nightly_sha" = "${{ github.sha }}" ]; then
+              echo "main unchanged since last nightly ($nightly_sha); skipping build"
+              should_build=false
+            fi
+          fi
+          echo "should_build=$should_build" >> $GITHUB_OUTPUT
       - name: Delete old nightly release and tag
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
         run: gh release delete nightly --cleanup-tag -y || true
   macos:
     needs: prepare_vars
+    if: needs.prepare_vars.outputs.should_build == 'true'
     name: macos-${{ matrix.dmg_suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -183,6 +204,7 @@ jobs:
 
   windows:
     needs: prepare_vars
+    if: needs.prepare_vars.outputs.should_build == 'true'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -283,6 +305,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   linux:
     needs: prepare_vars
+    if: needs.prepare_vars.outputs.should_build == 'true'
     name: linux-${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
