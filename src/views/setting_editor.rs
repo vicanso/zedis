@@ -66,6 +66,7 @@ pub struct ZedisSettingEditor {
     ai_model_state: Entity<InputState>,
     tray_enabled: bool,
     show_key_tree_ttl: bool,
+    soft_delete: bool,
     auto_update_check: bool,
     font_size_slider: Entity<SliderState>,
     locale_select: Entity<ZedisSelect>,
@@ -120,6 +121,7 @@ impl ZedisSettingEditor {
         let key_scan_count = store.key_scan_count();
         let tray_enabled = store.tray_enabled();
         let show_key_tree_ttl = store.show_key_tree_ttl();
+        let soft_delete = store.soft_delete();
         let auto_update_check = store.auto_update_check();
         let font_rem = store.font_rem_px().unwrap_or(16.0);
         let locale = store.locale().to_string();
@@ -382,6 +384,7 @@ impl ZedisSettingEditor {
             ai_model_state,
             tray_enabled,
             show_key_tree_ttl,
+            soft_delete,
             auto_update_check,
             font_size_slider,
             locale_select,
@@ -506,6 +509,19 @@ impl Render for ZedisSettingEditor {
                             let enabled = *checked;
                             update_app_state_and_save(cx, "save_show_key_tree_ttl", move |state, _| {
                                 state.set_show_key_tree_ttl(enabled);
+                            });
+                        })),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "soft_delete",
+                    Switch::new("soft-delete")
+                        .checked(self.soft_delete)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.soft_delete = *checked;
+                            let enabled = *checked;
+                            update_app_state_and_save(cx, "save_soft_delete", move |state, _| {
+                                state.set_soft_delete(enabled);
                             });
                         })),
                 ))

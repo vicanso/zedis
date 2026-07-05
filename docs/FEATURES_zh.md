@@ -109,7 +109,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Key 编辑与历史
 **重命名、字段级 TTL、文件导入导出、批量粘贴、版本历史。**
 
-原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。
+原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。删除 key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，工具菜单可恢复、TTL 原样保留；设置中可关闭）——生产环境手滑删 key 不再是不可挽回的事故。
 
 ### 批量 Key 操作
 **多选删除、批量 TTL、DUMP/RESTORE 导入导出、自动刷新。**

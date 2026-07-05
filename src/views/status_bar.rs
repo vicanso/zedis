@@ -20,7 +20,7 @@ use crate::{
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, ServerEvent, ServerTask, ServerToolsAction,
         ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar,
-        i18n_status_bar, i18n_topology, i18n_value_search, save_session_option,
+        i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
     },
 };
 use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
@@ -594,6 +594,13 @@ impl ZedisStatusBar {
             Icon::new(IconName::Settings),
             Box::new(ServerToolsAction::Config),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
+        );
+        // Local recycle bin (soft-deleted keys) — a dialog, not a sub-route,
+        // and always available since the bin lives client-side.
+        menu = menu.menu_element_with_icon(
+            Icon::new(CustomIconName::FileXCorner),
+            Box::new(ServerToolsAction::Trash),
+            move |_window, cx| Label::new(i18n_trash(cx, "title")),
         );
         // ACL (Redis 6.0+). Version-gated; suffix points at the required
         // Redis version when unavailable.

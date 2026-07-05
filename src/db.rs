@@ -28,6 +28,7 @@ mod metrics_history;
 mod protos;
 mod scripts;
 mod search_history_manager;
+mod trash;
 
 pub use cmd_history_manager::*;
 pub use favorites_manager::*;
@@ -37,6 +38,7 @@ pub use metrics_history::*;
 pub use protos::*;
 pub use scripts::*;
 pub use search_history_manager::*;
+pub use trash::*;
 
 const SEARCH_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
 const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
@@ -57,6 +59,10 @@ const KEY_METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ke
 // pruned to the retention window, so the table stays small (~10k rows per
 // server) — see `states/server/stat.rs` for the write policy.
 const METRICS_HISTORY_TABLE: TableDefinition<(&str, i64), &[u8]> = TableDefinition::new("metrics_history");
+// Local recycle bin for soft-deleted keys: key (server_id, id) where id is
+// "{deleted_at_ms:020}:{db}:{key}"; value = framed meta JSON + DUMP payload
+// (see `db/trash.rs`). Entries are purged after 24h.
+const TRASH_TABLE: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("key_trash");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -86,6 +92,7 @@ pub fn init_database() -> Result<()> {
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
         write_txn.open_table(KEY_METADATA_TABLE)?;
         write_txn.open_table(METRICS_HISTORY_TABLE)?;
+        write_txn.open_table(TRASH_TABLE)?;
     }
     write_txn.commit()?;
     debug!(path = db_path.display().to_string(), "database initialized success");
@@ -93,6 +100,20 @@ pub fn init_database() -> Result<()> {
         message: "database initialized failed".to_string(),
     })?;
     Ok(())
+}
+
+/// Test-only: initialize the database exactly once per process. `Once`
+/// blocks concurrent callers until the first initialization finishes —
+/// racing two `init_database` calls trips over redb's exclusive file lock.
+/// Callers must redirect the config dir (`override_config_dir`) first.
+#[cfg(test)]
+pub fn init_database_for_tests() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Err(e) = init_database() {
+            panic!("init test database: {e}");
+        }
+    });
 }
 
 fn add_normalize_history(history: &mut Vec<SharedString>, keyword: SharedString, max: usize) {

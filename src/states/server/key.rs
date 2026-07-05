@@ -23,11 +23,14 @@ use super::{
     value::{KeyType, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
+use crate::db::{
+    TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, insert_trash_entry, purge_trash,
+};
 use crate::states::{QueryMode, ZedisGlobalStore};
 use crate::{
-    connection::get_connection_manager,
+    connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
-    helpers::{parse_duration, unix_ts},
+    helpers::{parse_duration, unix_ts, unix_ts_millis},
 };
 use ahash::AHashSet;
 use futures::stream::{self, StreamExt};
@@ -35,8 +38,71 @@ use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
+
+/// Best-effort stash of a key into the local recycle bin before deletion:
+/// `DUMP` + `PTTL`, framed into the redb trash table (24h retention).
+/// Every failure path only warns and falls through to a permanent delete —
+/// the bin must never turn a working delete into an error. Oversized
+/// payloads (> [`TRASH_MAX_PAYLOAD`]) are skipped: the bin is a safety net
+/// for fat-finger deletes, not a big-key backup store.
+async fn stash_key_to_trash(server_id: &str, db: usize, key: &str, conn: &mut RedisAsyncConn) {
+    // Size gate BEFORE the DUMP: `MEMORY USAGE` (sampled estimate, Redis
+    // 4.0+) is cheap, while running DUMP on a huge value makes the server
+    // serialize and ship it just for us to throw it away. Estimate errors
+    // (older Redis, restricted command) fall through to the exact
+    // post-DUMP cap below.
+    match cmd("MEMORY")
+        .arg("USAGE")
+        .arg(key)
+        .query_async::<Option<i64>>(conn)
+        .await
+    {
+        Ok(Some(estimated)) if estimated > TRASH_MAX_VALUE_MEMORY => {
+            warn!(key, estimated, "trash: value too large, deleting permanently");
+            return;
+        }
+        // Nil: the key is already gone; the DUMP below settles it.
+        Ok(_) => {}
+        Err(e) => debug!(key, error = %e, "trash: MEMORY USAGE unavailable, relying on post-DUMP cap"),
+    }
+    let payload: Option<Vec<u8>> = match cmd("DUMP").arg(key).query_async(conn).await {
+        Ok(payload) => payload,
+        Err(e) => {
+            warn!(key, error = %e, "trash: DUMP failed, deleting permanently");
+            return;
+        }
+    };
+    // Nil reply: the key vanished between the delete request and now.
+    let Some(payload) = payload else {
+        return;
+    };
+    if payload.len() > TRASH_MAX_PAYLOAD {
+        warn!(
+            key,
+            size = payload.len(),
+            "trash: payload too large, deleting permanently"
+        );
+        return;
+    }
+    let pttl_ms: i64 = cmd("PTTL").arg(key).query_async(conn).await.unwrap_or(-1);
+    let entry = TrashEntry {
+        key: key.to_string(),
+        db,
+        pttl_ms,
+        deleted_at_ms: unix_ts_millis(),
+        payload,
+    };
+    if let Err(e) = insert_trash_entry(server_id, &entry) {
+        warn!(key, error = %e, "trash: stash failed, deleting permanently");
+        return;
+    }
+    // Opportunistic cleanup so the bin never outgrows its retention.
+    if let Err(e) = purge_trash(server_id, unix_ts_millis() - TRASH_RETENTION_MS) {
+        warn!(error = %e, "trash: purge failed");
+    }
+}
 
 /// Hard ceiling on the per-page target after the per-master multiplier, so a
 /// large cluster can't try to pull (and client-side tree-build) an unbounded
@@ -770,12 +836,16 @@ impl ZedisServerState {
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
+        let soft_delete = cx.global::<ZedisGlobalStore>().read(cx).soft_delete();
         let remove_key = key.clone();
         self.spawn_with_arg(
             ServerTask::DeleteKey,
             key.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                if soft_delete {
+                    stash_key_to_trash(&server_id, db, key.as_str(), &mut conn).await;
+                }
                 let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
                 Ok(())
             },

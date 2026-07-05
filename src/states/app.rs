@@ -242,6 +242,9 @@ pub enum ServerToolsAction {
     Topology,
     ServerLoad,
     ValueSearch,
+    /// Opens the local recycle-bin dialog (soft-deleted keys) instead of a
+    /// sub-route — handled specially in `main.rs`.
+    Trash,
 }
 
 const LIGHT_THEME_MODE: &str = "light";
@@ -415,6 +418,10 @@ pub struct ZedisAppState {
     #[serde(default)]
     last_db: HashMap<String, usize>,
     tray_enabled: Option<bool>,
+    /// When `true` (default), deleting a single key first stashes its DUMP
+    /// payload into the local recycle bin (24h retention) so it can be
+    /// restored. `false` deletes permanently, as before.
+    soft_delete: Option<bool>,
     /// When `true`, the key tree fetches TTL per key during SCAN and shows
     /// a TTL chip next to each leaf. When `false` the TTL pipeline command
     /// is skipped (cheaper scans on large dbs) and no chip is rendered.
@@ -808,6 +815,12 @@ impl ZedisAppState {
     }
     pub fn set_tray_enabled(&mut self, enabled: bool) {
         self.tray_enabled = Some(enabled);
+    }
+    pub fn soft_delete(&self) -> bool {
+        self.soft_delete.unwrap_or(true)
+    }
+    pub fn set_soft_delete(&mut self, enabled: bool) {
+        self.soft_delete = Some(enabled);
     }
     pub fn show_key_tree_ttl(&self) -> bool {
         self.show_key_tree_ttl.unwrap_or(true)

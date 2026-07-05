@@ -72,7 +72,7 @@ pub fn prune_metrics_history(server_id: &str, before_ms: i64) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_database;
+    use crate::db::init_database_for_tests;
     use crate::helpers::override_config_dir;
 
     #[test]
@@ -81,7 +81,7 @@ mod tests {
         // below overwrite their keys so the assertions are deterministic
         // even if the database file already exists.
         override_config_dir(std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())));
-        init_database().expect("init database");
+        init_database_for_tests();
 
         insert_metrics_sample("srv-a", 1000, b"a1").expect("insert a1");
         insert_metrics_sample("srv-a", 2000, b"a2").expect("insert a2");

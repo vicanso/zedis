@@ -109,7 +109,7 @@ Keys group into a nested tree by `:` with compact TTL chips (green live / red ex
 ### Key Editing & History
 **Rename, per-field TTL, file import/export, bulk paste, and version history.**
 
-Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXPIRE`/`HPERSIST`, Redis 7.4+), **value file export/import** (binary-safe, `KEEPTTL`), **bulk paste** of TSV/CSV into Hash/List/Set/ZSet, and a client-side **last-10-versions** write history with diff & one-click restore.
+Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXPIRE`/`HPERSIST`, Redis 7.4+), **value file export/import** (binary-safe, `KEEPTTL`), **bulk paste** of TSV/CSV into Hash/List/Set/ZSet, and a client-side **last-10-versions** write history with diff & one-click restore. Deleting a key first stashes its `DUMP` payload into a **local recycle bin** (24h, restorable from the Tools menu, TTL preserved; opt-out in Settings) — a fat-finger delete on production is no longer final.
 
 ### Bulk Key Operations
 **Multi-select delete, batch TTL, DUMP/RESTORE import/export, auto-refresh.**

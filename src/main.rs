@@ -1,11 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
-use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database};
+use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
     MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, download_and_verify,
     fetch_latest_release, get_default_font_family, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir,
-    new_hot_keys, open_installer, register_extra_languages,
+    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -14,7 +14,7 @@ use crate::states::{
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, open_about_window,
-    open_settings_window,
+    open_settings_window, open_trash_dialog,
 };
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Point, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
@@ -141,9 +141,27 @@ impl Zedis {
         })
         .detach();
         let clear_expired_cache = Some(cx.spawn(async move |_this, cx| {
+            // 30s ticks. The recycle-bin sweep piggybacks on this loop:
+            // first run on the first tick (~30s after launch, so a previous
+            // session's expired entries don't linger), then hourly — this
+            // keeps the 24h retention honest even for a Zedis left running
+            // for days. Off-thread: it's a full-table redb scan.
+            const TRASH_SWEEP_EVERY_TICKS: u64 = 120;
+            let mut tick: u64 = 0;
             loop {
                 cx.background_executor().timer(Duration::from_secs(30)).await;
                 clear_expired_cache();
+                if tick.is_multiple_of(TRASH_SWEEP_EVERY_TICKS) {
+                    cx.background_spawn(async {
+                        match purge_all_trash(unix_ts_millis() - TRASH_RETENTION_MS) {
+                            Ok(removed) if removed > 0 => info!(removed, "purged expired trash entries"),
+                            Ok(_) => {}
+                            Err(e) => error!(error = %e, "trash purge failed"),
+                        }
+                    })
+                    .detach();
+                }
+                tick += 1;
             }
         }));
         let title_bar = Some(cx.new(|cx| ZedisTitleBar::new(window, cx)));
@@ -712,7 +730,7 @@ impl Render for Zedis {
                     });
                 }
             }))
-            .on_action(cx.listener(move |_this, e: &ServerToolsAction, _window, cx| {
+            .on_action(cx.listener(move |_this, e: &ServerToolsAction, window, cx| {
                 let target = match e {
                     ServerToolsAction::Monitor => ServerView::Monitor,
                     ServerToolsAction::Config => ServerView::Config,
@@ -725,6 +743,12 @@ impl Render for Zedis {
                     ServerToolsAction::Topology => ServerView::Topology,
                     ServerToolsAction::ServerLoad => ServerView::ServerLoad,
                     ServerToolsAction::ValueSearch => ServerView::ValueSearch,
+                    // A dialog, not a sub-route: keeps whatever view is
+                    // active underneath.
+                    ServerToolsAction::Trash => {
+                        open_trash_dialog(window, cx);
+                        return;
+                    }
                 };
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
