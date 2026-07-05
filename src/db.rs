@@ -24,6 +24,7 @@ mod favorites_manager;
 mod history_manager;
 mod key_metadata_manager;
 mod lua_scripts;
+mod metrics_history;
 mod protos;
 mod scripts;
 mod search_history_manager;
@@ -32,6 +33,7 @@ pub use cmd_history_manager::*;
 pub use favorites_manager::*;
 pub use key_metadata_manager::*;
 pub use lua_scripts::*;
+pub use metrics_history::*;
 pub use protos::*;
 pub use scripts::*;
 pub use search_history_manager::*;
@@ -50,6 +52,11 @@ const LUA_SCRIPT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("lua
 // per-tag note, ...) can migrate the in-memory cache without breaking
 // disk compatibility.
 const KEY_METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("key_metadata");
+// Per-server metrics history samples: key (server_id, timestamp_ms), value =
+// JSON of one `RedisMetrics`. Written at most once per minute per server and
+// pruned to the retention window, so the table stays small (~10k rows per
+// server) — see `states/server/stat.rs` for the write policy.
+const METRICS_HISTORY_TABLE: TableDefinition<(&str, i64), &[u8]> = TableDefinition::new("metrics_history");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -78,6 +85,7 @@ pub fn init_database() -> Result<()> {
         write_txn.open_table(FAVORITY_TABLE)?;
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
         write_txn.open_table(KEY_METADATA_TABLE)?;
+        write_txn.open_table(METRICS_HISTORY_TABLE)?;
     }
     write_txn.commit()?;
     debug!(path = db_path.display().to_string(), "database initialized success");

@@ -498,6 +498,10 @@ connected_clients = "Clientes conectados"
 total_commands_processed = "Total de comandos procesados"
 output_kbps = "KBPS saliente"
 key_hit_rate = "Tasa de aciertos de claves"
+range_live = "En vivo"
+range_1h = "1h"
+range_24h = "24h"
+range_7d = "7d"
 
 [proto_editor]
 title = "Editor Proto"

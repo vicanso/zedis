@@ -14,7 +14,7 @@
 
 use crate::connection::get_server;
 use crate::helpers::get_mono_font_family;
-use crate::states::{RedisMetrics, ServerView, get_metrics_cache};
+use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_metrics};
 use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
@@ -119,8 +119,73 @@ struct MetricsChartData {
     evicted_keys: Arc<Vec<f64>>,
 }
 
+/// Chart time window: `Live` renders the in-memory 2s-resolution cache
+/// (session-only, the pre-existing behavior); the other ranges load the
+/// persisted 1/min samples from redb, so they survive restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetricsRange {
+    Live,
+    LastHour,
+    LastDay,
+    LastWeek,
+}
+
+impl MetricsRange {
+    const ALL: [MetricsRange; 4] = [
+        MetricsRange::Live,
+        MetricsRange::LastHour,
+        MetricsRange::LastDay,
+        MetricsRange::LastWeek,
+    ];
+    fn button_id(self) -> &'static str {
+        match self {
+            MetricsRange::Live => "metrics-range-live",
+            MetricsRange::LastHour => "metrics-range-1h",
+            MetricsRange::LastDay => "metrics-range-24h",
+            MetricsRange::LastWeek => "metrics-range-7d",
+        }
+    }
+    fn label_key(self) -> &'static str {
+        match self {
+            MetricsRange::Live => "range_live",
+            MetricsRange::LastHour => "range_1h",
+            MetricsRange::LastDay => "range_24h",
+            MetricsRange::LastWeek => "range_7d",
+        }
+    }
+    fn duration_ms(self) -> i64 {
+        match self {
+            MetricsRange::Live => 0,
+            MetricsRange::LastHour => 60 * 60 * 1000,
+            MetricsRange::LastDay => 24 * 60 * 60 * 1000,
+            MetricsRange::LastWeek => 7 * 24 * 60 * 60 * 1000,
+        }
+    }
+    /// X-axis label format: seconds only make sense for the live window,
+    /// and a week of labels needs the date to stay readable.
+    fn time_format(self) -> &'static str {
+        match self {
+            MetricsRange::Live => TIME_FORMAT,
+            MetricsRange::LastHour | MetricsRange::LastDay => "%H:%M",
+            MetricsRange::LastWeek => "%m-%d %H:%M",
+        }
+    }
+    /// Decimation budget: enough bars to show the trend without turning
+    /// the band chart into a smear.
+    fn max_points(self) -> usize {
+        match self {
+            MetricsRange::Live => 0,
+            MetricsRange::LastHour => 120,
+            MetricsRange::LastDay => 144,
+            MetricsRange::LastWeek => 168,
+        }
+    }
+}
+
 pub struct ZedisMetrics {
     title: SharedString,
+    server_id: String,
+    range: MetricsRange,
     latest_metrics: Option<RedisMetrics>,
     metrics_chart_data: MetricsChartData,
     tick_margin: usize,
@@ -128,14 +193,18 @@ pub struct ZedisMetrics {
     _subscriptions: Vec<Subscription>,
 }
 
-pub(crate) fn format_timestamp_ms(ts_ms: i64) -> SharedString {
+fn format_timestamp_ms_as(ts_ms: i64, fmt: &str) -> SharedString {
     match Local.timestamp_millis_opt(ts_ms) {
-        LocalResult::Single(dt) => dt.format(TIME_FORMAT).to_string().into(),
+        LocalResult::Single(dt) => dt.format(fmt).to_string().into(),
         _ => "--".into(),
     }
 }
 
-fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (MetricsChartData, usize) {
+pub(crate) fn format_timestamp_ms(ts_ms: i64) -> SharedString {
+    format_timestamp_ms_as(ts_ms, TIME_FORMAT)
+}
+
+fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format: &str) -> (MetricsChartData, usize) {
     let mut prev_metrics = RedisMetrics::default();
     let n = history_metrics.len();
 
@@ -185,11 +254,14 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
             continue;
         }
 
-        dates.push(format_timestamp_ms(metrics.timestamp_ms));
+        dates.push(format_timestamp_ms_as(metrics.timestamp_ms, time_format));
         let delta_time = (duration_ms as f64) / 1000.;
 
-        let used_cpu_sys_percent = (metrics.used_cpu_sys - prev_metrics.used_cpu_sys) / delta_time * 100.;
-        let used_cpu_user_percent = (metrics.used_cpu_user - prev_metrics.used_cpu_user) / delta_time * 100.;
+        // Counters (CPU time, commands, hits, evictions) reset when the
+        // server restarts. Persisted history spans restarts, so deltas are
+        // clamped at zero instead of wrapping into absurd spikes.
+        let used_cpu_sys_percent = ((metrics.used_cpu_sys - prev_metrics.used_cpu_sys) / delta_time * 100.).max(0.);
+        let used_cpu_user_percent = ((metrics.used_cpu_user - prev_metrics.used_cpu_user) / delta_time * 100.).max(0.);
         max_cpu_percent = max_cpu_percent.max(used_cpu_sys_percent.max(used_cpu_user_percent));
         min_cpu_percent = min_cpu_percent.min(used_cpu_sys_percent.min(used_cpu_user_percent));
         cpu_sys.push(used_cpu_sys_percent);
@@ -210,7 +282,9 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         min_connected_clients = min_connected_clients.min(clients);
         connected_clients.push(clients);
 
-        let processed = (metrics.total_commands_processed - prev_metrics.total_commands_processed) as f64;
+        let processed = metrics
+            .total_commands_processed
+            .saturating_sub(prev_metrics.total_commands_processed) as f64;
         max_total_commands_processed = max_total_commands_processed.max(processed);
         min_total_commands_processed = min_total_commands_processed.min(processed);
         total_commands_processed.push(processed);
@@ -220,8 +294,8 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         min_output_kbps = min_output_kbps.min(output);
         output_kbps.push(output);
 
-        let keyspace_hits = metrics.keyspace_hits - prev_metrics.keyspace_hits;
-        let keyspace_misses = metrics.keyspace_misses - prev_metrics.keyspace_misses;
+        let keyspace_hits = metrics.keyspace_hits.saturating_sub(prev_metrics.keyspace_hits);
+        let keyspace_misses = metrics.keyspace_misses.saturating_sub(prev_metrics.keyspace_misses);
         let keyspace_total = keyspace_hits + keyspace_misses;
         let rate = if keyspace_total > 0 {
             keyspace_hits as f64 / keyspace_total as f64 * 100.
@@ -232,7 +306,7 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>) -> (Metrics
         min_key_hit_rate = min_key_hit_rate.min(rate);
         key_hit_rate.push(rate);
 
-        let evicted = (metrics.evicted_keys - prev_metrics.evicted_keys) as f64;
+        let evicted = metrics.evicted_keys.saturating_sub(prev_metrics.evicted_keys) as f64;
         max_evicted_keys = max_evicted_keys.max(evicted);
         min_evicted_keys = min_evicted_keys.min(evicted);
         evicted_keys.push(evicted);
@@ -555,10 +629,12 @@ impl ZedisMetrics {
         .into();
         let metrics_history = get_metrics_cache().list_metrics(server_id);
         let latest_metrics = metrics_history.last().copied();
-        let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history);
+        let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
 
         let mut this = Self {
             title,
+            server_id: server_id.to_string(),
+            range: MetricsRange::Live,
             latest_metrics,
             metrics_chart_data,
             tick_margin,
@@ -567,6 +643,44 @@ impl ZedisMetrics {
         };
         this.start_heartbeat(server_id.to_string(), cx);
         this
+    }
+
+    /// Switch the chart window. `Live` re-renders from the in-memory cache
+    /// immediately; history ranges load the persisted samples off the UI
+    /// thread (redb read + JSON decode) and apply on completion, dropping
+    /// the result if the user has already switched again.
+    fn set_range(&mut self, range: MetricsRange, cx: &mut Context<Self>) {
+        if self.range == range {
+            return;
+        }
+        self.range = range;
+        if range == MetricsRange::Live {
+            let history = get_metrics_cache().list_metrics(&self.server_id);
+            let (data, tick_margin) = convert_metrics_to_chart_data(history, TIME_FORMAT);
+            self.metrics_chart_data = data;
+            self.tick_margin = tick_margin;
+            cx.notify();
+            return;
+        }
+        let server_id = self.server_id.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let history = cx
+                .background_spawn(
+                    async move { load_persisted_metrics(&server_id, range.duration_ms(), range.max_points()) },
+                )
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if state.range != range {
+                    return;
+                }
+                let (data, tick_margin) = convert_metrics_to_chart_data(history, range.time_format());
+                state.metrics_chart_data = data;
+                state.tick_margin = tick_margin;
+                cx.notify();
+            });
+        })
+        .detach();
     }
     /// Start the heartbeat task
     fn start_heartbeat(&mut self, server_id: String, cx: &mut Context<Self>) {
@@ -579,9 +693,15 @@ impl ZedisMetrics {
                 let metrics_history = get_metrics_cache().list_metrics(&server_id);
                 let _ = this.update(cx, |state, cx| {
                     state.latest_metrics = metrics_history.last().copied();
-                    let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history);
-                    state.metrics_chart_data = metrics_chart_data;
-                    state.tick_margin = tick_margin;
+                    // Stat cards stay live in every range; the charts only
+                    // follow the heartbeat in the Live window — a history
+                    // window is a frozen snapshot until re-selected.
+                    if state.range == MetricsRange::Live {
+                        let (metrics_chart_data, tick_margin) =
+                            convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
+                        state.metrics_chart_data = metrics_chart_data;
+                        state.tick_margin = tick_margin;
+                    }
                     cx.notify();
                 });
             }
@@ -911,7 +1031,22 @@ impl Render for ZedisMetrics {
                                     )
                                     .child(Label::new(self.title.clone())),
                             )
-                            .child(Label::new(time_range)),
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(h_flex().gap_1().children(MetricsRange::ALL.map(|range| {
+                                        let selected = self.range == range;
+                                        let button = Button::new(range.button_id())
+                                            .xsmall()
+                                            .label(i18n_metrics(cx, range.label_key()));
+                                        let button = if selected { button.primary() } else { button.ghost() };
+                                        button.on_click(
+                                            cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
+                                        )
+                                    })))
+                                    .child(Label::new(time_range)),
+                            ),
                     )
                     .child(self.render_stat_cards(columns, cx))
                     .when(has_chart_data, |this| {

@@ -13,16 +13,18 @@
 // limitations under the License.
 
 use crate::connection::{get_connection_manager, get_server};
+use crate::db::{insert_metrics_sample, list_metrics_samples, prune_metrics_history};
 use crate::helpers::{unix_ts, unix_ts_millis};
 use crate::states::{ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState};
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
 use redis::cmd;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 use std::time::Instant;
-use tracing::error;
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Default, Clone)]
 pub struct RedisKeySpaceStats {
@@ -39,7 +41,10 @@ pub struct RedisServerMeta {
     pub maxmemory: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+// Serialized as JSON into the `metrics_history` redb table; `serde(default)`
+// keeps old persisted samples readable when new fields are added.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RedisMetrics {
     pub timestamp_ms: i64,
     pub latency_ms: u64,
@@ -151,6 +156,101 @@ static METRICS_CACHE: LazyLock<MetricsCache> = LazyLock::new(|| MetricsCache::ne
 
 pub fn get_metrics_cache() -> &'static MetricsCache {
     &METRICS_CACHE
+}
+
+/// Persist at most one sample per minute per server — the in-memory cache
+/// keeps the 2s-resolution live window, disk only needs trend resolution.
+const METRICS_PERSIST_INTERVAL_MS: i64 = 60_000;
+/// Keep 7 days of samples (~10k rows per server at the 1/min cadence).
+const METRICS_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Per-server timestamp of the last persisted sample (this process).
+static METRICS_LAST_PERSISTED: LazyLock<RwLock<HashMap<String, i64>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Throttled write-behind of one metrics sample: skips unless a minute has
+/// passed since the server's last persisted sample, serializes on the
+/// caller, and hands the (blocking) redb write to the background executor.
+/// The first persist of a session also prunes samples past retention.
+/// Failures only warn — history is best-effort and must never break the
+/// heartbeat.
+fn maybe_persist_metrics(server_id: &str, metrics: RedisMetrics, cx: &mut Context<ZedisServerState>) {
+    let timestamp_ms = metrics.timestamp_ms;
+    let first_this_session;
+    {
+        let mut last = METRICS_LAST_PERSISTED.write();
+        let prev = last.get(server_id).copied();
+        if let Some(prev) = prev
+            && timestamp_ms - prev < METRICS_PERSIST_INTERVAL_MS
+        {
+            return;
+        }
+        first_this_session = prev.is_none();
+        last.insert(server_id.to_string(), timestamp_ms);
+    }
+    let Ok(payload) = serde_json::to_vec(&metrics) else {
+        return;
+    };
+    let server_id = server_id.to_string();
+    cx.background_executor()
+        .spawn(async move {
+            if first_this_session {
+                match prune_metrics_history(&server_id, timestamp_ms - METRICS_RETENTION_MS) {
+                    Ok(removed) if removed > 0 => debug!(server_id, removed, "pruned metrics history"),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = %e, "prune metrics history failed"),
+                }
+            }
+            if let Err(e) = insert_metrics_sample(&server_id, timestamp_ms, &payload) {
+                warn!(error = %e, "persist metrics sample failed");
+            }
+        })
+        .detach();
+}
+
+/// Load persisted history for the trailing `duration_ms`, decimated to at
+/// most `max_points` samples. Blocking (redb read + JSON decode) — call
+/// from a background task, not the render path.
+pub fn load_persisted_metrics(server_id: &str, duration_ms: i64, max_points: usize) -> Vec<RedisMetrics> {
+    let from_ms = unix_ts_millis() - duration_ms;
+    let raw = match list_metrics_samples(server_id, from_ms) {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!(error = %e, "load metrics history failed");
+            return vec![];
+        }
+    };
+    let samples: Vec<RedisMetrics> = raw
+        .iter()
+        .filter_map(|bytes| serde_json::from_slice(bytes).ok())
+        .collect();
+    decimate_samples(samples, max_points)
+}
+
+/// Evenly stride `samples` down to `max_points`, always keeping the first
+/// and the newest sample so the charted time range stays truthful.
+fn decimate_samples(samples: Vec<RedisMetrics>, max_points: usize) -> Vec<RedisMetrics> {
+    if max_points == 0 {
+        return vec![];
+    }
+    let len = samples.len();
+    if len <= max_points {
+        return samples;
+    }
+    if max_points == 1 {
+        return samples.last().copied().into_iter().collect();
+    }
+    let mut picked = Vec::with_capacity(max_points);
+    let mut last_ts = i64::MIN;
+    for i in 0..max_points {
+        let idx = i * (len - 1) / (max_points - 1);
+        let sample = samples[idx];
+        // The integer stride can land two i on one idx; skip duplicates.
+        if sample.timestamp_ms != last_ts {
+            last_ts = sample.timestamp_ms;
+            picked.push(sample);
+        }
+    }
+    picked
 }
 
 /// One replica's live state as reported by a master's `INFO replication`.
@@ -538,6 +638,7 @@ impl ZedisServerState {
             move |this, result, cx| match result {
                 Ok((info, slow_logs)) => {
                     METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
+                    maybe_persist_metrics(&server_id_clone, info.metrics, cx);
                     this.redis_info = Some(info);
                     if let Some(slow_logs) = slow_logs {
                         this.last_slow_log_count = slow_logs
@@ -657,5 +758,56 @@ mod tests {
                    slave0:ip=1.1.1.1,port=6379,state=online,offset=200,lag=0\n";
         let info = RedisInfo::parse(raw);
         assert_eq!(info.replicas[0].lag_bytes, 0);
+    }
+
+    fn sample(ts: i64) -> RedisMetrics {
+        RedisMetrics {
+            timestamp_ms: ts,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decimate_keeps_endpoints_and_bounds_length() {
+        let samples: Vec<RedisMetrics> = (0..1000).map(|i| sample(i as i64)).collect();
+        let picked = decimate_samples(samples, 150);
+        assert!(picked.len() <= 150);
+        assert_eq!(picked.first().map(|m| m.timestamp_ms), Some(0));
+        assert_eq!(picked.last().map(|m| m.timestamp_ms), Some(999));
+
+        // Short inputs pass through untouched.
+        let short: Vec<RedisMetrics> = (0..10).map(|i| sample(i as i64)).collect();
+        assert_eq!(decimate_samples(short, 150).len(), 10);
+        assert!(decimate_samples(vec![], 150).is_empty());
+        assert_eq!(
+            decimate_samples((0..10).map(|i| sample(i as i64)).collect(), 1).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn metrics_serde_roundtrip_and_forward_compat() {
+        let metrics = RedisMetrics {
+            timestamp_ms: 1_751_700_000_000,
+            latency_ms: 3,
+            used_memory: 1_048_576,
+            instantaneous_ops_per_sec: 42,
+            mem_fragmentation_ratio: 1.25,
+            aof_enabled: true,
+            ..Default::default()
+        };
+        let bytes = serde_json::to_vec(&metrics).expect("serialize metrics");
+        let parsed: RedisMetrics = serde_json::from_slice(&bytes).expect("deserialize metrics");
+        assert_eq!(parsed.timestamp_ms, metrics.timestamp_ms);
+        assert_eq!(parsed.used_memory, metrics.used_memory);
+        assert_eq!(parsed.instantaneous_ops_per_sec, 42);
+        assert!(parsed.aof_enabled);
+
+        // Old on-disk samples with missing fields must still parse
+        // (serde(default)) so schema growth never wipes history.
+        let legacy = r#"{"timestamp_ms":1751700000000,"used_memory":123}"#;
+        let parsed: RedisMetrics = serde_json::from_str(legacy).expect("parse legacy sample");
+        assert_eq!(parsed.used_memory, 123);
+        assert_eq!(parsed.latency_ms, 0);
     }
 }

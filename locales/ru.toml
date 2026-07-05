@@ -498,6 +498,10 @@ connected_clients = "Подключённые клиенты"
 total_commands_processed = "Всего обработано команд"
 output_kbps = "Исходящий KBPS"
 key_hit_rate = "Частота попаданий ключей"
+range_live = "Онлайн"
+range_1h = "1h"
+range_24h = "24h"
+range_7d = "7d"
 
 [proto_editor]
 title = "Редактор Proto"

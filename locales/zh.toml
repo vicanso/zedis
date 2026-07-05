@@ -497,6 +497,10 @@ connected_clients = "连接客户端数"
 total_commands_processed = "已处理命令数"
 output_kbps = "出站带宽"
 key_hit_rate = "键命中率"
+range_live = "实时"
+range_1h = "1h"
+range_24h = "24h"
+range_7d = "7d"
 
 [proto_editor]
 title = "Proto 编辑器"

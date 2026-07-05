@@ -53,9 +53,9 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 
 <table>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa"><img src="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa" width="260" alt="Key browser & data viewer"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0"><img src="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0" width="260" alt="Memory analyzer"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21"><img src="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21" width="260" alt="Live metrics"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"><img src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f" width="260" alt="Key browser & data viewer"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"><img src="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8" width="260" alt="Memory analyzer"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"><img src="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d" width="260" alt="Live metrics"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>Key browser & data viewer</sub></td>
@@ -63,9 +63,9 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
     <td align="center"><sub>Live metrics</sub></td>
   </tr>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507"><img src="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507" width="260" alt="Geo map"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13"><img src="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13" width="260" alt="Vector Set + KNN"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b"><img src="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b" width="260" alt="Command palette"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"><img src="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f" width="260" alt="Geo map"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"><img src="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513" width="260" alt="Vector Set + KNN"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"><img src="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5" width="260" alt="Command palette"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>Geo map</sub></td>
@@ -81,7 +81,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | 🚀 **Native & Fast** | GPU rendering · virtual-scrolled `SCAN`, 60+ FPS on millions of keys · macOS / Windows / Linux · Light / Dark / System |
 | 🧠 **Smart Data Viewer** | Auto-decompress (LZ4 / Snappy / GZIP / ZSTD) · JSON & RedisJSON + JSONPath · Protobuf · MessagePack · timestamps · images · hex · custom script viewer |
 | 🗂️ **Type & Module Viewers** | Bitmap · HyperLogLog · Vector Set (KNN) · Geo map · Bloom / Cuckoo / Count-Min / Top-K · Time Series · Streams (live-tail) · Pub/Sub · RediSearch · Functions |
-| 📊 **Observability** | Live metrics · memory analyzer + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health · persistence & keyspace events · typed CONFIG editor |
+| 📊 **Observability** | Live metrics + 7-day history · memory analyzer + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health · persistence & keyspace events · typed CONFIG editor |
 | 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · file import/export · bulk ops · cross-server copy & diff |
 | 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · encrypted secrets · local-only, no telemetry |
 | ⌨️ **Productivity** | ⌘K palette · ⌘/ shortcut reference · redis-cli with completion · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |

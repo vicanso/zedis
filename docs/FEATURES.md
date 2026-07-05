@@ -68,9 +68,9 @@ Pattern-based subscriptions (`PSUBSCRIBE`), a `PUBLISH` composer, and incoming m
 A built-in, GPU-accelerated dashboard for monitoring your instances.
 
 ### Live Metrics
-**Real-time charts for CPU, memory, and network I/O.**
+**Real-time charts for CPU, memory, and network I/O — with 7 days of history.**
 
-Beautifully rendered, GPU-accelerated time-series charts.
+Beautifully rendered, GPU-accelerated time-series charts. Samples are also persisted locally (one per minute, kept for 7 days), so the 1h / 24h / 7d ranges answer "did memory grow overnight?" even across app restarts.
 
 ### Memory Analyzer + Recommendations
 **Hunt BigKeys, see the TTL distribution, get instant offline health checks plus optional AI tips.**

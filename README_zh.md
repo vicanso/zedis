@@ -51,9 +51,9 @@
 
 <table>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa"><img src="https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa" width="260" alt="键浏览与数据查看"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0"><img src="https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0" width="260" alt="内存分析器"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21"><img src="https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21" width="260" alt="实时指标"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"><img src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f" width="260" alt="键浏览与数据查看"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"><img src="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8" width="260" alt="内存分析器"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"><img src="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d" width="260" alt="实时指标"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>键浏览与数据查看</sub></td>
@@ -61,9 +61,9 @@
     <td align="center"><sub>实时指标</sub></td>
   </tr>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507"><img src="https://github.com/user-attachments/assets/6a716d9c-cb58-40b1-9847-b0193c390507" width="260" alt="地理地图"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13"><img src="https://github.com/user-attachments/assets/00c6c782-af7e-4847-aa14-5f7756f66f13" width="260" alt="向量集 + KNN"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b"><img src="https://github.com/user-attachments/assets/b208f236-f6aa-4686-bdfe-2e2474a6757b" width="260" alt="命令面板"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"><img src="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f" width="260" alt="地理地图"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"><img src="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513" width="260" alt="向量集 + KNN"></a></td>
+    <td><a href="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"><img src="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5" width="260" alt="命令面板"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>地理地图</sub></td>
@@ -79,7 +79,7 @@
 | 🚀 **原生 & 快** | GPU 渲染 · 虚拟滚动 `SCAN`，百万键 60+ FPS · macOS / Windows / Linux · 浅色 / 深色 / 跟随系统 |
 | 🧠 **智能数据查看器** | 自动解压(LZ4 / Snappy / GZIP / ZSTD)· JSON & RedisJSON + JSONPath · Protobuf · MessagePack · 时间戳 · 图片 · Hex · 自定义脚本 |
 | 🗂️ **类型 & 模块查看器** | 位图 · HyperLogLog · 向量集(KNN)· 地理地图 · Bloom / Cuckoo / Count-Min / Top-K · 时间序列 · Streams(实时跟踪)· Pub/Sub · RediSearch · Functions |
-| 📊 **可观测性** | 实时指标 · 内存分析 + AI 建议 · 慢日志 ↔ Latency · `MONITOR` · 按值搜索 · 集群健康 · 持久化 & 键事件 · 带类型的 CONFIG 编辑器 |
+| 📊 **可观测性** | 实时指标 + 7 天历史 · 内存分析 + AI 建议 · 慢日志 ↔ Latency · `MONITOR` · 按值搜索 · 集群健康 · 持久化 & 键事件 · 带类型的 CONFIG 编辑器 |
 | 🔑 **Keys & 数据** | 带 TTL chip 的命名空间树 · 标签 / 备注 / 收藏 · 重命名 · 字段级 TTL · 版本历史 · 文件导入导出 · 批量操作 · 跨服务器复制 & 对比 |
 | 🔐 **安全 & 隐私** | 环境标签 + PROD 升级确认 · 只读锁 · ACL 编辑 · TLS/SSL & SSH · 分阶段连接诊断 · 密钥加密 · 纯本地、无遥测 |
 | ⌨️ **效率** | ⌘K 面板 · ⌘/ 快捷键速查 · 带补全的 redis-cli · 多行 Batch 模式 · Lua 脚本库 · 可关闭的更新检查(带下载进度)· 滚动文件日志 |
