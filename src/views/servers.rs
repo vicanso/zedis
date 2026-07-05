@@ -22,7 +22,7 @@ use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
 };
-use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global};
+use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global, open_connection_diagnostics};
 use gpui::{
     Action, Anchor, ClipboardItem, Entity, ExternalPaths, SharedString, Subscription, Window, div, prelude::*, px,
 };
@@ -444,6 +444,7 @@ impl ZedisServers {
         let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
 
         let test_label = i18n_servers(cx, "test_connection");
+        let diagnose_label = i18n_servers(cx, "diagnose_connection");
 
         ZedisFormOptions::new(fields)
             .title(title)
@@ -459,6 +460,7 @@ impl ZedisServers {
             .foot_actions(move |_window, cx: &mut Context<zedis_ui::ZedisForm>| {
                 let locale = locale.clone();
                 let test_label = test_label.clone();
+                let diagnose_label = diagnose_label.clone();
 
                 // Candidate master names populated by the suffix fetch button.
                 let current_candidates = candidates.read(cx).clone();
@@ -566,6 +568,18 @@ impl ZedisServers {
                                     .ok();
                             })
                             .detach();
+                        }))
+                        .into_any_element(),
+                );
+                items.push(
+                    Button::new("diagnose-connection")
+                        .label(diagnose_label)
+                        .on_click(cx.listener(move |form, _, window, cx| {
+                            let Some(values) = form.try_get_values(cx) else {
+                                return;
+                            };
+                            let server = RedisServer::from_form_data("", &values);
+                            open_connection_diagnostics(server, window, cx);
                         }))
                         .into_any_element(),
                 );

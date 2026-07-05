@@ -19,6 +19,7 @@ mod async_connection;
 mod command;
 mod config;
 mod danger;
+mod diagnostics;
 mod dump_restore;
 mod functions;
 mod latency;
@@ -40,6 +41,10 @@ pub use config::{
 pub use danger::{
     ConfirmStrictness, DangerKind, classify_dangerous_line, confirm_strictness, is_write_command,
     requires_write_confirm,
+};
+pub use diagnostics::{
+    DiagHint, DiagOutcome, DiagStage, DiagStatus, diag_stages, diag_timeout, dial_endpoint, probe_dns, probe_redis,
+    probe_ssh_auth, probe_ssh_tunnel, probe_tcp,
 };
 pub use dump_restore::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key, dump_keys_chunk,

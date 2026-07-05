@@ -363,7 +363,14 @@ mod tests {
     #[test]
     fn newer_version_is_strict() {
         // Strictly-greater is an update; equal/older/garbage are not.
-        assert_eq!(newer_version("v0.5.0").expect("parse"), Some("0.5.0".to_string()));
+        // Derive the "newer" tag from the running version so this keeps
+        // passing across version bumps.
+        let current = Version::parse(CURRENT_VERSION).expect("current version parses");
+        let next = format!("v{}.0.0", current.major + 1);
+        assert_eq!(
+            newer_version(&next).expect("parse"),
+            Some(next.trim_start_matches('v').to_string())
+        );
         assert_eq!(newer_version(CURRENT_VERSION).expect("parse"), None);
         assert_eq!(newer_version("0.0.1").expect("parse"), None);
         assert_eq!(newer_version("not-a-version").expect("parse"), None);

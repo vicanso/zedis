@@ -2,8 +2,10 @@ name: Security Audit
 
 on:
   push:
+    # The default branch is `main` — with `master` here the push trigger
+    # never fired and only the daily cron ran.
     branches:
-      - master
+      - main
     paths:
       - "**/Cargo.toml"
   schedule:

@@ -143,7 +143,7 @@ List users, view flags / commands / key patterns / channel rules, and edit via q
 ### Secure Connections & Groups
 **TLS/SSL and SSH tunnels, with named, shareable server groups.**
 
-Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, private key, agent). Organize connections into named, collapsible **groups** and reorder them. Export any selection of connections as JSON (credentials stripped by default) — or set a passphrase to emit a compact, portable **share token** (`ZEDIS1.…`, Argon2id + AES-256-GCM) that only opens with that passphrase; the import dialog detects the token and prompts for it. Migrate in by pasting a `redis://` URI or a **Redis Insight** database export — every database lands at once.
+Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, private key, agent). When a connection fails, the server form's **Diagnose** button runs staged diagnostics — DNS → TCP → SSH auth → SSH tunnel → TLS → AUTH → PING — pinpointing the failing layer with a targeted fix hint instead of one opaque error. Organize connections into named, collapsible **groups** and reorder them. Export any selection of connections as JSON (credentials stripped by default) — or set a passphrase to emit a compact, portable **share token** (`ZEDIS1.…`, Argon2id + AES-256-GCM) that only opens with that passphrase; the import dialog detects the token and prompts for it. Migrate in by pasting a `redis://` URI or a **Redis Insight** database export — every database lands at once.
 
 ---
 

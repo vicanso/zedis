@@ -24,6 +24,17 @@ ignore = [
     # moves off the rsa RC.
     "RUSTSEC-2023-0071",
 
+    # quick-xml DoS advisories (fix requires >= 0.41.0). Both copies in the
+    # lockfile are build-time-only and parse trusted, crate-bundled XML —
+    # wayland-scanner 0.31 (proc-macro, Wayland protocol defs, wants ^0.39)
+    # and xcb 1.7 (XCB protocol defs, wants ^0.30). 0.41 is semver-major for
+    # both parents and neither has a fixed release yet; the shipped binary
+    # never parses untrusted XML with quick-xml. Drop these once
+    # wayland-scanner / xcb release against quick-xml >= 0.41 and a
+    # `cargo update` picks them up.
+    "RUSTSEC-2026-0194", # quadratic duplicate-attribute check
+    "RUSTSEC-2026-0195", # NsReader unbounded namespace allocation
+
     # Unmaintained (informational warnings, not vulnerabilities) — all deep
     # transitive deps from the pinned gpui / gpui-component / russh trees we
     # can't swap, none with a maintained drop-in replacement:
@@ -32,4 +43,5 @@ ignore = [
     "RUSTSEC-2024-0436", # paste           (gpui-component, metal, ...)
     "RUSTSEC-2024-0370", # proc-macro-error (build-time-only proc-macro dep)
     "RUSTSEC-2025-0134", # rustls-pemfile  (rustls ecosystem)
+    "RUSTSEC-2026-0192", # ttf-parser      (gpui: fontdb <- cosmic-text/usvg)
 ]

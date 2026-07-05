@@ -244,7 +244,7 @@ fn host_keys_in_file(path: &std::path::Path, host_port: &str) -> (Vec<PublicKey>
     (keys, host_seen)
 }
 
-type SshHandle = Handle<ClientHandler>;
+pub(crate) type SshHandle = Handle<ClientHandler>;
 
 /// Global cache of SSH sessions keyed by "user@host:port" identifier.
 /// This prevents creating duplicate SSH connections to the same server.
@@ -342,7 +342,7 @@ fn is_pem_format(data: &str) -> bool {
 ///    - Otherwise, decodes the key from the string content
 /// 2. Password: If only `password` is provided, uses password authentication
 /// 3. Error: If neither key nor password is provided, returns an error
-async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<SshHandle> {
+pub(crate) async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<SshHandle> {
     // Configure SSH client with keepalive to maintain connection
     let config = russh::client::Config {
         keepalive_interval: Some(Duration::from_secs(5 * 60)),
