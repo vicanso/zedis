@@ -1261,6 +1261,7 @@ found = "Nova versão disponível"
 manual_hint = "O Zedis não se atualiza sozinho — clique no botão de atualização no canto superior direito quando quiser baixá-lo."
 
 [trash]
+menu = "Chaves excluídas (Lixeira)"
 title = "Lixeira"
 note = "As chaves excluídas são mantidas localmente por 24 horas e podem ser restauradas aqui."
 empty = "Nenhuma chave excluída recentemente neste servidor"

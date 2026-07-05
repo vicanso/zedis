@@ -1261,6 +1261,7 @@ found = "Nueva versión disponible"
 manual_hint = "Zedis no se actualiza solo: cuando quieras, haz clic en el botón de actualización (arriba a la derecha) para descargarlo."
 
 [trash]
+menu = "Claves eliminadas (Papelera)"
 title = "Papelera"
 note = "Las claves eliminadas se conservan localmente durante 24 horas y pueden restaurarse aquí."
 empty = "No hay claves eliminadas recientemente en este servidor"

@@ -1262,6 +1262,7 @@ found = "Nouvelle version disponible"
 manual_hint = "Zedis ne se met pas à jour tout seul — cliquez sur le bouton de mise à jour en haut à droite quand vous voulez le télécharger."
 
 [trash]
+menu = "Clés supprimées (Corbeille)"
 title = "Corbeille"
 note = "Les clés supprimées sont conservées localement pendant 24 heures et peuvent être restaurées ici."
 empty = "Aucune clé supprimée récemment sur ce serveur"

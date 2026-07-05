@@ -1262,6 +1262,7 @@ found = "New version available"
 manual_hint = "Zedis won't update on its own — click the update button in the top-right when you're ready to download it."
 
 [trash]
+menu = "Deleted Keys (Trash)"
 title = "Trash"
 note = "Deleted keys are kept locally for 24 hours and can be restored here."
 empty = "No recently deleted keys for this server"

@@ -1260,6 +1260,7 @@ found = "发现新版本"
 manual_hint = "Zedis 不会自动更新，准备好后点击右上角的更新按钮即可下载。"
 
 [trash]
+menu = "已删除的 Key（回收站）"
 title = "回收站"
 note = "删除的 key 会在本地保留 24 小时，可在此恢复。"
 empty = "该服务器最近没有删除的 key"

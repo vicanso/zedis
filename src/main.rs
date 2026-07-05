@@ -18,7 +18,7 @@ use crate::views::{
 };
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Point, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
-    WindowBounds, WindowOptions, div, prelude::*, px, size,
+    WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
 };
 use gpui_component::{
     ActiveTheme, Root, StyledExt, Theme, ThemeMode, ThemeRegistry, WindowExt,
@@ -26,6 +26,8 @@ use gpui_component::{
     h_flex,
     label::Label,
     notification::Notification,
+    scroll::ScrollableElement,
+    text::{TextView, TextViewStyle},
     v_flex,
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -524,8 +526,24 @@ fn restore_default_themes(cx: &mut App) {
 /// release page in the browser; **Skip this version** records the version so the
 /// silent startup check won't prompt for it again. Closing without choosing
 /// leaves nothing recorded, so the next daily check prompts again.
+/// Compact Markdown styling for release notes: the library defaults size
+/// headings up to ~28px, which dwarfs the dialog body; shrink them to a
+/// gentle hierarchy (mirrors the memory-analysis AI panel styling).
+fn release_notes_style() -> TextViewStyle {
+    TextViewStyle::default()
+        .paragraph_gap(rems(0.5))
+        .heading_font_size(|level, _base| match level {
+            1 => px(18.),
+            2 => px(16.),
+            3 => px(15.),
+            _ => px(14.),
+        })
+}
+
 fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut Window, cx: &mut App) {
-    const MAX_NOTES: usize = 600;
+    // The notes area scrolls, so this cap only guards layout work against a
+    // pathologically long release body.
+    const MAX_NOTES: usize = 5000;
     let title = format!("{} {}", i18n_update(cx, "available_title"), info.version);
     let mut notes = info.notes.clone();
     if notes.chars().count() > MAX_NOTES {
@@ -535,23 +553,33 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
     // No manual-update hint here — the dialog's own Download / Skip buttons make
     // the action obvious. The hint lives on the found toast, where it points at
     // the status-bar chip.
-    let body = if notes.trim().is_empty() {
-        format!(
-            "{}\n{} → {}",
-            i18n_update(cx, "update_body"),
-            info.current,
-            info.version
-        )
-    } else {
-        format!("{}\n\n{}", i18n_update(cx, "update_body"), notes)
-    };
+    let update_hint = i18n_update(cx, "update_body");
+    let version_line = format!("{} → {}", info.current, info.version);
     let skip_version = info.version.clone();
     let download_info = info;
     // Shared flag so the Download path suppresses the skip-on-close below.
     let downloaded = Rc::new(Cell::new(false));
     let on_download = downloaded.clone();
     ZedisDialog::new(title)
-        .message(body)
+        .child(move || {
+            let mut body = v_flex()
+                .gap_2()
+                .child(Label::new(update_hint.clone()))
+                .child(Label::new(version_line.clone()));
+            // Render the changelog as Markdown (it comes straight from the
+            // GitHub release body) inside a capped, scrollable area so a
+            // long release can't push the dialog buttons off screen.
+            if !notes.trim().is_empty() {
+                body = body.child(
+                    div()
+                        .w_full()
+                        .max_h(px(280.))
+                        .child(TextView::markdown("update-release-notes", notes.clone()).style(release_notes_style()))
+                        .overflow_y_scrollbar(),
+                );
+            }
+            body
+        })
         .w(px(520.))
         .overlay_closable(false)
         .ok_text(i18n_update(cx, "download"))

@@ -73,7 +73,9 @@ pub struct UpdateInfo {
     /// Release page to open in a browser — used as the changelog link and as the
     /// fallback "download" target when no verified asset is available.
     pub page_url: String,
-    /// Changelog text (only populated via the API fallback; empty for manifest).
+    /// Changelog markdown. The manifest only carries a release-page URL, so
+    /// this is filled by a best-effort extra GitHub API call (see
+    /// `fetch_release_notes`); empty when that call fails.
     pub notes: String,
     /// The installer for this `os`/`arch`. `None` when the manifest is absent or
     /// has no matching asset; the UI then falls back to opening `page_url`.
@@ -146,12 +148,38 @@ fn fetch_from_manifest() -> Result<Option<UpdateInfo>> {
         manifest.notes.clone()
     };
     Ok(Some(UpdateInfo {
+        notes: fetch_release_notes(&latest),
         version: latest,
         current: CURRENT_VERSION.to_string(),
         page_url,
-        notes: String::new(),
         asset,
     }))
+}
+
+/// Best-effort changelog for the update prompt: latest.json only carries a
+/// release-page URL, so the markdown body takes one extra GitHub API call.
+/// Any failure (offline API, rate limit) degrades to an empty string — the
+/// prompt then shows version + link only, never an error. Runs at most once
+/// per discovered update, well inside the anonymous API quota.
+fn fetch_release_notes(version: &str) -> String {
+    let fetch = || -> Result<String> {
+        let text = http_get_string(LATEST_RELEASE_API)?;
+        let release: GithubRelease = serde_json::from_str(&text)?;
+        // The API's "latest" can briefly disagree with the manifest (CDN
+        // caching, mid-publish) — only trust the body when both name the
+        // same version, otherwise the prompt would show the wrong changelog.
+        if release.tag_name.trim_start_matches('v').trim() != version {
+            return Ok(String::new());
+        }
+        Ok(release.body.trim().to_string())
+    };
+    match fetch() {
+        Ok(notes) => notes,
+        Err(e) => {
+            debug!(error = %e, "update check: release notes unavailable");
+            String::new()
+        }
+    }
 }
 
 fn fetch_from_api() -> Result<Option<UpdateInfo>> {

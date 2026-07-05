@@ -1261,6 +1261,7 @@ found = "Neue Version verfügbar"
 manual_hint = "Zedis aktualisiert sich nicht von selbst – klicke oben rechts auf die Update-Schaltfläche, wenn du es herunterladen möchtest."
 
 [trash]
+menu = "Gelöschte Keys (Papierkorb)"
 title = "Papierkorb"
 note = "Gelöschte Keys werden 24 Stunden lokal aufbewahrt und können hier wiederhergestellt werden."
 empty = "Keine kürzlich gelöschten Keys für diesen Server"

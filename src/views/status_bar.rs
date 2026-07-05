@@ -596,11 +596,14 @@ impl ZedisStatusBar {
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
         );
         // Local recycle bin (soft-deleted keys) — a dialog, not a sub-route,
-        // and always available since the bin lives client-side.
+        // and always available since the bin lives client-side. The menu
+        // uses the descriptive `menu` label ("Deleted Keys (Trash)"): a bare
+        // "Trash" next to entries like "Keyspace Notifications" reads as a
+        // mystery; the dialog itself keeps the short `title`.
         menu = menu.menu_element_with_icon(
             Icon::new(CustomIconName::FileXCorner),
             Box::new(ServerToolsAction::Trash),
-            move |_window, cx| Label::new(i18n_trash(cx, "title")),
+            move |_window, cx| Label::new(i18n_trash(cx, "menu")),
         );
         // ACL (Redis 6.0+). Version-gated; suffix points at the required
         // Redis version when unavailable.
