@@ -635,6 +635,7 @@ preferences = "偏好设置..."
 quit = "退出 Zedis"
 
 [memory_analysis]
+help = "**作用**\n扫描键空间,按估算内存(及访问热度)对 key 排序,帮你找出大 key。\n\n**如何解读**\n- **Size**:该 key 的估算字节数(抽样,非精确值)。\n- **Heat**:取决于 `maxmemory-policy`——LFU 显示访问频率,LRU 显示空闲时间。\n\n**说明**\n仅使用只读命令;`MEMORY USAGE` 需 Redis 4.0+。大键空间为抽样,数值为估算。"
 reco_panel_title = "优化建议"
 reco_healthy = "未发现问题 —— 该键空间看起来很健康。"
 reco_big_key_title = "大 key"
@@ -1063,6 +1064,7 @@ bgrewriteaof_started_title = "BGREWRITEAOF 已启动"
 bgrewriteaof_started_message = "后台 AOF 重写正在进行,完成后面板将自动更新。"
 
 [keyspace_notifications]
+help = "**作用**\n订阅 Redis 键空间事件,实时展示 key 的变化(set/del/expire/…)。\n\n**如何解读**\n每行是一个事件:命令、受影响的 key,以及所在数据库。\n\n**说明**\n需服务器启用 `notify-keyspace-events`——未开启时面板提供一键开启。仅显示面板打开期间触发的事件,不是历史日志。"
 title = "Keyspace 通知"
 subscribe = "订阅"
 stop = "停止"

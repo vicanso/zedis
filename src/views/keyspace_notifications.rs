@@ -59,7 +59,7 @@ use gpui_component::{
 };
 use std::collections::VecDeque;
 use tracing::error;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, help_popover};
 
 /// Subscribe to both `__keyspace@*__:*` and `__keyevent@*__:*` in one
 /// `PSUBSCRIBE` call — every key write emits two events (one per
@@ -748,6 +748,10 @@ impl ZedisKeyspaceNotifications {
                             }),
                     )
                     .child(Label::new(i18n_keyspace_notifications(cx, "title")).font_semibold())
+                    .child(help_popover(
+                        "keyspace-notifications-help",
+                        i18n_keyspace_notifications(cx, "help"),
+                    ))
                     .child(Label::new(self.title.clone()).text_color(theme.muted_foreground))
                     .child(Label::new(count_label).text_xs().text_color(theme.muted_foreground)),
             )

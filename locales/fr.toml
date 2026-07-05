@@ -637,6 +637,7 @@ preferences = "Préférences..."
 quit = "Quitter Zedis"
 
 [memory_analysis]
+help = "**Rôle**\nParcourt le keyspace et classe les clés par mémoire estimée (et chaleur d'accès) pour repérer les grosses clés.\n\n**Lire les résultats**\n- **Size** : octets estimés de la clé (échantillon, non exact).\n- **Heat** : dépend de `maxmemory-policy` — LFU montre la fréquence d'accès, LRU le temps d'inactivité.\n\n**Remarques**\nCommandes en lecture seule ; `MEMORY USAGE` nécessite Redis 4.0+. Les grands keyspaces sont échantillonnés, les chiffres sont des estimations."
 reco_panel_title = "Recommandations"
 reco_healthy = "Aucun problème détecté — cet espace de clés semble sain."
 reco_big_key_title = "Clé volumineuse"
@@ -1065,6 +1066,7 @@ bgrewriteaof_started_title = "BGREWRITEAOF started"
 bgrewriteaof_started_message = "Background AOF rewrite in progress. The panel will update when it completes."
 
 [keyspace_notifications]
+help = "**Rôle**\nS'abonne aux événements keyspace de Redis et affiche les changements de clés (set/del/expire/…) en temps réel.\n\n**Lire le tableau**\nChaque ligne est un événement : la commande, la clé concernée et sa base de données.\n\n**Remarques**\nNécessite `notify-keyspace-events` activé sur le serveur — s'il est désactivé, le panneau propose de l'activer en un clic. Seuls les événements survenus pendant que le panneau est ouvert sont affichés ; ce n'est pas un journal historique."
 title = "Keyspace Notifications"
 subscribe = "Subscribe"
 stop = "Stop"

@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
-use zedis_ui::ZedisDivider;
+use zedis_ui::{ZedisDivider, help_popover};
 
 /// Maximum rows kept per table.
 const TOP_N: usize = 20;
@@ -2385,7 +2385,8 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     }),
             )
             .child(Icon::new(CustomIconName::MemoryStick))
-            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground));
+            .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
+            .child(help_popover("memory-analysis-help", i18n_memory_analysis(cx, "help")));
         let functions = self.render_toolbar_functions(cx);
 
         v_flex()

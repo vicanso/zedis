@@ -636,6 +636,7 @@ preferences = "環境設定..."
 quit = "Zedis を終了"
 
 [memory_analysis]
+help = "**機能**\nキー空間をスキャンし、推定メモリ(とアクセス頻度)でキーを並べ替えて大きなキーを見つけます。\n\n**結果の見方**\n- **Size**: そのキーの推定バイト数(サンプリング、正確値ではありません)。\n- **Heat**: `maxmemory-policy` に依存します — LFU はアクセス頻度、LRU はアイドル時間を表示します。\n\n**注意**\n読み取り専用コマンドのみを使用します。`MEMORY USAGE` は Redis 4.0+ が必要です。大きなキー空間はサンプリングのため、数値は推定値です。"
 reco_panel_title = "推奨事項"
 reco_healthy = "問題は見つかりませんでした — このキースペースは健全のようです。"
 reco_big_key_title = "大きなキー"
@@ -1064,6 +1065,7 @@ bgrewriteaof_started_title = "BGREWRITEAOF 開始"
 bgrewriteaof_started_message = "バックグラウンドで AOF を書き換え中です。完了するとパネルが更新されます。"
 
 [keyspace_notifications]
+help = "**機能**\nRedis のキー空間イベントを購読し、キーの変化(set/del/expire/…)をリアルタイムに表示します。\n\n**テーブルの見方**\n各行が 1 件のイベントで、コマンド・対象キー・そのデータベースを示します。\n\n**注意**\nサーバー側で `notify-keyspace-events` の有効化が必要です — 無効な場合、パネルからワンクリックで有効化できます。表示されるのはパネルを開いている間に発生したイベントのみで、履歴ログではありません。"
 title = "キースペース通知"
 subscribe = "購読"
 stop = "停止"
