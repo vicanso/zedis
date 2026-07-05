@@ -101,6 +101,15 @@ jobs:
         run: |
           make lint
           cargo bundle --release --target ${{ matrix.target }} --features mimalloc
+      - name: smoke test (first frame must paint)
+        # Boots the real binary in ZEDIS_SMOKE_TEST mode: exit 0 once the
+        # first frame paints, exit 2 if none does within 30s — the failure
+        # mode of the 0.4.5/0.4.6 "window never appears" regression.
+        timeout-minutes: 3
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: ./target/${{ matrix.target }}/release/zedis
       - name: sign app
         env:
           CERT_NAME: ${{ secrets.MACOS_CERTIFICATE_NAME }}
@@ -238,6 +247,26 @@ jobs:
           cargo wix --nocapture --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/wix/*
           mv target/wix/zedis-*.msi ./zedis.msi
+      - name: smoke test (first frame must paint)
+        # x86_64 only: the aarch64 build is cross-compiled and cannot run on
+        # this runner. GUI-subsystem exes detach from the shell, so
+        # Start-Process -Wait is required to observe the exit code. This is
+        # the platform where 0.4.5/0.4.6 shipped an invisible main window —
+        # a hidden window gets no WM_PAINT, no frame ever paints, and the
+        # binary exits 2 via its watchdog.
+        if: matrix.suffix == 'x86_64'
+        timeout-minutes: 3
+        shell: pwsh
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: |
+          $p = Start-Process -FilePath .\zedis.exe -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Write-Error "smoke test failed: exit code $($p.ExitCode)"
+            exit 1
+          }
+          Write-Host "smoke test passed"
       - name: package
         shell: powershell
         run: |
@@ -357,6 +386,18 @@ jobs:
           cargo appimage --features mimalloc
           mv target/appimage/zedis.AppImage ./zedis.AppImage
           tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis.AppImage
+      - name: smoke test (first frame must paint)
+        # Best-effort: X11 via Xvfb + software Vulkan (lavapipe). GPU-less
+        # runners can be flaky here, so failures report without blocking the
+        # release — tighten to a hard gate once it proves stable.
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: |
+          sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1
+          xvfb-run -a ./zedis
       - name: checksum (linux)
         if: startsWith(github.ref, 'refs/tags/')
         run: |

@@ -863,9 +863,27 @@ fn cli_db_override() -> Option<usize> {
     db
 }
 
+/// True when launched with `ZEDIS_SMOKE_TEST=1` — the CI smoke mode: exit 0
+/// as soon as the first frame has painted, else the watchdog kills the
+/// process with a nonzero code. See the hooks in `main`.
+fn is_smoke_test() -> bool {
+    std::env::var("ZEDIS_SMOKE_TEST").is_ok_and(|v| v == "1")
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Held for the whole run so the non-blocking file logger keeps flushing.
     let _log_guard = init_logger()?;
+    if is_smoke_test() {
+        // Smoke watchdog: in the 0.4.5/0.4.6 Windows failure mode (hidden
+        // window never receives WM_PAINT) no frame ever paints, so the
+        // success hook below never fires — turn that hang into a distinct
+        // failing exit code instead of a stuck CI job.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            eprintln!("ZEDIS_SMOKE_TIMEOUT: no frame painted within 30s");
+            std::process::exit(2);
+        });
+    }
     // Register tree-sitter languages we want the code editor to
     // highlight beyond the JSON-only default. Today this is just Lua
     // (Functions / EVAL editors); add others by extending the helper.
@@ -1065,6 +1083,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // would never fire there (see the `show:` comment above).
                     #[cfg(target_os = "macos")]
                     window.on_next_frame(|window, _cx| window.activate_window());
+                    // CI smoke mode: a painted first frame is exactly the
+                    // signal the 0.4.5/0.4.6 Windows regression killed
+                    // (hidden windows never get WM_PAINT, so no frame ever
+                    // comes). Success → exit 0; the watchdog in `main`
+                    // turns "no frame" into exit 2.
+                    if is_smoke_test() {
+                        window.on_next_frame(|_window, _cx| {
+                            println!("ZEDIS_SMOKE_OK");
+                            std::process::exit(0);
+                        });
+                    }
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
                     // Activate the target connection + view now that the views
                     // are subscribed. Deep-link launch args (`--server

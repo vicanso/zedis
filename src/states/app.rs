@@ -1287,3 +1287,150 @@ pub fn escalate_dangerous_body(cx: &App, server_id: &str, body: impl Into<Shared
     let warning = rust_i18n::t!("danger.high_risk_warning", locale = &locale).to_string();
     format!("{body}\n\n{warning}").into()
 }
+
+/// Navigation / connection-selection logic tests on the headless gpui test
+/// platform. These lock in the event contracts that broke in past releases:
+/// the tray "Quick Connect does nothing" and "New Connection dialog doesn't
+/// open" regressions were both silent logic bugs in this file.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::override_config_dir;
+    use gpui::{Subscription, TestAppContext};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Redirect state persistence into a temp dir before any test triggers
+    /// `persist_nav` — a stray background save must never touch the real
+    /// `zedis.toml`.
+    fn isolate_config() {
+        let dir = std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id()));
+        override_config_dir(dir);
+    }
+
+    /// Recorded `(server_id, db)` of every `ServerSelected` emission.
+    type SelectedRecorder = Rc<RefCell<Vec<(String, usize)>>>;
+
+    /// A fresh state entity plus a recorder of every `ServerSelected` it
+    /// emits (the event that actually loads a connection).
+    fn state_with_recorder(cx: &mut TestAppContext) -> (Entity<ZedisAppState>, SelectedRecorder, Subscription) {
+        isolate_config();
+        let state = cx.new(|_| ZedisAppState::default());
+        let events: SelectedRecorder = Rc::default();
+        let recorder = events.clone();
+        let subscription = cx.update(|cx| {
+            cx.subscribe(&state, move |_state, event: &GlobalEvent, _cx| {
+                if let GlobalEvent::ServerSelected(id, db) = event {
+                    recorder.borrow_mut().push((id.to_string(), *db));
+                }
+            })
+        });
+        (state, events, subscription)
+    }
+
+    #[gpui::test]
+    fn connect_server_always_announces(cx: &mut TestAppContext) {
+        let (state, events, _sub) = state_with_recorder(cx);
+        // Restart scenario: the persisted snapshot already points at the
+        // target server while nothing is loaded in this session. Relying on
+        // apply_route's dedupe here was the "tray click does nothing" bug.
+        state.update(cx, |state, _| state.selected_server = Some(("srv-1".to_string(), 2)));
+        state.update(cx, |state, cx| state.connect_server("srv-1".to_string(), 2, cx));
+        assert_eq!(events.borrow().as_slice(), &[("srv-1".to_string(), 2)]);
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_server(), Some(&("srv-1".to_string(), 2)));
+            assert_eq!(state.last_db_for("srv-1"), 2);
+            assert!(matches!(
+                state.route(),
+                Route::Server {
+                    db: 2,
+                    view: ServerView::Editor,
+                    ..
+                }
+            ));
+        });
+        // Reconnecting the already-active server is still a (re)connect.
+        state.update(cx, |state, cx| state.connect_server("srv-1".to_string(), 2, cx));
+        assert_eq!(events.borrow().len(), 2);
+    }
+
+    #[gpui::test]
+    fn navigation_does_not_reannounce_same_connection(cx: &mut TestAppContext) {
+        let (state, events, _sub) = state_with_recorder(cx);
+        state.update(cx, |state, cx| state.connect_server("srv-1".to_string(), 0, cx));
+        assert_eq!(events.borrow().len(), 1);
+        // App-level detour and back: same connection → no reload.
+        state.update(cx, |state, cx| state.go_to(Route::Settings, cx));
+        state.update(cx, |state, cx| {
+            state.go_to(
+                Route::Server {
+                    id: "srv-1".into(),
+                    db: 0,
+                    view: ServerView::Metrics,
+                },
+                cx,
+            );
+        });
+        assert_eq!(events.borrow().len(), 1);
+        // Switching databases is a different connection → announce.
+        state.update(cx, |state, cx| {
+            state.go_to(
+                Route::Server {
+                    id: "srv-1".into(),
+                    db: 3,
+                    view: ServerView::Metrics,
+                },
+                cx,
+            );
+        });
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[("srv-1".to_string(), 0), ("srv-1".to_string(), 3)]
+        );
+    }
+
+    #[gpui::test]
+    fn new_connection_query_survives_clear(cx: &mut TestAppContext) {
+        let (state, events, _sub) = state_with_recorder(cx);
+        state.update(cx, |state, cx| state.connect_server("srv-1".to_string(), 0, cx));
+        // Tray "New Connection": clear first, then route Home with new=true.
+        // The reverse order lets clear_selected_server's Home routing wipe
+        // the query (the "dialog doesn't open" bug).
+        state.update(cx, |state, cx| {
+            state.clear_selected_server(cx);
+            let mut query = HashMap::new();
+            query.insert("new".to_string(), "true".to_string());
+            state.go_with_query(Route::Home, query, cx);
+        });
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.route(), Route::Home);
+            assert_eq!(state.selected_server(), None);
+            assert_eq!(
+                state.get_route_query().and_then(|q| q.get("new")).map(String::as_str),
+                Some("true")
+            );
+        });
+        // The clear announced the empty selection (sidebar/status bar reset).
+        assert_eq!(events.borrow().last(), Some(&(String::new(), 0)));
+    }
+
+    #[gpui::test]
+    fn activate_always_announces_server_route(cx: &mut TestAppContext) {
+        let (state, events, _sub) = state_with_recorder(cx);
+        // Startup restore: the snapshot matches the restored route, but the
+        // views subscribed after try_new — activate must still announce so
+        // the connection actually loads.
+        state.update(cx, |state, _| state.selected_server = Some(("srv-1".to_string(), 1)));
+        state.update(cx, |state, cx| {
+            state.activate(
+                Route::Server {
+                    id: "srv-1".into(),
+                    db: 1,
+                    view: ServerView::Editor,
+                },
+                cx,
+            );
+        });
+        assert_eq!(events.borrow().as_slice(), &[("srv-1".to_string(), 1)]);
+    }
+}

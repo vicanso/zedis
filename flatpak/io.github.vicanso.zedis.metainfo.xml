@@ -57,15 +57,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Key browser with namespace tree and syntax-highlighted value editor</caption>
-      <image>https://github.com/user-attachments/assets/20384b9e-9af7-4921-bacc-dde2c58a74fa</image>
+      <image>https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f</image>
     </screenshot>
     <screenshot>
       <caption>Memory analyzer with Top-N table, TTL histogram and recommendations</caption>
-      <image>https://github.com/user-attachments/assets/4442055e-4fe2-4195-a28a-9367466cb4e0</image>
+      <image>https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8</image>
     </screenshot>
     <screenshot>
       <caption>Real-time server metrics</caption>
-      <image>https://github.com/user-attachments/assets/40daafd8-1190-41ee-9dd1-1bbcd6f0db21</image>
+      <image>https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d</image>
     </screenshot>
   </screenshots>
 

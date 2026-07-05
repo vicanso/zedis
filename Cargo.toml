@@ -147,6 +147,12 @@ ureq = { version = "3", default-features = false, features = [
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tray-icon = "0.24.1"
 
+[dev-dependencies]
+# `TestAppContext` (headless fake platform) for state/route logic tests —
+# only test targets pay for the test-support build of gpui; release
+# builds are unaffected (dev-dependencies are excluded there).
+gpui = { workspace = true, features = ["test-support"] }
+
 [workspace.dependencies]
 indexmap = "2.14.0"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }

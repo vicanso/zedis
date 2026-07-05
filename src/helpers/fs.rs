@@ -26,7 +26,29 @@ use path_absolutize::Absolutize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
+
+/// Process-wide config-dir override, set at most once. Unit tests set it via
+/// [`override_config_dir`]; external runs (CI smoke) set `ZEDIS_CONFIG_DIR`.
+static CONFIG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Redirect the config directory for this process (first call wins). Test-only:
+/// keeps state persistence in tests away from the real `zedis.toml`.
+#[cfg(test)]
+pub fn override_config_dir(path: PathBuf) {
+    let _ = CONFIG_DIR_OVERRIDE.set(path);
+}
+
+fn config_dir_override() -> Option<PathBuf> {
+    if let Some(dir) = CONFIG_DIR_OVERRIDE.get() {
+        return Some(dir.clone());
+    }
+    match env::var("ZEDIS_CONFIG_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => Some(PathBuf::from(dir)),
+        _ => None,
+    }
+}
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 /// Recursively copies files from source directory to destination directory.
@@ -143,6 +165,15 @@ pub fn get_download_dir() -> Option<PathBuf> {
 /// If an old `~/.zedis` directory exists, its contents are copied to the new
 /// location and the old directory is removed.
 pub fn get_or_create_config_dir() -> Result<PathBuf> {
+    // Isolation override for CI smoke runs (`ZEDIS_CONFIG_DIR=…`) and unit
+    // tests (`override_config_dir`) — anything exercising state persistence
+    // must never touch the real user profile. Skips the `~/.zedis` migration.
+    if let Some(dir) = config_dir_override() {
+        if !dir.exists() {
+            fs::create_dir_all(&dir)?;
+        }
+        return Ok(dir);
+    }
     // Get platform-specific configuration directory
     let Some(project_dirs) = ProjectDirs::from("com", "bigtree", "zedis") else {
         return Err(Error::Invalid {
