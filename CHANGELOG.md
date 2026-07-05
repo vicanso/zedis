@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.2](https://github.com/vicanso/zedis/compare/v0.5.1..v0.5.2) - 2026-07-05
+
+### ⛰️  Features
+
+- *(keys)* Local recycle bin for deleted keys - ([11b0a84](https://github.com/vicanso/zedis/commit/11b0a844e5c7148647e4490f6de1959fc91d8a1b))
+- *(metrics)* Persist metrics history with 1h/24h/7d chart ranges - ([37b83f5](https://github.com/vicanso/zedis/commit/37b83f5ed9aace10ade3d42d565e7cd945ee82f7))
+- *(servers)* Staged connection diagnostics - ([f4a278c](https://github.com/vicanso/zedis/commit/f4a278c86b8efa522f9db698b4e9ca8427c5beff))
+
+### 🐛 Bug Fixes
+
+- *(tray)* Quick-connect and new-connection broken by route refactor - ([ca9323d](https://github.com/vicanso/zedis/commit/ca9323d81a9c54dae94ee3b4af3b5573016cfc52))
+
+### 🚜 Refactor
+
+- *(icon)* Update zedis icons - ([28c5cee](https://github.com/vicanso/zedis/commit/28c5cee81c48f5516bdea51978586f23fe72cfb2))
+
+### 🧪 Testing
+
+- Add route-logic tests and cross-platform smoke gate - ([d10113b](https://github.com/vicanso/zedis/commit/d10113bd008fe6a238ab3cedbaba735612ed6dff))
+
 ## [0.5.1](https://github.com/vicanso/zedis/compare/v0.4.6..v0.5.1) - 2026-07-04
 
 ### ⛰️  Features
