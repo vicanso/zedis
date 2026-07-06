@@ -49,15 +49,21 @@ fn help_text_style() -> TextViewStyle {
 /// view; `body` is Markdown (the caller resolves i18n). Opens on click,
 /// dismisses on click-outside. The content is capped and scrolls so a long
 /// explanation can't grow the popover past the viewport.
-pub fn help_popover(id: &'static str, body: impl Into<SharedString>) -> Popover {
+pub fn help_popover(id: impl Into<SharedString>, body: impl Into<SharedString>) -> Popover {
+    let id: SharedString = id.into();
     let body = body.into();
+    // Derive the child ids up front so the (owned) `id` can move into
+    // `Popover::new` while the content closure keeps only what it needs.
+    let trigger_id = SharedString::from(format!("{id}-trigger"));
+    let scroll_key = SharedString::from(format!("{id}-scroll"));
+    let body_id = SharedString::from(format!("{id}-body"));
     Popover::new(id)
         // Left-anchored (open rightward/down): these buttons sit next to a
         // panel's title at the left of the header, so this keeps the popover
         // on screen.
         .anchor(Anchor::TopLeft)
         .trigger(
-            Button::new(SharedString::from(format!("{id}-trigger")))
+            Button::new(trigger_id)
                 .ghost()
                 .xsmall()
                 .icon(Icon::empty().path(QUESTION_ICON)),
@@ -72,9 +78,7 @@ pub fn help_popover(id: &'static str, body: impl Into<SharedString>) -> Popover 
             // `size`, not `max_h`), so we hand-roll native scroll + a sibling
             // `Scrollbar`, mirroring the command palette.
             let scroll_handle = window
-                .use_keyed_state(SharedString::from(format!("{id}-scroll")), cx, |_, _| {
-                    ScrollHandle::default()
-                })
+                .use_keyed_state(scroll_key.clone(), cx, |_, _| ScrollHandle::default())
                 .read(cx)
                 .clone();
             div()
@@ -86,10 +90,7 @@ pub fn help_popover(id: &'static str, body: impl Into<SharedString>) -> Popover 
                         .max_h(px(320.))
                         .overflow_y_scroll()
                         .track_scroll(&scroll_handle)
-                        .child(
-                            TextView::markdown(SharedString::from(format!("{id}-body")), body.clone())
-                                .style(help_text_style()),
-                        ),
+                        .child(TextView::markdown(body_id.clone(), body.clone()).style(help_text_style())),
                 )
                 .child(
                     // Overlay bar reading the same handle; `Always` keeps it
