@@ -101,6 +101,14 @@ fn trim_output_scrollback(buf: &mut String) {
     }
 }
 
+/// Active `Ctrl+R` reverse-history-search session. `matches` is the command
+/// history filtered by the current query, newest-first; `index` is the match
+/// currently shown, advanced (toward older) by repeated `Ctrl+R`.
+struct ReverseSearchState {
+    matches: Vec<SharedString>,
+    index: usize,
+}
+
 pub struct ZedisTerminal {
     server_state: Entity<ZedisServerState>,
     cmd_output_state: Entity<InputState>,
@@ -112,6 +120,10 @@ pub struct ZedisTerminal {
     /// single-line REPL (which already iterates `command.lines()`).
     batch_input_state: Entity<InputState>,
     batch_mode: bool,
+    /// Query field for the `Ctrl+R` reverse history search.
+    search_input_state: Entity<InputState>,
+    /// `Some` while the reverse-search overlay is active.
+    reverse_search: Option<ReverseSearchState>,
     redis_commands: Vec<SharedString>,
     cmd_suggestions: Vec<String>,
     cmd_suggestion_index: Option<usize>,
@@ -138,6 +150,7 @@ impl ZedisTerminal {
                 .line_number(true)
                 .soft_wrap(true)
         });
+        let search_input_state = cx.new(|cx| InputState::new(window, cx));
 
         subscriptions.push(
             cx.subscribe_in(&cmd_input_state, window, |this, state, event, window, cx| match event {
@@ -211,6 +224,25 @@ impl ZedisTerminal {
             }),
         );
 
+        // Reverse-search query field: typing re-filters the history live;
+        // Enter accepts the highlighted match into the command input.
+        subscriptions.push(
+            cx.subscribe_in(&search_input_state, window, |this, state, event, window, cx| {
+                if this.reverse_search.is_none() {
+                    return;
+                }
+                match event {
+                    InputEvent::Change => {
+                        let query = state.read(cx).value().to_string();
+                        this.update_reverse_search_matches(&query, cx);
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => this.accept_reverse_search(window, cx),
+                    _ => {}
+                }
+            }),
+        );
+
         let mut this = Self {
             server_state,
             cmd_output_state,
@@ -219,6 +251,8 @@ impl ZedisTerminal {
             cmd_input_state,
             batch_input_state,
             batch_mode: false,
+            search_input_state,
+            reverse_search: None,
             redis_commands: Vec::new(),
             cmd_suggestions: Vec::new(),
             cmd_suggestion_index: None,
@@ -321,6 +355,97 @@ impl ZedisTerminal {
             });
             self.cmd_history_index = Some(index);
         }
+    }
+
+    /// History records newest-first, filtered by `query` (case-insensitive
+    /// substring; an empty query keeps everything).
+    fn reverse_search_matches(&self, query: &str, cx: &Context<Self>) -> Vec<SharedString> {
+        let server_id = self.server_state.read(cx).server_id();
+        if server_id.is_empty() {
+            return Vec::new();
+        }
+        let records = get_cmd_history_manager().records(server_id).unwrap_or_default();
+        let q = query.to_lowercase();
+        records
+            .into_iter()
+            .rev()
+            .filter(|r| q.is_empty() || r.to_lowercase().contains(&q))
+            .collect()
+    }
+
+    /// `Ctrl+R`: open the reverse-search overlay on the first press, then
+    /// step to the next (older) match on each subsequent press.
+    fn enter_or_advance_reverse_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reverse_search.is_some() {
+            self.step_reverse_search(true, cx);
+            return;
+        }
+        let matches = self.reverse_search_matches("", cx);
+        self.reverse_search = Some(ReverseSearchState { matches, index: 0 });
+        // The command-completion dropdown and history cursor belong to the
+        // REPL input; clear them so the overlay starts clean.
+        self.cmd_suggestions.clear();
+        self.cmd_suggestion_index = None;
+        self.cmd_history_index = None;
+        self.search_input_state.update(cx, |state, cx| {
+            state.set_value(SharedString::default(), window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Move the highlighted match: `older` walks toward earlier history (↑ or
+    /// a repeated Ctrl+R), otherwise toward more recent (↓). Clamped at both
+    /// ends; no-op when not searching.
+    fn step_reverse_search(&mut self, older: bool, cx: &mut Context<Self>) {
+        if let Some(state) = &mut self.reverse_search {
+            let next = if older {
+                (state.index + 1).min(state.matches.len().saturating_sub(1))
+            } else {
+                state.index.saturating_sub(1)
+            };
+            if next != state.index {
+                state.index = next;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Re-filter for a changed query, snapping back to the newest match.
+    fn update_reverse_search_matches(&mut self, query: &str, cx: &mut Context<Self>) {
+        let matches = self.reverse_search_matches(query, cx);
+        if let Some(state) = &mut self.reverse_search {
+            state.matches = matches;
+            state.index = 0;
+        }
+    }
+
+    fn current_reverse_match(&self) -> Option<SharedString> {
+        let state = self.reverse_search.as_ref()?;
+        state.matches.get(state.index).cloned()
+    }
+
+    /// Accept the highlighted match into the command input for review — it is
+    /// deliberately not auto-run, so the danger-command confirm still gates the
+    /// eventual Enter. No match ⇒ just close the overlay.
+    fn accept_reverse_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let matched = self.current_reverse_match();
+        self.reverse_search = None;
+        self.cmd_input_state.update(cx, |state, cx| {
+            if let Some(matched) = matched {
+                state.set_value(matched, window, cx);
+                state.set_cursor_position(Position::new(0, u32::MAX), window, cx);
+            }
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// `Esc`: close the overlay, leaving the command input untouched.
+    fn cancel_reverse_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reverse_search = None;
+        self.cmd_input_state.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
     }
 
     fn execute_command(&mut self, command: SharedString, window: &mut Window, cx: &mut Context<Self>) {
@@ -457,13 +582,21 @@ impl Render for ZedisTerminal {
             });
             self.should_focus_input = true;
         }
-        if std::mem::take(&mut self.should_focus_input) {
+        if std::mem::take(&mut self.should_focus_input) && self.reverse_search.is_none() {
             self.cmd_input_state.update(cx, |this, cx| this.focus(window, cx));
         }
 
         let font_family: SharedString = get_mono_font_family().into();
 
         let handle_cmd_arrow = |this: &mut Self, is_up: bool, window: &mut Window, cx: &mut Context<Self>| {
+            // While the reverse-search overlay is open the arrows step through
+            // its matches (↑ older, ↓ newer) instead of driving REPL
+            // completion/history.
+            if this.reverse_search.is_some() {
+                this.step_reverse_search(is_up, cx);
+                cx.stop_propagation();
+                return;
+            }
             let input = this.cmd_input_state.read(cx).value();
             if input.is_empty() || this.cmd_history_index.is_some() {
                 this.handle_cmd_history(is_up, window, cx);
@@ -506,6 +639,19 @@ impl Render for ZedisTerminal {
         let handle_other_keys = cx.listener(|this, _: &gpui::KeyDownEvent, _window, _cx| {
             this.cmd_history_index = None;
         });
+        // Captured (fires before the focused input) so Ctrl+R and Esc work
+        // regardless of what the InputState binds them to. Ctrl+R opens the
+        // reverse search and steps through matches; Esc closes it.
+        let handle_capture_keys = cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            let ks = &event.keystroke;
+            if ks.modifiers.control && ks.key == "r" {
+                this.enter_or_advance_reverse_search(window, cx);
+                cx.stop_propagation();
+            } else if this.reverse_search.is_some() && ks.key == "escape" {
+                this.cancel_reverse_search(window, cx);
+                cx.stop_propagation();
+            }
+        });
 
         v_flex()
             .w_full()
@@ -528,37 +674,78 @@ impl Render for ZedisTerminal {
                 let batch_mode = self.batch_mode;
                 let border = cx.theme().border;
 
-                // Single-line REPL row (completion + history) with a toggle
-                // to the batch editor. Built unconditionally so the captured
-                // arrow/key handlers are always consumed.
-                let repl_row =
-                    div()
+                let muted = cx.theme().muted_foreground;
+                let search_active = self.reverse_search.is_some();
+                let current_match = self.current_reverse_match();
+
+                // The bottom row: normally the single-line REPL (completion +
+                // history + Batch toggle); while reverse-search is active it is
+                // replaced in place by the `(reverse-i-search)` overlay. Built
+                // unconditionally so the captured arrow/key handlers (and the
+                // Ctrl+R capture that *opens* search) are always consumed.
+                let row_body = if search_active {
+                    // (reverse-i-search)`<query>`: <matched command>
+                    let match_label = match &current_match {
+                        Some(m) => Label::new(m.clone()).text_color(cx.theme().foreground),
+                        None => Label::new("(no match)").text_color(muted),
+                    };
+                    h_flex()
                         .w_full()
-                        .border_t_1()
-                        .border_color(border)
-                        .capture_action(handle_move_up)
-                        .capture_action(handle_move_down)
-                        .on_key_down(handle_other_keys)
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
                         .child(
-                            h_flex()
-                                .w_full()
-                                .items_center()
-                                .gap_1()
-                                .pr_1()
-                                .child(
-                                    div().flex_1().child(
-                                        Input::new(&self.cmd_input_state)
-                                            .font_family(font_family.clone())
-                                            .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
-                                            .appearance(false),
-                                    ),
-                                )
-                                .child(
-                                    Button::new("term-mode-batch").label("Batch").ghost().small().on_click(
-                                        cx.listener(|this, _, window, cx| this.toggle_batch_mode(window, cx)),
-                                    ),
-                                ),
-                        );
+                            Label::new("(reverse-i-search)`")
+                                .font_family(font_family.clone())
+                                .text_color(muted),
+                        )
+                        .child(
+                            div().min_w(px(60.)).child(
+                                Input::new(&self.search_input_state)
+                                    .font_family(font_family.clone())
+                                    .appearance(false),
+                            ),
+                        )
+                        .child(Label::new("`:").font_family(font_family.clone()).text_color(muted))
+                        .child(match_label.font_family(font_family.clone()))
+                        .child(div().flex_1())
+                        .child(
+                            Label::new("↑/↓ or Ctrl+R · Enter accept · Esc cancel")
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                } else {
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_1()
+                        .pr_1()
+                        .child(
+                            div().flex_1().child(
+                                Input::new(&self.cmd_input_state)
+                                    .font_family(font_family.clone())
+                                    .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                                    .appearance(false),
+                            ),
+                        )
+                        .child(
+                            Button::new("term-mode-batch")
+                                .label("Batch")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| this.toggle_batch_mode(window, cx))),
+                        )
+                };
+                let repl_row = div()
+                    .w_full()
+                    .border_t_1()
+                    .border_color(border)
+                    .capture_action(handle_move_up)
+                    .capture_action(handle_move_down)
+                    .capture_key_down(handle_capture_keys)
+                    .on_key_down(handle_other_keys)
+                    .child(row_body);
 
                 v_flex()
                     .w_full()

@@ -16,22 +16,21 @@ use crate::{
     assets::CustomIconName,
     connection::{DangerKind, get_connection_manager, get_server, get_servers},
     error::Error,
-    helpers::get_mono_font_family,
+    helpers::{ConfigEditAction, get_mono_font_family},
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
         i18n_config_editor,
     },
     views::{ZedisCopyKeyDialog, confirm_dangerous_command},
 };
-use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
-    button::{Button, ButtonVariants, DropdownButton},
+    button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState, NumberInput},
     label::Label,
-    menu::PopupMenuItem,
     notification::Notification,
     spinner::Spinner,
     v_flex,
@@ -39,7 +38,7 @@ use gpui_component::{
 use redis::cmd;
 use std::collections::{BTreeSet, HashMap};
 use tracing::error;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, ZedisSelect, ZedisSelectEvent};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -113,8 +112,154 @@ fn config_kind(key: &str, value: &str) -> ConfigKind {
     }
 }
 
+/// A section the config parameters are grouped into. `label` is a fixed
+/// technical string (a prefix pattern, shown mono); `desc_key` is an i18n key
+/// (under `config_editor`) for the human description. A parameter joins the
+/// first group any of its `prefixes` matches (`starts_with`); anything left
+/// over falls into a synthetic "others" section.
+struct ConfigGroup {
+    label: &'static str,
+    desc_key: &'static str,
+    prefixes: &'static [&'static str],
+}
+
+/// Groups in display order. Prefixes are chosen specific enough to avoid
+/// cross-group collisions (e.g. `set-max` not `set-`, so `set-proc-title`
+/// doesn't land in data types).
+/// Order: the parameters people most often view/tune first (memory,
+/// persistence, network, security, replication, logging, latency), then the
+/// situational/advanced groups (cluster, TLS, active defrag, data-type
+/// tuning, scripting). The "others" bucket always renders after all of these.
+const CONFIG_GROUPS: &[ConfigGroup] = &[
+    ConfigGroup {
+        label: "maxmemory-*",
+        desc_key: "group_memory",
+        prefixes: &["maxmemory"],
+    },
+    ConfigGroup {
+        label: "aof-* / appendonly",
+        desc_key: "group_aof",
+        prefixes: &[
+            "appendonly",
+            "appendfsync",
+            "appendfilename",
+            "appenddirname",
+            "aof",
+            "auto-aof-rewrite",
+            "no-appendfsync-on-rewrite",
+        ],
+    },
+    ConfigGroup {
+        label: "rdb-* / snapshot",
+        desc_key: "group_rdb",
+        prefixes: &[
+            "save",
+            "rdb",
+            "dbfilename",
+            "dir",
+            "stop-writes-on-bgsave-error",
+            "sanitize-dump-payload",
+        ],
+    },
+    ConfigGroup {
+        label: "client-* / network",
+        desc_key: "group_network",
+        prefixes: &[
+            "maxclients",
+            "timeout",
+            "tcp",
+            "client",
+            "bind",
+            "port",
+            "unixsocket",
+            "socket",
+            "protected-mode",
+        ],
+    },
+    ConfigGroup {
+        label: "acl-* / auth",
+        desc_key: "group_security",
+        prefixes: &[
+            "requirepass",
+            "acl",
+            "enable-protected",
+            "enable-debug",
+            "enable-module",
+            "rename-command",
+        ],
+    },
+    ConfigGroup {
+        label: "repl-* / replica-*",
+        desc_key: "group_replication",
+        prefixes: &[
+            "repl",
+            "slave",
+            "min-replicas",
+            "min-slaves",
+            "master",
+            "propagation-error",
+        ],
+    },
+    ConfigGroup {
+        label: "log-* / syslog",
+        desc_key: "group_logging",
+        prefixes: &["logfile", "loglevel", "syslog", "crash-"],
+    },
+    ConfigGroup {
+        label: "latency / slowlog",
+        desc_key: "group_observability",
+        prefixes: &["latency", "slowlog"],
+    },
+    ConfigGroup {
+        label: "cluster-*",
+        desc_key: "group_cluster",
+        prefixes: &["cluster"],
+    },
+    ConfigGroup {
+        label: "tls-*",
+        desc_key: "group_tls",
+        prefixes: &["tls"],
+    },
+    ConfigGroup {
+        label: "active-defrag-*",
+        desc_key: "group_defrag",
+        prefixes: &["activedefrag", "active-defrag"],
+    },
+    ConfigGroup {
+        label: "hash / list / set / zset",
+        desc_key: "group_datatypes",
+        prefixes: &[
+            "hash-max",
+            "list-max",
+            "list-compress",
+            "set-max",
+            "zset-max",
+            "stream-node-max",
+            "hll-sparse",
+            "activerehashing",
+            "proto-max-bulk-len",
+        ],
+    },
+    ConfigGroup {
+        label: "lua / functions",
+        desc_key: "group_scripting",
+        prefixes: &["lua", "functions", "busy-reply-threshold"],
+    },
+];
+
+/// The group index a config key belongs to, or `None` for the "others" bucket.
+fn config_group_index(key: &str) -> Option<usize> {
+    CONFIG_GROUPS
+        .iter()
+        .position(|g| g.prefixes.iter().any(|p| key.starts_with(p)))
+}
+
 pub struct ZedisConfigEditor {
     server_state: Entity<ZedisServerState>,
+    /// Tracked on the root so a config edit can grab focus (see the edit
+    /// handler), letting the `Esc` capture handler cancel the edit before the
+    /// keystroke bubbles up to the global "back" binding.
+    focus_handle: FocusHandle,
     configs: Vec<(SharedString, SharedString)>,
     filter_state: Entity<InputState>,
     filter: String,
@@ -126,6 +271,11 @@ pub struct ZedisConfigEditor {
     editing_bool: bool,
     /// Current selection used when editing a known enum value (dropdown).
     editing_enum: SharedString,
+    /// Searchable-style dropdown (`ZedisSelect`, matching the settings UI) and
+    /// its change subscription for the active enum edit; `None` otherwise. A
+    /// stateful view entity, so it's created on entering an enum edit rather
+    /// than inline per render.
+    enum_select: Option<(Entity<ZedisSelect>, Subscription)>,
     loading: bool,
     /// True while a cross-server compare fetches the target's `CONFIG GET *`,
     /// so the header shows the same spinner as the initial load (the fetch can
@@ -162,6 +312,7 @@ impl ZedisConfigEditor {
         subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
             if matches!(event, ServerEvent::ServerSelected(_)) {
                 this.editing_key = None;
+                this.enum_select = None;
                 this.configs.clear();
                 this.load_configs(cx);
             }
@@ -169,6 +320,7 @@ impl ZedisConfigEditor {
 
         let mut this = Self {
             server_state,
+            focus_handle: cx.focus_handle(),
             configs: Vec::new(),
             filter_state,
             filter: String::new(),
@@ -177,6 +329,7 @@ impl ZedisConfigEditor {
             number_state,
             editing_bool: false,
             editing_enum: SharedString::default(),
+            enum_select: None,
             loading: false,
             comparing: false,
             error: None,
@@ -251,6 +404,7 @@ impl ZedisConfigEditor {
             let result: Result<()> = task.await;
             let _ = handle.update(cx, |this, cx| {
                 this.editing_key = None;
+                this.enum_select = None;
                 match result {
                     Ok(()) => {
                         if let Some(entry) = this.configs.iter_mut().find(|(k, _)| k == &key_clone) {
@@ -363,6 +517,303 @@ impl ZedisConfigEditor {
         self.diff = None;
         cx.notify();
     }
+
+    /// Build the enum-edit dropdown (`ZedisSelect`, matching the settings UI)
+    /// for `value` among `options`. The server's current value is always
+    /// included so an option from a newer Redis isn't lost. The subscription
+    /// mirrors the selection into `editing_enum` for the eventual save.
+    fn build_enum_select(
+        &mut self,
+        options: &[&str],
+        value: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut opts: Vec<SharedString> = options.iter().map(|s| SharedString::from(*s)).collect();
+        if !opts.iter().any(|o| o.as_ref() == value.as_ref()) {
+            opts.insert(0, value.clone());
+        }
+        let selected = opts.iter().position(|o| o.as_ref() == value.as_ref());
+        let items: Vec<String> = opts.iter().map(|o| o.to_string()).collect();
+        self.editing_enum = value.clone();
+        let select = cx.new(|cx| ZedisSelect::new(items, selected, window, cx));
+        let opts_for_sub = opts;
+        let subscription = cx.subscribe(&select, move |this, _sel, event: &ZedisSelectEvent, cx| {
+            let ZedisSelectEvent::Change(index) = event;
+            if let Some(v) = opts_for_sub.get(*index) {
+                this.editing_enum = v.clone();
+                cx.notify();
+            }
+        });
+        self.enum_select = Some((select, subscription));
+    }
+
+    /// One config parameter as a card: key + edit pencil + value in display
+    /// mode; a highlighted card with the editor control + Save/Cancel while
+    /// editing. Theme colors are copied to `Copy` locals before any
+    /// `cx.listener` closure (borrowing `cx` inside one won't compile).
+    fn render_card(
+        &self,
+        key: SharedString,
+        value: SharedString,
+        font_family: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+        let fg = cx.theme().foreground;
+        let primary = cx.theme().primary;
+        let green = cx.theme().green;
+        let card_bg = cx.theme().secondary;
+        let radius = cx.theme().radius;
+        let kind = config_kind(&key, &value);
+
+        if self.editing_key.as_ref() == Some(&key) {
+            let save_key = key.clone();
+            let editor = match kind {
+                ConfigKind::Enum(_) => self
+                    .enum_select
+                    .as_ref()
+                    .map(|(s, _)| s.clone().into_any_element())
+                    .unwrap_or_else(|| div().into_any_element()),
+                ConfigKind::Bool => Checkbox::new("config-bool-edit")
+                    .checked(self.editing_bool)
+                    .label(if self.editing_bool { "yes" } else { "no" })
+                    .on_click(cx.listener(|this, checked: &bool, _w, cx| {
+                        this.editing_bool = *checked;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                ConfigKind::Number => NumberInput::new(&self.number_state).w_full().into_any_element(),
+                ConfigKind::Text => Input::new(&self.edit_state)
+                    .w_full()
+                    .font_family(font_family.clone())
+                    .appearance(true)
+                    .into_any_element(),
+            };
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .p_3()
+                .border_1()
+                .border_color(primary)
+                .rounded(radius)
+                .child(
+                    h_flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div().min_w_0().overflow_hidden().child(
+                                Label::new(key.clone())
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .font_family(font_family.clone()),
+                            ),
+                        )
+                        .child(
+                            Label::new(i18n_config_editor(cx, "editing"))
+                                .text_xs()
+                                .text_color(primary),
+                        ),
+                )
+                .child(editor)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("config-save")
+                                .small()
+                                .primary()
+                                .flex_1()
+                                .label(i18n_common(cx, "save"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let v: SharedString = match kind {
+                                        ConfigKind::Enum(_) => this.editing_enum.clone(),
+                                        ConfigKind::Bool => if this.editing_bool { "yes" } else { "no" }.into(),
+                                        ConfigKind::Number => this.number_state.read(cx).value(),
+                                        ConfigKind::Text => this.edit_state.read(cx).value(),
+                                    };
+                                    let key = save_key.clone();
+                                    let server_id = this.server_state.read(cx).server_id().to_string();
+                                    let line = format!("CONFIG SET {} {}", key, v);
+                                    let entity = cx.entity().downgrade();
+                                    let value_for_run = v.clone();
+                                    let key_for_run = key.clone();
+                                    let run = move |_: &mut Window, cx: &mut App| {
+                                        let Some(this) = entity.upgrade() else { return };
+                                        let key = key_for_run.clone();
+                                        let value = value_for_run.clone();
+                                        this.update(cx, |this, cx| this.save_config(key, value, cx));
+                                    };
+                                    if let Ok(server) = get_server(&server_id) {
+                                        confirm_dangerous_command(
+                                            &server,
+                                            &DangerKind::ConfigSet,
+                                            Some(&line),
+                                            window,
+                                            cx,
+                                            run,
+                                        );
+                                    } else {
+                                        this.save_config(key, v, cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new("config-cancel")
+                                .small()
+                                .ghost()
+                                .flex_1()
+                                .label(i18n_common(cx, "cancel"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.editing_key = None;
+                                    this.enum_select = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            let edit_key = key.clone();
+            let edit_value = value.clone();
+            let value_el = if matches!(kind, ConfigKind::Bool) {
+                let on = value.as_ref() == "yes";
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(div().size_2().rounded_full().bg(if on { green } else { muted }))
+                    .child(
+                        Label::new(value.clone())
+                            .text_sm()
+                            .text_color(fg)
+                            .font_family(font_family.clone()),
+                    )
+                    .into_any_element()
+            } else {
+                Label::new(value.clone())
+                    .text_sm()
+                    .text_ellipsis()
+                    .text_color(fg)
+                    .font_family(font_family.clone())
+                    .into_any_element()
+            };
+            div()
+                .id(SharedString::from(format!("config-card-{key}")))
+                .flex_1()
+                .min_w_0()
+                .min_h(px(72.))
+                .p_3()
+                .border_1()
+                .border_color(border)
+                .rounded(radius)
+                .bg(card_bg)
+                .hover(|this| this.border_color(primary))
+                .child(
+                    h_flex()
+                        .items_start()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div().min_w_0().overflow_hidden().child(
+                                Label::new(key.clone())
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .font_family(font_family.clone()),
+                            ),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("config-edit-{key}")))
+                                .xsmall()
+                                .ghost()
+                                .icon(Icon::new(CustomIconName::FilePenLine))
+                                .tooltip(i18n_config_editor(cx, "edit_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.editing_key = Some(edit_key.clone());
+                                    let kind = config_kind(&edit_key, &edit_value);
+                                    match kind {
+                                        ConfigKind::Enum(options) => {
+                                            this.build_enum_select(options, &edit_value, window, cx)
+                                        }
+                                        ConfigKind::Bool => this.editing_bool = edit_value.as_ref() == "yes",
+                                        // Focus the input so the user can type at once — and so the
+                                        // Esc-to-cancel capture handler is on the focus path.
+                                        ConfigKind::Number => this.number_state.update(cx, |state, cx| {
+                                            state.set_value(edit_value.clone(), window, cx);
+                                            state.focus(window, cx);
+                                        }),
+                                        ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
+                                            state.set_value(edit_value.clone(), window, cx);
+                                            state.focus(window, cx);
+                                        }),
+                                    }
+                                    // Bool / enum have no text input to focus; focus the editor root
+                                    // so Esc still reaches the capture handler above.
+                                    if matches!(kind, ConfigKind::Bool | ConfigKind::Enum(_)) {
+                                        this.focus_handle.focus(window, cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(div().mt_2().overflow_hidden().child(value_el))
+                .into_any_element()
+        }
+    }
+
+    /// A titled section: a header (accent bar + mono label + description +
+    /// count) over a responsive grid of parameter cards.
+    fn render_group(
+        &self,
+        label: SharedString,
+        desc: SharedString,
+        configs: &[(SharedString, SharedString)],
+        cols: u16,
+        font_family: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+        let fg = cx.theme().foreground;
+        let primary = cx.theme().primary;
+
+        let mut cards: Vec<gpui::AnyElement> = Vec::with_capacity(configs.len());
+        for (k, v) in configs {
+            cards.push(self.render_card(k.clone(), v.clone(), font_family, cx));
+        }
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(div().w(px(3.)).h(px(14.)).rounded_sm().bg(primary))
+                    .child(
+                        Label::new(label)
+                            .font_family(font_family.clone())
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(fg),
+                    )
+                    .child(Label::new(desc).text_xs().text_color(muted))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px_2()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(border)
+                            .child(Label::new(configs.len().to_string()).text_xs().text_color(muted)),
+                    ),
+            )
+            .child(div().grid().grid_cols(cols).items_start().gap_3().children(cards))
+            .into_any_element()
+    }
 }
 
 impl Render for ZedisConfigEditor {
@@ -381,199 +832,53 @@ impl Render for ZedisConfigEditor {
             .cloned()
             .collect();
 
-        let editing_key = self.editing_key.clone();
-        let edit_state = self.edit_state.clone();
-        let number_state = self.number_state.clone();
-        let editing_bool = self.editing_bool;
-        let editing_enum = self.editing_enum.clone();
-        let self_handle = cx.entity().downgrade();
-
+        // `stripe_bg` is still used by the cross-server diff view below.
         let stripe_bg = cx.theme().table_even;
-        let rows = filtered.into_iter().enumerate().map(|(row_ix, (key, value))| {
-            let is_editing = editing_key.as_ref() == Some(&key);
-            let is_stripe = row_ix % 2 != 0;
 
-            if is_editing {
-                let save_key = key.clone();
-                let kind = config_kind(&key, &value);
-                // Pick the editor control by inferred value type.
-                let editor = match kind {
-                    ConfigKind::Enum(options) => {
-                        // Always include the server's current value, so an option
-                        // from a newer Redis (not in our catalog) is selectable.
-                        let mut opts: Vec<SharedString> = options.iter().map(|s| SharedString::from(*s)).collect();
-                        if !opts.iter().any(|o| o.as_ref() == value.as_ref()) {
-                            opts.insert(0, value.clone());
-                        }
-                        let handle = self_handle.clone();
-                        DropdownButton::new("config-enum-edit")
-                            .small()
-                            .button(
-                                Button::new("config-enum-current")
-                                    .outline()
-                                    .small()
-                                    .label(editing_enum.clone()),
-                            )
-                            .dropdown_menu(move |menu, _w, _cx| {
-                                let mut menu = menu;
-                                for opt in opts.clone() {
-                                    let handle = handle.clone();
-                                    let val = opt.clone();
-                                    menu = menu.item(PopupMenuItem::new(opt.clone()).on_click(move |_, _w, cx| {
-                                        if let Some(this) = handle.upgrade() {
-                                            this.update(cx, |this, cx| {
-                                                this.editing_enum = val.clone();
-                                                cx.notify();
-                                            });
-                                        }
-                                    }));
-                                }
-                                menu
-                            })
-                            .into_any_element()
-                    }
-                    ConfigKind::Bool => Checkbox::new("config-bool-edit")
-                        .checked(editing_bool)
-                        .label(if editing_bool { "yes" } else { "no" })
-                        .on_click(cx.listener(|this, checked: &bool, _w, cx| {
-                            this.editing_bool = *checked;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                    ConfigKind::Number => NumberInput::new(&number_state).small().into_any_element(),
-                    ConfigKind::Text => Input::new(&edit_state)
-                        .small()
-                        .font_family(font_family.clone())
-                        .appearance(true)
-                        .into_any_element(),
-                };
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_1()
-                    .min_h(px(34.))
-                    .items_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .when(is_stripe, |this| this.bg(stripe_bg))
-                    .child(
-                        div()
-                            .w(px(280.0))
-                            .flex_none()
-                            .child(Label::new(key.clone()).text_sm().text_color(cx.theme().foreground)),
-                    )
-                    .child(div().flex_1().child(editor))
-                    .child(
-                        Button::new("config-save")
-                            .small()
-                            .primary()
-                            .label(i18n_common(cx, "save"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let v: SharedString = match kind {
-                                    ConfigKind::Enum(_) => this.editing_enum.clone(),
-                                    ConfigKind::Bool => if this.editing_bool { "yes" } else { "no" }.into(),
-                                    ConfigKind::Number => this.number_state.read(cx).value(),
-                                    ConfigKind::Text => this.edit_state.read(cx).value(),
-                                };
-                                let key = save_key.clone();
-                                let server_id = this.server_state.read(cx).server_id().to_string();
-                                let line = format!("CONFIG SET {} {}", key, v);
-                                let entity = cx.entity().downgrade();
-                                let value_for_run = v.clone();
-                                let key_for_run = key.clone();
-                                let run = move |_: &mut Window, cx: &mut App| {
-                                    let Some(this) = entity.upgrade() else { return };
-                                    let key = key_for_run.clone();
-                                    let value = value_for_run.clone();
-                                    this.update(cx, |this, cx| this.save_config(key, value, cx));
-                                };
-                                if let Ok(server) = get_server(&server_id) {
-                                    confirm_dangerous_command(
-                                        &server,
-                                        &DangerKind::ConfigSet,
-                                        Some(&line),
-                                        window,
-                                        cx,
-                                        run,
-                                    );
-                                } else {
-                                    this.save_config(key, v, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("config-cancel")
-                            .small()
-                            .ghost()
-                            .label(i18n_common(cx, "cancel"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.editing_key = None;
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element()
-            } else {
-                let edit_key = key.clone();
-                let edit_value = value.clone();
-                // Row-hover highlight so the pointer's current row is obvious
-                // in this dense list — the `.id()` makes the div stateful (a
-                // prerequisite for `.hover`); it overrides the zebra stripe.
-                h_flex()
-                    .id(("config-row", row_ix))
-                    .w_full()
-                    .px_3()
-                    .py_1()
-                    .min_h(px(34.))
-                    .items_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .when(is_stripe, |this| this.bg(stripe_bg))
-                    .hover(|this| this.bg(cx.theme().table_hover))
-                    .child(
-                        div()
-                            .w(px(280.0))
-                            .flex_none()
-                            .child(Label::new(key.clone()).text_sm().text_color(cx.theme().foreground)),
-                    )
-                    .child(
-                        div().flex_1().overflow_hidden().child(
-                            Label::new(value)
-                                .text_sm()
-                                .text_ellipsis()
-                                .text_color(cx.theme().muted_foreground),
-                        ),
-                    )
-                    .child(
-                        Button::new(format!("config-edit-{key}"))
-                            .xsmall()
-                            .ghost()
-                            .icon(Icon::new(CustomIconName::FilePenLine))
-                            .tooltip(i18n_config_editor(cx, "edit_tooltip"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.editing_key = Some(edit_key.clone());
-                                // Seed the control matching the value's inferred type.
-                                match config_kind(&edit_key, &edit_value) {
-                                    ConfigKind::Enum(_) => this.editing_enum = edit_value.clone(),
-                                    ConfigKind::Bool => this.editing_bool = edit_value.as_ref() == "yes",
-                                    ConfigKind::Number => this.number_state.update(cx, |state, cx| {
-                                        state.set_value(edit_value.clone(), window, cx);
-                                    }),
-                                    ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
-                                        state.set_value(edit_value.clone(), window, cx);
-                                    }),
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element()
+        // Group the filtered configs into ordered sections; anything not
+        // matching a known group falls into the synthetic "others" section.
+        let mut buckets: Vec<Vec<(SharedString, SharedString)>> = vec![Vec::new(); CONFIG_GROUPS.len()];
+        let mut others: Vec<(SharedString, SharedString)> = Vec::new();
+        for (k, v) in filtered {
+            match config_group_index(&k) {
+                Some(i) => buckets[i].push((k, v)),
+                None => others.push((k, v)),
             }
-        });
+        }
+        // Responsive card-grid column count via the content-width proxy.
+        let cols: u16 = cx
+            .global::<ZedisGlobalStore>()
+            .read(cx)
+            .content_width()
+            .map(|w| {
+                let w = w.as_f32();
+                if w > 1200. {
+                    4
+                } else if w > 900. {
+                    3
+                } else if w > 600. {
+                    2
+                } else {
+                    1
+                }
+            })
+            .unwrap_or(1);
 
         v_flex()
             .size_full()
             .overflow_hidden()
+            .track_focus(&self.focus_handle)
+            // While editing, declare the `ConfigEdit` key context so `escape`
+            // maps to Cancel — deeper than the workspace's back binding, so it
+            // wins; with no edit active there's no context and `escape` returns
+            // to the editor as usual. Requires the editor to hold focus (the
+            // edit handler focuses the input or this root).
+            .when(self.editing_key.is_some(), |this| this.key_context("ConfigEdit"))
+            .on_action(cx.listener(|this, _: &ConfigEditAction, _window, cx| {
+                this.editing_key = None;
+                this.enum_select = None;
+                cx.notify();
+            }))
             .child(
                 h_flex()
                     .px_3()
@@ -624,6 +929,7 @@ impl Render for ZedisConfigEditor {
                             .tooltip(i18n_common(cx, "reload"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.editing_key = None;
+                                this.enum_select = None;
                                 this.load_configs(cx);
                             })),
                     )
@@ -743,13 +1049,37 @@ impl Render for ZedisConfigEditor {
                     })
                     .into_any_element()
             } else {
+                let mut sections = v_flex().w_full().gap_6().px_4().py_3();
+                for (i, group) in CONFIG_GROUPS.iter().enumerate() {
+                    if buckets[i].is_empty() {
+                        continue;
+                    }
+                    sections = sections.child(self.render_group(
+                        SharedString::from(group.label),
+                        i18n_config_editor(cx, group.desc_key),
+                        &buckets[i],
+                        cols,
+                        &font_family,
+                        cx,
+                    ));
+                }
+                if !others.is_empty() {
+                    sections = sections.child(self.render_group(
+                        i18n_config_editor(cx, "group_others"),
+                        i18n_config_editor(cx, "group_others_desc"),
+                        &others,
+                        cols,
+                        &font_family,
+                        cx,
+                    ));
+                }
                 div()
                     .id("config-editor-body")
                     .flex_1()
                     .w_full()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .children(rows)
+                    .child(sections)
                     .into_any_element()
             })
     }

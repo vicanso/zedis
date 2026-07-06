@@ -14,7 +14,7 @@
 
 use crate::views::secondary_window::open_secondary_window;
 use crate::{
-    helpers::{get_or_create_config_dir, parse_duration},
+    helpers::{apply_fonts, get_or_create_config_dir, parse_duration},
     states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
 use gpui::{
@@ -52,7 +52,44 @@ fn index_to_locale(index: usize) -> &'static str {
     LOCALES.get(index).map(|(code, _)| *code).unwrap_or("en")
 }
 
+/// Build a font dropdown's `(labels, index→value, selected_index)`: a localized
+/// default entry (value `None`, index 0) followed by the installed families. A
+/// saved font missing from `fonts` (e.g. the config moved machines) is inserted
+/// so it stays selectable and shown as current.
+fn build_font_options(
+    fonts: &[String],
+    saved: &Option<String>,
+    default_label: String,
+) -> (Vec<String>, Vec<Option<String>>, Option<usize>) {
+    let mut labels = vec![default_label];
+    let mut values: Vec<Option<String>> = vec![None];
+    for f in fonts {
+        labels.push(f.clone());
+        values.push(Some(f.clone()));
+    }
+    let selected = match saved {
+        None => 0,
+        Some(name) => match fonts.iter().position(|f| f == name) {
+            Some(pos) => pos + 1,
+            None => {
+                labels.insert(1, name.clone());
+                values.insert(1, Some(name.clone()));
+                1
+            }
+        },
+    };
+    (labels, values, Some(selected))
+}
+
 pub struct ZedisSettingEditor {
+    ui_font_select: Entity<ZedisSelect>,
+    mono_font_select: Entity<ZedisSelect>,
+    /// Index → value for each dropdown (index 0 = the "default" entry = `None`).
+    ui_font_values: Vec<Option<String>>,
+    mono_font_values: Vec<Option<String>>,
+    /// Current selection, applied + persisted on change.
+    ui_font: Option<String>,
+    mono_font: Option<String>,
     max_key_tree_depth_state: Entity<InputState>,
     key_separator_state: Entity<InputState>,
     max_truncate_length_state: Entity<InputState>,
@@ -124,6 +161,8 @@ impl ZedisSettingEditor {
         let soft_delete = store.soft_delete();
         let auto_update_check = store.auto_update_check();
         let font_rem = store.font_rem_px().unwrap_or(16.0);
+        let ui_font = store.ui_font_family();
+        let mono_font = store.mono_font_family();
         let locale = store.locale().to_string();
         let ai_base_url = store.ai_base_url();
         let ai_api_key = store.ai_api_key();
@@ -369,8 +408,57 @@ impl ZedisSettingEditor {
             },
         ));
 
+        // UI + monospace font pickers: searchable dropdowns of the installed
+        // families (drop the `.`-prefixed internal ones), each led by a
+        // "default" entry. Changing either applies + persists both.
+        let all_fonts: Vec<String> = cx
+            .text_system()
+            .all_font_names()
+            .into_iter()
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        // The bundled JetBrains Mono is registered at runtime (`add_fonts`), so
+        // CoreText's enumeration may not list it — offer it explicitly.
+        let mut mono_fonts = all_fonts.clone();
+        if !mono_fonts.iter().any(|f| f == "JetBrains Mono") {
+            mono_fonts.push("JetBrains Mono".to_string());
+            mono_fonts.sort_unstable();
+        }
+        let (ui_labels, ui_font_values, ui_index) = build_font_options(
+            &all_fonts,
+            &ui_font,
+            i18n_settings(cx, "font_system_default").to_string(),
+        );
+        let (mono_labels, mono_font_values, mono_index) = build_font_options(
+            &mono_fonts,
+            &mono_font,
+            i18n_settings(cx, "font_mono_default").to_string(),
+        );
+        let ui_font_select = cx.new(|cx| ZedisSelect::new_searchable(ui_labels, ui_index, window, cx));
+        let mono_font_select = cx.new(|cx| ZedisSelect::new_searchable(mono_labels, mono_index, window, cx));
+        subscriptions.push(
+            cx.subscribe(&ui_font_select, |this, _sel, event: &ZedisSelectEvent, cx| {
+                let ZedisSelectEvent::Change(index) = event;
+                this.ui_font = this.ui_font_values.get(*index).cloned().flatten();
+                this.apply_and_save_fonts(cx);
+            }),
+        );
+        subscriptions.push(
+            cx.subscribe(&mono_font_select, |this, _sel, event: &ZedisSelectEvent, cx| {
+                let ZedisSelectEvent::Change(index) = event;
+                this.mono_font = this.mono_font_values.get(*index).cloned().flatten();
+                this.apply_and_save_fonts(cx);
+            }),
+        );
+
         Self {
             _subscriptions: subscriptions,
+            ui_font_select,
+            mono_font_select,
+            ui_font_values,
+            mono_font_values,
+            ui_font,
+            mono_font,
             key_scan_count_state,
             config_dir_state,
             auto_expand_threshold_state,
@@ -389,6 +477,18 @@ impl ZedisSettingEditor {
             font_size_slider,
             locale_select,
         }
+    }
+
+    /// Apply the current font selections live (Theme + mono global) and persist
+    /// them. Both are sent together so a change to one keeps the other's value.
+    fn apply_and_save_fonts(&self, cx: &mut Context<Self>) {
+        let ui = self.ui_font.clone();
+        let mono = self.mono_font.clone();
+        apply_fonts(cx, ui.as_deref(), mono.as_deref());
+        update_app_state_and_save(cx, "save_fonts", move |state, _| {
+            state.set_ui_font_family(ui.clone());
+            state.set_mono_font_family(mono.clone());
+        });
     }
 
     fn render_setting_row(cx: &Context<Self>, label_key: &str, input_element: impl IntoElement) -> impl IntoElement {
@@ -472,6 +572,8 @@ impl Render for ZedisSettingEditor {
                                 .text_color(muted),
                         )
                 }))
+                .child(Self::render_setting_row(cx, "ui_font", self.ui_font_select.clone()))
+                .child(Self::render_setting_row(cx, "mono_font", self.mono_font_select.clone()))
                 .child(Self::render_setting_row(cx, "lang", self.locale_select.clone()))
                 // — Key Behavior —
                 .child(Self::render_section_header(

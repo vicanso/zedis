@@ -47,6 +47,27 @@ impl EventEmitter<ZedisSelectEvent> for ZedisSelect {}
 
 impl ZedisSelect {
     pub fn new(items: Vec<String>, selected_index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::build(items, selected_index, false, window, cx)
+    }
+
+    /// Like [`ZedisSelect::new`] but the dropdown gets a search box — for long
+    /// option lists (e.g. installed font families).
+    pub fn new_searchable(
+        items: Vec<String>,
+        selected_index: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::build(items, selected_index, true, window, cx)
+    }
+
+    fn build(
+        items: Vec<String>,
+        selected_index: Option<usize>,
+        searchable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let options = items
             .into_iter()
             .enumerate()
@@ -56,7 +77,10 @@ impl ZedisSelect {
             })
             .collect::<Vec<_>>();
         let initial = selected_index.map(IndexPath::new);
-        let state = cx.new(|cx| SelectState::new(options, initial, window, cx));
+        let state = cx.new(|cx| {
+            let state = SelectState::new(options, initial, window, cx);
+            if searchable { state.searchable(true) } else { state }
+        });
         let subscription = cx.subscribe_in(
             &state,
             window,

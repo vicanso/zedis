@@ -123,6 +123,13 @@ pub enum ValueDiffAction {
     Close,
 }
 
+/// Actions scoped to the config editor while a parameter is being edited.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ConfigEditAction {
+    /// Cancel the in-progress edit (mirrors the Cancel button / Esc).
+    Cancel,
+}
+
 /// Slow-log panel export actions, dispatched by the toolbar "Export"
 /// dropdown and handled by the panel's own `.on_action` (same pattern
 /// as `EditorAction`). They export the currently-filtered rows.
@@ -304,6 +311,11 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // `ValueDiff` context, which is deeper than `Workspace`, so it wins
         // over the page-back binding above while the diff is focused.
         KeyBinding::new("escape", ValueDiffAction::Close, Some("ValueDiff")),
+        // Esc while editing a config parameter cancels the edit. Scoped to the
+        // `ConfigEdit` context (only present on the config editor's root while
+        // an edit is active), so it wins over the page-back binding then and
+        // falls through to it otherwise.
+        KeyBinding::new("escape", ConfigEditAction::Cancel, Some("ConfigEdit")),
         // Scoped to the JSONPath bar so it only overrides `tab` there;
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.

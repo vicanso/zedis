@@ -3,9 +3,9 @@ use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
-    MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, download_and_verify,
-    fetch_latest_release, get_default_font_family, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir,
-    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis,
+    MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, apply_fonts, download_and_verify,
+    fetch_latest_release, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir, new_hot_keys,
+    open_installer, register_extra_languages, unix_ts_millis,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -656,7 +656,10 @@ impl Render for Zedis {
 
         let content = v_flex()
             .id(PKG_NAME)
-            .font_family(get_default_font_family())
+            // No font_family here: gpui-component's `Root` (which wraps this
+            // view) already cascades `theme.font_family` (`.SystemUIFont` by
+            // default), so setting it again is redundant — and would override
+            // a theme that customizes the UI font.
             .size_full()
             .child(self.render_titlebar(window, cx))
             .child(
@@ -1048,6 +1051,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Theme::change(mode, None, cx);
         }
         cx.set_global(app_store);
+        // Apply the saved font preferences onto the (already-initialized)
+        // Theme before the first frame, so the initial paint uses them.
+        {
+            let (ui_font, mono_font) = {
+                let store = cx.global::<ZedisGlobalStore>().read(cx);
+                (store.ui_font_family(), store.mono_font_family())
+            };
+            apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
+        }
         #[cfg(not(target_os = "linux"))]
         {
             let tray_enabled = cx.global::<ZedisGlobalStore>().read(cx).tray_enabled();

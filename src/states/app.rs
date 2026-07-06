@@ -401,6 +401,12 @@ pub struct ZedisAppState {
     /// precedence over the legacy `font_size` enum; `None` falls back to it,
     /// then to gpui's 16px default. Additive so old configs migrate silently.
     font_rem_px: Option<f32>,
+    /// User-chosen UI font family (all non-mono text). Empty/None ⇒ the OS
+    /// system UI font. A single family name, never a comma-separated stack.
+    ui_font_family: Option<String>,
+    /// User-chosen monospace font family (code / tables / terminal). Empty/None
+    /// ⇒ the bundled JetBrains Mono.
+    mono_font_family: Option<String>,
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
     auto_expand_threshold: Option<usize>,
@@ -681,6 +687,21 @@ impl ZedisAppState {
     }
     pub fn set_font_rem_px(&mut self, px: Option<f32>) {
         self.font_rem_px = px;
+    }
+    /// UI font family, `None` when unset or blank (falls back to system).
+    pub fn ui_font_family(&self) -> Option<String> {
+        self.ui_font_family.clone().filter(|s| !s.trim().is_empty())
+    }
+    pub fn set_ui_font_family(&mut self, name: Option<String>) {
+        self.ui_font_family = name.filter(|s| !s.trim().is_empty());
+    }
+    /// Monospace font family, `None` when unset or blank (falls back to
+    /// bundled JetBrains Mono).
+    pub fn mono_font_family(&self) -> Option<String> {
+        self.mono_font_family.clone().filter(|s| !s.trim().is_empty())
+    }
+    pub fn set_mono_font_family(&mut self, name: Option<String>) {
+        self.mono_font_family = name.filter(|s| !s.trim().is_empty());
     }
     pub fn max_key_tree_depth(&self) -> usize {
         self.max_key_tree_depth.unwrap_or(5)
