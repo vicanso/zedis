@@ -13,11 +13,23 @@
 // limitations under the License.
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, Entity, FocusHandle, Focusable, Global, KeyDownEvent, Window, WindowOptions, div,
-    prelude::*,
+    AnyWindowHandle, App, AppContext, DisplayId, Entity, FocusHandle, Focusable, Global, KeyDownEvent, Window,
+    WindowOptions, div, prelude::*,
 };
 use gpui_component::Root;
 use std::{any::TypeId, collections::HashMap};
+
+/// The `DisplayId` of the monitor the main (active) window is currently on, or
+/// `None` if there's no active window. Pass it to `Bounds::centered` so a
+/// secondary window (About / Settings) opens on the same monitor as the app
+/// instead of always centering on the primary display.
+pub fn active_window_display(cx: &mut App) -> Option<DisplayId> {
+    let handle = cx.active_window()?;
+    handle
+        .update(cx, |_, window, cx| window.display(cx).map(|d| d.id()))
+        .ok()
+        .flatten()
+}
 
 /// Global registry that tracks open secondary windows by their content type.
 /// Allows [`open_secondary_window`] to reuse an existing window instead of

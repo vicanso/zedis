@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::assets::Assets;
-use crate::views::secondary_window::open_secondary_window;
+use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use chrono::{Datelike, Local};
 use gpui::{
     App, Bounds, Image, ImageFormat, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px,
@@ -125,10 +125,12 @@ fn build_config() -> AboutConfig {
 
 pub fn open_about_window(cx: &mut App) {
     let window_size = size(px(600.), px(500.));
+    // Center on the monitor the main window is on (not always the primary).
+    let display = active_window_display(cx);
     open_secondary_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
-            is_movable: false,
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(display, window_size, cx))),
+            is_movable: true,
             is_resizable: false,
             titlebar: Some(TitlebarOptions {
                 title: Some("About Zedis".into()),

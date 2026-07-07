@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::views::secondary_window::open_secondary_window;
+use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     helpers::{apply_fonts, get_or_create_config_dir, parse_duration},
     states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
@@ -703,9 +703,11 @@ impl Render for ZedisSettingEditor {
 pub fn open_settings_window(cx: &mut App) {
     let window_size = size(px(700.), px(560.));
     let title = i18n_settings(cx, "title");
+    // Center on the monitor the main window is on (not always the primary).
+    let display = active_window_display(cx);
     open_secondary_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(display, window_size, cx))),
             titlebar: Some(TitlebarOptions {
                 title: Some(title),
                 ..Default::default()
