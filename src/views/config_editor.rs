@@ -16,14 +16,14 @@ use crate::{
     assets::CustomIconName,
     connection::{DangerKind, get_connection_manager, get_server, get_servers},
     error::Error,
-    helpers::{ConfigEditAction, get_mono_font_family},
+    helpers::{ConfigEditAction, card_background, get_mono_font_family},
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
         i18n_config_editor,
     },
     views::{ZedisCopyKeyDialog, confirm_dangerous_command},
 };
-use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, Entity, FocusHandle, Hsla, SharedString, Subscription, Window, div, prelude::*, px, rgb};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
@@ -1690,7 +1690,8 @@ impl ZedisConfigEditor {
         let fg = cx.theme().foreground;
         let primary = cx.theme().primary;
         let green = cx.theme().green;
-        let card_bg = cx.theme().secondary;
+        // Shared card surface, matching the server cards (Home).
+        let card_bg = card_background(cx);
         let radius = cx.theme().radius;
         let kind = config_kind(&key, &value);
 
@@ -1920,7 +1921,9 @@ impl ZedisConfigEditor {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let fg = cx.theme().foreground;
-        let primary = cx.theme().primary;
+        // Fixed brand blue, matching the sidebar's selected-server accent bar
+        // (theme `primary` reads too faint against the card fill in some themes).
+        let accent_bar: Hsla = rgb(0x6b95c4).into();
 
         let mut cards: Vec<gpui::AnyElement> = Vec::with_capacity(configs.len());
         for (k, v) in configs {
@@ -1937,7 +1940,7 @@ impl ZedisConfigEditor {
                     .pb_2()
                     .border_b_1()
                     .border_color(border)
-                    .child(div().w(px(3.)).h(px(14.)).rounded_sm().bg(primary))
+                    .child(div().w(px(3.)).h(px(15.)).rounded_sm().bg(accent_bar))
                     .child(
                         Label::new(label)
                             .font_family(font_family.clone())

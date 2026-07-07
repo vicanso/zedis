@@ -17,7 +17,9 @@ use crate::connection::{
     ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
 };
 use crate::error::Error;
-use crate::helpers::{decrypt_share, get_mono_font_family, is_share_token, resolve_path, resolve_tag_chip};
+use crate::helpers::{
+    card_background, decrypt_share, get_mono_font_family, is_share_token, resolve_path, resolve_tag_chip,
+};
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
@@ -31,7 +33,7 @@ use gpui_component::menu::DropdownMenu;
 use gpui_component::notification::Notification;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
-    ActiveTheme, Colorize, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
 };
@@ -53,8 +55,6 @@ const DEFAULT_REDIS_PORT: u16 = 6379;
 const VIEWPORT_BREAKPOINT_SMALL: f32 = 800.0; // Single column
 const VIEWPORT_BREAKPOINT_MEDIUM: f32 = 1200.0; // Two columns
 const UPDATED_AT_SUBSTRING_LENGTH: usize = 10; // Length of date string to display
-const THEME_LIGHTEN_AMOUNT_DARK: f32 = 1.0;
-const THEME_DARKEN_AMOUNT_LIGHT: f32 = 0.02;
 
 /// Per-card secondary actions dispatched from the footer "⋯" dropdown. The
 /// payload is the server id; the handlers (registered on the view's render
@@ -1149,12 +1149,8 @@ impl Render for ZedisServers {
             _ => 3,
         };
 
-        // Card background color (slightly lighter/darker than theme background)
-        let bg = if cx.theme().is_dark() {
-            cx.theme().background.lighten(THEME_LIGHTEN_AMOUNT_DARK)
-        } else {
-            cx.theme().background.darken(THEME_DARKEN_AMOUNT_LIGHT)
-        };
+        // Shared card surface (same helper the config-editor cards use).
+        let bg = card_background(cx);
 
         let dark = cx.theme().is_dark();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();

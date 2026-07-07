@@ -510,16 +510,31 @@ fn apply_named_theme(name: &str, cx: &mut App) -> bool {
 /// `light_theme`/`dark_theme` slot, so picking Light/Dark/System afterwards
 /// would just re-apply that named theme unless the slots are reset first.
 fn restore_default_themes(cx: &mut App) {
-    let (light, dark) = {
+    // Clone the configs out (owned) so we can override the primary before
+    // installing them.
+    let (mut light, mut dark) = {
         let registry = ThemeRegistry::global(cx);
         (
-            registry.default_light_theme().clone(),
-            registry.default_dark_theme().clone(),
+            (**registry.default_light_theme()).clone(),
+            (**registry.default_dark_theme()).clone(),
         )
     };
+    // The stock default themes use a neutral (near-black / near-white) primary,
+    // so primary buttons are pure high-contrast fills that invert with the mode.
+    // Override it to the Zedis brand blue (same accent as the sidebar's selected
+    // bar) so primary buttons read as the app's color in both modes; a white
+    // label stays legible on the mid-blue. The hover/active shades are also set
+    // explicitly — the default configs pin them to neutrals (a near-white hover
+    // in dark), so they must be overridden too or the button flashes white.
+    for cfg in [&mut light, &mut dark] {
+        cfg.colors.primary = Some("#6b95c4".into());
+        cfg.colors.primary_foreground = Some("#ffffff".into());
+        cfg.colors.primary_hover = Some("#5a83b0".into());
+        cfg.colors.primary_active = Some("#4e73a0".into());
+    }
     let theme = Theme::global_mut(cx);
-    theme.light_theme = light;
-    theme.dark_theme = dark;
+    theme.light_theme = Rc::new(light);
+    theme.dark_theme = Rc::new(dark);
 }
 
 /// Open the "update available" dialog on the main window. **Download** opens the
