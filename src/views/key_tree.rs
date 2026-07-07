@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
     connection::get_server,
-    constants::KEY_TREE_KEYWORD_INPUT_HEIGHT,
+    constants::EDITOR_KEY_BAR_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
         EditorAction, build_csv, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
@@ -2388,7 +2388,7 @@ impl ZedisKeyTree {
         h_flex()
             .flex_shrink_0()
             .px_2()
-            .h(KEY_TREE_KEYWORD_INPUT_HEIGHT)
+            .h(EDITOR_KEY_BAR_HEIGHT)
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()

@@ -15,6 +15,7 @@
 use crate::{
     assets::CustomIconName,
     connection::get_servers,
+    constants::EDITOR_KEY_BAR_HEIGHT,
     helpers::resolve_tag_color,
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
 };
@@ -275,7 +276,7 @@ impl ZedisSidebar {
             });
         let home_item = ListItem::new("sidebar-home-item")
             .w_full()
-            .h_8()
+            .h_full()
             .px_2()
             .rounded_md()
             .when(is_home_current, |this| this.bg(list_active_color))
@@ -323,13 +324,20 @@ impl ZedisSidebar {
                     });
                 });
             });
-        rows.push(div().id("sidebar-home-row").mx_2().child(home_item).into_any_element());
-        // Thin divider with deliberately asymmetric breathing room —
-        // 8px above, 12px below — so the gap below Home reads as a
-        // section break rather than uniform list spacing. Sets the
-        // top-level Home entry apart from the group tree without
-        // competing with the floating selection pill.
-        rows.push(div().mx_2().h_px().mt_2().mb_3().bg(divider_color).into_any_element());
+        // Fixed-height top band (== the editor's key bar) with the Home pill
+        // vertically centered, so the sidebar's top row lines up with the
+        // content pane's top bar instead of sitting a couple px off.
+        rows.push(
+            h_flex()
+                .id("sidebar-home-row")
+                .mx_2()
+                .h(EDITOR_KEY_BAR_HEIGHT)
+                .items_center()
+                .child(home_item)
+                .border_b_1()
+                .border_color(divider_color)
+                .into_any_element(),
+        );
 
         // --- Group sections ---
         for (section_idx, section) in self.state.sections.iter().enumerate() {
@@ -581,7 +589,10 @@ impl ZedisSidebar {
         v_flex()
             .id("sidebar-redis-servers")
             .size_full()
-            .py_2()
+            // No top padding: the fixed-height Home band above must sit flush
+            // at the top so it aligns with the content pane's top bar. Keep the
+            // bottom breathing room.
+            .pb_2()
             .overflow_y_scrollbar()
             .children(rows)
     }

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::{MemuAction, PaletteAction, ShortcutsAction, UpdateAction, is_app_store_build};
+use crate::helpers::{
+    MemuAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family, is_app_store_build,
+};
 use crate::{
     assets::CustomIconName,
     connection::get_server,
@@ -23,7 +25,7 @@ use crate::{
 };
 use gpui::{Anchor, App, Context, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
-    Disableable, Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -63,15 +65,17 @@ impl ZedisTitleBar {
     /// The selected server is persisted across restarts, but the Home
     /// page is a server-agnostic chooser — showing the previously
     /// selected name there is misleading, so hide it on `Route::Home`.
-    fn selected_server_name(cx: &App) -> Option<SharedString> {
+    fn selected_server_info(cx: &App) -> Option<(SharedString, SharedString)> {
         let state = cx.global::<ZedisGlobalStore>().read(cx);
         if state.route() == Route::Home {
             return None;
         }
         let (server_id, _db) = state.selected_server()?.clone();
-        get_server(&server_id)
-            .ok()
-            .map(|server| SharedString::from(server.name))
+        let server = get_server(&server_id).ok()?;
+        // `host:port` — the name is user-chosen and may not say which real
+        // instance it is; the address confirms the actual target.
+        let host = SharedString::from(format!("{}:{}", server.host, server.port));
+        Some((SharedString::from(server.name), host))
     }
 
     fn render_settings_menu(this: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
@@ -238,21 +242,32 @@ impl Render for ZedisTitleBar {
         // True while re-checking on click — the chip shows a loading spinner.
         let update_checking = cx.global::<ZedisGlobalStore>().read(cx).update_checking();
 
-        // Centered title showing the active server name (empty when none).
+        // Centered title: active server name (primary) + its host:port (muted,
+        // mono, secondary) so you can confirm which real instance is connected.
+        // Empty on Home / when no server is selected.
+        let muted = cx.theme().muted_foreground;
+        let mono: SharedString = get_mono_font_family().into();
         let center =
             h_flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .child(
-                    h_flex()
-                        .gap_1p5()
-                        .items_center()
-                        .when_some(Self::selected_server_name(cx), |this, name| {
-                            this.child(Icon::new(IconName::HardDrive).small())
+                .child(h_flex().gap_1p5().items_center().when_some(
+                    Self::selected_server_info(cx),
+                    |this, (name, host)| {
+                        this.child(Icon::new(CustomIconName::Database).small()).child(
+                            // Name + host share one baseline, so the smaller
+                            // muted host sits on the name's line instead of
+                            // floating mid-height (what `items_center` did with
+                            // the mixed font sizes).
+                            h_flex()
+                                .items_baseline()
+                                .gap_1p5()
                                 .child(Label::new(name).font_semibold())
-                        }),
-                );
+                                .child(Label::new(host).text_xs().text_color(muted).font_family(mono.clone())),
+                        )
+                    },
+                ));
 
         TitleBar::new()
             // left placeholder balances the right actions so `center` stays centered
