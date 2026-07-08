@@ -21,7 +21,7 @@ use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{ValueHistoryEntry, push_history};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
-use crate::states::{QueryMode, get_session_option};
+use crate::states::{QueryMode, get_session_option, i18n_common};
 use ahash::AHashMap;
 use ahash::AHashSet;
 use bytes::Bytes;
@@ -167,6 +167,17 @@ pub struct ZedisServerState {
     /// transition in `note_ping_result`, reset to 0 on any success.
     ping_failures: u32,
 
+    /// User pressed "disconnect" on the status-bar health dot: the live
+    /// connection is dropped and the heartbeat paused (health stays `Offline`)
+    /// until `reconnect` re-establishes it. Distinct from an involuntary drop,
+    /// where the heartbeat keeps retrying on its own.
+    manually_offline: bool,
+
+    /// Unix seconds of the last "reconnect first" notice shown while
+    /// `manually_offline`. Throttles it so a background refresh loop can't spam
+    /// the notification each tick.
+    last_offline_notice: i64,
+
     /// Total number of keys in the database (from DBSIZE command)
     dbsize: Option<u64>,
 
@@ -307,6 +318,9 @@ impl ZedisServerState {
         self.connection_health = ConnectionHealth::Unknown;
         self.last_connection_error = ConnectionErrorKind::Unknown;
         self.ping_failures = 0;
+        // A fresh select / reconnect always re-establishes the link, so clear
+        // any manual-disconnect pause (reconnect routes through here too).
+        self.manually_offline = false;
         self.value = None;
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
@@ -422,6 +436,20 @@ impl ZedisServerState {
         T: Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
+        // Manually disconnected: run no Redis query. Every op here calls
+        // get_client, which silently re-establishes the link the user just
+        // dropped (hence "offline but data still loads"). reconnect clears the
+        // flag first (via reset), so the reload after reconnect still runs.
+        if self.manually_offline {
+            // Tell the user why nothing loaded — but throttle it so a
+            // background refresh loop can't spam a notice every tick.
+            let now = unix_ts();
+            if now.saturating_sub(self.last_offline_notice) >= 3 {
+                self.last_offline_notice = now;
+                self.emit_warning_notification(i18n_common(cx, "reconnect_first"), cx);
+            }
+            return;
+        }
         let arg = arg.into();
         cx.emit(ServerEvent::TaskStarted(name.clone()));
         debug!(name = name.as_str(), arg = arg.as_str(), "Spawning background task");

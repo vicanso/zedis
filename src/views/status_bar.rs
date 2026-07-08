@@ -789,10 +789,16 @@ impl ZedisStatusBar {
             server_state.health,
             ConnectionHealth::Offline | ConnectionHealth::Reconnecting
         );
+        // Connected → the dot doubles as a one-click *disconnect*; when down it's
+        // a *reconnect*. `Unknown` (still connecting) stays inert.
+        let is_connected = server_state.health == ConnectionHealth::Connected;
+        let dot_clickable = is_link_down || is_connected;
         let health_tooltip = if is_link_down {
             let hint = i18n_status_bar(cx, "conn_reconnect_hint");
             let reason = i18n_status_bar(cx, server_state.last_connection_error.reason_key());
             format!("{reason} · {hint}").into()
+        } else if is_connected {
+            format!("{} · {}", health_label, i18n_status_bar(cx, "conn_disconnect_hint")).into()
         } else {
             health_label.clone()
         };
@@ -815,10 +821,14 @@ impl ZedisStatusBar {
                             .size(px(8.))
                             .rounded_full()
                             .bg(health_color)
-                            .when(is_link_down, |this| {
-                                this.cursor_pointer().on_click(cx.listener(|this, _, _window, cx| {
+                            .when(dot_clickable, |this| {
+                                this.cursor_pointer().on_click(cx.listener(move |this, _, _window, cx| {
                                     this.server_state.update(cx, |state, cx| {
-                                        state.reconnect(cx);
+                                        if is_connected {
+                                            state.disconnect(cx);
+                                        } else {
+                                            state.reconnect(cx);
+                                        }
                                     });
                                 }))
                             })

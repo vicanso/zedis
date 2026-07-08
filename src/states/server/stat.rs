@@ -596,8 +596,30 @@ impl ZedisServerState {
         }
     }
 
+    /// Manually drop the live connection and stay `Offline` until the user hits
+    /// reconnect — the status-bar health dot's disconnect toggle. Removes the
+    /// pooled client and pauses the heartbeat (`manually_offline`), so the link
+    /// doesn't silently come back on the next tick.
+    pub fn disconnect(&mut self, cx: &mut Context<Self>) {
+        if self.server_id.is_empty() || self.manually_offline {
+            return;
+        }
+        self.manually_offline = true;
+        get_connection_manager().remove_client(&self.server_id, self.db);
+        self.ping_failures = Self::PING_OFFLINE_THRESHOLD;
+        if self.connection_health != ConnectionHealth::Offline {
+            self.connection_health = ConnectionHealth::Offline;
+            cx.emit(ServerEvent::ConnectionHealthChanged);
+        }
+    }
+
     pub fn refresh_redis_info(&mut self, cx: &mut Context<Self>) {
         if self.server_id.is_empty() {
+            return;
+        }
+        // Paused by a manual disconnect — don't PING (that would flip health
+        // back to Connected). Cleared by reconnect (via `reset`).
+        if self.manually_offline {
             return;
         }
 
