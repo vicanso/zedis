@@ -1003,6 +1003,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         return Ok(());
     }
+    // Populate the in-memory proto / script / lua caches synchronously, before
+    // the window opens — they back the proto/script/lua editor tables. Loading
+    // them in a post-window background task (the old placement) raced: an editor
+    // restored as the startup route read an empty cache and showed no rows until
+    // the view was recreated (switching away and back).
+    if let Err(e) = ProtoManager::init() {
+        error!(error = %e, "init protos fail");
+    }
+    if let Err(e) = ScriptManager::init() {
+        error!(error = %e, "init script viewers fail");
+    }
+    if let Err(e) = LuaScriptManager::init() {
+        error!(error = %e, "init lua scripts fail");
+    }
     let config_dir = if let Ok(dir) = get_or_create_config_dir() {
         dir.to_string_lossy().to_string()
     } else {
@@ -1278,21 +1292,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             Ok::<_, anyhow::Error>(())
-        })
-        .detach();
-        cx.spawn(async move |cx| {
-            cx.background_spawn(async move {
-                if let Err(e) = ProtoManager::init() {
-                    error!(error = %e, "init protos fail",);
-                }
-                if let Err(e) = ScriptManager::init() {
-                    error!(error = %e, "init script viewers fail",);
-                }
-                if let Err(e) = LuaScriptManager::init() {
-                    error!(error = %e, "init lua scripts fail",);
-                }
-            })
-            .await;
         })
         .detach();
     });

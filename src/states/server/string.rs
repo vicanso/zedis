@@ -144,44 +144,51 @@ impl RedisBytesValue {
                 .and_then(|vec| format_text(&vec, max_truncate_length).map(|(_, text)| (DataFormat::Preview, text)))
         };
 
-        let result = match initial_format {
-            DataFormat::MessagePack => rmp_serde::from_slice::<serde_json::Value>(data)
-                .ok()
-                .and_then(|v| serde_json::to_string_pretty(&v).ok())
-                .map(|s| (DataFormat::Preview, SharedString::from(s))),
+        // A script / proto viewer explicitly configured for this key wins over
+        // native format handling. Checked *before* the format match: otherwise a
+        // value that also happens to be gzip / zstd / snappy / an image is
+        // decoded natively and the configured viewer never runs. A viewer whose
+        // decode/execute fails falls through to native handling.
+        let result = if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
+            && let Ok(decoded) = ProtoManager::decode_data(&id, data)
+        {
+            Some((DataFormat::Protobuf, SharedString::from(decoded)))
+        } else if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
+            && let Ok(output) = ScriptManager::execute(&id, key, data)
+        {
+            Some((DataFormat::Script, SharedString::from(output)))
+        } else {
+            match initial_format {
+                DataFormat::MessagePack => rmp_serde::from_slice::<serde_json::Value>(data)
+                    .ok()
+                    .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                    .map(|s| (DataFormat::Preview, SharedString::from(s))),
 
-            DataFormat::Gzip => process_decompressed({
-                let mut decoder = GzDecoder::new(data);
-                let mut vec = Vec::with_capacity(data.len() * 2);
-                decoder.read_to_end(&mut vec).ok().map(|_| vec)
-            }),
+                DataFormat::Gzip => process_decompressed({
+                    let mut decoder = GzDecoder::new(data);
+                    let mut vec = Vec::with_capacity(data.len() * 2);
+                    decoder.read_to_end(&mut vec).ok().map(|_| vec)
+                }),
 
-            DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
+                DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
 
-            DataFormat::Snappy => process_decompressed({
-                let mut decoder = FrameDecoder::new(data);
-                let mut vec = Vec::with_capacity(data.len() * 2);
-                decoder.read_to_end(&mut vec).ok().map(|_| vec)
-            }),
+                DataFormat::Snappy => process_decompressed({
+                    let mut decoder = FrameDecoder::new(data);
+                    let mut vec = Vec::with_capacity(data.len() * 2);
+                    decoder.read_to_end(&mut vec).ok().map(|_| vec)
+                }),
 
-            DataFormat::Timestamp => format_unix_timestamp(data).map(|text| (DataFormat::Preview, text)),
+                DataFormat::Timestamp => format_unix_timestamp(data).map(|text| (DataFormat::Preview, text)),
 
-            DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
+                DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
-            _ => {
-                let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
-                if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
-                    && let Ok(decoded) = ProtoManager::decode_data(&id, data)
-                {
-                    Some((DataFormat::Protobuf, SharedString::from(decoded)))
-                } else if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
-                    && let Ok(output) = ScriptManager::execute(&id, key, data)
-                {
-                    Some((DataFormat::Script, SharedString::from(output)))
-                } else if !is_utf8 && let Ok(decompressed) = decompress_size_prepended(data) {
-                    process_decompressed(Some(decompressed))
-                } else {
-                    format_text(data, max_truncate_length)
+                _ => {
+                    let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
+                    if !is_utf8 && let Ok(decompressed) = decompress_size_prepended(data) {
+                        process_decompressed(Some(decompressed))
+                    } else {
+                        format_text(data, max_truncate_length)
+                    }
                 }
             }
         };
