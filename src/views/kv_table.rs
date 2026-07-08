@@ -746,7 +746,13 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             - STATUS_BAR_HEIGHT.as_f32()
             - EDITOR_KEY_BAR_HEIGHT.as_f32()
             - FOOTER_HEIGHT;
-        let normal_field_height = 60.;
+        // The field / editor height estimates below were tuned against a ~14px
+        // base font. Scale them by the live rem size so a larger font enlarges
+        // the reserved per-field space too, instead of overflowing the form and
+        // forcing a scrollbar. The chrome heights above are fixed-height bars,
+        // so they are deliberately not scaled.
+        let font_scale = window.rem_size().as_f32() / 14.0;
+        let normal_field_height = 60. * font_scale;
         if is_adding && self.fetcher.key_type() == KeyType::List {
             fields.push(
                 ZedisFormField::new("position", i18n_list_editor(cx, "position"))
@@ -768,7 +774,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
             reset_form_height -= normal_field_height;
         }
-        let flex_field_height = (reset_form_height / flex_field_count as f32).max(150.);
+        let flex_field_height = (reset_form_height / flex_field_count as f32).max(150. * font_scale);
 
         let mut first = true;
         // A read-only *connection* makes the edit form view-only too (disabled,
@@ -797,11 +803,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             // height (rather than `flex_1`) so the editor area has a definite
             // size inside the form's scroll container.
             if column.flex {
-                field = field.h(px(flex_field_height - 30.));
+                field = field.h(px(flex_field_height - 30. * font_scale));
             }
             if let Some(field_type) = column.field_type.clone() {
                 if field_type == ZedisFormFieldType::Editor && !column.flex {
-                    field = field.h(px(150.));
+                    field = field.h(px(150. * font_scale));
                 }
                 field = field.field_type(field_type);
             }
