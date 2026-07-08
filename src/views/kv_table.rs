@@ -497,10 +497,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     }
 
     fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
-        // Only allow row selection if UPDATE, REMOVE, or ADD mode is enabled
-        if !self
-            .mode
-            .intersects(KvTableMode::UPDATE | KvTableMode::REMOVE | KvTableMode::ADD)
+        // Open the detail panel on select. Normally an action mode
+        // (UPDATE/REMOVE/ADD) is required; in a read-only connection the mode is
+        // empty, but we still open a *view-only* preview so an entry's contents
+        // (e.g. a stream entry's id + message) can be inspected — the form is
+        // disabled and the update/remove actions are hidden below.
+        if !self.readonly
+            && !self
+                .mode
+                .intersects(KvTableMode::UPDATE | KvTableMode::REMOVE | KvTableMode::ADD)
         {
             return;
         }
@@ -766,7 +771,10 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let flex_field_height = (reset_form_height / flex_field_count as f32).max(150.);
 
         let mut first = true;
-        let readonly_on_edit = !is_adding && self.fetcher.readonly_on_edit();
+        // A read-only *connection* makes the edit form view-only too (disabled,
+        // empty fields skipped, no add-fields), same as a fetcher that is
+        // inherently read-only-on-edit (e.g. streams).
+        let readonly_on_edit = !is_adding && (self.readonly || self.fetcher.readonly_on_edit());
         for column in self.columns.iter() {
             if column.column_type != KvTableColumnType::Value {
                 continue;
