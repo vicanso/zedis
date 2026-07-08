@@ -984,13 +984,6 @@ impl Render for ZedisMetrics {
                 .text(i18n_common(cx, "loading"))
                 .into_any_element();
         }
-        let time_range = if let Some(first) = self.metrics_chart_data.dates.first()
-            && let Some(last) = self.metrics_chart_data.dates.last()
-        {
-            format!("{first} - {last}")
-        } else {
-            "".to_string()
-        };
         let has_chart_data = !self.metrics_chart_data.dates.is_empty();
         div()
             .size_full()
@@ -1031,22 +1024,16 @@ impl Render for ZedisMetrics {
                                     )
                                     .child(Label::new(self.title.clone())),
                             )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(h_flex().gap_1().children(MetricsRange::ALL.map(|range| {
-                                        let selected = self.range == range;
-                                        let button = Button::new(range.button_id())
-                                            .xsmall()
-                                            .label(i18n_metrics(cx, range.label_key()));
-                                        let button = if selected { button.primary() } else { button.ghost() };
-                                        button.on_click(
-                                            cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
-                                        )
-                                    })))
-                                    .child(Label::new(time_range)),
-                            ),
+                            .child(h_flex().items_center().gap_2().child(h_flex().gap_1().children(
+                                MetricsRange::ALL.map(|range| {
+                                    let selected = self.range == range;
+                                    let button = Button::new(range.button_id())
+                                        .xsmall()
+                                        .label(i18n_metrics(cx, range.label_key()));
+                                    let button = if selected { button.primary() } else { button.ghost() };
+                                    button.on_click(cx.listener(move |this, _, _window, cx| this.set_range(range, cx)))
+                                }),
+                            ))),
                     )
                     .child(self.render_stat_cards(columns, cx))
                     .when(has_chart_data, |this| {
