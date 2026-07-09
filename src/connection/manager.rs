@@ -252,7 +252,9 @@ mod command_stats_tests {
 // Wrapper for the underlying Redis client
 #[derive(Clone)]
 enum RClient {
-    Single(RedisServer),
+    // Boxed: RedisServer has grown (per-server key-tree prefs) and would
+    // otherwise trip clippy::large_enum_variant against the cluster arms.
+    Single(Box<RedisServer>),
     Cluster(cluster::ClusterClient),
     SshCluster(cluster::ClusterClient),
 }
@@ -1865,7 +1867,7 @@ impl ConnectionManager {
                     RClient::Cluster(builder.build()?)
                 }
             }
-            _ => RClient::Single(first_node.server.clone()),
+            _ => RClient::Single(Box::new(first_node.server.clone())),
         };
         let master_nodes: Vec<RedisNode> = nodes
             .iter()

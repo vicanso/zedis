@@ -460,6 +460,15 @@ impl ZedisServerState {
                 self.last_offline_notice = now;
                 self.emit_warning_notification(i18n_common(cx, "reconnect_first"), cx);
             }
+            // If `select` already flipped us to Loading before calling spawn,
+            // leave Failed so the UI is not stuck on the busy skeleton with
+            // no in-flight task to clear it.
+            if matches!(self.server_status, RedisServerStatus::Loading) {
+                self.server_status = RedisServerStatus::Failed;
+                self.scanning = false;
+                cx.emit(ServerEvent::ServerInfoUpdated);
+                cx.notify();
+            }
             return;
         }
         let arg = arg.into();

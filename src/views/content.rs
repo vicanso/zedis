@@ -206,6 +206,7 @@ impl ZedisContent {
                         // Disconnect / Home: drop the suite so a later
                         // reconnect never reuses another server's tree.
                         this.drop_editor_suite();
+                        cx.notify();
                         return;
                     }
                     // Compare before `select` mutates server_state.
@@ -222,6 +223,10 @@ impl ZedisContent {
                     if connection_changed {
                         this.drop_editor_suite();
                     }
+                    // `select` flips `server_status` to Loading — re-render so
+                    // the busy skeleton appears immediately (and clears later
+                    // when ServerInfoUpdated fires below).
+                    cx.notify();
                 }
                 GlobalEvent::ServerListUpdated => {
                     // If the currently-tracked server was just deleted,
@@ -235,12 +240,23 @@ impl ZedisContent {
             }),
         );
 
-        subscriptions.push(cx.subscribe(&server_state, |this, _server_state, event, cx| {
-            if let ServerEvent::TerminalToggled(_) = event {
-                this.should_focus = true;
-                cx.notify();
-            }
-        }));
+        // Content's full-page busy gate reads `server_state.is_busy()`.
+        // GPUI does not re-render this entity when only `server_state`
+        // notifies, so we must `cx.notify()` ourselves when load status
+        // changes — otherwise a cold start can leave the skeleton up after
+        // SelectServer finishes (Idle/Failed) until some other event happens.
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+                ServerEvent::TerminalToggled(_) => {
+                    this.should_focus = true;
+                    cx.notify();
+                }
+                ServerEvent::ServerInfoUpdated | ServerEvent::ServerSelected(_) => {
+                    cx.notify();
+                }
+                _ => {}
+            }),
+        );
 
         // Restore persisted key tree width from global state
         let global_store = cx.global::<ZedisGlobalStore>().read(cx);
