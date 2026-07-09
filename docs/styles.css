@@ -1,0 +1,567 @@
+/* Zedis landing — shared styles (GitHub Pages /docs) */
+
+:root {
+  --bg: #0c0f14;
+  --bg-elevated: #141a22;
+  --bg-card: #1a222d;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e8edf4;
+  --muted: #8b98a8;
+  --accent: #5b8fd9;
+  --accent-hover: #7aa8e8;
+  --accent-dim: rgba(91, 143, 217, 0.15);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --max: 1080px;
+  --font: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+code,
+.cmd {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* —— Layout —— */
+
+.wrap {
+  width: min(100% - 2rem, var(--max));
+  margin-inline: auto;
+}
+
+/* —— Nav —— */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  backdrop-filter: blur(12px);
+  background: rgba(12, 15, 20, 0.85);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.brand:hover {
+  color: var(--text);
+}
+
+.brand img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+.nav-links a {
+  color: var(--muted);
+}
+
+.nav-links a:hover {
+  color: var(--text);
+}
+
+.lang-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  font-size: 0.8rem;
+}
+
+.lang-switch a {
+  padding: 0.25rem 0.65rem;
+  color: var(--muted);
+}
+
+.lang-switch a.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* —— Buttons —— */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1.15rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 0.95rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #0c0f14;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  color: #0c0f14;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.btn-ghost:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+/* —— Hero —— */
+
+.hero {
+  padding: 3.5rem 0 2.5rem;
+  text-align: center;
+}
+
+.hero h1 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(2rem, 5vw, 3rem);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.hero .tagline {
+  margin: 0 auto;
+  max-width: 36rem;
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.hero-video {
+  position: relative;
+  margin: 2.25rem auto 0;
+  max-width: 900px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  background: #000;
+}
+
+.hero-video .hero-poster {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top;
+}
+
+.hero-video video {
+  width: 100%;
+  display: none;
+  vertical-align: middle;
+}
+
+/* Shown once the local (or fallback) video can play. */
+.hero-video.is-playing .hero-poster {
+  display: none;
+}
+
+.hero-video.is-playing video {
+  display: block;
+}
+
+/* —— Sections —— */
+
+section {
+  padding: 3rem 0;
+}
+
+section.alt {
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.02) 40%, transparent);
+}
+
+.section-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+
+.section-sub {
+  margin: 0 auto 2rem;
+  max-width: 32rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* —— Why —— */
+
+.why-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.why-card {
+  padding: 1.15rem 1.25rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.why-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+.why-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* —— Highlights —— */
+
+.grid-3 {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.card {
+  padding: 1.25rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.card .icon {
+  font-size: 1.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* —— Feature table —— */
+
+.feat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.feat-table th,
+.feat-table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.feat-table th {
+  width: 28%;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.feat-table td {
+  color: var(--muted);
+  background: var(--bg-card);
+}
+
+.feat-table tr:last-child th,
+.feat-table tr:last-child td {
+  border-bottom: none;
+}
+
+.feat-more {
+  text-align: center;
+  margin-top: 1.25rem;
+}
+
+/* —— Screenshots —— */
+
+.shots {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.shot {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--bg-card);
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.shot:hover {
+  border-color: rgba(91, 143, 217, 0.4);
+  transform: translateY(-2px);
+}
+
+.shot img {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top;
+}
+
+.shot figcaption {
+  padding: 0.55rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* —— Install —— */
+
+.install-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.install-card {
+  padding: 1.25rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.install-card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.cmd-box {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.65rem;
+}
+
+.cmd-box code {
+  flex: 1;
+  color: var(--text);
+  font-size: 0.8rem;
+  word-break: break-all;
+  line-height: 1.45;
+  align-self: center;
+}
+
+.copy-btn {
+  flex-shrink: 0;
+  border: none;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.copy-btn:hover {
+  background: rgba(91, 143, 217, 0.28);
+}
+
+.install-note {
+  margin-top: 1.25rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.cta-center {
+  text-align: center;
+  margin-top: 1.75rem;
+}
+
+/* —— Community —— */
+
+.community {
+  text-align: center;
+}
+
+.community p {
+  color: var(--muted);
+  max-width: 32rem;
+  margin: 0 auto 1.25rem;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem 1.25rem;
+  font-size: 0.95rem;
+}
+
+/* —— Footer —— */
+
+.footer {
+  border-top: 1px solid var(--border);
+  padding: 1.75rem 0 2.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.footer a {
+  color: var(--muted);
+}
+
+.footer a:hover {
+  color: var(--text);
+}
+
+/* —— Mobile nav —— */
+
+@media (max-width: 640px) {
+  .nav-links .hide-sm {
+    display: none;
+  }
+
+  .hero {
+    padding-top: 2.25rem;
+  }
+
+  .feat-table th {
+    width: auto;
+    display: block;
+    border-bottom: none;
+    padding-bottom: 0.25rem;
+  }
+
+  .feat-table td {
+    display: block;
+    padding-top: 0.25rem;
+  }
+
+  .feat-table tr {
+    display: block;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .feat-table tr:last-child {
+    border-bottom: none;
+  }
+}

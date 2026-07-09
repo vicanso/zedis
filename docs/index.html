@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zedis — Native, GPU-accelerated Redis GUI</title>
+    <meta
+      name="description"
+      content="Zedis is a blazing-fast, native Redis GUI built with Rust and GPUI. Browse millions of keys, understand your data, and stay safe on production."
+    />
+    <meta property="og:title" content="Zedis — Native Redis GUI" />
+    <meta
+      property="og:description"
+      content="GPU-accelerated Redis client. Native performance, smart viewers, live metrics, privacy-first."
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://raw.githubusercontent.com/vicanso/zedis/main/assets/icon.png"
+    />
+    <link
+      rel="icon"
+      href="https://raw.githubusercontent.com/vicanso/zedis/main/assets/icon.png"
+      type="image/png"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Browser language → Chinese (respect manual choice via localStorage).
+      (function () {
+        try {
+          var forced = localStorage.getItem("zedis-lang");
+          if (forced === "en") return;
+          if (forced === "zh") {
+            location.replace("zh/");
+            return;
+          }
+          var lang = (navigator.language || navigator.userLanguage || "").toLowerCase();
+          if (lang.indexOf("zh") === 0) location.replace("zh/");
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="./">
+          <img
+            src="https://raw.githubusercontent.com/vicanso/zedis/main/assets/icon.png"
+            width="28"
+            height="28"
+            alt=""
+          />
+          Zedis
+        </a>
+        <nav class="nav-links" aria-label="Primary">
+          <a class="hide-sm" href="#highlights">Highlights</a>
+          <a class="hide-sm" href="#features">Features</a>
+          <a class="hide-sm" href="#screenshots">Screenshots</a>
+          <a class="hide-sm" href="#install">Install</a>
+          <a href="https://github.com/vicanso/zedis" target="_blank" rel="noopener">GitHub</a>
+          <span class="lang-switch" role="group" aria-label="Language">
+            <a class="active" href="./" onclick="try{localStorage.setItem('zedis-lang','en')}catch(e){}">EN</a>
+            <a href="zh/" onclick="try{localStorage.setItem('zedis-lang','zh')}catch(e){}">中文</a>
+          </span>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/vicanso/zedis/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap">
+          <h1>Native Redis GUI.<br />Blazingly fast.</h1>
+          <p class="tagline">
+            Built with Rust and GPUI (the same engine as
+            <a href="https://zed.dev" target="_blank" rel="noopener">Zed</a>).
+            GPU-drawn UI, virtual-scrolled SCAN — millions of keys without the Electron tax.
+          </p>
+          <div class="badges">
+            <span class="badge">macOS · Windows · Linux</span>
+            <span class="badge">Apache-2.0</span>
+            <span class="badge">8 UI languages</span>
+            <span class="badge">No telemetry</span>
+          </div>
+          <div class="btn-row" style="justify-content: center">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/vicanso/zedis/releases/latest"
+              target="_blank"
+              rel="noopener"
+              >Download latest release</a
+            >
+            <a class="btn btn-ghost" href="#install">Package managers</a>
+            <a
+              class="btn btn-ghost"
+              href="https://github.com/vicanso/zedis"
+              target="_blank"
+              rel="noopener"
+              >Star on GitHub</a
+            >
+          </div>
+          <div class="hero-video" id="hero-media">
+            <img
+              class="hero-poster"
+              id="hero-poster"
+              src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"
+              alt="Zedis key browser"
+              width="1600"
+              height="1000"
+            />
+            <video
+              id="hero-video"
+              src="https://github.com/user-attachments/assets/36135174-16df-473b-8756-ea5931ec3c4b"
+              loop
+              muted
+              playsinline
+              preload="metadata"
+            ></video>
+          </div>
+        </div>
+      </section>
+
+      <section id="why" class="alt">
+        <div class="wrap">
+          <h2 class="section-title">Why Zedis?</h2>
+          <p class="section-sub">
+            Tired of Electron clients that freeze on big keys or burn gigabytes of RAM for a JSON string? So were we.
+          </p>
+          <div class="why-grid">
+            <div class="why-card">
+              <h3>Native, not Electron</h3>
+              <p>Every pixel on the GPU. Stay at 60+ FPS with a tiny memory footprint.</p>
+            </div>
+            <div class="why-card">
+              <h3>Understands your data</h3>
+              <p>JSON, Protobuf, MessagePack, compression, images, hex — purpose-built viewers per type.</p>
+            </div>
+            <div class="why-card">
+              <h3>Safe on production</h3>
+              <p>Env tags, read-only lock, escalated confirms, encrypted secrets — local only.</p>
+            </div>
+            <div class="why-card">
+              <h3>Built for power users</h3>
+              <p>⌘K palette, ⌘P recent keys, redis-cli with completion, batch mode, cross-server copy/diff.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="highlights">
+        <div class="wrap">
+          <h2 class="section-title">Highlights</h2>
+          <p class="section-sub">What you get out of the box.</p>
+          <div class="grid-3">
+            <article class="card">
+              <div class="icon">🦀</div>
+              <h3>Native &amp; fast</h3>
+              <p>Virtual-scrolled SCAN, million-key trees, light/dark/system themes across desktop platforms.</p>
+            </article>
+            <article class="card">
+              <div class="icon">🧠</div>
+              <h3>Smart data viewer</h3>
+              <p>Auto-decompress LZ4/Snappy/GZIP/ZSTD. JSONPath, Protobuf schemas, timestamps, images, custom scripts.</p>
+            </article>
+            <article class="card">
+              <div class="icon">🗂️</div>
+              <h3>Types &amp; modules</h3>
+              <p>Bitmap, HLL, Vector Set (KNN), Geo, Bloom, Time Series, Streams live-tail, Pub/Sub, RediSearch, Functions.</p>
+            </article>
+            <article class="card">
+              <div class="icon">📊</div>
+              <h3>Observability</h3>
+              <p>Live metrics + 7-day history, memory analyzer + AI tips, Slow Log ↔ Latency, MONITOR, value search.</p>
+            </article>
+            <article class="card">
+              <div class="icon">🔐</div>
+              <h3>Privacy-first</h3>
+              <p>Tags and notes stay local. TLS/SSH, ACL editor, staged connection diagnostics. No accounts, no telemetry.</p>
+            </article>
+            <article class="card">
+              <div class="icon">⌨️</div>
+              <h3>Keyboard-first</h3>
+              <p>Command palette, recent keys (⌘P), shortcuts overlay, Lua script library, in-app update check.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="alt">
+        <div class="wrap">
+          <h2 class="section-title">Features at a glance</h2>
+          <p class="section-sub">A condensed map of the product surface.</p>
+          <table class="feat-table">
+            <tbody>
+              <tr>
+                <th>🚀 Native &amp; fast</th>
+                <td>GPU rendering · virtual SCAN · multi-platform · light / dark / system</td>
+              </tr>
+              <tr>
+                <th>🧠 Data viewers</th>
+                <td>Compression · JSON/JSONPath · Protobuf · MessagePack · timestamps · images · hex · scripts</td>
+              </tr>
+              <tr>
+                <th>🗂️ Types &amp; modules</th>
+                <td>Bitmap · HLL · Vector · Geo · probabilistic · Time Series · Streams · Pub/Sub · Search · Functions</td>
+              </tr>
+              <tr>
+                <th>📊 Observability</th>
+                <td>Metrics history · memory analyzer · Slowlog · MONITOR · cluster · persistence · keyspace events</td>
+              </tr>
+              <tr>
+                <th>🔑 Keys &amp; data</th>
+                <td>Namespace tree · tags/notes · bulk ops · recycle bin · import/export · cross-server copy &amp; diff</td>
+              </tr>
+              <tr>
+                <th>🔐 Security</th>
+                <td>Env tags · read-only · ACL · TLS/SSH · diagnostics · encrypted secrets</td>
+              </tr>
+              <tr>
+                <th>⌨️ Productivity</th>
+                <td>⌘K · ⌘P · CLI · batch · Lua library · updates · logs</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="feat-more">
+            <a href="https://github.com/vicanso/zedis/blob/main/docs/FEATURES.md" target="_blank" rel="noopener"
+              >Full feature tour on GitHub →</a
+            >
+          </p>
+        </div>
+      </section>
+
+      <section id="screenshots">
+        <div class="wrap">
+          <h2 class="section-title">Screenshots</h2>
+          <p class="section-sub">A quick look at the main surfaces.</p>
+          <div class="shots">
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"
+                  alt="Key browser and data viewer"
+                  loading="lazy"
+                />
+                <figcaption>Key browser &amp; data viewer</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"
+                  alt="Memory analyzer"
+                  loading="lazy"
+                />
+                <figcaption>Memory analyzer</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"
+                  alt="Live metrics"
+                  loading="lazy"
+                />
+                <figcaption>Live metrics</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"
+                  alt="Geo map"
+                  loading="lazy"
+                />
+                <figcaption>Geo map</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"
+                  alt="Vector Set and KNN"
+                  loading="lazy"
+                />
+                <figcaption>Vector Set + KNN</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"
+                  alt="Command palette"
+                  loading="lazy"
+                />
+                <figcaption>Command palette (⌘K)</figcaption>
+              </figure>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="alt">
+        <div class="wrap">
+          <h2 class="section-title">Install</h2>
+          <p class="section-sub">Prefer a package manager, or grab a release binary.</p>
+          <div class="install-grid">
+            <div class="install-card">
+              <h3>macOS (Homebrew)</h3>
+              <div class="cmd-box">
+                <code id="cmd-brew">brew install --cask zedis</code>
+                <button type="button" class="copy-btn" data-copy="cmd-brew">Copy</button>
+              </div>
+            </div>
+            <div class="install-card">
+              <h3>Windows (Scoop)</h3>
+              <div class="cmd-box">
+                <code id="cmd-scoop">scoop bucket add extras &amp;&amp; scoop install zedis</code>
+                <button type="button" class="copy-btn" data-copy="cmd-scoop">Copy</button>
+              </div>
+            </div>
+            <div class="install-card">
+              <h3>Linux (Arch)</h3>
+              <div class="cmd-box">
+                <code id="cmd-aur">yay -S zedis-bin</code>
+                <button type="button" class="copy-btn" data-copy="cmd-aur">Copy</button>
+              </div>
+            </div>
+            <div class="install-card">
+              <h3>Cargo (from source)</h3>
+              <div class="cmd-box">
+                <code id="cmd-cargo">cargo install --git https://github.com/vicanso/zedis --locked zedis-gui</code>
+                <button type="button" class="copy-btn" data-copy="cmd-cargo">Copy</button>
+              </div>
+            </div>
+          </div>
+          <p class="install-note">
+            crates.io builds may lag (GPUI is a git dependency). Prefer Homebrew / Scoop / AUR or GitHub Releases for the newest build.
+          </p>
+          <div class="cta-center">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/vicanso/zedis/releases/latest"
+              target="_blank"
+              rel="noopener"
+              >Download latest release</a
+            >
+          </div>
+        </div>
+      </section>
+
+      <section id="community" class="community">
+        <div class="wrap">
+          <h2 class="section-title">Open source</h2>
+          <p>
+            Zedis is licensed under the Apache License 2.0. Issues and PRs welcome —
+            by contributing you agree to the project CLA.
+          </p>
+          <div class="links">
+            <a href="https://github.com/vicanso/zedis" target="_blank" rel="noopener">Repository</a>
+            <a href="https://github.com/vicanso/zedis/issues" target="_blank" rel="noopener">Issues</a>
+            <a href="https://github.com/vicanso/zedis/releases" target="_blank" rel="noopener">Releases</a>
+            <a href="https://github.com/vicanso/zedis/blob/main/CHANGELOG.md" target="_blank" rel="noopener"
+              >Changelog</a
+            >
+            <a href="https://x.com/tree_xie" target="_blank" rel="noopener">X / Twitter</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer-inner">
+        <span>© Zedis · Apache-2.0 · Hosted on GitHub Pages</span>
+        <span>
+          <a href="./">English</a>
+          ·
+          <a href="zh/" onclick="try{localStorage.setItem('zedis-lang','zh')}catch(e){}">中文</a>
+          ·
+          <a href="https://github.com/vicanso/zedis" target="_blank" rel="noopener">GitHub</a>
+        </span>
+      </div>
+    </footer>
+
+    <script>
+      document.querySelectorAll(".copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var id = btn.getAttribute("data-copy");
+          var el = document.getElementById(id);
+          if (!el) return;
+          var text = el.textContent.replace(/\u00a0/g, " ").trim();
+          function done() {
+            var prev = btn.textContent;
+            btn.textContent = "Copied";
+            setTimeout(function () {
+              btn.textContent = prev;
+            }, 1200);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function () {
+              fallback();
+            });
+          } else {
+            fallback();
+          }
+          function fallback() {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+              document.execCommand("copy");
+              done();
+            } catch (e) {}
+            document.body.removeChild(ta);
+          }
+        });
+      });
+
+      (function setupHeroVideo() {
+        var wrap = document.getElementById("hero-media");
+        var video = document.getElementById("hero-video");
+        if (!wrap || !video) return;
+        function showVideo() {
+          wrap.classList.add("is-playing");
+          var p = video.play();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        }
+        video.addEventListener("canplay", showVideo, { once: true });
+        video.addEventListener("error", function () {
+          wrap.classList.remove("is-playing");
+        });
+        // If the source is missing, some browsers never fire "error" on <video>
+        // until play is attempted.
+        video.load();
+      })();
+    </script>
+  </body>
+</html>

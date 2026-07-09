@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zedis — 原生 GPU 加速 Redis 客户端</title>
+    <meta
+      name="description"
+      content="Zedis 是使用 Rust 与 GPUI 构建的高性能原生 Redis GUI。百万级键流畅浏览，智能数据查看，隐私优先。"
+    />
+    <meta property="og:title" content="Zedis — 原生 Redis GUI" />
+    <meta
+      property="og:description"
+      content="GPU 加速的 Redis 客户端。原生性能、智能查看器、实时指标、隐私优先。"
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://raw.githubusercontent.com/vicanso/zedis/main/assets/icon.png"
+    />
+    <link
+      rel="icon"
+      href="https://raw.githubusercontent.com/vicanso/zedis/main/assets/icon.png"
+      type="image/png"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="./">
+          <img
+            src="https://raw.githubusercontent.com/vicanso/zedis/main/assets/icon.png"
+            width="28"
+            height="28"
+            alt=""
+          />
+          Zedis
+        </a>
+        <nav class="nav-links" aria-label="主导航">
+          <a class="hide-sm" href="#highlights">亮点</a>
+          <a class="hide-sm" href="#features">功能</a>
+          <a class="hide-sm" href="#screenshots">截图</a>
+          <a class="hide-sm" href="#install">安装</a>
+          <a href="https://github.com/vicanso/zedis" target="_blank" rel="noopener">GitHub</a>
+          <span class="lang-switch" role="group" aria-label="语言">
+            <a href="../" onclick="try{localStorage.setItem('zedis-lang','en')}catch(e){}">EN</a>
+            <a class="active" href="./" onclick="try{localStorage.setItem('zedis-lang','zh')}catch(e){}">中文</a>
+          </span>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/vicanso/zedis/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >下载</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap">
+          <h1>原生 Redis GUI<br />极速流畅</h1>
+          <p class="tagline">
+            使用 Rust 与 GPUI（与
+            <a href="https://zed.dev" target="_blank" rel="noopener">Zed Editor</a>
+            同款渲染引擎）打造。GPU 绘制界面、虚拟滚动 SCAN —— 百万级键也能保持低内存与 60+ FPS。
+          </p>
+          <div class="badges">
+            <span class="badge">macOS · Windows · Linux</span>
+            <span class="badge">Apache-2.0</span>
+            <span class="badge">8 种界面语言</span>
+            <span class="badge">无遥测</span>
+          </div>
+          <div class="btn-row" style="justify-content: center">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/vicanso/zedis/releases/latest"
+              target="_blank"
+              rel="noopener"
+              >下载最新发布版</a
+            >
+            <a class="btn btn-ghost" href="#install">包管理器安装</a>
+            <a
+              class="btn btn-ghost"
+              href="https://github.com/vicanso/zedis"
+              target="_blank"
+              rel="noopener"
+              >Star on GitHub</a
+            >
+          </div>
+          <div class="hero-video" id="hero-media">
+            <img
+              class="hero-poster"
+              id="hero-poster"
+              src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"
+              alt="Zedis 键浏览"
+              width="1600"
+              height="1000"
+            />
+            <video
+              id="hero-video"
+              src="https://github.com/user-attachments/assets/36135174-16df-473b-8756-ea5931ec3c4b"
+              loop
+              muted
+              playsinline
+              preload="metadata"
+            ></video>
+          </div>
+        </div>
+      </section>
+
+      <section id="why" class="alt">
+        <div class="wrap">
+          <h2 class="section-title">为什么选 Zedis？</h2>
+          <p class="section-sub">
+            厌倦了 Electron 客户端在大 key 上卡死、或者显示一个 JSON 就吃掉数 GB 内存？我们也是。
+          </p>
+          <div class="why-grid">
+            <div class="why-card">
+              <h3>原生，而非 Electron</h3>
+              <p>每个像素在 GPU 上绘制，内存占用极低，浏览大库仍保持流畅。</p>
+            </div>
+            <div class="why-card">
+              <h3>看得懂你的数据</h3>
+              <p>JSON、Protobuf、MessagePack、压缩、图片、Hex —— 按类型与模块提供专用查看器。</p>
+            </div>
+            <div class="why-card">
+              <h3>生产环境更安全</h3>
+              <p>环境标签、只读锁、破坏性操作升级确认、密钥加密 —— 纯本地、无遥测。</p>
+            </div>
+            <div class="why-card">
+              <h3>为重度用户而生</h3>
+              <p>⌘K 命令面板、⌘P 最近键、带补全的 redis-cli、Batch 模式、跨服复制与对比。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="highlights">
+        <div class="wrap">
+          <h2 class="section-title">亮点</h2>
+          <p class="section-sub">开箱即用的核心能力。</p>
+          <div class="grid-3">
+            <article class="card">
+              <div class="icon">🦀</div>
+              <h3>原生 &amp; 快</h3>
+              <p>虚拟滚动 SCAN、百万键树、跨平台浅色 / 深色 / 跟随系统。</p>
+            </article>
+            <article class="card">
+              <div class="icon">🧠</div>
+              <h3>智能数据查看</h3>
+              <p>自动解压 LZ4/Snappy/GZIP/ZSTD。JSONPath、Protobuf、时间戳、图片、自定义脚本。</p>
+            </article>
+            <article class="card">
+              <div class="icon">🗂️</div>
+              <h3>类型 &amp; 模块</h3>
+              <p>位图、HLL、向量集 (KNN)、地理、概率结构、时间序列、Stream 实时跟踪、Pub/Sub、RediSearch、Functions。</p>
+            </article>
+            <article class="card">
+              <div class="icon">📊</div>
+              <h3>可观测</h3>
+              <p>实时指标 + 7 天历史、内存分析 + AI 建议、慢日志 ↔ Latency、MONITOR、按值搜索。</p>
+            </article>
+            <article class="card">
+              <div class="icon">🔐</div>
+              <h3>隐私优先</h3>
+              <p>标签与备注仅存本地。TLS/SSH、ACL、分阶段连接诊断。无账号、无遥测。</p>
+            </article>
+            <article class="card">
+              <div class="icon">⌨️</div>
+              <h3>键盘优先</h3>
+              <p>命令面板、最近打开的键、快捷键速查、Lua 脚本库、应用内更新检查。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="alt">
+        <div class="wrap">
+          <h2 class="section-title">功能一览</h2>
+          <p class="section-sub">产品能力的浓缩地图。</p>
+          <table class="feat-table">
+            <tbody>
+              <tr>
+                <th>🚀 原生 &amp; 快</th>
+                <td>GPU 渲染 · 虚拟 SCAN · 多平台 · 浅色 / 深色 / 跟随系统</td>
+              </tr>
+              <tr>
+                <th>🧠 数据查看</th>
+                <td>压缩 · JSON/JSONPath · Protobuf · MessagePack · 时间戳 · 图片 · Hex · 脚本</td>
+              </tr>
+              <tr>
+                <th>🗂️ 类型 &amp; 模块</th>
+                <td>位图 · HLL · 向量 · 地理 · 概率型 · 时间序列 · Streams · Pub/Sub · Search · Functions</td>
+              </tr>
+              <tr>
+                <th>📊 可观测</th>
+                <td>指标历史 · 内存分析 · 慢日志 · MONITOR · 集群 · 持久化 · 键事件</td>
+              </tr>
+              <tr>
+                <th>🔑 Keys &amp; 数据</th>
+                <td>命名空间树 · 标签/备注 · 批量 · 回收站 · 导入导出 · 跨服复制与对比</td>
+              </tr>
+              <tr>
+                <th>🔐 安全</th>
+                <td>环境标签 · 只读 · ACL · TLS/SSH · 诊断 · 密钥加密</td>
+              </tr>
+              <tr>
+                <th>⌨️ 效率</th>
+                <td>⌘K · ⌘P · CLI · Batch · Lua 库 · 更新 · 日志</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="feat-more">
+            <a href="https://github.com/vicanso/zedis/blob/main/docs/FEATURES_zh.md" target="_blank" rel="noopener"
+              >完整功能巡览（GitHub）→</a
+            >
+          </p>
+        </div>
+      </section>
+
+      <section id="screenshots">
+        <div class="wrap">
+          <h2 class="section-title">截图</h2>
+          <p class="section-sub">主要界面一览。</p>
+          <div class="shots">
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"
+                  alt="键浏览与数据查看"
+                  loading="lazy"
+                />
+                <figcaption>键浏览与数据查看</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"
+                  alt="内存分析器"
+                  loading="lazy"
+                />
+                <figcaption>内存分析器</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"
+                  alt="实时指标"
+                  loading="lazy"
+                />
+                <figcaption>实时指标</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"
+                  alt="地理地图"
+                  loading="lazy"
+                />
+                <figcaption>地理地图</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"
+                  alt="向量集与 KNN"
+                  loading="lazy"
+                />
+                <figcaption>向量集 + KNN</figcaption>
+              </figure>
+            </a>
+            <a
+              class="shot"
+              href="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"
+              target="_blank"
+              rel="noopener"
+            >
+              <figure>
+                <img
+                  src="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"
+                  alt="命令面板"
+                  loading="lazy"
+                />
+                <figcaption>命令面板 (⌘K)</figcaption>
+              </figure>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="alt">
+        <div class="wrap">
+          <h2 class="section-title">安装</h2>
+          <p class="section-sub">推荐包管理器，或直接下载发布包。</p>
+          <div class="install-grid">
+            <div class="install-card">
+              <h3>macOS（Homebrew）</h3>
+              <div class="cmd-box">
+                <code id="cmd-brew">brew install --cask zedis</code>
+                <button type="button" class="copy-btn" data-copy="cmd-brew">复制</button>
+              </div>
+            </div>
+            <div class="install-card">
+              <h3>Windows（Scoop）</h3>
+              <div class="cmd-box">
+                <code id="cmd-scoop">scoop bucket add extras &amp;&amp; scoop install zedis</code>
+                <button type="button" class="copy-btn" data-copy="cmd-scoop">复制</button>
+              </div>
+            </div>
+            <div class="install-card">
+              <h3>Linux（Arch）</h3>
+              <div class="cmd-box">
+                <code id="cmd-aur">yay -S zedis-bin</code>
+                <button type="button" class="copy-btn" data-copy="cmd-aur">复制</button>
+              </div>
+            </div>
+            <div class="install-card">
+              <h3>Cargo（源码）</h3>
+              <div class="cmd-box">
+                <code id="cmd-cargo">cargo install --git https://github.com/vicanso/zedis --locked zedis-gui</code>
+                <button type="button" class="copy-btn" data-copy="cmd-cargo">复制</button>
+              </div>
+            </div>
+          </div>
+          <p class="install-note">
+            crates.io 版本可能滞后（GPUI 为 git 依赖）。最新版请用 Homebrew / Scoop / AUR 或 GitHub Releases。
+          </p>
+          <div class="cta-center">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/vicanso/zedis/releases/latest"
+              target="_blank"
+              rel="noopener"
+              >下载最新发布版</a
+            >
+          </div>
+        </div>
+      </section>
+
+      <section id="community" class="community">
+        <div class="wrap">
+          <h2 class="section-title">开源</h2>
+          <p>
+            Zedis 基于 Apache License 2.0 开源。欢迎提 Issue 与 PR ——
+            提交贡献即表示同意项目的 CLA。
+          </p>
+          <div class="links">
+            <a href="https://github.com/vicanso/zedis" target="_blank" rel="noopener">仓库</a>
+            <a href="https://github.com/vicanso/zedis/issues" target="_blank" rel="noopener">Issues</a>
+            <a href="https://github.com/vicanso/zedis/releases" target="_blank" rel="noopener">Releases</a>
+            <a href="https://github.com/vicanso/zedis/blob/main/CHANGELOG.md" target="_blank" rel="noopener"
+              >更新日志</a
+            >
+            <a href="https://x.com/tree_xie" target="_blank" rel="noopener">X / Twitter</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer-inner">
+        <span>© Zedis · Apache-2.0 · Hosted on GitHub Pages</span>
+        <span>
+          <a href="../" onclick="try{localStorage.setItem('zedis-lang','en')}catch(e){}">English</a>
+          ·
+          <a href="./">中文</a>
+          ·
+          <a href="https://github.com/vicanso/zedis" target="_blank" rel="noopener">GitHub</a>
+        </span>
+      </div>
+    </footer>
+
+    <script>
+      document.querySelectorAll(".copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var id = btn.getAttribute("data-copy");
+          var el = document.getElementById(id);
+          if (!el) return;
+          var text = el.textContent.replace(/\u00a0/g, " ").trim();
+          function done() {
+            var prev = btn.textContent;
+            btn.textContent = "已复制";
+            setTimeout(function () {
+              btn.textContent = prev;
+            }, 1200);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function () {
+              fallback();
+            });
+          } else {
+            fallback();
+          }
+          function fallback() {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+              document.execCommand("copy");
+              done();
+            } catch (e) {}
+            document.body.removeChild(ta);
+          }
+        });
+      });
+
+      (function setupHeroVideo() {
+        var wrap = document.getElementById("hero-media");
+        var video = document.getElementById("hero-video");
+        if (!wrap || !video) return;
+        function showVideo() {
+          wrap.classList.add("is-playing");
+          var p = video.play();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        }
+        video.addEventListener("canplay", showVideo, { once: true });
+        video.addEventListener("error", function () {
+          wrap.classList.remove("is-playing");
+        });
+        video.load();
+      })();
+    </script>
+  </body>
+</html>
