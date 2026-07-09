@@ -23,8 +23,9 @@ use crate::{
         parse_duration, theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
-        KeyType, KeyTypeFilter, QueryMode, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
-        escalate_dangerous_body, get_session_option, i18n_common, i18n_key_tag, i18n_key_tree, save_session_option,
+        GlobalEvent, KeyType, KeyTypeFilter, QueryMode, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
+        dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_key_tag, i18n_key_tree,
+        save_session_option,
     },
     views::{
         OnTagDialogDone, export_to_file, open_key_tag_dialog, open_migration_export_window,
@@ -1240,6 +1241,20 @@ impl ZedisKeyTree {
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+
+        // Pause auto-refresh while the editor suite is cached but not
+        // visible (user is on Metrics/Slowlog/…). Resume when Editor is
+        // shown again so SCAN doesn't run against a hidden tree.
+        let global_state = cx.global::<ZedisGlobalStore>().state();
+        subscriptions.push(cx.subscribe(&global_state, |this, _global, event, cx| {
+            if let GlobalEvent::RouteChanged(route) = event {
+                if route.server_view() == Some(ServerView::Editor) {
+                    this.start_auto_refresh(cx);
+                } else {
+                    this.auto_refresh_task = None;
+                }
+            }
+        }));
 
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {

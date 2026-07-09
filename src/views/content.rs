@@ -42,8 +42,12 @@ const SERVERS_MARGIN: f32 = 8.0;
 /// - Server list view (Route::Home): Display and manage Redis server connections
 /// - Editor view (Route::Server(ServerView::Editor)): Display key tree and value editor for selected server
 ///
-/// Views are lazily initialized and cached for performance, but cleared when
-/// no longer needed to conserve memory.
+/// Views are lazily initialized. Tool panels (Metrics, Slowlog, …) are dropped
+/// when left so they don't hold large scan buffers. The **editor suite**
+/// (key tree + value editor + terminal) is kept for the whole server session
+/// so switching to Metrics/Slowlog and back preserves expand state, scroll,
+/// multi-select, and the search box — and is only dropped when leaving
+/// server routes entirely or when the active connection `(id, db)` changes.
 pub struct ZedisContent {
     /// Reference to the server state containing Redis connection and data
     server_state: Entity<ZedisServerState>,
@@ -85,15 +89,24 @@ pub struct ZedisContent {
 }
 
 impl ZedisContent {
+    /// Drop key tree / value editor / terminal. Called when leaving server
+    /// routes entirely, or when the active `(server_id, db)` changes so UI
+    /// state from the previous connection cannot leak.
+    fn drop_editor_suite(&mut self) {
+        self.key_tree.take();
+        self.value_editor.take();
+        self.terminal.take();
+    }
+
     fn clear_views(&mut self) {
         let route = self.current_route.clone();
         if route != Route::Home {
             self.servers.take();
         }
-        if route.server_view() != Some(ServerView::Editor) && route.server_view() != Some(ServerView::Metrics) {
-            self.key_tree.take();
-            self.value_editor.take();
-            self.terminal.take();
+        // Editor suite: keep for any `Route::Server` so tool pages don't
+        // wipe expand/scroll/multi-select/keyword. Drop only off-server.
+        if !route.is_server() {
+            self.drop_editor_suite();
         }
         if route.server_view() != Some(ServerView::Metrics) {
             self.metrics.take();
@@ -190,11 +203,25 @@ impl ZedisContent {
                 }
                 GlobalEvent::ServerSelected(server_id, db) => {
                     if server_id.is_empty() {
+                        // Disconnect / Home: drop the suite so a later
+                        // reconnect never reuses another server's tree.
+                        this.drop_editor_suite();
                         return;
                     }
+                    // Compare before `select` mutates server_state.
+                    let (prev_id, prev_db) = {
+                        let s = this.server_state.read(cx);
+                        (s.server_id().to_string(), s.db())
+                    };
+                    let connection_changed = prev_id.as_str() != server_id.as_str() || prev_db != *db;
                     this.server_state.update(cx, |state, cx| {
                         state.select(server_id.clone(), *db, cx);
                     });
+                    // Fresh connection ⇒ fresh editor suite (keyword /
+                    // multi-select / scroll must not carry over).
+                    if connection_changed {
+                        this.drop_editor_suite();
+                    }
                 }
                 GlobalEvent::ServerListUpdated => {
                     // If the currently-tracked server was just deleted,
