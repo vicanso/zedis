@@ -48,6 +48,7 @@ Until DNS propagates, the site still works at `https://vicanso.github.io/zedis/`
 | `index.html` | English landing (redirects browser `zh*` → `zh/`) |
 | `zh/index.html` | Chinese landing |
 | `styles.css` | Shared styles |
+| `images/*.png` | Screenshot assets (local; no user-attachments CDN) |
 | `FEATURES.md` / `FEATURES_zh.md` | Full feature docs (linked from the site) |
 
 Language preference is stored in `localStorage` key `zedis-lang` (`en` \| `zh`) when the user clicks the language switcher.
