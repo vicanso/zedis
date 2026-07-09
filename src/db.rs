@@ -26,6 +26,7 @@ mod key_metadata_manager;
 mod lua_scripts;
 mod metrics_history;
 mod protos;
+mod recent_keys_manager;
 mod scripts;
 mod search_history_manager;
 mod trash;
@@ -36,6 +37,7 @@ pub use key_metadata_manager::*;
 pub use lua_scripts::*;
 pub use metrics_history::*;
 pub use protos::*;
+pub use recent_keys_manager::*;
 pub use scripts::*;
 pub use search_history_manager::*;
 pub use trash::*;
@@ -45,6 +47,8 @@ const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
 const SCRIPT_VIEWER_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("script_viewer");
 const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd_history");
 const FAVORITY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
+/// Per-(server, db) MRU of recently opened keys (JSON array of key names).
+const RECENT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("recent_keys");
 // Saved Lua scripts: globally shared across servers, persisted to disk.
 const LUA_SCRIPT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("lua_script");
 // Per-server client-side key tags + free-form notes. Value is a JSON
@@ -89,6 +93,7 @@ pub fn init_database() -> Result<()> {
         write_txn.open_table(PROTO_TABLE)?;
         write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
         write_txn.open_table(FAVORITY_TABLE)?;
+        write_txn.open_table(RECENT_KEYS_TABLE)?;
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
         write_txn.open_table(KEY_METADATA_TABLE)?;
         write_txn.open_table(METRICS_HISTORY_TABLE)?;

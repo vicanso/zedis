@@ -3,9 +3,9 @@ use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
-    MemuAction, NavAction, PaletteAction, ShortcutsAction, UpdateAction, UpdateInfo, apply_fonts, download_and_verify,
-    fetch_latest_release, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir, new_hot_keys,
-    open_installer, register_extra_languages, unix_ts_millis,
+    MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo, apply_fonts,
+    download_and_verify, fetch_latest_release, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir,
+    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -13,8 +13,8 @@ use crate::states::{
     update_app_state_and_save,
 };
 use crate::views::{
-    ZedisCommandPalette, ZedisContent, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, open_about_window,
-    open_settings_window, open_trash_dialog,
+    ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar,
+    open_about_window, open_settings_window, open_trash_dialog,
 };
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Point, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
@@ -72,6 +72,7 @@ pub struct Zedis {
     sidebar: Entity<ZedisSidebar>,
     content: Entity<ZedisContent>,
     command_palette: Entity<ZedisCommandPalette>,
+    recent_keys_palette: Entity<ZedisRecentKeysPalette>,
     shortcuts_overlay: Entity<ZedisShortcutsOverlay>,
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
@@ -92,7 +93,8 @@ impl Zedis {
         // The palette fuzzy-searches the active connection's loaded keys, so
         // hand it the content's shared ServerState entity.
         let server_state = content.read(cx).server_state();
-        let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state, window, cx));
+        let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), window, cx));
+        let recent_keys_palette = cx.new(|cx| ZedisRecentKeysPalette::new(server_state, window, cx));
         let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
         let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
@@ -173,6 +175,7 @@ impl Zedis {
             save_task: None,
             content,
             command_palette,
+            recent_keys_palette,
             shortcuts_overlay,
             pending_notification: None,
             title_bar,
@@ -391,6 +394,12 @@ impl Zedis {
     /// nothing is focused (e.g. right after the palette closed on ESC).
     pub fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette.update(cx, |palette, cx| palette.toggle(cx));
+    }
+
+    /// Toggle the recent-keys Quick Open palette (⌘P). Global handler so
+    /// it works regardless of focus, matching the command palette.
+    pub fn toggle_recent_keys_palette(&mut self, cx: &mut Context<Self>) {
+        self.recent_keys_palette.update(cx, |palette, cx| palette.toggle(cx));
     }
 
     /// Toggle the keyboard-shortcuts overlay. Like the command palette
@@ -698,6 +707,8 @@ impl Render for Zedis {
             // Command palette overlays everything (absolute, full-size
             // when open; zero-footprint when closed).
             .child(self.command_palette.clone())
+            // Recent-keys Quick Open (⌘P); same overlay model.
+            .child(self.recent_keys_palette.clone())
             // Keyboard-shortcuts reference overlay (⌘/), same overlay
             // model as the palette; rendered last so it stacks on top.
             .child(self.shortcuts_overlay.clone());
@@ -1247,6 +1258,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cx.on_action(move |_: &PaletteAction, cx: &mut App| {
                         if let Some(view) = weak_zedis.upgrade() {
                             view.update(cx, |zedis, cx| zedis.toggle_command_palette(cx));
+                        }
+                    });
+                    // Global (focus-independent) ⌘P — recent keys Quick Open.
+                    let weak_zedis_recent = zedis_view.downgrade();
+                    cx.on_action(move |_: &RecentKeysAction, cx: &mut App| {
+                        if let Some(view) = weak_zedis_recent.upgrade() {
+                            view.update(cx, |zedis, cx| zedis.toggle_recent_keys_palette(cx));
                         }
                     });
                     // Global (focus-independent) ⌘/ handler — same

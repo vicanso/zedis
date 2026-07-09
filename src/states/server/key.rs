@@ -24,7 +24,8 @@ use super::{
     zset::first_load_zset_value,
 };
 use crate::db::{
-    TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, insert_trash_entry, purge_trash,
+    TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
+    insert_trash_entry, purge_trash, recent_keys_scope,
 };
 use crate::states::{QueryMode, ZedisGlobalStore};
 use crate::{
@@ -828,6 +829,14 @@ impl ZedisServerState {
         if !self.keys.contains_key(&key) {
             self.keys.insert(key.clone(), KeyType::Unknown);
         }
+        // MRU: most-recent first, capped per (server, db). Best-effort —
+        // a full disk/db error must not block opening the key.
+        let scope = recent_keys_scope(self.server_id.as_str(), self.db);
+        let key_for_mru = key.to_string();
+        cx.background_spawn(async move {
+            let _ = get_recent_keys_manager().add_record(&scope, &key_for_mru);
+        })
+        .detach();
         cx.emit(ServerEvent::KeySelected(key.clone()));
         cx.notify();
 
@@ -853,6 +862,13 @@ impl ZedisServerState {
                 if let Ok(()) = result {
                     this.keys.remove(&remove_key);
                     this.clear_value_history_for(&remove_key);
+                    // Drop from MRU so the dropdown doesn't offer a gone key.
+                    let scope = recent_keys_scope(this.server_id.as_str(), this.db);
+                    let mru_key = remove_key.to_string();
+                    cx.background_spawn(async move {
+                        let _ = get_recent_keys_manager().remove_record(&scope, &mru_key);
+                    })
+                    .detach();
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     // Deselect if the deleted key was selected

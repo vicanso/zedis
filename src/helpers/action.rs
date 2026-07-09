@@ -48,6 +48,14 @@ pub enum PaletteAction {
     Toggle,
 }
 
+/// Recent-keys palette (⌘P). Opens a Quick-Open style picker for the
+/// current connection's MRU keys. Handled by a global, focus-independent
+/// handler in `main.rs` (same model as [`PaletteAction`]).
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum RecentKeysAction {
+    Toggle,
+}
+
 /// Keyboard-shortcuts reference overlay (⌘/). `Toggle` opens it (or
 /// closes if already open). Like `PaletteAction` it is handled by a
 /// global, focus-independent handler in `main.rs` so the hotkey works
@@ -246,6 +254,7 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
             title_key: "group_general",
             items: &[
                 ("cmd-k", "command_palette"),
+                ("cmd-p", "recent_keys"),
                 ("cmd-/", "keyboard_shortcuts"),
                 ("cmd-q", "quit"),
             ],
@@ -278,6 +287,9 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // Ctrl+W on the respective platforms.
         KeyBinding::new("secondary-w", MemuAction::Close, None),
         KeyBinding::new("secondary-k", PaletteAction::Toggle, None),
+        // Quick-open recent keys (Zed/VS Code ⌘P style). Global so it works
+        // from tool pages and after the picker closes (focus-independent).
+        KeyBinding::new("secondary-p", RecentKeysAction::Toggle, None),
         KeyBinding::new("secondary-/", ShortcutsAction::Toggle, None),
         KeyBinding::new("secondary-s", EditorAction::Save, None),
         KeyBinding::new("secondary-r", EditorAction::ReloadKeyTree, None),

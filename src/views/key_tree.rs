@@ -17,7 +17,10 @@ use crate::{
     components::KeyTypeBadge,
     connection::{Capability, get_server},
     constants::EDITOR_KEY_BAR_HEIGHT,
-    db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
+    db::{
+        KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_recent_keys_manager,
+        get_search_history_manager, recent_keys_scope,
+    },
     helpers::{
         EditorAction, build_csv, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
         parse_duration, theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
@@ -97,6 +100,9 @@ enum KeyTreeAction {
     AutoRefresh(u32),
     SelectFavoriteKey(SharedString),
     ClearFavorites,
+    /// Open a key from the per-connection MRU list (same path as favorites).
+    SelectRecentKey(SharedString),
+    ClearRecentKeys,
     ExportSelectedKeys,
     ExportFolder(SharedString),
     ExportKey(SharedString),
@@ -2147,6 +2153,7 @@ impl ZedisKeyTree {
         let scanning = server_state.scanning();
         let readonly = server_state.readonly();
         let server_id = server_state.server_id().to_string();
+        let recent_scope = recent_keys_scope(server_id.as_str(), server_state.db());
         let server_id_changed = server_id.as_str() != self.state.server_id.as_str();
         let _ = server_state;
         if server_id_changed {
@@ -2171,6 +2178,9 @@ impl ZedisKeyTree {
                 let favorites = get_favorites_manager()
                     .records(server_id_for_favorites.as_ref())
                     .unwrap_or_default();
+                let recent_keys = get_recent_keys_manager()
+                    .records(recent_scope.as_str())
+                    .unwrap_or_default();
                 let server_state_for_history = server_state_clone.clone();
                 menu.submenu_with_icon(
                     Some(Icon::new(CustomIconName::Clock3)),
@@ -2193,6 +2203,32 @@ impl ZedisKeyTree {
                                 CustomIconName::Eraser,
                                 Box::new(KeyTreeAction::Clear),
                                 move |_, cx| Label::new(i18n_key_tree(cx, "clear_history")),
+                            );
+                        }
+                        submenu
+                    },
+                )
+                .submenu_with_icon(
+                    Some(Icon::new(CustomIconName::Activity)),
+                    i18n_key_tree(cx, "recent_keys"),
+                    window,
+                    cx,
+                    move |submenu, _window, cx| {
+                        let mut submenu = submenu;
+                        if recent_keys.is_empty() {
+                            submenu = submenu.label(i18n_key_tree(cx, "no_recent_keys"));
+                        } else {
+                            for key in &recent_keys {
+                                let key_clone = key.clone();
+                                submenu = submenu.menu_element(
+                                    Box::new(KeyTreeAction::SelectRecentKey(key.clone())),
+                                    move |_, _cx| Label::new(key_clone.clone()).text_ellipsis(),
+                                );
+                            }
+                            submenu = submenu.separator().menu_element_with_icon(
+                                CustomIconName::Eraser,
+                                Box::new(KeyTreeAction::ClearRecentKeys),
+                                move |_, cx| Label::new(i18n_key_tree(cx, "clear_recent_keys")),
                             );
                         }
                         submenu
@@ -2617,6 +2653,21 @@ impl Render for ZedisKeyTree {
                         let _ = cx
                             .background_spawn(async move {
                                 let _ = get_favorites_manager().clear_history(&server_id);
+                            })
+                            .await;
+                    })
+                    .detach();
+                }
+                KeyTreeAction::SelectRecentKey(key) => {
+                    this.select_item(key.clone(), false, false, false, cx);
+                }
+                KeyTreeAction::ClearRecentKeys => {
+                    let server_state = this.server_state.read(cx);
+                    let scope = recent_keys_scope(server_state.server_id(), server_state.db());
+                    cx.spawn(async move |_, cx| {
+                        let _ = cx
+                            .background_spawn(async move {
+                                let _ = get_recent_keys_manager().clear_history(&scope);
                             })
                             .await;
                     })
