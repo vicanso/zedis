@@ -898,8 +898,10 @@ impl ListDelegate for KeyTreeDelegate {
                         .context_menu(move |mut menu, _window, cx| {
                             let id = id.clone();
                             let multi_selection_count = if selected { selected_items_count } else { 0 };
-                            if !readonly {
-                                if selected && selected_items_count > 1 {
+                            // Read-only still allows refresh (and export below). Write
+                            // ops (delete / set TTL / persist / import) stay gated.
+                            if selected && selected_items_count > 1 {
+                                if !readonly {
                                     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                                     let text = t!(
                                         "key_tree.delete_keys_tooltip",
@@ -922,13 +924,16 @@ impl ListDelegate for KeyTreeDelegate {
                                             Box::new(KeyTreeAction::PersistMultipleKeys),
                                             move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
                                         );
-                                } else {
-                                    menu = if is_folder {
-                                        menu.menu_element_with_icon(
-                                            CustomIconName::RotateCw,
-                                            Box::new(KeyTreeAction::RefreshFolder(id.clone())),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
-                                        )
+                                }
+                            } else if is_folder {
+                                // Refresh is a read — always available.
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::RotateCw,
+                                    Box::new(KeyTreeAction::RefreshFolder(id.clone())),
+                                    move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
+                                );
+                                if !readonly {
+                                    menu = menu
                                         .menu_element_with_icon(
                                             CustomIconName::X,
                                             Box::new(KeyTreeAction::DeleteFolder(id.clone())),
@@ -943,15 +948,14 @@ impl ListDelegate for KeyTreeDelegate {
                                             CustomIconName::Clock3,
                                             Box::new(KeyTreeAction::PersistFolder(id.clone())),
                                             move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
-                                        )
-                                    } else {
-                                        menu.menu_element_with_icon(
-                                            CustomIconName::X,
-                                            Box::new(KeyTreeAction::DeleteKey(id.clone())),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
-                                        )
-                                    };
+                                        );
                                 }
+                            } else if !readonly {
+                                menu = menu.menu_element_with_icon(
+                                    CustomIconName::X,
+                                    Box::new(KeyTreeAction::DeleteKey(id.clone())),
+                                    move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
+                                );
                             }
                             if multi_selection_count > 0 {
                                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
