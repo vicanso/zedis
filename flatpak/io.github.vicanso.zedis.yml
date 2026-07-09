@@ -38,6 +38,8 @@ modules:
       - install -Dm755 target/release/zedis /app/bin/zedis
       - install -Dm644 flatpak/io.github.vicanso.zedis.desktop /app/share/applications/io.github.vicanso.zedis.desktop
       - install -Dm644 assets/icon.png /app/share/icons/hicolor/512x512/apps/io.github.vicanso.zedis.png
+      # Scalable brand mark (Wayland compositors prefer SVG when available).
+      - install -Dm644 icons/zedis-icon.svg /app/share/icons/hicolor/scalable/apps/io.github.vicanso.zedis.svg
       - install -Dm644 flatpak/io.github.vicanso.zedis.metainfo.xml /app/share/metainfo/io.github.vicanso.zedis.metainfo.xml
     sources:
       # Offline mirror of every crate in Cargo.lock (including git deps such

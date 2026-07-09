@@ -13,6 +13,29 @@
 // limitations under the License.
 use gpui::{Pixels, px};
 
+/// User-facing application name (window title, menus, About).
+pub const APP_NAME: &str = "Zedis";
+
+/// Freedesktop / Wayland `app_id` for AppImage and tarball installs.
+///
+/// Must match the desktop file id (`zedis.desktop` → `zedis`) and the
+/// `Icon=` / `StartupWMClass` fields so KDE/GNOME can resolve the name and
+/// icon. Flatpak overrides this at runtime via `$FLATPAK_ID`
+/// (`io.github.vicanso.zedis`) — see [`linux_app_id`].
+pub const APP_ID: &str = "zedis";
+
+/// Wayland/X11 application id for the running process.
+///
+/// Flatpak exports `FLATPAK_ID` matching the manifest `app-id`
+/// (`io.github.vicanso.zedis`); elsewhere we use [`APP_ID`] so
+/// AppImage/`zedis.desktop` icon lookup works.
+pub fn linux_app_id() -> String {
+    std::env::var("FLATPAK_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| APP_ID.to_string())
+}
+
 pub const SIDEBAR_WIDTH: Pixels = px(180.0);
 pub const SIDEBAR_COLLAPSED_WIDTH: Pixels = px(52.0);
 pub const KEY_TREE_MIN_WIDTH: Pixels = px(275.0);

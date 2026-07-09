@@ -1,8 +1,12 @@
 [Desktop Entry]
 Name=Zedis
 Exec=zedis
-Icon=icon
+# Basename must match cargo-appimage's `{bin}.png` copy and the runtime
+# Wayland app_id (`zedis`) so KDE/GNOME can resolve the window icon.
+Icon=zedis
 Type=Application
 Categories=Development;Database;
 Comment=A High-Performance Redis Client
 Terminal=false
+StartupWMClass=zedis
+StartupNotify=true

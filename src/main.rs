@@ -5,7 +5,7 @@ use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_M
 use crate::helpers::{
     MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo, apply_fonts,
     download_and_verify, fetch_latest_release, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir,
-    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis,
+    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -994,11 +994,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cx.activate(true);
             let bounds = Bounds::centered(None, size(px(460.), px(220.)), cx);
             let opened = cx.open_window(
-                WindowOptions {
+                with_app_identity(WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(380.), px(180.))),
                     ..Default::default()
-                },
+                }),
                 |window, cx| {
                     window.on_window_should_close(cx, |_window, cx| {
                         cx.quit();
@@ -1151,9 +1151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         cx.spawn(async move |cx| {
             cx.open_window(
-                WindowOptions {
+                with_app_identity(WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-                    #[cfg(not(target_os = "linux"))]
+                    // macOS / Windows: custom-drawn title bar (transparent OS chrome).
+                    // Linux: server-side decorations show the title from
+                    // `with_app_identity` ("Zedis") — see issue #106.
+                    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
                     titlebar: Some(TitlebarOptions {
                         title: None,
                         appears_transparent: true,
@@ -1172,7 +1175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     show: cfg!(not(target_os = "macos")),
                     window_min_size: Some(size(px(600.), px(400.))),
                     ..Default::default()
-                },
+                }),
                 |window, cx| {
                     #[cfg(target_os = "macos")]
                     window.on_window_should_close(cx, move |_window, cx| {

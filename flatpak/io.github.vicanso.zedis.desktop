@@ -7,3 +7,7 @@ Type=Application
 Terminal=false
 Categories=Development;Database;
 Keywords=redis;valkey;database;gui;client;
+# Flatpak sets FLATPAK_ID=io.github.vicanso.zedis; the binary uses that as
+# the Wayland app_id so this desktop entry is matched for name + icon.
+StartupWMClass=io.github.vicanso.zedis
+StartupNotify=true

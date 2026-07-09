@@ -17,7 +17,7 @@
 //! Step 3 wires the Export tab end to end. Step 4 will add Import.
 
 use crate::connection::ConflictMode;
-use crate::helpers::{get_download_dir, get_home_dir};
+use crate::helpers::{get_download_dir, get_home_dir, with_app_identity};
 use crate::states::{
     LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_migration,
 };
@@ -386,7 +386,7 @@ impl Render for ZedisMigrationWindow {
 
 fn open_migration_window(mode: MigrationWindowMode, title: SharedString, cx: &mut App) {
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
-    let options = WindowOptions {
+    let options = with_app_identity(WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
         titlebar: Some(TitlebarOptions {
             title: Some(title),
@@ -395,7 +395,7 @@ fn open_migration_window(mode: MigrationWindowMode, title: SharedString, cx: &mu
         is_resizable: true,
         focus: true,
         ..Default::default()
-    };
+    });
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| ZedisMigrationWindow::new(mode.clone(), window, cx));
         cx.new(|cx| Root::new(view, window, cx))

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::with_app_identity;
 use gpui::{
     AnyWindowHandle, App, AppContext, DisplayId, Entity, FocusHandle, Focusable, Global, KeyDownEvent, Window,
     WindowOptions, div, prelude::*,
@@ -108,6 +109,11 @@ where
         // Window was closed — fall through to create a new one.
         SecondaryWindowRegistry::get(cx).0.remove(&type_id);
     }
+
+    // Stamp Wayland app_id + default title/icon so secondary windows (About,
+    // Settings, …) group with the main window and don't show the generic
+    // "Wayland (W)" icon on KDE (issue #106). Caller-supplied title wins.
+    let options = with_app_identity(options);
 
     if let Ok(handle) = cx.open_window(options, move |window, cx| {
         let content = build(window, cx);

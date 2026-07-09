@@ -16,6 +16,7 @@ use std::env;
 
 mod action;
 mod ai;
+mod app_identity;
 mod color;
 mod common;
 mod csv;
@@ -37,6 +38,7 @@ mod validate;
 
 pub use action::*;
 pub use ai::{AiEndpoint, analyze_report};
+pub use app_identity::with_app_identity;
 pub use color::card_background;
 pub use common::*;
 pub use csv::build_csv;
