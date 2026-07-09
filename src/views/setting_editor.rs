@@ -91,7 +91,6 @@ pub struct ZedisSettingEditor {
     ui_font: Option<String>,
     mono_font: Option<String>,
     max_key_tree_depth_state: Entity<InputState>,
-    key_separator_state: Entity<InputState>,
     max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
     key_scan_count_state: Entity<InputState>,
@@ -150,7 +149,6 @@ impl ZedisSettingEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let max_key_tree_depth = store.max_key_tree_depth();
-        let key_separator = store.key_separator().to_string();
         let auto_expand_threshold = store.auto_expand_threshold();
         let max_truncate_length = store.max_truncate_length();
         let redis_connection_timeout = store.redis_connection_timeout();
@@ -175,8 +173,6 @@ impl ZedisSettingEditor {
             max_key_tree_depth.to_string(),
             None,
         );
-        let key_separator_state =
-            Self::create_input_state(window, cx, "key_separator_placeholder", key_separator, None);
         let key_scan_count_state = Self::create_input_state(
             window,
             cx,
@@ -278,12 +274,6 @@ impl ZedisSettingEditor {
                 }
             }),
         );
-
-        subscriptions.push(Self::bind_blur_save(cx, &key_separator_state, window, |text, cx| {
-            update_app_state_and_save(cx, "save_key_separator", move |state, _| {
-                state.set_key_separator(text);
-            });
-        }));
 
         subscriptions.push(Self::bind_blur_save(cx, &key_scan_count_state, window, |text, cx| {
             let text = text.trim();
@@ -463,7 +453,6 @@ impl ZedisSettingEditor {
             config_dir_state,
             auto_expand_threshold_state,
             max_truncate_length_state,
-            key_separator_state,
             max_key_tree_depth_state,
             redis_response_timeout_state,
             redis_connection_timeout_state,
@@ -585,11 +574,6 @@ impl Render for ZedisSettingEditor {
                     cx,
                     "max_key_tree_depth",
                     NumberInput::new(&self.max_key_tree_depth_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "key_separator",
-                    Input::new(&self.key_separator_state),
                 ))
                 .child(Self::render_setting_row(
                     cx,

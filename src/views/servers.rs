@@ -435,6 +435,42 @@ impl ZedisServers {
                 )
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::RadioGroup),
+            // —— Keys tab: key-tree / SCAN behaviour (per-server overrides) ——
+            ZedisFormField::new("key_separator", i18n_servers(cx, "key_separator"))
+                .default_value(redis_server.key_separator.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "key_separator_placeholder"))
+                .tab_index(4),
+            ZedisFormField::new("key_scan_count", i18n_servers(cx, "key_scan_count"))
+                .default_value(redis_server.key_scan_count.map(|n| n.to_string()).unwrap_or_default())
+                .placeholder(i18n_servers(cx, "key_scan_count_placeholder"))
+                .tab_index(4),
+            ZedisFormField::new("max_key_tree_depth", i18n_servers(cx, "max_key_tree_depth"))
+                .default_value(
+                    redis_server
+                        .max_key_tree_depth
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
+                )
+                .placeholder(i18n_servers(cx, "max_key_tree_depth_placeholder"))
+                .tab_index(4),
+            ZedisFormField::new("auto_expand_threshold", i18n_servers(cx, "auto_expand_threshold"))
+                .default_value(
+                    redis_server
+                        .auto_expand_threshold
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
+                )
+                .placeholder(i18n_servers(cx, "auto_expand_threshold_placeholder"))
+                .tab_index(4),
+            ZedisFormField::new("show_key_tree_ttl", i18n_servers(cx, "show_key_tree_ttl"))
+                .default_value(redis_server.show_key_tree_ttl_form_index().to_string())
+                .options(vec![
+                    i18n_servers(cx, "show_key_tree_ttl_default"),
+                    i18n_servers(cx, "show_key_tree_ttl_show"),
+                    i18n_servers(cx, "show_key_tree_ttl_hide"),
+                ])
+                .tab_index(4)
+                .field_type(ZedisFormFieldType::RadioGroup),
         ];
         let title = if is_new {
             i18n_servers(cx, "add_server_title")
@@ -453,6 +489,7 @@ impl ZedisServers {
                 i18n_servers(cx, "tab_tls"),
                 i18n_servers(cx, "tab_ssh"),
                 i18n_servers(cx, "tab_advanced"),
+                i18n_servers(cx, "tab_keys"),
             ])
             .confirm_label(i18n_common(cx, "confirm"))
             .cancel_label(i18n_common(cx, "cancel"))

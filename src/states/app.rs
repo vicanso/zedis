@@ -408,7 +408,6 @@ pub struct ZedisAppState {
     /// ⇒ the bundled JetBrains Mono.
     mono_font_family: Option<String>,
     max_key_tree_depth: Option<usize>,
-    key_separator: Option<String>,
     auto_expand_threshold: Option<usize>,
     key_scan_count: Option<usize>,
     max_truncate_length: Option<usize>,
@@ -776,16 +775,6 @@ impl ZedisAppState {
     }
     pub fn set_locale(&mut self, locale: String) {
         self.locale = Some(locale);
-    }
-    pub fn key_separator(&self) -> &str {
-        self.key_separator.as_deref().unwrap_or(":")
-    }
-    pub fn set_key_separator(&mut self, key_separator: String) {
-        if key_separator.is_empty() {
-            self.key_separator = None;
-            return;
-        }
-        self.key_separator = Some(key_separator);
     }
     pub fn max_truncate_length(&self) -> usize {
         self.max_truncate_length.unwrap_or(1000)

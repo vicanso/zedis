@@ -138,6 +138,19 @@ pub struct RedisServer {
     /// Per-server per-command response timeout in **seconds**. When
     /// unset, falls back to the global setting.
     pub response_timeout: Option<u64>,
+    /// Character used to split Redis key names into key-tree folders.
+    /// When unset or empty, defaults to `":"`.
+    pub key_separator: Option<String>,
+    /// Keys fetched per SCAN round. When unset, falls back to the global
+    /// Settings value (default 10_000).
+    pub key_scan_count: Option<usize>,
+    /// Max key-tree nesting depth. When unset, falls back to global Settings.
+    pub max_key_tree_depth: Option<usize>,
+    /// Auto-expand folders when total keys are below this count. When unset,
+    /// falls back to global Settings.
+    pub auto_expand_threshold: Option<usize>,
+    /// Show TTL chips in the key tree. `None` = use global Settings default.
+    pub show_key_tree_ttl: Option<bool>,
     pub master_name: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
@@ -264,6 +277,22 @@ impl RedisServer {
             response_timeout: get_str("response_timeout")
                 .and_then(|s| s.parse::<u64>().ok())
                 .filter(|&n| n > 0),
+            key_separator: get_str("key_separator"),
+            key_scan_count: get_str("key_scan_count")
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0),
+            max_key_tree_depth: get_str("max_key_tree_depth")
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0),
+            auto_expand_threshold: get_str("auto_expand_threshold")
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0),
+            // Radio index: 0 = inherit global, 1 = show, 2 = hide.
+            show_key_tree_ttl: get_str("show_key_tree_ttl").and_then(|s| match s.as_str() {
+                "1" | "true" | "show" => Some(true),
+                "2" | "false" | "hide" => Some(false),
+                _ => None,
+            }),
             // The environment select is the single source of truth: derive the
             // display tag from the chosen preset rather than a separate
             // free-text field.
@@ -280,6 +309,11 @@ impl RedisServer {
             sort_order: None,
         }
     }
+
+    /// Tree separator when set and non-empty; otherwise `None` (callers use `":"`).
+    pub fn key_separator_override(&self) -> Option<&str> {
+        self.key_separator.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
     pub fn get_hash(&self, db: usize) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
@@ -288,6 +322,43 @@ impl RedisServer {
     }
     pub fn is_ssh_tunnel(&self) -> bool {
         self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
+    }
+
+    /// Key-tree separator for this server; defaults to `":"`.
+    pub fn resolve_key_separator(&self) -> String {
+        self.key_separator_override().unwrap_or(":").to_string()
+    }
+
+    /// SCAN page size; `global` is the Settings default when unset.
+    pub fn resolve_key_scan_count(&self, global: usize) -> usize {
+        self.key_scan_count
+            .filter(|&n| n > 0)
+            .unwrap_or(global)
+            .clamp(10, 100_000)
+    }
+
+    /// Max tree depth; `global` is the Settings default when unset.
+    pub fn resolve_max_key_tree_depth(&self, global: usize) -> usize {
+        self.max_key_tree_depth.filter(|&n| n > 0).unwrap_or(global).max(1)
+    }
+
+    /// Auto-expand threshold; `global` is the Settings default when unset.
+    pub fn resolve_auto_expand_threshold(&self, global: usize) -> usize {
+        self.auto_expand_threshold.unwrap_or(global)
+    }
+
+    /// Whether to show TTL chips; `global` is the Settings default when unset.
+    pub fn resolve_show_key_tree_ttl(&self, global: bool) -> bool {
+        self.show_key_tree_ttl.unwrap_or(global)
+    }
+
+    /// Form radio index for `show_key_tree_ttl`: 0 inherit / 1 show / 2 hide.
+    pub fn show_key_tree_ttl_form_index(&self) -> usize {
+        match self.show_key_tree_ttl {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        }
     }
 
     /// Serialize this server config to JSON for team sharing.
@@ -1052,5 +1123,37 @@ mod tests {
         // Grouped first (alphabetical group, then sort_order), then
         // ungrouped (sort_order then name).
         assert_eq!(names, vec!["a0", "a1", "b0", "alpha-ungrouped", "zeta"]);
+    }
+
+    #[test]
+    fn key_separator_defaults_to_colon() {
+        let mut s = sample_server();
+        assert_eq!(s.resolve_key_separator(), ":");
+        s.key_separator = Some("  ".into());
+        assert_eq!(s.resolve_key_separator(), ":");
+        s.key_separator = Some("_".into());
+        assert_eq!(s.resolve_key_separator(), "_");
+        assert_eq!(s.key_separator_override(), Some("_"));
+    }
+
+    #[test]
+    fn key_behavior_overrides_fall_back_to_global() {
+        let mut s = sample_server();
+        assert_eq!(s.resolve_key_scan_count(10_000), 10_000);
+        assert_eq!(s.resolve_max_key_tree_depth(5), 5);
+        assert_eq!(s.resolve_auto_expand_threshold(100), 100);
+        assert!(s.resolve_show_key_tree_ttl(true));
+        assert!(!s.resolve_show_key_tree_ttl(false));
+        assert_eq!(s.show_key_tree_ttl_form_index(), 0);
+
+        s.key_scan_count = Some(500);
+        s.max_key_tree_depth = Some(3);
+        s.auto_expand_threshold = Some(50);
+        s.show_key_tree_ttl = Some(false);
+        assert_eq!(s.resolve_key_scan_count(10_000), 500);
+        assert_eq!(s.resolve_max_key_tree_depth(5), 3);
+        assert_eq!(s.resolve_auto_expand_threshold(100), 50);
+        assert!(!s.resolve_show_key_tree_ttl(true));
+        assert_eq!(s.show_key_tree_ttl_form_index(), 2);
     }
 }

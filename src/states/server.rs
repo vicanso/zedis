@@ -21,7 +21,7 @@ use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{ValueHistoryEntry, push_history};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
-use crate::states::{QueryMode, get_session_option, i18n_common};
+use crate::states::{QueryMode, ZedisGlobalStore, get_session_option, i18n_common};
 use ahash::AHashMap;
 use ahash::AHashSet;
 use bytes::Bytes;
@@ -130,6 +130,18 @@ pub struct ZedisServerState {
 
     /// Currently selected database
     db: usize,
+
+    /// Key-tree separator for this connection (from server config, else `:`).
+    /// Set on `select`.
+    key_separator: String,
+    /// Resolved SCAN page size for this connection.
+    key_scan_count: usize,
+    /// Resolved max key-tree depth for this connection.
+    max_key_tree_depth: usize,
+    /// Resolved auto-expand threshold for this connection.
+    auto_expand_threshold: usize,
+    /// Resolved "show TTL in key tree" for this connection.
+    show_key_tree_ttl: bool,
 
     /// Access mode
     access_mode: AccessMode,
@@ -729,6 +741,36 @@ impl ZedisServerState {
         self.db
     }
 
+    /// Key-tree / prefix separator for the active connection.
+    /// Never empty — defaults to `":"`.
+    pub fn key_separator(&self) -> &str {
+        if self.key_separator.is_empty() {
+            ":"
+        } else {
+            &self.key_separator
+        }
+    }
+
+    /// SCAN page size for the active connection (never zero).
+    pub fn key_scan_count(&self) -> usize {
+        self.key_scan_count.max(1)
+    }
+
+    /// Max key-tree nesting depth for the active connection.
+    pub fn max_key_tree_depth(&self) -> usize {
+        self.max_key_tree_depth.max(1)
+    }
+
+    /// Auto-expand threshold for the active connection.
+    pub fn auto_expand_threshold(&self) -> usize {
+        self.auto_expand_threshold
+    }
+
+    /// Whether TTL chips are shown in the key tree for this connection.
+    pub fn show_key_tree_ttl(&self) -> bool {
+        self.show_key_tree_ttl
+    }
+
     /// Get the total number of databases
     pub fn databases(&self) -> usize {
         self.databases
@@ -811,6 +853,25 @@ impl ZedisServerState {
             self.reset(cx);
             self.server_id = server_id.clone();
             self.db = db;
+            // Resolve key-tree / scan prefs: per-server override, else Settings.
+            let global = cx.global::<ZedisGlobalStore>().read(cx);
+            let g_scan = global.key_scan_count();
+            let g_depth = global.max_key_tree_depth();
+            let g_expand = global.auto_expand_threshold();
+            let g_ttl = global.show_key_tree_ttl();
+            if let Ok(server) = get_server(server_id.as_str()) {
+                self.key_separator = server.resolve_key_separator();
+                self.key_scan_count = server.resolve_key_scan_count(g_scan);
+                self.max_key_tree_depth = server.resolve_max_key_tree_depth(g_depth);
+                self.auto_expand_threshold = server.resolve_auto_expand_threshold(g_expand);
+                self.show_key_tree_ttl = server.resolve_show_key_tree_ttl(g_ttl);
+            } else {
+                self.key_separator = ":".to_string();
+                self.key_scan_count = g_scan.max(1);
+                self.max_key_tree_depth = g_depth.max(1);
+                self.auto_expand_threshold = g_expand;
+                self.show_key_tree_ttl = g_ttl;
+            }
 
             let (query_mode, soft_wrap) = get_session_option(&server_id)
                 .map(|option| {

@@ -1372,7 +1372,7 @@ impl ZedisMemoryAnalysis {
         let db = server_state.db();
         let prefix_table = self.prefix_table.clone();
         let single_table = self.single_table.clone();
-        let key_separator = cx.global::<ZedisGlobalStore>().read(cx).key_separator().to_string();
+        let key_separator = self.server_state.read(cx).key_separator().to_string();
         let ratio = self.ratio;
         let dbsize = self.dbsize.unwrap_or(0);
         let scan_count = self.scan_count;

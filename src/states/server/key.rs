@@ -130,8 +130,7 @@ impl ZedisServerState {
         let binding = prefix.unwrap_or_default();
         let prefix = binding.as_str();
         let count = self.keys.len();
-        let binding = cx.global::<ZedisGlobalStore>().value(cx);
-        let separator = binding.key_separator();
+        let separator = self.key_separator();
         let mut keys = self
             .keys
             .iter()
@@ -232,9 +231,8 @@ impl ZedisServerState {
         let cursors = self.cursors.clone();
         let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let key_scan_count = store.key_scan_count().max(1);
-        let with_ttl = store.show_key_tree_ttl();
+        let key_scan_count = self.key_scan_count();
+        let with_ttl = self.show_key_tree_ttl();
         // First-page load follows the user's "Per Scan" setting: one batch of
         // `key_scan_count` keys per cluster master (each master returns ~that
         // many in a single SCAN round), capped so a large cluster can't pull an
@@ -347,9 +345,8 @@ impl ZedisServerState {
         // 10k-per-master batch — which ignored "Per Scan" and ballooned the
         // tree to 10000×masters on a multi-master cluster. Floored at one
         // "Per Scan" batch so a tiny view still re-scans sensibly.
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let key_scan_count = store.key_scan_count().max(1);
-        let with_ttl = store.show_key_tree_ttl();
+        let key_scan_count = self.key_scan_count();
+        let with_ttl = self.show_key_tree_ttl();
         let masters = self.nodes.0.max(1);
         let count = (self.keys.len().max(key_scan_count) / masters).max(1);
         let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
@@ -513,9 +510,8 @@ impl ZedisServerState {
         }
         let db = self.db;
         let pattern = format!("{}*", prefix);
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let key_scan_count = store.key_scan_count() as u64;
-        let with_ttl = store.show_key_tree_ttl();
+        let key_scan_count = self.key_scan_count() as u64;
+        let with_ttl = self.show_key_tree_ttl();
         // Stop this batch once accumulated matches reach ~80% of key_scan_count.
         let threshold = key_scan_count as usize * SCAN_PREFIX_FILL_PERCENT / 100;
         let task_server_id = server_id.clone();
@@ -887,7 +883,7 @@ impl ZedisServerState {
     pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
-        let separator = cx.global::<ZedisGlobalStore>().value(cx).key_separator().to_string();
+        let separator = self.key_separator().to_string();
         let prefix = format!("{folder}{separator}");
         let pattern = format!("{prefix}*");
         self.spawn_with_arg(
@@ -1127,7 +1123,7 @@ impl ZedisServerState {
     pub fn batch_set_ttl_folder(&mut self, folder: SharedString, ttl_secs: Option<u64>, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
-        let separator = cx.global::<ZedisGlobalStore>().value(cx).key_separator().to_string();
+        let separator = self.key_separator().to_string();
         let prefix = format!("{folder}{separator}");
         let pattern = format!("{prefix}*");
         let prefix_done = prefix.clone();

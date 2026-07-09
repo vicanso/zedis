@@ -774,7 +774,7 @@ impl ListDelegate for KeyTreeDelegate {
         // perm `-1` ∞) ⇒ muted gray. Missing (`-2`, race between SCAN and TTL)
         // renders nothing. Gated by the user setting; when off the SCAN loop
         // also skipped the TTL command (see `RedisClient::scan`).
-        let show_ttl = cx.global::<ZedisGlobalStore>().read(cx).show_key_tree_ttl();
+        let show_ttl = self.server_state.read(cx).show_key_tree_ttl();
         let ttl_chip: Option<(SharedString, Hsla)> = if is_folder || !show_ttl {
             None
         } else {
@@ -1437,11 +1437,8 @@ impl ZedisKeyTree {
     }
     fn update_expand(&mut self, selected_key: SharedString, cx: &mut Context<Self>) {
         let (separator, max_depth) = {
-            let global_state = cx.global::<ZedisGlobalStore>().read(cx);
-            (
-                global_state.key_separator().to_string(),
-                global_state.max_key_tree_depth(),
-            )
+            let s = self.server_state.read(cx);
+            (s.key_separator().to_string(), s.max_key_tree_depth())
         };
         if !selected_key.contains(separator.as_str()) {
             return;
@@ -1460,18 +1457,19 @@ impl ZedisKeyTree {
         }
     }
     fn check_and_expand_keys(&mut self, cx: &mut Context<Self>) {
-        let keys = self.server_state.read(cx).keys();
-        let global_state = cx.global::<ZedisGlobalStore>().read(cx);
-        if keys.len() < global_state.auto_expand_threshold() {
-            let key_separator = global_state.key_separator();
+        let server_state = self.server_state.read(cx);
+        let keys = server_state.keys();
+        let key_separator = server_state.key_separator().to_string();
+        let auto_expand_threshold = server_state.auto_expand_threshold();
+        if keys.len() < auto_expand_threshold {
             let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
             keys.iter().for_each(|(key, _)| {
-                if !key.contains(key_separator) {
+                if !key.contains(key_separator.as_str()) {
                     return;
                 }
-                let parts: Vec<&str> = key.split(key_separator).collect();
+                let parts: Vec<&str> = key.split(key_separator.as_str()).collect();
                 for i in 1..parts.len() {
-                    let prefix = parts[..i].join(key_separator);
+                    let prefix = parts[..i].join(key_separator.as_str());
                     expanded_items.insert(prefix.into());
                 }
             });
@@ -1544,10 +1542,9 @@ impl ZedisKeyTree {
         };
         let tag_filter_snapshot = self.state.selected_tag_filter;
 
+        let separator = self.server_state.read(cx).key_separator().to_string();
+        let max_key_tree_depth = self.server_state.read(cx).max_key_tree_depth();
         self.key_tree_list_state.update(cx, move |_state, cx| {
-            let app_state = cx.global::<ZedisGlobalStore>().value(cx);
-            let separator = app_state.key_separator().to_string();
-            let max_key_tree_depth = app_state.max_key_tree_depth();
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
@@ -2092,7 +2089,7 @@ impl ZedisKeyTree {
                 // row per level, so deep nesting doesn't eat the viewport.
                 // Clicking jumps to the deepest pinned folder (the subtree the
                 // top of the viewport is inside).
-                let separator = cx.global::<ZedisGlobalStore>().read(cx).key_separator().to_string();
+                let separator = self.server_state.read(cx).key_separator().to_string();
                 let deep_ix = sticky.last().map(|(ix, _, _)| *ix).unwrap_or_default();
                 let path: SharedString = sticky
                     .iter()
