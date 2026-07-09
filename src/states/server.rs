@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::{
-    AccessMode, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server, get_servers,
+    AccessMode, Capability, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server, get_servers,
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
@@ -561,6 +561,16 @@ impl ZedisServerState {
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
     }
+
+    /// Whether `cap` is allowed under the current access mode.
+    ///
+    /// Prefer this over raw `!self.readonly()` so pure reads (folder
+    /// refresh, export, multi-select, local tags) stay available when
+    /// the connection is locked. See [`Capability`].
+    pub fn can(&self, cap: Capability) -> bool {
+        cap.allowed(self.readonly())
+    }
+
     pub fn toggle_readonly(&mut self, cx: &mut Context<Self>) {
         if matches!(self.access_mode, AccessMode::StrictReadOnly) {
             self.add_error_message(

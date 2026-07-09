@@ -26,7 +26,7 @@
 //! label set in `sentinel.conf`. `TopologyEntry::master_name` carries
 //! this from the parse layer; the UI reads it directly.
 
-use crate::connection::get_connection_manager;
+use crate::connection::{Capability, get_connection_manager};
 use crate::states::{ServerTask, ZedisServerState};
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -38,7 +38,7 @@ impl ZedisServerState {
     /// sentinel quorum's automatic detection. Fans out to all
     /// sentinels so the new role is acknowledged across the quorum.
     pub fn sentinel_failover(&mut self, master_name: SharedString, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::SentinelWrite) {
             self.emit_warning_notification("Read-only mode — sentinel ops blocked".into(), cx);
             return;
         }
@@ -77,7 +77,7 @@ impl ZedisServerState {
     /// after a network split healed. The pattern is a glob, not a
     /// regex.
     pub fn sentinel_reset(&mut self, pattern: SharedString, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::SentinelWrite) {
             self.emit_warning_notification("Read-only mode — sentinel ops blocked".into(), cx);
             return;
         }
@@ -112,7 +112,7 @@ impl ZedisServerState {
     /// include it. To re-add, the operator must `SENTINEL MONITOR`
     /// the master from scratch (config + quorum).
     pub fn sentinel_remove(&mut self, master_name: SharedString, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::SentinelWrite) {
             self.emit_warning_notification("Read-only mode — sentinel ops blocked".into(), cx);
             return;
         }

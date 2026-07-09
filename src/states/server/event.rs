@@ -257,13 +257,27 @@ impl EventEmitter<ServerEvent> for ZedisServerState {}
 
 impl ZedisServerState {
     pub fn emit_editor_action(&self, event: EditorAction, cx: &mut Context<Self>) {
-        let readonly = self.readonly();
-        if readonly
-            && matches!(
-                event,
-                EditorAction::Create | EditorAction::Save | EditorAction::UpdateTtl
-            )
-        {
+        // Gate mutators via the capability matrix so read-only stays usable
+        // for reload / export / history / diff while Create/Save/TTL/… stay
+        // blocked. See `connection::Capability`.
+        use crate::connection::Capability;
+        let cap = match event {
+            EditorAction::Create => Capability::CreateKey,
+            EditorAction::Save => Capability::SaveValue,
+            EditorAction::UpdateTtl => Capability::SetTtl,
+            EditorAction::ImportValue => Capability::ImportValue,
+            EditorAction::Delete => Capability::DeleteKey,
+            EditorAction::Rename => Capability::RenameKey,
+            EditorAction::CopyTo => Capability::CopyKeyToServer,
+            EditorAction::ExportValue => Capability::ExportValue,
+            EditorAction::DiffHistory(_) | EditorAction::DiffWithServer => Capability::DiffValues,
+            EditorAction::LoadHistory(_) => Capability::LoadHistory,
+            EditorAction::Reload | EditorAction::ViewBitmap => Capability::ReloadValue,
+            EditorAction::ReloadKeyTree => Capability::RefreshKeys,
+            EditorAction::AutoRefresh(_) => Capability::AutoRefresh,
+            EditorAction::Search | EditorAction::Cmd => Capability::SearchFilter,
+        };
+        if !self.can(cap) {
             return;
         }
         cx.emit(ServerEvent::EditionActionTriggered(event));

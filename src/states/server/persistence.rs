@@ -21,7 +21,7 @@
 //! command to all masters and kicks an immediate `INFO` refresh so the
 //! in-progress flag flips into the UI without waiting for the heartbeat.
 
-use crate::connection::get_connection_manager;
+use crate::connection::{Capability, get_connection_manager};
 use crate::states::{ServerTask, ZedisServerState, i18n_persistence};
 use gpui::prelude::*;
 use redis::cmd;
@@ -37,7 +37,7 @@ impl ZedisServerState {
         // the user explicitly locked the connection. The button is
         // already disabled in this state — this is the second layer of
         // defence for the keyboard/command-palette path.
-        if self.readonly() {
+        if !self.can(Capability::PersistenceWrite) {
             self.emit_warning_notification(i18n_persistence(cx, "readonly_blocked"), cx);
             return;
         }
@@ -77,7 +77,7 @@ impl ZedisServerState {
     /// (hidden when `!aof_enabled`, disabled when in progress) lives in
     /// the view; here we trust the caller and just dispatch.
     pub fn bgrewriteaof(&mut self, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::PersistenceWrite) {
             self.emit_warning_notification(i18n_persistence(cx, "readonly_blocked"), cx);
             return;
         }

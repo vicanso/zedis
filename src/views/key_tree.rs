@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
-    connection::get_server,
+    connection::{Capability, get_server},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::{KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_search_history_manager},
     helpers::{
@@ -828,7 +828,7 @@ impl ListDelegate for KeyTreeDelegate {
         let del_id = entry.id.clone();
         // Inline delete only on leaf keys (folders use their context-menu
         // delete) and only when writes are allowed.
-        let show_inline_delete = !is_folder && !readonly;
+        let show_inline_delete = !is_folder && Capability::DeleteKey.allowed(readonly);
         // When the row shows a TTL chip, scope the inline delete to that chip
         // slot (hover the chip to swap it for the delete) instead of revealing
         // on hover of the whole row. Rows without a chip fall back to row-hover.
@@ -898,106 +898,116 @@ impl ListDelegate for KeyTreeDelegate {
                         .context_menu(move |mut menu, _window, cx| {
                             let id = id.clone();
                             let multi_selection_count = if selected { selected_items_count } else { 0 };
-                            // Read-only still allows refresh (and export below). Write
-                            // ops (delete / set TTL / persist / import) stay gated.
+                            // Capability matrix (`connection::Capability`) is the
+                            // source of truth for what survives read-only mode.
                             if selected && selected_items_count > 1 {
-                                if !readonly {
+                                if Capability::DeleteKeys.allowed(readonly) {
                                     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                                     let text = t!(
                                         "key_tree.delete_keys_tooltip",
                                         count = selected_items_count,
                                         locale = locale
                                     );
-                                    menu = menu
-                                        .menu_element_with_icon(
-                                            CustomIconName::ListX,
-                                            Box::new(KeyTreeAction::DeleteMultipleKeys),
-                                            move |_, _cx| Label::new(text.clone()),
-                                        )
-                                        .menu_element_with_icon(
-                                            CustomIconName::Clock3,
-                                            Box::new(KeyTreeAction::SetTtlMultipleKeys),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "set_ttl_tooltip")),
-                                        )
-                                        .menu_element_with_icon(
-                                            CustomIconName::Clock3,
-                                            Box::new(KeyTreeAction::PersistMultipleKeys),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
-                                        );
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::ListX,
+                                        Box::new(KeyTreeAction::DeleteMultipleKeys),
+                                        move |_, _cx| Label::new(text.clone()),
+                                    );
+                                }
+                                if Capability::SetTtl.allowed(readonly) {
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Clock3,
+                                        Box::new(KeyTreeAction::SetTtlMultipleKeys),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "set_ttl_tooltip")),
+                                    );
+                                }
+                                if Capability::PersistTtl.allowed(readonly) {
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Clock3,
+                                        Box::new(KeyTreeAction::PersistMultipleKeys),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
+                                    );
                                 }
                             } else if is_folder {
-                                // Refresh is a read — always available.
-                                menu = menu.menu_element_with_icon(
-                                    CustomIconName::RotateCw,
-                                    Box::new(KeyTreeAction::RefreshFolder(id.clone())),
-                                    move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
-                                );
-                                if !readonly {
-                                    menu = menu
-                                        .menu_element_with_icon(
-                                            CustomIconName::X,
-                                            Box::new(KeyTreeAction::DeleteFolder(id.clone())),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
-                                        )
-                                        .menu_element_with_icon(
-                                            CustomIconName::Clock3,
-                                            Box::new(KeyTreeAction::SetTtlFolder(id.clone())),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "set_ttl_tooltip")),
-                                        )
-                                        .menu_element_with_icon(
-                                            CustomIconName::Clock3,
-                                            Box::new(KeyTreeAction::PersistFolder(id.clone())),
-                                            move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
-                                        );
+                                if Capability::RefreshFolder.allowed(readonly) {
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::RotateCw,
+                                        Box::new(KeyTreeAction::RefreshFolder(id.clone())),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
+                                    );
                                 }
-                            } else if !readonly {
+                                if Capability::DeleteFolder.allowed(readonly) {
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::X,
+                                        Box::new(KeyTreeAction::DeleteFolder(id.clone())),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "delete_folder_tooltip")),
+                                    );
+                                }
+                                if Capability::SetTtl.allowed(readonly) {
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Clock3,
+                                        Box::new(KeyTreeAction::SetTtlFolder(id.clone())),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "set_ttl_tooltip")),
+                                    );
+                                }
+                                if Capability::PersistTtl.allowed(readonly) {
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Clock3,
+                                        Box::new(KeyTreeAction::PersistFolder(id.clone())),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "persist_tooltip")),
+                                    );
+                                }
+                            } else if Capability::DeleteKey.allowed(readonly) {
                                 menu = menu.menu_element_with_icon(
                                     CustomIconName::X,
                                     Box::new(KeyTreeAction::DeleteKey(id.clone())),
                                     move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
                                 );
                             }
-                            if multi_selection_count > 0 {
-                                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                                let text = t!(
-                                    "key_tree.export_selected_tooltip",
-                                    count = multi_selection_count,
-                                    locale = locale
-                                );
-                                menu = menu.menu_element_with_icon(
-                                    CustomIconName::Save,
-                                    Box::new(KeyTreeAction::ExportSelectedKeys),
-                                    move |_, _cx| Label::new(text.clone()),
-                                );
-                            } else if is_folder {
-                                let folder_id = id.clone();
-                                menu = menu.menu_element_with_icon(
-                                    CustomIconName::Save,
-                                    Box::new(KeyTreeAction::ExportFolder(folder_id)),
-                                    move |_, cx| Label::new(i18n_key_tree(cx, "export_folder_tooltip")),
-                                );
-                            } else {
-                                let key_id = id.clone();
-                                menu = menu.menu_element_with_icon(
-                                    CustomIconName::Save,
-                                    Box::new(KeyTreeAction::ExportKey(key_id)),
-                                    move |_, cx| Label::new(i18n_key_tree(cx, "export_key_tooltip")),
-                                );
+                            // Export is a Redis read + local write — always OK.
+                            if Capability::ExportKeys.allowed(readonly) {
+                                if multi_selection_count > 0 {
+                                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                                    let text = t!(
+                                        "key_tree.export_selected_tooltip",
+                                        count = multi_selection_count,
+                                        locale = locale
+                                    );
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Save,
+                                        Box::new(KeyTreeAction::ExportSelectedKeys),
+                                        move |_, _cx| Label::new(text.clone()),
+                                    );
+                                } else if is_folder {
+                                    let folder_id = id.clone();
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Save,
+                                        Box::new(KeyTreeAction::ExportFolder(folder_id)),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "export_folder_tooltip")),
+                                    );
+                                } else {
+                                    let key_id = id.clone();
+                                    menu = menu.menu_element_with_icon(
+                                        CustomIconName::Save,
+                                        Box::new(KeyTreeAction::ExportKey(key_id)),
+                                        move |_, cx| Label::new(i18n_key_tree(cx, "export_key_tooltip")),
+                                    );
+                                }
                             }
-                            if !readonly {
+                            if Capability::ImportKeys.allowed(readonly) {
                                 menu = menu.menu_element_with_icon(
                                     CustomIconName::HardDrive,
                                     Box::new(KeyTreeAction::ImportFromFile),
                                     move |_, cx| Label::new(i18n_key_tree(cx, "import_from_file_tooltip")),
                                 );
                             }
-                            // Tag & note editor — only meaningful on a
-                            // single leaf key. Folders aggregate tags
-                            // as a v2 concern (currently no schema for
-                            // that), and bulk-tagging a multi-select
-                            // wants its own dialog UX, so we hide both
-                            // and present a single-key flow here.
-                            if !is_folder && multi_selection_count == 0 {
+                            // Tag & note editor — local redb only. Meaningful
+                            // on a single leaf key (folder aggregate / bulk
+                            // tag are a later UX).
+                            if !is_folder
+                                && multi_selection_count == 0
+                                && Capability::EditLocalMetadata.allowed(readonly)
+                            {
                                 let tag_key = edit_tag_id.clone();
                                 menu = menu.menu_element_with_icon(
                                     CustomIconName::FilePenLine,
@@ -2313,7 +2323,8 @@ impl ZedisKeyTree {
                     Box::new(KeyTreeAction::ExportCsv),
                     move |_, cx| Label::new(i18n_common(cx, "export_csv")),
                 )
-                .when(!readonly, |this| {
+                // Multi-select is local UI (enables bulk export); allowed in RO.
+                .when(Capability::ToggleMultiSelect.allowed(readonly), |this| {
                     let icon = if enabled_multiple_selection {
                         Icon::new(IconName::Check)
                     } else {
@@ -2399,11 +2410,12 @@ impl ZedisKeyTree {
             .w_full()
             .gap_x_2()
             .child(keyword_input)
-            .child(
+            .child({
+                let can_create = Capability::CreateKey.allowed(readonly);
                 Button::new("key-tree-add-btn")
-                    .disabled(readonly)
-                    .when(readonly, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
-                    .when(!readonly, |this| {
+                    .disabled(!can_create)
+                    .when(!can_create, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
+                    .when(can_create, |this| {
                         let tooltip = format!(
                             "{} ({})",
                             i18n_key_tree(cx, "add_key_tooltip"),
@@ -2415,8 +2427,8 @@ impl ZedisKeyTree {
                     .icon(CustomIconName::FilePlusCorner)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.handle_add_key(window, cx);
-                    })),
-            )
+                    }))
+            })
             .child(more_dropdown)
     }
 }

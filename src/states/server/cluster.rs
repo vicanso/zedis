@@ -38,7 +38,7 @@
 //! Notifications are English literals on this commit; i18n keys land
 //! in P2.3 when the user-facing buttons appear.
 
-use crate::connection::{get_connection_manager, open_node_connection};
+use crate::connection::{Capability, get_connection_manager, open_node_connection};
 use crate::states::{ServerTask, ZedisServerState};
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -52,7 +52,7 @@ impl ZedisServerState {
     /// unreachable and an immediate takeover is preferred over a
     /// graceful one.
     pub fn cluster_failover(&mut self, target_addr: SharedString, force: bool, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::ClusterWrite) {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
@@ -94,7 +94,7 @@ impl ZedisServerState {
     /// master to send through. The new node's `node_id` is allocated
     /// by the cluster and learned via the next gossip round.
     pub fn cluster_meet(&mut self, host: SharedString, port: u16, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::ClusterWrite) {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
@@ -129,7 +129,7 @@ impl ZedisServerState {
     /// to land on all masters within 60s or the next gossip round
     /// re-adds the node.
     pub fn cluster_forget(&mut self, node_id: SharedString, cx: &mut Context<Self>) {
-        if self.readonly() {
+        if !self.can(Capability::ClusterWrite) {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
@@ -171,7 +171,7 @@ impl ZedisServerState {
         master_node_id: SharedString,
         cx: &mut Context<Self>,
     ) {
-        if self.readonly() {
+        if !self.can(Capability::ClusterWrite) {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
