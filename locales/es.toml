@@ -655,7 +655,7 @@ refresh_tooltip = "Actualizar lista de clientes"
 
 [tray]
 header = "Zedis"
-active = "Activo: %{name}"
+active = "Activo: %{name} · db%{db}"
 active_none = "Activo: --"
 mem = "  Mem: %{value}"
 mem_none = "  Mem: --"

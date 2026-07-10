@@ -14,8 +14,8 @@
 
 use crate::connection::{RedisServer, get_servers};
 use crate::states::Route;
-use crate::states::{RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
-use gpui::{App, BorrowAppContext, Context};
+use crate::states::{GlobalEvent, RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
+use gpui::{App, BorrowAppContext, Context, Subscription};
 use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -114,51 +114,56 @@ impl TrayMenuState {
     fn refresh(
         &self,
         servers: &[RedisServer],
-        active_server_id: Option<&str>,
+        active: Option<&(String, usize)>,
         active_metrics: Option<&RedisMetrics>,
         cx: &App,
     ) -> bool {
-        // Check if server list changed
+        // Check if server list changed (order / membership)
         let current_ids: Vec<&str> = servers.iter().map(|s| s.id.as_str()).collect();
         let snapshot_ids: Vec<&str> = self.server_ids_snapshot.iter().map(|s| s.as_str()).collect();
         if current_ids != snapshot_ids {
             return true;
         }
 
-        let has_active = active_metrics.is_some();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let active_id = active.map(|(id, _)| id.as_str());
 
-        // Update active server section
-        if let (Some(server_id), Some(m)) = (active_server_id, active_metrics) {
+        // Active selection drives the header, even before metrics arrive.
+        if let Some((server_id, db)) = active {
             let server_name = servers
                 .iter()
-                .find(|s| s.id == server_id)
+                .find(|s| s.id == *server_id)
                 .map(|s| s.name.as_str())
-                .unwrap_or(server_id);
+                .unwrap_or(server_id.as_str());
             self.active_label
-                .set_text(t!("tray.active", name = server_name, locale = locale));
-            let mem_value = humansize::format_size(m.used_memory, humansize::DECIMAL);
-            self.mem_label
-                .set_text(t!("tray.mem", value = mem_value, locale = locale));
-            let ops_text = if m.latency_ms > 100 {
-                t!(
-                    "tray.ops_high_latency",
-                    value = m.instantaneous_ops_per_sec,
-                    locale = locale
-                )
+                .set_text(t!("tray.active", name = server_name, db = db, locale = locale));
+            if let Some(m) = active_metrics {
+                let mem_value = humansize::format_size(m.used_memory, humansize::DECIMAL);
+                self.mem_label
+                    .set_text(t!("tray.mem", value = mem_value, locale = locale));
+                let ops_text = if m.latency_ms > 100 {
+                    t!(
+                        "tray.ops_high_latency",
+                        value = m.instantaneous_ops_per_sec,
+                        locale = locale
+                    )
+                } else {
+                    t!("tray.ops", value = m.instantaneous_ops_per_sec, locale = locale)
+                };
+                self.ops_label.set_text(ops_text);
             } else {
-                t!("tray.ops", value = m.instantaneous_ops_per_sec, locale = locale)
-            };
-            self.ops_label.set_text(ops_text);
+                self.mem_label.set_text(i18n_tray(cx, "mem_none"));
+                self.ops_label.set_text(i18n_tray(cx, "ops_none"));
+            }
         } else {
             self.active_label.set_text(i18n_tray(cx, "active_none"));
             self.mem_label.set_text(i18n_tray(cx, "mem_none"));
             self.ops_label.set_text(i18n_tray(cx, "ops_none"));
         }
 
-        // Update Quick Connect indicators
+        // Quick Connect ● tracks selected_server (not metrics cache).
         for (sid, item) in &self.server_items {
-            let is_active = has_active && active_server_id == Some(sid.as_str());
+            let is_active = active_id == Some(sid.as_str());
             let indicator = if is_active { "● " } else { "○ " };
             let name = servers
                 .iter()
@@ -172,10 +177,10 @@ impl TrayMenuState {
     }
 }
 
-fn collect_refresh_data(cx: &App) -> (Vec<RedisServer>, Option<String>, Option<RedisMetrics>) {
+fn collect_refresh_data(cx: &App) -> (Vec<RedisServer>, Option<(String, usize)>, Option<RedisMetrics>) {
     let store = cx.global::<ZedisGlobalStore>().clone();
-    let active = store.read(cx).selected_server().map(|(id, _)| id.clone());
-    let active_metrics = active.as_ref().and_then(|id| {
+    let active = store.read(cx).selected_server().map(|(id, db)| (id.clone(), *db));
+    let active_metrics = active.as_ref().and_then(|(id, _)| {
         let metrics = get_metrics_cache().list_metrics(id);
         metrics.last().copied()
     });
@@ -196,10 +201,10 @@ fn refresh_tray_menu(state: &Rc<RefCell<TrayMenuState>>, tray: &Rc<tray_icon::Tr
     let (servers, active, active_metrics) = collect_refresh_data(cx);
     let need_rebuild = state
         .borrow()
-        .refresh(&servers, active.as_deref(), active_metrics.as_ref(), cx);
+        .refresh(&servers, active.as_ref(), active_metrics.as_ref(), cx);
     if need_rebuild {
         let (new_menu, new_state) = TrayMenuState::build(&servers, cx);
-        new_state.refresh(&servers, active.as_deref(), active_metrics.as_ref(), cx);
+        new_state.refresh(&servers, active.as_ref(), active_metrics.as_ref(), cx);
         *state.borrow_mut() = new_state;
         tray.set_menu(Some(Box::new(new_menu)));
     }
@@ -220,6 +225,9 @@ pub fn init_tray(cx: &mut App) {
         Ok(tray) => {
             let tray = Rc::new(tray);
             let state = Rc::new(RefCell::new(menu_state));
+
+            // Paint the initial selection / metrics immediately.
+            refresh_tray_menu(&state, &tray, cx);
 
             // Channel for sending actions from blocking thread to async handler
             let (action_tx, action_rx) = smol::channel::unbounded::<TrayAction>();
@@ -301,19 +309,30 @@ pub fn init_tray(cx: &mut App) {
                                 }
                                 TrayAction::SelectServer(server_id) => {
                                     cx.activate(true);
-                                    cx.update_global::<ZedisGlobalStore, ()>(
-                                        |store: &mut ZedisGlobalStore, cx: &mut App| {
-                                            store.update(
-                                                cx,
-                                                |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
-                                                    let db = state.last_db_for(&server_id);
-                                                    state.connect_server(server_id.clone(), db, cx);
-                                                },
-                                            );
-                                        },
-                                    );
+                                    // Same server already selected → only bring the window
+                                    // forward; avoid a redundant reconnect/route cycle.
+                                    let already_active = cx
+                                        .global::<ZedisGlobalStore>()
+                                        .read(cx)
+                                        .selected_server()
+                                        .is_some_and(|(id, _)| id == &server_id);
+                                    if !already_active {
+                                        cx.update_global::<ZedisGlobalStore, ()>(
+                                            |store: &mut ZedisGlobalStore, cx: &mut App| {
+                                                store.update(
+                                                    cx,
+                                                    |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
+                                                        let db = state.last_db_for(&server_id);
+                                                        state.connect_server(server_id, db, cx);
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    }
                                 }
                             }
+                            // GlobalEvent subscription also refreshes; this covers actions
+                            // that don't emit (Show) and keeps the menu snappy after a click.
                             refresh_tray_menu(&state, &tray, cx);
                         });
                     }
@@ -321,7 +340,27 @@ pub fn init_tray(cx: &mut App) {
                 .detach();
             }
 
-            // Task 3: Periodic metrics refresh (5s interval, only updates text)
+            // Event-driven refresh: selection / disconnect / server list
+            // changes push immediately. Metrics still rely on the periodic
+            // tick below (they don't emit a GlobalEvent).
+            let global_state = cx.global::<ZedisGlobalStore>().state();
+            {
+                let tray = Rc::clone(&tray);
+                let state = Rc::clone(&state);
+                let subscription: Subscription = cx.subscribe(&global_state, move |_entity, event, cx| {
+                    if matches!(
+                        event,
+                        GlobalEvent::ServerSelected(_, _) | GlobalEvent::ServerListUpdated
+                    ) {
+                        refresh_tray_menu(&state, &tray, cx);
+                    }
+                });
+                // Tray lives for the process lifetime; keep the listener with it.
+                std::mem::forget(subscription);
+            }
+
+            // Periodic metrics refresh (mem / OPS). Selection is event-driven
+            // above, so this only keeps live stats current.
             cx.spawn(async move |cx| {
                 loop {
                     cx.background_executor().timer(Duration::from_secs(5)).await;

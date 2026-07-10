@@ -654,7 +654,7 @@ refresh_tooltip = "刷新客户端列表"
 
 [tray]
 header = "Zedis"
-active = "当前: %{name}"
+active = "当前: %{name} · db%{db}"
 active_none = "当前: --"
 mem = "  内存: %{value}"
 mem_none = "  内存: --"

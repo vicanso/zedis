@@ -655,7 +655,7 @@ refresh_tooltip = "Client-Liste aktualisieren"
 
 [tray]
 header = "Zedis"
-active = "Aktiv: %{name}"
+active = "Aktiv: %{name} · db%{db}"
 active_none = "Aktiv: --"
 mem = "  Speicher: %{value}"
 mem_none = "  Speicher: --"
