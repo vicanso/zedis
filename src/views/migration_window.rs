@@ -14,9 +14,10 @@
 
 //! Modal-style window for export / import jobs.
 //!
-//! Step 3 wires the Export tab end to end. Step 4 will add Import.
+//! Import supports conflict strategy selection (Skip / Overwrite / Abort)
+//! and an optional dry-run preview (`EXISTS` on destination) before restore.
 
-use crate::connection::ConflictMode;
+use crate::connection::{ConflictMode, ConflictPreview, preview_dump_conflicts};
 use crate::helpers::{get_download_dir, get_home_dir, with_app_identity};
 use crate::states::{
     LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_migration,
@@ -31,13 +32,19 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
+    radio::RadioGroup,
     scroll::ScrollableElement,
+    v_flex,
 };
 use humansize::{DECIMAL, format_size};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::error;
 
 const WINDOW_WIDTH: f32 = 720.0;
-const WINDOW_HEIGHT: f32 = 540.0;
+const WINDOW_HEIGHT: f32 = 620.0;
+const PREVIEW_SAMPLE_LIMIT: usize = 40;
 
 /// What kind of job the window was opened for.
 #[derive(Clone)]
@@ -59,8 +66,15 @@ pub struct ZedisMigrationWindow {
     focus_handle: FocusHandle,
     mode: MigrationWindowMode,
     state: Entity<MigrationState>,
-    /// Path the user picked in the save dialog. `None` until they choose.
+    /// Path the user picked in the save/open dialog. `None` until they choose.
     chosen_path: Option<PathBuf>,
+    /// Import only: what to do when the destination already has the key.
+    conflict_mode: ConflictMode,
+    /// Import only: last dry-run result (if any).
+    preview: Option<ConflictPreview>,
+    preview_running: bool,
+    preview_error: Option<SharedString>,
+    preview_cancel: Arc<AtomicBool>,
     _subs: Vec<Subscription>,
 }
 
@@ -78,6 +92,11 @@ impl ZedisMigrationWindow {
             mode,
             state,
             chosen_path: None,
+            conflict_mode: ConflictMode::Skip,
+            preview: None,
+            preview_running: false,
+            preview_error: None,
+            preview_cancel: Arc::new(AtomicBool::new(false)),
             _subs: subs,
         }
     }
@@ -149,6 +168,7 @@ impl ZedisMigrationWindow {
                 .detach();
             }
             MigrationWindowMode::Import { .. } => {
+                // Import: pick file only — user then previews / starts with strategy.
                 let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
                     files: true,
                     directories: false,
@@ -161,8 +181,10 @@ impl ZedisMigrationWindow {
                         if let Ok(Ok(Some(paths))) = result
                             && let Some(path) = paths.into_iter().next()
                         {
-                            view.chosen_path = Some(path.clone());
-                            view.start_with_path(path, cx);
+                            view.chosen_path = Some(path);
+                            view.preview = None;
+                            view.preview_error = None;
+                            cx.notify();
                         }
                     });
                 })
@@ -185,10 +207,72 @@ impl ZedisMigrationWindow {
                 server_id: server_id.clone(),
                 db: *db,
                 input_path: path,
-                conflict: ConflictMode::Skip,
+                conflict: self.conflict_mode,
             },
         };
         self.state.update(cx, |s, cx| s.start(job, cx));
+    }
+
+    fn handle_start_import(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.chosen_path.clone() else {
+            return;
+        };
+        // Cancel any in-flight preview so it doesn't fight the import worker.
+        self.preview_cancel.store(true, Ordering::Release);
+        self.preview_running = false;
+        self.start_with_path(path, cx);
+    }
+
+    fn handle_preview(&mut self, cx: &mut Context<Self>) {
+        let MigrationWindowMode::Import { server_id, db, .. } = &self.mode else {
+            return;
+        };
+        let Some(path) = self.chosen_path.clone() else {
+            return;
+        };
+        if self.preview_running {
+            return;
+        }
+        let server_id = server_id.to_string();
+        let db = *db;
+        self.preview_cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.preview_cancel.clone();
+        self.preview_running = true;
+        self.preview_error = None;
+        self.preview = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    preview_dump_conflicts(&server_id, db, path, PREVIEW_SAMPLE_LIMIT, &cancel).await
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.preview_running = false;
+                match result {
+                    Ok(preview) => {
+                        view.preview = Some(preview);
+                        view.preview_error = None;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "import conflict preview failed");
+                        view.preview = None;
+                        view.preview_error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set_conflict_mode(&mut self, mode: ConflictMode, cx: &mut Context<Self>) {
+        if self.conflict_mode == mode {
+            return;
+        }
+        self.conflict_mode = mode;
+        cx.notify();
     }
 
     fn handle_cancel(&mut self, cx: &mut Context<Self>) {
@@ -288,6 +372,94 @@ impl Render for ZedisMigrationWindow {
                     .child(Label::new(progress_text).text_sm().text_color(muted)),
             );
 
+        let is_import = matches!(self.mode, MigrationWindowMode::Import { .. });
+        let conflict_section = is_import.then(|| {
+            let selected = self.conflict_mode.index();
+            let labels = vec![
+                i18n_migration(cx, "conflict_skip").to_string(),
+                i18n_migration(cx, "conflict_overwrite").to_string(),
+                i18n_migration(cx, "conflict_abort").to_string(),
+            ];
+            let path_label: SharedString = self
+                .chosen_path
+                .as_ref()
+                .map(|p| p.display().to_string().into())
+                .unwrap_or_else(|| i18n_migration(cx, "no_file_chosen"));
+            let preview_summary: SharedString = if self.preview_running {
+                i18n_migration(cx, "preview_running")
+            } else if let Some(err) = &self.preview_error {
+                format!("{}: {err}", i18n_migration(cx, "preview_failed")).into()
+            } else if let Some(p) = &self.preview {
+                if p.cancelled {
+                    i18n_migration(cx, "preview_cancelled")
+                } else {
+                    i18n_migration(cx, "preview_summary")
+                        .replace("{total}", &p.total.to_string())
+                        .replace("{conflicts}", &p.conflicting.to_string())
+                        .replace("{free}", &p.free.to_string())
+                        .into()
+                }
+            } else {
+                i18n_migration(cx, "preview_idle")
+            };
+
+            let sample_lines: Vec<SharedString> = self
+                .preview
+                .as_ref()
+                .map(|p| p.sample_keys.iter().map(|k| SharedString::from(k.clone())).collect())
+                .unwrap_or_default();
+
+            v_flex()
+                .px_6()
+                .pt_3()
+                .gap_2()
+                .child(Label::new(i18n_migration(cx, "conflict_label")).text_sm())
+                .child(
+                    Label::new(i18n_migration(cx, "conflict_hint"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(
+                    RadioGroup::horizontal("migration-conflict-mode")
+                        .mt(px(4.))
+                        .children(labels)
+                        .selected_index(Some(selected))
+                        .on_click(cx.listener(|this, index, _window, cx| {
+                            this.set_conflict_mode(ConflictMode::from_index(*index), cx);
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_migration(cx, "file_label")).text_sm())
+                        .child(Label::new(path_label).text_xs().text_color(muted).text_ellipsis()),
+                )
+                .child(Label::new(preview_summary).text_xs().text_color(muted))
+                .when(!sample_lines.is_empty(), |this| {
+                    this.child(
+                        Label::new(i18n_migration(cx, "preview_sample_label"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(
+                        v_flex()
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded(px(4.))
+                            .max_h(px(100.))
+                            .overflow_y_scrollbar()
+                            .px_2()
+                            .py_1()
+                            .children(
+                                sample_lines
+                                    .into_iter()
+                                    .map(|k| Label::new(k).text_xs().text_color(theme.danger_foreground)),
+                            ),
+                    )
+                })
+        });
+
         let log_section = div()
             .px_6()
             .pt_4()
@@ -335,19 +507,53 @@ impl Render for ZedisMigrationWindow {
                         .on_click(cx.listener(|this, _, _window, cx| this.handle_reveal(cx))),
                 );
             }
-            if is_running {
+            if is_running || self.preview_running {
                 row = row.child(
                     Button::new("migration-cancel")
                         .danger()
                         .label(i18n_migration(cx, "cancel"))
-                        .on_click(cx.listener(|this, _, _, cx| this.handle_cancel(cx))),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.preview_running {
+                                this.preview_cancel.store(true, Ordering::Release);
+                            } else {
+                                this.handle_cancel(cx);
+                            }
+                        })),
                 );
+            } else if is_import {
+                let has_file = self.chosen_path.is_some();
+                let pick_label = if has_file {
+                    i18n_migration(cx, "pick_file_again")
+                } else {
+                    i18n_migration(cx, "pick_file")
+                };
+                row = row
+                    .child(
+                        Button::new("migration-pick")
+                            .outline()
+                            .label(pick_label)
+                            .on_click(cx.listener(|this, _, window, cx| this.handle_pick_and_start(window, cx))),
+                    )
+                    .child(
+                        Button::new("migration-preview")
+                            .outline()
+                            .disabled(!has_file)
+                            .label(i18n_migration(cx, "preview_conflicts"))
+                            .on_click(cx.listener(|this, _, _, cx| this.handle_preview(cx))),
+                    )
+                    .child(
+                        Button::new("migration-start")
+                            .primary()
+                            .disabled(!has_file)
+                            .label(i18n_migration(cx, "start_import"))
+                            .on_click(cx.listener(|this, _, _, cx| this.handle_start_import(cx))),
+                    );
             } else {
                 let (idle_key, again_key, disabled) = match &self.mode {
                     MigrationWindowMode::Export { keys, .. } => {
                         ("save_and_export", "save_and_export_again", keys.is_empty())
                     }
-                    MigrationWindowMode::Import { .. } => ("pick_and_import", "pick_and_import_again", false),
+                    MigrationWindowMode::Import { .. } => ("pick_file", "pick_file_again", false),
                 };
                 let label_key = if matches!(phase, MigrationPhase::Idle) {
                     idle_key
@@ -374,10 +580,11 @@ impl Render for ZedisMigrationWindow {
                 }
             }))
             .child(
-                gpui_component::v_flex()
+                v_flex()
                     .size_full()
                     .child(header)
                     .child(status_section)
+                    .children(conflict_section)
                     .child(log_section)
                     .child(footer),
             )

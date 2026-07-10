@@ -34,13 +34,16 @@
 //! ```
 
 use super::async_connection::RedisAsyncConn;
+use super::manager::get_connection_manager;
 use crate::error::Error;
 use futures::future::try_join_all;
 use gpui::SharedString;
 use redis::cmd;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -110,12 +113,28 @@ pub struct DumpEntry {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+/// What to do when `RESTORE` hits an existing key (`BUSYKEY`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConflictMode {
+    /// Leave the destination key unchanged (default).
+    #[default]
     Skip,
+    /// `RESTORE … REPLACE` — overwrite the destination.
     Overwrite,
+    /// Stop the whole import on the first conflict.
     Abort,
+}
+
+impl ConflictMode {
+    pub const ALL: [ConflictMode; 3] = [ConflictMode::Skip, ConflictMode::Overwrite, ConflictMode::Abort];
+
+    pub fn from_index(i: usize) -> Self {
+        Self::ALL.get(i).copied().unwrap_or(ConflictMode::Skip)
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&m| m == self).unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,6 +486,109 @@ async fn restore_single_key(
             }
         }
     }
+}
+
+/// Batch `EXISTS` for binary key names. Returns one bool per key (order preserved).
+pub async fn keys_exist(conn: &mut RedisAsyncConn, keys: &[Vec<u8>]) -> Result<Vec<bool>> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut pipe = redis::pipe();
+    for key in keys {
+        pipe.cmd("EXISTS").arg(key.as_slice());
+    }
+    let results: Vec<i64> = pipe.query_async(conn).await?;
+    Ok(results.into_iter().map(|n| n > 0).collect())
+}
+
+/// Dry-run import conflict scan: read every key name from a dump file and
+/// check `EXISTS` on the destination. Does **not** write. `sample_limit`
+/// caps how many conflicting key names are retained for the UI list.
+pub async fn preview_dump_conflicts(
+    server_id: &str,
+    db: usize,
+    input_path: PathBuf,
+    sample_limit: usize,
+    cancel: &AtomicBool,
+) -> Result<ConflictPreview> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let client = get_connection_manager().get_client(server_id, db).await?;
+    let mut conn = client.connection();
+
+    let path_for_open = input_path.clone();
+    let mut reader = smol::unblock(move || -> Result<DumpReader<BufReader<File>>> {
+        let file = File::open(&path_for_open)?;
+        DumpReader::open(BufReader::new(file))
+    })
+    .await?;
+
+    let mut total = 0u64;
+    let mut conflicting = 0u64;
+    let mut free = 0u64;
+    let mut sample: Vec<String> = Vec::new();
+    const BATCH: usize = 64;
+    type KeyBatch = (DumpReader<BufReader<File>>, Vec<Vec<u8>>, bool);
+
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let (returned, batch, eof) = smol::unblock(move || -> Result<KeyBatch> {
+            let mut batch = Vec::with_capacity(BATCH);
+            let mut eof = false;
+            while batch.len() < BATCH {
+                match reader.read_entry()? {
+                    Some(entry) => batch.push(entry.key),
+                    None => {
+                        eof = true;
+                        break;
+                    }
+                }
+            }
+            Ok((reader, batch, eof))
+        })
+        .await?;
+        reader = returned;
+        if batch.is_empty() {
+            break;
+        }
+        let exists = keys_exist(&mut conn, &batch).await?;
+        for (key, is_there) in batch.into_iter().zip(exists) {
+            total += 1;
+            if is_there {
+                conflicting += 1;
+                if sample.len() < sample_limit {
+                    sample.push(String::from_utf8_lossy(&key).into_owned());
+                }
+            } else {
+                free += 1;
+            }
+        }
+        if eof {
+            break;
+        }
+    }
+
+    Ok(ConflictPreview {
+        total,
+        conflicting,
+        free,
+        sample_keys: sample,
+        cancelled: cancel.load(Ordering::Acquire),
+    })
+}
+
+/// Result of a dry-run conflict scan against a dump file.
+#[derive(Debug, Clone, Default)]
+pub struct ConflictPreview {
+    pub total: u64,
+    pub conflicting: u64,
+    pub free: u64,
+    /// First N conflicting key names for the UI list.
+    pub sample_keys: Vec<String>,
+    pub cancelled: bool,
 }
 
 /// Copy a single key's value (and remaining TTL) to another server / db

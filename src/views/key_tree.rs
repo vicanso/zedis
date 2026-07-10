@@ -32,7 +32,6 @@ use crate::{
     },
     views::{
         OnTagDialogDone, export_to_file, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window,
-        open_migration_import_window,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -106,7 +105,6 @@ enum KeyTreeAction {
     ExportSelectedKeys,
     ExportFolder(SharedString),
     ExportKey(SharedString),
-    ImportFromFile,
     /// Manual full refresh: re-scan with the current keyword/mode.
     RefreshAll,
     /// Open the key tag & note dialog for the given key (carried in
@@ -1155,13 +1153,9 @@ impl ListDelegate for KeyTreeDelegate {
                                     );
                                 }
                             }
-                            if Capability::ImportKeys.allowed(readonly) {
-                                menu = menu.menu_element_with_icon(
-                                    CustomIconName::HardDrive,
-                                    Box::new(KeyTreeAction::ImportFromFile),
-                                    move |_, cx| Label::new(i18n_key_tree(cx, "import_from_file_tooltip")),
-                                );
-                            }
+                            // Import keys lives under Tools (status bar) —
+                            // it targets the current server/db, not a tree
+                            // prefix, so the context menu no longer offers it.
                             // Tag & note — local redb only.
                             // Multi-select → batch colour only (notes preserved).
                             // Single leaf → full tag + note dialog.
@@ -3112,15 +3106,6 @@ impl Render for ZedisKeyTree {
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
                     open_migration_export_window(server_id, server_name, db, vec![id], cx);
-                }
-                KeyTreeAction::ImportFromFile => {
-                    let server_state = this.server_state.read(cx);
-                    let server_id: SharedString = server_state.server_id().to_string().into();
-                    let db = server_state.db();
-                    let server_name: SharedString = get_server(server_id.as_str())
-                        .map(|s| s.name.into())
-                        .unwrap_or_else(|_| server_id.clone());
-                    open_migration_import_window(server_id, server_name, db, cx);
                 }
             }))
             .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {

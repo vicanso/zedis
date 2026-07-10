@@ -245,6 +245,9 @@ pub enum ServerToolsAction {
     /// Opens the local recycle-bin dialog (soft-deleted keys) instead of a
     /// sub-route — handled specially in `main.rs`.
     Trash,
+    /// Opens the key dump import window for the current server / db
+    /// (RESTORE) — handled specially in `main.rs`, not a sub-route.
+    ImportKeys,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

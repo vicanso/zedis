@@ -14,7 +14,7 @@ use crate::states::{
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar,
-    open_about_window, open_settings_window, open_trash_dialog,
+    open_about_window, open_migration_import_window, open_settings_window, open_trash_dialog,
 };
 use gpui::{
     App, Bounds, Entity, Menu, MenuItem, Pixels, Point, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
@@ -804,6 +804,19 @@ impl Render for Zedis {
                     // active underneath.
                     ServerToolsAction::Trash => {
                         open_trash_dialog(window, cx);
+                        return;
+                    }
+                    // Dump import into the active server / db (not a
+                    // key-tree prefix). Opens a dedicated window.
+                    ServerToolsAction::ImportKeys => {
+                        let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                        else {
+                            return;
+                        };
+                        let server_name: gpui::SharedString = get_server(&server_id)
+                            .map(|s| s.name.into())
+                            .unwrap_or_else(|_| server_id.clone().into());
+                        open_migration_import_window(server_id.into(), server_name, db, cx);
                         return;
                     }
                 };

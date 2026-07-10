@@ -19,8 +19,8 @@ use crate::{
     helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, ServerEvent, ServerTask, ServerToolsAction,
-        ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_server_load, i18n_sidebar,
-        i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
+        ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common, i18n_server_load,
+        i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
     },
 };
 use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
@@ -503,6 +503,8 @@ impl ZedisStatusBar {
         supports_acl: bool,
         supports_functions: bool,
         supports_topology: bool,
+        // When true, Import Keys is disabled (needs write / RESTORE).
+        readonly: bool,
         cx: &gpui::App,
     ) -> PopupMenu {
         // The tool list has grown, so it's split into titled,
@@ -605,6 +607,24 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::Trash),
             move |_window, cx| Label::new(i18n_trash(cx, "menu")),
         );
+        // Import framed dump into the current server / db. Needs write
+        // (RESTORE); keep visible when readonly so users know where it lives.
+        let import_label: SharedString = if readonly {
+            format!(
+                "{}  ·  {}",
+                i18n_status_bar(cx, "import_keys_menu"),
+                i18n_common(cx, "disable_in_readonly")
+            )
+            .into()
+        } else {
+            i18n_status_bar(cx, "import_keys_menu")
+        };
+        menu = menu.menu_with_icon_and_disabled(
+            import_label,
+            Icon::new(CustomIconName::Upload),
+            Box::new(ServerToolsAction::ImportKeys),
+            readonly,
+        );
         // ACL (Redis 6.0+). Version-gated; suffix points at the required
         // Redis version when unavailable.
         let acl_label: SharedString = if supports_acl {
@@ -663,6 +683,7 @@ impl ZedisStatusBar {
         let supports_acl = server_state.supports_acl;
         let supports_functions = server_state.supports_functions;
         let supports_topology = server_state.supports_topology;
+        let readonly = self.readonly;
         let status_text = status_text_color(cx.theme().is_dark());
         ZedisDivider::new()
             .child(
@@ -729,6 +750,7 @@ impl ZedisStatusBar {
                                     supports_acl,
                                     supports_functions,
                                     supports_topology,
+                                    readonly,
                                     cx,
                                 )
                             }),

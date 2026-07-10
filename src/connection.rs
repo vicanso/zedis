@@ -49,8 +49,8 @@ pub use diagnostics::{
     probe_ssh_auth, probe_ssh_tunnel, probe_tcp,
 };
 pub use dump_restore::{
-    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key, dump_keys_chunk,
-    restore_keys_chunk,
+    ConflictMode, ConflictPreview, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key,
+    dump_keys_chunk, preview_dump_conflicts, restore_keys_chunk,
 };
 pub use functions::{FunctionLibrary, function_delete, function_list, function_load};
 pub use latency::{
