@@ -22,7 +22,7 @@ use crate::{
         get_search_history_manager, recent_keys_scope,
     },
     helpers::{
-        EditorAction, build_csv, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
+        EditorAction, TtlFilter, build_csv, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
         parse_duration, theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
@@ -122,6 +122,9 @@ enum KeyTreeAction {
     /// actions need `JsonSchema` and the colour enum sits in the
     /// `db` layer, so we keep the wire format string-based.
     SetTagFilter(SharedString),
+    /// Local TTL-range filter (`TtlFilter::as_str` wire id). `"all"` /
+    /// empty clears it. Applied only on the already-loaded TTL cache.
+    SetTtlFilter(SharedString),
 }
 
 #[derive(Default)]
@@ -172,6 +175,9 @@ struct KeyTreeState {
     /// (folders stay so the path remains navigable even when the
     /// folder's own descendants are filtered out).
     selected_tag_filter: Option<TagColor>,
+    /// Local TTL-range filter. [`TtlFilter::All`] means no TTL constraint.
+    /// Combined with type + tag via AND on the already-loaded key set.
+    selected_ttl_filter: TtlFilter,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -223,11 +229,11 @@ struct KeyTreeItem {
 /// For each tagged key we try to recover its `KeyType` from the SCAN
 /// snapshot (constant-time lookup via a `name → type` index built
 /// here). Keys outside the snapshot fall back to `KeyType::Unknown` —
-/// the row still renders (with a neutral icon) and a click opens the
-/// editor, which resolves the type lazily. Keys that have been deleted
-/// on the server but still carry local metadata also show up this way;
-/// that's intentional, since the loud "this key is gone" feedback
-/// helps the user spot dangling annotations.
+/// the subsequent local AND with a type filter drops those (so tag
+/// rows cannot bypass `SCAN TYPE`). Keys that have been deleted on the
+/// server but still carry local metadata also show up this way when no
+/// type filter is set; that's intentional, since the loud "this key is
+/// gone" feedback helps the user spot dangling annotations.
 fn build_tagged_keys_list(
     color: TagColor,
     snapshot_keys: &[(SharedString, KeyType)],
@@ -244,6 +250,49 @@ fn build_tagged_keys_list(
         .map(|(key, _)| {
             let key_type = type_by_key.get(key.as_str()).copied().unwrap_or(KeyType::Unknown);
             (SharedString::from(key.clone()), key_type)
+        })
+        .collect()
+}
+
+/// Local AND over the candidate key list (already obtained from SCAN
+/// and/or the local tag index). Does **not** issue Redis commands —
+/// type may still have been narrowed server-side via `SCAN TYPE`.
+///
+/// Dimensions (any `None` / `All` is a no-op for that axis):
+/// - `type_filter`: exact `KeyType` match; `Unknown` never matches
+/// - `tag_filter`: exact local metadata tag colour
+/// - `ttl_filter`: cached TTL range (missing / `-2` never match)
+fn apply_local_key_filters(
+    keys: Vec<(SharedString, KeyType)>,
+    type_filter: Option<KeyType>,
+    tag_filter: Option<TagColor>,
+    ttl_filter: TtlFilter,
+    key_ttls: &AHashMap<SharedString, i64>,
+    metadata: &std::collections::HashMap<String, KeyMetadata>,
+) -> Vec<(SharedString, KeyType)> {
+    if type_filter.is_none() && tag_filter.is_none() && matches!(ttl_filter, TtlFilter::All) {
+        return keys;
+    }
+    keys.into_iter()
+        .filter(|(key, key_type)| {
+            if let Some(want) = type_filter
+                && *key_type != want
+            {
+                return false;
+            }
+            if let Some(want) = tag_filter {
+                let tag = metadata.get(key.as_ref()).and_then(|m| m.tag);
+                if tag != Some(want) {
+                    return false;
+                }
+            }
+            if !matches!(ttl_filter, TtlFilter::All) {
+                let ttl = key_ttls.get(key).copied();
+                if !ttl_filter.matches(ttl) {
+                    return false;
+                }
+            }
+            true
         })
         .collect()
 }
@@ -338,11 +387,9 @@ fn new_key_tree_items(
     // Looked up by exact key name when building leaf items so each
     // row carries its own tag/note copy and `render_item` doesn't
     // have to touch the manager per frame. Empty map is fine — no
-    // metadata simply means no badges.
+    // metadata simply means no badges. Tag / type / TTL filtering
+    // happens upstream via [`apply_local_key_filters`].
     metadata: &std::collections::HashMap<String, KeyMetadata>,
-    // Optional single-colour filter — when set, keys not carrying
-    // that exact tag are excluded from the resulting tree.
-    tag_filter: Option<TagColor>,
 ) -> Vec<KeyTreeItem> {
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     // Effective expansion = the user-expanded folders plus any single-child
@@ -377,16 +424,6 @@ fn new_key_tree_items(
             Some(m) => (m.tag, SharedString::from(m.note.clone())),
             None => (None, SharedString::default()),
         };
-        // Single-color tag filter — drop the key entirely (along with
-        // any synthesised parent folders) when it doesn't carry the
-        // selected colour. Folders that end up empty just disappear
-        // along with their leaves, which is correct: no need to keep
-        // a heading with zero matching descendants.
-        if let Some(filter) = tag_filter
-            && tag_for_leaf != Some(filter)
-        {
-            continue;
-        }
         if !key.contains(separator) {
             items.insert(
                 key.clone(),
@@ -1521,6 +1558,15 @@ impl ZedisKeyTree {
         let readonly = server_state.readonly();
         let scanning_prefixes = server_state.scanning_prefixes().clone();
         let incomplete_prefixes = server_state.incomplete_prefix_set();
+        // Server-side SCAN TYPE already narrows the snapshot; re-apply
+        // locally so tag-sourced rows and older Redis paths stay honest.
+        let type_filter_snapshot = server_state.type_filter();
+        let separator = server_state.key_separator().to_string();
+        let max_key_tree_depth = server_state.max_key_tree_depth();
+        // Without tree TTL chips, `key_ttls` is empty — ignore any stale
+        // TTL filter so the tree is not accidentally wiped.
+        let ttl_enabled = server_state.show_key_tree_ttl();
+
         let expanded_items = self.state.expanded_items.clone();
         let suppressed = self.state.suppressed_auto_expand.clone();
 
@@ -1541,23 +1587,32 @@ impl ZedisKeyTree {
             }
         };
         let tag_filter_snapshot = self.state.selected_tag_filter;
-
-        let separator = self.server_state.read(cx).key_separator().to_string();
-        let max_key_tree_depth = self.server_state.read(cx).max_key_tree_depth();
+        let ttl_filter_snapshot = if ttl_enabled {
+            self.state.selected_ttl_filter
+        } else {
+            TtlFilter::All
+        };
         self.key_tree_list_state.update(cx, move |_state, cx| {
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = std::time::Instant::now();
-                    // Filter-source switch: when a colour filter is
-                    // active, the input key list comes from local
-                    // metadata (covers every tagged key regardless of
-                    // SCAN progress); otherwise the SCAN snapshot is
-                    // the source as usual.
+                    // Source switch: tag filter → local metadata union
+                    // (covers tagged keys not yet in the SCAN page);
+                    // otherwise the SCAN snapshot is the source.
+                    // Then local AND of type + tag + TTL on that set.
                     let raw_keys = (*keys_snapshot).clone();
-                    let keys_input = match tag_filter_snapshot {
+                    let source = match tag_filter_snapshot {
                         Some(color) => build_tagged_keys_list(color, &raw_keys, &metadata_snapshot),
                         None => raw_keys,
                     };
+                    let keys_input = apply_local_key_filters(
+                        source,
+                        type_filter_snapshot,
+                        tag_filter_snapshot,
+                        ttl_filter_snapshot,
+                        &key_ttls_snapshot,
+                        &metadata_snapshot,
+                    );
                     let mut items = new_key_tree_items(
                         keys_input,
                         keyword,
@@ -1567,11 +1622,6 @@ impl ZedisKeyTree {
                         max_key_tree_depth,
                         &key_ttls_snapshot,
                         &metadata_snapshot,
-                        // The internal tag-filter check is a no-op in
-                        // the filtered branch (every input row already
-                        // matches), and stays as the source of truth
-                        // when no upstream filtering happened.
-                        tag_filter_snapshot,
                     );
                     // Stamp the inline-spinner flag on folders whose lazy
                     // prefix-scan is still running. Skipped entirely when
@@ -1626,8 +1676,9 @@ impl ZedisKeyTree {
     /// search is trivial, so we don't bother with an id→index map.
     fn refresh_metadata_for_key(&mut self, key: &SharedString, cx: &mut Context<Self>) {
         if self.state.selected_tag_filter.is_some() {
-            // Filter-aware path: visibility may flip → full rebuild.
-            self.handle_filter(cx);
+            // Filter-aware path: visibility may flip → full rebuild
+            // from the cached key set (no re-SCAN).
+            self.update_key_tree(true, cx);
             return;
         }
         let server_id = self.state.server_id.clone();
@@ -2161,6 +2212,8 @@ impl ZedisKeyTree {
         }
         let query_mode = self.state.query_mode;
         let type_filter = self.server_state.read(cx).type_filter();
+        let show_key_tree_ttl = self.server_state.read(cx).show_key_tree_ttl();
+        let ttl_filter = self.state.selected_ttl_filter;
 
         // Select icon based on query mode
         let icon = match query_mode {
@@ -2321,6 +2374,40 @@ impl ZedisKeyTree {
                             )
                     },
                 )
+                // Local TTL-range filter (AND with type + tag). Only when
+                // tree TTL chips are enabled — otherwise `key_ttls` is empty
+                // and every constrained filter would yield an empty tree.
+                .when(show_key_tree_ttl, |this| {
+                    this.submenu_with_icon(
+                        Some(Icon::new(CustomIconName::Clock3)),
+                        i18n_key_tree(cx, "ttl_filter"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            let mut submenu = submenu.menu_element_with_check(
+                                matches!(ttl_filter, TtlFilter::All),
+                                Box::new(KeyTreeAction::SetTtlFilter(TtlFilter::All.as_str().into())),
+                                move |_, cx| Label::new(i18n_key_tree(cx, "ttl_filter_all")),
+                            );
+                            for (filter, label_key) in [
+                                (TtlFilter::NoTtl, "ttl_filter_no_ttl"),
+                                (TtlFilter::Expiring, "ttl_filter_expiring"),
+                                (TtlFilter::Lt1h, "ttl_filter_lt_1h"),
+                                (TtlFilter::Lt1d, "ttl_filter_lt_1d"),
+                                (TtlFilter::Lt7d, "ttl_filter_lt_7d"),
+                                (TtlFilter::Gte7d, "ttl_filter_gte_7d"),
+                            ] {
+                                let id: SharedString = filter.as_str().into();
+                                submenu = submenu.menu_element_with_check(
+                                    ttl_filter == filter,
+                                    Box::new(KeyTreeAction::SetTtlFilter(id)),
+                                    move |_, cx| Label::new(i18n_key_tree(cx, label_key)),
+                                );
+                            }
+                            submenu
+                        },
+                    )
+                })
             });
         let search_btn = Button::new("key-tree-search-btn")
             .ghost()
@@ -2635,10 +2722,20 @@ impl Render for ZedisKeyTree {
                     };
                     if this.state.selected_tag_filter != new_filter {
                         this.state.selected_tag_filter = new_filter;
-                        // Re-run the filter pass to apply the new
-                        // colour selection. Cached keys are reused;
-                        // only the tree-rebuild step re-runs.
-                        this.handle_filter(cx);
+                        // Local-only: rebuild the tree from the cached
+                        // SCAN snapshot + metadata. No re-SCAN.
+                        this.update_key_tree(true, cx);
+                    }
+                }
+                KeyTreeAction::SetTtlFilter(id) => {
+                    let new_filter = if id.is_empty() {
+                        TtlFilter::All
+                    } else {
+                        TtlFilter::from_str(id.as_ref())
+                    };
+                    if this.state.selected_ttl_filter != new_filter {
+                        this.state.selected_ttl_filter = new_filter;
+                        this.update_key_tree(true, cx);
                     }
                 }
                 KeyTreeAction::SelectFavoriteKey(key) => {
@@ -2932,6 +3029,95 @@ impl Render for ZedisKeyTree {
                     cx.propagate();
                 }
             }))
+    }
+}
+
+#[cfg(test)]
+mod local_filter_tests {
+    use super::*;
+
+    fn keys(items: &[(&str, KeyType)]) -> Vec<(SharedString, KeyType)> {
+        items.iter().map(|(k, t)| ((*k).into(), *t)).collect()
+    }
+
+    #[test]
+    fn type_and_drops_unknown_and_mismatches() {
+        let input = keys(&[("a", KeyType::String), ("b", KeyType::Hash), ("c", KeyType::Unknown)]);
+        let out = apply_local_key_filters(
+            input,
+            Some(KeyType::String),
+            None,
+            TtlFilter::All,
+            &AHashMap::new(),
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.as_ref(), "a");
+    }
+
+    #[test]
+    fn tag_and_type_and_ttl_intersection() {
+        let input = keys(&[
+            ("red-hash-live", KeyType::Hash),
+            ("red-str-live", KeyType::String),
+            ("blue-hash-live", KeyType::Hash),
+            ("red-hash-perm", KeyType::Hash),
+            ("red-hash-expiring", KeyType::Hash),
+        ]);
+        let mut ttls = AHashMap::new();
+        ttls.insert("red-hash-live".into(), 3600);
+        ttls.insert("red-str-live".into(), 3600);
+        ttls.insert("blue-hash-live".into(), 3600);
+        ttls.insert("red-hash-perm".into(), -1);
+        ttls.insert("red-hash-expiring".into(), 30);
+
+        let mut meta = std::collections::HashMap::new();
+        for k in ["red-hash-live", "red-str-live", "red-hash-perm", "red-hash-expiring"] {
+            meta.insert(
+                k.to_string(),
+                KeyMetadata {
+                    tag: Some(TagColor::Red),
+                    note: String::new(),
+                },
+            );
+        }
+        meta.insert(
+            "blue-hash-live".into(),
+            KeyMetadata {
+                tag: Some(TagColor::Blue),
+                note: String::new(),
+            },
+        );
+
+        let out = apply_local_key_filters(
+            input,
+            Some(KeyType::Hash),
+            Some(TagColor::Red),
+            TtlFilter::Lt1h,
+            &ttls,
+            &meta,
+        );
+        // red-hash-live (3600 is NOT < 3600) → out
+        // red-hash-expiring (30) → in
+        // red-hash-perm (-1) → out of Lt1h
+        // red-str-live wrong type
+        // blue wrong tag
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.as_ref(), "red-hash-expiring");
+    }
+
+    #[test]
+    fn missing_ttl_never_matches_constrained_filter() {
+        let input = keys(&[("x", KeyType::String)]);
+        let out = apply_local_key_filters(
+            input,
+            None,
+            None,
+            TtlFilter::NoTtl,
+            &AHashMap::new(),
+            &std::collections::HashMap::new(),
+        );
+        assert!(out.is_empty());
     }
 }
 
