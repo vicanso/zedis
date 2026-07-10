@@ -192,50 +192,74 @@ impl KeyMetadataManager {
         if metadata.is_empty() {
             return self.clear(server_id, key);
         }
-        // Hydrate the cache first so the write transaction below sees
-        // the full set, not just the delta we're about to apply.
-        let _ = self.records(server_id)?;
-
-        let db = get_database()?;
-        let write_txn = db.begin_write()?;
-        let entries_to_persist = {
-            let mut entries = self.cache.entry(server_id.to_string()).or_default();
+        self.persist_envelope(server_id, |entries| {
             entries.insert(key.to_string(), metadata);
-            entries.clone()
-        };
-        {
-            let mut table = write_txn.open_table(KEY_METADATA_TABLE)?;
-            let envelope = StoredEnvelope {
-                v: ENVELOPE_VERSION,
-                entries: entries_to_persist,
-            };
-            let json_val = serde_json::to_string(&envelope)?;
-            table.insert(server_id, json_val.as_str())?;
+        })
+    }
+
+    /// Apply many per-key updates in **one** redb write. Empty metadata
+    /// values delete that key's row (same as [`Self::set`]). Used by
+    /// multi-select batch tagging so N keys don't cost N disk round-trips.
+    pub fn set_many(&self, server_id: &str, updates: impl IntoIterator<Item = (String, KeyMetadata)>) -> Result<()> {
+        let updates: Vec<_> = updates.into_iter().collect();
+        if updates.is_empty() {
+            return Ok(());
         }
-        write_txn.commit()?;
-        Ok(())
+        self.persist_envelope(server_id, |entries| {
+            for (key, metadata) in updates {
+                if metadata.is_empty() {
+                    entries.remove(&key);
+                } else {
+                    entries.insert(key, metadata);
+                }
+            }
+        })
+    }
+
+    /// Batch-set (or clear) **only the tag colour** on many keys, preserving
+    /// each key's existing note. Keys with `tag = None` and an empty note are
+    /// dropped from the table. No-op iterator is fine.
+    pub fn set_tags_many<'a>(
+        &self,
+        server_id: &str,
+        keys: impl IntoIterator<Item = &'a str>,
+        tag: Option<TagColor>,
+    ) -> Result<()> {
+        let keys: Vec<String> = keys.into_iter().map(str::to_string).collect();
+        if keys.is_empty() {
+            return Ok(());
+        }
+        // Snapshot notes before the write so we don't re-read inside the
+        // mutation closure while holding the cache entry.
+        let existing = self.records(server_id)?;
+        let updates = keys.into_iter().map(|key| {
+            let note = existing.get(&key).map(|m| m.note.clone()).unwrap_or_default();
+            (key, KeyMetadata { tag, note })
+        });
+        self.set_many(server_id, updates)
     }
 
     /// Delete a single key's record. No-op if there was nothing
     /// recorded — callers can always invoke this defensively.
     pub fn clear(&self, server_id: &str, key: &str) -> Result<()> {
-        // Hydrate first so we can detect "nothing to do" without
-        // racing the disk.
+        self.persist_envelope(server_id, |entries| {
+            entries.remove(key);
+        })
+    }
+
+    /// Hydrate cache, apply `mutate`, then write the full envelope once.
+    fn persist_envelope(&self, server_id: &str, mutate: impl FnOnce(&mut HashMap<String, KeyMetadata>)) -> Result<()> {
         let _ = self.records(server_id)?;
         let db = get_database()?;
         let write_txn = db.begin_write()?;
         let entries_to_persist = {
             let mut entries = self.cache.entry(server_id.to_string()).or_default();
-            if entries.remove(key).is_none() {
-                return Ok(());
-            }
+            mutate(&mut entries);
             entries.clone()
         };
         {
             let mut table = write_txn.open_table(KEY_METADATA_TABLE)?;
             if entries_to_persist.is_empty() {
-                // Empty envelope is wasteful — drop the row entirely so
-                // future reads short-circuit at the table lookup.
                 table.remove(server_id)?;
             } else {
                 let envelope = StoredEnvelope {
@@ -250,9 +274,10 @@ impl KeyMetadataManager {
         Ok(())
     }
 
-    /// `true` when the server has at least one record — drives the
-    /// "show filter chip row" decision so we don't litter the toolbar
-    /// when nothing is tagged yet.
+    /// `true` when the server has at least one metadata record.
+    /// Useful for empty-state hints; the key-tree tag filter is always
+    /// shown in the search menu (not gated on this).
+    #[allow(dead_code)]
     pub fn has_any_records(&self, server_id: &str) -> bool {
         self.records(server_id).map(|m| !m.is_empty()).unwrap_or(false)
     }

@@ -89,7 +89,7 @@ pub use geo_map::{GeoMapEvent, ZedisGeoMap};
 pub use hash_editor::ZedisHashEditor;
 pub use hll_editor::ZedisHllEditor;
 pub(crate) use hll_editor::looks_like_hll;
-pub use key_tag_dialog::{OnTagDialogDone, open_key_tag_dialog};
+pub use key_tag_dialog::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog};
 pub use key_tree::ZedisKeyTree;
 pub use keyspace_notifications::ZedisKeyspaceNotifications;
 pub use kv_table::ZedisKvTable;

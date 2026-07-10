@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tag & note editor for a single key.
+//! Tag & note editor for a single key, plus a batch colour-only dialog
+//! for multi-select.
 //!
 //! Backed by a small dedicated view so the swatch row re-renders on
 //! click without having to plumb state through the parent editor. The
@@ -21,16 +22,20 @@
 //! redraw machinery keeps the swatch selection in sync with internal
 //! state.
 //!
-//! Save / Clear semantics:
+//! Save / Clear semantics (single key):
 //! * **Save** persists the current swatch + note. An empty swatch *and*
 //!   empty note hits the manager's "drop the record" branch.
 //! * **Clear** drops the record outright, regardless of dialog state —
 //!   convenience for "I no longer care about this key".
 //! * **Cancel** does nothing and closes.
+//!
+//! Batch dialog: only the colour swatch is shown. Save/Clear call
+//! [`KeyMetadataManager::set_tags_many`], which **preserves each key's
+//! existing note** and only rewrites the tag field.
 
 use crate::db::{KeyMetadata, TagColor, get_key_metadata_manager};
 use crate::helpers::theme_color_for_tag;
-use crate::states::{dialog_button_props, i18n_common, i18n_key_tag};
+use crate::states::{ZedisGlobalStore, dialog_button_props, i18n_common, i18n_key_tag};
 use gpui::{Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt, WindowExt,
@@ -41,6 +46,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
+use rust_i18n::t;
 use tracing::error;
 use zedis_ui::ZedisDialog;
 
@@ -293,6 +299,182 @@ pub fn open_key_tag_dialog(
         })
         .on_ok(move |_, _w, cx| {
             save_state.read(cx).save(cx);
+            if let Some(cb) = on_done_save.as_ref() {
+                cb(cx);
+            }
+            true
+        })
+        .open(window, cx);
+}
+
+// ─── Batch tag (multi-select) ───────────────────────────────────────────────
+
+/// Colour-only tag editor for many keys. Notes are never shown or
+/// overwritten — batch ops only touch [`KeyMetadata::tag`].
+pub struct ZedisBatchKeyTagDialog {
+    server_id: SharedString,
+    keys: Vec<SharedString>,
+    selected_tag: Option<TagColor>,
+}
+
+impl ZedisBatchKeyTagDialog {
+    pub fn new(server_id: SharedString, keys: Vec<SharedString>) -> Self {
+        Self {
+            server_id,
+            keys,
+            selected_tag: None,
+        }
+    }
+
+    fn set_tag(&mut self, tag: Option<TagColor>, cx: &mut Context<Self>) {
+        if self.selected_tag == tag {
+            return;
+        }
+        self.selected_tag = tag;
+        cx.notify();
+    }
+
+    /// Apply `selected_tag` to every key, preserving notes.
+    fn apply_tag(&self, tag: Option<TagColor>) {
+        let keys: Vec<&str> = self.keys.iter().map(|k| k.as_ref()).collect();
+        if let Err(e) = get_key_metadata_manager().set_tags_many(self.server_id.as_ref(), keys, tag) {
+            error!(
+                error = %e,
+                server = %self.server_id,
+                count = self.keys.len(),
+                "Failed to batch-set key tags"
+            );
+        }
+    }
+
+    fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let muted_border = theme.border;
+        let active_border = theme.foreground;
+        let muted_fg = theme.muted_foreground;
+
+        let mut row = h_flex().gap_2().flex_wrap().items_center();
+        let none_active = self.selected_tag.is_none();
+        let none_btn = Button::new("bktd-swatch-none")
+            .xsmall()
+            .label(i18n_key_tag(cx, "none_pill"));
+        let none_btn = if none_active {
+            none_btn.primary()
+        } else {
+            none_btn.outline()
+        };
+        row = row.child(none_btn.on_click(cx.listener(|this, _, _w, cx| this.set_tag(None, cx))));
+
+        for (i, color) in TagColor::ALL.iter().copied().enumerate() {
+            let fill = theme_color_for_tag(color, cx);
+            let active = self.selected_tag == Some(color);
+            let border = if active { active_border } else { muted_border };
+            let tooltip_text = i18n_key_tag(cx, color_label_key(color));
+            let swatch_id = ("bktd-swatch", i as u32);
+            row = row.child(
+                div()
+                    .id(swatch_id)
+                    .w(px(22.))
+                    .h(px(22.))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(border)
+                    .bg(fill)
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
+                    .on_click(cx.listener(move |this, _, _w, cx| this.set_tag(Some(color), cx))),
+            );
+        }
+
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(
+                Label::new(i18n_key_tag(cx, "batch_body_hint"))
+                    .text_xs()
+                    .text_color(muted_fg),
+            )
+            .child(Label::new(i18n_key_tag(cx, "tag_label")).text_xs().text_color(muted_fg))
+            .child(row)
+    }
+}
+
+impl Render for ZedisBatchKeyTagDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_body(cx)
+    }
+}
+
+/// Open a batch colour dialog for `keys` (multi-select). Notes on each
+/// key are preserved; only the tag field is written via
+/// [`get_key_metadata_manager::set_tags_many`].
+pub fn open_batch_key_tag_dialog(
+    server_id: SharedString,
+    keys: Vec<SharedString>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+    on_done: Option<OnTagDialogDone>,
+) {
+    if server_id.is_empty() || keys.is_empty() {
+        return;
+    }
+    let count = keys.len();
+    let dialog_state: Entity<ZedisBatchKeyTagDialog> = cx.new(|_cx| ZedisBatchKeyTagDialog::new(server_id, keys));
+    let body_state = dialog_state.clone();
+    let save_state = dialog_state.clone();
+    let clear_state = dialog_state.clone();
+    let on_done_save = on_done.clone();
+    let on_done_clear = on_done;
+
+    let title_text: SharedString = {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        t!("key_tag.batch_dialog_title", count = count, locale = locale)
+            .to_string()
+            .into()
+    };
+
+    let clear_label = i18n_key_tag(cx, "batch_clear_tags");
+
+    ZedisDialog::new(title_text)
+        .w(px(420.))
+        .ok_text(i18n_common(cx, "save"))
+        .cancel_text(i18n_common(cx, "cancel"))
+        .button_props(
+            dialog_button_props(cx)
+                .ok_text(i18n_common(cx, "save"))
+                .cancel_text(i18n_common(cx, "cancel")),
+        )
+        .child(move || {
+            let dialog = body_state.clone();
+            let clear_dialog = clear_state.clone();
+            let clear_label = clear_label.clone();
+            v_flex()
+                .gap_4()
+                .w_full()
+                .child(dialog)
+                .child(
+                    h_flex().w_full().justify_end().child(
+                        Button::new("bktd-clear-btn")
+                            .ghost()
+                            .xsmall()
+                            .label(clear_label)
+                            .on_click({
+                                let on_done = on_done_clear.clone();
+                                move |_, window, cx| {
+                                    clear_dialog.read(cx).apply_tag(None);
+                                    if let Some(cb) = on_done.as_ref() {
+                                        cb(cx);
+                                    }
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                    ),
+                )
+                .into_any_element()
+        })
+        .on_ok(move |_, _w, cx| {
+            let tag = save_state.read(cx).selected_tag;
+            save_state.read(cx).apply_tag(tag);
             if let Some(cb) = on_done_save.as_ref() {
                 cb(cx);
             }
