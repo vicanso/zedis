@@ -17,47 +17,77 @@
 //! Detects the active server's deployment mode (Cluster / Sentinel /
 //! Standalone) from `nodes_description().server_type` and renders
 //! per-mode content:
-//!   * Cluster: master+replica list pulled from
-//!     `nodes_description().topology`. Replica rows carry per-row
-//!     `Failover` (graceful) / `Force` (skip handshake) / `Forget`
-//!     buttons; master rows carry `Forget` only. Above the table
-//!     sit two forms — `MEET host:port` (introduce a new node)
-//!     and `REPLICATE target master_id` (point a node at a master).
-//!     Forms render even when the topology is empty so a fresh
-//!     cluster can be bootstrapped through this panel.
+//!   * Cluster: four tabs — **Nodes** (FAILOVER/MEET/FORGET/REPLICATE),
+//!     **Slots** (hash-slot map + in-flight migrations), **Load**
+//!     (per-master memory/OPS heatmap), **Reshard** (plan + execute
+//!     slot moves). Slot ownership comes from the heartbeat
+//!     `ClusterSlotMap`; load is polled separately.
 //!   * Sentinel: monitored-master list with per-master
 //!     `Force Failover` / `Reset` / `Remove` buttons; replica rows
 //!     are read-only because Sentinel ops target by master name.
-//!   * Standalone / Unknown: localized placeholder text only —
-//!     topology operations do not apply.
+//!   * Standalone / Unknown: localized placeholder text only.
 //!
 //! All destructive commands route through `ZedisDialog::new_alert`, with
 //! the body run through `escalate_dangerous_body` so production-tagged
-//! (high-risk) servers get the escalated warning. Cluster commands live in
-//! `states/server/cluster.rs`; Sentinel commands in
-//! `states/server/sentinel.rs`. Slot-range RESHARD is intentionally
-//! out of scope — the visual slot editor is a substantial side
-//! project the maintainer chose not to pursue.
+//! servers get the escalated warning.
 
+use crate::connection::{CLUSTER_HASH_SLOTS, ClusterSlotMap};
 use crate::helpers::get_mono_font_family;
-use crate::states::{ServerEvent, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_topology};
-use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*};
+use crate::states::{
+    ClusterMasterRanges, ClusterNodeLoad, ServerEvent, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+    fetch_cluster_node_loads, i18n_topology, plan_cluster_reshard, source_owners_for_slots,
+};
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
     label::Label,
     v_flex,
 };
+use std::time::Duration;
 use tracing::info;
 use zedis_ui::ZedisDialog;
 
-/// Three deployment shapes Redis exposes — they are mutually
-/// exclusive per connection, which is why a single panel can adapt
-/// rather than two sidebar entries always showing one disabled.
-/// `Unknown` is the transient state before the first `INFO` round
-/// trip surfaces `nodes_description`.
+/// Fixed master palette for slot bar + load cards (cycled by color_index).
+const MASTER_PALETTE: [u32; 8] = [
+    0x4c_8b_f5, // blue
+    0x69_b0_83, // green
+    0xe5_a5_4b, // amber
+    0xe0_6c_75, // red
+    0xc6_78_dd, // purple
+    0x56_b6_c2, // cyan
+    0xd1_9a_66, // orange
+    0xab_b2_bf, // grey
+];
+
+fn master_color(index: usize) -> Hsla {
+    rgb(MASTER_PALETTE[index % MASTER_PALETTE.len()]).into()
+}
+
+/// Heat colour: low → green, mid → amber, high → red (ratio in 0..=1).
+fn heat_color(ratio: f32) -> Hsla {
+    let r = ratio.clamp(0.0, 1.0);
+    if r < 0.5 {
+        // green → amber
+        let t = r * 2.0;
+        let g = 0xb0u8;
+        let red = (0x69u8 as f32 + t * (0xe5 - 0x69) as f32) as u8;
+        let blue = (0x83u8 as f32 * (1.0 - t)) as u8;
+        rgb(u32::from_be_bytes([0, red, g, blue])).into()
+    } else {
+        // amber → red
+        let t = (r - 0.5) * 2.0;
+        let red = 0xe5u8;
+        let green = (0xa5u8 as f32 * (1.0 - t) + 0x6c as f32 * t) as u8;
+        let blue = (0x4bu8 as f32 * (1.0 - t) + 0x75 as f32 * t) as u8;
+        rgb(u32::from_be_bytes([0, red, green, blue])).into()
+    }
+}
+
+/// Three deployment shapes Redis exposes — mutually exclusive per
+/// connection. `Unknown` is the transient state before the first INFO.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 enum TopologyMode {
     #[default]
@@ -67,37 +97,64 @@ enum TopologyMode {
     Sentinel,
 }
 
+/// Cluster sub-panel.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+enum ClusterTab {
+    #[default]
+    Nodes,
+    Slots,
+    Load,
+    Reshard,
+}
+
 pub struct ZedisTopology {
     server_state: Entity<ZedisServerState>,
     mode: TopologyMode,
-    // P2.4 form inputs (rendered above the node table when in
-    // Cluster mode). MEET takes `host:port`; REPLICATE takes both
-    // the target node's `host:port` and the master's `node_id`,
-    // because `CLUSTER REPLICATE` runs *on* the target but
-    // identifies the future master by id.
+    cluster_tab: ClusterTab,
+    // Nodes tab forms.
     meet_input: Entity<InputState>,
     replicate_target_input: Entity<InputState>,
     replicate_master_input: Entity<InputState>,
+    // Reshard wizard inputs.
+    reshard_source_input: Entity<InputState>,
+    reshard_target_input: Entity<InputState>,
+    reshard_count_input: Entity<InputState>,
+    planned_slots: Vec<u16>,
+    plan_error: Option<SharedString>,
+    // Load heatmap.
+    node_loads: Vec<ClusterNodeLoad>,
+    load_error: Option<SharedString>,
+    load_metric: LoadMetric,
+    load_poll_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+enum LoadMetric {
+    #[default]
+    Memory,
+    Ops,
+    Clients,
 }
 
 impl ZedisTopology {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // P2.4 form inputs — placeholders are hardcoded English on
-        // purpose: they're technical address/id formats that don't
-        // translate cleanly and stay informative across locales.
         let meet_input = cx.new(|cx| InputState::new(window, cx).placeholder("host:port"));
         let replicate_target_input = cx.new(|cx| InputState::new(window, cx).placeholder("target host:port"));
         let replicate_master_input = cx.new(|cx| InputState::new(window, cx).placeholder("master node_id"));
-        // Re-detect on the same events Persistence listens to:
-        // `ServerRedisInfoUpdated` (2s heartbeat after connect) and
-        // `ServerSelected` (user switched server in the sidebar).
+        let reshard_source_input = cx.new(|cx| InputState::new(window, cx).placeholder("source node_id (optional)"));
+        let reshard_target_input = cx.new(|cx| InputState::new(window, cx).placeholder("target node_id"));
+        let reshard_count_input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 100"));
+
         let subscriptions = vec![cx.subscribe(&server_state, |this, _state, event, cx| {
             if matches!(
                 event,
                 ServerEvent::ServerRedisInfoUpdated | ServerEvent::ServerSelected(_)
             ) {
                 this.detect_mode(cx);
+                if this.mode == TopologyMode::Cluster {
+                    this.ensure_load_poll(cx);
+                }
                 cx.notify();
             }
         })];
@@ -105,21 +162,30 @@ impl ZedisTopology {
         let mut this = Self {
             server_state,
             mode: TopologyMode::Unknown,
+            cluster_tab: ClusterTab::Nodes,
             meet_input,
             replicate_target_input,
             replicate_master_input,
+            reshard_source_input,
+            reshard_target_input,
+            reshard_count_input,
+            planned_slots: Vec::new(),
+            plan_error: None,
+            node_loads: Vec::new(),
+            load_error: None,
+            load_metric: LoadMetric::Memory,
+            load_poll_task: None,
             _subscriptions: subscriptions,
         };
         this.detect_mode(cx);
+        if this.mode == TopologyMode::Cluster {
+            this.ensure_load_poll(cx);
+        }
         info!("Creating new topology view");
         this
     }
 
     fn detect_mode(&mut self, cx: &mut Context<Self>) {
-        // `nodes_description().server_type` is the `Debug` repr of
-        // `connection::manager::ServerType`, so the match arms below
-        // are the exact strings — "Standalone" / "Cluster" /
-        // "Sentinel" / "Unknown".
         let desc = self.server_state.read(cx).nodes_description();
         self.mode = match desc.server_type.as_ref() {
             "Cluster" => TopologyMode::Cluster,
@@ -129,14 +195,115 @@ impl ZedisTopology {
         };
     }
 
-    /// Render the Cluster mode body: a flat master-then-replicas list
-    /// pulled from `nodes_description().topology`, with per-row action
-    /// buttons on the right edge. Master rows get FORGET (no FAILOVER
-    /// — Redis rejects FAILOVER on a master). Replica rows get
-    /// FAILOVER + FORGET. Buttons whose `node_id` is empty (sentinel
-    /// or standalone entries that somehow reach this branch) drop
-    /// their FORGET — `CLUSTER FORGET` targets by id, not address.
-    fn render_cluster_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn ensure_load_poll(&mut self, cx: &mut Context<Self>) {
+        if self.load_poll_task.is_some() {
+            return;
+        }
+        self.load_poll_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let masters = match this.update(cx, |this, cx| {
+                    if this.mode != TopologyMode::Cluster {
+                        return None;
+                    }
+                    let desc = this.server_state.read(cx).nodes_description();
+                    let server_id = this.server_state.read(cx).server_id().to_string();
+                    if server_id.is_empty() {
+                        return None;
+                    }
+                    let masters: Vec<(String, String, u32, usize)> = desc
+                        .slot_map
+                        .masters
+                        .iter()
+                        .map(|m| (m.node_id.to_string(), m.addr.to_string(), m.slot_count, m.color_index))
+                        .collect();
+                    Some((server_id, masters))
+                }) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        cx.background_executor().timer(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+
+                let result = if masters.1.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    fetch_cluster_node_loads(&masters.0, &masters.1).await
+                };
+
+                if this
+                    .update(cx, |this, cx| {
+                        match result {
+                            Ok(loads) => {
+                                this.node_loads = loads;
+                                this.load_error = None;
+                            }
+                            Err(e) => {
+                                this.load_error = Some(e.to_string().into());
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+            }
+        }));
+    }
+
+    fn set_cluster_tab(&mut self, tab: ClusterTab, cx: &mut Context<Self>) {
+        self.cluster_tab = tab;
+        if tab == ClusterTab::Load {
+            self.ensure_load_poll(cx);
+        }
+        cx.notify();
+    }
+
+    fn render_cluster_tabs(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tabs = [
+            (ClusterTab::Nodes, "tab_nodes"),
+            (ClusterTab::Slots, "tab_slots"),
+            (ClusterTab::Load, "tab_load"),
+            (ClusterTab::Reshard, "tab_reshard"),
+        ];
+        let mut row = h_flex().gap_1().items_center();
+        for (tab, key) in tabs {
+            let active = self.cluster_tab == tab;
+            let label = i18n_topology(cx, key);
+            row = row.child(
+                Button::new(SharedString::from(format!("topo-tab-{key}")))
+                    .when(active, |b| b.primary())
+                    .when(!active, |b| b.ghost())
+                    .small()
+                    .label(label)
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.set_cluster_tab(tab, cx);
+                    })),
+            );
+        }
+        row.into_any_element()
+    }
+
+    // ── Nodes tab (existing ops) ──────────────────────────────────────
+
+    fn render_cluster_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let body = match self.cluster_tab {
+            ClusterTab::Nodes => self.render_nodes_tab(window, cx),
+            ClusterTab::Slots => self.render_slots_tab(cx),
+            ClusterTab::Load => self.render_load_tab(cx),
+            ClusterTab::Reshard => self.render_reshard_tab(window, cx),
+        };
+        v_flex()
+            .gap_3()
+            .child(self.render_cluster_tabs(cx))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn render_nodes_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let desc = self.server_state.read(cx).nodes_description();
         let muted = cx.theme().muted_foreground;
         let hover = cx.theme().table_hover;
@@ -146,10 +313,6 @@ impl ZedisTopology {
         let meet_label = i18n_topology(cx, "meet_button");
         let replicate_label = i18n_topology(cx, "replicate_button");
 
-        // Build the two write-op forms once so they show in both
-        // the empty (first-bootstrap) and non-empty (mature cluster)
-        // paths — MEET is most useful precisely when there's
-        // nothing else to interact with yet.
         let meet_form = h_flex()
             .gap_2()
             .items_center()
@@ -161,9 +324,6 @@ impl ZedisTopology {
                     .label(meet_label)
                     .on_click(cx.listener(|this, _, window, cx| {
                         let raw = this.meet_input.read(cx).value().to_string();
-                        // Silently drop malformed input — the form
-                        // stays open so the user can correct. A real
-                        // inline error message lands in a polish pass.
                         let Some((host, port_str)) = raw.rsplit_once(':') else {
                             return;
                         };
@@ -215,8 +375,6 @@ impl ZedisTopology {
 
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         for master in desc.topology.iter() {
-            // Master row — only FORGET applies (FAILOVER targets
-            // replicas). Suppress FORGET when node_id is empty.
             let m_addr = master.master.addr.clone();
             let m_node_id = master.master.node_id.clone();
             let m_role = master.master.role_marker.clone();
@@ -245,11 +403,6 @@ impl ZedisTopology {
             }
             rows.push(master_row.into_any_element());
 
-            // Replica rows — FAILOVER + FORGET. Replicas in FAIL
-            // state still get both: operators may want to evict a
-            // dead replica or take over via FAILOVER FORCE (the
-            // FORCE option lands with P2.4's checkbox; P2.3 uses
-            // graceful failover only).
             for replica in master.replicas.iter() {
                 let r_addr = replica.addr.clone();
                 let r_node_id = replica.node_id.clone();
@@ -311,13 +464,527 @@ impl ZedisTopology {
             .into_any_element()
     }
 
-    /// Render the Sentinel mode body: a list of monitored masters
-    /// (with their replicas indented below) and per-master action
-    /// buttons. Each master row gets FAILOVER (force a swap),
-    /// RESET (rediscover topology), and REMOVE (stop monitoring).
-    /// Replica rows render read-only — Sentinel ops target by
-    /// master name, not by replica address. When `master_name` is
-    /// missing (older Redis or parser edge case), buttons drop.
+    // ── Slots tab ─────────────────────────────────────────────────────
+
+    fn render_slots_tab(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let desc = self.server_state.read(cx).nodes_description();
+        let muted = cx.theme().muted_foreground;
+        let slot_map = &desc.slot_map;
+
+        if slot_map.masters.is_empty() && slot_map.owners.is_empty() {
+            return Label::new(i18n_topology(cx, "cluster_placeholder"))
+                .text_color(muted)
+                .into_any_element();
+        }
+
+        let summary = SharedString::from(format!(
+            "{}: {} / {CLUSTER_HASH_SLOTS} · {} masters · {} migrations",
+            i18n_topology(cx, "slots_title"),
+            slot_map.assigned_slots,
+            slot_map.masters.len(),
+            slot_map.migrations.len()
+        ));
+
+        v_flex()
+            .gap_3()
+            .child(Label::new(summary).text_xs().text_color(muted))
+            .child(self.render_slot_bar(slot_map, cx))
+            .child(self.render_slot_legend(slot_map, cx))
+            .child(self.render_migrations_list(slot_map, cx))
+            .into_any_element()
+    }
+
+    fn render_slot_bar(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        // Build proportional flex children. Unassigned gaps use a faint fill.
+        let mut segments: Vec<(u32, Option<usize>, String)> = Vec::new(); // width, color_idx, label
+        let mut cursor: u32 = 0;
+        for owner in &slot_map.owners {
+            let start = u32::from(owner.start);
+            if start > cursor {
+                segments.push((start - cursor, None, "unassigned".into()));
+            }
+            let width = u32::from(owner.end.saturating_sub(owner.start).saturating_add(1));
+            let label = format!(
+                "{}:{} ({}-{})",
+                owner.addr,
+                owner.node_id.chars().take(8).collect::<String>(),
+                owner.start,
+                owner.end
+            );
+            segments.push((width, Some(owner.color_index), label));
+            cursor = u32::from(owner.end).saturating_add(1);
+        }
+        if cursor < CLUSTER_HASH_SLOTS {
+            segments.push((CLUSTER_HASH_SLOTS - cursor, None, "unassigned".into()));
+        }
+
+        let mut bar = h_flex()
+            .w_full()
+            .h(px(28.))
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .overflow_hidden();
+
+        for (i, (width, color_idx, _label)) in segments.into_iter().enumerate() {
+            if width == 0 {
+                continue;
+            }
+            let bg = color_idx.map(master_color).unwrap_or_else(|| {
+                let mut c = muted;
+                c.a = 0.15;
+                c
+            });
+            bar = bar.child(
+                div()
+                    .id(SharedString::from(format!("slot-seg-{i}")))
+                    .h_full()
+                    .flex_grow(width as f32)
+                    .bg(bg),
+            );
+        }
+
+        bar.into_any_element()
+    }
+
+    fn render_slot_legend(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let mut chips: Vec<gpui::AnyElement> = Vec::new();
+        for m in &slot_map.masters {
+            let color = master_color(m.color_index);
+            let short_id: String = m.node_id.chars().take(8).collect();
+            chips.push(
+                h_flex()
+                    .id(SharedString::from(format!("legend-{}", m.node_id)))
+                    .gap_1()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(color))
+                    .child(Label::new(m.addr.clone()).text_xs())
+                    .child(Label::new(SharedString::from(short_id)).text_xs().text_color(muted))
+                    .child(
+                        Label::new(SharedString::from(format!("{} slots", m.slot_count)))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .into_any_element(),
+            );
+        }
+        h_flex().gap_2().flex_wrap().children(chips).into_any_element()
+    }
+
+    fn render_migrations_list(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let title = i18n_topology(cx, "slots_migrations");
+        if slot_map.migrations.is_empty() {
+            return v_flex()
+                .gap_1()
+                .child(Label::new(title).font_semibold())
+                .child(
+                    Label::new(i18n_topology(cx, "slots_no_migrations"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .into_any_element();
+        }
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        for m in &slot_map.migrations {
+            let src = if m.source_addr.is_empty() {
+                m.source_id.to_string()
+            } else {
+                m.source_addr.to_string()
+            };
+            let tgt = if m.target_addr.is_empty() {
+                m.target_id.to_string()
+            } else {
+                m.target_addr.to_string()
+            };
+            rows.push(
+                Label::new(SharedString::from(format!("slot {} · {} → {}", m.slot, src, tgt)))
+                    .text_xs()
+                    .into_any_element(),
+            );
+        }
+        v_flex()
+            .gap_1()
+            .child(Label::new(title).font_semibold())
+            .children(rows)
+            .into_any_element()
+    }
+
+    // ── Load tab ──────────────────────────────────────────────────────
+
+    fn render_load_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let metric_row = h_flex()
+            .gap_1()
+            .child(
+                Button::new("load-mem")
+                    .when(self.load_metric == LoadMetric::Memory, |b| b.primary())
+                    .when(self.load_metric != LoadMetric::Memory, |b| b.ghost())
+                    .small()
+                    .label(i18n_topology(cx, "load_metric_mem"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.load_metric = LoadMetric::Memory;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("load-ops")
+                    .when(self.load_metric == LoadMetric::Ops, |b| b.primary())
+                    .when(self.load_metric != LoadMetric::Ops, |b| b.ghost())
+                    .small()
+                    .label(i18n_topology(cx, "load_metric_ops"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.load_metric = LoadMetric::Ops;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("load-clients")
+                    .when(self.load_metric == LoadMetric::Clients, |b| b.primary())
+                    .when(self.load_metric != LoadMetric::Clients, |b| b.ghost())
+                    .small()
+                    .label(i18n_topology(cx, "load_metric_clients"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.load_metric = LoadMetric::Clients;
+                        cx.notify();
+                    })),
+            );
+
+        if let Some(err) = &self.load_error {
+            return v_flex()
+                .gap_2()
+                .child(Label::new(i18n_topology(cx, "load_title")).font_semibold())
+                .child(metric_row)
+                .child(Label::new(err.clone()).text_color(cx.theme().danger))
+                .into_any_element();
+        }
+
+        if self.node_loads.is_empty() {
+            return v_flex()
+                .gap_2()
+                .child(Label::new(i18n_topology(cx, "load_title")).font_semibold())
+                .child(metric_row)
+                .child(Label::new(i18n_topology(cx, "load_refreshing")).text_color(muted))
+                .into_any_element();
+        }
+
+        let max_val = self
+            .node_loads
+            .iter()
+            .map(|n| match self.load_metric {
+                LoadMetric::Memory => n.used_memory,
+                LoadMetric::Ops => n.ops_per_sec,
+                LoadMetric::Clients => n.connected_clients,
+            })
+            .max()
+            .unwrap_or(1)
+            .max(1);
+
+        let mut cards: Vec<gpui::AnyElement> = Vec::new();
+        for n in &self.node_loads {
+            let value = match self.load_metric {
+                LoadMetric::Memory => n.used_memory,
+                LoadMetric::Ops => n.ops_per_sec,
+                LoadMetric::Clients => n.connected_clients,
+            };
+            let ratio = value as f32 / max_val as f32;
+            let heat = heat_color(ratio);
+            let value_label = match self.load_metric {
+                LoadMetric::Memory => humansize::format_size(n.used_memory, humansize::DECIMAL),
+                LoadMetric::Ops => format!("{} ops/s", n.ops_per_sec),
+                LoadMetric::Clients => format!("{} clients", n.connected_clients),
+            };
+            let short_id: String = n.node_id.chars().take(8).collect();
+            let stripe = master_color(n.color_index);
+            cards.push(
+                v_flex()
+                    .id(SharedString::from(format!("load-card-{}", n.node_id)))
+                    .w(px(200.))
+                    .gap_1()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg({
+                        let mut c = heat;
+                        c.a = 0.25;
+                        c
+                    })
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(stripe))
+                            .child(Label::new(n.addr.clone()).font_semibold()),
+                    )
+                    .child(Label::new(SharedString::from(short_id)).text_xs().text_color(muted))
+                    .child(Label::new(SharedString::from(value_label)).text_sm())
+                    .child(
+                        Label::new(SharedString::from(format!("{} slots", n.slot_count)))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        v_flex()
+            .gap_3()
+            .child(Label::new(i18n_topology(cx, "load_title")).font_semibold())
+            .child(metric_row)
+            .child(h_flex().gap_3().flex_wrap().children(cards))
+            .into_any_element()
+    }
+
+    // ── Reshard tab ───────────────────────────────────────────────────
+
+    fn render_reshard_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let desc = self.server_state.read(cx).nodes_description();
+
+        // Quick-pick chips for target (and optional source).
+        let mut master_chips: Vec<gpui::AnyElement> = Vec::new();
+        for m in &desc.slot_map.masters {
+            let id = m.node_id.clone();
+            let id_as_source = id.clone();
+            let id_as_target = id.clone();
+            let color = master_color(m.color_index);
+            master_chips.push(
+                h_flex()
+                    .id(SharedString::from(format!("reshard-chip-{}", m.node_id)))
+                    .gap_1()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
+                    .child(Label::new(m.addr.clone()).text_xs())
+                    .child(
+                        Button::new(SharedString::from(format!("reshard-src-{}", m.node_id)))
+                            .ghost()
+                            .small()
+                            .label("src")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reshard_source_input.update(cx, |input, cx| {
+                                    input.set_value(id_as_source.clone(), window, cx);
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("reshard-tgt-{}", m.node_id)))
+                            .ghost()
+                            .small()
+                            .label("dst")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reshard_target_input.update(cx, |input, cx| {
+                                    input.set_value(id_as_target.clone(), window, cx);
+                                });
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        let plan_btn = Button::new("reshard-plan")
+            .primary()
+            .small()
+            .label(i18n_topology(cx, "reshard_plan"))
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.run_plan(cx);
+            }));
+
+        let execute_btn = Button::new("reshard-exec")
+            .danger()
+            .small()
+            .label(i18n_topology(cx, "reshard_execute"))
+            .disabled(self.planned_slots.is_empty())
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.open_reshard_dialog(window, cx);
+            }));
+
+        let preview: gpui::AnyElement = if let Some(err) = &self.plan_error {
+            Label::new(err.clone()).text_color(cx.theme().danger).into_any_element()
+        } else if self.planned_slots.is_empty() {
+            Label::new(i18n_topology(cx, "reshard_pick_target"))
+                .text_xs()
+                .text_color(muted)
+                .into_any_element()
+        } else {
+            let preview_slots = if self.planned_slots.len() > 24 {
+                let head: Vec<String> = self.planned_slots.iter().take(20).map(|s| s.to_string()).collect();
+                format!("{} … (+{} more)", head.join(", "), self.planned_slots.len() - 20)
+            } else {
+                self.planned_slots
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            v_flex()
+                .gap_1()
+                .child(
+                    Label::new(SharedString::from(format!(
+                        "Will move {} slots",
+                        self.planned_slots.len()
+                    )))
+                    .font_semibold(),
+                )
+                .child(
+                    Label::new(SharedString::from(preview_slots))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .into_any_element()
+        };
+
+        v_flex()
+            .gap_3()
+            .child(Label::new(i18n_topology(cx, "reshard_title")).font_semibold())
+            .child(
+                Label::new(i18n_topology(cx, "reshard_hint"))
+                    .text_xs()
+                    .text_color(muted),
+            )
+            .child(h_flex().gap_2().flex_wrap().children(master_chips))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.reshard_source_input).small().flex_1())
+                    .child(Input::new(&self.reshard_target_input).small().flex_1())
+                    .child(Input::new(&self.reshard_count_input).small().w(px(100.))),
+            )
+            .child(h_flex().gap_2().child(plan_btn).child(execute_btn))
+            .child(preview)
+            .into_any_element()
+    }
+
+    fn run_plan(&mut self, cx: &mut Context<Self>) {
+        let desc = self.server_state.read(cx).nodes_description();
+        let source_raw = self.reshard_source_input.read(cx).value().to_string();
+        let target_raw = self.reshard_target_input.read(cx).value().to_string();
+        let count_raw = self.reshard_count_input.read(cx).value().to_string();
+
+        let source_id = {
+            let t = source_raw.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        };
+        let target_id = target_raw.trim().to_string();
+        let count: u32 = match count_raw.trim().parse() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                self.plan_error = Some("Slot count must be a positive integer".into());
+                self.planned_slots.clear();
+                cx.notify();
+                return;
+            }
+        };
+
+        // Expand slot_map masters into (id, ranges) for the planner.
+        // Ranges come from owners filtered by node_id.
+        let mut by_id: std::collections::HashMap<String, Vec<(u16, u16)>> = std::collections::HashMap::new();
+        for o in &desc.slot_map.owners {
+            by_id.entry(o.node_id.to_string()).or_default().push((o.start, o.end));
+        }
+        let masters: Vec<(String, Vec<(u16, u16)>)> = by_id.into_iter().collect();
+
+        match plan_cluster_reshard(&masters, source_id.as_deref(), &target_id, count) {
+            Ok(slots) => {
+                self.planned_slots = slots;
+                self.plan_error = None;
+            }
+            Err(e) => {
+                self.planned_slots.clear();
+                self.plan_error = Some(e.into());
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_reshard_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.planned_slots.is_empty() {
+            return;
+        }
+        let desc = self.server_state.read(cx).nodes_description();
+        let target_id = self.reshard_target_input.read(cx).value().trim().to_string();
+        let target_addr = desc
+            .slot_map
+            .masters
+            .iter()
+            .find(|m| m.node_id.as_ref() == target_id)
+            .map(|m| m.addr.to_string())
+            .unwrap_or_default();
+        if target_addr.is_empty() {
+            self.plan_error = Some("Target master not found in current topology".into());
+            cx.notify();
+            return;
+        }
+
+        // Build owner list for source mapping.
+        let mut masters_with_addr: Vec<ClusterMasterRanges> = Vec::new();
+        for m in &desc.slot_map.masters {
+            let ranges: Vec<(u16, u16)> = desc
+                .slot_map
+                .owners
+                .iter()
+                .filter(|o| o.node_id == m.node_id)
+                .map(|o| (o.start, o.end))
+                .collect();
+            masters_with_addr.push(ClusterMasterRanges {
+                node_id: m.node_id.to_string(),
+                addr: m.addr.to_string(),
+                ranges,
+            });
+        }
+        let source_by_slot = match source_owners_for_slots(&masters_with_addr, &self.planned_slots) {
+            Ok(v) => v,
+            Err(e) => {
+                self.plan_error = Some(e.into());
+                cx.notify();
+                return;
+            }
+        };
+
+        let title = i18n_topology(cx, "reshard_confirm_title");
+        let body = format!(
+            "Move {} hash slots onto master {target_id} ({target_addr}). \
+             Each slot is SETSLOT-migrated and keys are MIGRATEd. \
+             This changes cluster slot ownership and may briefly block writes on those slots.",
+            self.planned_slots.len()
+        );
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let slots = self.planned_slots.clone();
+        let target_addr_s: SharedString = target_addr.into();
+        let target_id_s: SharedString = target_id.into();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                let slots = slots.clone();
+                let source_by_slot = source_by_slot.clone();
+                let t_addr = target_addr_s.clone();
+                let t_id = target_id_s.clone();
+                server_state.update(cx, |state, cx| {
+                    state.cluster_reshard(t_addr, t_id, slots, source_by_slot, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    // ── Sentinel ──────────────────────────────────────────────────────
+
     fn render_sentinel_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let desc = self.server_state.read(cx).nodes_description();
         let muted = cx.theme().muted_foreground;
@@ -410,10 +1077,8 @@ impl ZedisTopology {
             .into_any_element()
     }
 
-    /// `CLUSTER FAILOVER [FORCE]` confirm dialog. The `force` flag
-    /// branches the body text so users see the right risk callout
-    /// before confirming. Both paths share the same i18n title —
-    /// the body is English (admin op, low-frequency).
+    // ── Confirm dialogs (unchanged behaviour) ─────────────────────────
+
     fn open_failover_dialog(
         &mut self,
         target_addr: SharedString,
@@ -447,11 +1112,6 @@ impl ZedisTopology {
             .open(window, cx);
     }
 
-    /// `CLUSTER FORGET` confirm dialog. Body stresses the 60s gossip
-    /// re-add window since that's the common foot-gun — fan-out by
-    /// `cluster_forget` covers every master we currently know about,
-    /// but a master that's briefly unreachable will re-announce the
-    /// dropped node on the next gossip tick.
     fn open_forget_dialog(
         &mut self,
         node_id: SharedString,
@@ -477,11 +1137,6 @@ impl ZedisTopology {
             .open(window, cx);
     }
 
-    /// `CLUSTER MEET` confirm dialog. Body stays English (admin op,
-    /// title is the localized part). The op fans out to all masters
-    /// via the pooled client, so gossip distributes membership within
-    /// seconds — the table doesn't reflect the new node immediately,
-    /// only after the next `INFO`/`CLUSTER NODES` round trip.
     fn open_meet_dialog(&mut self, host: SharedString, port: u16, window: &mut Window, cx: &mut Context<Self>) {
         let title = i18n_topology(cx, "meet_confirm_title");
         let body = format!(
@@ -502,11 +1157,6 @@ impl ZedisTopology {
             .open(window, cx);
     }
 
-    /// `CLUSTER REPLICATE` confirm dialog. The body spells out the
-    /// "must be empty / known member" precondition because the most
-    /// common failure mode is REPLICATE on a node that still has
-    /// data — Redis refuses with `ERR To set a master the node must
-    /// be empty and without assigned hash slots`.
     fn open_replicate_dialog(
         &mut self,
         target_addr: SharedString,
@@ -533,9 +1183,6 @@ impl ZedisTopology {
             .open(window, cx);
     }
 
-    /// `SENTINEL FAILOVER` confirm. Body stresses that this is a
-    /// manual override of the sentinel quorum — operators should
-    /// already know they want to skip automatic detection.
     fn open_sentinel_failover_dialog(
         &mut self,
         master_name: SharedString,
@@ -561,10 +1208,6 @@ impl ZedisTopology {
             .open(window, cx);
     }
 
-    /// `SENTINEL RESET` confirm. Pattern is pre-filled with the
-    /// master name; for "reset everything" the operator can use
-    /// the master_name "*" (sentinel glob) but this dialog runs
-    /// per-master to keep the surface obvious.
     fn open_sentinel_reset_dialog(&mut self, master_name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let title = i18n_topology(cx, "sentinel_reset_confirm_title");
         let body = format!(
@@ -585,11 +1228,6 @@ impl ZedisTopology {
             .open(window, cx);
     }
 
-    /// `SENTINEL REMOVE` confirm. The biggest foot-gun in this
-    /// panel — once removed, the sentinel quorum stops watching
-    /// the master entirely. Re-adding requires a full
-    /// `SENTINEL MONITOR` invocation with config + quorum, not
-    /// just clicking a button in this UI.
     fn open_sentinel_remove_dialog(&mut self, master_name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let title = i18n_topology(cx, "sentinel_remove_confirm_title");
         let body = format!(

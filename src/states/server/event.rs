@@ -127,6 +127,9 @@ pub enum ServerTask {
     /// `CLUSTER REPLICATE node_id` — make a specific node become a
     /// replica of the given master. Targeted at one node's `host:port`.
     ClusterReplicate,
+    /// `CLUSTER SETSLOT` + `MIGRATE` reshard batch — moves one or more
+    /// hash slots from their current owner to a target master.
+    ClusterReshard,
 
     /// `SENTINEL FAILOVER master_name` — force a manual failover on
     /// the named master. Fanned out to all sentinel instances via
@@ -183,6 +186,7 @@ impl ServerTask {
             ServerTask::ClusterMeet => "cluster_meet",
             ServerTask::ClusterForget => "cluster_forget",
             ServerTask::ClusterReplicate => "cluster_replicate",
+            ServerTask::ClusterReshard => "cluster_reshard",
             ServerTask::SentinelFailover => "sentinel_failover",
             ServerTask::SentinelReset => "sentinel_reset",
             ServerTask::SentinelRemove => "sentinel_remove",

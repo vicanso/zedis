@@ -282,12 +282,32 @@ struct RedisNode {
     master_cluster_id: Option<String>,
     /// Slot ranges owned by this master node (cluster mode only).
     slots: Vec<(u16, u16)>,
+    /// In-flight slot migrations reported on this node (`CLUSTER NODES`).
+    migrations: Vec<SlotMigration>,
 }
 
 impl RedisNode {
     pub fn host_port(&self) -> String {
         format!("{}:{}", self.server.host, self.server.port)
     }
+}
+
+/// Direction of an in-flight slot migration reported by `CLUSTER NODES`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotMigrationKind {
+    /// This node owns the slot and is migrating it *to* `peer_id`.
+    Migrating,
+    /// This node is importing the slot *from* `peer_id`.
+    Importing,
+}
+
+/// One migrating/importing marker from a `CLUSTER NODES` line
+/// (e.g. `[12345->-target_id]` / `[12345-<-source_id]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotMigration {
+    pub slot: u16,
+    pub kind: SlotMigrationKind,
+    pub peer_id: String,
 }
 
 // Information parsed from `CLUSTER NODES` command
@@ -301,7 +321,56 @@ pub struct ClusterNodeInfo {
     pub master_id: Option<String>,
     /// Slot ranges owned by this node (only set on masters).
     pub slots: Vec<(u16, u16)>,
+    /// In-flight migration markers on this node.
+    pub migrations: Vec<SlotMigration>,
 }
+
+/// One contiguous owned slot range with its master, used by the Topology
+/// slot map (0–16383 bar).
+#[derive(Debug, Clone)]
+pub struct ClusterSlotRange {
+    pub start: u16,
+    pub end: u16,
+    pub node_id: SharedString,
+    pub addr: SharedString,
+    /// Stable palette index for the owning master (UI colour).
+    pub color_index: usize,
+}
+
+/// A slot currently in MIGRATING/IMPORTING state, paired across source
+/// and target when both sides of the gossip are visible.
+#[derive(Debug, Clone)]
+pub struct ClusterMigrationEntry {
+    pub slot: u16,
+    pub source_id: SharedString,
+    pub source_addr: SharedString,
+    pub target_id: SharedString,
+    pub target_addr: SharedString,
+}
+
+/// Per-master summary for the slot legend / load heatmap join key.
+#[derive(Debug, Clone)]
+pub struct ClusterMasterSlotSummary {
+    pub node_id: SharedString,
+    pub addr: SharedString,
+    pub slot_count: u32,
+    pub color_index: usize,
+}
+
+/// Structured cluster slot view built from `CLUSTER NODES` — ownership
+/// ranges, active migrations, and per-master slot counts. Empty outside
+/// cluster mode.
+#[derive(Debug, Clone, Default)]
+pub struct ClusterSlotMap {
+    pub owners: Vec<ClusterSlotRange>,
+    pub migrations: Vec<ClusterMigrationEntry>,
+    pub masters: Vec<ClusterMasterSlotSummary>,
+    /// How many of the 16384 hash slots are assigned to some master.
+    pub assigned_slots: u32,
+}
+
+/// Total hash slots in a Redis Cluster.
+pub const CLUSTER_HASH_SLOTS: u32 = 16384;
 
 /// Parses a Redis address string like "ip:port@cport" or just "ip:port".
 fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
@@ -332,6 +401,36 @@ fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
     Ok((ip.to_string(), port, cport))
 }
 
+/// Parses one migration marker token from `CLUSTER NODES`
+/// (`[slot->-peer]` or `[slot-<-peer]`). Returns `None` for malformed
+/// tokens so a bad marker never aborts the whole parse.
+fn parse_slot_migration_token(raw: &str) -> Option<SlotMigration> {
+    let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
+    if let Some((slot_s, peer)) = inner.split_once("->-") {
+        let slot = slot_s.parse().ok()?;
+        if peer.is_empty() {
+            return None;
+        }
+        return Some(SlotMigration {
+            slot,
+            kind: SlotMigrationKind::Migrating,
+            peer_id: peer.to_string(),
+        });
+    }
+    if let Some((slot_s, peer)) = inner.split_once("-<-") {
+        let slot = slot_s.parse().ok()?;
+        if peer.is_empty() {
+            return None;
+        }
+        return Some(SlotMigration {
+            slot,
+            kind: SlotMigrationKind::Importing,
+            peer_id: peer.to_string(),
+        });
+    }
+    None
+}
+
 /// Parses the output of the `CLUSTER NODES` command.
 ///
 /// Columns (whitespace-separated):
@@ -340,8 +439,8 @@ fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
 ///  2: flags (comma-list, e.g. `master,myself`)
 ///  3: master id (`-` for masters)
 ///  4..7: ping-sent / pong-recv / config-epoch / link-state
-///  8..: slot ranges, each either `N` (single) or `N-M`. Migration markers
-///        like `[N->-id]` / `[N-<-id]` are skipped.
+///  8..: slot ranges (`N` / `N-M`) and migration markers
+///        (`[N->-id]` migrating, `[N-<-id]` importing).
 fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     let mut nodes = Vec::new();
 
@@ -376,9 +475,12 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
         };
 
         let mut slots = Vec::new();
+        let mut migrations = Vec::new();
         for raw in parts.iter().skip(8) {
-            // Skip migration markers like `[5461->-target_id]` / `[5461-<-source_id]`.
             if raw.starts_with('[') {
+                if let Some(m) = parse_slot_migration_token(raw) {
+                    migrations.push(m);
+                }
                 continue;
             }
             if let Some((lo, hi)) = raw.split_once('-')
@@ -399,10 +501,78 @@ fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
             role,
             master_id,
             slots,
+            migrations,
         });
     }
 
     Ok(nodes)
+}
+
+/// Pick up to `count` slots to move toward `target_id`.
+///
+/// When `source_id` is `Some`, take only from that master; otherwise
+/// drain from the masters that currently hold the most slots (excluding
+/// the target). Slots are taken from the high end of each range so the
+/// remaining ownership stays more contiguous — the same heuristic
+/// `redis-cli --cluster reshard` uses.
+pub fn plan_reshard_slots(
+    masters: &[(String, Vec<(u16, u16)>)],
+    source_id: Option<&str>,
+    target_id: &str,
+    count: u32,
+) -> Result<Vec<u16>, String> {
+    if count == 0 {
+        return Err("slot count must be > 0".into());
+    }
+    if target_id.is_empty() {
+        return Err("target master is required".into());
+    }
+
+    // Expand ranges → individual slots, grouped by master.
+    let mut by_master: Vec<(String, Vec<u16>)> = masters
+        .iter()
+        .filter(|(id, _)| id.as_str() != target_id)
+        .filter(|(id, _)| source_id.is_none_or(|s| s == id.as_str()))
+        .map(|(id, ranges)| {
+            let mut slots = Vec::new();
+            for &(lo, hi) in ranges {
+                for s in lo..=hi {
+                    slots.push(s);
+                }
+            }
+            // Prefer high end first (pop from the back after sort).
+            slots.sort_unstable();
+            (id.clone(), slots)
+        })
+        .filter(|(_, slots)| !slots.is_empty())
+        .collect();
+
+    if by_master.is_empty() {
+        return Err("no source slots available".into());
+    }
+
+    // Always drain the currently largest source first so an automatic
+    // rebalance tends toward evenness.
+    by_master.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
+
+    let mut planned = Vec::with_capacity(count as usize);
+    let mut remaining = count;
+    while remaining > 0 {
+        // Re-sort each round so we keep peeling from the current largest.
+        by_master.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
+        let Some((_, slots)) = by_master.iter_mut().find(|(_, s)| !s.is_empty()) else {
+            break;
+        };
+        if let Some(slot) = slots.pop() {
+            planned.push(slot);
+            remaining -= 1;
+        }
+    }
+
+    if planned.is_empty() {
+        return Err("no source slots available".into());
+    }
+    Ok(planned)
 }
 
 /// Establishes an asynchronous connection based on the client type.
@@ -564,6 +734,8 @@ pub struct RedisClientDescription {
     /// standalone connections without grouped data; the consumer should fall
     /// back to `master_nodes` / `slave_nodes` flat strings then.
     pub topology: Vec<TopologyMaster>,
+    /// Cluster slot ownership + migration markers. Empty outside cluster mode.
+    pub slot_map: ClusterSlotMap,
 }
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -599,6 +771,7 @@ impl RedisClient {
             .collect::<Vec<_>>()
             .join(", ");
         let topology = self.build_topology();
+        let slot_map = self.build_slot_map();
         RedisClientDescription {
             is_valkey: self.is_valkey,
             server_type: format!("{:?}", self.server_type).into(),
@@ -606,6 +779,140 @@ impl RedisClient {
             slave_nodes: slave_nodes.join(",").into(),
             modules: modules.into(),
             topology,
+            slot_map,
+        }
+    }
+
+    /// Build the structured slot map consumed by Topology's slot bar and
+    /// reshard planner. Only populated in cluster mode.
+    fn build_slot_map(&self) -> ClusterSlotMap {
+        if self.server_type != ServerType::Cluster {
+            return ClusterSlotMap::default();
+        }
+
+        // Master order is the stable colour index source of truth.
+        let masters: Vec<ClusterMasterSlotSummary> = self
+            .master_nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, m)| {
+                let id = m.cluster_id.clone()?;
+                let slot_count = m
+                    .slots
+                    .iter()
+                    .map(|(lo, hi)| u32::from(hi.saturating_sub(*lo).saturating_add(1)))
+                    .sum();
+                Some(ClusterMasterSlotSummary {
+                    node_id: id.into(),
+                    addr: m.host_port().into(),
+                    slot_count,
+                    color_index: idx,
+                })
+            })
+            .collect();
+
+        let id_to_addr: HashMap<String, String> = self
+            .nodes
+            .iter()
+            .filter_map(|n| n.cluster_id.clone().map(|id| (id, n.host_port())))
+            .collect();
+        let id_to_color: HashMap<String, usize> =
+            masters.iter().map(|m| (m.node_id.to_string(), m.color_index)).collect();
+
+        // Expand every owned range into ClusterSlotRange segments, then
+        // merge contiguous same-owner ranges so the bar isn't 16k pieces.
+        let mut flat: Vec<(u16, u16, String, String, usize)> = Vec::new();
+        for m in self.master_nodes.iter() {
+            let Some(id) = m.cluster_id.as_ref() else {
+                continue;
+            };
+            let color = id_to_color.get(id).copied().unwrap_or(0);
+            let addr = m.host_port();
+            for &(lo, hi) in &m.slots {
+                flat.push((lo, hi, id.clone(), addr.clone(), color));
+            }
+        }
+        flat.sort_by_key(|(lo, _, _, _, _)| *lo);
+
+        let mut owners: Vec<ClusterSlotRange> = Vec::new();
+        for (lo, hi, id, addr, color) in flat {
+            if let Some(last) = owners.last_mut()
+                && last.node_id.as_ref() == id
+                && last.end.saturating_add(1) == lo
+            {
+                last.end = hi;
+                continue;
+            }
+            owners.push(ClusterSlotRange {
+                start: lo,
+                end: hi,
+                node_id: id.into(),
+                addr: addr.into(),
+                color_index: color,
+            });
+        }
+
+        let assigned_slots = owners
+            .iter()
+            .map(|r| u32::from(r.end.saturating_sub(r.start).saturating_add(1)))
+            .sum();
+
+        // Pair migrating (source) with importing (target) by slot.
+        // Either side alone is enough to surface the in-flight slot.
+        #[derive(Default)]
+        struct PairSides {
+            source: Option<(String, String)>,
+            target: Option<(String, String)>,
+        }
+        let mut by_slot: HashMap<u16, PairSides> = HashMap::new();
+        for node in self.nodes.iter() {
+            let Some(self_id) = node.cluster_id.as_ref() else {
+                continue;
+            };
+            let self_addr = node.host_port();
+            for m in &node.migrations {
+                let entry = by_slot.entry(m.slot).or_default();
+                match m.kind {
+                    SlotMigrationKind::Migrating => {
+                        entry.source = Some((self_id.clone(), self_addr.clone()));
+                        // peer is target; fill target side if still empty
+                        if entry.target.is_none() {
+                            let t_addr = id_to_addr.get(&m.peer_id).cloned().unwrap_or_default();
+                            entry.target = Some((m.peer_id.clone(), t_addr));
+                        }
+                    }
+                    SlotMigrationKind::Importing => {
+                        entry.target = Some((self_id.clone(), self_addr.clone()));
+                        if entry.source.is_none() {
+                            let s_addr = id_to_addr.get(&m.peer_id).cloned().unwrap_or_default();
+                            entry.source = Some((m.peer_id.clone(), s_addr));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut migrations: Vec<ClusterMigrationEntry> = by_slot
+            .into_iter()
+            .map(|(slot, sides)| {
+                let (source_id, source_addr) = sides.source.unwrap_or_default();
+                let (target_id, target_addr) = sides.target.unwrap_or_default();
+                ClusterMigrationEntry {
+                    slot,
+                    source_id: source_id.into(),
+                    source_addr: source_addr.into(),
+                    target_id: target_id.into(),
+                    target_addr: target_addr.into(),
+                }
+            })
+            .collect();
+        migrations.sort_by_key(|m| m.slot);
+
+        ClusterSlotMap {
+            owners,
+            migrations,
+            masters,
+            assigned_slots,
         }
     }
 
@@ -1747,6 +2054,7 @@ impl ConnectionManager {
                             cluster_id: Some(item.id.clone()),
                             master_cluster_id: item.master_id.clone(),
                             slots: item.slots.clone(),
+                            migrations: item.migrations.clone(),
                             ..Default::default()
                         }
                     })
@@ -1981,7 +2289,7 @@ mod tests {
     fn parse_cluster_nodes_extracts_id_master_and_slots() {
         let raw = "07c37dfeb235213a872192d90877d0cd55635b91 127.0.0.1:30004@31004 slave e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 0 0 4 connected\n\
                    67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 0 2 connected 5461-10922\n\
-                   e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected 0-5460 [12345->-67ed]";
+                   e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected 0-5460 [12345->-67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1]";
         let parsed = parse_cluster_nodes(raw).expect("parse must succeed");
         assert_eq!(parsed.len(), 3);
 
@@ -1998,10 +2306,45 @@ mod tests {
         assert!(m1.master_id.is_none());
         assert_eq!(m1.slots, vec![(5461, 10922)]);
 
-        // Migration markers in `[12345->-...]` form must be ignored — only
-        // 0-5460 should be picked up here.
+        // Owned ranges stay on the node; migration markers are captured
+        // separately rather than discarded.
         let m2 = &parsed[2];
         assert_eq!(m2.slots, vec![(0, 5460)]);
         assert_eq!(m2.id, "e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca");
+        assert_eq!(m2.migrations.len(), 1);
+        assert_eq!(m2.migrations[0].slot, 12345);
+        assert_eq!(m2.migrations[0].kind, SlotMigrationKind::Migrating);
+        assert_eq!(m2.migrations[0].peer_id, "67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1");
+    }
+
+    #[test]
+    fn parse_cluster_nodes_importing_marker() {
+        let raw = "aabb 127.0.0.1:7001@17001 master - 0 0 1 connected 0-100 [50-<-ccdd]\n\
+                   ccdd 127.0.0.1:7002@17002 master - 0 0 2 connected 101-200 [50->-aabb]";
+        let parsed = parse_cluster_nodes(raw).expect("parse");
+        assert_eq!(parsed[0].migrations[0].kind, SlotMigrationKind::Importing);
+        assert_eq!(parsed[0].migrations[0].peer_id, "ccdd");
+        assert_eq!(parsed[1].migrations[0].kind, SlotMigrationKind::Migrating);
+        assert_eq!(parsed[1].migrations[0].peer_id, "aabb");
+    }
+
+    #[test]
+    fn plan_reshard_takes_from_largest_source() {
+        let masters = vec![
+            ("a".into(), vec![(0, 9)]),   // 10 slots
+            ("b".into(), vec![(10, 14)]), // 5 slots
+            ("c".into(), vec![(15, 19)]), // 5 slots target
+        ];
+        let planned = plan_reshard_slots(&masters, None, "c", 3).expect("plan");
+        assert_eq!(planned.len(), 3);
+        // High end of the largest source first.
+        assert_eq!(planned, vec![9, 8, 7]);
+    }
+
+    #[test]
+    fn plan_reshard_respects_source_filter() {
+        let masters = vec![("a".into(), vec![(0, 9)]), ("b".into(), vec![(10, 19)])];
+        let planned = plan_reshard_slots(&masters, Some("b"), "a", 2).expect("plan");
+        assert_eq!(planned, vec![19, 18]);
     }
 }

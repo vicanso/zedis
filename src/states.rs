@@ -70,6 +70,9 @@ pub use migration::{LogStatus, MigrationEvent, MigrationJob, MigrationPhase, Mig
 pub use server::ConnectionHealth;
 pub use server::ErrorMessage;
 pub use server::ZedisServerState;
+pub use server::cluster::{
+    ClusterMasterRanges, ClusterNodeLoad, fetch_cluster_node_loads, plan_cluster_reshard, source_owners_for_slots,
+};
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;
 // Used by the value-diff view to render the same RFC 7396 merge patch

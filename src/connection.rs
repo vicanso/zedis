@@ -58,8 +58,8 @@ pub use latency::{
 };
 pub use lua_script::{ScriptRunOutcome, run_script};
 pub use manager::{
-    AccessMode, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation, RedisClientDescription,
-    SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager,
+    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,
+    RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager, plan_reshard_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
