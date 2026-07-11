@@ -43,6 +43,15 @@ jobs:
       - name: Delete old nightly release and tag
         if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
         run: gh release delete nightly --cleanup-tag -y || true
+      - name: Pre-create draft release for tag
+        # upload_asset.sh creates a draft when it finds none for the tag —
+        # with six platform jobs uploading in parallel, two jobs racing that
+        # check both created one (GitHub allows multiple drafts on the same
+        # tag_name). Creating the draft here, before any platform job runs,
+        # removes the race; `|| true` covers workflow re-runs where the
+        # release already exists.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes "" || true
   macos:
     needs: prepare_vars
     if: needs.prepare_vars.outputs.should_build == 'true'

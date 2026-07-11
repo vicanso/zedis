@@ -839,14 +839,26 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
             // Render the changelog as Markdown (it comes straight from the
             // GitHub release body) inside a capped, scrollable area so a
             // long release can't push the dialog buttons off screen.
+            //
+            // Not `max_h`: `Scrollable` copies the caller's size styles onto
+            // its wrapper but the inner content keeps them too, and while its
+            // forced `h_auto` overrides a fixed `h`, nothing resets `max_h` —
+            // so the content itself gets clamped and there is never anything
+            // to scroll. A definite `h` viewport scrolls correctly; short
+            // bodies render inline so the dialog stays compact.
             if !notes.trim().is_empty() {
-                body = body.child(
+                let text = TextView::markdown("update-release-notes", notes.clone()).style(release_notes_style());
+                let long_notes = notes.lines().count() > 12 || notes.chars().count() > 800;
+                body = body.child(if long_notes {
                     div()
                         .w_full()
-                        .max_h(px(280.))
-                        .child(TextView::markdown("update-release-notes", notes.clone()).style(release_notes_style()))
-                        .overflow_y_scrollbar(),
-                );
+                        .h(px(280.))
+                        .child(text)
+                        .overflow_y_scrollbar()
+                        .into_any_element()
+                } else {
+                    div().w_full().child(text).into_any_element()
+                });
             }
             body
         })
