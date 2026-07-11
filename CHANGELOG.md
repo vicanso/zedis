@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.5.3](https://github.com/vicanso/zedis/compare/v0.5.2..v0.5.3) - 2026-07-11
+
+### ⛰️  Features
+
+- *(capability)* Wire PublishMessage / FunctionWrite / EvalScript gates - ([9a5cbdc](https://github.com/vicanso/zedis/commit/9a5cbdcb7bc8eea111982a1381c190e04d5ddd3e))
+- *(clients)* Batch kill filtered client connections - ([57873c5](https://github.com/vicanso/zedis/commit/57873c56604edb07660f1eae2eaa8230452aeda9))
+- *(config)* Bilingual (en/zh) full help text in the config popover - ([e6537be](https://github.com/vicanso/zedis/commit/e6537be8d9bf3cf88d3edda92bfb17889a61a434))
+- *(connection)* Add read-only capability matrix with table-driven tests - ([3658a2a](https://github.com/vicanso/zedis/commit/3658a2adf52060181de010f0f43bc3c0a3f9ef55))
+- *(docs)* Add GitHub Pages landing site for zedis.net - ([ef7bc72](https://github.com/vicanso/zedis/commit/ef7bc720488614cfdeb188d6c8ff58aeb28f9090))
+- *(help)* In-panel help popovers for specialized panels - ([1957b25](https://github.com/vicanso/zedis/commit/1957b254119c0845b8579e0d5602a17c1c5e3267))
+- *(key-tree)* Copy / rename / favorite in the context menu - ([2deda1d](https://github.com/vicanso/zedis/commit/2deda1db4929e4ad3f4ddc36bb27ab3e23a031b7))
+- *(key-tree)* Batch tag selection, folder tag aggregates, surface Tag filter - ([46c9369](https://github.com/vicanso/zedis/commit/46c936909ebae021c1c2d30072fef97de416738b))
+- *(key-tree)* Combine type, tag, and TTL filters with local AND - ([db3e3cd](https://github.com/vicanso/zedis/commit/db3e3cd873221974ac6b160131409ef7dcc2eca2))
+- *(keys)* Recently opened keys — key-tree menu and ⌘P Quick Open - ([73978ce](https://github.com/vicanso/zedis/commit/73978ce41e5869fb55a00d48ef86cd10f5a9f0b1))
+- *(migration)* Conflict strategy preview and move Import Keys to Tools - ([93e7df6](https://github.com/vicanso/zedis/commit/93e7df691680950f8dc040c499f9ac914612bc2c))
+- *(servers)* Per-server key-tree prefs and Keys form tab - ([d249ddb](https://github.com/vicanso/zedis/commit/d249ddbaa4f67877415851e01471ad4c91ba5a32))
+- *(settings)* Configurable UI and monospace fonts - ([5194ee5](https://github.com/vicanso/zedis/commit/5194ee51267059407a314e15459ed2e09977412e))
+- *(sidebar)* Rework home row and collapse toggle - ([d803c95](https://github.com/vicanso/zedis/commit/d803c95a6ea8c88f09925a669a50f5779fb299f3))
+- *(status-bar)* Connect/disconnect toggle on the health dot ([#111](https://github.com/orhun/git-cliff/issues/111)) - ([1e9a13c](https://github.com/vicanso/zedis/commit/1e9a13c547662231121706eeb84535d4c3fe1aa7))
+- *(theme)* Brand-blue primary for default light/dark themes - ([00f371f](https://github.com/vicanso/zedis/commit/00f371fa2f13375c11f5bae4a1fadcd77d2b2509))
+- *(topology)* Slot map, node load heatmap, and reshard wizard - ([c5fa55f](https://github.com/vicanso/zedis/commit/c5fa55fa9802178e438298b48aaa70377d3aea32))
+- *(views)* Jump to key from Monitor / Keyspace / Memory Analyzer - ([4f06d06](https://github.com/vicanso/zedis/commit/4f06d06d07e346329e5c9c2ccdd6e3b5a5313455))
+
+### 🐛 Bug Fixes
+
+- *(about)* Make the About window movable - ([d8bc7a3](https://github.com/vicanso/zedis/commit/d8bc7a336a6258dbf037a6051c04f47f425dbf12))
+- *(content)* Clear startup loading skeleton when server load finishes - ([b40a999](https://github.com/vicanso/zedis/commit/b40a999c17f599e8aa36e3640e2b429008c4d58e))
+- *(docs)* Make Download button label high-contrast on dark landing page - ([72ef324](https://github.com/vicanso/zedis/commit/72ef324109a17785026ee6bbcfb92da5b14ff16d))
+- *(docs)* Host screenshots in docs/images and brand ZEDIS - ([5f75918](https://github.com/vicanso/zedis/commit/5f7591828bae27a7ae6ab7bb46d8ad8895d20f19))
+- *(key-tree)* Keep folder refresh in read-only context menu ([#114](https://github.com/orhun/git-cliff/issues/114)) - ([76916cb](https://github.com/vicanso/zedis/commit/76916cb0bed0834b60f4c80b00ead8f42cfcf6ce))
+- *(linux)* Set window title and app_id so Wayland shows name and icon ([#106](https://github.com/orhun/git-cliff/issues/106)) - ([8edb191](https://github.com/vicanso/zedis/commit/8edb191a7365ce2a2db34c117867b0967689ffab))
+- *(startup)* Load proto/script/lua caches before the window opens ([#105](https://github.com/orhun/git-cliff/issues/105)) - ([011c0dd](https://github.com/vicanso/zedis/commit/011c0dd4a1726975d56ec068a424a7d702c23901))
+- *(titlebar)* Baseline-align server name and host - ([8d5904c](https://github.com/vicanso/zedis/commit/8d5904c3984d36f9802b8f6802d2c22278860996))
+- *(tray)* Sync quick-connect with main window via GlobalEvent - ([5a3f498](https://github.com/vicanso/zedis/commit/5a3f498775062009b7c13b21de2eaf8872662c23))
+- *(updater)* Restore markdown release notes in the update prompt - ([e71fc67](https://github.com/vicanso/zedis/commit/e71fc672fee0faa927afe4297502296eddc00495))
+
+### 🚜 Refactor
+
+- *(content)* Keep key-tree across server tool routes - ([aa7aa55](https://github.com/vicanso/zedis/commit/aa7aa557e77c9a3ead682cb9f2c2825f6274e377))
+- *(kv-table)* Gate modes through the capability matrix - ([5fbecbb](https://github.com/vicanso/zedis/commit/5fbecbbb07ead909f7b461190e667984735b5a85))
+- *(kv-table)* Scale edit-form field heights with the font size ([#108](https://github.com/orhun/git-cliff/issues/108)) - ([f9c5e92](https://github.com/vicanso/zedis/commit/f9c5e92665bfa77fb109ff3e56972e58bc96e749))
+- *(kv-table)* Allow entry preview on read-only connections ([#109](https://github.com/orhun/git-cliff/issues/109)) - ([3acd890](https://github.com/vicanso/zedis/commit/3acd8903ba04c3e03273e5e7ad1f4f8a897926e2))
+- *(views)* Split oversized view files into submodules - ([390695d](https://github.com/vicanso/zedis/commit/390695d37c34e4ec0e97e91dcd39e06af04478df))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update dependencies - ([d90a802](https://github.com/vicanso/zedis/commit/d90a8025451f314246d144c8542cb12c87e9a23d))
+
 ## [0.5.2](https://github.com/vicanso/zedis/compare/v0.5.1..v0.5.2) - 2026-07-05
 
 ### ⛰️  Features
