@@ -155,16 +155,31 @@ gpui = { workspace = true, features = ["test-support"] }
 
 [workspace.dependencies]
 indexmap = "2.14.0"
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
+# Matched pair with gpui-component. Current component tip depends on zed
+# *without* a `rev=` — Cargo treats `git+…/zed?rev=X` and `git+…/zed` as
+# different package identities even when the commit is identical, so we must
+# use the same source form (no rev) here and let Cargo.lock pin the commit.
+# Pin only gpui-component's rev; after upgrade, confirm a single gpui via
+# `cargo tree -i gpui` and commit the lockfile.
+# component: 0775df394083c1ed74f36f846b78868d1267398f
+# zed (lockfile): 503292376ed04fca814c8b4533b38f90863675fb
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
-gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+# gpui-component tip gates the native highlighter behind `tree-sitter`
+# (older pins used cfg(not(wasm)) and needed no feature). Enables
+# LanguageConfig / LanguageRegistry; pulls tree-sitter + tree-sitter-json
+# only — not `tree-sitter-languages` (30+ parsers). Without this feature
+# only the WASM stub is built and LanguageConfig has no constructor.
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "0775df394083c1ed74f36f846b78868d1267398f", features = [
+    "tree-sitter",
+] }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "0775df394083c1ed74f36f846b78868d1267398f" }
+gpui_macros = { git = "https://github.com/zed-industries/zed" }
 # gpui = "0.2.2"
 # gpui-component = "0.5.1"
 # gpui-component-assets = "0.5.1"
@@ -190,11 +205,13 @@ strip = true
 panic = "abort"
 
 # Cold, one-shot decoder crates get size-optimized codegen: they run rarely
-# (decoding an image value when one is viewed, parsing an SVG icon once before
-# gpui caches it) or never (exr — pulled in by gpui's image features but no
-# EXR ever reaches Zedis), so `opt-level = "s"` shrinks .text without touching
-# any hot path. Rendering/shaping/network/proto crates deliberately stay at
-# the default opt-level.
+# (decoding an image value when one is viewed, parsing/rasterizing an SVG icon
+# once before gpui caches it) or never (exr — pulled in by gpui's image
+# features but no EXR ever reaches Zedis), so `opt-level = "s"` shrinks .text
+# without touching any hot path. Rendering/shaping/network/proto crates
+# deliberately stay at the default opt-level.
+#
+# Image codecs:
 [profile.release.package.exr]
 opt-level = "s"
 [profile.release.package.gif]
@@ -215,7 +232,14 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.fdeflate]
 opt-level = "s"
+# SVG stack (gpui icon path; usvg parse → resvg + tiny-skia rasterize):
 [profile.release.package.usvg]
+opt-level = "s"
+[profile.release.package.resvg]
+opt-level = "s"
+[profile.release.package.tiny-skia]
+opt-level = "s"
+[profile.release.package.svgtypes]
 opt-level = "s"
 
 [package.metadata.bundle]
