@@ -129,3 +129,26 @@ pub use value_diff::{DiffCloseCallback, ZedisValueDiff};
 pub use value_search::ZedisValueSearch;
 pub use vector_set_editor::ZedisVectorSetEditor;
 pub use zset_editor::ZedisZsetEditor;
+
+use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState};
+use gpui::{App, Entity, SharedString};
+
+/// Shared "jump to key" used by observability views (Monitor, Keyspace
+/// notifications, Memory Analyzer, Value Search): select the key on the
+/// active connection and switch to the editor view.
+pub fn open_key_in_editor(server_state: &Entity<ZedisServerState>, key: SharedString, cx: &mut App) {
+    server_state.update(cx, |state, cx| state.select_key(key, cx));
+    cx.global::<ZedisGlobalStore>()
+        .clone()
+        .update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+}
+
+/// Shared "search in key tree": start a keyword scan (contains-match) on the
+/// active connection and switch to the editor view. The key tree mirrors the
+/// keyword into its search box via the `KeyScanStarted` event.
+pub fn search_keys_in_tree(server_state: &Entity<ZedisServerState>, keyword: SharedString, cx: &mut App) {
+    server_state.update(cx, |state, cx| state.scan(keyword, cx));
+    cx.global::<ZedisGlobalStore>()
+        .clone()
+        .update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+}

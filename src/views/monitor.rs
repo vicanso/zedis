@@ -17,16 +17,17 @@ use crate::connection::{RedisServer, get_connection_manager, open_monitor_connec
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
+use crate::states::{
+    ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
+    i18n_common, i18n_monitor, i18n_status_bar,
+};
 /// Redis MONITOR live viewer.
 ///
 /// Opens dedicated (non-cached) connections to each master node, sends
 /// the `MONITOR` command, and streams the output in real time into a
 /// scrollable table.  Supports keyword and command-type filtering.
 /// The buffer is capped at `MAX_RECORDS` entries.
-use crate::states::{
-    ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-    i18n_common, i18n_monitor, i18n_status_bar,
-};
+use crate::views::open_key_in_editor;
 use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, ClipboardItem, Edges, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -156,6 +157,8 @@ const COL_COMMAND: &str = "command";
 const COL_ARGS: &str = "args";
 
 struct MonitorTableDelegate {
+    /// For the args column's open-first-arg-as-key jump.
+    server_state: Entity<ZedisServerState>,
     /// All entries (unfiltered).
     all_rows: VecDeque<MonitorEntry>,
     /// Visible rows when a keyword filter is active.
@@ -167,7 +170,7 @@ struct MonitorTableDelegate {
 }
 
 impl MonitorTableDelegate {
-    fn new(window: &mut Window) -> Self {
+    fn new(server_state: Entity<ZedisServerState>, window: &mut Window) -> Self {
         let window_width = window.viewport_size().width;
         let content_width = window_width - SIDEBAR_WIDTH;
 
@@ -206,6 +209,7 @@ impl MonitorTableDelegate {
             .collect();
 
         Self {
+            server_state,
             all_rows: VecDeque::new(),
             filtered_rows: Vec::new(),
             is_filtered: false,
@@ -256,6 +260,7 @@ impl MonitorTableDelegate {
 impl Clone for MonitorTableDelegate {
     fn clone(&self) -> Self {
         Self {
+            server_state: self.server_state.clone(),
             all_rows: self.all_rows.clone(),
             filtered_rows: self.filtered_rows.clone(),
             is_filtered: self.is_filtered,
@@ -351,6 +356,22 @@ impl TableDelegate for MonitorTableDelegate {
 
         let group_name: SharedString = format!("monitor-td-{}-{}", row_ix, col_ix).into();
         let copied_message = i18n_common(cx, "copied_to_clipboard");
+        // Args cell: the first argument is the key for most commands — offer a
+        // hover jump straight to it in the editor (heuristic; args with spaces
+        // are ambiguous, so only the first token is used).
+        let jump_key: Option<SharedString> = if col_key == COL_ARGS {
+            self.visible_row(row_ix).and_then(|row| {
+                row.args
+                    .split(' ')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| SharedString::from(s.to_string()))
+            })
+        } else {
+            None
+        };
+        let jump_server_state = self.server_state.clone();
+        let open_key_tooltip = i18n_common(cx, "open_key_tooltip");
         h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
@@ -370,6 +391,17 @@ impl TableDelegate for MonitorTableDelegate {
                     .group_hover(group_name, |style| style.visible())
                     .flex_none()
                     .on_click(|_, _, cx: &mut App| cx.stop_propagation())
+                    .when_some(jump_key, |this, key| {
+                        this.child(
+                            Button::new(("open-key-cell", row_ix * 100 + col_ix))
+                                .ghost()
+                                .icon(IconName::Search)
+                                .tooltip(open_key_tooltip.clone())
+                                .on_click(move |_, _, cx: &mut gpui::App| {
+                                    open_key_in_editor(&jump_server_state, key.clone(), cx);
+                                }),
+                        )
+                    })
                     .child(
                         Button::new(("copy-cell", row_ix * 100 + col_ix))
                             .ghost()
@@ -407,7 +439,7 @@ pub struct ZedisMonitor {
 impl ZedisMonitor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        let delegate = MonitorTableDelegate::new(window);
+        let delegate = MonitorTableDelegate::new(server_state.clone(), window);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         subscriptions.push(cx.subscribe(&server_state, |this, _, event, cx| {

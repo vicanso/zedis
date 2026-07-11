@@ -37,6 +37,19 @@ Compressed values are unpacked in place so you read the real payload, not a blob
 
 Configure a command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{RAW_FILE}`); Zedis runs it via `sh -c` / `cmd /c` and shows stdout as the formatted value. Per-server key matching by exact / prefix / suffix / regex.
 
+### Decode Pipeline
+**A documented, deterministic order — your custom viewers always win.**
+
+Every string value goes through the same pipeline, top priority first:
+
+1. **Protobuf viewer** — a registered `.proto` schema matching this key
+2. **Custom script viewer** — a configured script matching this key
+3. **Native format detection** — MessagePack · GZIP · ZSTD · Snappy · Unix timestamp · images (`PNG/JPG/WEBP/SVG/GIF`)
+4. **LZ4** (size-prepended) for non-UTF-8 payloads
+5. **Text / pretty-printed JSON** fallback
+
+A viewer that matches but fails to decode falls through to native handling, so a bad script never blanks the value. Manual overrides: the **hex** view always shows the raw bytes, and small opaque strings offer a **bitmap** toggle.
+
 ---
 
 ## 🗂️ Type & Module Viewers

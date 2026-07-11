@@ -17,15 +17,16 @@ use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_ma
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands};
+use crate::states::{
+    ServerView, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis,
+};
+use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 /// Redis Memory Analysis viewer.
 ///
 /// Samples keys from the database, groups by prefix and displays two tables:
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
 /// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
-use crate::states::{
-    ServerView, ZedisGlobalStore, ZedisServerState, get_metrics_cache, i18n_common, i18n_memory_analysis,
-};
-use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
+use crate::views::{open_key_in_editor, search_keys_in_tree};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -533,6 +534,10 @@ fn latest_fragmentation(server_id: &str) -> Option<(f64, u64)> {
         })
 }
 
+/// Hover action for a cell: (tooltip, click handler). Used by the prefix /
+/// key columns to jump into the key tree / editor.
+type JumpAction = std::sync::Arc<dyn Fn(&mut gpui::App)>;
+
 fn render_copy_cell(
     row_ix: usize,
     col_ix: usize,
@@ -540,6 +545,7 @@ fn render_copy_cell(
     column: &Column,
     id_prefix: &'static str,
     copied_message: SharedString,
+    jump: Option<(SharedString, JumpAction)>,
 ) -> impl IntoElement {
     // This is the only necessary string allocation.
     // It serves as a globally unique Group identifier for the hover state.
@@ -558,6 +564,23 @@ fn render_copy_cell(
                 // Essential for text_ellipsis to work inside a flex container
                 .min_w_0(),
         )
+        .when_some(jump, |this, (tooltip, action)| {
+            this.child(
+                div()
+                    .id((group_name.clone(), 2_usize))
+                    .invisible()
+                    .group_hover(group_name.clone(), |style| style.visible())
+                    .flex_none()
+                    .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
+                    .child(
+                        Button::new((group_name.clone(), 3_usize))
+                            .ghost()
+                            .icon(IconName::Search)
+                            .tooltip(tooltip)
+                            .on_click(move |_, _, cx: &mut gpui::App| action(cx)),
+                    ),
+            )
+        })
         .child(
             div()
                 // Clever trick: Reuse the group_name (SharedString) combined with a usize index.
@@ -595,10 +618,17 @@ struct PrefixTableDelegate {
     rows: Vec<PrefixRow>,
     columns: Vec<Column>,
     column_keys: Vec<&'static str>,
+    /// For the prefix column's search-in-key-tree jump.
+    server_state: Entity<ZedisServerState>,
 }
 
 impl PrefixTableDelegate {
-    fn new(rows: Vec<PrefixRow>, window: &mut Window, _cx: &mut gpui::App) -> Self {
+    fn new(
+        rows: Vec<PrefixRow>,
+        server_state: Entity<ZedisServerState>,
+        window: &mut Window,
+        _cx: &mut gpui::App,
+    ) -> Self {
         let content_width = (window.viewport_size().width - SIDEBAR_WIDTH).as_f32();
 
         // Use padding offsets to prevent horizontal scrollbars
@@ -645,6 +675,7 @@ impl PrefixTableDelegate {
             rows,
             columns,
             column_keys,
+            server_state,
         }
     }
 }
@@ -729,6 +760,23 @@ impl TableDelegate for PrefixTableDelegate {
             })
             .unwrap_or_else(|| "--".into());
 
+        // Prefix column: hover action jumps to the key tree filtered by
+        // this prefix.
+        let jump = if col_ix == 0 {
+            self.rows.get(row_ix).map(|r| {
+                let prefix = r.prefix.clone();
+                let server_state = self.server_state.clone();
+                (
+                    i18n_common(cx, "search_prefix_tooltip"),
+                    std::sync::Arc::new(move |cx: &mut gpui::App| {
+                        search_keys_in_tree(&server_state, prefix.clone(), cx);
+                    }) as JumpAction,
+                )
+            })
+        } else {
+            None
+        };
+
         // Uses our highly optimized render_copy_cell function
         render_copy_cell(
             row_ix,
@@ -737,6 +785,7 @@ impl TableDelegate for PrefixTableDelegate {
             col,
             "prefix",
             i18n_common(cx, "copied_to_clipboard"),
+            jump,
         )
     }
 
@@ -755,10 +804,17 @@ struct SingleKeyTableDelegate {
     rows: Vec<SingleKeyRow>,
     columns: Vec<Column>,
     column_keys: Vec<&'static str>,
+    /// For the key column's open-in-editor jump.
+    server_state: Entity<ZedisServerState>,
 }
 
 impl SingleKeyTableDelegate {
-    fn new(rows: Vec<SingleKeyRow>, window: &mut Window, _cx: &mut gpui::App) -> Self {
+    fn new(
+        rows: Vec<SingleKeyRow>,
+        server_state: Entity<ZedisServerState>,
+        window: &mut Window,
+        _cx: &mut gpui::App,
+    ) -> Self {
         let content_width = (window.viewport_size().width - SIDEBAR_WIDTH).as_f32();
 
         let padding_offset = 16.0;
@@ -790,6 +846,7 @@ impl SingleKeyTableDelegate {
             rows,
             columns,
             column_keys,
+            server_state,
         }
     }
 }
@@ -868,6 +925,22 @@ impl TableDelegate for SingleKeyTableDelegate {
                 _ => "--".into(),
             })
             .unwrap_or_else(|| "--".into());
+
+        // Key column: hover action opens the key in the editor.
+        let jump = if col_ix == 0 {
+            self.rows.get(row_ix).map(|r| {
+                let key = r.key.clone();
+                let server_state = self.server_state.clone();
+                (
+                    i18n_common(cx, "open_key_tooltip"),
+                    std::sync::Arc::new(move |cx: &mut gpui::App| {
+                        open_key_in_editor(&server_state, key.clone(), cx);
+                    }) as JumpAction,
+                )
+            })
+        } else {
+            None
+        };
         render_copy_cell(
             row_ix,
             col_ix,
@@ -875,6 +948,7 @@ impl TableDelegate for SingleKeyTableDelegate {
             col,
             "singlekey",
             i18n_common(cx, "copied_to_clipboard"),
+            jump,
         )
     }
 
@@ -1173,9 +1247,20 @@ impl ZedisMemoryAnalysis {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
-        let prefix_table = cx.new(|cx| TableState::new(PrefixTableDelegate::new(Vec::new(), window, cx), window, cx));
-        let single_table =
-            cx.new(|cx| TableState::new(SingleKeyTableDelegate::new(Vec::new(), window, cx), window, cx));
+        let prefix_table = cx.new(|cx| {
+            TableState::new(
+                PrefixTableDelegate::new(Vec::new(), server_state.clone(), window, cx),
+                window,
+                cx,
+            )
+        });
+        let single_table = cx.new(|cx| {
+            TableState::new(
+                SingleKeyTableDelegate::new(Vec::new(), server_state.clone(), window, cx),
+                window,
+                cx,
+            )
+        });
 
         let dbsize = server_state.read(cx).dbsize();
         // Large DBs default to a sampled ratio so we don't `MEMORY USAGE`

@@ -627,6 +627,11 @@ impl ZedisServerState {
         self.query_mode
     }
 
+    /// The keyword the current key scan was started with (empty = full scan).
+    pub fn keyword(&self) -> SharedString {
+        self.keyword.clone()
+    }
+
     /// Check if the current scan has completed
     pub fn scan_completed(&self) -> bool {
         self.scan_completed

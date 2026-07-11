@@ -26,11 +26,12 @@ use crate::error::Error;
 use crate::helpers::{get_mono_font_family, unix_ts_millis};
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, i18n_common, i18n_trash};
 use chrono::{Local, LocalResult, TimeZone};
-use gpui::{App, SharedString, Window, div, prelude::*, px};
+use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputEvent, InputState},
     label::Label,
     scroll::ScrollableElement,
     v_flex,
@@ -43,6 +44,11 @@ pub struct ZedisTrashDialog {
     server_id: String,
     entries: Vec<TrashMeta>,
     loading: bool,
+    /// True while a batch restore runs (disables the restore-all button).
+    restoring: bool,
+    /// Substring filter over the listed keys.
+    filter_state: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 fn format_deleted_at(ts_ms: i64) -> SharedString {
@@ -61,14 +67,109 @@ fn emit_notification(notification: NotificationAction, cx: &mut App) {
 }
 
 impl ZedisTrashDialog {
-    pub fn new(server_id: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(server_id: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_trash(cx, "filter_placeholder"))
+        });
+        // Live filtering: re-render on every keystroke.
+        let subscription = cx.subscribe(&filter_state, |_this, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         let mut this = Self {
             server_id,
             entries: vec![],
             loading: true,
+            restoring: false,
+            filter_state,
+            _subscriptions: vec![subscription],
         };
         this.reload(cx);
         this
+    }
+
+    /// Entries matching the current substring filter (all when empty).
+    fn filtered_entries(&self, cx: &Context<Self>) -> Vec<TrashMeta> {
+        let keyword = self.filter_state.read(cx).value().to_string();
+        self.entries
+            .iter()
+            .filter(|e| keyword.is_empty() || e.key.contains(keyword.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Restore every currently-listed (filtered) entry in one background
+    /// task: RESTORE with the stored TTL, drop the trash row on success,
+    /// then a single aggregated notification + one reload. A key that
+    /// meanwhile exists again (BUSYKEY) is counted as skipped, not failed.
+    fn restore_all(&mut self, cx: &mut Context<Self>) {
+        if self.restoring {
+            return;
+        }
+        let ids: Vec<String> = self.filtered_entries(cx).iter().map(|e| e.id.clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.restoring = true;
+        let server_id = self.server_id.clone();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        cx.spawn(async move |this, cx| {
+            let sid = server_id.clone();
+            let (restored, skipped, failed) = cx
+                .background_spawn(async move {
+                    let mut restored = 0usize;
+                    let mut skipped = 0usize;
+                    let mut failed = 0usize;
+                    for id in ids {
+                        let Ok(Some(entry)) = get_trash_entry(&sid, &id) else {
+                            failed += 1;
+                            continue;
+                        };
+                        let result = async {
+                            let mut conn = get_connection_manager().get_connection(&sid, entry.db).await?;
+                            let _: () = cmd("RESTORE")
+                                .arg(entry.key.as_str())
+                                .arg(entry.pttl_ms.max(0))
+                                .arg(entry.payload.as_slice())
+                                .query_async(&mut conn)
+                                .await?;
+                            Ok::<(), Error>(())
+                        }
+                        .await;
+                        match result {
+                            Ok(()) => {
+                                let _ = remove_trash_entry(&sid, &id);
+                                restored += 1;
+                            }
+                            Err(e) if e.to_string().contains("BUSYKEY") => skipped += 1,
+                            Err(_) => failed += 1,
+                        }
+                    }
+                    (restored, skipped, failed)
+                })
+                .await;
+            let msg = t!(
+                "trash.restore_all_result",
+                restored = restored,
+                skipped = skipped,
+                failed = failed,
+                locale = &locale
+            );
+            let notification = if failed == 0 {
+                NotificationAction::new_success(msg.into())
+            } else {
+                NotificationAction::new_error(msg.into())
+            };
+            cx.update(|cx| emit_notification(notification, cx));
+            let _ = this.update(cx, |state, cx| {
+                state.restoring = false;
+                state.reload(cx);
+            });
+        })
+        .detach();
     }
 
     /// Refresh the listing off the UI thread; expired rows are purged
@@ -167,13 +268,14 @@ impl Render for ZedisTrashDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
 
+        let entries = self.filtered_entries(cx);
         let mut list = v_flex().w_full().gap_2();
         if self.loading {
             list = list.child(Label::new(i18n_common(cx, "loading")).text_sm().text_color(muted));
-        } else if self.entries.is_empty() {
+        } else if entries.is_empty() {
             list = list.child(Label::new(i18n_trash(cx, "empty")).text_sm().text_color(muted));
         }
-        for (index, entry) in self.entries.iter().enumerate() {
+        for (index, entry) in entries.iter().enumerate() {
             let restore_id = entry.id.clone();
             let remove_id = entry.id.clone();
             list = list.child(
@@ -225,6 +327,24 @@ impl Render for ZedisTrashDialog {
             .w_full()
             .gap_3()
             .child(Label::new(i18n_trash(cx, "note")).text_xs().text_color(muted))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.filter_state).flex_1().cleanable(true).small())
+                    .child(
+                        Button::new("trash-restore-all")
+                            .xsmall()
+                            .outline()
+                            .label(i18n_trash(cx, "restore_all"))
+                            .loading(self.restoring)
+                            .disabled(self.restoring || entries.is_empty())
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.restore_all(cx);
+                            })),
+                    ),
+            )
             .child(div().w_full().max_h(px(360.)).child(list).overflow_y_scrollbar())
     }
 }
@@ -235,7 +355,7 @@ pub fn open_trash_dialog(window: &mut Window, cx: &mut App) {
     let Some((server_id, _db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned() else {
         return;
     };
-    let view = cx.new(|cx| ZedisTrashDialog::new(server_id, cx));
+    let view = cx.new(|cx| ZedisTrashDialog::new(server_id, window, cx));
     let view_child = view.clone();
     ZedisDialog::new(i18n_trash(cx, "title"))
         .w(px(560.))

@@ -44,6 +44,7 @@ use crate::helpers::get_mono_font_family;
 use crate::states::{
     ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
+use crate::views::open_key_in_editor;
 use ahash::AHashSet;
 use chrono::Local;
 use futures::StreamExt;
@@ -55,6 +56,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    tooltip::Tooltip,
     v_flex,
 };
 use std::collections::VecDeque;
@@ -152,10 +154,12 @@ struct KeyspaceTableDelegate {
     is_filtered: bool,
     columns: Vec<Column>,
     column_keys: Vec<&'static str>,
+    /// For the key column's click-to-open-in-editor jump.
+    server_state: Entity<ZedisServerState>,
 }
 
 impl KeyspaceTableDelegate {
-    fn new(window: &mut Window) -> Self {
+    fn new(server_state: Entity<ZedisServerState>, window: &mut Window) -> Self {
         let window_width = window.viewport_size().width;
         let content_width = window_width - SIDEBAR_WIDTH;
 
@@ -195,6 +199,7 @@ impl KeyspaceTableDelegate {
             is_filtered: false,
             columns,
             column_keys,
+            server_state,
         }
     }
 
@@ -245,6 +250,7 @@ impl Clone for KeyspaceTableDelegate {
             is_filtered: self.is_filtered,
             columns: self.columns.clone(),
             column_keys: self.column_keys.clone(),
+            server_state: self.server_state.clone(),
         }
     }
 }
@@ -297,6 +303,35 @@ impl TableDelegate for KeyspaceTableDelegate {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
 
+        // Key column: click opens the key in the editor.
+        if col_key == COL_KEY
+            && let Some(row) = self.visible_row(row_ix)
+        {
+            let key = row.key.clone();
+            let server_state = self.server_state.clone();
+            let tooltip = i18n_common(cx, "open_key_tooltip");
+            return div()
+                .size_full()
+                .when_some(column.paddings, |this, paddings| this.paddings(paddings))
+                .child(
+                    div()
+                        .id(("ks-open-key", row_ix))
+                        .cursor_pointer()
+                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                        .on_click(move |_, _, cx: &mut App| {
+                            open_key_in_editor(&server_state, key.clone(), cx);
+                        })
+                        .child(
+                            Label::new(row.key.clone())
+                                .text_align(column.align)
+                                .text_color(theme.foreground)
+                                .text_sm()
+                                .text_ellipsis(),
+                        ),
+                )
+                .into_any_element();
+        }
+
         let (value, color): (SharedString, gpui::Hsla) = if let Some(row) = self.visible_row(row_ix) {
             match col_key {
                 COL_TIME => (row.timestamp.clone(), muted),
@@ -328,6 +363,7 @@ impl TableDelegate for KeyspaceTableDelegate {
                     .text_sm()
                     .text_ellipsis(),
             )
+            .into_any_element()
     }
 
     fn has_more(&self, _cx: &App) -> bool {
@@ -389,7 +425,7 @@ impl ZedisKeyspaceNotifications {
                 .placeholder(i18n_keyspace_notifications(cx, "key_pattern_placeholder"))
         });
 
-        let delegate = KeyspaceTableDelegate::new(window);
+        let delegate = KeyspaceTableDelegate::new(server_state.clone(), window);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         let mut subscriptions = Vec::new();

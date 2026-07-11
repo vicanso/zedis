@@ -1423,6 +1423,29 @@ impl ZedisKeyTree {
             }
         }));
 
+        // A scan can be started programmatically (e.g. Memory Analyzer's
+        // "search this prefix"): mirror the externally-set keyword into the
+        // search box and the local caches so the tree, box and auto-refresh
+        // all agree. A scan typed into the box is a no-op here (values match).
+        subscriptions.push(cx.subscribe_in(
+            &server_state,
+            window,
+            |this, server_state, event: &ServerEvent, window, cx| {
+                if !matches!(event, ServerEvent::KeyScanStarted) {
+                    return;
+                }
+                let keyword = server_state.read(cx).keyword();
+                if this.keyword_state.read(cx).value() == keyword {
+                    return;
+                }
+                this.keyword_state.update(cx, |input, cx| {
+                    input.set_value(keyword.clone(), window, cx);
+                });
+                this.state.keyword = keyword.clone();
+                this.state.preserve_expand_on_scan = false;
+                this.current_keyword.update(cx, |state, _cx| *state = keyword);
+            },
+        ));
         subscriptions.push(
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeyCollapseAll => {
