@@ -48,10 +48,18 @@ jobs:
         # with six platform jobs uploading in parallel, two jobs racing that
         # check both created one (GitHub allows multiple drafts on the same
         # tag_name). Creating the draft here, before any platform job runs,
-        # removes the race; `|| true` covers workflow re-runs where the
-        # release already exists.
+        # removes the race. Skip when ANY release for the tag already exists
+        # — including a hand-published one (releasing via the GitHub UI is
+        # what pushes the tag) and the draft of a re-run; `gh release create`
+        # alone would still add a draft next to a published release, and the
+        # uploads would land on that draft instead of the published release.
         if: startsWith(github.ref, 'refs/tags/')
-        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes "" || true
+        run: |
+          if gh release list --json tagName -q '.[].tagName' | grep -qx "$GITHUB_REF_NAME"; then
+            echo "release for $GITHUB_REF_NAME already exists; skipping"
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes ""
+          fi
   macos:
     needs: prepare_vars
     if: needs.prepare_vars.outputs.should_build == 'true'
