@@ -17,7 +17,7 @@
 /// Provides a UI for subscribing to Redis channels via pattern-based subscriptions
 /// and publishing messages. Received messages are displayed in a scrollable table
 /// with timestamp, channel, and message columns.
-use crate::connection::get_connection_manager;
+use crate::connection::{Capability, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
@@ -438,6 +438,10 @@ impl ZedisPubsubEditor {
     /// Publishes a message to the specified channel via the server state.
     /// Does nothing if either the channel or message field is empty.
     fn handle_publish(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // Defense in depth — the publish bar is hidden without PublishMessage.
+        if !self.server_state.read(cx).can(Capability::PublishMessage) {
+            return;
+        }
         let channel: SharedString = self.publish_channel_input_state.read(cx).value();
         let message: SharedString = self.publish_message_input_state.read(cx).value();
         if channel.is_empty() || message.is_empty() {
@@ -544,7 +548,11 @@ impl Render for ZedisPubsubEditor {
                         )
                     }),
             )
-            .child(self.render_publish_bar(cx))
+            // PUBLISH mutates server state (Capability::PublishMessage);
+            // subscribing stays available read-only (Observe).
+            .when(self.server_state.read(cx).can(Capability::PublishMessage), |this| {
+                this.child(self.render_publish_bar(cx))
+            })
             .into_any_element()
     }
 }

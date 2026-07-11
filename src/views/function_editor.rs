@@ -22,7 +22,7 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{FunctionLibrary, function_delete, function_list, function_load, get_connection_manager},
+    connection::{Capability, FunctionLibrary, function_delete, function_list, function_load, get_connection_manager},
     error::Error,
     helpers::get_mono_font_family,
     states::{
@@ -216,6 +216,11 @@ impl ZedisFunctionEditor {
     }
 
     fn submit(&mut self, cx: &mut gpui::Context<Self>) {
+        // Defense in depth — the form entry points are hidden without
+        // FunctionWrite.
+        if !self.server_state.read(cx).can(Capability::FunctionWrite) {
+            return;
+        }
         let Some(form) = self.edit_form.as_ref() else { return };
         let code = form.code.read(cx).value().to_string();
         if code.trim().is_empty() {
@@ -257,6 +262,9 @@ impl ZedisFunctionEditor {
     }
 
     fn confirm_delete(&mut self, library: SharedString, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::FunctionWrite) {
+            return;
+        }
         let entity = cx.entity().downgrade();
         let title = i18n_functions(cx, "delete_title");
         let message: SharedString = format!(
@@ -386,6 +394,8 @@ impl gpui::Render for ZedisFunctionEditor {
 
 impl ZedisFunctionEditor {
     fn render_header(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // FUNCTION LOAD / DELETE are server writes (Capability::FunctionWrite).
+        let can_write = self.server_state.read(cx).can(Capability::FunctionWrite);
         let muted = cx.theme().muted_foreground;
         let count = self.libraries.len();
         let count_label = if count == 0 {
@@ -424,15 +434,17 @@ impl ZedisFunctionEditor {
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        Button::new("functions-new")
-                            .outline()
-                            .small()
-                            .icon(IconName::Plus)
-                            .label(i18n_functions(cx, "new_library"))
-                            .disabled(self.submitting || self.unsupported)
-                            .on_click(cx.listener(|this, _, w, cx| this.open_form(None, w, cx))),
-                    )
+                    .when(can_write, |this| {
+                        this.child(
+                            Button::new("functions-new")
+                                .outline()
+                                .small()
+                                .icon(IconName::Plus)
+                                .label(i18n_functions(cx, "new_library"))
+                                .disabled(self.submitting || self.unsupported)
+                                .on_click(cx.listener(|this, _, w, cx| this.open_form(None, w, cx))),
+                        )
+                    })
                     .child(
                         Button::new("functions-refresh")
                             .outline()
@@ -450,6 +462,7 @@ impl ZedisFunctionEditor {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
+        let can_write = self.server_state.read(cx).can(Capability::FunctionWrite);
         let muted = cx.theme().muted_foreground;
         let theme_blue = cx.theme().blue;
         let name = lib.name.clone();
@@ -586,26 +599,32 @@ impl ZedisFunctionEditor {
                                 cx.listener(move |this, _, _w, cx| this.toggle_expanded(name_for_expand.clone(), cx)),
                             ),
                     )
-                    .child(
-                        Button::new(("fn-edit", id_hash))
-                            .outline()
-                            .small()
-                            .icon(CustomIconName::FilePenLine)
-                            .label(i18n_functions(cx, "edit"))
-                            .disabled(self.submitting)
-                            .on_click(cx.listener(move |this, _, w, cx| this.open_form(Some(&lib_for_edit), w, cx))),
-                    )
-                    .child(
-                        Button::new(("fn-delete", id_hash))
-                            .ghost()
-                            .small()
-                            .icon(IconName::CircleX)
-                            .tooltip(i18n_functions(cx, "delete_tooltip"))
-                            .disabled(deleting)
-                            .on_click(
-                                cx.listener(move |this, _, w, cx| this.confirm_delete(name_for_delete.clone(), w, cx)),
-                            ),
-                    ),
+                    .when(can_write, |this| {
+                        this.child(
+                            Button::new(("fn-edit", id_hash))
+                                .outline()
+                                .small()
+                                .icon(CustomIconName::FilePenLine)
+                                .label(i18n_functions(cx, "edit"))
+                                .disabled(self.submitting)
+                                .on_click(
+                                    cx.listener(move |this, _, w, cx| this.open_form(Some(&lib_for_edit), w, cx)),
+                                ),
+                        )
+                    })
+                    .when(can_write, |this| {
+                        this.child(
+                            Button::new(("fn-delete", id_hash))
+                                .ghost()
+                                .small()
+                                .icon(IconName::CircleX)
+                                .tooltip(i18n_functions(cx, "delete_tooltip"))
+                                .disabled(deleting)
+                                .on_click(cx.listener(move |this, _, w, cx| {
+                                    this.confirm_delete(name_for_delete.clone(), w, cx)
+                                })),
+                        )
+                    }),
             )
             .when(!func_chips.is_empty(), |this| {
                 this.child(

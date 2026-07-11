@@ -22,7 +22,7 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{ScriptRunOutcome, get_connection_manager, run_script},
+    connection::{Capability, ScriptRunOutcome, get_connection_manager, run_script},
     db::{LuaScript, LuaScriptManager},
     error::Error,
     helpers::{get_mono_font_family, unix_ts},
@@ -152,6 +152,10 @@ impl ZedisLuaScriptLibrary {
     }
 
     fn toggle_run(&mut self, id: String, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // Defense in depth — the run toggle is hidden without EvalScript.
+        if !self.server_state.read(cx).can(Capability::EvalScript) {
+            return;
+        }
         let want_open = !*self.run_expanded.entry(id.clone()).or_insert(false);
         self.run_expanded.insert(id.clone(), want_open);
         if want_open && !self.run_forms.contains_key(&id) {
@@ -352,6 +356,9 @@ impl ZedisLuaScriptLibrary {
     /// EVAL` fallback), and records the hit/miss into the script's
     /// lifetime counters.
     fn run(&mut self, id: String, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::EvalScript) {
+            return;
+        }
         if self.running.is_some() {
             return;
         }
@@ -579,6 +586,9 @@ impl ZedisLuaScriptLibrary {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
+        // EVAL/EVALSHA mutate server state (Capability::EvalScript); the
+        // local script library itself (redb) stays editable read-only.
+        let can_run = self.server_state.read(cx).can(Capability::EvalScript);
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let code_expanded = *self.code_expanded.get(&id).unwrap_or(&false);
@@ -772,18 +782,22 @@ impl ZedisLuaScriptLibrary {
                             })
                             .on_click(cx.listener(move |this, _, _w, cx| this.toggle_code(id_code_toggle.clone(), cx))),
                     )
-                    .child(
-                        Button::new(("lua-toggle-run", card_hash))
-                            .outline()
-                            .small()
-                            .icon(IconName::Search)
-                            .label(if run_expanded {
-                                i18n_lua_scripts(cx, "hide_run")
-                            } else {
-                                i18n_lua_scripts(cx, "run")
-                            })
-                            .on_click(cx.listener(move |this, _, w, cx| this.toggle_run(id_run_toggle.clone(), w, cx))),
-                    )
+                    .when(can_run, |this| {
+                        this.child(
+                            Button::new(("lua-toggle-run", card_hash))
+                                .outline()
+                                .small()
+                                .icon(IconName::Search)
+                                .label(if run_expanded {
+                                    i18n_lua_scripts(cx, "hide_run")
+                                } else {
+                                    i18n_lua_scripts(cx, "run")
+                                })
+                                .on_click(
+                                    cx.listener(move |this, _, w, cx| this.toggle_run(id_run_toggle.clone(), w, cx)),
+                                ),
+                        )
+                    })
                     .child(
                         Button::new(("lua-edit", card_hash))
                             .outline()
