@@ -83,12 +83,17 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-build-${{ matrix.target }}
       - name: install tools
+        # Lint has its own workflow (lint.yml) on every push, so the release
+        # build skips clippy/rustfmt/typos entirely. The cache restore above
+        # runs first so `cargo install` no-ops (~10 min saved) when rust-cache
+        # restored the same cargo-bundle version to ~/.cargo/bin.
         run: |
-          rustup update
-          rustup component add clippy rustfmt
           cargo install cargo-bundle
-          cargo install typos-cli
           brew install create-dmg
       - name: Import Code-Signing Certificates
         env:
@@ -110,14 +115,8 @@ jobs:
 
           # set as default keychain
           security list-keychains -d user -s "$KEYCHAIN_PATH"
-      - name: rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: macos-build-${{ matrix.target }}
       - name: release
-        run: |
-          make lint
-          cargo bundle --release --target ${{ matrix.target }} --features mimalloc
+        run: cargo bundle --release --target ${{ matrix.target }} --features mimalloc
       - name: smoke test (first frame must paint)
         # Boots the real binary in ZEDIS_SMOKE_TEST mode: exit 0 once the
         # first frame paints, exit 2 if none does within 30s — the failure

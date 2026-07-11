@@ -82,6 +82,7 @@ update_tooltip = "Mettre à jour l'élément"
 copied_to_clipboard = "Copié dans le presse-papiers"
 
 [sidebar]
+collapse = "Réduire"
 home = "Accueil"
 theme = "Thème"
 language = "Langue"

@@ -82,6 +82,7 @@ update_tooltip = "Обновить элемент"
 copied_to_clipboard = "Скопировано в буфер обмена"
 
 [sidebar]
+collapse = "Свернуть"
 home = "Главная"
 theme = "Тема"
 language = "Язык"

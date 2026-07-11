@@ -81,6 +81,7 @@ update_tooltip = "更新项"
 copied_to_clipboard = "已复制到剪贴板"
 
 [sidebar]
+collapse = "收起"
 home = "主页"
 theme = "主题"
 language = "语言"

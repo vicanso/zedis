@@ -82,6 +82,7 @@ update_tooltip = "Actualizar elemento"
 copied_to_clipboard = "Copiado al portapapeles"
 
 [sidebar]
+collapse = "Contraer"
 home = "Inicio"
 theme = "Tema"
 language = "Idioma"

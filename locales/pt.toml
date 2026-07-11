@@ -82,6 +82,7 @@ update_tooltip = "Atualizar item"
 copied_to_clipboard = "Copiado para a área de transferência"
 
 [sidebar]
+collapse = "Recolher"
 home = "Início"
 theme = "Tema"
 language = "Idioma"

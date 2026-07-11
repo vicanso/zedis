@@ -82,6 +82,7 @@ update_tooltip = "Update item"
 copied_to_clipboard = "Copied to clipboard"
 
 [sidebar]
+collapse = "Collapse"
 home = "Home"
 theme = "Theme"
 language = "Language"

@@ -82,6 +82,7 @@ update_tooltip = "Element aktualisieren"
 copied_to_clipboard = "In die Zwischenablage kopiert"
 
 [sidebar]
+collapse = "Einklappen"
 home = "Startseite"
 theme = "Design"
 language = "Sprache"

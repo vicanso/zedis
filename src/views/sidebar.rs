@@ -615,6 +615,7 @@ impl Render for ZedisSidebar {
         // server routes keep the full sidebar and hide the toggle.
         let can_collapse = self.state.server_id.is_empty();
         let border = cx.theme().border;
+        let collapse_label = i18n_sidebar(cx, "collapse");
         v_flex()
             .size_full()
             .id("sidebar-container")
@@ -638,20 +639,24 @@ impl Render for ZedisSidebar {
                         .border_color(border)
                         .when(sidebar_collapsed, |this| this.justify_center())
                         .when(!sidebar_collapsed, |this| this.justify_end().px_2())
-                        .child(
-                            Button::new("sidebar-collapse-toggle")
-                                .ghost()
-                                .icon(if sidebar_collapsed {
-                                    IconName::ChevronRight
-                                } else {
-                                    IconName::ChevronLeft
-                                })
-                                .on_click(move |_, _window, cx| {
-                                    update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
-                                        state.toggle_sidebar_collapsed();
-                                    });
-                                }),
-                        ),
+                        .child({
+                            let mut toggle = Button::new("sidebar-collapse-toggle").ghost();
+                            if sidebar_collapsed {
+                                // The collapsed rail is too narrow for text — icon-only.
+                                toggle = toggle.icon(IconName::ChevronRight);
+                            } else {
+                                // Short label with the chevron on its right: `.icon()`
+                                // always renders left of the label, so append the icon
+                                // as a child instead (Button renders children after
+                                // the label).
+                                toggle = toggle.label(collapse_label).child(Icon::new(IconName::ChevronLeft));
+                            }
+                            toggle.on_click(move |_, _window, cx| {
+                                update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
+                                    state.toggle_sidebar_collapsed();
+                                });
+                            })
+                        }),
                 )
             })
     }

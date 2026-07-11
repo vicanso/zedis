@@ -82,6 +82,7 @@ update_tooltip = "項目を更新"
 copied_to_clipboard = "クリップボードにコピーしました"
 
 [sidebar]
+collapse = "折りたたむ"
 home = "ホーム"
 theme = "テーマ"
 language = "言語"
