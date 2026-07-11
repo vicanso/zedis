@@ -157,23 +157,34 @@ code,
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.btn-primary {
+/* Use `a.btn-*` so global `a` / `a:hover` accent colors cannot wash out
+   the label (Download is an <a class="btn btn-primary">). White on
+   accent reads clearly on the dark page. */
+.btn-primary,
+a.btn-primary:link,
+a.btn-primary:visited {
   background: var(--accent);
-  color: #0c0f14;
+  color: #ffffff;
 }
 
-.btn-primary:hover {
+.btn-primary:hover,
+a.btn-primary:hover,
+a.btn-primary:focus-visible {
   background: var(--accent-hover);
-  color: #0c0f14;
+  color: #ffffff;
 }
 
-.btn-ghost {
+.btn-ghost,
+a.btn-ghost:link,
+a.btn-ghost:visited {
   background: transparent;
   border-color: var(--border);
   color: var(--text);
 }
 
-.btn-ghost:hover {
+.btn-ghost:hover,
+a.btn-ghost:hover,
+a.btn-ghost:focus-visible {
   border-color: var(--muted);
   color: var(--text);
 }
