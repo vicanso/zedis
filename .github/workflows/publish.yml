@@ -25,7 +25,7 @@ jobs:
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_OUTPUT
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Skip scheduled run when main has no new commits
         id: gate
         run: |
@@ -76,7 +76,7 @@ jobs:
             target: x86_64-apple-darwin
             dmg_suffix: x86_64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: setup node
         uses: actions/setup-node@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -240,7 +240,7 @@ jobs:
           - target: aarch64-pc-windows-msvc
             suffix: aarch64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: setup node
         uses: actions/setup-node@v6
       - name: Install Rust toolchain
@@ -367,7 +367,7 @@ jobs:
             suffix: aarch64
             appimagetool: appimagetool-aarch64.AppImage
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: setup node
         uses: actions/setup-node@v6
       - name: Install Linux Dependencies
@@ -464,7 +464,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: download checksum meta
         uses: actions/download-artifact@v4
         with:

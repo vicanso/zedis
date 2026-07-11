@@ -1,93 +1,40 @@
 #!/bin/bash
+set -euo pipefail
 
-# Assure parameters are correct.
-if [ $# -lt 2 ]; then
-    echo "Usage: upload_asset.sh <FILE> <TOKEN>"
+# Usage: upload_asset.sh <FILE> [TOKEN]
+#
+# Uploads FILE to the release of the current tag via the gh CLI. The release
+# is normally pre-created by prepare_vars (publish.yml); the create here is a
+# fallback for manual/partial runs. `--clobber` replaces an already-uploaded
+# asset of the same name, so re-running a job doesn't fail with 422.
+if [ $# -lt 1 ]; then
+    echo "Usage: upload_asset.sh <FILE> [TOKEN]"
     exit 1
 fi
 
 repo="vicanso/zedis"
 file_path=$1
-bearer=$2
 
-echo "Starting asset upload from $file_path to $repo."
+# gh reads GH_TOKEN / GITHUB_TOKEN from the environment; the second argument
+# is kept for backward compatibility with existing callers.
+if [ -n "${2:-}" ]; then
+    export GH_TOKEN=$2
+fi
 
-# Get the release for this tag.
 tag="$(git describe --tags --abbrev=0)"
-
-# Make sure the git tag could be determined.
 if [ -z "$tag" ]; then
     printf "\e[31mError: Unable to find git tag\e[0m\n"
     exit 1
 fi
+echo "Uploading $file_path to $repo@$tag"
 
-echo "Git tag: $tag"
-
-# Get the upload URL for the current tag.
-#
-# Since this might be a draft release, we can't just use the /releases/tags/:tag
-# endpoint which only shows published releases.
-echo "Checking for existing release..."
-upload_url=$(\
-    curl \
-        -H "Authorization: Bearer $bearer" \
-        "https://api.github.com/repos/$repo/releases" \
-        2> /dev/null \
-    | grep -E "(upload_url|tag_name)" \
-    | paste - - \
-    | grep -e "tag_name\": \"$tag\"" \
-    | head -n 1 \
-    | sed 's/.*\(https.*assets\).*/\1/' \
-)
-
-# Create a new release if we didn't find one for this tag.
-if [ -z "$upload_url" ]; then
-    echo "No release found."
-    echo "Creating new release..."
-
-    # Create new release.
-    response=$(
-        curl -f \
-            -X POST \
-            -H "Authorization: Bearer $bearer" \
-            -d "{\"tag_name\":\"$tag\",\"draft\":true}" \
-            "https://api.github.com/repos/$repo/releases" \
-            2> /dev/null\
-    )
-
-    # Abort if the release could not be created.
-    if [ $? -ne 0 ]; then
-        printf "\e[31mError: Unable to create new release.\e[0m\n"
-        exit 1;
-    fi
-
-    # Extract upload URL from new release.
-    upload_url=$(\
-        echo "$response" \
-        | grep "upload_url" \
-        | sed 's/.*: "\(.*\){.*/\1/' \
-    )
+# Fallback only: `gh release list` includes drafts, unlike a lookup via
+# /releases/tags/:tag, so a pre-created draft is correctly detected.
+if ! gh release list -R "$repo" --json tagName -q '.[].tagName' | grep -qx "$tag"; then
+    echo "No release for $tag; creating draft..."
+    gh release create "$tag" -R "$repo" --draft --title "$tag" --notes "" || true
 fi
 
-# Propagate error if no URL for asset upload could be found.
-if [ -z "$upload_url" ]; then
-    printf "\e[31mError: Unable to find release upload url.\e[0m\n"
-    exit 2
-fi
-
-# Upload the file to the tag's release.
-file_name=${file_path##*/}
-echo "Uploading asset $file_name to $upload_url..."
-curl -v -f \
-    --http1.1 \
-    -X POST \
-    -H "Authorization: Bearer $bearer" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @"$file_path" \
-    "$upload_url?name=$file_name" \
-|| { \
-    printf "\e[31mError: Unable to upload asset.\e[0m\n" \
-    && exit 3; \
-}
+gh release upload "$tag" "$file_path" -R "$repo" --clobber
 
 printf "\e[32mSuccess\e[0m\n"

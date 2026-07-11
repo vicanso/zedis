@@ -22,7 +22,7 @@ jobs:
       issues: write # for rustsec/audit-check to create issues
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Audit Check
         # https://github.com/rustsec/audit-check/issues/2
