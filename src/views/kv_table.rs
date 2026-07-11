@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::Capability;
 use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT};
 use crate::helpers::get_mono_font_family;
 use crate::{
@@ -147,6 +148,21 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     _subscriptions: Vec<Subscription>,
 }
 impl<T: ZedisKvFetcher> ZedisKvTable<T> {
+    /// Project the configured mode through the capability matrix
+    /// (`connection::Capability`): container mutations (add / update /
+    /// remove) drop out on a read-only connection, while FILTER — a pure
+    /// read (`Capability::SearchFilter`) — survives it.
+    fn effective_mode(base: KvTableMode, readonly: bool) -> KvTableMode {
+        let mut mode = base;
+        if !Capability::MutateContainer.allowed(readonly) {
+            mode.remove(KvTableMode::ADD | KvTableMode::UPDATE | KvTableMode::REMOVE);
+        }
+        if !Capability::SearchFilter.allowed(readonly) {
+            mode.remove(KvTableMode::FILTER);
+        }
+        mode
+    }
+
     /// Creates a new fetcher instance with the current server value.
     fn new_values(server_state: Entity<ZedisServerState>, cx: &mut Context<Self>) -> T {
         let value = server_state.read(cx).value().cloned().unwrap_or_default();
@@ -285,7 +301,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     let readonly = server_state.read(cx).readonly();
                     if readonly != this.readonly {
                         this.readonly = readonly;
-                        this.mode = if readonly { KvTableMode::empty() } else { this.base_mode };
+                        this.mode = Self::effective_mode(this.base_mode, readonly);
                         // Locking mid-edit: close any in-progress row editor.
                         this.edit_row = None;
                         this.editor_form = None;
@@ -317,12 +333,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
         let readonly = server_state.read(cx).readonly();
 
-        // If readonly, disable all operations; otherwise default to ALL
-        let mode = if readonly {
-            KvTableMode::empty()
-        } else {
-            KvTableMode::ALL
-        };
+        // Default to ALL, projected through the capability matrix.
+        let mode = Self::effective_mode(KvTableMode::ALL, readonly);
 
         // Initialize table data and state
         let fetcher = Arc::new(Self::new_values(server_state.clone(), cx));
@@ -487,8 +499,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     pub fn mode(mut self, mode: KvTableMode) -> Self {
         // Remember the intended mode so a later read-only toggle can restore it.
         self.base_mode = mode;
-        // If readonly, the effective mode is always empty.
-        self.mode = if self.readonly { KvTableMode::empty() } else { mode };
+        self.mode = Self::effective_mode(mode, self.readonly);
         self
     }
 
@@ -497,12 +508,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     }
 
     fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
-        // Open the detail panel on select. Normally an action mode
-        // (UPDATE/REMOVE/ADD) is required; in a read-only connection the mode is
-        // empty, but we still open a *view-only* preview so an entry's contents
-        // (e.g. a stream entry's id + message) can be inspected — the form is
-        // disabled and the update/remove actions are hidden below.
-        if !self.readonly
+        // Open the detail panel on select. An action mode (UPDATE/REMOVE/ADD)
+        // opens the editor; otherwise `Capability::ViewEntry` still allows a
+        // view-only preview (entry contents — e.g. a stream entry's id +
+        // message — stay inspectable on read-only connections; the form is
+        // disabled and the update/remove actions are hidden below).
+        if !Capability::ViewEntry.allowed(self.readonly)
             && !self
                 .mode
                 .intersects(KvTableMode::UPDATE | KvTableMode::REMOVE | KvTableMode::ADD)
@@ -777,10 +788,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let flex_field_height = (reset_form_height / flex_field_count as f32).max(150. * font_scale);
 
         let mut first = true;
-        // A read-only *connection* makes the edit form view-only too (disabled,
-        // empty fields skipped, no add-fields), same as a fetcher that is
-        // inherently read-only-on-edit (e.g. streams).
-        let readonly_on_edit = !is_adding && (self.readonly || self.fetcher.readonly_on_edit());
+        // A read-only *connection* (no `MutateContainer` capability) makes the
+        // edit form view-only too (disabled, empty fields skipped, no
+        // add-fields), same as a fetcher that is inherently read-only-on-edit
+        // (e.g. streams).
+        let readonly_on_edit =
+            !is_adding && (!Capability::MutateContainer.allowed(self.readonly) || self.fetcher.readonly_on_edit());
         for column in self.columns.iter() {
             if column.column_type != KvTableColumnType::Value {
                 continue;
