@@ -300,6 +300,9 @@ diff_patch_label = "RFC 7396 Merge-Patch (äquivalente JSON.MERGE-Payload)"
 diff_patch_empty = "{}  // keine Änderung"
 
 [key_tree]
+copy_key_tooltip = "Key-Namen kopieren"
+copy_prefix_tooltip = "Ordner-Präfix kopieren"
+rename_key_tooltip = "Key umbenennen"
 type_filter = "Typ"
 type_filter_all = "Alle Typen"
 ttl_filter = "TTL"

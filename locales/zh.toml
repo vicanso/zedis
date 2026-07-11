@@ -300,6 +300,9 @@ diff_patch_label = "RFC 7396 merge patch(等价的 JSON.MERGE 内容)"
 diff_patch_empty = "{}  // 无变化"
 
 [key_tree]
+copy_key_tooltip = "复制 key 名称"
+copy_prefix_tooltip = "复制文件夹前缀"
+rename_key_tooltip = "重命名 key"
 type_filter = "类型"
 type_filter_all = "全部类型"
 ttl_filter = "TTL"

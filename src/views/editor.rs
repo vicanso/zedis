@@ -135,6 +135,9 @@ pub struct ZedisEditor {
     /// found the destination occupied. Consumed on the next render (which
     /// has a `Window`) to open the confirm dialog.
     pending_overwrite_confirm: Option<(SharedString, SharedString)>,
+    /// Set by the key tree's right-click "Rename" (the event subscription has
+    /// no `Window`); the next render opens the rename dialog and clears it.
+    pending_rename_dialog: bool,
 
     /// Track when a key was selected to handle loading states smoothly
     selected_key_at: Option<Instant>,
@@ -333,6 +336,13 @@ impl ZedisEditor {
                     EditorAction::Reload => {
                         this.reload(cx);
                     }
+                    // From the key tree's right-click (already gated by
+                    // Capability::RenameKey in emit_editor_action). No Window
+                    // here — stash and open on the next render.
+                    EditorAction::Rename => {
+                        this.pending_rename_dialog = true;
+                        cx.notify();
+                    }
                     _ => {}
                 },
                 _ => {}
@@ -384,6 +394,7 @@ impl ZedisEditor {
             ttl_input_state,
             rename_input_state,
             pending_overwrite_confirm: None,
+            pending_rename_dialog: false,
             should_enter_ttl_edit_mode: None,
             _subscriptions: subscriptions,
             selected_key_at: None,
@@ -1776,6 +1787,9 @@ impl Render for ZedisEditor {
         }
         if let Some(true) = self.should_enter_ttl_edit_mode.take() {
             self.enter_ttl_edit_mode(window, cx);
+        }
+        if std::mem::take(&mut self.pending_rename_dialog) {
+            self.open_rename_dialog(window, cx);
         }
         if let Some((old, new)) = self.pending_overwrite_confirm.take() {
             self.open_overwrite_confirm(old, new, window, cx);

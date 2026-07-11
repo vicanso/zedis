@@ -300,6 +300,9 @@ diff_patch_label = "Patch RFC 7396 (carga equivalente de JSON.MERGE)"
 diff_patch_empty = "{}  // sem alteração"
 
 [key_tree]
+copy_key_tooltip = "Copiar nome da chave"
+copy_prefix_tooltip = "Copiar prefixo da pasta"
+rename_key_tooltip = "Renomear chave"
 type_filter = "Tipo"
 type_filter_all = "Todos os tipos"
 ttl_filter = "TTL"

@@ -27,8 +27,8 @@ use crate::{
     },
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, QueryMode, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-        dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_key_tag, i18n_key_tree,
-        save_session_option,
+        dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor, i18n_key_tag,
+        i18n_key_tree, save_session_option,
     },
     views::{
         OnTagDialogDone, export_to_file, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window,
@@ -36,16 +36,17 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    Action, Anchor, App, AppContext, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString, Subscription,
-    Task, Window, div, prelude::*, px, rgb,
+    Action, Anchor, App, AppContext, ClipboardItem, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString,
+    Subscription, Task, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     menu::ContextMenuExt,
+    notification::Notification,
     spinner::Spinner,
     v_flex,
 };
@@ -126,6 +127,14 @@ enum KeyTreeAction {
     /// Multi-select: open the batch tag colour dialog for the current
     /// selection (tag only — notes on each key are preserved).
     BatchTagSelectedKeys,
+    /// Copy the full key name to the clipboard.
+    CopyKeyName(SharedString),
+    /// Copy the folder prefix (with trailing separator) to the clipboard.
+    CopyFolderPrefix(SharedString),
+    /// Select the key and open the editor's rename dialog.
+    RenameKey(SharedString),
+    /// Add / remove the key from the local favorites list.
+    ToggleFavoriteKey(SharedString),
 }
 
 #[derive(Default)]
@@ -1179,6 +1188,60 @@ impl ListDelegate for KeyTreeDelegate {
                                         Box::new(KeyTreeAction::EditKeyTag(tag_key)),
                                         move |_, cx| Label::new(i18n_key_tag(cx, "edit_menu_label")),
                                     );
+                                }
+                            }
+                            // Single-row affordances: copy name / prefix,
+                            // rename, favorite toggle.
+                            if multi_selection_count == 0 {
+                                if Capability::CopyToClipboard.allowed(readonly) {
+                                    if is_folder {
+                                        menu = menu.menu_element_with_icon(
+                                            IconName::Copy,
+                                            Box::new(KeyTreeAction::CopyFolderPrefix(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "copy_prefix_tooltip")),
+                                        );
+                                    } else {
+                                        menu = menu.menu_element_with_icon(
+                                            IconName::Copy,
+                                            Box::new(KeyTreeAction::CopyKeyName(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "copy_key_tooltip")),
+                                        );
+                                    }
+                                }
+                                if !is_folder {
+                                    if Capability::RenameKey.allowed(readonly) {
+                                        menu = menu.menu_element_with_icon(
+                                            CustomIconName::FilePenLine,
+                                            Box::new(KeyTreeAction::RenameKey(id.clone())),
+                                            move |_, cx| Label::new(i18n_key_tree(cx, "rename_key_tooltip")),
+                                        );
+                                    }
+                                    if Capability::EditLocalMetadata.allowed(readonly) {
+                                        // Star state comes from the local
+                                        // favorites store, keyed by server.
+                                        let is_favorited = cx
+                                            .global::<ZedisGlobalStore>()
+                                            .read(cx)
+                                            .selected_server()
+                                            .map(|(server_id, _)| {
+                                                get_favorites_manager()
+                                                    .records(server_id.as_ref())
+                                                    .unwrap_or_default()
+                                                    .iter()
+                                                    .any(|k| k.as_ref() == id.as_ref())
+                                            })
+                                            .unwrap_or(false);
+                                        let (icon, label_key) = if is_favorited {
+                                            (IconName::StarFill, "remove_favorite_tooltip")
+                                        } else {
+                                            (IconName::Star, "add_favorite_tooltip")
+                                        };
+                                        menu = menu.menu_element_with_icon(
+                                            icon,
+                                            Box::new(KeyTreeAction::ToggleFavoriteKey(id.clone())),
+                                            move |_, cx| Label::new(i18n_editor(cx, label_key)),
+                                        );
+                                    }
                                 }
                             }
                             menu
@@ -2876,6 +2939,47 @@ impl Render for ZedisKeyTree {
                 }
                 KeyTreeAction::SelectFavoriteKey(key) => {
                     this.select_item(key.clone(), false, false, false, cx);
+                }
+                KeyTreeAction::CopyKeyName(key) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(key.to_string()));
+                    window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+                }
+                KeyTreeAction::CopyFolderPrefix(id) => {
+                    // Trailing separator matches the folder's scan prefix
+                    // (same shape RefreshFolder uses).
+                    cx.write_to_clipboard(ClipboardItem::new_string(format!("{}:", id.as_str())));
+                    window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+                }
+                KeyTreeAction::RenameKey(key) => {
+                    // Select first so the editor's rename dialog prefills this
+                    // key; emit_editor_action re-checks Capability::RenameKey.
+                    let key = key.clone();
+                    this.server_state.update(cx, |state, cx| {
+                        state.select_key(key, cx);
+                        state.emit_editor_action(EditorAction::Rename, cx);
+                    });
+                }
+                KeyTreeAction::ToggleFavoriteKey(key) => {
+                    let server_id = this.server_state.read(cx).server_id().to_string();
+                    let key = key.clone();
+                    cx.spawn(async move |_, cx| {
+                        let _ = cx
+                            .background_spawn(async move {
+                                let manager = get_favorites_manager();
+                                let is_favorited = manager
+                                    .records(&server_id)
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .any(|k| k.as_ref() == key.as_ref());
+                                if is_favorited {
+                                    let _ = manager.remove_record(&server_id, key.as_ref());
+                                } else {
+                                    let _ = manager.add_record(&server_id, key.as_ref());
+                                }
+                            })
+                            .await;
+                    })
+                    .detach();
                 }
                 KeyTreeAction::ClearFavorites => {
                     let server_id = this.server_state.read(cx).server_id().to_string();

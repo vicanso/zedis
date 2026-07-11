@@ -300,6 +300,9 @@ diff_patch_label = "RFC 7396 マージパッチ(JSON.MERGE と同等のペイロ
 diff_patch_empty = "{}  // 変更なし"
 
 [key_tree]
+copy_key_tooltip = "キー名をコピー"
+copy_prefix_tooltip = "フォルダの接頭辞をコピー"
+rename_key_tooltip = "キー名を変更"
 type_filter = "型"
 type_filter_all = "すべての型"
 ttl_filter = "TTL"

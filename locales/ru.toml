@@ -300,6 +300,9 @@ diff_patch_label = "RFC 7396 merge patch (эквивалент JSON.MERGE payloa
 diff_patch_empty = "{}  // без изменений"
 
 [key_tree]
+copy_key_tooltip = "Скопировать имя ключа"
+copy_prefix_tooltip = "Скопировать префикс папки"
+rename_key_tooltip = "Переименовать ключ"
 type_filter = "Тип"
 type_filter_all = "Все типы"
 ttl_filter = "TTL"
