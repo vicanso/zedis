@@ -18,6 +18,7 @@ mod bitmap_editor;
 mod bytes_editor;
 mod clients_manager;
 mod command_palette;
+mod config_doc;
 mod config_editor;
 mod connection_diagnostics;
 mod content;
