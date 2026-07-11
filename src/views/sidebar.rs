@@ -92,6 +92,10 @@ pub struct ZedisSidebar {
     /// Built once here so renders don't re-wrap the bytes every frame.
     logo: Arc<Image>,
 
+    /// Light variant (icon-light.png) shown on dark themes, where the
+    /// default mark doesn't contrast enough against the panel background.
+    logo_light: Arc<Image>,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -120,10 +124,14 @@ impl ZedisSidebar {
             cx.notify();
         }));
 
-        let logo_bytes = Assets::get("icon.png").map(|item| item.data).unwrap_or_default();
+        let load_logo = |name: &str| {
+            let bytes = Assets::get(name).map(|item| item.data).unwrap_or_default();
+            Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
+        };
         let mut this = Self {
             state: SidebarState::default(),
-            logo: Arc::new(Image::from_bytes(ImageFormat::Png, logo_bytes.to_vec())),
+            logo: load_logo("icon.png"),
+            logo_light: load_logo("icon-light.png"),
             _subscriptions: subscriptions,
         };
 
@@ -274,8 +282,18 @@ impl ZedisSidebar {
                     // Top slot is Home in both states: the collapsed rail keeps
                     // just the app logo (the expand toggle lives in the fixed
                     // bottom bar), the expanded sidebar adds the heading. The
-                    // logo is a full-colour bitmap, so no theme tinting here.
-                    .child(img(self.logo.clone()).flex_none().size(px(18.)))
+                    // logo is a bitmap (no theme tinting), so dark themes swap
+                    // in the light variant for contrast; picked per render so a
+                    // live theme switch updates it immediately.
+                    .child(
+                        img(if cx.theme().is_dark() {
+                            self.logo_light.clone()
+                        } else {
+                            self.logo.clone()
+                        })
+                        .flex_none()
+                        .size(px(18.)),
+                    )
                     .when(!sidebar_collapsed, |this| {
                         this.child(
                             Label::new(home_label.clone())

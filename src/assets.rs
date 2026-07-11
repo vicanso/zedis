@@ -10,6 +10,7 @@ use std::borrow::Cow;
 #[include = "icons/**/*.svg"]
 #[include = "commands.json"]
 #[include = "icon.png"]
+#[include = "icon-light.png"]
 #[include = "themes/*.json"]
 #[include = "fonts/*.ttf"]
 pub struct Assets;
