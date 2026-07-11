@@ -84,6 +84,12 @@ pub struct ZedisContent {
     should_focus: bool,
     focus_handle: FocusHandle,
 
+    /// Whether this content is the active tab. Only the active tab reacts to
+    /// the global `RouteChanged` / `ServerSelected` broadcasts, so parallel
+    /// tabs don't stomp on each other's connection or views; the
+    /// `ServerListUpdated` cleanup still applies to every tab.
+    active: bool,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -176,6 +182,15 @@ impl ZedisContent {
         self.status_bar.clone()
     }
 
+    /// Mark this content as the active tab (or not). Called by the root
+    /// (`main.rs`) when the active tab changes; see the `active` field.
+    /// Also flips the server state's `background` flag so an inactive tab's
+    /// heartbeat drops to the relaxed cadence (and recovers on activation).
+    pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.active = active;
+        self.server_state.update(cx, |state, _| state.set_background(!active));
+    }
+
     /// Sets up subscriptions to automatically clean up cached views when
     /// switching routes to optimize memory usage.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -189,6 +204,12 @@ impl ZedisContent {
         subscriptions.push(
             cx.subscribe(&global_state, |this, _global_state, event, cx| match event {
                 GlobalEvent::RouteChanged(route) => {
+                    // Inactive tabs keep their route/views frozen; the root
+                    // re-broadcasts the projected route when a tab is
+                    // re-activated.
+                    if !this.active {
+                        return;
+                    }
                     this.current_route = route.clone();
                     this.clear_views();
                     // clear_views drops the previously focused view, so the
@@ -202,6 +223,11 @@ impl ZedisContent {
                     cx.notify();
                 }
                 GlobalEvent::ServerSelected(server_id, db) => {
+                    // Only the active tab follows server selection — an
+                    // inactive tab must keep its own connection.
+                    if !this.active {
+                        return;
+                    }
                     if server_id.is_empty() {
                         // Disconnect / Home: drop the suite so a later
                         // reconnect never reuses another server's tree.
@@ -290,6 +316,7 @@ impl ZedisContent {
             key_tree_width,
             should_focus: false,
             focus_handle,
+            active: true,
             proto_editor: None,
             script_editor: None,
             _subscriptions: subscriptions,

@@ -1,4 +1,5 @@
 [common]
+tab_limit = "标签页已达上限(最多 8 个)"
 # --- 通用操作/按钮 ---
 submit = "提交"
 cancel = "取消"

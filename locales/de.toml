@@ -1,4 +1,5 @@
 [common]
+tab_limit = "Tab-Limit erreicht (max. 8)"
 # --- Allgemeine Aktionen/Schaltflächen ---
 submit = "Senden"
 cancel = "Abbrechen"

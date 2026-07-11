@@ -1,4 +1,5 @@
 [common]
+tab_limit = "Limite d'onglets atteinte (max. 8)"
 # --- Actions/Boutons généraux ---
 submit = "Envoyer"
 cancel = "Annuler"

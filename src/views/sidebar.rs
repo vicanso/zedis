@@ -540,15 +540,24 @@ impl ZedisSidebar {
                                 })
                             }),
                     )
-                    .on_click(move |_, _window, cx| {
-                        if is_current {
+                    .on_click(move |e, _window, cx| {
+                        // Cmd/Ctrl+click opens the server in a new workspace
+                        // tab (or jumps to the tab already bound to it) —
+                        // allowed even on the current server, which a plain
+                        // re-click ignores.
+                        let in_new_tab = e.modifiers().secondary();
+                        if is_current && !in_new_tab {
                             return;
                         }
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| {
                                 let id = server_id.to_string();
                                 let db = state.last_db_for(&id);
-                                state.connect_server(id, db, cx);
+                                if in_new_tab {
+                                    state.open_server_in_new_tab(id, db, cx);
+                                } else {
+                                    state.connect_server(id, db, cx);
+                                }
                             });
                         });
                     });

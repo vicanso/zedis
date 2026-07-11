@@ -1,4 +1,5 @@
 [common]
+tab_limit = "Límite de pestañas alcanzado (máx. 8)"
 # --- Acciones/Botones generales ---
 submit = "Enviar"
 cancel = "Cancelar"

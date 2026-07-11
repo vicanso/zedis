@@ -1,4 +1,5 @@
 [common]
+tab_limit = "Tab limit reached (max 8)"
 # --- General Actions/Buttons ---
 submit = "Submit"
 cancel = "Cancel"

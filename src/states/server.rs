@@ -190,6 +190,14 @@ pub struct ZedisServerState {
     /// the notification each tick.
     last_offline_notice: i64,
 
+    /// This state belongs to an inactive workspace tab: its status-bar
+    /// heartbeat keeps ticking, but `refresh_redis_info` throttles itself to a
+    /// relaxed cadence so background tabs don't poll Redis at full speed.
+    background: bool,
+
+    /// Unix seconds of the last refresh allowed through while `background`.
+    last_background_refresh: i64,
+
     /// Total number of keys in the database (from DBSIZE command)
     dbsize: Option<u64>,
 
@@ -270,6 +278,17 @@ impl ZedisServerState {
     /// Create a new server state instance
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mark this state as belonging to an inactive (background) workspace tab
+    /// — see the `background` field. Clearing the flag also resets the
+    /// throttle window so a re-activated tab refreshes on its next heartbeat
+    /// tick instead of waiting out the relaxed interval.
+    pub fn set_background(&mut self, background: bool) {
+        self.background = background;
+        if !background {
+            self.last_background_refresh = 0;
+        }
     }
 
     /// Reset all scan-related state (clears keys, cursors, etc.)

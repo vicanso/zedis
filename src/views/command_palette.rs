@@ -128,6 +128,12 @@ impl ZedisCommandPalette {
         }
     }
 
+    /// Rebind to another tab's server state (the root swaps this on
+    /// workspace-tab switch so the palette searches the active tab's keys).
+    pub fn set_server_state(&mut self, server_state: gpui::Entity<ZedisServerState>) {
+        self.server_state = server_state;
+    }
+
     /// Open the palette (or close it if already open). `render`
     /// performs the input reset+focus on open via `pending_focus`,
     /// since this is invoked from a global action handler with no

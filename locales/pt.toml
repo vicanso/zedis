@@ -1,4 +1,5 @@
 [common]
+tab_limit = "Limite de abas atingido (máx. 8)"
 # --- Ações/Botões gerais ---
 submit = "Enviar"
 cancel = "Cancelar"

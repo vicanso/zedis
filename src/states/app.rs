@@ -334,6 +334,9 @@ pub enum GlobalEvent {
     Notification(NotificationAction),
     /// User selected a different server
     ServerSelected(SharedString, usize),
+    /// Ask the workspace root (`main.rs`) to open the connection in a new
+    /// content tab — or re-activate the tab already bound to it.
+    ServerOpenInNewTab(SharedString, usize),
     /// Server list config has been modified (add/remove/edit).
     ServerListUpdated,
     /// Route has been changed.
@@ -425,6 +428,12 @@ pub struct ZedisAppState {
     /// left it on instead of always DB 0. Keyed by server id.
     #[serde(default)]
     last_db: HashMap<String, usize>,
+    /// Workspace tabs from the last session — every tab's `(server_id, db)`
+    /// in strip order (tabs still on Home are skipped). Restored at startup;
+    /// `selected_server` decides which of them starts active. Empty for the
+    /// everyday single-tab session, so the config stays unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    open_tabs: Vec<(String, usize)>,
     tray_enabled: Option<bool>,
     /// When `true` (default), deleting a single key first stashes its DUMP
     /// payload into the local recycle bin (24h retention) so it can be
@@ -971,6 +980,13 @@ impl ZedisAppState {
     pub fn last_db_for(&self, server_id: &str) -> usize {
         self.last_db.get(server_id).copied().unwrap_or(0)
     }
+    /// The persisted workspace-tab list — see the `open_tabs` field.
+    pub fn open_tabs(&self) -> &[(String, usize)] {
+        &self.open_tabs
+    }
+    pub fn set_open_tabs(&mut self, open_tabs: Vec<(String, usize)>) {
+        self.open_tabs = open_tabs;
+    }
     /// Drop the active connection (Home click): clear the snapshot, announce
     /// the empty selection, and route to Home.
     pub fn clear_selected_server(&mut self, cx: &mut Context<Self>) {
@@ -1000,6 +1016,13 @@ impl ZedisAppState {
             },
             cx,
         );
+    }
+    /// Request opening `(id, db)` in a new workspace tab (sidebar cmd+click).
+    /// The root (`Zedis` in main.rs) owns the tab list, so this only
+    /// broadcasts the request; the root creates or re-activates the tab and
+    /// then projects the selection back through `connect_server`.
+    pub fn open_server_in_new_tab(&mut self, id: String, db: usize, cx: &mut Context<Self>) {
+        cx.emit(GlobalEvent::ServerOpenInNewTab(id.into(), db));
     }
     /// Activate a connection: routes to it, keeping the current server view
     /// when one is active (the status-bar DB switch) and falling back to the

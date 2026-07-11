@@ -57,6 +57,12 @@ impl ZedisRecentKeysPalette {
         }
     }
 
+    /// Rebind to another tab's server state (the root swaps this on
+    /// workspace-tab switch so the palette lists the active tab's keys).
+    pub fn set_server_state(&mut self, server_state: gpui::Entity<ZedisServerState>) {
+        self.server_state = server_state;
+    }
+
     /// Open (or close if already open). Input reset/focus is deferred to
     /// `render` because the global action handler has no `Window`.
     pub fn toggle(&mut self, cx: &mut Context<Self>) {

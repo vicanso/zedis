@@ -9,24 +9,25 @@ use crate::helpers::{
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
-    SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_update, save_app_state,
-    update_app_state_and_save,
+    SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_sidebar,
+    i18n_update, save_app_state, update_app_state_and_save,
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar,
     open_about_window, open_migration_import_window, open_settings_window, open_trash_dialog,
 };
 use gpui::{
-    App, Bounds, Entity, Menu, MenuItem, Pixels, Point, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance,
-    WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
+    App, Bounds, Entity, Menu, MenuItem, Pixels, Point, SharedString, Task, TitlebarOptions, WeakEntity, Window,
+    WindowAppearance, WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
 };
 use gpui_component::{
-    ActiveTheme, Root, StyledExt, Theme, ThemeMode, ThemeRegistry, WindowExt,
+    ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, ThemeMode, ThemeRegistry, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     notification::Notification,
     scroll::ScrollableElement,
+    tab::{Tab, TabBar},
     text::{TextView, TextViewStyle},
     v_flex,
 };
@@ -51,6 +52,11 @@ rust_i18n::i18n!(
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
+/// Upper bound on workspace tabs — each tab holds its own `ZedisServerState`
+/// (heartbeat, pooled connections, loaded keys), so the cap keeps a runaway
+/// tab strip from piling up background Redis traffic.
+const MAX_TABS: usize = 8;
+
 mod assets;
 mod components;
 mod connection;
@@ -64,13 +70,27 @@ mod states;
 mod tray;
 mod views;
 
+/// One workspace tab: a content column bound to a connection. `server_id`
+/// stays empty until a server is selected in this tab.
+struct ContentTab {
+    server_id: String,
+    db: usize,
+    content: Entity<ZedisContent>,
+}
+
 pub struct Zedis {
     pending_notification: Option<Notification>,
     last_bounds: Bounds<Pixels>,
     save_task: Option<Task<()>>,
     // views
     sidebar: Entity<ZedisSidebar>,
-    content: Entity<ZedisContent>,
+    /// Workspace tabs (single tab today; the tab bar UI comes later). Only
+    /// the active tab's content reacts to global route/server broadcasts.
+    tabs: Vec<ContentTab>,
+    active_tab: usize,
+    /// A cmd+click "open in new tab" request awaiting `render` (which has the
+    /// `Window` needed to build a `ZedisContent`).
+    pending_new_tab: Option<(String, usize)>,
     command_palette: Entity<ZedisCommandPalette>,
     recent_keys_palette: Entity<ZedisRecentKeysPalette>,
     shortcuts_overlay: Entity<ZedisShortcutsOverlay>,
@@ -90,38 +110,117 @@ impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
         let content = cx.new(|cx| ZedisContent::new(window, cx));
+        let mut tabs = vec![ContentTab {
+            server_id: String::new(),
+            db: 0,
+            content,
+        }];
+        let mut active_tab = 0;
+        // Restore the last session's workspace tabs. Only the strip layout is
+        // rebuilt here — a restored tab's connection loads lazily on first
+        // activation (its server state stays empty, so its heartbeat is idle),
+        // and the startup composer below activates the remembered
+        // `selected_server`, which lands on the matching tab.
+        let (saved_tabs, selected) = {
+            let store = cx.global::<ZedisGlobalStore>().read(cx);
+            let saved: Vec<(String, usize)> = store
+                .open_tabs()
+                .iter()
+                .filter(|(id, _)| get_server(id).is_ok())
+                .cloned()
+                .collect();
+            (saved, store.selected_server().cloned())
+        };
+        if let Some((id, db)) = saved_tabs.first() {
+            tabs[0].server_id = id.clone();
+            tabs[0].db = *db;
+        }
+        for (id, db) in saved_tabs.iter().skip(1) {
+            let content = cx.new(|cx| ZedisContent::new(window, cx));
+            content.update(cx, |content, cx| content.set_active(false, cx));
+            tabs.push(ContentTab {
+                server_id: id.clone(),
+                db: *db,
+                content,
+            });
+        }
+        if let Some((id, db)) = selected
+            && let Some(ix) = tabs.iter().position(|tab| tab.server_id == id && tab.db == db)
+            && ix != 0
+        {
+            active_tab = ix;
+            tabs[0].content.update(cx, |content, cx| content.set_active(false, cx));
+            tabs[ix].content.update(cx, |content, cx| content.set_active(true, cx));
+        }
         // The palette fuzzy-searches the active connection's loaded keys, so
-        // hand it the content's shared ServerState entity.
-        let server_state = content.read(cx).server_state();
+        // hand it the active tab's shared ServerState entity.
+        let server_state = tabs[active_tab].content.read(cx).server_state();
         let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), window, cx));
         let recent_keys_palette = cx.new(|cx| ZedisRecentKeysPalette::new(server_state, window, cx));
         let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
         let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
-            if let GlobalEvent::Notification(e) = event {
-                let message = e.message.clone();
-                let mut notification = match e.category {
-                    NotificationCategory::Info => {
-                        info!(message = %message, "info notification");
-                        Notification::info(message)
+            match event {
+                GlobalEvent::Notification(e) => {
+                    let message = e.message.clone();
+                    let mut notification = match e.category {
+                        NotificationCategory::Info => {
+                            info!(message = %message, "info notification");
+                            Notification::info(message)
+                        }
+                        NotificationCategory::Success => {
+                            info!(message = %message, "success notification");
+                            Notification::success(message)
+                        }
+                        NotificationCategory::Warning => {
+                            info!(message = %message, "warning notification");
+                            Notification::warning(message)
+                        }
+                        NotificationCategory::Error => {
+                            error!(message = %message, "error notification");
+                            Notification::error(message)
+                        }
+                    };
+                    if let Some(title) = e.title.as_ref() {
+                        notification = notification.title(title);
                     }
-                    NotificationCategory::Success => {
-                        info!(message = %message, "success notification");
-                        Notification::success(message)
-                    }
-                    NotificationCategory::Warning => {
-                        info!(message = %message, "warning notification");
-                        Notification::warning(message)
-                    }
-                    NotificationCategory::Error => {
-                        error!(message = %message, "error notification");
-                        Notification::error(message)
-                    }
-                };
-                if let Some(title) = e.title.as_ref() {
-                    notification = notification.title(title);
+                    this.pending_notification = Some(notification);
                 }
-                this.pending_notification = Some(notification);
+                GlobalEvent::ServerSelected(server_id, db) => {
+                    // Track the active tab's connection identity. Deliberately
+                    // no "jump to an existing tab" here: the contents'
+                    // subscriptions run before this one, so by the time this
+                    // fired the active tab has already followed the selection.
+                    // Normal clicks navigate the current tab (browser-like);
+                    // only the explicit open-in-new-tab path below dedupes
+                    // onto an existing tab.
+                    let tab = &mut this.tabs[this.active_tab];
+                    if server_id.is_empty() {
+                        tab.server_id.clear();
+                        tab.db = 0;
+                    } else {
+                        tab.server_id = server_id.to_string();
+                        tab.db = *db;
+                    }
+                    this.persist_tabs(cx);
+                }
+                GlobalEvent::ServerOpenInNewTab(server_id, db) => {
+                    if let Some(ix) = this
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.server_id.as_str() == server_id.as_str() && tab.db == *db)
+                    {
+                        this.activate_tab(ix, cx);
+                        this.project_active_tab(cx);
+                    } else if this.tabs.len() >= MAX_TABS {
+                        this.pending_notification = Some(Notification::warning(i18n_common(cx, "tab_limit")));
+                    } else {
+                        // Creating a `ZedisContent` needs a `Window`; stash the
+                        // request and let `render` build the tab.
+                        this.pending_new_tab = Some((server_id.to_string(), *db));
+                    }
+                }
+                _ => {}
             }
             cx.notify();
         })
@@ -173,7 +272,9 @@ impl Zedis {
         Self {
             sidebar,
             save_task: None,
-            content,
+            tabs,
+            active_tab,
+            pending_new_tab: None,
             command_palette,
             recent_keys_palette,
             shortcuts_overlay,
@@ -186,6 +287,96 @@ impl Zedis {
             update_task: None,
             download_task: None,
         }
+    }
+
+    /// The active tab's content column (what the root lays out and whose
+    /// status bar is shown).
+    fn active_content(&self) -> Entity<ZedisContent> {
+        self.tabs[self.active_tab].content.clone()
+    }
+
+    /// Switch the active tab: the outgoing tab stops reacting to global
+    /// route/server broadcasts, the incoming one resumes, and the palettes
+    /// are rebound to the incoming tab's server state. No-op when `ix` is
+    /// already active (or out of range).
+    fn activate_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix == self.active_tab || ix >= self.tabs.len() {
+            return;
+        }
+        self.tabs[self.active_tab]
+            .content
+            .update(cx, |content, cx| content.set_active(false, cx));
+        self.active_tab = ix;
+        self.tabs[ix]
+            .content
+            .update(cx, |content, cx| content.set_active(true, cx));
+        self.rebind_palettes(cx);
+        cx.notify();
+    }
+
+    /// Point the ⌘K / ⌘P palettes at the active tab's server state so they
+    /// search the right connection's keys after a tab switch.
+    fn rebind_palettes(&mut self, cx: &mut Context<Self>) {
+        let server_state = self.tabs[self.active_tab].content.read(cx).server_state();
+        self.command_palette
+            .update(cx, |palette, _| palette.set_server_state(server_state.clone()));
+        self.recent_keys_palette
+            .update(cx, |palette, _| palette.set_server_state(server_state));
+    }
+
+    /// Project the active tab's connection into the global store so the
+    /// single-selection consumers (sidebar highlight, title bar, tray, status
+    /// bar, …) follow the tab switch. Safe to call with an unchanged
+    /// selection: `connect_server` re-announces it, and the active content's
+    /// `select` is a no-op for the same `(server_id, db)`.
+    fn project_active_tab(&mut self, cx: &mut Context<Self>) {
+        let (id, db) = {
+            let tab = &self.tabs[self.active_tab];
+            (tab.server_id.clone(), tab.db)
+        };
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+            if id.is_empty() {
+                state.clear_selected_server(cx);
+            } else {
+                state.connect_server(id, db, cx);
+            }
+        });
+    }
+
+    /// Close a tab, dropping its content entity (which tears down the tab's
+    /// subscriptions, server state and connections). The last tab can't be
+    /// closed; closing the active tab activates its left neighbor (or the
+    /// new last tab) and projects that tab's connection.
+    fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.tabs.len() <= 1 || ix >= self.tabs.len() {
+            return;
+        }
+        let was_active = ix == self.active_tab;
+        self.tabs.remove(ix);
+        if self.active_tab > ix {
+            self.active_tab -= 1;
+        } else if was_active {
+            self.active_tab = ix.min(self.tabs.len() - 1);
+            self.tabs[self.active_tab]
+                .content
+                .update(cx, |content, cx| content.set_active(true, cx));
+            self.rebind_palettes(cx);
+            self.project_active_tab(cx);
+        }
+        self.persist_tabs(cx);
+        cx.notify();
+    }
+
+    /// Persist the strip's `(server_id, db)` list so the next launch restores
+    /// the same workspace tabs. Tabs still on Home (empty id) are skipped.
+    fn persist_tabs(&self, cx: &mut Context<Self>) {
+        let tabs: Vec<(String, usize)> = self
+            .tabs
+            .iter()
+            .filter(|tab| !tab.server_id.is_empty())
+            .map(|tab| (tab.server_id.clone(), tab.db))
+            .collect();
+        update_app_state_and_save(cx, "save_open_tabs", move |state, _| state.set_open_tabs(tabs.clone()));
     }
 
     /// Kick off a background check for a newer release. A `manual` check always
@@ -408,6 +599,61 @@ impl Zedis {
     /// palette can hand off to it via a dispatched action.
     pub fn toggle_shortcuts(&mut self, cx: &mut Context<Self>) {
         self.shortcuts_overlay.update(cx, |overlay, cx| overlay.toggle(cx));
+    }
+
+    /// The workspace tab strip. Hidden with a single tab (the everyday
+    /// single-connection layout stays untouched); with more, one tab per
+    /// content column: click activates, × closes.
+    fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if self.tabs.len() <= 1 {
+            return None;
+        }
+        let home_label = i18n_sidebar(cx, "home");
+        let weak = cx.entity().downgrade();
+        let mut bar = TabBar::new("content-tabs").selected_index(self.active_tab).on_click({
+            let weak = weak.clone();
+            move |ix: &usize, _window, cx| {
+                let ix = *ix;
+                if let Some(view) = weak.upgrade() {
+                    view.update(cx, |this, cx| {
+                        this.activate_tab(ix, cx);
+                        this.project_active_tab(cx);
+                    });
+                }
+            }
+        });
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            let title: SharedString = if tab.server_id.is_empty() {
+                home_label.clone()
+            } else {
+                let name = get_server(&tab.server_id)
+                    .map(|server| server.name)
+                    .unwrap_or_else(|_| tab.server_id.clone());
+                if tab.db > 0 {
+                    format!("{name} [{}]", tab.db).into()
+                } else {
+                    name.into()
+                }
+            };
+            let weak = weak.clone();
+            bar = bar.child(
+                Tab::new().label(title).suffix(
+                    Button::new(("content-tab-close", ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .on_click(move |_, _window, cx| {
+                            // Keep the click from also selecting the tab
+                            // underneath — closing is not activating.
+                            cx.stop_propagation();
+                            if let Some(view) = weak.upgrade() {
+                                view.update(cx, |this, cx| this.close_tab(ix, cx));
+                            }
+                        }),
+                ),
+            );
+        }
+        Some(bar)
     }
 
     fn render_titlebar(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -662,6 +908,26 @@ impl Render for Zedis {
         if let Some(font_size) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
             window.set_rem_size(font_size);
         }
+        if let Some((id, db)) = self.pending_new_tab.take() {
+            // Build the new tab's content now that we have the `Window`, make
+            // it the active tab, then project the connection — the fresh
+            // content (already subscribed) receives the `ServerSelected` and
+            // loads the server.
+            let content = cx.new(|cx| ZedisContent::new(window, cx));
+            self.tabs[self.active_tab]
+                .content
+                .update(cx, |content, cx| content.set_active(false, cx));
+            self.tabs.push(ContentTab {
+                server_id: id.clone(),
+                db,
+                content,
+            });
+            self.active_tab = self.tabs.len() - 1;
+            self.rebind_palettes(cx);
+            cx.global::<ZedisGlobalStore>()
+                .clone()
+                .update(cx, |state, cx| state.connect_server(id, db, cx));
+        }
 
         // The status bar spans the full window width as a bottom row (beneath the
         // sidebar + content), so it's rendered here at the root rather than inside
@@ -669,7 +935,7 @@ impl Render for Zedis {
         // route match, where Home/Settings/Protos/Scripts have no status bar).
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
         let show_status_bar = route.is_server();
-        let status_bar = self.content.read(cx).status_bar();
+        let status_bar = self.active_content().read(cx).status_bar();
         // Sidebar collapses to a narrow icon-only rail; the toggle saves state +
         // refreshes windows, so this re-reads the width on the next render.
         let sidebar_width = if cx.global::<ZedisGlobalStore>().read(cx).sidebar_collapsed() {
@@ -697,7 +963,17 @@ impl Render for Zedis {
                     .w_full()
                     .bg(cx.theme().background)
                     .child(div().w(sidebar_width).flex_none().h_full().child(self.sidebar.clone()))
-                    .child(self.content.clone())
+                    // Tab strip lives inside the content column (above it),
+                    // so the sidebar keeps the full body height and the strip
+                    // matches the content width.
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .children(self.render_tab_bar(cx))
+                            .child(self.active_content()),
+                    )
                     .children(dialog_layer)
                     .children(notification_layer),
             )

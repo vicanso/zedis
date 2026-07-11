@@ -622,6 +622,17 @@ impl ZedisServerState {
         if self.manually_offline {
             return;
         }
+        // Inactive workspace tabs poll at a relaxed cadence: the 2s status-bar
+        // heartbeat keeps firing, but only one refresh per interval gets
+        // through. Re-activating the tab resets the window (`set_background`).
+        const BACKGROUND_REFRESH_INTERVAL: i64 = 30;
+        if self.background {
+            let now = unix_ts();
+            if now - self.last_background_refresh < BACKGROUND_REFRESH_INTERVAL {
+                return;
+            }
+            self.last_background_refresh = now;
+        }
 
         let slow_logs_check_interval = 60;
         let mut last_slow_logs_checked_at = self.last_slow_logs_checked_at;
