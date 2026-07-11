@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{RedisServer, get_connection_manager, open_single_connection};
+use crate::connection::{Capability, RedisServer, get_connection_manager, open_single_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{format_duration, get_mono_font_family};
@@ -156,7 +156,9 @@ impl ClientsTableDelegate {
         let db_width = 100.;
         let flags_width = 80.;
         let addr_width = 200.;
-        let action_width = if readonly { 0. } else { 60. };
+        // CLIENT KILL is gated by the capability matrix.
+        let can_kill = Capability::KillClient.allowed(readonly);
+        let action_width = if can_kill { 60. } else { 0. };
         let remaining_width = content_width.as_f32()
             - id_width
             - name_width
@@ -198,7 +200,7 @@ impl ClientsTableDelegate {
             flags_width,
             cmd_width,
         ];
-        if !readonly {
+        if can_kill {
             column_keys.push(COLUMN_ACTION);
             widths.push(action_width);
         }
@@ -707,6 +709,10 @@ impl ZedisClientsManager {
     /// flagged S/M are skipped, same rule as the per-row button). The confirm
     /// prompt names the exact count and escalates on production-tagged servers.
     fn handle_batch_kill(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // Defense in depth — the button is hidden without KillClient.
+        if !self.server_state.read(cx).can(Capability::KillClient) {
+            return;
+        }
         let targets: Vec<(SharedString, RedisServer)> = self
             .table_state
             .read(cx)
@@ -890,7 +896,7 @@ impl gpui::Render for ZedisClientsManager {
                                         this.handle_filter(cx);
                                     })),
                             )
-                            .when(!readonly, |this| {
+                            .when(Capability::KillClient.allowed(readonly), |this| {
                                 this.child(
                                     Button::new("batch-kill-clients")
                                         .outline()

@@ -20,7 +20,9 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, get_connection_manager},
+    connection::{
+        AclUser, Capability, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, get_connection_manager,
+    },
     error::Error,
     helpers::get_mono_font_family,
     states::{
@@ -330,6 +332,9 @@ impl ZedisAclManager {
     }
 
     fn confirm_delete(&mut self, username: SharedString, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::AclWrite) {
+            return;
+        }
         let entity = cx.entity().downgrade();
         let server_id = self.server_state.read(cx).server_id().to_string();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
@@ -374,6 +379,9 @@ impl ZedisAclManager {
 
 impl gpui::Render for ZedisAclManager {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // ACL SETUSER / DELUSER are server writes (Capability::AclWrite);
+        // read-only keeps the list and whoami visible but hides the editors.
+        let can_write = self.server_state.read(cx).can(Capability::AclWrite);
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
@@ -422,21 +430,23 @@ impl gpui::Render for ZedisAclManager {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(
-                        Button::new("acl-add-user")
-                            .outline()
-                            .small()
-                            .icon(IconName::Plus)
-                            .label(i18n_acl(cx, "add_user"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let target = AclUser {
-                                    flags: vec!["on".into()],
-                                    enabled: true,
-                                    ..Default::default()
-                                };
-                                this.open_editor(target, true, window, cx);
-                            })),
-                    )
+                    .when(can_write, |this| {
+                        this.child(
+                            Button::new("acl-add-user")
+                                .outline()
+                                .small()
+                                .icon(IconName::Plus)
+                                .label(i18n_acl(cx, "add_user"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let target = AclUser {
+                                        flags: vec!["on".into()],
+                                        enabled: true,
+                                        ..Default::default()
+                                    };
+                                    this.open_editor(target, true, window, cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("acl-refresh")
                             .outline()
@@ -501,6 +511,7 @@ impl gpui::Render for ZedisAclManager {
 
 impl ZedisAclManager {
     fn render_user_row(&self, idx: usize, user: AclUser, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let can_write = self.server_state.read(cx).can(Capability::AclWrite);
         let muted = cx.theme().muted_foreground;
         let bg = cx.theme().background;
         let border = cx.theme().border;
@@ -569,31 +580,33 @@ impl ZedisAclManager {
                             .child(Label::new(user.username.clone()).text_color(cx.theme().foreground))
                             .child(Label::new(flags_label).text_color(muted).text_xs()),
                     )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new(("acl-edit", idx))
-                                    .ghost()
-                                    .small()
-                                    .icon(CustomIconName::FilePenLine)
-                                    .tooltip(i18n_acl(cx, "edit_tooltip"))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_editor(user_for_edit.clone(), false, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(("acl-delete", idx))
-                                    .ghost()
-                                    .small()
-                                    .disabled(is_default)
-                                    .icon(CustomIconName::FileXCorner)
-                                    .tooltip(i18n_acl(cx, "delete_tooltip"))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.confirm_delete(user_for_delete.clone(), window, cx);
-                                    })),
-                            ),
-                    ),
+                    .when(can_write, |this| {
+                        this.child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new(("acl-edit", idx))
+                                        .ghost()
+                                        .small()
+                                        .icon(CustomIconName::FilePenLine)
+                                        .tooltip(i18n_acl(cx, "edit_tooltip"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_editor(user_for_edit.clone(), false, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("acl-delete", idx))
+                                        .ghost()
+                                        .small()
+                                        .disabled(is_default)
+                                        .icon(CustomIconName::FileXCorner)
+                                        .tooltip(i18n_acl(cx, "delete_tooltip"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.confirm_delete(user_for_delete.clone(), window, cx);
+                                        })),
+                                ),
+                        )
+                    }),
             )
             .child(
                 h_flex()

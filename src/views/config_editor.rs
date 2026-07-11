@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::{DangerKind, get_connection_manager, get_server, get_servers},
+    connection::{Capability, DangerKind, get_connection_manager, get_server, get_servers},
     error::Error,
     helpers::{ConfigEditAction, card_background, get_mono_font_family},
     states::{
@@ -1511,6 +1511,10 @@ impl ZedisConfigEditor {
     }
 
     fn save_config(&mut self, key: SharedString, value: SharedString, cx: &mut Context<Self>) {
+        // Defense in depth — the pencil is hidden without ConfigWrite.
+        if !self.server_state.read(cx).can(Capability::ConfigWrite) {
+            return;
+        }
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
@@ -1694,6 +1698,9 @@ impl ZedisConfigEditor {
         let card_bg = card_background(cx);
         let radius = cx.theme().radius;
         let kind = config_kind(&key, &value);
+        // CONFIG SET is a server write — hide the pencil without
+        // Capability::ConfigWrite (read-only keeps values + help visible).
+        let can_write = self.server_state.read(cx).can(Capability::ConfigWrite);
 
         if self.editing_key.as_ref() == Some(&key) {
             let save_key = key.clone();
@@ -1867,39 +1874,43 @@ impl ZedisConfigEditor {
                                 .when_some(doc, |this, doc| {
                                     this.child(help_popover(SharedString::from(format!("config-help-{key}")), doc))
                                 })
-                                .child(
-                                    Button::new(SharedString::from(format!("config-edit-{key}")))
-                                        .xsmall()
-                                        .ghost()
-                                        .icon(Icon::new(CustomIconName::FilePenLine))
-                                        .tooltip(i18n_config_editor(cx, "edit_tooltip"))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.editing_key = Some(edit_key.clone());
-                                            let kind = config_kind(&edit_key, &edit_value);
-                                            match kind {
-                                                ConfigKind::Enum(options) => {
-                                                    this.build_enum_select(options, &edit_value, window, cx)
+                                .when(can_write, |this| {
+                                    this.child(
+                                        Button::new(SharedString::from(format!("config-edit-{key}")))
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(Icon::new(CustomIconName::FilePenLine))
+                                            .tooltip(i18n_config_editor(cx, "edit_tooltip"))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.editing_key = Some(edit_key.clone());
+                                                let kind = config_kind(&edit_key, &edit_value);
+                                                match kind {
+                                                    ConfigKind::Enum(options) => {
+                                                        this.build_enum_select(options, &edit_value, window, cx)
+                                                    }
+                                                    ConfigKind::Bool => {
+                                                        this.editing_bool = edit_value.as_ref() == "yes"
+                                                    }
+                                                    // Focus the input so the user can type at once — and so the
+                                                    // Esc-to-cancel capture handler is on the focus path.
+                                                    ConfigKind::Number => this.number_state.update(cx, |state, cx| {
+                                                        state.set_value(edit_value.clone(), window, cx);
+                                                        state.focus(window, cx);
+                                                    }),
+                                                    ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
+                                                        state.set_value(edit_value.clone(), window, cx);
+                                                        state.focus(window, cx);
+                                                    }),
                                                 }
-                                                ConfigKind::Bool => this.editing_bool = edit_value.as_ref() == "yes",
-                                                // Focus the input so the user can type at once — and so the
-                                                // Esc-to-cancel capture handler is on the focus path.
-                                                ConfigKind::Number => this.number_state.update(cx, |state, cx| {
-                                                    state.set_value(edit_value.clone(), window, cx);
-                                                    state.focus(window, cx);
-                                                }),
-                                                ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
-                                                    state.set_value(edit_value.clone(), window, cx);
-                                                    state.focus(window, cx);
-                                                }),
-                                            }
-                                            // Bool / enum have no text input to focus; focus the editor root
-                                            // so Esc still reaches the capture handler above.
-                                            if matches!(kind, ConfigKind::Bool | ConfigKind::Enum(_)) {
-                                                this.focus_handle.focus(window, cx);
-                                            }
-                                            cx.notify();
-                                        })),
-                                ),
+                                                // Bool / enum have no text input to focus; focus the editor root
+                                                // so Esc still reaches the capture handler above.
+                                                if matches!(kind, ConfigKind::Bool | ConfigKind::Enum(_)) {
+                                                    this.focus_handle.focus(window, cx);
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                }),
                         ),
                 )
                 .child(div().mt_2().overflow_hidden().child(value_el))
