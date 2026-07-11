@@ -30,7 +30,7 @@ use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Windo
 use gpui_component::button::ButtonVariants;
 use gpui_component::notification::Notification;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -526,6 +526,10 @@ pub struct ZedisClientsManager {
     error: Option<SharedString>,
     _fetch_task: Option<Task<()>>,
     _kill_task: Option<Task<()>>,
+    /// One-shot batch kill over the current filtered rows; aggregates the
+    /// outcome into a single notification + refresh (unlike the per-row
+    /// channel, which notifies and refetches per kill).
+    _batch_kill_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -571,6 +575,7 @@ impl ZedisClientsManager {
             error: None,
             _fetch_task: None,
             _kill_task: None,
+            _batch_kill_task: None,
             _subscriptions: subscriptions,
         };
 
@@ -697,6 +702,105 @@ impl ZedisClientsManager {
             }
         }));
     }
+
+    /// Confirm-and-kill every *currently filtered* client (replica links
+    /// flagged S/M are skipped, same rule as the per-row button). The confirm
+    /// prompt names the exact count and escalates on production-tagged servers.
+    fn handle_batch_kill(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let targets: Vec<(SharedString, RedisServer)> = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .rows
+            .iter()
+            .filter(|row| !row.flags.contains('S') && !row.flags.contains('M'))
+            .map(|row| (row.id.clone(), row.node.clone()))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let title = i18n_clients_manager(cx, "batch_kill_confirm_title");
+        let prompt = t!(
+            "clients_manager.batch_kill_confirm_prompt",
+            count = targets.len(),
+            locale = locale
+        )
+        .to_string();
+        let prompt = escalate_dangerous_body(cx, &server_id, prompt);
+        let entity = cx.entity().clone();
+
+        ZedisDialog::new_alert(title, prompt)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                let targets = targets.clone();
+                entity.update(cx, |this, cx| {
+                    this.batch_kill(targets, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Kill the given clients one by one (`CLIENT KILL ID`, each on its own
+    /// node), then surface a single aggregated notification and refresh once.
+    fn batch_kill(&mut self, targets: Vec<(SharedString, RedisServer)>, cx: &mut gpui::Context<Self>) {
+        let db = self.server_state.read(cx).db();
+        let table_state = self.table_state.clone();
+
+        self._batch_kill_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut ok = 0usize;
+                let mut failed = 0usize;
+                for (id, node) in targets {
+                    let result = async {
+                        let mut conn = open_single_connection(&node, db, true).await?;
+                        let _: String = cmd("CLIENT")
+                            .arg("KILL")
+                            .arg("ID")
+                            .arg(id.as_ref())
+                            .query_async(&mut conn)
+                            .await?;
+                        Ok::<(), Error>(())
+                    }
+                    .await;
+                    match result {
+                        Ok(()) => ok += 1,
+                        Err(e) => {
+                            error!(error = %e, id = id.as_ref(), "batch client kill fail");
+                            failed += 1;
+                        }
+                    }
+                }
+                (ok, failed)
+            });
+
+            let (ok, failed) = task.await;
+            let _ = handle.update(cx, move |this, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                if failed == 0 {
+                    let msg = t!("clients_manager.batch_kill_success", count = ok, locale = locale);
+                    this.server_state.update(cx, |state, cx| {
+                        state.emit_success_notification(msg.into(), "CLIENT KILL".into(), cx);
+                    });
+                } else {
+                    let msg = t!(
+                        "clients_manager.batch_kill_partial",
+                        ok = ok,
+                        failed = failed,
+                        locale = locale
+                    );
+                    this.server_state.update(cx, |state, cx| {
+                        state.emit_error_notification(msg.into(), cx);
+                    });
+                }
+                this.fetch_clients(table_state, cx);
+            });
+        }));
+    }
 }
 
 impl gpui::Render for ZedisClientsManager {
@@ -710,6 +814,17 @@ impl gpui::Render for ZedisClientsManager {
             (i18n_clients_manager(cx, "no_clients"), cx.theme().muted_foreground)
         };
         let total = self.table_state.read(cx).delegate().all_rows.len();
+        let readonly = self.table_state.read(cx).delegate().readonly;
+        // Batch kill targets = the filtered rows minus replica links (S/M),
+        // mirroring the per-row kill button's rule.
+        let killable = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .rows
+            .iter()
+            .filter(|row| !row.flags.contains('S') && !row.flags.contains('M'))
+            .count();
         let count_label = if self.row_count == total {
             format!("({})", total)
         } else {
@@ -775,6 +890,19 @@ impl gpui::Render for ZedisClientsManager {
                                         this.handle_filter(cx);
                                     })),
                             )
+                            .when(!readonly, |this| {
+                                this.child(
+                                    Button::new("batch-kill-clients")
+                                        .outline()
+                                        .small()
+                                        .icon(Icon::new(CustomIconName::FileXCorner))
+                                        .tooltip(i18n_clients_manager(cx, "batch_kill_tooltip"))
+                                        .disabled(killable == 0)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.handle_batch_kill(window, cx);
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("refresh-clients")
                                     .outline()

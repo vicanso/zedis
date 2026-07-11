@@ -38,7 +38,6 @@ ignore = [
     # Unmaintained (informational warnings, not vulnerabilities) — all deep
     # transitive deps from the pinned gpui / gpui-component / russh trees we
     # can't swap, none with a maintained drop-in replacement:
-    "RUSTSEC-2025-0052", # async-std       (gpui http_client -> async-tar)
     "RUSTSEC-2024-0384", # instant         (gpui-component, notify-types)
     "RUSTSEC-2024-0436", # paste           (gpui-component, metal, ...)
     "RUSTSEC-2024-0370", # proc-macro-error (build-time-only proc-macro dep)
