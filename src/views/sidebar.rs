@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use crate::{
-    assets::CustomIconName,
+    assets::{Assets, CustomIconName},
     connection::get_servers,
     constants::EDITOR_KEY_BAR_HEIGHT,
     helpers::resolve_tag_color,
-    states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, update_app_state_and_save},
+    states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save},
 };
-use gpui::{Context, Hsla, SharedString, Subscription, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Hsla, Image, ImageFormat, SharedString, Subscription, Window, div, img, prelude::*, px, rgb};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
@@ -30,6 +30,7 @@ use gpui_component::{
     list::ListItem,
     v_flex,
 };
+use std::sync::Arc;
 use tracing::info;
 
 /// Internal state for sidebar component
@@ -87,6 +88,10 @@ pub struct ZedisSidebar {
     /// Internal state with cached server list
     state: SidebarState,
 
+    /// App logo (bundled icon.png), decoded lazily by gpui's image cache.
+    /// Built once here so renders don't re-wrap the bytes every frame.
+    logo: Arc<Image>,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -115,8 +120,10 @@ impl ZedisSidebar {
             cx.notify();
         }));
 
+        let logo_bytes = Assets::get("icon.png").map(|item| item.data).unwrap_or_default();
         let mut this = Self {
             state: SidebarState::default(),
+            logo: Arc::new(Image::from_bytes(ImageFormat::Png, logo_bytes.to_vec())),
             _subscriptions: subscriptions,
         };
 
@@ -195,7 +202,7 @@ impl ZedisSidebar {
         // is hard-coded in `main.rs`'s window title, `tray.rs`, and
         // `about.rs`; following the same pattern rather than adding
         // an APP_NAME constant just for this one site).
-        let home_label = SharedString::from("Zedis");
+        let home_label = SharedString::from("ZEDIS");
         let ungrouped_label = i18n_servers(cx, "ungrouped_label");
         // `list_active` from the theme is intentionally subtle for
         // tightly-packed list views, but in this sparse sidebar it
@@ -252,34 +259,11 @@ impl ZedisSidebar {
         // no server is selected (server_id empty) and the route is
         // one of the server-context routes.
         let is_home_current = is_match_route && current_server_id.is_empty();
-        // Collapse / expand toggle, placed INSIDE the home item so it shares the
-        // same row background. Default (Medium) size renders an icon button at
-        // `size_8` (32px) — exactly the `h_8` home-row height — so the chevron
-        // fills the row and is a full-height tap target. The click closure stops
-        // propagation so it toggles collapse without also firing the home row's
-        // on_click.
-        let toggle_btn = Button::new("sidebar-collapse-toggle")
-            .ghost()
-            .icon(if sidebar_collapsed {
-                IconName::ChevronRight
-            } else {
-                IconName::ChevronLeft
-            })
-            .on_click(move |_, _window, cx| {
-                // gpui-component Button doesn't stop normal-click propagation, so
-                // without this the click bubbles to the home_item's on_click and
-                // navigates home. Stop it so the toggle only collapses/expands.
-                cx.stop_propagation();
-                update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
-                    state.toggle_sidebar_collapsed();
-                });
-            });
         let home_item = ListItem::new("sidebar-home-item")
             .w_full()
             .h_full()
             .px_2()
             .rounded_md()
-            .when(is_home_current, |this| this.bg(list_active_color))
             .child(
                 h_flex()
                     .items_center()
@@ -287,33 +271,25 @@ impl ZedisSidebar {
                     .w_full()
                     .overflow_hidden()
                     .when(sidebar_collapsed, |this| this.justify_center())
-                    // Dashboard icon + "Zedis" heading — hidden in the icon rail,
-                    // where only the toggle remains.
+                    // Top slot is Home in both states: the collapsed rail keeps
+                    // just the app logo (the expand toggle lives in the fixed
+                    // bottom bar), the expanded sidebar adds the heading. The
+                    // logo is a full-colour bitmap, so no theme tinting here.
+                    .child(img(self.logo.clone()).flex_none().size(px(18.)))
                     .when(!sidebar_collapsed, |this| {
-                        this.child(Icon::new(IconName::LayoutDashboard).text_color(active_icon_color))
-                            .child(
-                                Label::new(home_label.clone())
-                                    .text_sm()
-                                    .font_semibold()
-                                    .text_color(active_icon_color)
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .flex_1()
-                                    .min_w_0(),
-                            )
-                    })
-                    .child(toggle_btn),
+                        this.child(
+                            Label::new(home_label.clone())
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(active_icon_color)
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                    }),
             )
             .on_click(move |_, _window, cx| {
-                // Collapsed rail: the whole home row is the expand target — the
-                // toggle alone is a small tap area, and Home/Zedis are hidden here,
-                // so clicking anywhere on the row expands the sidebar.
-                if sidebar_collapsed {
-                    update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
-                        state.toggle_sidebar_collapsed();
-                    });
-                    return;
-                }
                 if is_home_current {
                     return;
                 }
@@ -327,6 +303,7 @@ impl ZedisSidebar {
         // Fixed-height top band (== the editor's key bar) with the Home pill
         // vertically centered, so the sidebar's top row lines up with the
         // content pane's top bar instead of sitting a couple px off.
+        let home_tooltip = i18n_sidebar(cx, "home");
         rows.push(
             h_flex()
                 .id("sidebar-home-row")
@@ -336,6 +313,9 @@ impl ZedisSidebar {
                 .child(home_item)
                 .border_b_1()
                 .border_color(divider_color)
+                .when(sidebar_collapsed, |this| {
+                    this.tooltip(move |window, cx| Tooltip::new(home_tooltip.clone()).build(window, cx))
+                })
                 .into_any_element(),
         );
 
@@ -600,12 +580,52 @@ impl ZedisSidebar {
 
 impl Render for ZedisSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The collapse/expand toggle lives in a fixed (non-scrolling) bottom
+        // bar in BOTH states, so it never changes place — and the top slot
+        // stays "Home" whether the sidebar is expanded or an icon rail.
+        let sidebar_collapsed = cx.global::<ZedisGlobalStore>().read(cx).sidebar_collapsed();
+        // Collapsing is only offered on the Home page (no server selected);
+        // server routes keep the full sidebar and hide the toggle.
+        let can_collapse = self.state.server_id.is_empty();
+        let border = cx.theme().border;
         v_flex()
             .size_full()
             .id("sidebar-container")
             .justify_start()
             .border_r_1()
-            .border_color(cx.theme().border)
-            .child(div().flex_1().size_full().child(self.render_server_list(window, cx)))
+            .border_color(border)
+            .child(
+                div()
+                    .flex_1()
+                    .size_full()
+                    .min_h_0()
+                    .child(self.render_server_list(window, cx)),
+            )
+            .when(can_collapse, |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .w_full()
+                        .py_1()
+                        .border_t_1()
+                        .border_color(border)
+                        .when(sidebar_collapsed, |this| this.justify_center())
+                        .when(!sidebar_collapsed, |this| this.justify_end().px_2())
+                        .child(
+                            Button::new("sidebar-collapse-toggle")
+                                .ghost()
+                                .icon(if sidebar_collapsed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronLeft
+                                })
+                                .on_click(move |_, _window, cx| {
+                                    update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
+                                        state.toggle_sidebar_collapsed();
+                                    });
+                                }),
+                        ),
+                )
+            })
     }
 }
