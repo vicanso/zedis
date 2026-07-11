@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.5.3](https://github.com/vicanso/zedis/compare/v0.5.2..v0.5.3) - 2026-07-11
+## [0.5.4](https://github.com/vicanso/zedis/compare/v0.5.2..v0.5.4) - 2026-07-11
 
 ### ⛰️  Features
 
@@ -17,8 +17,10 @@
 - *(migration)* Conflict strategy preview and move Import Keys to Tools - ([93e7df6](https://github.com/vicanso/zedis/commit/93e7df691680950f8dc040c499f9ac914612bc2c))
 - *(servers)* Per-server key-tree prefs and Keys form tab - ([d249ddb](https://github.com/vicanso/zedis/commit/d249ddbaa4f67877415851e01471ad4c91ba5a32))
 - *(settings)* Configurable UI and monospace fonts - ([5194ee5](https://github.com/vicanso/zedis/commit/5194ee51267059407a314e15459ed2e09977412e))
+- *(sidebar)* Theme-aware logo (light variant on dark themes) - ([e3b5fbe](https://github.com/vicanso/zedis/commit/e3b5fbe394ccb92bf6ed94d9785d801c81b6c3d1))
 - *(sidebar)* Rework home row and collapse toggle - ([d803c95](https://github.com/vicanso/zedis/commit/d803c95a6ea8c88f09925a669a50f5779fb299f3))
 - *(status-bar)* Connect/disconnect toggle on the health dot ([#111](https://github.com/orhun/git-cliff/issues/111)) - ([1e9a13c](https://github.com/vicanso/zedis/commit/1e9a13c547662231121706eeb84535d4c3fe1aa7))
+- *(tabs)* Multi-connection workspace tabs - ([07cfab9](https://github.com/vicanso/zedis/commit/07cfab9ba08aeaa4cc9f1c60de2e8ad3ae137de8))
 - *(theme)* Brand-blue primary for default light/dark themes - ([00f371f](https://github.com/vicanso/zedis/commit/00f371fa2f13375c11f5bae4a1fadcd77d2b2509))
 - *(topology)* Slot map, node load heatmap, and reshard wizard - ([c5fa55f](https://github.com/vicanso/zedis/commit/c5fa55fa9802178e438298b48aaa70377d3aea32))
 - *(views)* Jump to key from Monitor / Keyspace / Memory Analyzer - ([4f06d06](https://github.com/vicanso/zedis/commit/4f06d06d07e346329e5c9c2ccdd6e3b5a5313455))
@@ -34,6 +36,7 @@
 - *(startup)* Load proto/script/lua caches before the window opens ([#105](https://github.com/orhun/git-cliff/issues/105)) - ([011c0dd](https://github.com/vicanso/zedis/commit/011c0dd4a1726975d56ec068a424a7d702c23901))
 - *(titlebar)* Baseline-align server name and host - ([8d5904c](https://github.com/vicanso/zedis/commit/8d5904c3984d36f9802b8f6802d2c22278860996))
 - *(tray)* Sync quick-connect with main window via GlobalEvent - ([5a3f498](https://github.com/vicanso/zedis/commit/5a3f498775062009b7c13b21de2eaf8872662c23))
+- *(update)* Show scrollbar for long release notes in the update dialog - ([15abde2](https://github.com/vicanso/zedis/commit/15abde2540a4e92c22c12c1a7a4f25f900ec74c3))
 - *(updater)* Restore markdown release notes in the update prompt - ([e71fc67](https://github.com/vicanso/zedis/commit/e71fc672fee0faa927afe4297502296eddc00495))
 
 ### 🚜 Refactor
@@ -922,4 +925,3 @@
 
 - *(release)* Adjust app store build - ([b0ab723](https://github.com/vicanso/zedis/commit/b0ab72332d35e1637e9f18a6f6e7fe4de4138970))
 - *(windows)* Add application icon - ([8089db8](https://github.com/vicanso/zedis/commit/8089db8399cd3bf5c31b71a474f3b57a067f6cf0))
-
