@@ -43,6 +43,15 @@ jobs:
       - name: Delete old nightly release and tag
         if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
         run: gh release delete nightly --cleanup-tag -y || true
+      - name: Pre-create nightly release
+        # Same race as the tag drafts: six platform jobs each run
+        # softprops/action-gh-release for the nightly, and two finishing
+        # close together could both try to create it. Creating it here,
+        # before any platform job runs, pins the release they all update.
+        if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
+        run: |
+          gh release create nightly --prerelease --title "Development Build (Nightly)" \
+            --notes "Rolling build from the latest main branch — assets uploading…" || true
       - name: Pre-create draft release for tag
         # upload_asset.sh creates a draft when it finds none for the tag —
         # with six platform jobs uploading in parallel, two jobs racing that
@@ -403,10 +412,8 @@ jobs:
           mv target/appimage/zedis.AppImage ./zedis.AppImage
           tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis.AppImage
       - name: smoke test (first frame must paint)
-        # Best-effort: X11 via Xvfb + software Vulkan (lavapipe). GPU-less
-        # runners can be flaky here, so failures report without blocking the
-        # release — tighten to a hard gate once it proves stable.
-        continue-on-error: true
+        # Hard gate (was best-effort while Xvfb + software Vulkan proved
+        # itself; recent nightly/tag runs have been consistently green).
         timeout-minutes: 5
         env:
           ZEDIS_SMOKE_TEST: "1"

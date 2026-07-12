@@ -1485,16 +1485,23 @@ impl ZedisKeyTree {
                         ))
                     },
                 )
-                .menu_element_with_icon(
-                    Icon::new(CustomIconName::ListChecvronsDownUp),
-                    Box::new(KeyTreeAction::CollapseAllKeys),
-                    move |_, cx| Label::new(i18n_key_tree(cx, "collapse_keys")),
-                )
-                .menu_element_with_icon(
-                    Icon::new(CustomIconName::Save),
-                    Box::new(KeyTreeAction::ExportCsv),
-                    move |_, cx| Label::new(i18n_common(cx, "export_csv")),
-                )
+                // Read-class capabilities: allowed on read-only connections
+                // today, but routed through the matrix so a future stricter
+                // mode (e.g. export-restricted compliance) has one switch.
+                .when(Capability::CollapseTree.allowed(readonly), |this| {
+                    this.menu_element_with_icon(
+                        Icon::new(CustomIconName::ListChecvronsDownUp),
+                        Box::new(KeyTreeAction::CollapseAllKeys),
+                        move |_, cx| Label::new(i18n_key_tree(cx, "collapse_keys")),
+                    )
+                })
+                .when(Capability::ExportCsv.allowed(readonly), |this| {
+                    this.menu_element_with_icon(
+                        Icon::new(CustomIconName::Save),
+                        Box::new(KeyTreeAction::ExportCsv),
+                        move |_, cx| Label::new(i18n_common(cx, "export_csv")),
+                    )
+                })
                 // Multi-select is local UI (enables bulk export); allowed in RO.
                 .when(Capability::ToggleMultiSelect.allowed(readonly), |this| {
                     let icon = if enabled_multiple_selection {
@@ -1641,11 +1648,17 @@ impl Render for ZedisKeyTree {
                     this.handle_filter(cx);
                 }
                 KeyTreeAction::CollapseAllKeys => {
+                    if !this.server_state.read(cx).can(Capability::CollapseTree) {
+                        return;
+                    }
                     this.server_state.update(cx, |state, cx| {
                         state.collapse_all_keys(cx);
                     });
                 }
                 KeyTreeAction::ExportCsv => {
+                    if !this.server_state.read(cx).can(Capability::ExportCsv) {
+                        return;
+                    }
                     let (count, csv) = {
                         let state = this.server_state.read(cx);
                         let keys = state.keys();

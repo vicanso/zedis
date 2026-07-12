@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{RedisServer, get_connection_manager, open_monitor_connection};
+use crate::connection::{Capability, RedisServer, get_connection_manager, open_monitor_connection};
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
@@ -488,7 +488,10 @@ impl ZedisMonitor {
     }
 
     fn handle_start(&mut self, cx: &mut Context<Self>) {
-        if self.monitoring {
+        // Observe is a read-class capability (allowed on read-only
+        // connections); routed through the matrix so a stricter future mode
+        // can turn observation off in one place.
+        if self.monitoring || !self.server_state.read(cx).can(Capability::Observe) {
             return;
         }
         let server_id = self.server_state.read(cx).server_id().to_string();

@@ -419,7 +419,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// notification notes "loaded / total", so a partial export is never
     /// mistaken for the whole collection.
     fn export_csv(&mut self, cx: &mut Context<Self>) {
-        if self.items_count == 0 {
+        if self.items_count == 0 || !Capability::ExportCsv.allowed(self.readonly) {
             return;
         }
         let headers: Vec<&str> = self.columns.iter().map(|c| c.name.as_ref()).collect();
@@ -1032,17 +1032,20 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                     })
                                     // Export loaded rows to CSV — one button on the
                                     // shared table covers every collection type.
-                                    .when(self.items_count > 0, |this| {
-                                        this.child(
-                                            Button::new("kv-table-export-btn")
-                                                .ghost()
-                                                .icon(CustomIconName::Download)
-                                                .tooltip(i18n_common(cx, "export_csv"))
-                                                .on_click(cx.listener(|this, _, _window, cx| {
-                                                    this.export_csv(cx);
-                                                })),
-                                        )
-                                    })
+                                    .when(
+                                        self.items_count > 0 && Capability::ExportCsv.allowed(self.readonly),
+                                        |this| {
+                                            this.child(
+                                                Button::new("kv-table-export-btn")
+                                                    .ghost()
+                                                    .icon(CustomIconName::Download)
+                                                    .tooltip(i18n_common(cx, "export_csv"))
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        this.export_csv(cx);
+                                                    })),
+                                            )
+                                        },
+                                    )
                                     .flex_1(),
                             )
                             // Right side: Status icon and count
