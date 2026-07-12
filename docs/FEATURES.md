@@ -165,7 +165,7 @@ Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, priv
 ### Workspace Tabs
 **Multiple connections side by side — Cmd/Ctrl-click a server to open it in a new tab.**
 
-Each tab keeps its own connection and view state (key tree expansion, scroll, selection survive tab switches). The tab strip appears only with two or more tabs (max 8); background tabs relax their heartbeat to one refresh per 30 seconds, and the open-tab list is restored on the next launch with background tabs reconnecting lazily on first activation.
+Each tab keeps its own connection and view state (key tree expansion, scroll, selection survive tab switches). The tab strip appears only with two or more tabs (max 8): click activates, middle-click or × closes, drag reorders, and right-click offers close / close-others / close-to-the-right. Background tabs relax their heartbeat to one refresh per 30 seconds, and the open-tab list is restored on the next launch with background tabs reconnecting lazily on first activation.
 
 ### Command Palette & Shortcuts
 **⌘K fuzzy navigation and a ⌘/ keyboard-shortcut reference.**
