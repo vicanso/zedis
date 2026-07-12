@@ -12,17 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! GUI-free core logic shared by the Zedis app: pure functions with no gpui
-//! dependency, so they compile and test without the UI stack. UI strings stay
-//! in the app crate (rust-i18n is per-crate) — modules here return data only.
-
-pub mod capability;
-pub mod csv;
-pub mod diff;
-pub mod env;
-pub mod fuzzy;
-pub mod hex;
-pub mod jsonpath;
-pub mod ttl;
-pub mod ttl_cache;
-pub mod validate;
+/// True when launched with `RUST_ENV=dev` — switches config/db paths and
+/// logging to the development variants.
+pub fn is_development() -> bool {
+    std::env::var("RUST_ENV").unwrap_or_default() == "dev"
+}

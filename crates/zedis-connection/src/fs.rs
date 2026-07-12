@@ -33,9 +33,10 @@ use std::{
 /// [`override_config_dir`]; external runs (CI smoke) set `ZEDIS_CONFIG_DIR`.
 static CONFIG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
-/// Redirect the config directory for this process (first call wins). Test-only:
-/// keeps state persistence in tests away from the real `zedis.toml`.
-#[cfg(test)]
+/// Redirect the config directory for this process (first call wins). Test-only
+/// by convention: keeps state persistence in tests away from the real
+/// `zedis.toml`. Not `#[cfg(test)]` — the app crate's tests call it through
+/// this crate, and a test-gated item would be invisible to them.
 pub fn override_config_dir(path: PathBuf) {
     let _ = CONFIG_DIR_OVERRIDE.set(path);
 }

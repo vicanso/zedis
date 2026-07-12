@@ -84,7 +84,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | 📊 **Observability** | Live metrics + 7-day history · memory analyzer + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health · persistence & keyspace events · typed CONFIG editor |
 | 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops · cross-server copy & diff |
 | 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · encrypted secrets · local-only, no telemetry |
-| ⌨️ **Productivity** | ⌘K palette · ⌘/ shortcut reference · redis-cli with completion · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |
+| ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘/ shortcut reference · redis-cli with completion · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |
 
 📖 **[See the full feature tour →](./docs/FEATURES.md)**
 

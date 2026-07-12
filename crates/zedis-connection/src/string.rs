@@ -56,6 +56,7 @@ const MASTER_KEY: &[u8; 32] = b"9dFVxjgeQTPfOXCoDdjpgMOlPhy2HE9E";
 ///
 /// # Examples
 /// ```
+/// # use zedis_connection::string::fast_contains_ignore_case;
 /// assert!(fast_contains_ignore_case("Hello World", "hello"));
 /// assert!(fast_contains_ignore_case("测试ABC", "abc"));
 /// assert!(!fast_contains_ignore_case("short", "longer"));

@@ -1270,6 +1270,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // highlight beyond the JSON-only default. Today this is just Lua
     // (Functions / EVAL editors); add others by extending the helper.
     register_extra_languages();
+    // Hand the embedded command metadata to the connection crate — it has
+    // no access to the app's asset bundle (see command.rs).
+    if let Some(file) = assets::Assets::get("commands.json") {
+        crate::connection::init_commands_json(file.data.to_vec());
+    }
     let app = gpui_platform::application().with_assets(assets::Assets);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
     if let Err(e) = get_servers() {

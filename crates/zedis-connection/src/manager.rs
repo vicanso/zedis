@@ -20,8 +20,7 @@ use super::{
     config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
-use crate::helpers::TtlCache;
-use crate::{connection::async_connection::set_client_name, error::Error};
+use crate::{async_connection::set_client_name, error::Error};
 use futures::future::try_join_all;
 use rand::RngExt;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
@@ -35,6 +34,7 @@ use std::{
     time::Duration,
 };
 use tracing::{debug, error, info};
+use zedis_core::ttl_cache::TtlCache;
 
 type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 

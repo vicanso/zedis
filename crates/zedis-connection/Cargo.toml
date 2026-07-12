@@ -1,0 +1,60 @@
+[package]
+name = "zedis-connection"
+version = "0.1.0"
+edition = "2024"
+authors = ["Tree Xie <tree.xie@outlook.com>"]
+categories = ["database"]
+keywords = ["redis"]
+description = "Redis connection layer for Zedis: pooled clients, server config, SSH tunnels."
+license = "Apache-2.0"
+homepage = "https://github.com/vicanso/zedis"
+repository = "https://github.com/vicanso/zedis"
+documentation = "https://github.com/vicanso/zedis"
+exclude = []
+readme = "./README.md"
+rust-version = "1.88.0"
+
+[dependencies]
+aes-gcm = { workspace = true }
+arc-swap = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+directories = { workspace = true }
+futures = { workspace = true }
+home = { workspace = true }
+humantime = { workspace = true }
+indexmap = { workspace = true }
+path-absolutize = { workspace = true }
+percent-encoding = { workspace = true }
+# Only for `Error` variants (proto decode / local-db errors) — the shared
+# error type lives here so every layer can return it. Splitting the enum
+# into a connection-domain + app-domain pair would drop these; tracked as
+# a possible follow-up.
+prost-reflect = { workspace = true }
+protox = { workspace = true }
+redb = { workspace = true }
+shlex = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true }
+regex = { workspace = true }
+russh = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smol = { workspace = true }
+snafu = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+webpki-roots = { workspace = true }
+zedis-core = { path = "../zedis-core" }
+
+[lints.clippy]
+# Match the root crate: no unwrap anywhere, tests included.
+unwrap_used = "deny"

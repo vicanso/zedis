@@ -22,10 +22,14 @@ Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.ex
 
 ## Workspace layout
 
-Cargo workspace: root binary crate `zedis-gui` (bin name `zedis`) plus `members = ["crates/*", "zedis-cmd-builder"]`.
+Cargo workspace: root binary crate `zedis-gui` (bin name `zedis`) plus `members = ["crates/*", "zedis-cmd-builder"]`. Shared dependency versions live in the root `[workspace.dependencies]`; member crates reference them with `{ workspace = true }`.
 
+- `crates/zedis-core` — GUI-free pure logic: the `Capability` permission matrix, fuzzy match, hex/csv/diff, JSONPath, TTL helpers, `env::is_development`. No gpui, no i18n.
+- `crates/zedis-connection` — the Redis layer: pooled clients (`manager/{client,pool,slots}.rs`), `RedisServer` config, SSH tunnels, plus the shared `error.rs` and the `fs`/`string`/`time` helpers. No gpui (strings are `String`, converted at UI boundaries) and no i18n (`danger.rs` returns `i18n_key()`s for the UI to translate). The embedded `commands.json` is injected at startup via `init_commands_json` — this crate has no access to the app's assets.
 - `crates/zedis-ui` — reusable widgets (`ZedisCard`, `ZedisDialog`, `ZedisForm`, ...). **Separate crate**: it cannot use `crate::helpers::*` from the app. Platform-specific values (e.g. monospace font family) must be passed in by the caller.
 - `zedis-cmd-builder` — offline helper tool (`make build-cmd`).
+
+The app re-exports the sub-crates through thin shims, so call sites keep their old paths: `crate::connection::*` (→ zedis-connection), `crate::error::*` (→ zedis-connection::error), `crate::helpers::*` (mixes app-only helpers with re-exports from both crates). Add new pure logic to zedis-core, new Redis operations to zedis-connection — not to the app crate. UI strings never move into the sub-crates (rust-i18n is per-crate; translations live only in the app).
 
 ## Architecture
 
@@ -35,9 +39,9 @@ Cargo workspace: root binary crate `zedis-gui` (bin name `zedis`) plus `members 
 - Events: `GlobalEvent` (notifications, `ServerSelected`, `ServerListUpdated`, `RouteChanged`) and `ServerEvent` (`ValueUpdated`, `KeySelected`, …) drive view updates via `cx.subscribe`. `ServerTask` is the async-task identity enum (add a variant + string mapping in `server/event.rs` for a new task).
 - i18n: `t!("section.key")` (rust-i18n). Use the `i18n_<section>(cx, key)` helpers in `states/i18n.rs`, each **individually** re-exported from `states.rs` (add both the fn and the `pub use` line for a new section).
 
-**Connection (`src/connection/`)** — `config.rs` holds `RedisServer` (server list persisted to `redis-servers.toml`, secrets encrypted; read through the in-memory `SERVER_CONFIG_MAP` ArcSwap cache via `get_servers()` / `get_server()`). The manager hands out pooled multiplexed connections. For **blocking commands** (`MONITOR`, `XREAD BLOCK`) use `open_single_connection(&server, db, /*use_cache=*/false)` — a dedicated connection so blocking never starves the shared pool.
+**Connection (`crates/zedis-connection`, re-exported as `crate::connection`)** — `config.rs` holds `RedisServer` (server list persisted to `redis-servers.toml`, secrets encrypted; read through the in-memory `SERVER_CONFIG_MAP` ArcSwap cache via `get_servers()` / `get_server()`). `manager/pool.rs` hands out pooled multiplexed clients and probes the three-state `AccessMode` (ReadWrite / SafeMode / StrictReadOnly — the source for the `Capability` matrix); `manager/client.rs` is the `RedisClient` ops; `manager/slots.rs` is cluster parsing + reshard planning. For **blocking commands** (`MONITOR`, `XREAD BLOCK`) use `open_single_connection(&server, db, /*use_cache=*/false)` — a dedicated connection so blocking never starves the shared pool.
 
-**Views (`src/views/`)** — one GPUI view per route/panel. `content.rs` is the route switcher and **drops/recreates views on route change** (`clear_views`), so in-view-only state does not survive navigation (persist via `ZedisAppState` if it must). `main.rs`'s `Zedis` root holds sidebar + content + title bar and registers global `.on_action` handlers.
+**Views (`src/views/`)** — one GPUI view per route/panel. `content.rs` is the route switcher: server tool panels live in a `HashMap<ServerView, AnyView>` (one `tool_view()` match arm per panel — add new tool pages there), created on first visit and **dropped on route change** (`clear_views`), so in-view-only state does not survive navigation (persist via `ZedisAppState` if it must); only the editor suite (key tree / value editor / terminal) survives within a server session. `main.rs`'s `Zedis` root holds sidebar + workspace tabs (`Vec<ContentTab>`, one `ZedisContent` per tab; only the active tab reacts to global route/server broadcasts) + title bar, and registers global `.on_action` handlers.
 
 **Long-running background loops** (live tail, MONITOR): mirror the Monitor pattern — a cancellable `gpui::Task` stored on the *view*, a dedicated connection in a `cx.background_spawn` loop, a `smol::channel` ferrying batches to a foreground drainer that updates state. Dropping the `Task` (stop toggle / key or server switch / view teardown) cancels the loop and its connection. Always key-guard appends so a stale batch after a key switch is discarded.
 

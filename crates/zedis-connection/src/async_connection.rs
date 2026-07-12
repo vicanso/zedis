@@ -16,7 +16,6 @@ use super::config::{RedisServer, get_server};
 use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
-use crate::helpers::{TtlCache, now_secs};
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use redis::{
@@ -31,6 +30,7 @@ use std::sync::{
 };
 use std::{sync::LazyLock, time::Duration};
 use tracing::{debug, error};
+use zedis_core::ttl_cache::{TtlCache, now_secs};
 
 const CLIENT_NAME: &str = concat!("zedis:v", env!("CARGO_PKG_VERSION"));
 

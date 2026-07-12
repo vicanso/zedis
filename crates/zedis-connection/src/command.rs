@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::Assets;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
@@ -46,12 +45,21 @@ pub fn get_command_description(name: &str) -> Option<(String, String)> {
     ))
 }
 
+static COMMANDS_JSON: OnceLock<Vec<u8>> = OnceLock::new();
+
+/// Provide the embedded `commands.json` bytes. Called once at startup by the
+/// app (which owns the asset bundle) so this layer stays free of the app's
+/// `rust-embed` assets; without it the command metadata is simply empty.
+pub fn init_commands_json(bytes: Vec<u8>) {
+    let _ = COMMANDS_JSON.set(bytes);
+}
+
 fn get_commands() -> &'static CommandsMap {
     COMMANDS_MAP.get_or_init(|| {
-        let Some(data) = Assets::get("commands.json") else {
+        let Some(data) = COMMANDS_JSON.get() else {
             return HashMap::new();
         };
-        let Ok(commands) = serde_json::from_slice(&data.data) else {
+        let Ok(commands) = serde_json::from_slice(data) else {
             return HashMap::new();
         };
         commands

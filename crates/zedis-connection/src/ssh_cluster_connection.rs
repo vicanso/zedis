@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::config::get_server;
-use crate::connection::ssh_tunnel::open_single_ssh_tunnel_connection;
+use crate::config::get_server;
+use crate::ssh_tunnel::open_single_ssh_tunnel_connection;
 use redis::aio::{ConnectionLike, MultiplexedConnection};
 use redis::cluster_async::Connect;
 use redis::{AsyncConnectionConfig, IntoConnectionInfo};
