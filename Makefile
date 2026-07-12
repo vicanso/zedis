@@ -5,6 +5,9 @@ lint:
 fmt:
 	cargo fmt
 
+test:
+	cargo test --workspace
+
 build-cmd:
 	cargo run --package zedis-cmd-builder
 

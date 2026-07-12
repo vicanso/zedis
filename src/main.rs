@@ -449,15 +449,7 @@ impl Zedis {
         }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
-        self.active_tab = if self.active_tab == from {
-            to
-        } else if from < self.active_tab && to >= self.active_tab {
-            self.active_tab - 1
-        } else if from > self.active_tab && to <= self.active_tab {
-            self.active_tab + 1
-        } else {
-            self.active_tab
-        };
+        self.active_tab = moved_active_index(self.active_tab, from, to);
         self.persist_tabs(cx);
         cx.notify();
     }
@@ -1275,6 +1267,22 @@ impl Render for Zedis {
     }
 }
 
+/// Where the active index lands after the tab at `from` is moved to `to`
+/// (`Vec::remove` + `insert` semantics): the active tab follows itself, and a
+/// tab crossing over it pushes the index one step the other way. Pure so the
+/// arithmetic is unit-tested (see `tests` below).
+fn moved_active_index(active: usize, from: usize, to: usize) -> usize {
+    if active == from {
+        to
+    } else if from < active && to >= active {
+        active - 1
+    } else if from > active && to <= active {
+        active + 1
+    } else {
+        active
+    }
+}
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
@@ -1760,4 +1768,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .detach();
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::moved_active_index;
+
+    /// Reference model: perform the actual remove+insert on tab ids and
+    /// locate where the active id ended up.
+    fn model(len: usize, active: usize, from: usize, to: usize) -> usize {
+        let mut v: Vec<usize> = (0..len).collect();
+        let moved = v.remove(from);
+        v.insert(to, moved);
+        v.iter().position(|&id| id == active).expect("active id present")
+    }
+
+    #[test]
+    fn active_index_follows_tab_moves_exhaustively() {
+        // Exhaustive over every (len ≤ 6, active, from, to) combination,
+        // checked against the reference model — locks the drag-reorder
+        // index arithmetic in `Zedis::move_tab`.
+        for len in 1..=6usize {
+            for active in 0..len {
+                for from in 0..len {
+                    for to in 0..len {
+                        assert_eq!(
+                            moved_active_index(active, from, to),
+                            model(len, active, from, to),
+                            "len={len} active={active} from={from} to={to}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

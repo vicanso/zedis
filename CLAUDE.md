@@ -9,7 +9,7 @@ Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](ht
 - Build / typecheck: `cargo check`
 - Lint: **run `make lint` once as the final step before completing any work** (and after every change) — it is the required gate and runs `typos` + `cargo clippy --all-targets --all -- --deny=warnings`. Never report work as done until `make lint` passes clean. `cargo clippy --tests -- -D warnings` alone is *not* enough: it skips `typos`, so a misspelled word in code/comments passes locally but fails `make lint`/CI.
 - Format: **run `make fmt` (`cargo fmt`) after every code change**, before the final `make lint`.
-- Tests: `cargo test` — run a subset by substring filter, e.g. `cargo test fuzzy`, `cargo test config::`.
+- Tests: `make test` (`cargo test --workspace`) — the sub-crates (zedis-core / zedis-connection / zedis-db) have their own suites, so a bare `cargo test` misses them. Run a subset by substring filter, e.g. `cargo test -p zedis-core fuzzy`, `cargo test config::`.
 - Run dev: `make dev` (`bacon run`); with logs: `make debug` (`RUST_LOG=DEBUG`).
 - Release: `make release` (`cargo build --release --features mimalloc`).
 - Toolchain: Rust **1.95.0**, edition 2024.

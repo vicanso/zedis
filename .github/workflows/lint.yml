@@ -44,3 +44,5 @@ jobs:
         run: |
           cargo fmt --check
           make lint
+      - name: test
+        run: make test
