@@ -135,14 +135,17 @@ impl TableDelegate for PubsubTableDelegate {
         cx: &mut gpui::Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = &self.columns[col_ix];
-        div()
+        // h_flex (items_center) matches render_td, so header text is
+        // vertically centered like the cells.
+        h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .child(
                 Label::new(column.name.clone())
                     .text_align(column.align)
                     .text_color(cx.theme().primary)
-                    .text_sm(),
+                    .text_sm()
+                    .flex_1(),
             )
     }
 

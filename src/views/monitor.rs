@@ -319,14 +319,17 @@ impl TableDelegate for MonitorTableDelegate {
     ) -> impl IntoElement {
         let column = &self.columns[col_ix];
         let name = i18n_monitor(cx, self.column_keys[col_ix]);
-        div()
+        // h_flex (items_center) matches render_td, so header text is
+        // vertically centered like the cells.
+        h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .child(
                 Label::new(name)
                     .text_align(column.align)
                     .text_color(cx.theme().primary)
-                    .text_sm(),
+                    .text_sm()
+                    .flex_1(),
             )
     }
 

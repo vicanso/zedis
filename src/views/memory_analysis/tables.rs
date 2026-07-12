@@ -210,14 +210,17 @@ impl TableDelegate for PrefixTableDelegate {
         cx: &mut gpui::Context<TableState<Self>>,
     ) -> impl IntoElement {
         let col = &self.columns[col_ix];
-        div()
+        // h_flex (items_center) matches render_td, so header text is
+        // vertically centered like the cells.
+        h_flex()
             .size_full()
             .when_some(col.paddings, |this, p| this.paddings(p))
             .child(
                 Label::new(i18n_memory_analysis(cx, self.column_keys[col_ix]))
                     .text_align(col.align)
                     .text_color(cx.theme().primary)
-                    .text_sm(),
+                    .text_sm()
+                    .flex_1(),
             )
     }
 
@@ -377,14 +380,17 @@ impl TableDelegate for SingleKeyTableDelegate {
         cx: &mut gpui::Context<TableState<Self>>,
     ) -> impl IntoElement {
         let col = &self.columns[col_ix];
-        div()
+        // h_flex (items_center) matches render_td, so header text is
+        // vertically centered like the cells.
+        h_flex()
             .size_full()
             .when_some(col.paddings, |this, p| this.paddings(p))
             .child(
                 Label::new(i18n_memory_analysis(cx, self.column_keys[col_ix]))
                     .text_align(col.align)
                     .text_color(cx.theme().primary)
-                    .text_sm(),
+                    .text_sm()
+                    .flex_1(),
             )
     }
 
