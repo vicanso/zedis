@@ -345,7 +345,21 @@ impl Render for ZedisTrashDialog {
                             })),
                     ),
             )
-            .child(div().w_full().max_h(px(360.)).child(list).overflow_y_scrollbar())
+            // Not `max_h`: `Scrollable` keeps a copy of the caller's size styles
+            // on the inner content and its forced `h_auto` doesn't reset `max_h`,
+            // so the content itself gets clamped and never scrolls (same pitfall
+            // as the update dialog's release notes). Fixed-height viewport only
+            // when the list is long enough to need one; short lists stay inline.
+            .child(if entries.len() > 7 {
+                div()
+                    .w_full()
+                    .h(px(360.))
+                    .child(list)
+                    .overflow_y_scrollbar()
+                    .into_any_element()
+            } else {
+                div().w_full().child(list).into_any_element()
+            })
     }
 }
 

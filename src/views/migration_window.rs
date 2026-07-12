@@ -442,21 +442,27 @@ impl Render for ZedisMigrationWindow {
                             .text_xs()
                             .text_color(muted),
                     )
-                    .child(
-                        v_flex()
+                    .child({
+                        // Same Scrollable/`max_h` pitfall as the update dialog:
+                        // a fixed height scrolls, `max_h` silently clips.
+                        let long = sample_lines.len() > 5;
+                        let block = v_flex()
                             .border_1()
                             .border_color(theme.border)
                             .rounded(px(4.))
-                            .max_h(px(100.))
-                            .overflow_y_scrollbar()
                             .px_2()
                             .py_1()
                             .children(
                                 sample_lines
                                     .into_iter()
                                     .map(|k| Label::new(k).text_xs().text_color(theme.danger_foreground)),
-                            ),
-                    )
+                            );
+                        if long {
+                            block.h(px(100.)).overflow_y_scrollbar().into_any_element()
+                        } else {
+                            block.into_any_element()
+                        }
+                    })
                 })
         });
 
