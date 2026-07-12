@@ -72,8 +72,8 @@ pub fn prune_metrics_history(server_id: &str, before_ms: i64) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_database_for_tests;
-    use crate::helpers::override_config_dir;
+    use crate::init_database_for_tests;
+    use zedis_core::fs::override_config_dir;
 
     #[test]
     fn metrics_history_roundtrip_and_prune() {

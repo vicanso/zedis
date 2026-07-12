@@ -33,29 +33,6 @@ pub enum Error {
     Ssh { source: russh::Error },
     #[snafu(display("Key error: {source}"))]
     Key { source: russh::keys::Error },
-    #[snafu(display("Redb error: {source}"))]
-    Redb { source: redb::Error },
-    #[snafu(display("Redb database error: {source}"))]
-    RedbDatabase { source: redb::DatabaseError },
-    #[snafu(display("Redb transaction error: {source}"))]
-    RedbTransaction { source: redb::TransactionError },
-
-    #[snafu(display("Redb table error: {source}"))]
-    RedbTable { source: redb::TableError },
-    #[snafu(display("Redb commit error: {source}"))]
-    RedbCommit { source: redb::CommitError },
-
-    #[snafu(display("Redb storage error: {source}"))]
-    RedbStorage { source: redb::StorageError },
-
-    #[snafu(display("Protox error: {source}"))]
-    Protox { source: protox::Error },
-
-    #[snafu(display("Prost reflect descriptor error: {source}"))]
-    ProstReflectDescriptor { source: prost_reflect::DescriptorError },
-
-    #[snafu(display("Prost reflect decode error: {source}"))]
-    ProstReflectDecode { source: prost_reflect::prost::DecodeError },
 }
 
 /// Why a connection or command failed, as far as the driver lets us tell.
@@ -199,60 +176,6 @@ impl From<russh::Error> for Error {
 impl From<russh::keys::Error> for Error {
     fn from(source: russh::keys::Error) -> Self {
         Error::Key { source }
-    }
-}
-
-impl From<redb::Error> for Error {
-    fn from(source: redb::Error) -> Self {
-        Error::Redb { source }
-    }
-}
-
-impl From<redb::DatabaseError> for Error {
-    fn from(source: redb::DatabaseError) -> Self {
-        Error::RedbDatabase { source }
-    }
-}
-
-impl From<redb::TransactionError> for Error {
-    fn from(source: redb::TransactionError) -> Self {
-        Error::RedbTransaction { source }
-    }
-}
-
-impl From<redb::TableError> for Error {
-    fn from(source: redb::TableError) -> Self {
-        Error::RedbTable { source }
-    }
-}
-
-impl From<redb::CommitError> for Error {
-    fn from(source: redb::CommitError) -> Self {
-        Error::RedbCommit { source }
-    }
-}
-
-impl From<redb::StorageError> for Error {
-    fn from(source: redb::StorageError) -> Self {
-        Error::RedbStorage { source }
-    }
-}
-
-impl From<protox::Error> for Error {
-    fn from(source: protox::Error) -> Self {
-        Error::Protox { source }
-    }
-}
-
-impl From<prost_reflect::DescriptorError> for Error {
-    fn from(source: prost_reflect::DescriptorError) -> Self {
-        Error::ProstReflectDescriptor { source }
-    }
-}
-
-impl From<prost_reflect::prost::DecodeError> for Error {
-    fn from(source: prost_reflect::prost::DecodeError) -> Self {
-        Error::ProstReflectDecode { source }
     }
 }
 

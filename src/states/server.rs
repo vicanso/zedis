@@ -855,7 +855,7 @@ impl ZedisServerState {
     }
 
     pub fn set_search_history(&mut self, history: Vec<SharedString>) {
-        self.search_history = history;
+        self.search_history = history.into_iter().collect();
     }
 
     /// Select and connect to a Redis server
@@ -926,7 +926,7 @@ impl ZedisServerState {
             debug!(server_id = self.server_id.as_str(), "Selecting server");
             let search_history_manager = get_search_history_manager();
             if let Ok(history) = search_history_manager.records(server_id.as_str()) {
-                self.search_history = history;
+                self.search_history = history.into_iter().map(Into::into).collect();
             }
             cx.emit(ServerEvent::ServerSelected(server_id));
 

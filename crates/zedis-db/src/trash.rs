@@ -230,8 +230,8 @@ pub fn purge_all_trash(before_ms: i64) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_database_for_tests;
-    use crate::helpers::override_config_dir;
+    use crate::init_database_for_tests;
+    use zedis_core::fs::override_config_dir;
 
     fn entry(key: &str, db: usize, deleted_at_ms: i64) -> TrashEntry {
         TrashEntry {

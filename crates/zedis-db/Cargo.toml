@@ -1,11 +1,11 @@
 [package]
-name = "zedis-core"
+name = "zedis-db"
 version = "0.1.0"
 edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
 categories = ["database"]
 keywords = ["redis"]
-description = "GUI-free core logic for Zedis (fuzzy match, hex/csv/diff, JSONPath, TTL helpers)."
+description = "Local storage layer for Zedis: redb-backed managers and proto descriptors."
 license = "Apache-2.0"
 homepage = "https://github.com/vicanso/zedis"
 repository = "https://github.com/vicanso/zedis"
@@ -16,13 +16,16 @@ rust-version = "1.88.0"
 
 [dependencies]
 dashmap = { workspace = true }
-directories = { workspace = true }
-home = { workspace = true }
-path-absolutize = { workspace = true }
-humantime = { workspace = true }
+prost-reflect = { workspace = true }
+protox = { workspace = true }
+redb = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_json_path = { workspace = true }
+snafu = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+zedis-core = { path = "../zedis-core" }
 
 [lints.clippy]
 # Match the root crate: no unwrap anywhere, tests included.

@@ -391,7 +391,7 @@ impl ZedisLuaScriptLibrary {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 run_script(&mut conn, &code, &sha, &keys, &args).await
             });
-            let result: Result<ScriptRunOutcome> = task.await;
+            let result: Result<ScriptRunOutcome> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 this.running = None;
                 match result {

@@ -315,7 +315,7 @@ impl ZedisSearchManager {
                 let mut conn = get_connection_manager().get_connection(&server_id_for_task, db).await?;
                 ft_info(&mut conn, name_for_task.as_ref()).await
             });
-            let result: Result<IndexInfo> = task.await;
+            let result: Result<IndexInfo> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 this.loading_info = false;
                 match result {
@@ -415,7 +415,7 @@ impl ZedisSearchManager {
                             let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
                             ft_dropindex(&mut conn, cmd_index.as_ref(), false).await
                         });
-                        let result: Result<()> = task.await;
+                        let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| {
                             this.dropping_index = false;
                             match result {
@@ -512,7 +512,7 @@ impl ZedisSearchManager {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 ft_alter_add(&mut conn, index_for_task.as_ref(), &spec).await
             });
-            let result: Result<()> = task.await;
+            let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 this.altering_index = false;
                 match result {
@@ -652,7 +652,7 @@ impl ZedisSearchManager {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 ft_create(&mut conn, &opts).await
             });
-            let result: Result<()> = task.await;
+            let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 this.creating_index = false;
                 match result {
@@ -738,7 +738,7 @@ impl ZedisSearchManager {
                         let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                         ft_search(&mut conn, index_for_task.as_ref(), &query, &opts).await
                     });
-                    let result: Result<SearchResult> = task.await;
+                    let result: Result<SearchResult> = task.await.map_err(Into::into);
                     let _ = handle.update(cx, |this, cx| {
                         this.running_query = false;
                         match result {
@@ -779,7 +779,7 @@ impl ZedisSearchManager {
                         let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                         ft_aggregate(&mut conn, index_for_task.as_ref(), &query, &opts).await
                     });
-                    let result: Result<AggregateResult> = task.await;
+                    let result: Result<AggregateResult> = task.await.map_err(Into::into);
                     let _ = handle.update(cx, |this, cx| {
                         this.running_query = false;
                         match result {

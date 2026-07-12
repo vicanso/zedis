@@ -35,12 +35,12 @@ pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
 pub use updater::{UpdateInfo, download_and_verify, fetch_latest_release, open_installer};
 // Pure logic lives in `zedis-core`, fs/crypto/time in `zedis-connection`;
 // re-exported here so call sites keep using `crate::helpers::*` unchanged.
-pub use zedis_connection::fs::*;
 pub use zedis_connection::string::*;
 pub use zedis_connection::time::{parse_duration, unix_ts, unix_ts_millis};
 pub use zedis_core::csv::build_csv;
 pub use zedis_core::diff::*;
 pub use zedis_core::env::is_development;
+pub use zedis_core::fs::*;
 pub use zedis_core::fuzzy::fuzzy_score;
 pub use zedis_core::hex::{bytes_to_hex_text, parse_hex_text};
 pub use zedis_core::jsonpath::{

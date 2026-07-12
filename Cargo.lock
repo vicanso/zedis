@@ -11278,17 +11278,11 @@ dependencies = [
  "argon2",
  "base64",
  "chrono",
- "directories",
  "futures",
- "home",
  "humantime",
  "indexmap",
- "path-absolutize",
  "percent-encoding",
- "prost-reflect",
- "protox",
  "rand 0.10.2",
- "redb",
  "redis",
  "regex",
  "russh",
@@ -11315,10 +11309,30 @@ name = "zedis-core"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "directories",
+ "home",
  "humantime",
+ "path-absolutize",
  "serde",
  "serde_json",
  "serde_json_path",
+]
+
+[[package]]
+name = "zedis-db"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "prost-reflect",
+ "protox",
+ "redb",
+ "regex",
+ "serde",
+ "serde_json",
+ "snafu",
+ "tempfile",
+ "tracing",
+ "zedis-core",
 ]
 
 [[package]]
@@ -11353,9 +11367,6 @@ dependencies = [
  "os_info",
  "parking_lot",
  "pretty-hex",
- "prost-reflect",
- "protox",
- "redb",
  "redis",
  "regex",
  "rmp-serde",
@@ -11371,6 +11382,7 @@ dependencies = [
  "shlex 2.0.1",
  "simdutf8",
  "smol",
+ "snafu",
  "snap",
  "substring",
  "sys-locale",
@@ -11393,6 +11405,7 @@ dependencies = [
  "winres",
  "zedis-connection",
  "zedis-core",
+ "zedis-db",
  "zedis-ui",
 ]
 

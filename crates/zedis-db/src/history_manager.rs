@@ -15,7 +15,6 @@
 use super::{add_normalize_history, get_database};
 use crate::error::Error;
 use dashmap::DashMap;
-use gpui::SharedString;
 use redb::TableDefinition;
 use redb::{ReadableDatabase, ReadableTable};
 
@@ -23,7 +22,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct HistoryManager {
     max_history_size: usize,
-    history_cache: DashMap<String, Vec<SharedString>>,
+    history_cache: DashMap<String, Vec<String>>,
     definition: TableDefinition<'static, &'static str, &'static str>,
 }
 
@@ -39,7 +38,7 @@ impl HistoryManager {
         self.max_history_size = max_history_size;
         self
     }
-    pub fn add_record(&self, server_id: &str, keyword: &str) -> Result<Vec<SharedString>> {
+    pub fn add_record(&self, server_id: &str, keyword: &str) -> Result<Vec<String>> {
         let keyword = keyword.trim();
         let db = get_database()?;
         let write_txn = db.begin_write()?;
@@ -54,7 +53,7 @@ impl HistoryManager {
                 Vec::new()
             };
             if !keyword.is_empty() {
-                add_normalize_history(&mut history, keyword.to_string().into(), self.max_history_size);
+                add_normalize_history(&mut history, keyword.to_string(), self.max_history_size);
 
                 self.history_cache.insert(server_id.to_string(), history.clone());
 
@@ -68,7 +67,7 @@ impl HistoryManager {
         Ok(history)
     }
 
-    pub fn records(&self, server_id: &str) -> Result<Vec<SharedString>> {
+    pub fn records(&self, server_id: &str) -> Result<Vec<String>> {
         if let Some(history) = self.history_cache.get(server_id) {
             return Ok(history.clone());
         }
@@ -78,12 +77,12 @@ impl HistoryManager {
         let Some(v) = table.get(server_id)? else {
             return Ok(Vec::new());
         };
-        let history: Vec<SharedString> = serde_json::from_str(v.value())?;
+        let history: Vec<String> = serde_json::from_str(v.value())?;
         self.history_cache.insert(server_id.to_string(), history.clone());
         Ok(history)
     }
 
-    pub fn remove_record(&self, server_id: &str, keyword: &str) -> Result<Vec<SharedString>> {
+    pub fn remove_record(&self, server_id: &str, keyword: &str) -> Result<Vec<String>> {
         let keyword = keyword.trim();
         if keyword.is_empty() {
             return self.records(server_id);
@@ -101,7 +100,7 @@ impl HistoryManager {
                 Vec::new()
             };
             let len_before = history.len();
-            history.retain(|x| x.as_ref() != keyword);
+            history.retain(|x| x.as_str() != keyword);
             if history.len() != len_before {
                 self.history_cache.insert(server_id.to_string(), history.clone());
                 let json_val = serde_json::to_string(&history)?;

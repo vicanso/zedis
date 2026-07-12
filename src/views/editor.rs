@@ -1352,7 +1352,7 @@ impl ZedisEditor {
             .records(&server_id)
             .unwrap_or_default()
             .iter()
-            .any(|k| k.as_ref() == key.as_ref());
+            .any(|k| k.as_str() == key.as_ref());
         let favorite_icon = if is_favorited {
             IconName::StarFill
         } else {

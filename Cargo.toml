@@ -60,9 +60,6 @@ mimalloc = { version = "0.1.52", optional = true }
 os_info = "3.15.0"
 parking_lot = "0.12.5"
 pretty-hex = "0.4.2"
-prost-reflect = { workspace = true }
-protox = { workspace = true }
-redb = { workspace = true }
 redis = { workspace = true }
 # Provides the `ring` crypto backend for rustls 0.23+ (used transitively by redis TLS)
 rustls = { workspace = true }
@@ -85,7 +82,7 @@ smol = { workspace = true }
 snap = "1.1.1"
 substring = "1.4.5"
 sys-locale = "0.3.2"
-tempfile = "3.27.0"
+tempfile = { workspace = true }
 time = "0.3.47"
 # Single-language tree-sitter wiring for the Functions / EVAL editor.
 # We deliberately avoid gpui-component's `tree-sitter-languages` feature
@@ -103,8 +100,10 @@ url = { workspace = true }
 uuid = { workspace = true }
 zedis-connection = { path = "crates/zedis-connection" }
 zedis-core = { path = "crates/zedis-core" }
+zedis-db = { path = "crates/zedis-db" }
 zedis-ui = { path = "crates/zedis-ui" }
 indexmap = { workspace = true }
+snafu = { workspace = true }
 simdutf8 = "0.1.5"
 shlex = { workspace = true }
 # Minimal blocking HTTP client for the OpenAI-compatible AI analysis
@@ -168,6 +167,7 @@ semver = "1.0.28"
 shlex = "2.0.1"
 smol = "2.0.2"
 snafu = "0.9.1"
+tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "macros"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [
     "ring",

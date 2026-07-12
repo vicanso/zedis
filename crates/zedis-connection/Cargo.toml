@@ -20,20 +20,10 @@ arc-swap = { workspace = true }
 argon2 = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
-directories = { workspace = true }
 futures = { workspace = true }
-home = { workspace = true }
 humantime = { workspace = true }
 indexmap = { workspace = true }
-path-absolutize = { workspace = true }
 percent-encoding = { workspace = true }
-# Only for `Error` variants (proto decode / local-db errors) — the shared
-# error type lives here so every layer can return it. Splitting the enum
-# into a connection-domain + app-domain pair would drop these; tracked as
-# a possible follow-up.
-prost-reflect = { workspace = true }
-protox = { workspace = true }
-redb = { workspace = true }
 shlex = { workspace = true }
 rand = { workspace = true }
 redis = { workspace = true }

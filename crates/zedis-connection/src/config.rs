@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::error::Error;
-use crate::fs::get_or_create_config_dir;
 use crate::string::{decrypt, encrypt};
 use arc_swap::ArcSwap;
 use indexmap::IndexMap;
@@ -31,6 +30,7 @@ use tracing::{debug, info};
 use url::Url;
 use uuid::Uuid;
 use zedis_core::env::is_development;
+use zedis_core::fs::get_or_create_config_dir;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 

@@ -82,7 +82,7 @@ impl TagColor {
     }
 
     /// Round-trip helper used by tests + filter chip restoration.
-    pub fn from_str(s: &str) -> Option<TagColor> {
+    pub fn from_name(s: &str) -> Option<TagColor> {
         match s {
             "red" => Some(TagColor::Red),
             "orange" => Some(TagColor::Orange),
@@ -290,9 +290,9 @@ mod tests {
     #[test]
     fn tag_color_round_trips_through_string() {
         for c in TagColor::ALL {
-            assert_eq!(TagColor::from_str(c.as_str()), Some(c));
+            assert_eq!(TagColor::from_name(c.as_str()), Some(c));
         }
-        assert_eq!(TagColor::from_str("turquoise"), None);
+        assert_eq!(TagColor::from_name("turquoise"), None);
     }
 
     #[test]

@@ -19,7 +19,6 @@
 use tracing::info;
 
 pub mod error;
-pub mod fs;
 pub mod string;
 pub mod time;
 

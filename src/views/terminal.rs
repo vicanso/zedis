@@ -373,6 +373,7 @@ impl ZedisTerminal {
             .into_iter()
             .rev()
             .filter(|r| q.is_empty() || r.to_lowercase().contains(&q))
+            .map(Into::into)
             .collect()
     }
 

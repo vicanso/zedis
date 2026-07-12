@@ -313,7 +313,7 @@ impl ZedisAclManager {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 acl_set_user(&mut conn, &username, &rules_vec).await
             });
-            let result: Result<()> = task.await;
+            let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                 this.pending_notification = Some(match result {
@@ -361,7 +361,7 @@ impl ZedisAclManager {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 acl_del_user(&mut conn, username.as_ref()).await
             });
-            let result: Result<()> = task.await;
+            let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                 this.pending_notification = Some(match result {

@@ -244,7 +244,7 @@ impl ZedisFunctionEditor {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 function_load(&mut conn, &code, replace).await
             });
-            let result: Result<String> = task.await;
+            let result: Result<String> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 this.submitting = false;
                 match result {
@@ -298,7 +298,7 @@ impl ZedisFunctionEditor {
                             let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
                             function_delete(&mut conn, lib.as_ref()).await
                         });
-                        let result: Result<()> = task.await;
+                        let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| {
                             this.deleting = None;
                             match result {

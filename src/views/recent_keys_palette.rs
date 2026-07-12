@@ -79,7 +79,12 @@ impl ZedisRecentKeysPalette {
             self.recent = if self.in_server_context {
                 let s = self.server_state.read(cx);
                 let scope = recent_keys_scope(s.server_id(), s.db());
-                get_recent_keys_manager().records(&scope).unwrap_or_default()
+                get_recent_keys_manager()
+                    .records(&scope)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
             } else {
                 Vec::new()
             };

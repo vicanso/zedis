@@ -388,5 +388,5 @@ impl Render for ZedisServerLoad {
 
 async fn fetch_command_stats(server_id: String, db: usize) -> Result<Vec<CommandStat>> {
     let client = get_connection_manager().get_client(&server_id, db).await?;
-    client.command_stats().await
+    Ok(client.command_stats().await?)
 }

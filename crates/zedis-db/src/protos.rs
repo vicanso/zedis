@@ -14,7 +14,6 @@
 
 use super::{PROTO_TABLE, get_database};
 use crate::error::Error;
-use crate::helpers::resolve_path;
 use dashmap::DashMap;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use redb::{ReadableDatabase, ReadableTable};
@@ -25,6 +24,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use tempfile::TempDir;
 use tracing::info;
+use zedis_core::fs::resolve_path;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 

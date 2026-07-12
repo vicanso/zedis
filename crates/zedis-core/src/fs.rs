@@ -19,7 +19,6 @@
 //! - App Store build detection (for macOS sandboxing)
 //! - Configuration directory management with migration support
 
-use crate::error::Error;
 use directories::{ProjectDirs, UserDirs};
 use home::home_dir;
 use path_absolutize::Absolutize;
@@ -51,7 +50,7 @@ fn config_dir_override() -> Option<PathBuf> {
     }
 }
 
-type Result<T, E = Error> = std::result::Result<T, E>;
+type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 /// Recursively copies files from source directory to destination directory.
 ///
 /// Note: This function only copies files, not subdirectories. Subdirectories
@@ -177,9 +176,7 @@ pub fn get_or_create_config_dir() -> Result<PathBuf> {
     }
     // Get platform-specific configuration directory
     let Some(project_dirs) = ProjectDirs::from("com", "bigtree", "zedis") else {
-        return Err(Error::Invalid {
-            message: "project directories not found".to_string(),
-        });
+        return Err(std::io::Error::other("project directories not found".to_string()));
     };
 
     let config_dir = project_dirs.config_dir();

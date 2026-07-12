@@ -460,7 +460,7 @@ impl ListDelegate for KeyTreeDelegate {
                                                     .records(server_id.as_ref())
                                                     .unwrap_or_default()
                                                     .iter()
-                                                    .any(|k| k.as_ref() == id.as_ref())
+                                                    .any(|k| k.as_str() == id.as_ref())
                                             })
                                             .unwrap_or(false);
                                         let (icon, label_key) = if is_favorited {

@@ -146,7 +146,12 @@ impl ZedisCommandPalette {
             // Snapshot the active server's favorites once per open — the
             // build_items run on every keystroke must stay DB-free.
             let server_id = self.server_state.read(cx).server_id().to_string();
-            self.favorites = get_favorites_manager().records(&server_id).unwrap_or_default();
+            self.favorites = get_favorites_manager()
+                .records(&server_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect();
             // The ScrollHandle keeps its offset across open/close, so
             // without this the list stays scrolled where it was last
             // time while the selection is back at the top.

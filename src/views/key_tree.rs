@@ -748,7 +748,7 @@ impl ZedisKeyTree {
                 .await;
             if let Ok(history) = result {
                 server_state_clone.update(cx, |state, _cx| {
-                    state.set_search_history(history);
+                    state.set_search_history(history.into_iter().map(Into::into).collect());
                 });
             }
         })
@@ -1280,7 +1280,7 @@ impl ZedisKeyTree {
                             for key in &recent_keys {
                                 let key_clone = key.clone();
                                 submenu = submenu.menu_element(
-                                    Box::new(KeyTreeAction::SelectRecentKey(key.clone())),
+                                    Box::new(KeyTreeAction::SelectRecentKey(key.clone().into())),
                                     move |_, _cx| Label::new(key_clone.clone()).text_ellipsis(),
                                 );
                             }
@@ -1306,7 +1306,7 @@ impl ZedisKeyTree {
                             for key in &favorites {
                                 let key_clone = key.clone();
                                 submenu = submenu.menu_element(
-                                    Box::new(KeyTreeAction::SelectFavoriteKey(key.clone())),
+                                    Box::new(KeyTreeAction::SelectFavoriteKey(key.clone().into())),
                                     move |_, _cx| Label::new(key_clone.clone()).text_ellipsis(),
                                 );
                             }
@@ -1742,7 +1742,7 @@ impl Render for ZedisKeyTree {
                     let new_filter = if color_name.is_empty() {
                         None
                     } else {
-                        TagColor::from_str(color_name.as_ref())
+                        TagColor::from_name(color_name.as_ref())
                     };
                     if this.state.selected_tag_filter != new_filter {
                         this.state.selected_tag_filter = new_filter;
@@ -1795,7 +1795,7 @@ impl Render for ZedisKeyTree {
                                     .records(&server_id)
                                     .unwrap_or_default()
                                     .iter()
-                                    .any(|k| k.as_ref() == key.as_ref());
+                                    .any(|k| k.as_str() == key.as_ref());
                                 if is_favorited {
                                     let _ = manager.remove_record(&server_id, key.as_ref());
                                 } else {

@@ -263,7 +263,7 @@ async fn export_worker(
     let header_for_open = header.clone();
     let mut writer = smol::unblock(move || -> Result<DumpWriter<BufWriter<File>>> {
         let file = File::create(&path_for_open)?;
-        DumpWriter::new(BufWriter::new(file), &header_for_open)
+        Ok(DumpWriter::new(BufWriter::new(file), &header_for_open)?)
     })
     .await?;
 
@@ -374,7 +374,7 @@ async fn import_worker(
     let path_for_open = input_path.clone();
     let mut reader = smol::unblock(move || -> Result<DumpReader<BufReader<File>>> {
         let file = File::open(&path_for_open)?;
-        DumpReader::open(BufReader::new(file))
+        Ok(DumpReader::open(BufReader::new(file))?)
     })
     .await?;
     let header_total = reader.header().key_count;

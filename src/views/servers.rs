@@ -257,7 +257,7 @@ impl ZedisServers {
                                             Ok(c) => c,
                                             Err(e) => {
                                                 if !e.to_string().contains("AuthenticationFailed") {
-                                                    return Err(e);
+                                                    return Err(e.into());
                                                 }
                                                 let mut tmp = server.clone();
                                                 tmp.password = None;
@@ -542,7 +542,7 @@ impl ZedisServers {
                                         Ok(conn) => conn,
                                         Err(e) => {
                                             if !e.to_string().contains("AuthenticationFailed") {
-                                                return Err(e);
+                                                return Err(e.into());
                                             }
                                             // sentinel nodes typically don't require auth
                                             let mut tmp = server.clone();

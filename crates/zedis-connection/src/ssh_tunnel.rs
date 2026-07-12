@@ -16,7 +16,6 @@ use super::async_connection::{resolve_connection_timeout, resolve_response_timeo
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
-use crate::fs::{get_home_dir, get_or_create_config_dir, resolve_path};
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::AgentAuthError;
 use russh::client::AuthResult;
@@ -33,6 +32,7 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info};
+use zedis_core::fs::{get_home_dir, get_or_create_config_dir, resolve_path};
 use zedis_core::ttl_cache::TtlCache;
 
 type Result<T, E = Error> = std::result::Result<T, E>;

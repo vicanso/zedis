@@ -267,9 +267,9 @@ impl ZedisServerState {
                 // auto-paging loop after roughly one batch per master.
                 let count = key_scan_count as u64;
                 if let Some(cursors) = cursors {
-                    client.scan(Some(cursors), &pattern, count, with_ttl, type_arg).await
+                    Ok(client.scan(Some(cursors), &pattern, count, with_ttl, type_arg).await?)
                 } else {
-                    client.first_scan(&pattern, count, with_ttl, type_arg).await
+                    Ok(client.first_scan(&pattern, count, with_ttl, type_arg).await?)
                 }
             },
             move |this, result, cx| {
@@ -360,7 +360,7 @@ impl ZedisServerState {
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
 
-                client.first_scan(&pattern, count as u64, with_ttl, type_arg).await
+                Ok(client.first_scan(&pattern, count as u64, with_ttl, type_arg).await?)
             },
             move |this, result, cx| {
                 // This refresh diffs against the live key set and *removes*
@@ -938,9 +938,9 @@ impl ZedisServerState {
             format!("{} keys", remove_keys.len()),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                client
+                Ok(client
                     .unlike_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect())
-                    .await
+                    .await?)
             },
             move |this, result, cx| {
                 if let Ok(()) = result {
@@ -1113,9 +1113,9 @@ impl ZedisServerState {
             format!("{} keys", keys.len()),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                client
+                Ok(client
                     .set_ttl_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect(), ttl_secs)
-                    .await
+                    .await?)
             },
             move |this, result, cx| {
                 if result.is_ok() {

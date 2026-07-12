@@ -12,5 +12,62 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Thin forwarding shim: the shared error type lives in `zedis-connection`.
-pub use zedis_connection::error::*;
+use snafu::Snafu;
+
+pub use zedis_connection::error::ConnectionErrorKind;
+
+type ConnectionError = zedis_connection::error::Error;
+
+/// App-level error. Connection-layer failures pass through transparently;
+/// the extra variants exist only for errors the app itself produces (proto
+/// decoding, the local redb database) so `zedis-connection` doesn't have to
+/// depend on those crates just to name them.
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(transparent)]
+    Connection { source: ConnectionError },
+    #[snafu(transparent)]
+    Db { source: zedis_db::error::Error },
+    #[snafu(display("Invalid: {message}"))]
+    Invalid { message: String },
+}
+
+impl Error {
+    /// Delegates to the connection layer's classifier; app-domain errors are
+    /// never link failures, so they report `Unknown`.
+    pub fn connection_kind(&self) -> ConnectionErrorKind {
+        match self {
+            Error::Connection { source } => source.connection_kind(),
+            _ => ConnectionErrorKind::Unknown,
+        }
+    }
+
+    /// See [`zedis_connection::error::Error::connection_kind_tls_aware`].
+    pub fn connection_kind_tls_aware(&self, tls_enabled: bool) -> ConnectionErrorKind {
+        match self {
+            Error::Connection { source } => source.connection_kind_tls_aware(tls_enabled),
+            _ => ConnectionErrorKind::Unknown,
+        }
+    }
+}
+
+// External errors the app converts with `?` — routed through the connection
+// error (which owns their From impls) so classification keeps working.
+macro_rules! via_connection {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl From<$ty> for Error {
+            fn from(source: $ty) -> Self {
+                Error::Connection {
+                    source: ConnectionError::from(source),
+                }
+            }
+        }
+    )+};
+}
+via_connection!(
+    redis::RedisError,
+    std::io::Error,
+    serde_json::Error,
+    toml::de::Error,
+    toml::ser::Error,
+);
