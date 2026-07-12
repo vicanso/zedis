@@ -1,4 +1,7 @@
 [common]
+tab_close = "Cerrar pestaña"
+tab_close_others = "Cerrar otras pestañas"
+tab_close_right = "Cerrar pestañas a la derecha"
 tab_limit = "Límite de pestañas alcanzado (máx. 8)"
 # --- Acciones/Botones generales ---
 submit = "Enviar"

@@ -17,20 +17,22 @@ use crate::views::{
     open_about_window, open_migration_import_window, open_settings_window, open_trash_dialog,
 };
 use gpui::{
-    App, Bounds, Entity, Menu, MenuItem, Pixels, Point, SharedString, Task, TitlebarOptions, WeakEntity, Window,
-    WindowAppearance, WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
+    Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
+    WeakEntity, Window, WindowAppearance, WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
 };
 use gpui_component::{
     ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, ThemeMode, ThemeRegistry, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
+    menu::ContextMenuExt,
     notification::Notification,
     scroll::ScrollableElement,
-    tab::{Tab, TabBar},
     text::{TextView, TextViewStyle},
     v_flex,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::{cell::Cell, rc::Rc, time::Duration};
 use sys_locale::get_locale;
 use tracing::{error, info, warn};
@@ -76,6 +78,38 @@ struct ContentTab {
     server_id: String,
     db: usize,
     content: Entity<ZedisContent>,
+}
+
+/// Context-menu actions on a workspace tab (dispatched by the tab strip's
+/// right-click menu, handled on the `Zedis` root).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+enum TabAction {
+    Close(usize),
+    CloseOthers(usize),
+    CloseRight(usize),
+}
+
+/// Drag payload for reordering workspace tabs.
+struct DraggedTab {
+    from: usize,
+}
+
+/// Floating preview shown while a tab is dragged.
+struct TabDragPreview {
+    title: SharedString,
+}
+
+impl Render for TabDragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(Label::new(self.title.clone()).text_sm())
+    }
 }
 
 pub struct Zedis {
@@ -367,6 +401,67 @@ impl Zedis {
         cx.notify();
     }
 
+    /// Close every tab except `ix` (context menu "close others").
+    fn close_others(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() || self.tabs.len() <= 1 {
+            return;
+        }
+        let was_active = self.active_tab == ix;
+        let keep = self.tabs.remove(ix);
+        self.tabs.clear();
+        self.tabs.push(keep);
+        self.active_tab = 0;
+        if !was_active {
+            self.tabs[0]
+                .content
+                .update(cx, |content, cx| content.set_active(true, cx));
+            self.rebind_palettes(cx);
+            self.project_active_tab(cx);
+        }
+        self.persist_tabs(cx);
+        cx.notify();
+    }
+
+    /// Close every tab to the right of `ix` (context menu "close right").
+    fn close_right(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix + 1 >= self.tabs.len() {
+            return;
+        }
+        let active_closed = self.active_tab > ix;
+        self.tabs.truncate(ix + 1);
+        if active_closed {
+            self.active_tab = ix;
+            self.tabs[ix]
+                .content
+                .update(cx, |content, cx| content.set_active(true, cx));
+            self.rebind_palettes(cx);
+            self.project_active_tab(cx);
+        }
+        self.persist_tabs(cx);
+        cx.notify();
+    }
+
+    /// Reorder: move the tab at `from` so it sits at `to` (drag & drop on the
+    /// strip). The active index follows its tab.
+    fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active_tab = if self.active_tab == from {
+            to
+        } else if from < self.active_tab && to >= self.active_tab {
+            self.active_tab - 1
+        } else if from > self.active_tab && to <= self.active_tab {
+            self.active_tab + 1
+        } else {
+            self.active_tab
+        };
+        self.persist_tabs(cx);
+        cx.notify();
+    }
+
     /// Persist the strip's `(server_id, db)` list so the next launch restores
     /// the same workspace tabs. Tabs still on Home (empty id) are skipped.
     fn persist_tabs(&self, cx: &mut Context<Self>) {
@@ -601,59 +696,96 @@ impl Zedis {
         self.shortcuts_overlay.update(cx, |overlay, cx| overlay.toggle(cx));
     }
 
-    /// The workspace tab strip. Hidden with a single tab (the everyday
-    /// single-connection layout stays untouched); with more, one tab per
-    /// content column: click activates, × closes.
+    /// The workspace tab strip — hand-rolled pills instead of
+    /// gpui-component's `TabBar`, whose `child(impl Into<Tab>)` API can't
+    /// carry a context menu / drag-drop / middle-click. Hidden with a single
+    /// tab; with more: click activates, × or middle-click closes, drag
+    /// reorders, right-click offers close / close-others / close-right.
     fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         if self.tabs.len() <= 1 {
             return None;
         }
         let home_label = i18n_sidebar(cx, "home");
-        let weak = cx.entity().downgrade();
-        let mut bar = TabBar::new("content-tabs").selected_index(self.active_tab).on_click({
-            let weak = weak.clone();
-            move |ix: &usize, _window, cx| {
-                let ix = *ix;
-                if let Some(view) = weak.upgrade() {
-                    view.update(cx, |this, cx| {
+        let border = cx.theme().border;
+        let active_bg = cx.theme().foreground.alpha(0.1);
+        let muted = cx.theme().muted_foreground;
+        let strip = h_flex()
+            .w_full()
+            .flex_none()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(border)
+            .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
+                let title: SharedString = if tab.server_id.is_empty() {
+                    home_label.clone()
+                } else {
+                    let name = get_server(&tab.server_id)
+                        .map(|server| server.name)
+                        .unwrap_or_else(|_| tab.server_id.clone());
+                    if tab.db > 0 {
+                        format!("{name} [{}]", tab.db).into()
+                    } else {
+                        name.into()
+                    }
+                };
+                let is_active = ix == self.active_tab;
+                let preview_title = title.clone();
+                div()
+                    .id(("content-tab", ix))
+                    .flex_none()
+                    .on_drag(DraggedTab { from: ix }, move |_, _, _, cx| {
+                        let title = preview_title.clone();
+                        cx.new(|_| TabDragPreview { title })
+                    })
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _window, cx| {
+                        this.move_tab(dragged.from, ix, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _, _window, cx| {
+                            this.close_tab(ix, cx);
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, _, _window, cx| {
                         this.activate_tab(ix, cx);
                         this.project_active_tab(cx);
-                    });
-                }
-            }
-        });
-        for (ix, tab) in self.tabs.iter().enumerate() {
-            let title: SharedString = if tab.server_id.is_empty() {
-                home_label.clone()
-            } else {
-                let name = get_server(&tab.server_id)
-                    .map(|server| server.name)
-                    .unwrap_or_else(|_| tab.server_id.clone());
-                if tab.db > 0 {
-                    format!("{name} [{}]", tab.db).into()
-                } else {
-                    name.into()
-                }
-            };
-            let weak = weak.clone();
-            bar = bar.child(
-                Tab::new().label(title).suffix(
-                    Button::new(("content-tab-close", ix))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .on_click(move |_, _window, cx| {
-                            // Keep the click from also selecting the tab
-                            // underneath — closing is not activating.
-                            cx.stop_propagation();
-                            if let Some(view) = weak.upgrade() {
-                                view.update(cx, |this, cx| this.close_tab(ix, cx));
-                            }
-                        }),
-                ),
-            );
-        }
-        Some(bar)
+                    }))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .pl_2()
+                            .pr_1()
+                            .py_0p5()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .when(is_active, |this| this.bg(active_bg))
+                            .when(!is_active, |this| this.text_color(muted))
+                            .child(Label::new(title).text_sm().whitespace_nowrap())
+                            .child(
+                                Button::new(("content-tab-close", ix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        // Closing is not activating — keep the
+                                        // click off the pill underneath.
+                                        cx.stop_propagation();
+                                        this.close_tab(ix, cx);
+                                    })),
+                            ),
+                    )
+                    .context_menu(move |menu, _window, cx| {
+                        menu.menu(i18n_common(cx, "tab_close"), Box::new(TabAction::Close(ix)))
+                            .menu(
+                                i18n_common(cx, "tab_close_others"),
+                                Box::new(TabAction::CloseOthers(ix)),
+                            )
+                            .menu(i18n_common(cx, "tab_close_right"), Box::new(TabAction::CloseRight(ix)))
+                    })
+            }));
+        Some(strip)
     }
 
     fn render_titlebar(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -1118,6 +1250,11 @@ impl Render for Zedis {
             // global keybinding only reaches here when no deeper handler
             // (focused input, open dialog, command palette) claimed the
             // keystroke; no-op on routes without a back affordance.
+            .on_action(cx.listener(|this, e: &TabAction, _window, cx| match e {
+                TabAction::Close(ix) => this.close_tab(*ix, cx),
+                TabAction::CloseOthers(ix) => this.close_others(*ix, cx),
+                TabAction::CloseRight(ix) => this.close_right(*ix, cx),
+            }))
             .on_action(cx.listener(|_this, _e: &NavAction, _window, cx| {
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {

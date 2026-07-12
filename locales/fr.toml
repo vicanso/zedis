@@ -1,4 +1,7 @@
 [common]
+tab_close = "Fermer l'onglet"
+tab_close_others = "Fermer les autres onglets"
+tab_close_right = "Fermer les onglets à droite"
 tab_limit = "Limite d'onglets atteinte (max. 8)"
 # --- Actions/Boutons généraux ---
 submit = "Envoyer"

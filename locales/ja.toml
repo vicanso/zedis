@@ -1,4 +1,7 @@
 [common]
+tab_close = "タブを閉じる"
+tab_close_others = "他のタブを閉じる"
+tab_close_right = "右側のタブを閉じる"
 tab_limit = "タブの上限に達しました(最大 8)"
 # --- 一般操作/ボタン ---
 submit = "送信"

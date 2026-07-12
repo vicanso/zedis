@@ -1,4 +1,7 @@
 [common]
+tab_close = "Fechar aba"
+tab_close_others = "Fechar outras abas"
+tab_close_right = "Fechar abas à direita"
 tab_limit = "Limite de abas atingido (máx. 8)"
 # --- Ações/Botões gerais ---
 submit = "Enviar"

@@ -1,4 +1,7 @@
 [common]
+tab_close = "Tab schließen"
+tab_close_others = "Andere Tabs schließen"
+tab_close_right = "Tabs rechts schließen"
 tab_limit = "Tab-Limit erreicht (max. 8)"
 # --- Allgemeine Aktionen/Schaltflächen ---
 submit = "Senden"

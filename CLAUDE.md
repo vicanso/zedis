@@ -26,10 +26,11 @@ Cargo workspace: root binary crate `zedis-gui` (bin name `zedis`) plus `members 
 
 - `crates/zedis-core` — GUI-free pure logic: the `Capability` permission matrix, fuzzy match, hex/csv/diff, JSONPath, TTL helpers, `env::is_development`. No gpui, no i18n.
 - `crates/zedis-connection` — the Redis layer: pooled clients (`manager/{client,pool,slots}.rs`), `RedisServer` config, SSH tunnels, plus the shared `error.rs` and the `fs`/`string`/`time` helpers. No gpui (strings are `String`, converted at UI boundaries) and no i18n (`danger.rs` returns `i18n_key()`s for the UI to translate). The embedded `commands.json` is injected at startup via `init_commands_json` — this crate has no access to the app's assets.
+- `crates/zedis-db` — the local storage layer: redb-backed managers (tags, favorites, history, trash, scripts) and proto descriptors, with its own `error.rs` (redb + prost/protox variants live here, not in the app). New redb managers go in this crate.
 - `crates/zedis-ui` — reusable widgets (`ZedisCard`, `ZedisDialog`, `ZedisForm`, ...). **Separate crate**: it cannot use `crate::helpers::*` from the app. Platform-specific values (e.g. monospace font family) must be passed in by the caller.
 - `zedis-cmd-builder` — offline helper tool (`make build-cmd`).
 
-The app re-exports the sub-crates through thin shims, so call sites keep their old paths: `crate::connection::*` (→ zedis-connection), `crate::error::*` (→ zedis-connection::error), `crate::helpers::*` (mixes app-only helpers with re-exports from both crates). Add new pure logic to zedis-core, new Redis operations to zedis-connection — not to the app crate. UI strings never move into the sub-crates (rust-i18n is per-crate; translations live only in the app).
+The app re-exports the sub-crates through thin shims, so call sites keep their old paths: `crate::connection::*` (→ zedis-connection), `crate::db::*` (→ zedis-db), `crate::error::*` (the app-level `Error` — a thin wrapper that transparently passes through `zedis_connection::error::Error` and `zedis_db::error::Error`), `crate::helpers::*` (mixes app-only helpers with re-exports from the sub-crates). Add new pure logic to zedis-core, new Redis operations to zedis-connection, new local-storage managers to zedis-db — not to the app crate. UI strings never move into the sub-crates (rust-i18n is per-crate; translations live only in the app).
 
 ## Architecture
 
