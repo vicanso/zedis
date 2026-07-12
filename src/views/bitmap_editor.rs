@@ -692,6 +692,24 @@ mod tests {
     }
 
     #[test]
+    fn sparse_setbit_bitmap_stays_bytes_end_to_end() {
+        // User-reported regression: a sparse SETBIT bitmap (all zeros except
+        // 0x01 at byte 5 and 0x10 at the tail) is entirely valid UTF-8, so
+        // the value pipeline classified it as Text (and its all-zero prefix
+        // even "decompressed" as a size-0 LZ4 block) — the format never
+        // stayed `Bytes`, so the editor's bitmap heuristics below never ran.
+        use crate::states::DataFormat;
+        use crate::states::detect_and_decode;
+        let mut bytes = vec![0u8; 122];
+        bytes[5] = 0x01;
+        bytes[121] = 0x10;
+        let (format, _) = detect_and_decode(&bytes, 4096);
+        assert_eq!(format, DataFormat::Bytes);
+        assert!(bitmap_eligible(&bytes));
+        assert!(looks_like_bitmap(&bytes));
+    }
+
+    #[test]
     fn looks_like_bitmap_gates_on_size_format_and_text() {
         // Small opaque non-UTF8 blob → bitmap.
         assert!(looks_like_bitmap(&[0xff, 0x00, 0x80, 0x13]));

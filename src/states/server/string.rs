@@ -114,9 +114,22 @@ pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat
         DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
         _ => {
-            let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
-            if !is_utf8 && let Ok(decompressed) = decompress_size_prepended(data) {
+            // NUL bytes mean binary even when every byte is valid
+            // UTF-8 — a sparse SETBIT bitmap is mostly 0x00 and must
+            // stay `Bytes` so the editor's bitmap heuristics get a
+            // chance (mirrors `is_probably_text` in bitmap_editor.rs).
+            // The LZ4 sniff also rejects empty output: an all-zero
+            // prefix reads as a size-prepended block of length 0 and
+            // would "decompress" into an empty preview.
+            let has_nul = data.contains(&0);
+            let is_utf8 = !has_nul && simdutf8::basic::from_utf8(data).is_ok();
+            if !is_utf8
+                && let Ok(decompressed) = decompress_size_prepended(data)
+                && !decompressed.is_empty()
+            {
                 process_decompressed(Some(decompressed))
+            } else if has_nul {
+                None
             } else {
                 format_text(data, max_truncate_length)
             }
@@ -183,9 +196,22 @@ impl RedisBytesValue {
                 DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
                 _ => {
-                    let is_utf8 = simdutf8::basic::from_utf8(data).is_ok();
-                    if !is_utf8 && let Ok(decompressed) = decompress_size_prepended(data) {
+                    // NUL bytes mean binary even when every byte is valid
+                    // UTF-8 — a sparse SETBIT bitmap is mostly 0x00 and must
+                    // stay `Bytes` so the editor's bitmap heuristics get a
+                    // chance (mirrors `is_probably_text` in bitmap_editor.rs).
+                    // The LZ4 sniff also rejects empty output: an all-zero
+                    // prefix reads as a size-prepended block of length 0 and
+                    // would "decompress" into an empty preview.
+                    let has_nul = data.contains(&0);
+                    let is_utf8 = !has_nul && simdutf8::basic::from_utf8(data).is_ok();
+                    if !is_utf8
+                        && let Ok(decompressed) = decompress_size_prepended(data)
+                        && !decompressed.is_empty()
+                    {
                         process_decompressed(Some(decompressed))
+                    } else if has_nul {
+                        None
                     } else {
                         format_text(data, max_truncate_length)
                     }
