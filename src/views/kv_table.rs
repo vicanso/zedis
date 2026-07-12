@@ -21,7 +21,7 @@ use crate::{
     helpers::{EditorAction, build_csv, humanize_keystroke},
     states::{
         KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
-        i18n_list_editor,
+        i18n_list_editor, save_app_state,
     },
     views::export_to_file,
 };
@@ -35,6 +35,7 @@ use gpui_component::{
     h_flex,
     input::{Escape, Input, InputEvent, InputState},
     label::Label,
+    resizable::{ResizableState, h_resizable, resizable_panel},
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
@@ -136,6 +137,9 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     list_push_mode_state: Entity<usize>,
     /// The form for the editor
     editor_form: Option<Entity<ZedisForm>>,
+    /// User-resized width of the entry panel (right pane); mirrors the
+    /// persisted `kv_edit_panel_width` so renders don't re-read the store.
+    panel_width: Option<gpui::Pixels>,
     /// Fetcher instance
     fetcher: Arc<T>,
     /// Server state, kept so the CSV export action can call `export_to_file`.
@@ -402,6 +406,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             readonly,
             mode,
             base_mode: KvTableMode::ALL,
+            panel_width: cx.global::<ZedisGlobalStore>().read(cx).kv_edit_panel_width(),
             fetcher,
             server_state,
             columns,
@@ -958,124 +963,151 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             Icon::new(CustomIconName::CircleDotDashed) // More data available
         };
 
+        // Left side: table + footer
+        let left = v_flex()
+            .h_full()
+            .w_full()
+            // Main table area
+            .child(
+                div().flex_1().w_full().child(
+                    DataTable::new(&self.table_state)
+                        .stripe(true) // Alternating row colors for better readability
+                        .bordered(false) // Table borders
+                        .scrollbar_visible(true, true), // Show both scrollbars
+                ),
+            )
+            // Footer toolbar with search and status
+            .child(
+                h_flex()
+                    .flex_none()
+                    .w_full()
+                    .p_3()
+                    // Left side: Add button and search input
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .when(can_add, |this| {
+                                this.child(
+                                    Button::new("add-value-btn")
+                                        .icon(CustomIconName::FilePlusCorner)
+                                        .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.handle_add_row(window, cx);
+                                        })),
+                                )
+                            })
+                            // Bulk paste only makes sense for the
+                            // four flat-table types — Stream rows
+                            // require structured fields (ID + N
+                            // entries) that don't map cleanly to
+                            // TSV/CSV, so we hide the button
+                            // there.
+                            .when(
+                                can_add
+                                    && matches!(
+                                        self.fetcher.key_type(),
+                                        KeyType::Hash | KeyType::List | KeyType::Set | KeyType::Zset
+                                    ),
+                                |this| {
+                                    this.child(
+                                        Button::new("bulk-add-value-btn")
+                                            .icon(IconName::Asterisk)
+                                            .tooltip(i18n_kv_table(cx, "bulk_add_tooltip"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.handle_bulk_add(window, cx);
+                                            })),
+                                    )
+                                },
+                            )
+                            .when(can_filter, |this| {
+                                this.child(
+                                    Input::new(&self.keyword_state)
+                                        .w(px(KEYWORD_INPUT_WIDTH))
+                                        .suffix(search_btn)
+                                        .cleanable(true),
+                                )
+                            })
+                            .when_some(self.action_button_factory.as_ref(), |this, factory| {
+                                this.children(factory(window, cx))
+                            })
+                            // Export loaded rows to CSV — one button on the
+                            // shared table covers every collection type.
+                            .when(
+                                self.items_count > 0 && Capability::ExportCsv.allowed(self.readonly),
+                                |this| {
+                                    this.child(
+                                        Button::new("kv-table-export-btn")
+                                            .ghost()
+                                            .icon(CustomIconName::Download)
+                                            .tooltip(i18n_common(cx, "export_csv"))
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                this.export_csv(cx);
+                                            })),
+                                    )
+                                },
+                            )
+                            .flex_1(),
+                    )
+                    // Right side: Status icon and count
+                    .child(status_icon.text_color(text_color).mr_2())
+                    .child(
+                        Label::new(format!("{} / {}", self.items_count, self.total_count))
+                            .text_sm()
+                            .text_color(text_color),
+                    ),
+            );
+
+        // With the entry panel open, split into user-resizable panes (width
+        // persisted globally as `kv_edit_panel_width` — a display preference,
+        // same policy as the key tree width). Without it, the table takes the
+        // full width as before.
+        let body = if self.edit_row.is_some() {
+            let panel = div()
+                .id("kv-table-on-edit-overlay")
+                .size_full()
+                .border_l_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .p_2()
+                .flex()
+                .flex_col()
+                .child(self.enhance_render_edit_form(window, cx))
+                .on_click(cx.listener(|_this, _, _, cx| {
+                    cx.stop_propagation();
+                }));
+            let viewport_width = window.viewport_size().width;
+            let panel_width = self.panel_width.unwrap_or(viewport_width * 0.5);
+            h_resizable("kv-table-split")
+                .child(resizable_panel().child(left))
+                .child(
+                    resizable_panel()
+                        .size(panel_width)
+                        .size_range(px(320.)..viewport_width * 0.75)
+                        .child(panel),
+                )
+                .on_resize(cx.listener(|this, event: &Entity<ResizableState>, _window, cx| {
+                    let Some(width) = event.read(cx).sizes().get(1).copied() else {
+                        return;
+                    };
+                    this.panel_width = Some(width);
+                    let mut value = cx.global::<ZedisGlobalStore>().value(cx);
+                    value.set_kv_edit_panel_width(width);
+                    cx.background_spawn(async move {
+                        if let Err(e) = save_app_state(&value) {
+                            tracing::error!(error = %e, "Failed to save kv panel width");
+                        }
+                    })
+                    .detach();
+                }))
+                .into_any_element()
+        } else {
+            left.into_any_element()
+        };
+
         h_flex()
             .h_full()
             .w_full()
-            // Left side: table + footer
-            .child(
-                v_flex()
-                    .h_full()
-                    .when(self.edit_row.is_some(), |this| this.w_1_2())
-                    .when(self.edit_row.is_none(), |this| this.w_full())
-                    // Main table area
-                    .child(
-                        div().flex_1().w_full().child(
-                            DataTable::new(&self.table_state)
-                                .stripe(true) // Alternating row colors for better readability
-                                .bordered(false) // Table borders
-                                .scrollbar_visible(true, true), // Show both scrollbars
-                        ),
-                    )
-                    // Footer toolbar with search and status
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .w_full()
-                            .p_3()
-                            // Left side: Add button and search input
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .when(can_add, |this| {
-                                        this.child(
-                                            Button::new("add-value-btn")
-                                                .icon(CustomIconName::FilePlusCorner)
-                                                .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.handle_add_row(window, cx);
-                                                })),
-                                        )
-                                    })
-                                    // Bulk paste only makes sense for the
-                                    // four flat-table types — Stream rows
-                                    // require structured fields (ID + N
-                                    // entries) that don't map cleanly to
-                                    // TSV/CSV, so we hide the button
-                                    // there.
-                                    .when(
-                                        can_add
-                                            && matches!(
-                                                self.fetcher.key_type(),
-                                                KeyType::Hash | KeyType::List | KeyType::Set | KeyType::Zset
-                                            ),
-                                        |this| {
-                                            this.child(
-                                                Button::new("bulk-add-value-btn")
-                                                    .icon(IconName::Asterisk)
-                                                    .tooltip(i18n_kv_table(cx, "bulk_add_tooltip"))
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        this.handle_bulk_add(window, cx);
-                                                    })),
-                                            )
-                                        },
-                                    )
-                                    .when(can_filter, |this| {
-                                        this.child(
-                                            Input::new(&self.keyword_state)
-                                                .w(px(KEYWORD_INPUT_WIDTH))
-                                                .suffix(search_btn)
-                                                .cleanable(true),
-                                        )
-                                    })
-                                    .when_some(self.action_button_factory.as_ref(), |this, factory| {
-                                        this.children(factory(window, cx))
-                                    })
-                                    // Export loaded rows to CSV — one button on the
-                                    // shared table covers every collection type.
-                                    .when(
-                                        self.items_count > 0 && Capability::ExportCsv.allowed(self.readonly),
-                                        |this| {
-                                            this.child(
-                                                Button::new("kv-table-export-btn")
-                                                    .ghost()
-                                                    .icon(CustomIconName::Download)
-                                                    .tooltip(i18n_common(cx, "export_csv"))
-                                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                                        this.export_csv(cx);
-                                                    })),
-                                            )
-                                        },
-                                    )
-                                    .flex_1(),
-                            )
-                            // Right side: Status icon and count
-                            .child(status_icon.text_color(text_color).mr_2())
-                            .child(
-                                Label::new(format!("{} / {}", self.items_count, self.total_count))
-                                    .text_sm()
-                                    .text_color(text_color),
-                            ),
-                    ),
-            )
-            // Right side: edit panel (full height)
-            .when(self.edit_row.is_some(), |this| {
-                this.child(
-                    div()
-                        .id("kv-table-on-edit-overlay")
-                        .w_1_2()
-                        .h_full()
-                        .border_l_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().background)
-                        .p_2()
-                        .flex()
-                        .flex_col()
-                        .child(self.enhance_render_edit_form(window, cx))
-                        .on_click(cx.listener(|_this, _, _, cx| {
-                            cx.stop_propagation();
-                        })),
-                )
-            })
+            .child(body)
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {
                     let Some(values) = this

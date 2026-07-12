@@ -398,6 +398,13 @@ pub struct ZedisAppState {
     #[serde(default)]
     window_placements: Vec<WindowPlacement>,
     key_tree_width: Pixels,
+    /// Persisted width of the kv-table entry panel — the right-hand
+    /// preview/edit pane in the collection editors (Hash/List/Set/ZSet/
+    /// Stream), user-resizable via the split handle. Global: a display
+    /// preference, not a per-server setting (same policy as
+    /// `key_tree_width`). `None` falls back to half the viewport.
+    #[serde(default)]
+    kv_edit_panel_width: Option<Pixels>,
     theme: Option<String>,
     /// Selected named theme from the registry (e.g. "Ayu Dark"). Takes
     /// precedence over the `theme` mode; `None` falls back to Light/Dark/System.
@@ -979,6 +986,12 @@ impl ZedisAppState {
     /// server reopen the database the user left it on instead of always DB 0.
     pub fn last_db_for(&self, server_id: &str) -> usize {
         self.last_db.get(server_id).copied().unwrap_or(0)
+    }
+    pub fn kv_edit_panel_width(&self) -> Option<Pixels> {
+        self.kv_edit_panel_width
+    }
+    pub fn set_kv_edit_panel_width(&mut self, width: Pixels) {
+        self.kv_edit_panel_width = Some(width);
     }
     /// The persisted workspace-tab list — see the `open_tabs` field.
     pub fn open_tabs(&self) -> &[(String, usize)] {
