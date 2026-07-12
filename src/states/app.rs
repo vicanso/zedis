@@ -55,7 +55,7 @@ pub enum Route {
 }
 
 /// A connection-scoped page, rendered against the active `selected_server`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ServerView {
     #[default]
     Editor,

@@ -19,46 +19,40 @@ mod ai;
 mod app_identity;
 mod color;
 mod common;
-mod csv;
-mod diff;
 mod font;
 mod fs;
-mod fuzzy;
-mod hex;
-mod jsonpath;
 mod logger;
 mod string;
 mod syntax;
 mod tag;
 mod time;
-mod ttl;
-mod ttl_cache;
 mod updater;
-mod validate;
 
 pub use action::*;
 pub use ai::{AiEndpoint, analyze_report};
 pub use app_identity::with_app_identity;
 pub use color::card_background;
 pub use common::*;
-pub use csv::build_csv;
-pub use diff::*;
 pub use font::*;
 pub use fs::*;
-pub use fuzzy::fuzzy_score;
-pub use hex::{bytes_to_hex_text, parse_hex_text};
-pub use jsonpath::{
-    JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,
-};
 pub use logger::{init_logger, logs_dir};
 pub use string::*;
 pub use syntax::register_extra_languages;
 pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
 pub use time::{parse_duration, unix_ts, unix_ts_millis};
-pub use ttl::{TtlFilter, format_ttl_chip, ttl_chip_kind};
-pub use ttl_cache::*;
 pub use updater::{UpdateInfo, download_and_verify, fetch_latest_release, open_installer};
-pub use validate::*;
+// Pure (GUI-free) logic lives in the `zedis-core` crate; re-exported here so
+// call sites keep using `crate::helpers::*` unchanged.
+pub use zedis_core::csv::build_csv;
+pub use zedis_core::diff::*;
+pub use zedis_core::fuzzy::fuzzy_score;
+pub use zedis_core::hex::{bytes_to_hex_text, parse_hex_text};
+pub use zedis_core::jsonpath::{
+    JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,
+};
+pub use zedis_core::ttl::{TtlFilter, format_ttl_chip, ttl_chip_kind};
+pub use zedis_core::ttl_cache::*;
+pub use zedis_core::validate::*;
 pub fn is_development() -> bool {
     env::var("RUST_ENV").unwrap_or_default() == "dev"
 }

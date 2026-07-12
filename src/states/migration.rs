@@ -271,7 +271,8 @@ async fn export_worker(
         if cancel.load(Ordering::Acquire) {
             break;
         }
-        let entries = dump_keys_chunk(&mut conn, chunk).await?;
+        let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+        let entries = dump_keys_chunk(&mut conn, &chunk).await?;
         let chunk_total = chunk.len();
         let dumped_count = entries.len();
         let bytes_in_chunk: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
@@ -305,7 +306,7 @@ async fn export_worker(
             let dumped_set: ahash::AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
             for key in chunk.iter().filter(|k| !dumped_set.contains(k.as_str().as_bytes())) {
                 log_lines.push(LogLine {
-                    key: key.clone(),
+                    key: key.clone().into(),
                     bytes: 0,
                     status: LogStatus::Skipped,
                     message: Some("missing".into()),

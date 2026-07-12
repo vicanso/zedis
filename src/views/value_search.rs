@@ -354,7 +354,7 @@ impl ZedisValueSearch {
         let mut list = v_flex().w_full();
         for (ix, vm) in self.matches.iter().enumerate() {
             let is_stripe = ix % 2 != 0;
-            let is_selected = selected.as_ref() == Some(&vm.key);
+            let is_selected = selected.as_deref() == Some(vm.key.as_str());
             let key_click = vm.key.clone();
             // A muted second line names where the needle matched (field /
             // index / member); plain string values carry no location.
@@ -382,7 +382,7 @@ impl ZedisValueSearch {
                     // Row-hover highlight for the pointer's current match; the
                     // selected row keeps its `active` fill (no hover override).
                     .when(!is_selected, |this| this.hover(move |s| s.bg(hover)))
-                    .on_click(cx.listener(move |this, _, _w, cx| this.select_result(key_click.clone(), cx)))
+                    .on_click(cx.listener(move |this, _, _w, cx| this.select_result(key_click.clone().into(), cx)))
                     .child(content),
             );
         }

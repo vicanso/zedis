@@ -397,7 +397,12 @@ impl ZedisTopology {
                         .small()
                         .label(forget_label.clone())
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_forget_dialog(id_for_click.clone(), addr_for_click.clone(), window, cx);
+                            this.open_forget_dialog(
+                                id_for_click.clone().into(),
+                                addr_for_click.clone().into(),
+                                window,
+                                cx,
+                            );
                         })),
                 );
             }
@@ -426,7 +431,7 @@ impl ZedisTopology {
                             .small()
                             .label(failover_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_failover_dialog(failover_target.clone(), false, window, cx);
+                                this.open_failover_dialog(failover_target.clone().into(), false, window, cx);
                             })),
                     )
                     .child(
@@ -435,7 +440,7 @@ impl ZedisTopology {
                             .small()
                             .label(force_failover_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_failover_dialog(force_failover_target.clone(), true, window, cx);
+                                this.open_failover_dialog(force_failover_target.clone().into(), true, window, cx);
                             })),
                     );
                 if !r_node_id.is_empty() {
@@ -447,7 +452,12 @@ impl ZedisTopology {
                             .small()
                             .label(forget_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_forget_dialog(id_for_click.clone(), addr_for_click.clone(), window, cx);
+                                this.open_forget_dialog(
+                                    id_for_click.clone().into(),
+                                    addr_for_click.clone().into(),
+                                    window,
+                                    cx,
+                                );
                             })),
                     );
                 }
@@ -921,7 +931,7 @@ impl ZedisTopology {
             .slot_map
             .masters
             .iter()
-            .find(|m| m.node_id.as_ref() == target_id)
+            .find(|m| m.node_id.as_str() == target_id)
             .map(|m| m.addr.to_string())
             .unwrap_or_default();
         if target_addr.is_empty() {
@@ -1030,7 +1040,7 @@ impl ZedisTopology {
                             .small()
                             .label(failover_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_sentinel_failover_dialog(name_for_failover.clone(), window, cx);
+                                this.open_sentinel_failover_dialog(name_for_failover.clone().into(), window, cx);
                             })),
                     )
                     .child(
@@ -1039,7 +1049,7 @@ impl ZedisTopology {
                             .small()
                             .label(reset_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_sentinel_reset_dialog(name_for_reset.clone(), window, cx);
+                                this.open_sentinel_reset_dialog(name_for_reset.clone().into(), window, cx);
                             })),
                     )
                     .child(
@@ -1048,7 +1058,7 @@ impl ZedisTopology {
                             .small()
                             .label(remove_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_sentinel_remove_dialog(name_for_remove.clone(), window, cx);
+                                this.open_sentinel_remove_dialog(name_for_remove.clone().into(), window, cx);
                             })),
                     );
             }

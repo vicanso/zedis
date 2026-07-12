@@ -193,9 +193,9 @@ fn correlated_event_for_slowlog(slow_ts: i64, events: &[LatencyEvent]) -> Option
             continue;
         }
         match &best {
-            None => best = Some((ev.event.clone(), delta)),
+            None => best = Some((ev.event.clone().into(), delta)),
             Some((_, current_delta)) if delta.abs() < current_delta.abs() => {
-                best = Some((ev.event.clone(), delta));
+                best = Some((ev.event.clone().into(), delta));
             }
             _ => {}
         }
@@ -1511,7 +1511,7 @@ impl ZedisSlowlogEditor {
         let event_for_toggle = event.clone();
         let event_for_jump = event.clone();
         let event_ts = ev.timestamp;
-        let is_expanded = self.expanded_event.as_ref() == Some(&event);
+        let is_expanded = self.expanded_event.as_deref() == Some(event.as_str());
         let when_str = format_unix_seconds(ev.timestamp);
         let id_hash: u32 = djb2_hash(event.as_ref());
 
@@ -1534,7 +1534,7 @@ impl ZedisSlowlogEditor {
                     .xsmall()
                     .label(label)
                     .on_click(cx.listener(move |this, _, _w, cx| {
-                        this.jump_to_slowlog_window(event_for_jump.clone(), event_ts, cx);
+                        this.jump_to_slowlog_window(event_for_jump.clone().into(), event_ts, cx);
                     }))
                     .into_any_element(),
             )
@@ -1546,7 +1546,7 @@ impl ZedisSlowlogEditor {
         let latest_color = severity_color(ev.latest_ms, cx);
         let max_color = severity_color(ev.max_ms, cx);
 
-        let history = self.event_histories.get(&event).cloned();
+        let history = self.event_histories.get(event.as_str()).cloned();
 
         let row = h_flex()
             .px_3()
@@ -1578,7 +1578,9 @@ impl ZedisSlowlogEditor {
                     } else {
                         i18n_slowlog_editor(cx, "latency_show_graph")
                     })
-                    .on_click(cx.listener(move |this, _, _w, cx| this.expand_event(event_for_toggle.clone(), cx))),
+                    .on_click(
+                        cx.listener(move |this, _, _w, cx| this.expand_event(event_for_toggle.clone().into(), cx)),
+                    ),
             );
 
         // Inline drill-down block: GPU sparkline (from HISTORY) +

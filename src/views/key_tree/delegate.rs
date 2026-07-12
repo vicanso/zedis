@@ -185,7 +185,7 @@ impl ListDelegate for KeyTreeDelegate {
                 } else {
                     cx.theme().muted_foreground
                 };
-                Some((label, color))
+                Some((label.into(), color))
             })
         };
 

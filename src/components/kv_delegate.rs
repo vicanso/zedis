@@ -266,14 +266,19 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         let column = self.column(col_ix, cx);
         let primary_color = cx.theme().primary;
 
-        div()
+        // h_flex (items_center) matches render_td below, so the header text
+        // is vertically centered like the cells; flex_1 keeps the label
+        // full-width so per-column text_align (e.g. the right-aligned index
+        // column) still applies.
+        h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .child(
                 Label::new(column.name.clone())
                     .text_align(column.align)
                     .text_color(primary_color)
-                    .text_sm(),
+                    .text_sm()
+                    .flex_1(),
             )
     }
 

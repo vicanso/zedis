@@ -14,7 +14,6 @@
 
 use super::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use gpui::SharedString;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -26,15 +25,15 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// the user edits a single line.
 #[derive(Debug, Clone, Default)]
 pub struct AclUser {
-    pub username: SharedString,
-    pub flags: Vec<SharedString>,
+    pub username: String,
+    pub flags: Vec<String>,
     /// Hex sha-256 prefixes of stored passwords, length-truncated for display.
-    pub password_digests: Vec<SharedString>,
+    pub password_digests: Vec<String>,
     /// `+@all -@dangerous +set ...` command spec.
-    pub commands: SharedString,
+    pub commands: String,
     /// `~prefix:* %R~foo &chan:*` patterns flattened into one line.
-    pub keys: Vec<SharedString>,
-    pub channels: Vec<SharedString>,
+    pub keys: Vec<String>,
+    pub channels: Vec<String>,
     /// True iff the user has the `on` flag.
     pub enabled: bool,
     /// True iff the user has the `nopass` flag.
@@ -68,7 +67,7 @@ impl AclUser {
 /// module. Callers render an empty-state explainer in that case.
 #[derive(Debug, Clone, Default)]
 pub struct AclListing {
-    pub usernames: Vec<SharedString>,
+    pub usernames: Vec<String>,
     pub unsupported: bool,
 }
 
@@ -76,7 +75,7 @@ pub async fn acl_list(conn: &mut RedisAsyncConn) -> Result<AclListing> {
     let res: redis::RedisResult<Vec<String>> = cmd("ACL").arg("USERS").query_async(conn).await;
     match res {
         Ok(users) => Ok(AclListing {
-            usernames: users.into_iter().map(SharedString::from).collect(),
+            usernames: users.into_iter().collect(),
             unsupported: false,
         }),
         Err(e) => {
@@ -99,11 +98,11 @@ pub async fn acl_get_user(conn: &mut RedisAsyncConn, username: &str) -> Result<A
     })
 }
 
-pub async fn acl_whoami(conn: &mut RedisAsyncConn) -> Result<SharedString> {
+pub async fn acl_whoami(conn: &mut RedisAsyncConn) -> Result<String> {
     let res: redis::RedisResult<String> = cmd("ACL").arg("WHOAMI").query_async(conn).await;
     match res {
-        Ok(name) => Ok(name.into()),
-        Err(e) if is_unsupported(&e) => Ok(SharedString::default()),
+        Ok(name) => Ok(name),
+        Err(e) if is_unsupported(&e) => Ok(String::new()),
         Err(e) => Err(e.into()),
     }
 }
@@ -144,7 +143,7 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
     };
 
     let mut user = AclUser {
-        username: SharedString::from(username.to_string()),
+        username: username.to_string(),
         ..Default::default()
     };
 
@@ -157,7 +156,6 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
                 user.flags = flags
                     .into_iter()
                     .filter(|f| f != "on" && f != "off" && f != "nopass")
-                    .map(SharedString::from)
                     .collect();
                 if user.enabled {
                     user.flags.insert(0, "on".into());
@@ -174,12 +172,12 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
                     .into_iter()
                     .map(|s| {
                         let preview = s.chars().take(8).collect::<String>();
-                        SharedString::from(format!("#{preview}…"))
+                        format!("#{preview}…")
                     })
                     .collect();
             }
             "commands" => {
-                user.commands = parse_simple_string(&val).unwrap_or_default().into();
+                user.commands = parse_simple_string(&val).unwrap_or_default();
             }
             "keys" => {
                 user.keys = parse_keys_or_channels(&val);
@@ -235,15 +233,12 @@ fn parse_string_array(v: &Value) -> Option<Vec<String>> {
 
 /// `keys` / `channels` may come as an `Array<BulkString>` (one pattern each)
 /// or as a single space-joined `BulkString`. Normalize both into a token list.
-fn parse_keys_or_channels(v: &Value) -> Vec<SharedString> {
+fn parse_keys_or_channels(v: &Value) -> Vec<String> {
     if let Some(items) = parse_string_array(v) {
-        return items.into_iter().map(SharedString::from).collect();
+        return items.into_iter().collect();
     }
     if let Some(joined) = parse_simple_string(v) {
-        return joined
-            .split_whitespace()
-            .map(|s| SharedString::from(s.to_string()))
-            .collect();
+        return joined.split_whitespace().map(|s| s.to_string()).collect();
     }
     Vec::new()
 }
@@ -272,9 +267,9 @@ mod tests {
             Value::Array(vec![bs("&events:*")]),
         ]);
         let user = parse_get_user("alice", &raw).expect("parse failed");
-        assert_eq!(user.username.as_ref(), "alice");
+        assert_eq!(user.username.as_str(), "alice");
         assert!(user.enabled);
-        assert_eq!(user.commands.as_ref(), "+@all -@dangerous");
+        assert_eq!(user.commands.as_str(), "+@all -@dangerous");
         assert_eq!(user.keys.len(), 2);
         assert_eq!(user.channels.len(), 1);
         assert_eq!(user.password_digests.len(), 1);
@@ -293,7 +288,7 @@ mod tests {
         ]);
         let user = parse_get_user("bob", &raw).expect("parse failed");
         assert!(!user.enabled);
-        let expected: Vec<SharedString> = vec!["~user:*".into(), "~order:*".into()];
+        let expected: Vec<String> = vec!["~user:*".into(), "~order:*".into()];
         assert_eq!(user.keys, expected);
     }
 

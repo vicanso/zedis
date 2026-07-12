@@ -15,7 +15,6 @@
 use crate::error::Error;
 use crate::helpers::{decrypt, encrypt, get_or_create_config_dir, is_development};
 use arc_swap::ArcSwap;
-use gpui::SharedString;
 use indexmap::IndexMap;
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use redis::{ClientTlsConfig, TlsCertificates};
@@ -92,7 +91,7 @@ struct RedisUrl {
     tls: bool,
 }
 
-fn parse_url(host: SharedString) -> RedisUrl {
+fn parse_url(host: String) -> RedisUrl {
     let input_to_parse = if host.contains("://") {
         host.to_string()
     } else {
@@ -220,13 +219,13 @@ pub enum ImportError {
 }
 
 impl RedisServer {
-    pub fn from_form_data(id: &str, data: &IndexMap<SharedString, SharedString>) -> Self {
+    pub fn from_form_data(id: &str, data: &IndexMap<String, String>) -> Self {
         let get_str = |k: &str| data.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
         let get_parsed = |k: &str| get_str(k).and_then(|s| s.parse().ok());
 
         let get_bool = |k: &str| get_str(k).map(|s| s == "true" || s == "1");
-        let redis_url = parse_url(get_str("host").unwrap_or_default().into());
+        let redis_url = parse_url(get_str("host").unwrap_or_default());
         let mut username = get_str("username");
         if username.is_none() && !redis_url.username.is_empty() {
             username = Some(redis_url.username.clone());

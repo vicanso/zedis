@@ -24,11 +24,12 @@ use crate::{
         ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology, ZedisValueSearch,
     },
 };
-use gpui::{Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
+use gpui::{AnyView, Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
+use std::collections::HashMap;
 use tracing::{debug, error, info};
 use zedis_ui::ZedisSkeletonLoading;
 
@@ -58,22 +59,12 @@ pub struct ZedisContent {
     script_editor: Option<Entity<ZedisScriptEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     terminal: Option<Entity<ZedisTerminal>>,
-    metrics: Option<Entity<ZedisMetrics>>,
-    slowlog_editor: Option<Entity<ZedisSlowlogEditor>>,
-    memory_analysis: Option<Entity<ZedisMemoryAnalysis>>,
-    server_load: Option<Entity<ZedisServerLoad>>,
-    value_search: Option<Entity<ZedisValueSearch>>,
-    clients_manager: Option<Entity<ZedisClientsManager>>,
-    monitor: Option<Entity<ZedisMonitor>>,
-    config_editor: Option<Entity<ZedisConfigEditor>>,
-    acl_manager: Option<Entity<ZedisAclManager>>,
-    search_manager: Option<Entity<ZedisSearchManager>>,
-    function_editor: Option<Entity<ZedisFunctionEditor>>,
-    lua_script_library: Option<Entity<ZedisLuaScriptLibrary>>,
-    persistence: Option<Entity<ZedisPersistence>>,
-    keyspace_notifications: Option<Entity<ZedisKeyspaceNotifications>>,
-    topology: Option<Entity<ZedisTopology>>,
     key_tree: Option<Entity<ZedisKeyTree>>,
+    /// Server tool panels (Metrics, Slowlog, Monitor, …) keyed by their route
+    /// view — one map instead of fifteen `Option<Entity<…>>` fields. Created
+    /// on first visit (`tool_view`), dropped uniformly by `clear_views` when
+    /// the route moves elsewhere.
+    tool_views: HashMap<ServerView, AnyView>,
     status_bar: Entity<ZedisStatusBar>,
 
     /// Persisted width of the key tree panel (resizable by user)
@@ -114,57 +105,17 @@ impl ZedisContent {
         if !route.is_server() {
             self.drop_editor_suite();
         }
-        if route.server_view() != Some(ServerView::Metrics) {
-            self.metrics.take();
-        }
         if route != Route::Protos {
             self.proto_editor.take();
         }
         if route != Route::Scripts {
             self.script_editor.take();
         }
-        if route.server_view() != Some(ServerView::Slowlog) {
-            self.slowlog_editor.take();
-        }
-        if route.server_view() != Some(ServerView::MemoryAnalysis) {
-            self.memory_analysis.take();
-        }
-        if route.server_view() != Some(ServerView::ServerLoad) {
-            self.server_load.take();
-        }
-        if route.server_view() != Some(ServerView::ValueSearch) {
-            self.value_search.take();
-        }
-        if route.server_view() != Some(ServerView::Clients) {
-            self.clients_manager.take();
-        }
-        if route.server_view() != Some(ServerView::Monitor) {
-            self.monitor.take();
-        }
-        if route.server_view() != Some(ServerView::Config) {
-            self.config_editor.take();
-        }
-        if route.server_view() != Some(ServerView::Acl) {
-            self.acl_manager.take();
-        }
-        if route.server_view() != Some(ServerView::Search) {
-            self.search_manager.take();
-        }
-        if route.server_view() != Some(ServerView::Functions) {
-            self.function_editor.take();
-        }
-        if route.server_view() != Some(ServerView::LuaScripts) {
-            self.lua_script_library.take();
-        }
-        if route.server_view() != Some(ServerView::Persistence) {
-            self.persistence.take();
-        }
-        if route.server_view() != Some(ServerView::KeyspaceNotifications) {
-            self.keyspace_notifications.take();
-        }
-        if route.server_view() != Some(ServerView::Topology) {
-            self.topology.take();
-        }
+        // Tool panels: keep only the one the current route still shows —
+        // leaving a tool route drops its panel (and any large scan buffers),
+        // same per-view policy as before, now uniform over the map.
+        let current_tool = route.server_view();
+        self.tool_views.retain(|view, _| Some(*view) == current_tool);
     }
     /// Create a new content view with route-aware view management
     ///
@@ -297,21 +248,7 @@ impl ZedisContent {
             servers: None,
             value_editor: None,
             terminal: None,
-            metrics: None,
-            slowlog_editor: None,
-            memory_analysis: None,
-            server_load: None,
-            value_search: None,
-            clients_manager: None,
-            monitor: None,
-            config_editor: None,
-            acl_manager: None,
-            search_manager: None,
-            function_editor: None,
-            lua_script_library: None,
-            persistence: None,
-            keyspace_notifications: None,
-            topology: None,
+            tool_views: HashMap::new(),
             key_tree: None,
             key_tree_width,
             should_focus: false,
@@ -376,169 +313,36 @@ impl ZedisContent {
         div().size_full().child(script_editor)
     }
 
-    fn render_metrics(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let metrics = self
-            .metrics
-            .get_or_insert_with(|| {
-                debug!("Creating new metrics view");
-                cx.new(|cx| ZedisMetrics::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(metrics)
-    }
-
-    fn render_slowlog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let slowlog = self
-            .slowlog_editor
-            .get_or_insert_with(|| {
-                debug!("Creating new slowlog editor view");
-                cx.new(|cx| ZedisSlowlogEditor::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(slowlog)
-    }
-
-    fn render_memory_analysis(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let memory_analysis = self
-            .memory_analysis
-            .get_or_insert_with(|| {
-                debug!("Creating new memory analysis view");
-                cx.new(|cx| ZedisMemoryAnalysis::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(memory_analysis)
-    }
-
-    fn render_server_load(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let server_load = self
-            .server_load
-            .get_or_insert_with(|| {
-                debug!("Creating new server load view");
-                cx.new(|cx| ZedisServerLoad::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(server_load)
-    }
-
-    fn render_value_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let value_search = self
-            .value_search
-            .get_or_insert_with(|| {
-                debug!("Creating new value search view");
-                cx.new(|cx| ZedisValueSearch::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(value_search)
-    }
-
-    fn render_clients(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let clients = self
-            .clients_manager
-            .get_or_insert_with(|| {
-                debug!("Creating new clients manager view");
-                cx.new(|cx| ZedisClientsManager::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(clients)
-    }
-
-    fn render_monitor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let monitor = self
-            .monitor
-            .get_or_insert_with(|| {
-                debug!("Creating new monitor view");
-                cx.new(|cx| ZedisMonitor::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(monitor)
-    }
-
-    fn render_config_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let config_editor = self
-            .config_editor
-            .get_or_insert_with(|| {
-                debug!("Creating new config editor view");
-                cx.new(|cx| ZedisConfigEditor::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(config_editor)
-    }
-
-    fn render_acl_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let acl_manager = self
-            .acl_manager
-            .get_or_insert_with(|| {
-                debug!("Creating new ACL manager view");
-                cx.new(|cx| ZedisAclManager::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(acl_manager)
-    }
-
-    fn render_search_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let search_manager = self
-            .search_manager
-            .get_or_insert_with(|| {
-                debug!("Creating new search manager view");
-                cx.new(|cx| ZedisSearchManager::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(search_manager)
-    }
-
-    fn render_function_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let function_editor = self
-            .function_editor
-            .get_or_insert_with(|| {
-                debug!("Creating new function editor view");
-                cx.new(|cx| ZedisFunctionEditor::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(function_editor)
-    }
-
-    fn render_lua_script_library(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let lib = self
-            .lua_script_library
-            .get_or_insert_with(|| {
-                debug!("Creating new lua script library view");
-                cx.new(|cx| ZedisLuaScriptLibrary::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(lib)
-    }
-
-    fn render_persistence(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = self
-            .persistence
-            .get_or_insert_with(|| {
-                debug!("Creating new persistence view");
-                cx.new(|cx| ZedisPersistence::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(view)
-    }
-
-    fn render_keyspace_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = self
-            .keyspace_notifications
-            .get_or_insert_with(|| {
-                debug!("Creating new keyspace notifications view");
-                cx.new(|cx| ZedisKeyspaceNotifications::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(view)
-    }
-
-    fn render_topology(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = self
-            .topology
-            .get_or_insert_with(|| {
-                debug!("Creating new topology view");
-                cx.new(|cx| ZedisTopology::new(self.server_state.clone(), window, cx))
-            })
-            .clone();
-        div().size_full().child(view)
+    /// Cached tool-panel view for a server route, created on first visit.
+    /// `None` for [`ServerView::Editor`] — the editor suite has its own
+    /// dedicated fields (`render_editor`) because its parts are accessed
+    /// typed elsewhere (terminal toggle, key-tree width persistence).
+    fn tool_view(&mut self, view: ServerView, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyView> {
+        if let Some(existing) = self.tool_views.get(&view) {
+            return Some(existing.clone());
+        }
+        let state = self.server_state.clone();
+        debug!(view = ?view, "creating tool view");
+        let created: AnyView = match view {
+            ServerView::Editor => return None,
+            ServerView::Metrics => cx.new(|cx| ZedisMetrics::new(state, window, cx)).into(),
+            ServerView::Slowlog => cx.new(|cx| ZedisSlowlogEditor::new(state, window, cx)).into(),
+            ServerView::MemoryAnalysis => cx.new(|cx| ZedisMemoryAnalysis::new(state, window, cx)).into(),
+            ServerView::Clients => cx.new(|cx| ZedisClientsManager::new(state, window, cx)).into(),
+            ServerView::Monitor => cx.new(|cx| ZedisMonitor::new(state, window, cx)).into(),
+            ServerView::Config => cx.new(|cx| ZedisConfigEditor::new(state, window, cx)).into(),
+            ServerView::Acl => cx.new(|cx| ZedisAclManager::new(state, window, cx)).into(),
+            ServerView::Search => cx.new(|cx| ZedisSearchManager::new(state, window, cx)).into(),
+            ServerView::Functions => cx.new(|cx| ZedisFunctionEditor::new(state, window, cx)).into(),
+            ServerView::LuaScripts => cx.new(|cx| ZedisLuaScriptLibrary::new(state, window, cx)).into(),
+            ServerView::Persistence => cx.new(|cx| ZedisPersistence::new(state, window, cx)).into(),
+            ServerView::KeyspaceNotifications => cx.new(|cx| ZedisKeyspaceNotifications::new(state, window, cx)).into(),
+            ServerView::Topology => cx.new(|cx| ZedisTopology::new(state, window, cx)).into(),
+            ServerView::ServerLoad => cx.new(|cx| ZedisServerLoad::new(state, window, cx)).into(),
+            ServerView::ValueSearch => cx.new(|cx| ZedisValueSearch::new(state, window, cx)).into(),
+        };
+        self.tool_views.insert(view, created.clone());
+        Some(created)
     }
 
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -644,21 +448,14 @@ impl Render for ZedisContent {
             Route::Scripts => base.child(self.render_script_editor(window, cx)).into_any_element(),
             _ => {
                 let is_busy = self.server_state.read(cx).is_busy();
-                let is_metrics = route.server_view() == Some(ServerView::Metrics);
-                let is_slowlog = route.server_view() == Some(ServerView::Slowlog);
-                let is_memory_analysis = route.server_view() == Some(ServerView::MemoryAnalysis);
-                let is_clients = route.server_view() == Some(ServerView::Clients);
-                let is_monitor = route.server_view() == Some(ServerView::Monitor);
-                let is_config = route.server_view() == Some(ServerView::Config);
-                let is_acl = route.server_view() == Some(ServerView::Acl);
-                let is_search = route.server_view() == Some(ServerView::Search);
-                let is_functions = route.server_view() == Some(ServerView::Functions);
-                let is_lua_scripts = route.server_view() == Some(ServerView::LuaScripts);
-                let is_persistence = route.server_view() == Some(ServerView::Persistence);
-                let is_keyspace_notifications = route.server_view() == Some(ServerView::KeyspaceNotifications);
-                let is_topology = route.server_view() == Some(ServerView::Topology);
-                let is_server_load = route.server_view() == Some(ServerView::ServerLoad);
-                let is_value_search = route.server_view() == Some(ServerView::ValueSearch);
+                // Tool panel for the current route; `None` ⇒ the editor
+                // suite. Created only when actually shown (not while the
+                // busy skeleton is up).
+                let tool = if is_busy {
+                    None
+                } else {
+                    route.server_view().and_then(|view| self.tool_view(view, window, cx))
+                };
 
                 base.when(is_busy, |this| this.child(self.render_loading(window, cx)))
                     .when(!is_busy, |this| {
@@ -669,45 +466,10 @@ impl Render for ZedisContent {
                                     .inset_0()
                                     .size_full()
                                     .overflow_hidden()
-                                    .when(is_metrics, |this| this.child(self.render_metrics(window, cx)))
-                                    .when(is_slowlog, |this| this.child(self.render_slowlog(window, cx)))
-                                    .when(is_memory_analysis, |this| {
-                                        this.child(self.render_memory_analysis(window, cx))
-                                    })
-                                    .when(is_clients, |this| this.child(self.render_clients(window, cx)))
-                                    .when(is_monitor, |this| this.child(self.render_monitor(window, cx)))
-                                    .when(is_config, |this| this.child(self.render_config_editor(window, cx)))
-                                    .when(is_acl, |this| this.child(self.render_acl_manager(window, cx)))
-                                    .when(is_search, |this| this.child(self.render_search_manager(window, cx)))
-                                    .when(is_functions, |this| this.child(self.render_function_editor(window, cx)))
-                                    .when(is_lua_scripts, |this| {
-                                        this.child(self.render_lua_script_library(window, cx))
-                                    })
-                                    .when(is_persistence, |this| this.child(self.render_persistence(window, cx)))
-                                    .when(is_keyspace_notifications, |this| {
-                                        this.child(self.render_keyspace_notifications(window, cx))
-                                    })
-                                    .when(is_topology, |this| this.child(self.render_topology(window, cx)))
-                                    .when(is_server_load, |this| this.child(self.render_server_load(window, cx)))
-                                    .when(is_value_search, |this| this.child(self.render_value_search(window, cx)))
-                                    .when(
-                                        !is_metrics
-                                            && !is_slowlog
-                                            && !is_memory_analysis
-                                            && !is_clients
-                                            && !is_monitor
-                                            && !is_config
-                                            && !is_acl
-                                            && !is_search
-                                            && !is_functions
-                                            && !is_lua_scripts
-                                            && !is_persistence
-                                            && !is_keyspace_notifications
-                                            && !is_topology
-                                            && !is_server_load
-                                            && !is_value_search,
-                                        |this| this.child(self.render_editor(window, cx)),
-                                    ),
+                                    .map(|this| match tool {
+                                        Some(view) => this.child(div().size_full().child(view)),
+                                        None => this.child(self.render_editor(window, cx)),
+                                    }),
                             ),
                         )
                     })

@@ -16,7 +16,6 @@ use tracing::info;
 
 mod acl;
 mod async_connection;
-mod capability;
 mod command;
 mod config;
 mod danger;
@@ -36,7 +35,6 @@ pub use async_connection::{
     RedisAsyncConn, open_monitor_connection, open_node_connection, open_single_connection,
     set_redis_connection_timeout, set_redis_response_timeout,
 };
-pub use capability::Capability;
 pub use config::{
     ImportError, RedisServer, TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, tag_color_index,
 };
@@ -66,6 +64,9 @@ pub use search::{
     ReducerFn, ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex, ft_info,
     ft_list, ft_search,
 };
+// The capability matrix is pure logic and lives in `zedis-core`; re-exported
+// here so call sites keep using `crate::connection::Capability` unchanged.
+pub use zedis_core::capability::Capability;
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
     if removed_count > 0 {

@@ -762,7 +762,7 @@ impl ZedisServerState {
     /// connection layer).
     pub fn supports_topology(&self) -> bool {
         let server_type = &self.nodes_description().server_type;
-        server_type.as_ref() == "Cluster" || server_type.as_ref() == "Sentinel"
+        server_type.as_str() == "Cluster" || server_type.as_str() == "Sentinel"
     }
 
     /// Get the currently selected server id

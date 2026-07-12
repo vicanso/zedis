@@ -168,9 +168,11 @@ impl ZedisFunctionEditor {
     /// shape is used either way — the difference is target_name and
     /// the default REPLACE flag.
     fn open_form(&mut self, existing: Option<&FunctionLibrary>, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        let default_value: SharedString = existing.and_then(|l| l.code.clone()).unwrap_or_else(|| {
-            SharedString::from("#!lua name=mylib\nredis.register_function('hello', function() return 'hi' end)\n")
-        });
+        let default_value: SharedString = existing
+            .and_then(|l| l.code.clone().map(SharedString::from))
+            .unwrap_or_else(|| {
+                SharedString::from("#!lua name=mylib\nredis.register_function('hello', function() return 'hi' end)\n")
+            });
         let code = cx.new(|cx| {
             // Pass "lua" literally rather than going through
             // `Language::from_str`, which silently falls back to JSON
@@ -190,7 +192,7 @@ impl ZedisFunctionEditor {
                 .soft_wrap(false)
                 .default_value(default_value)
         });
-        let target_name = existing.map(|l| l.name.clone());
+        let target_name = existing.map(|l| SharedString::from(l.name.clone()));
         // REPLACE makes sense by default when editing (you're
         // overwriting on purpose). For a new library REPLACE=false
         // lets Redis error out if the name is already taken.
@@ -242,12 +244,12 @@ impl ZedisFunctionEditor {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 function_load(&mut conn, &code, replace).await
             });
-            let result: Result<SharedString> = task.await;
+            let result: Result<String> = task.await;
             let _ = handle.update(cx, |this, cx| {
                 this.submitting = false;
                 match result {
                     Ok(loaded_name) => {
-                        info!(library = loaded_name.as_ref(), "FUNCTION LOAD succeeded");
+                        info!(library = loaded_name.as_str(), "FUNCTION LOAD succeeded");
                         let _ = target_name;
                         this.edit_form = None;
                         this.fetch(cx);
@@ -468,9 +470,9 @@ impl ZedisFunctionEditor {
         let name = lib.name.clone();
         let name_for_id = name.clone();
         let id_hash: u32 = djb2_hash(name_for_id.as_ref());
-        let expanded = self.expanded.contains(&name);
-        let deleting = self.deleting.as_ref() == Some(&name);
-        let engine_chip = self.chip(lib.engine.clone(), theme_blue, cx).into_any_element();
+        let expanded = self.expanded.contains(name.as_str());
+        let deleting = self.deleting.as_deref() == Some(name.as_str());
+        let engine_chip = self.chip(lib.engine.clone().into(), theme_blue, cx).into_any_element();
         let funcs_count = lib.functions.len();
 
         // Function names rendered as plain monospace labels in the
@@ -486,7 +488,7 @@ impl ZedisFunctionEditor {
             } else {
                 Some(format!(
                     "({})",
-                    f.flags.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join(", ")
+                    f.flags.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
                 ))
             };
             func_chips.push(
@@ -511,7 +513,7 @@ impl ZedisFunctionEditor {
         // composing the layout avoids a `&mut self` + `&mut cx`
         // overlap inside the builder chain.
         if expanded
-            && !self.code_editors.contains_key(&name)
+            && !self.code_editors.contains_key(name.as_str())
             && let Some(code) = lib.code.as_ref()
         {
             let value = code.clone();
@@ -523,11 +525,11 @@ impl ZedisFunctionEditor {
                     .soft_wrap(false)
                     .default_value(value)
             });
-            self.code_editors.insert(name.clone(), editor);
+            self.code_editors.insert(name.clone().into(), editor);
         }
 
         let code_block: Option<gpui::AnyElement> = if expanded {
-            if let Some(editor) = self.code_editors.get(&name) {
+            if let Some(editor) = self.code_editors.get(name.as_str()) {
                 Some(
                     div()
                         .border_t_1()
@@ -595,9 +597,9 @@ impl ZedisFunctionEditor {
                             } else {
                                 i18n_functions(cx, "show_code")
                             })
-                            .on_click(
-                                cx.listener(move |this, _, _w, cx| this.toggle_expanded(name_for_expand.clone(), cx)),
-                            ),
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                this.toggle_expanded(name_for_expand.clone().into(), cx)
+                            })),
                     )
                     .when(can_write, |this| {
                         this.child(
@@ -621,7 +623,7 @@ impl ZedisFunctionEditor {
                                 .tooltip(i18n_functions(cx, "delete_tooltip"))
                                 .disabled(deleting)
                                 .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.confirm_delete(name_for_delete.clone(), w, cx)
+                                    this.confirm_delete(name_for_delete.clone().into(), w, cx)
                                 })),
                         )
                     }),

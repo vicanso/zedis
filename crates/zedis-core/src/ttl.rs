@@ -26,7 +26,7 @@ const SECS_PER_WEEK: i64 = 7 * SECS_PER_DAY;
 /// `key_ttls` cache (no extra Redis round-trips). Presets align with the
 /// memory-analyzer histogram buckets plus an ops-oriented "expiring soon".
 ///
-/// Wire form (`as_str` / `from_str`) is used by the key-tree action payload
+/// Wire form (`as_str` / `from_name`) is used by the key-tree action payload
 /// so the colour/type enums stay free of gpui `Action` bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TtlFilter {
@@ -62,7 +62,7 @@ impl TtlFilter {
     }
 
     /// Parse a wire id; unknown values fall back to [`TtlFilter::All`].
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "no_ttl" => TtlFilter::NoTtl,
             "expiring" => TtlFilter::Expiring,
@@ -132,7 +132,7 @@ pub fn ttl_chip_kind(ttl_secs: i64) -> Option<TtlChipKind> {
 /// the chip width stays uniform.
 ///
 /// Returns `None` only for `-2` (missing key — no chip rendered).
-pub fn format_ttl_chip(ttl_secs: i64) -> Option<gpui::SharedString> {
+pub fn format_ttl_chip(ttl_secs: i64) -> Option<String> {
     if ttl_secs == -2 {
         return None;
     }
@@ -149,15 +149,15 @@ pub fn format_ttl_chip(ttl_secs: i64) -> Option<gpui::SharedString> {
         let days = ttl_secs / 86400;
         if days < 100 { format!("{days}d") } else { "99d".into() }
     };
-    Some(s.into())
+    Some(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{TtlChipKind, TtlFilter, format_ttl_chip, ttl_chip_kind};
 
-    fn chip(s: Option<gpui::SharedString>) -> Option<String> {
-        s.map(|v| v.to_string())
+    fn chip(s: Option<String>) -> Option<String> {
+        s
     }
 
     #[test]
@@ -218,9 +218,9 @@ mod tests {
             TtlFilter::Lt7d,
             TtlFilter::Gte7d,
         ] {
-            assert_eq!(TtlFilter::from_str(f.as_str()), f);
+            assert_eq!(TtlFilter::from_name(f.as_str()), f);
         }
-        assert_eq!(TtlFilter::from_str("nope"), TtlFilter::All);
+        assert_eq!(TtlFilter::from_name("nope"), TtlFilter::All);
     }
 
     #[test]

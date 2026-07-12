@@ -530,6 +530,8 @@ impl ZedisServers {
                             let Some(values) = form.try_get_values(cx) else {
                                 return;
                             };
+                            let values: indexmap::IndexMap<String, String> =
+                                values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
                             let server = RedisServer::from_form_data("", &values);
                             let locale = locale.clone();
                             form.is_processing = true;
@@ -615,6 +617,8 @@ impl ZedisServers {
                             let Some(values) = form.try_get_values(cx) else {
                                 return;
                             };
+                            let values: indexmap::IndexMap<String, String> =
+                                values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
                             let server = RedisServer::from_form_data("", &values);
                             open_connection_diagnostics(server, window, cx);
                         }))
@@ -623,6 +627,8 @@ impl ZedisServers {
                 items
             })
             .on_dialog_submit(move |values, _window, cx| {
+                let values: indexmap::IndexMap<String, String> =
+                    values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
                 let redis_server = RedisServer::from_form_data(&server_id, &values);
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {

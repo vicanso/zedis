@@ -277,7 +277,7 @@ impl ZedisSearchManager {
                 match result {
                     Ok(listing) => {
                         this.module_unsupported = listing.unsupported;
-                        this.indexes = listing.names;
+                        this.indexes = listing.names.into_iter().map(Into::into).collect();
                         // Auto-select the first index if nothing's selected
                         // yet — saves the user a click for the common
                         // "open the panel, see what's in the first index"
@@ -493,8 +493,8 @@ impl ZedisSearchManager {
             return;
         }
         let spec = CreateFieldSpec {
-            name: SharedString::from(name),
-            field_type: form.field_type.clone(),
+            name: SharedString::from(name).to_string(),
+            field_type: form.field_type.clone().to_string(),
             sortable: form.sortable,
             no_stem: form.no_stem,
             no_index: form.no_index,
@@ -620,8 +620,8 @@ impl ZedisSearchManager {
                 continue;
             }
             fields.push(CreateFieldSpec {
-                name: SharedString::from(fname),
-                field_type: f.field_type.clone(),
+                name: SharedString::from(fname).to_string(),
+                field_type: f.field_type.clone().to_string(),
                 sortable: f.sortable,
                 no_stem: f.no_stem,
                 no_index: f.no_index,
@@ -634,7 +634,7 @@ impl ZedisSearchManager {
         }
 
         let opts = CreateIndexOptions {
-            index: SharedString::from(name.clone()),
+            index: SharedString::from(name.clone()).to_string(),
             on_json: form.on_json,
             prefixes: split_csv(&form.prefixes.read(cx).value()),
             fields,
@@ -718,12 +718,12 @@ impl ZedisSearchManager {
                 let highlight_open = if highlight_fields.is_empty() || open.is_empty() {
                     None
                 } else {
-                    Some(SharedString::from(open))
+                    Some(open)
                 };
                 let highlight_close = if highlight_fields.is_empty() || close.is_empty() {
                     None
                 } else {
-                    Some(SharedString::from(close))
+                    Some(close)
                 };
                 let opts = SearchOptions {
                     limit: (offset, count),
@@ -761,7 +761,7 @@ impl ZedisSearchManager {
                 let alias = if alias_str.trim().is_empty() {
                     None
                 } else {
-                    Some(SharedString::from(alias_str.trim().to_string()))
+                    Some(alias_str.trim().to_string())
                 };
                 let reducer = Some(ReducerSpec {
                     func: Some(self.reducer_fn.clone()),
@@ -802,11 +802,11 @@ impl ZedisSearchManager {
 
 /// Split a "comma or whitespace separated" user string into trimmed,
 /// non-empty tokens. Used for RETURN / HIGHLIGHT / GROUPBY inputs.
-fn split_csv(s: &str) -> Vec<SharedString> {
+fn split_csv(s: &str) -> Vec<String> {
     s.split(|c: char| c == ',' || c.is_whitespace())
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(|t| SharedString::from(t.to_string()))
+        .map(str::to_string)
         .collect()
 }
 
@@ -1053,7 +1053,10 @@ impl ZedisSearchManager {
                         .gap_2()
                         .child(Label::new(i18n_search(cx, "schema_label")).text_sm().text_color(muted))
                         .when(!key_type.is_empty(), |this| {
-                            this.child(self.chip(key_type, cx.theme().muted_foreground, cx).into_any_element())
+                            this.child(
+                                self.chip(key_type.into(), cx.theme().muted_foreground, cx)
+                                    .into_any_element(),
+                            )
                         })
                         .when(!prefixes.is_empty(), |this| {
                             // Quote each prefix so the trailing colon
@@ -1061,7 +1064,7 @@ impl ZedisSearchManager {
                             // ("prefix: user: 0 docs" → "prefix: \"user:\"").
                             let joined = prefixes
                                 .iter()
-                                .map(|s| format!("\"{}\"", s.as_ref()))
+                                .map(|s| format!("\"{}\"", s.as_str()))
                                 .collect::<Vec<_>>()
                                 .join(", ");
                             this.child(
@@ -1197,7 +1200,10 @@ impl ZedisSearchManager {
             .gap_2()
             .items_center()
             .px_2()
-            .child(self.chip(field.kind_str.clone(), kind_color, cx).into_any_element())
+            .child(
+                self.chip(field.kind_str.clone().into(), kind_color, cx)
+                    .into_any_element(),
+            )
             .child(Label::new(field.name.clone()).text_sm())
             .children(flag_chips)
     }

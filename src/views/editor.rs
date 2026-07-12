@@ -964,7 +964,15 @@ impl ZedisEditor {
             .map(|s| s.name.into())
             .unwrap_or_else(|_| target_id.clone());
         cx.spawn(async move |this, cx| {
-            let result = copy_key(source_id, source_db, target_id.to_string(), target_db, key, conflict).await;
+            let result = copy_key(
+                source_id,
+                source_db,
+                target_id.to_string(),
+                target_db,
+                key.to_string(),
+                conflict,
+            )
+            .await;
             let _ = this.update(cx, move |this, cx| {
                 this.server_state.update(cx, |state, cx| match result {
                     Ok(Some(RestoreStatus::Written)) => state.emit_success_notification(

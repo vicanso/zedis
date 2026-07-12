@@ -11270,6 +11270,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zedis-core"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "humantime",
+ "serde",
+ "serde_json",
+ "serde_json_path",
+]
+
+[[package]]
 name = "zedis-gui"
 version = "0.5.4"
 dependencies = [
@@ -11350,6 +11361,7 @@ dependencies = [
  "vergen-git2",
  "webpki-roots",
  "winres",
+ "zedis-core",
  "zedis-ui",
 ]
 

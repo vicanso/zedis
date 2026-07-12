@@ -37,7 +37,6 @@ use super::async_connection::RedisAsyncConn;
 use super::manager::get_connection_manager;
 use crate::error::Error;
 use futures::future::try_join_all;
-use gpui::SharedString;
 use redis::cmd;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -396,7 +395,7 @@ impl<R: Read> DumpReader<R> {
 // ---------------------------------------------------------------------------
 
 /// Dumps a slice of keys with bounded concurrency. Missing or expired keys are skipped.
-pub async fn dump_keys_chunk(conn: &mut RedisAsyncConn, keys: &[SharedString]) -> Result<Vec<DumpEntry>> {
+pub async fn dump_keys_chunk(conn: &mut RedisAsyncConn, keys: &[String]) -> Result<Vec<DumpEntry>> {
     if keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -409,7 +408,7 @@ pub async fn dump_keys_chunk(conn: &mut RedisAsyncConn, keys: &[SharedString]) -
     Ok(results.into_iter().flatten().collect())
 }
 
-async fn dump_single_key(conn: &mut RedisAsyncConn, key: SharedString) -> Result<Option<DumpEntry>> {
+async fn dump_single_key(conn: &mut RedisAsyncConn, key: String) -> Result<Option<DumpEntry>> {
     let key_str = key.as_str();
     // All three commands target the same key, so they hit the same cluster slot —
     // safe to pipeline. Folding them into one round-trip is ~3x faster than three
@@ -600,7 +599,7 @@ pub async fn copy_key(
     source_db: usize,
     target_id: String,
     target_db: usize,
-    key: SharedString,
+    key: String,
     conflict: ConflictMode,
 ) -> Result<Option<RestoreStatus>> {
     let mut src = super::get_connection_manager()

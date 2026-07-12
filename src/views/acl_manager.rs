@@ -114,14 +114,14 @@ impl ZedisAclManager {
                 let whoami = if listing.unsupported {
                     SharedString::default()
                 } else {
-                    acl_whoami(&mut conn).await?
+                    acl_whoami(&mut conn).await?.into()
                 };
                 let mut users = Vec::with_capacity(listing.usernames.len());
                 for name in &listing.usernames {
                     match acl_get_user(&mut conn, name.as_ref()).await {
                         Ok(u) => users.push(u),
                         Err(e) => {
-                            error!(error = %e, user = name.as_ref(), "ACL GETUSER failed");
+                            error!(error = %e, user = name.as_str(), "ACL GETUSER failed");
                         }
                     }
                 }
@@ -519,7 +519,7 @@ impl ZedisAclManager {
         let red = cx.theme().red;
         let user_for_edit = user.clone();
         let user_for_delete = user.username.clone();
-        let is_default = user.username.as_ref() == "default";
+        let is_default = user.username.as_str() == "default";
 
         let flags_label = if user.flags.is_empty() {
             "—".to_string()
@@ -602,7 +602,7 @@ impl ZedisAclManager {
                                         .icon(CustomIconName::FileXCorner)
                                         .tooltip(i18n_acl(cx, "delete_tooltip"))
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.confirm_delete(user_for_delete.clone(), window, cx);
+                                            this.confirm_delete(user_for_delete.clone().into(), window, cx);
                                         })),
                                 ),
                         )

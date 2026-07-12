@@ -27,7 +27,6 @@
 
 use super::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use gpui::SharedString;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -43,7 +42,7 @@ pub enum FieldKind {
     Geo,
     Vector,
     GeoShape,
-    Unknown(SharedString),
+    Unknown(String),
 }
 
 impl FieldKind {
@@ -69,7 +68,7 @@ impl FieldKind {
             "GEO" => FieldKind::Geo,
             "VECTOR" => FieldKind::Vector,
             "GEOSHAPE" => FieldKind::GeoShape,
-            other => FieldKind::Unknown(SharedString::from(other.to_string())),
+            other => FieldKind::Unknown(other.to_string()),
         }
     }
 }
@@ -77,13 +76,13 @@ impl FieldKind {
 /// One attribute / field as declared in the index's schema.
 #[derive(Debug, Clone, Default)]
 pub struct FieldSchema {
-    pub name: SharedString,
-    pub kind_str: SharedString,
+    pub name: String,
+    pub kind_str: String,
     pub sortable: bool,
     pub no_index: bool,
     pub no_stem: bool,
     pub weight: Option<f64>,
-    pub separator: Option<SharedString>,
+    pub separator: Option<String>,
 }
 
 impl FieldSchema {
@@ -100,7 +99,7 @@ pub struct IndexInfo {
     /// callers that route stat blocks by name even though the current
     /// view tracks the selected index separately.
     #[allow(dead_code)]
-    pub name: SharedString,
+    pub name: String,
     pub num_docs: u64,
     pub max_doc_id: u64,
     pub num_terms: u64,
@@ -118,10 +117,10 @@ pub struct IndexInfo {
     pub indexing_failures: u64,
     pub fields: Vec<FieldSchema>,
     /// HASH / JSON — the underlying storage the index reads from.
-    pub key_type: SharedString,
+    pub key_type: String,
     /// Key prefixes the index watches (empty means all keys).
-    pub prefixes: Vec<SharedString>,
-    pub language: Option<SharedString>,
+    pub prefixes: Vec<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -129,19 +128,19 @@ pub struct SearchOptions {
     /// `(offset, count)`. `(0, 10)` is the RediSearch default.
     pub limit: (u32, u32),
     /// Empty ⇒ return all stored fields.
-    pub return_fields: Vec<SharedString>,
+    pub return_fields: Vec<String>,
     /// Empty ⇒ no `HIGHLIGHT` clause at all.
-    pub highlight_fields: Vec<SharedString>,
+    pub highlight_fields: Vec<String>,
     /// Default tags used if `HIGHLIGHT` is enabled and the user picked the
     /// "wrap with these markers" preset.
-    pub highlight_open: Option<SharedString>,
-    pub highlight_close: Option<SharedString>,
+    pub highlight_open: Option<String>,
+    pub highlight_close: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchHit {
-    pub doc_id: SharedString,
-    pub fields: Vec<(SharedString, SharedString)>,
+    pub doc_id: String,
+    pub fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,7 +155,7 @@ pub struct SearchResult {
 /// would need an additional `stages` field here.
 #[derive(Debug, Clone, Default)]
 pub struct AggregateOptions {
-    pub group_by: Vec<SharedString>,
+    pub group_by: Vec<String>,
     pub reducer: Option<ReducerSpec>,
     pub limit: Option<(u32, u32)>,
 }
@@ -225,21 +224,21 @@ impl ReducerFn {
 /// them can still drop into a CLI/Terminal.
 #[derive(Debug, Clone, Default)]
 pub struct CreateIndexOptions {
-    pub index: SharedString,
+    pub index: String,
     /// `false` ⇒ `ON HASH` (the default), `true` ⇒ `ON JSON` (RediSearch
     /// 2.6+ with the JSON module loaded).
     pub on_json: bool,
-    pub prefixes: Vec<SharedString>,
+    pub prefixes: Vec<String>,
     pub fields: Vec<CreateFieldSpec>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct CreateFieldSpec {
-    pub name: SharedString,
+    pub name: String,
     /// One of `TEXT` / `NUMERIC` / `TAG` / `GEO`. Free-form so we can
     /// add future types without code churn — the form constrains the
     /// user to the supported subset.
-    pub field_type: SharedString,
+    pub field_type: String,
     pub sortable: bool,
     pub no_stem: bool,
     pub no_index: bool,
@@ -268,7 +267,7 @@ pub async fn ft_dropindex(conn: &mut RedisAsyncConn, index: &str, delete_documen
 pub async fn ft_alter_add(conn: &mut RedisAsyncConn, index: &str, field: &CreateFieldSpec) -> Result<()> {
     let mut c = cmd("FT.ALTER");
     c.arg(index).arg("SCHEMA").arg("ADD");
-    c.arg(field.name.as_ref()).arg(field.field_type.as_ref());
+    c.arg(field.name.as_str()).arg(field.field_type.as_str());
     if field.sortable {
         c.arg("SORTABLE");
     }
@@ -284,12 +283,12 @@ pub async fn ft_alter_add(conn: &mut RedisAsyncConn, index: &str, field: &Create
 
 pub async fn ft_create(conn: &mut RedisAsyncConn, opts: &CreateIndexOptions) -> Result<()> {
     let mut c = cmd("FT.CREATE");
-    c.arg(opts.index.as_ref());
+    c.arg(opts.index.as_str());
     c.arg("ON").arg(if opts.on_json { "JSON" } else { "HASH" });
     if !opts.prefixes.is_empty() {
         c.arg("PREFIX").arg(opts.prefixes.len());
         for p in &opts.prefixes {
-            c.arg(p.as_ref());
+            c.arg(p.as_str());
         }
     }
     c.arg("SCHEMA");
@@ -297,7 +296,7 @@ pub async fn ft_create(conn: &mut RedisAsyncConn, opts: &CreateIndexOptions) -> 
         // For JSON-backed indexes the identifier uses JSONPath form, but
         // the form lets users type either `$.title` or `title`; pass it
         // through verbatim. AS-aliases aren't surfaced here yet.
-        c.arg(f.name.as_ref()).arg(f.field_type.as_ref());
+        c.arg(f.name.as_str()).arg(f.field_type.as_str());
         if f.sortable {
             c.arg("SORTABLE");
         }
@@ -317,8 +316,8 @@ pub async fn ft_create(conn: &mut RedisAsyncConn, opts: &CreateIndexOptions) -> 
 #[derive(Debug, Clone, Default)]
 pub struct ReducerSpec {
     pub func: Option<ReducerFn>,
-    pub args: Vec<SharedString>,
-    pub alias: Option<SharedString>,
+    pub args: Vec<String>,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -330,14 +329,14 @@ pub struct AggregateResult {
     #[allow(dead_code)]
     pub total: u64,
     /// Each row is a list of `(field, value)` pairs.
-    pub rows: Vec<Vec<(SharedString, SharedString)>>,
+    pub rows: Vec<Vec<(String, String)>>,
 }
 
 /// Returned-shape indicator for `FT._LIST`: an empty `Vec` is ambiguous
 /// (server doesn't have RediSearch, vs. has it but no indexes yet).
 #[derive(Debug, Clone, Default)]
 pub struct IndexListing {
-    pub names: Vec<SharedString>,
+    pub names: Vec<String>,
     /// True ⇒ the server returned `ERR unknown command` for `FT._LIST`.
     /// UI uses this to show "RediSearch module not loaded" instead of "no
     /// indexes".
@@ -348,7 +347,7 @@ pub async fn ft_list(conn: &mut RedisAsyncConn) -> Result<IndexListing> {
     let res: redis::RedisResult<Vec<String>> = cmd("FT._LIST").query_async(conn).await;
     match res {
         Ok(names) => Ok(IndexListing {
-            names: names.into_iter().map(SharedString::from).collect(),
+            names: names.into_iter().collect(),
             unsupported: false,
         }),
         Err(e) if is_unsupported(&e) => Ok(IndexListing {
@@ -379,16 +378,16 @@ pub async fn ft_search(
     if !opts.return_fields.is_empty() {
         c.arg("RETURN").arg(opts.return_fields.len());
         for f in &opts.return_fields {
-            c.arg(f.as_ref());
+            c.arg(f.as_str());
         }
     }
     if !opts.highlight_fields.is_empty() {
         c.arg("HIGHLIGHT").arg("FIELDS").arg(opts.highlight_fields.len());
         for f in &opts.highlight_fields {
-            c.arg(f.as_ref());
+            c.arg(f.as_str());
         }
         if let (Some(open), Some(close)) = (&opts.highlight_open, &opts.highlight_close) {
-            c.arg("TAGS").arg(open.as_ref()).arg(close.as_ref());
+            c.arg("TAGS").arg(open.as_str()).arg(close.as_str());
         }
     }
     let (offset, count) = opts.limit;
@@ -411,7 +410,7 @@ pub async fn ft_aggregate(
         c.arg("GROUPBY").arg(opts.group_by.len());
         for f in &opts.group_by {
             // GROUPBY fields use `@field` form on the wire.
-            c.arg(format!("@{}", f.as_ref()));
+            c.arg(format!("@{}", f.as_str()));
         }
         if let Some(reducer) = &opts.reducer
             && let Some(func) = &reducer.func
@@ -422,13 +421,13 @@ pub async fn ft_aggregate(
                 // QUANTILE's numeric percentile, which is just a literal.
                 let is_field_arg = !arg.starts_with('@') && !is_numeric_literal(arg);
                 if is_field_arg {
-                    c.arg(format!("@{}", arg.as_ref()));
+                    c.arg(format!("@{}", arg.as_str()));
                 } else {
-                    c.arg(arg.as_ref());
+                    c.arg(arg.as_str());
                 }
             }
             if let Some(alias) = &reducer.alias {
-                c.arg("AS").arg(alias.as_ref());
+                c.arg("AS").arg(alias.as_str());
             }
         }
     }
@@ -510,7 +509,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
         _ => return None,
     };
     let mut field = FieldSchema::default();
-    let mut legacy_name_candidate: Option<SharedString> = None;
+    let mut legacy_name_candidate: Option<String> = None;
     let mut i = 0;
     while i < items.len() {
         let token = match parse_simple_string(&items[i]) {
@@ -541,7 +540,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
                     && let Some(next) = items.get(i + 1)
                     && let Some(s) = parse_simple_string(next)
                 {
-                    field.name = s.into();
+                    field.name = s;
                 }
                 i += 2;
             }
@@ -549,7 +548,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
                 if let Some(next) = items.get(i + 1)
                     && let Some(s) = parse_simple_string(next)
                 {
-                    field.name = s.into();
+                    field.name = s;
                 }
                 i += 2;
             }
@@ -557,7 +556,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
                 if let Some(next) = items.get(i + 1)
                     && let Some(s) = parse_simple_string(next)
                 {
-                    field.kind_str = s.into();
+                    field.kind_str = s;
                 }
                 i += 2;
             }
@@ -569,7 +568,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
             }
             "separator" => {
                 if let Some(next) = items.get(i + 1) {
-                    field.separator = parse_simple_string(next).map(SharedString::from);
+                    field.separator = parse_simple_string(next);
                 }
                 i += 2;
             }
@@ -578,7 +577,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
                 // first bare token is the field name. Consume one slot
                 // so the loop picks up the real `type` key next.
                 if i == 0 && legacy_name_candidate.is_none() {
-                    legacy_name_candidate = Some(token.into());
+                    legacy_name_candidate = Some(token);
                     i += 1;
                 } else {
                     // Unknown key elsewhere — skip a pair conservatively.
@@ -604,16 +603,16 @@ fn parse_field_definition_from_pairs(entries: Vec<(String, Value)>) -> Option<Fi
         let key = k.to_ascii_lowercase();
         match key.as_str() {
             "identifier" if field.name.is_empty() => {
-                field.name = parse_simple_string(&val).unwrap_or_default().into();
+                field.name = parse_simple_string(&val).unwrap_or_default();
             }
             "attribute" => {
-                field.name = parse_simple_string(&val).unwrap_or_default().into();
+                field.name = parse_simple_string(&val).unwrap_or_default();
             }
             "type" => {
-                field.kind_str = parse_simple_string(&val).unwrap_or_default().into();
+                field.kind_str = parse_simple_string(&val).unwrap_or_default();
             }
             "weight" => field.weight = parse_simple_string(&val).and_then(|s| s.parse().ok()),
-            "separator" => field.separator = parse_simple_string(&val).map(SharedString::from),
+            "separator" => field.separator = parse_simple_string(&val),
             "sortable" => field.sortable = matches!(parse_int(&val), Some(n) if n != 0),
             "noindex" => field.no_index = matches!(parse_int(&val), Some(n) if n != 0),
             "nostem" => field.no_stem = matches!(parse_int(&val), Some(n) if n != 0),
@@ -629,7 +628,7 @@ fn parse_field_definition_from_pairs(entries: Vec<(String, Value)>) -> Option<Fi
 fn parse_info(name: &str, value: &Value) -> Option<IndexInfo> {
     let entries = extract_pairs(value)?;
     let mut info = IndexInfo {
-        name: name.to_string().into(),
+        name: name.to_string(),
         ..Default::default()
     };
     for (k, val) in entries {
@@ -657,19 +656,15 @@ fn parse_info(name: &str, value: &Value) -> Option<IndexInfo> {
                         let dk = dk.to_ascii_lowercase();
                         match dk.as_str() {
                             "key_type" => {
-                                info.key_type = parse_simple_string(&dv).unwrap_or_default().into();
+                                info.key_type = parse_simple_string(&dv).unwrap_or_default();
                             }
                             "prefixes" => {
                                 if let Value::Array(items) = dv {
-                                    info.prefixes = items
-                                        .iter()
-                                        .filter_map(parse_simple_string)
-                                        .map(SharedString::from)
-                                        .collect();
+                                    info.prefixes = items.iter().filter_map(parse_simple_string).collect();
                                 }
                             }
                             "language" => {
-                                info.language = parse_simple_string(&dv).map(SharedString::from);
+                                info.language = parse_simple_string(&dv);
                             }
                             _ => {}
                         }
@@ -696,19 +691,14 @@ fn parse_search(value: &Value) -> Option<SearchResult> {
     let total = iter.next().and_then(parse_int).unwrap_or_default().max(0) as u64;
     let mut hits = Vec::new();
     while let Some(id_val) = iter.next() {
-        let doc_id: SharedString = parse_simple_string(id_val)?.into();
+        let doc_id: String = parse_simple_string(id_val)?;
         let fields_val = iter.next();
         let fields = fields_val
             .and_then(extract_pairs)
             .map(|pairs| {
                 pairs
                     .into_iter()
-                    .map(|(k, v)| {
-                        (
-                            SharedString::from(k),
-                            SharedString::from(parse_simple_string(&v).unwrap_or_default()),
-                        )
-                    })
+                    .map(|(k, v)| (k, parse_simple_string(&v).unwrap_or_default()))
                     .collect()
             })
             .unwrap_or_default();
@@ -731,19 +721,12 @@ fn parse_search_map(value: &Value) -> Option<SearchResult> {
                             let mut sh = SearchHit::default();
                             for (hk, hv) in hit_pairs {
                                 match hk.to_ascii_lowercase().as_str() {
-                                    "id" => sh.doc_id = parse_simple_string(&hv).unwrap_or_default().into(),
+                                    "id" => sh.doc_id = parse_simple_string(&hv).unwrap_or_default(),
                                     "extra_attributes" | "values" => {
                                         if let Some(field_pairs) = extract_pairs(&hv) {
                                             sh.fields = field_pairs
                                                 .into_iter()
-                                                .map(|(fk, fv)| {
-                                                    (
-                                                        SharedString::from(fk),
-                                                        SharedString::from(
-                                                            parse_simple_string(&fv).unwrap_or_default(),
-                                                        ),
-                                                    )
-                                                })
+                                                .map(|(fk, fv)| (fk, parse_simple_string(&fv).unwrap_or_default()))
                                                 .collect();
                                         }
                                     }
@@ -774,12 +757,7 @@ fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
             rows.push(
                 pairs
                     .into_iter()
-                    .map(|(k, v)| {
-                        (
-                            SharedString::from(k),
-                            SharedString::from(parse_simple_string(&v).unwrap_or_default()),
-                        )
-                    })
+                    .map(|(k, v)| (k, parse_simple_string(&v).unwrap_or_default()))
                     .collect(),
             );
         }
@@ -839,15 +817,15 @@ mod tests {
         assert_eq!(info.num_docs, 42);
         assert_eq!(info.fields.len(), 2);
         let title = &info.fields[0];
-        assert_eq!(title.name.as_ref(), "title");
+        assert_eq!(title.name.as_str(), "title");
         assert_eq!(title.kind(), FieldKind::Text);
         assert!(title.sortable);
         assert_eq!(title.weight, Some(2.0));
         let tags = &info.fields[1];
         assert_eq!(tags.kind(), FieldKind::Tag);
         assert_eq!(tags.separator.as_ref().map(|s| s.as_ref()), Some(","));
-        assert_eq!(info.key_type.as_ref(), "HASH");
-        assert_eq!(info.prefixes, vec![SharedString::from("post:")]);
+        assert_eq!(info.key_type.as_str(), "HASH");
+        assert_eq!(info.prefixes, vec![String::from("post:")]);
     }
 
     #[test]
@@ -866,7 +844,7 @@ mod tests {
         ]);
         let info = parse_info("legacy", &raw).expect("parse failed");
         assert_eq!(info.fields.len(), 1);
-        assert_eq!(info.fields[0].name.as_ref(), "title");
+        assert_eq!(info.fields[0].name.as_str(), "title");
         assert_eq!(info.fields[0].kind(), FieldKind::Text);
     }
 
@@ -882,10 +860,10 @@ mod tests {
         let r = parse_search(&raw).expect("parse failed");
         assert_eq!(r.total, 2);
         assert_eq!(r.hits.len(), 2);
-        assert_eq!(r.hits[0].doc_id.as_ref(), "post:1");
+        assert_eq!(r.hits[0].doc_id.as_str(), "post:1");
         assert_eq!(r.hits[0].fields.len(), 2);
-        assert_eq!(r.hits[0].fields[0].0.as_ref(), "title");
-        assert_eq!(r.hits[0].fields[0].1.as_ref(), "hello");
+        assert_eq!(r.hits[0].fields[0].0.as_str(), "title");
+        assert_eq!(r.hits[0].fields[0].1.as_str(), "hello");
     }
 
     #[test]
@@ -899,8 +877,8 @@ mod tests {
         let r = parse_aggregate(&raw).expect("parse failed");
         assert_eq!(r.total, 3);
         assert_eq!(r.rows.len(), 3);
-        assert_eq!(r.rows[0][0], (SharedString::from("tag"), SharedString::from("rust")));
-        assert_eq!(r.rows[0][1], (SharedString::from("cnt"), SharedString::from("12")));
+        assert_eq!(r.rows[0][0], (String::from("tag"), String::from("rust")));
+        assert_eq!(r.rows[0][1], (String::from("cnt"), String::from("12")));
     }
 
     #[test]

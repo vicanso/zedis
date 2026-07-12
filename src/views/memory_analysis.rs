@@ -638,7 +638,7 @@ impl ZedisMemoryAnalysis {
                     let memory_score = memory as i64;
                     let heat_score = heat_sort_key(item.heat);
                     let row_template = || SingleKeyRow {
-                        key: key.clone(),
+                        key: key.clone().into(),
                         memory_bytes: memory,
                         memory: format_memory(memory).into(),
                         key_type: SharedString::from(key_type.clone()),

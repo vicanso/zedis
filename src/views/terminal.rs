@@ -271,7 +271,10 @@ impl ZedisTerminal {
     }
 
     fn update_redis_commands(&mut self, cx: &mut Context<Self>) {
-        self.redis_commands = list_commands(self.server_state.read(cx).version());
+        self.redis_commands = list_commands(self.server_state.read(cx).version())
+            .into_iter()
+            .map(Into::into)
+            .collect();
     }
 
     fn update_suggestions(&mut self, input: String) {
@@ -818,8 +821,8 @@ impl Render for ZedisTerminal {
                                                         .font_family(font_family.clone())
                                                         .text_color(cx.theme().foreground),
                                                 )
-                                                .child(make_label(syntax))
-                                                .child(make_label(summary))
+                                                .child(make_label(syntax.into()))
+                                                .child(make_label(summary.into()))
                                         },
                                     ))),
                             )

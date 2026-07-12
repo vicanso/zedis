@@ -13,18 +13,17 @@
 // limitations under the License.
 
 use crate::assets::Assets;
-use gpui::SharedString;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
 
 // Top-level Map: Key is the command name (e.g., "SET"), Value is the command details.
-type CommandsMap = HashMap<SharedString, Command>;
+type CommandsMap = HashMap<String, Command>;
 
 static COMMANDS_MAP: OnceLock<CommandsMap> = OnceLock::new();
 
-pub fn list_commands(version: &str) -> Vec<SharedString> {
+pub fn list_commands(version: &str) -> Vec<String> {
     let version: Version = version.into();
     get_commands()
         .iter()
@@ -38,12 +37,12 @@ pub fn list_commands(version: &str) -> Vec<SharedString> {
         .collect()
 }
 
-pub fn get_command_description(name: &str) -> Option<(SharedString, SharedString)> {
+pub fn get_command_description(name: &str) -> Option<(String, String)> {
     let commands = get_commands();
     let command = commands.get(name)?;
     Some((
         command.summary.clone().unwrap_or_default(),
-        command.generate_syntax(name).into(),
+        command.generate_syntax(name),
     ))
 }
 
@@ -61,7 +60,7 @@ fn get_commands() -> &'static CommandsMap {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct Command {
-    summary: Option<SharedString>,
+    summary: Option<String>,
     since: Option<Version>,
     group: Option<String>,
     complexity: Option<String>,

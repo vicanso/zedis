@@ -1755,7 +1755,7 @@ impl Render for ZedisKeyTree {
                     let new_filter = if id.is_empty() {
                         TtlFilter::All
                     } else {
-                        TtlFilter::from_str(id.as_ref())
+                        TtlFilter::from_name(id.as_ref())
                     };
                     if this.state.selected_ttl_filter != new_filter {
                         this.state.selected_ttl_filter = new_filter;

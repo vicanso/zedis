@@ -23,7 +23,6 @@
 
 use super::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use gpui::SharedString;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -32,7 +31,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// per event — we map them to named fields here.
 #[derive(Debug, Clone, Default)]
 pub struct LatencyEvent {
-    pub event: SharedString,
+    pub event: String,
     /// Unix timestamp seconds of the most recent occurrence.
     pub timestamp: i64,
     /// Latency (ms) of the most recent occurrence.
@@ -151,7 +150,7 @@ fn parse_latest(v: &Value) -> Option<Vec<LatencyEvent>> {
             _ => continue,
         };
         out.push(LatencyEvent {
-            event: event.into(),
+            event,
             timestamp: parse_int(&parts[1]).unwrap_or_default(),
             latest_ms: parse_int(&parts[2]).unwrap_or_default(),
             max_ms: parse_int(&parts[3]).unwrap_or_default(),
@@ -206,10 +205,10 @@ mod tests {
         ]);
         let events = parse_latest(&raw).expect("parse");
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event.as_ref(), "event-loop");
+        assert_eq!(events[0].event.as_str(), "event-loop");
         assert_eq!(events[0].latest_ms, 15);
         assert_eq!(events[0].max_ms, 42);
-        assert_eq!(events[1].event.as_ref(), "fork");
+        assert_eq!(events[1].event.as_str(), "fork");
         assert_eq!(events[1].latest_ms, 120);
     }
 
@@ -241,6 +240,6 @@ mod tests {
         ]);
         let events = parse_latest(&raw).expect("parse");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event.as_ref(), "event-loop");
+        assert_eq!(events[0].event.as_str(), "event-loop");
     }
 }

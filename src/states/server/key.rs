@@ -293,7 +293,11 @@ impl ZedisServerState {
                         } else {
                             this.cursors = Some(cursors);
                         }
-                        this.extend_keys(keys);
+                        this.extend_keys(
+                            keys.into_iter()
+                                .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
+                                .collect(),
+                        );
                     }
                     Err(_) => {
                         this.cursors = None;
@@ -369,7 +373,8 @@ impl ZedisServerState {
                     return;
                 }
                 if let Ok((_, keys)) = result {
-                    let new_keys_set: AHashSet<SharedString> = keys.iter().map(|(k, _, _)| k.clone()).collect();
+                    let new_keys_set: AHashSet<SharedString> =
+                        keys.iter().map(|(k, _, _)| SharedString::from(k.clone())).collect();
 
                     let keys_to_remove: Vec<SharedString> = this
                         .keys
@@ -380,7 +385,8 @@ impl ZedisServerState {
 
                     let keys_to_add: Vec<(SharedString, SharedString, i64)> = keys
                         .into_iter()
-                        .filter(|(k, _, _)| !this.keys.contains_key(k))
+                        .filter(|(k, _, _)| !this.keys.contains_key(k.as_str()))
+                        .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
                         .collect();
 
                     let has_changes = !keys_to_remove.is_empty() || !keys_to_add.is_empty();
@@ -544,7 +550,11 @@ impl ZedisServerState {
                         iteration,
                         "scan prefix page"
                     );
-                    this.extend_keys(keys);
+                    this.extend_keys(
+                        keys.into_iter()
+                            .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
+                            .collect(),
+                    );
                     cx.emit(ServerEvent::KeyTreeUpdated);
                     if done {
                         this.loaded_prefixes.insert(prefix.clone());
@@ -928,7 +938,9 @@ impl ZedisServerState {
             format!("{} keys", remove_keys.len()),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                client.unlike_keys_scattered(keys).await
+                client
+                    .unlike_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect())
+                    .await
             },
             move |this, result, cx| {
                 if let Ok(()) = result {
@@ -1101,7 +1113,9 @@ impl ZedisServerState {
             format!("{} keys", keys.len()),
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                client.set_ttl_keys_scattered(keys, ttl_secs).await
+                client
+                    .set_ttl_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect(), ttl_secs)
+                    .await
             },
             move |this, result, cx| {
                 if result.is_ok() {
@@ -1136,7 +1150,7 @@ impl ZedisServerState {
                 let mut cursors: Option<Vec<u64>> = None;
                 for _ in 0..20 {
                     let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count, None).await?;
-                    let flat: Vec<SharedString> = keys_per_node.into_iter().flatten().collect();
+                    let flat: Vec<String> = keys_per_node.into_iter().flatten().collect();
                     client.set_ttl_keys_scattered(flat, ttl_secs).await?;
                     if new_cursors.iter().sum::<u64>() == 0 {
                         break;

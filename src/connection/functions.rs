@@ -22,7 +22,6 @@
 
 use super::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use gpui::SharedString;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -32,23 +31,23 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// fields like the function's compiled bytecode are dropped.
 #[derive(Debug, Clone, Default)]
 pub struct FunctionMeta {
-    pub name: SharedString,
-    pub description: Option<SharedString>,
+    pub name: String,
+    pub description: Option<String>,
     /// `no-writes`, `allow-oom`, `allow-stale`, etc. Server's
     /// `register_function` flags.
-    pub flags: Vec<SharedString>,
+    pub flags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct FunctionLibrary {
-    pub name: SharedString,
+    pub name: String,
     /// Currently always `"LUA"`; reserved for future engines.
-    pub engine: SharedString,
+    pub engine: String,
     pub functions: Vec<FunctionMeta>,
     /// Source code. Populated only when `function_list` is called with
     /// `with_code=true` (sends `WITHCODE`). `None` means the listing
     /// was the lightweight summary form.
-    pub code: Option<SharedString>,
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,7 +83,7 @@ pub async fn function_list(conn: &mut RedisAsyncConn, with_code: bool) -> Result
 /// `#!lua name=<libname>` shebang line — Redis returns that name on
 /// success. `replace=true` overwrites an existing library with the
 /// same name (the default RESP error otherwise).
-pub async fn function_load(conn: &mut RedisAsyncConn, code: &str, replace: bool) -> Result<SharedString> {
+pub async fn function_load(conn: &mut RedisAsyncConn, code: &str, replace: bool) -> Result<String> {
     let mut c = cmd("FUNCTION");
     c.arg("LOAD");
     if replace {
@@ -92,7 +91,7 @@ pub async fn function_load(conn: &mut RedisAsyncConn, code: &str, replace: bool)
     }
     c.arg(code);
     let name: String = c.query_async(conn).await?;
-    Ok(name.into())
+    Ok(name)
 }
 
 pub async fn function_delete(conn: &mut RedisAsyncConn, library: &str) -> Result<()> {
@@ -139,18 +138,10 @@ fn extract_pairs(v: &Value) -> Option<Vec<(String, Value)>> {
     }
 }
 
-fn parse_string_array(v: &Value) -> Vec<SharedString> {
+fn parse_string_array(v: &Value) -> Vec<String> {
     match v {
-        Value::Array(items) => items
-            .iter()
-            .filter_map(parse_simple_string)
-            .map(SharedString::from)
-            .collect(),
-        Value::Set(items) => items
-            .iter()
-            .filter_map(parse_simple_string)
-            .map(SharedString::from)
-            .collect(),
+        Value::Array(items) => items.iter().filter_map(parse_simple_string).collect(),
+        Value::Set(items) => items.iter().filter_map(parse_simple_string).collect(),
         _ => Vec::new(),
     }
 }
@@ -161,12 +152,12 @@ fn parse_function_meta(v: &Value) -> Option<FunctionMeta> {
     for (k, val) in entries {
         match k.to_ascii_lowercase().as_str() {
             "name" => {
-                meta.name = parse_simple_string(&val).unwrap_or_default().into();
+                meta.name = parse_simple_string(&val).unwrap_or_default();
             }
             "description" => {
                 let s = parse_simple_string(&val).unwrap_or_default();
                 if !s.is_empty() {
-                    meta.description = Some(s.into());
+                    meta.description = Some(s);
                 }
             }
             "flags" => {
@@ -187,10 +178,10 @@ fn parse_library(v: &Value) -> Option<FunctionLibrary> {
     for (k, val) in entries {
         match k.to_ascii_lowercase().as_str() {
             "library_name" => {
-                lib.name = parse_simple_string(&val).unwrap_or_default().into();
+                lib.name = parse_simple_string(&val).unwrap_or_default();
             }
             "engine" => {
-                lib.engine = parse_simple_string(&val).unwrap_or_default().into();
+                lib.engine = parse_simple_string(&val).unwrap_or_default();
             }
             "functions" => {
                 if let Value::Array(items) = val {
@@ -198,7 +189,7 @@ fn parse_library(v: &Value) -> Option<FunctionLibrary> {
                 }
             }
             "library_code" => {
-                lib.code = parse_simple_string(&val).map(SharedString::from);
+                lib.code = parse_simple_string(&val);
             }
             _ => {}
         }
@@ -256,12 +247,12 @@ mod tests {
         let libs = parse_list(&raw).expect("parse failed");
         assert_eq!(libs.len(), 1);
         let lib = &libs[0];
-        assert_eq!(lib.name.as_ref(), "mylib");
-        assert_eq!(lib.engine.as_ref(), "LUA");
+        assert_eq!(lib.name.as_str(), "mylib");
+        assert_eq!(lib.engine.as_str(), "LUA");
         assert_eq!(lib.functions.len(), 2);
-        assert_eq!(lib.functions[0].name.as_ref(), "hello");
+        assert_eq!(lib.functions[0].name.as_str(), "hello");
         assert!(lib.functions[0].description.is_none());
-        assert_eq!(lib.functions[1].name.as_ref(), "count");
+        assert_eq!(lib.functions[1].name.as_str(), "count");
         assert_eq!(
             lib.functions[1].description.as_ref().map(|s| s.as_ref()),
             Some("counts something"),
@@ -283,11 +274,7 @@ mod tests {
             bs("#!lua name=mylib\nredis.register_function('hello', function() return 'hi' end)"),
         ])]);
         let libs = parse_list(&raw).expect("parse failed");
-        let code = libs[0]
-            .code
-            .as_ref()
-            .map(|s| s.as_ref())
-            .expect("code should be present");
+        let code = libs[0].code.as_deref().expect("code should be present");
         assert!(code.starts_with("#!lua name=mylib"));
         assert!(code.contains("register_function"));
     }
@@ -304,6 +291,6 @@ mod tests {
         ]);
         let libs = parse_list(&raw).expect("parse failed");
         assert_eq!(libs.len(), 1);
-        assert_eq!(libs[0].name.as_ref(), "ok");
+        assert_eq!(libs[0].name.as_str(), "ok");
     }
 }
