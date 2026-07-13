@@ -37,6 +37,13 @@ use std::{sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
 
+/// Fixed slot width for the latency label: 5 mono chars at `text_sm`
+/// covers "999ms" / "1.23s" / "--". The heartbeat refreshes the value
+/// every 2s and the telemetry cluster is right-anchored, so without a
+/// reserved width a "9ms" ⇄ "10ms" flip shifts every element to the
+/// label's left (Activity icon, Connected dot) on each beat.
+const LATENCY_LABEL_MIN_WIDTH: f32 = 44.0;
+
 /// Formats the database size and scan count string "count/total".
 #[inline]
 fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
@@ -877,7 +884,11 @@ impl ZedisStatusBar {
                                         });
                                     })),
                             )
-                            .child(Label::new(latency_text).text_color(latency_color)),
+                            .child(
+                                Label::new(latency_text)
+                                    .text_color(latency_color)
+                                    .min_w(px(LATENCY_LABEL_MIN_WIDTH)),
+                            ),
                     )
                     .child(
                         h_flex()
