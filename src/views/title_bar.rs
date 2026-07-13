@@ -238,7 +238,7 @@ impl Render for ZedisTitleBar {
         // (the title bar is always visible, so the update check can run on
         // startup regardless of route). While downloading it shows the percent.
         let update_version = cx.global::<ZedisGlobalStore>().read(cx).available_update_version();
-        let download_progress = cx.global::<ZedisGlobalStore>().read(cx).download_progress();
+        let download_progress = cx.global::<ZedisGlobalStore>().read(cx).download_percent();
         // True while re-checking on click — the chip shows a loading spinner.
         let update_checking = cx.global::<ZedisGlobalStore>().read(cx).update_checking();
 

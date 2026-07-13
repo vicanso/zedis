@@ -44,6 +44,7 @@ pub struct ZedisDialog {
     icon: Option<Icon>,
     message: Option<SharedString>,
     child: Option<Rc<dyn Fn() -> AnyElement>>,
+    footer_child: Option<Rc<dyn Fn() -> AnyElement>>,
     on_ok: Option<ZedisDialogOnOk>,
     on_close: Option<ZedisDialogOnClose>,
     button_props: Option<DialogButtonProps>,
@@ -77,6 +78,25 @@ impl ZedisDialog {
     /// Sets a simple text message as the dialog content.
     pub fn message(mut self, message: impl Into<SharedString>) -> Self {
         self.message = Some(message.into());
+        self
+    }
+
+    /// Sets a custom **footer** element builder, replacing the default
+    /// ok/cancel footer built from [`Self::ok_text`] / [`Self::cancel_text`].
+    ///
+    /// The footer is a sibling of the dialog body, which is the scroll
+    /// container — so anything here stays visible however long the body grows.
+    /// Put the action row (and anything that must never scroll out of reach,
+    /// e.g. a live progress bar) here rather than at the end of `child`.
+    ///
+    /// Like [`Self::child`], the builder runs on every render, so returning a
+    /// view entity gives the footer live state.
+    pub fn footer_child<F, E>(mut self, f: F) -> Self
+    where
+        F: Fn() -> E + 'static,
+        E: IntoElement,
+    {
+        self.footer_child = Some(Rc::new(move || f().into_any_element()));
         self
     }
 
@@ -153,6 +173,7 @@ impl ZedisDialog {
         let icon = self.icon;
         let message = self.message;
         let child = self.child;
+        let footer_child = self.footer_child;
         let on_ok = self.on_ok;
         let on_close = self.on_close;
         let button_props = self.button_props;
@@ -200,7 +221,11 @@ impl ZedisDialog {
                     let cb = cb.clone();
                     d = d.on_close(move |e, w, cx| cb(e, w, cx));
                 }
-                if let Some((ok_label, cancel_label)) = non_alert_footer.clone() {
+                // A caller-supplied footer wins over the ok/cancel one — it owns
+                // the whole action area (see `footer_child`).
+                if let Some(ref ff) = footer_child {
+                    d = d.footer(ff());
+                } else if let Some((ok_label, cancel_label)) = non_alert_footer.clone() {
                     let mut footer = DialogFooter::new();
                     if let Some(cancel) = cancel_label {
                         footer = footer.child(

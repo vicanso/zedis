@@ -481,10 +481,12 @@ pub struct ZedisAppState {
     /// the status-bar update chip; the chip's click opens the prompt for it.
     #[serde(skip)]
     available_update: Option<UpdateInfo>,
-    /// Installer download progress (0–100) while an update is downloading;
-    /// `None` when idle. Runtime only — drives the status-bar chip percentage.
+    /// Installer download progress as `(downloaded, total)` bytes while an
+    /// update is downloading; `None` when idle. Runtime only — the update
+    /// dialog renders the bar plus "6.2 MB / 13.2 MB", the title-bar chip
+    /// renders just the percentage (see `download_percent`).
     #[serde(skip)]
-    download_progress: Option<u8>,
+    download_progress: Option<(u64, u64)>,
     /// True while an update check (network fetch) is in flight. Runtime only —
     /// drives the title-bar update chip's loading spinner.
     #[serde(skip)]
@@ -932,6 +934,12 @@ impl ZedisAppState {
     pub fn set_skipped_version(&mut self, version: String) {
         self.skipped_version = if version.is_empty() { None } else { Some(version) };
     }
+    /// The pending update in full (version, changelog, per-arch asset) — the
+    /// check already fetched all of it, so the prompt can open straight from
+    /// here instead of going back to the network.
+    pub fn available_update(&self) -> Option<UpdateInfo> {
+        self.available_update.clone()
+    }
     /// Just the version string of the pending update — for the status-bar chip.
     pub fn available_update_version(&self) -> Option<SharedString> {
         self.available_update
@@ -944,13 +952,20 @@ impl ZedisAppState {
         self.available_update = info;
         cx.emit(GlobalEvent::UpdateAvailable);
     }
-    /// Current installer download progress (0–100), or `None` when not downloading.
-    pub fn download_progress(&self) -> Option<u8> {
+    /// Current installer download progress as `(downloaded, total)` bytes, or
+    /// `None` when not downloading. `total` is always > 0 while downloading.
+    pub fn download_progress(&self) -> Option<(u64, u64)> {
         self.download_progress
     }
+    /// The same progress as a 0–100 percentage — what the title-bar chip shows.
+    pub fn download_percent(&self) -> Option<u8> {
+        self.download_progress
+            .filter(|(_, total)| *total > 0)
+            .map(|(done, total)| (done * 100 / total).min(100) as u8)
+    }
     /// Set (or clear with `None`) the download progress and broadcast it so the
-    /// status-bar chip shows the percentage.
-    pub fn set_download_progress(&mut self, progress: Option<u8>, cx: &mut Context<Self>) {
+    /// update dialog's progress bar and the title-bar chip both refresh.
+    pub fn set_download_progress(&mut self, progress: Option<(u64, u64)>, cx: &mut Context<Self>) {
         self.download_progress = progress;
         cx.emit(GlobalEvent::UpdateDownloadProgress);
     }

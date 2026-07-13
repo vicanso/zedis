@@ -1365,6 +1365,10 @@ search_invalid = "数値の経度・緯度・半径（km）を入力"
 measure_hint = "⇧ Shift+クリックで2点間を計測"
 
 [update]
+quit_to_install_title = "終了してインストールを完了"
+quit_to_install_body = "インストーラーが開いています。新しいバージョンで置き換えるには Zedis を終了する必要があります。保存していない変更は失われます。"
+quit_to_install_now = "今すぐ終了"
+quit_to_install_later = "後で"
 available_title = "新しいバージョン"
 update_body = "Zedis の新しいバージョンをインストールできます。"
 download = "ダウンロード"

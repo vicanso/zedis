@@ -1365,6 +1365,10 @@ search_invalid = "Numerische Länge, Breite und Radius (km) eingeben"
 measure_hint = "⇧ Umschalt+Klick auf zwei Punkte zum Messen"
 
 [update]
+quit_to_install_title = "Zum Abschließen der Installation beenden"
+quit_to_install_body = "Das Installationsprogramm ist geöffnet. Zedis muss beendet werden, damit die neue Version es ersetzen kann — nicht gespeicherte Änderungen gehen verloren."
+quit_to_install_now = "Jetzt beenden"
+quit_to_install_later = "Später"
 available_title = "Neue Version"
 update_body = "Eine neue Version von Zedis kann installiert werden."
 download = "Herunterladen"

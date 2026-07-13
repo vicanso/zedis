@@ -352,6 +352,38 @@ pub fn download_and_verify(asset: &UpdateAsset, mut on_progress: impl FnMut(u64,
     Ok(path)
 }
 
+/// Whether finishing the install needs Zedis to quit — the answer differs per
+/// platform because "installing" means something different on each:
+///
+/// * **macOS** (`.dmg`): the user drags the new `Zedis.app` over the running one
+///   in `/Applications`. The live process has the old bundle's pages mapped, so
+///   replacing it underneath can fault it (bad code signature / `SIGBUS`).
+/// * **Windows** (`.msi`): msiexec cannot replace a running `zedis.exe`; it
+///   raises the "files in use" prompt (or demands a reboot) instead.
+/// * **Linux** (AppImage / tarball): not an installer at all — nothing needs the
+///   process gone, and quitting would strand the user with no new version.
+pub const fn installer_requires_quit() -> bool {
+    cfg!(not(target_os = "linux"))
+}
+
+/// Bring the installer's own UI forward, right before Zedis quits.
+///
+/// On macOS the `.dmg` is handed to LaunchServices, which mounts it and has
+/// **Finder** open the drag-to-Applications window. Quitting gives focus to
+/// whichever app was active before Zedis (a terminal, an editor…) rather than to
+/// Finder, so the window the user is supposed to act on ends up buried behind
+/// everything. `open -a Finder` activates it through LaunchServices — no
+/// AppleScript, so no "wants to control Finder" permission prompt.
+///
+/// Windows' msiexec raises its own foreground window, and Linux never quits
+/// here, so both are no-ops.
+pub fn focus_installer_ui() {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = Command::new("open").args(["-a", "Finder"]).spawn() {
+        debug!(error = %e, "update: could not activate Finder for the installer window");
+    }
+}
+
 /// Hand a downloaded installer to the OS: `open` on macOS (mounts a `.dmg`,
 /// launches a `.pkg`), `start` on Windows (runs the `.msi`), `xdg-open` on Linux.
 /// Blocking; run on a background task.
@@ -375,12 +407,33 @@ pub fn open_installer(path: &Path) -> Result<()> {
         c.arg(path);
         c
     };
-    command.spawn().map_err(|e| {
+
+    let open_failed = |e: std::io::Error| {
         error!(path = %path.display(), error = %e, "update: failed to open installer");
         Error::Invalid {
             message: format!("failed to open installer: {e}"),
         }
-    })?;
+    };
+
+    // macOS / Windows: *wait* for the launcher to return, because the caller
+    // quits right after (see `installer_requires_quit`) and must not race it.
+    // Neither waits for the install itself — `open` returns once LaunchServices
+    // has the disk image, `cmd /C start` once msiexec is launched.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let status = command.status().map_err(open_failed)?;
+        if !status.success() {
+            error!(path = %path.display(), %status, "update: installer launcher exited non-zero");
+            return Err(Error::Invalid {
+                message: format!("failed to open installer: {status}"),
+            });
+        }
+    }
+    // Linux: `xdg-open` can block until the handler it picked exits (some
+    // desktop fallbacks do), and we never quit here — so fire and forget.
+    #[cfg(target_os = "linux")]
+    command.spawn().map_err(open_failed)?;
+
     Ok(())
 }
 

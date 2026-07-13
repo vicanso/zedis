@@ -4,8 +4,9 @@ use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
     MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo, apply_fonts,
-    download_and_verify, fetch_latest_release, get_or_create_config_dir, init_logger, is_app_store_build, logs_dir,
-    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
+    download_and_verify, fetch_latest_release, focus_installer_ui, get_or_create_config_dir, init_logger,
+    installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages,
+    unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -13,8 +14,9 @@ use crate::states::{
     i18n_update, save_app_state, update_app_state_and_save,
 };
 use crate::views::{
-    ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar,
-    open_about_window, open_migration_import_window, open_settings_window, open_trash_dialog,
+    DialogCallback, ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar,
+    ZedisTitleBar, ZedisUpdateDialog, open_about_window, open_migration_import_window, open_settings_window,
+    open_trash_dialog,
 };
 use gpui::{
     Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
@@ -138,6 +140,9 @@ pub struct Zedis {
     update_task: Option<Task<()>>,
     /// The in-flight installer download, if any — guards against re-entry.
     download_task: Option<Task<()>>,
+    /// The installer is open and this platform needs Zedis gone to finish the
+    /// install — prompt to quit. Consumed in `render` (which has the `Window`).
+    pending_install_quit: bool,
 }
 
 impl Zedis {
@@ -320,6 +325,7 @@ impl Zedis {
             pending_update: None,
             update_task: None,
             download_task: None,
+            pending_install_quit: false,
         }
     }
 
@@ -553,47 +559,91 @@ impl Zedis {
     /// release page. A failed download falls back to the page too.
     fn start_download(&mut self, info: UpdateInfo, cx: &mut Context<Self>) {
         let Some(asset) = info.asset.clone() else {
+            // No verified asset for this os/arch (manifest missing → API
+            // fallback, or no matching build): nothing to download in-app, so
+            // hand off to the browser. Logged because it otherwise looks
+            // identical to "the Download button did nothing".
+            info!(version = %info.version, url = %info.page_url, "update: no asset for this platform, opening release page");
             cx.open_url(&info.page_url);
             return;
         };
         if self.download_task.is_some() {
+            info!("update: download already in progress, ignoring");
             return;
         }
         let page_url = info.page_url.clone();
-        let starting = format!("{} {}…", i18n_update(cx, "downloading"), info.version);
-        self.pending_notification = Some(Notification::info(starting));
+        let version = info.version.clone();
+        info!(
+            version = %version,
+            asset = %asset.name,
+            size = asset.size,
+            "update: download started"
+        );
+
+        // Publish 0% *synchronously*, before any await: connecting (DNS, TLS,
+        // the GitHub → CDN redirect) takes a second or two during which no byte
+        // has arrived, and the first `on_progress` can only fire after that. If
+        // the UI waited for it, the dialog would keep showing the Download
+        // button and the chip its version — looking like the click did nothing,
+        // which is exactly what made it get clicked twice. Publishing here
+        // swaps both to the progress state on the click itself.
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+            state.set_download_progress(Some((0, asset.size)), cx);
+        });
         cx.notify();
 
         // Progress is produced on the background thread and ferried to the UI
-        // through a channel; this foreground drainer publishes it to the global
-        // store, which the status-bar chip reads to show the percentage.
-        let (tx, rx) = smol::channel::unbounded::<u8>();
+        // through a channel as `(downloaded, total)` bytes; this foreground
+        // drainer publishes it to the global store, which the update dialog
+        // (progress bar) and the title-bar chip (percentage) both read.
+        let (tx, rx) = smol::channel::unbounded::<(u64, u64)>();
         cx.spawn(async move |_, cx| {
-            while let Ok(pct) = rx.recv().await {
+            while let Ok(progress) = rx.recv().await {
                 cx.update(|cx| {
                     cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                        state.set_download_progress(Some(pct), cx);
+                        state.set_download_progress(Some(progress), cx);
                     });
                 });
             }
+            // The sender is dropped once the download settles, so the loop ends
+            // with every queued tick already applied. Clearing *here* (rather
+            // than in the completion handler, which races the drainer) means a
+            // late tick can't land after the clear and freeze the chip at a
+            // stale percent. This is also what dismisses the dialog.
+            cx.update(|cx| {
+                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                    state.set_download_progress(None, cx);
+                });
+            });
         })
         .detach();
 
+        let log_name = asset.name.clone();
         self.download_task = Some(cx.spawn(async move |handle, cx| {
             // Networking + checksum are blocking — keep them off the UI thread.
             let result = cx
                 .background_spawn(async move {
                     let mut last_pct = u8::MAX;
+                    let mut last_logged_decile = u8::MAX;
                     let outcome = download_and_verify(&asset, |done, total| {
                         if total == 0 {
                             return;
                         }
                         // Throttle to integer-percent changes (≤101 updates).
                         let pct = ((done * 100 / total).min(100)) as u8;
-                        if pct != last_pct {
-                            last_pct = pct;
-                            let _ = tx.try_send(pct);
+                        if pct == last_pct {
+                            return;
                         }
+                        last_pct = pct;
+                        // Log every 10% so a slow or stalled download is
+                        // diagnosable from the log alone, without spamming it
+                        // with a line per percent.
+                        let decile = pct / 10;
+                        if decile != last_logged_decile {
+                            last_logged_decile = decile;
+                            info!(asset = %log_name, pct, done, total, "update: download progress");
+                        }
+                        let _ = tx.try_send((done, total));
                     })
                     .and_then(|path| open_installer(&path));
                     // Drop the sender so the drainer task ends.
@@ -603,13 +653,19 @@ impl Zedis {
                 .await;
             let _ = handle.update(cx, |this, cx| {
                 this.download_task = None;
-                // Clear the progress chip regardless of outcome.
-                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                    state.set_download_progress(None, cx);
-                });
+                // The progress is cleared by the drainer once it has applied
+                // every queued tick (see above) — clearing it here too would
+                // race it and could leave the chip stuck at a stale percent.
                 match result {
                     Ok(()) => {
+                        info!(version = %version, "update: download finished, installer handed to the OS");
                         this.pending_notification = Some(Notification::success(i18n_update(cx, "download_done")));
+                        // macOS / Windows: the installer can't replace a running
+                        // Zedis, so offer to quit (the dialog needs a `Window`,
+                        // which only `render` has — hence the flag).
+                        if installer_requires_quit() {
+                            this.pending_install_quit = true;
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "update download failed");
@@ -934,6 +990,35 @@ fn release_notes_style() -> TextViewStyle {
         })
 }
 
+/// Offered once the installer is open on a platform that can't install over a
+/// running Zedis (macOS / Windows — see `installer_requires_quit`). Quitting is
+/// the user's call: an editor may hold unsaved changes, and they may simply want
+/// to install later.
+fn open_install_quit_dialog(window: &mut Window, cx: &mut App) {
+    ZedisDialog::new(i18n_update(cx, "quit_to_install_title"))
+        .icon(IconName::Info)
+        .message(i18n_update(cx, "quit_to_install_body"))
+        .ok_text(i18n_update(cx, "quit_to_install_now"))
+        .cancel_text(i18n_update(cx, "quit_to_install_later"))
+        .on_ok(|_, _window, cx| {
+            // App state is normally persisted by an async task (`cx.spawn` →
+            // background write), which `cx.quit()` does not wait for. Flush the
+            // current state synchronously first so a just-made change (window
+            // bounds, open tabs) can't be lost on the way out.
+            let state = cx.global::<ZedisGlobalStore>().read(cx).clone();
+            if let Err(e) = save_app_state(&state) {
+                error!(error = %e, "update: failed to flush state before quitting");
+            }
+            // Quitting hands focus to whatever ran before Zedis, not to the
+            // installer — pull its window forward first, or it ends up buried.
+            focus_installer_ui();
+            info!("update: quitting so the installer can replace the app");
+            cx.quit();
+            true
+        })
+        .open(window, cx);
+}
+
 fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut Window, cx: &mut App) {
     // The notes area scrolls, so this cap only guards layout work against a
     // pathologically long release body.
@@ -944,16 +1029,42 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
         notes = notes.chars().take(MAX_NOTES).collect::<String>();
         notes.push('…');
     }
-    // No manual-update hint here — the dialog's own Download / Skip buttons make
-    // the action obvious. The hint lives on the found toast, where it points at
-    // the status-bar chip.
     let update_hint = i18n_update(cx, "update_body");
     let version_line = format!("{} → {}", info.current, info.version);
     let skip_version = info.version.clone();
-    let download_info = info;
-    // Shared flag so the Download path suppresses the skip-on-close below.
+    let download_info = info.clone();
+    // Shared flag so the Download path suppresses the skip-on-close below (the
+    // dialog's own × still records a skip when the user never started one).
     let downloaded = Rc::new(Cell::new(false));
-    let on_download = downloaded.clone();
+    let on_download_flag = downloaded.clone();
+
+    // Kick off the download and *leave the dialog open* — `ZedisUpdateDialog`
+    // watches the progress in the store and swaps its buttons for the bar.
+    let on_download: DialogCallback = Rc::new(move |_window, cx| {
+        on_download_flag.set(true);
+        // Download + verify + open the installer (or open the release page when
+        // there's no verified asset) — see `Zedis::start_download`.
+        if let Some(view) = zedis.upgrade() {
+            view.update(cx, |this, cx| this.start_download(download_info.clone(), cx));
+        }
+    });
+    let skip = skip_version.clone();
+    let on_skip: DialogCallback = Rc::new(move |_window, cx| {
+        info!(version = %skip, "update: version skipped by user");
+        let version = skip.clone();
+        update_app_state_and_save(cx, "skip_update_version", move |state, _| {
+            state.set_skipped_version(version.clone());
+        });
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+            state.set_available_update(None, cx);
+        });
+    });
+
+    // The action row is a *view* in the dialog footer, not part of the body:
+    // the body is the dialog's scroll container, so a long changelog would push
+    // the buttons below the fold. As a footer view it stays put and can swap
+    // itself for the live progress bar (see `ZedisUpdateDialog`).
+    let actions = cx.new(|cx| ZedisUpdateDialog::new(on_download.clone(), on_skip.clone(), cx));
     ZedisDialog::new(title)
         .child(move || {
             let mut body = v_flex()
@@ -961,8 +1072,7 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
                 .child(Label::new(update_hint.clone()))
                 .child(Label::new(version_line.clone()));
             // Render the changelog as Markdown (it comes straight from the
-            // GitHub release body) inside a capped, scrollable area so a
-            // long release can't push the dialog buttons off screen.
+            // GitHub release body) inside a capped, scrollable area.
             //
             // Not `max_h`: `Scrollable` copies the caller's size styles onto
             // its wrapper but the inner content keeps them too, and while its
@@ -986,23 +1096,13 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
             }
             body
         })
+        .footer_child(move || actions.clone().into_any_element())
         .w(px(520.))
         .overlay_closable(false)
-        .ok_text(i18n_update(cx, "download"))
-        .cancel_text(i18n_update(cx, "skip_version"))
-        .on_ok(move |_, _window, cx| {
-            on_download.set(true);
-            // Download + verify + open the installer (or open the release page
-            // when there's no verified asset) — see `Zedis::start_download`.
-            if let Some(view) = zedis.upgrade() {
-                view.update(cx, |this, cx| this.start_download(download_info.clone(), cx));
-            }
-            true
-        })
         .on_close(move |_, _window, cx| {
-            // Only the explicit "Skip this version" (cancel) records a skip and
-            // clears the chip; the Download path set the flag above, so it keeps
-            // the chip visible to show the download progress percentage.
+            // Only dismissing without downloading (the × button) records a skip
+            // and clears the chip. The Download path sets the flag above, and
+            // the dialog then closes itself once the download settles.
             if !downloaded.get() {
                 let version = skip_version.clone();
                 update_app_state_and_save(cx, "skip_update_version", move |state, _| {
@@ -1031,6 +1131,11 @@ impl Render for Zedis {
         }
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
+        }
+        // The installer is up and this platform needs Zedis closed to finish —
+        // ask (the update dialog has already dismissed itself by now).
+        if std::mem::take(&mut self.pending_install_quit) {
+            open_install_quit_dialog(window, cx);
         }
         if let Some(info) = self.pending_update.take() {
             let weak = cx.entity().downgrade();
@@ -1741,11 +1846,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             UpdateAction::Check => {
                                 view.update(cx, |zedis, cx| zedis.check_for_updates(true, false, cx));
                             }
-                            // Title-bar chip click: re-fetch the latest release
-                            // (chip shows a spinner meanwhile) and then open the
-                            // download/skip dialog with the fresh info.
+                            // Title-bar chip click: open the prompt straight from
+                            // the store. The check that lit the chip already
+                            // fetched everything the dialog shows — version,
+                            // changelog, the per-arch asset — so re-fetching here
+                            // only made the chip spin for a beat before anything
+                            // appeared. The fallback fetch is for the (unreachable)
+                            // case of a chip with no cached update behind it.
                             UpdateAction::OpenPrompt => {
-                                view.update(cx, |zedis, cx| zedis.check_for_updates(true, true, cx));
+                                let cached = cx.global::<ZedisGlobalStore>().read(cx).available_update();
+                                view.update(cx, |zedis, cx| match cached {
+                                    Some(info) => {
+                                        zedis.pending_update = Some(info);
+                                        cx.notify();
+                                    }
+                                    None => zedis.check_for_updates(true, true, cx),
+                                });
                             }
                         }
                     });

@@ -1366,6 +1366,10 @@ search_invalid = "Saisissez lon, lat et rayon (km) numériques"
 measure_hint = "⇧ Maj+clic sur deux points pour mesurer"
 
 [update]
+quit_to_install_title = "Quitter pour terminer l'installation"
+quit_to_install_body = "Le programme d'installation est ouvert. Zedis doit être fermé pour que la nouvelle version puisse le remplacer ; les modifications non enregistrées seront perdues."
+quit_to_install_now = "Quitter maintenant"
+quit_to_install_later = "Plus tard"
 available_title = "Nouvelle version"
 update_body = "Une nouvelle version de Zedis est prête à être installée."
 download = "Télécharger"

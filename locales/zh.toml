@@ -1364,6 +1364,10 @@ search_invalid = "请输入数字经度、纬度、半径（km）"
 measure_hint = "按住 Shift 点选两点测量距离"
 
 [update]
+quit_to_install_title = "退出以完成安装"
+quit_to_install_body = "安装程序已打开。需要退出 Zedis，新版本才能覆盖它——未保存的修改将会丢失。"
+quit_to_install_now = "立即退出"
+quit_to_install_later = "稍后"
 available_title = "新版本"
 update_body = "Zedis 有新版本可以安装啦。"
 download = "下载"

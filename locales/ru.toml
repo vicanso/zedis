@@ -1365,6 +1365,10 @@ search_invalid = "Введите числовые долготу, широту �
 measure_hint = "⇧ Shift+клик по двум точкам для измерения"
 
 [update]
+quit_to_install_title = "Выйти, чтобы завершить установку"
+quit_to_install_body = "Установщик открыт. Zedis нужно закрыть, чтобы новая версия смогла заменить его — несохранённые изменения будут потеряны."
+quit_to_install_now = "Выйти сейчас"
+quit_to_install_later = "Позже"
 available_title = "Новая версия"
 update_body = "Доступна новая версия Zedis, готовая к установке."
 download = "Скачать"
