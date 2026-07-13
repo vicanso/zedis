@@ -253,6 +253,9 @@ diag_hint_auth_rejected = "Authentification refusée. Vérifiez le mot de passe 
 diag_hint_redis = "Le port a accepté la connexion mais l'échange Redis a échoué — est-ce vraiment un port Redis ? Le serveur est peut-être encore en cours de chargement."
 
 [editor]
+value_too_large = "Valeur trop volumineuse pour un chargement automatique"
+value_too_large_message = "Cette valeur fait %{size}, au-delà de la limite de chargement automatique de %{limit}. Son chargement peut brièvement figer l'interface."
+load_anyway = "Charger quand même"
 value_readonly = "Aperçu en lecture seule (binaire ou valeur tronquée/décompressée) — impossible d'enregistrer. Pour les valeurs tronquées, augmentez la longueur de troncature maximale dans les Paramètres."
 delete_key_prompt = "Voulez-vous vraiment supprimer cette clé : %{key} ?"
 reload_key_tooltip = "Recharger la valeur de la clé"

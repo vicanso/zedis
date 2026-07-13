@@ -20,8 +20,8 @@ use crate::{
     db::get_favorites_manager,
     helpers::{EditorAction, format_duration, get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl},
     states::{
-        DataFormat, KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
-        escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
+        DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
+        dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
     },
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
@@ -1532,11 +1532,53 @@ impl ZedisEditor {
             )
     }
 
+    /// Inline panel shown when the oversized-value gate skipped the load:
+    /// the probed size, the cap it exceeded, and an explicit bypass load.
+    fn render_value_too_large(&mut self, size: u64, cx: &mut Context<Self>) -> impl IntoElement {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let title = i18n_editor(cx, "value_too_large");
+        let message: SharedString = t!(
+            "editor.value_too_large_message",
+            size = format_size(size, DECIMAL),
+            limit = format_size(MAX_INLINE_VALUE_SIZE, DECIMAL),
+            locale = locale
+        )
+        .to_string()
+        .into();
+        let load_anyway = i18n_editor(cx, "load_anyway");
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_4()
+            .child(Label::new(title))
+            .child(Label::new(message).text_sm().text_color(muted))
+            .child(
+                Button::new("value-load-anyway")
+                    .outline()
+                    .label(load_anyway)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        let key = this.server_state.read(cx).key();
+                        if let Some(key) = key {
+                            this.server_state
+                                .update(cx, |state, cx| state.load_value_ignore_size_limit(key, cx));
+                        }
+                    })),
+            )
+    }
+
     fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A failed value load keeps the key selected — surface the error
         // inline (with a Retry) instead of a blank/looks-empty sub-editor.
         if let Some(message) = self.server_state.read(cx).value().and_then(|v| v.failure_message()) {
             return self.render_load_error(message, cx).into_any_element();
+        }
+        // An oversized value was skipped by the size gate — offer an
+        // explicit "load anyway" instead of a blank editor.
+        if let Some(size) = self.server_state.read(cx).value().and_then(|v| v.too_large_size()) {
+            return self.render_value_too_large(size, cx).into_any_element();
         }
         let Some(value) = self.server_state.read(cx).value() else {
             self.reset_editors(KeyType::Unknown);

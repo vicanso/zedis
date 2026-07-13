@@ -253,6 +253,9 @@ diag_hint_auth_rejected = "Autenticação rejeitada. Verifique a senha e o usuá
 diag_hint_redis = "A porta aceitou a conexão, mas o handshake do Redis falhou — é realmente uma porta Redis? O servidor também pode estar carregando dados."
 
 [editor]
+value_too_large = "Valor grande demais para carregamento automático"
+value_too_large_message = "Este valor tem %{size}, acima do limite de carregamento automático de %{limit}. Carregá-lo pode travar a interface por instantes."
+load_anyway = "Carregar mesmo assim"
 value_readonly = "Pré-visualização somente leitura (binário ou valor truncado/descomprimido) — não é possível salvar. Para valores truncados, aumente o comprimento máximo de truncamento nas Configurações."
 delete_key_prompt = "Tem certeza que deseja excluir esta chave: %{key}?"
 reload_key_tooltip = "Recarregar valor da chave"

@@ -20,7 +20,7 @@ use super::{
     set::first_load_set_value,
     stream::first_load_stream_value,
     string::get_redis_bytes_value,
-    value::{KeyType, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
+    value::{KeyType, MAX_INLINE_VALUE_SIZE, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
 use crate::db::{
@@ -642,6 +642,7 @@ impl ZedisServerState {
         let db = self.db;
         let current_key = key.clone();
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
+        let bypass_size_gate = self.size_gate_bypassed.as_ref() == Some(&key);
 
         self.spawn(
             task,
@@ -668,6 +669,25 @@ impl ZedisServerState {
                 };
 
                 let key_type = KeyType::from(t.as_str());
+                // Size gate: String / RedisJSON pull the whole payload in one
+                // command, so probe the size first (STRLEN / MEMORY USAGE —
+                // both cheap) and stop before fetching something that would
+                // stall the UI and spike memory. Collections are exempt —
+                // their first loads are already paginated. On a failed probe
+                // the gate is skipped rather than blocking the load.
+                if !bypass_size_gate
+                    && matches!(key_type, KeyType::String | KeyType::Json)
+                    && let Ok(size) = client.memory_usage(key.as_str(), key_type.as_str()).await
+                    && size > MAX_INLINE_VALUE_SIZE
+                {
+                    return Ok(RedisValue {
+                        key_type,
+                        status: RedisValueStatus::TooLarge(size),
+                        size,
+                        expire_at,
+                        ..Default::default()
+                    });
+                }
                 let mut redis_value = match key_type {
                     KeyType::String => {
                         let mut data = get_redis_bytes_value(&mut conn, &key).await?;
@@ -776,6 +796,20 @@ impl ZedisServerState {
 
     /// Reloads the value for a selected key.
     pub fn reload_value(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.get_value(key, ServerTask::ReloadValue, cx);
+    }
+
+    /// Reloads the value for a key with the oversized-value gate disabled
+    /// ("Load anyway" on the too-large panel). The bypass is remembered for
+    /// the key so a later refresh doesn't bounce back to the gate panel.
+    pub fn load_value_ignore_size_limit(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.size_gate_bypassed = Some(key.clone());
+        // Blank + busy while the (large) payload downloads — mirrors the
+        // first-load rendering instead of leaving the stale gate panel up.
+        self.value = Some(RedisValue {
+            status: RedisValueStatus::Loading,
+            ..Default::default()
+        });
         self.get_value(key, ServerTask::ReloadValue, cx);
     }
     pub fn is_channel_mode(&self) -> bool {

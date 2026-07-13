@@ -253,6 +253,9 @@ diag_hint_auth_rejected = "Authentifizierung abgelehnt. Prüfen Sie Passwort und
 diag_hint_redis = "Der Port hat die Verbindung akzeptiert, aber der Redis-Handshake schlug fehl — ist das wirklich ein Redis-Port? Der Server könnte auch noch laden."
 
 [editor]
+value_too_large = "Wert zu groß zum automatischen Laden"
+value_too_large_message = "Dieser Wert ist %{size} groß und überschreitet die Obergrenze von %{limit} für automatisches Laden. Das Laden kann die Oberfläche kurz einfrieren."
+load_anyway = "Trotzdem laden"
 value_readonly = "Schreibgeschützte Vorschau (binär oder gekürzter/dekomprimierter Wert) – kann nicht gespeichert werden. Bei gekürzten Werten die maximale Kürzungslänge in den Einstellungen erhöhen."
 delete_key_prompt = "Möchten Sie diesen Schlüssel wirklich löschen: %{key}?"
 reload_key_tooltip = "Schlüsselwert neu laden"

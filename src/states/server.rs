@@ -218,6 +218,12 @@ pub struct ZedisServerState {
     /// Value data for the currently selected key
     value: Option<RedisValue>,
 
+    /// Key whose oversized value the user chose to load anyway ("Load
+    /// anyway" on the too-large panel). While the selected key matches,
+    /// `get_value` skips the size gate so a later refresh doesn't bounce
+    /// back to the panel. Cleared on server switch.
+    size_gate_bypassed: Option<SharedString>,
+
     // ===== Key scanning state =====
     /// Search keyword for filtering keys
     keyword: SharedString,
@@ -353,6 +359,7 @@ impl ZedisServerState {
         // any manual-disconnect pause (reconnect routes through here too).
         self.manually_offline = false;
         self.value = None;
+        self.size_gate_bypassed = None;
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
         self.type_filter = None;

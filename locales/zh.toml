@@ -253,6 +253,9 @@ diag_hint_auth_rejected = "认证被拒绝。请检查密码和用户名 (ACL)�
 diag_hint_redis = "端口已接受连接但 Redis 握手失败——该端口确定是 Redis 吗？服务器也可能仍在加载数据。"
 
 [editor]
+value_too_large = "值过大，未自动加载"
+value_too_large_message = "该值大小为 %{size}，超过 %{limit} 的自动加载上限，加载后界面可能出现短暂卡顿。"
+load_anyway = "仍要加载"
 value_readonly = "只读预览(二进制,或已截断/解压的值),无法保存。若因截断,可在设置中调大最大截断长度。"
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"
 reload_key_tooltip = "重新加载键值"

@@ -253,6 +253,9 @@ diag_hint_auth_rejected = "Autenticación rechazada. Revise la contraseña y el 
 diag_hint_redis = "El puerto aceptó la conexión pero falló el protocolo de Redis — ¿es realmente un puerto de Redis? El servidor también podría estar cargando datos."
 
 [editor]
+value_too_large = "Valor demasiado grande para cargarse automáticamente"
+value_too_large_message = "Este valor ocupa %{size}, por encima del límite de carga automática de %{limit}. Cargarlo puede congelar brevemente la interfaz."
+load_anyway = "Cargar de todos modos"
 value_readonly = "Vista previa de solo lectura (binario o valor truncado/descomprimido): no se puede guardar. Para valores truncados, aumenta la longitud máxima de truncado en Ajustes."
 delete_key_prompt = "¿Está seguro de que desea eliminar esta clave: %{key}?"
 reload_key_tooltip = "Recargar valor de la clave"

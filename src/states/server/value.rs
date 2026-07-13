@@ -27,6 +27,13 @@ use std::sync::Arc;
 
 pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 
+/// Auto-load cap for whole-payload value types (String / RedisJSON).
+/// `get_value` probes the size first and, above this, returns a
+/// [`RedisValueStatus::TooLarge`] placeholder instead of pulling the
+/// payload — the editor then offers an explicit "load anyway".
+/// Collection types are exempt: their first loads are paginated.
+pub const MAX_INLINE_VALUE_SIZE: u64 = 5 * 1024 * 1024;
+
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum DataFormat {
     #[default]
@@ -593,6 +600,10 @@ pub enum RedisValueStatus {
     /// show this message inline (with a retry) instead of silently
     /// deselecting — the string is the error to display.
     Failed(SharedString),
+    /// The payload exceeds [`MAX_INLINE_VALUE_SIZE`] and was not fetched;
+    /// the editor shows an inline "load anyway" panel instead. Carries
+    /// the probed size in bytes.
+    TooLarge(u64),
 }
 
 /// Redis value with metadata including type, data, expiration, and status
@@ -616,6 +627,15 @@ impl RedisValue {
     /// Checks if the value is currently loading
     pub fn is_loading(&self) -> bool {
         matches!(self.status, RedisValueStatus::Loading)
+    }
+
+    /// The probed size when the load was skipped by the oversized-value
+    /// gate, else `None`.
+    pub fn too_large_size(&self) -> Option<u64> {
+        match self.status {
+            RedisValueStatus::TooLarge(size) => Some(size),
+            _ => None,
+        }
     }
 
     /// The error message when the last load failed, else `None`.

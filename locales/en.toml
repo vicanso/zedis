@@ -253,6 +253,9 @@ diag_hint_auth_rejected = "Authentication was rejected. Check the password and u
 diag_hint_redis = "The port accepted the connection but the Redis handshake failed — is this really a Redis port? The server may also still be loading."
 
 [editor]
+value_too_large = "Value too large to auto-load"
+value_too_large_message = "This value is %{size}, above the %{limit} auto-load cap. Loading it may briefly freeze the UI."
+load_anyway = "Load anyway"
 value_readonly = "Read-only preview (binary, or truncated/decompressed value) — can't save. For truncated values, raise the max truncate length in Settings."
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"
 reload_key_tooltip = "Reload key value"

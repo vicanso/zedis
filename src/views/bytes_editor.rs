@@ -329,14 +329,23 @@ impl ZedisBytesEditor {
                 .soft_wrap(soft_wrap)
         });
 
-        // Subscribe to editor changes to track modification state
-        subscriptions.push(cx.subscribe(&editor, |this, _, event, cx| {
+        // Subscribe to editor changes to track modification state — and to
+        // enforce read-only: gpui-component's `Input::disabled` renders the
+        // text at half opacity (too dim for a value *viewer*) and
+        // `InputState` has no read-only mode, so the input stays enabled and
+        // any edit made while readonly is snapped back to the original here.
+        subscriptions.push(cx.subscribe_in(&editor, window, |this, editor, event, window, cx| {
             if let InputEvent::Change = &event {
-                let value = this.editor.read(cx).value();
+                let value = editor.read(cx).value();
 
                 // Compare with original value to determine if modified
                 let original = this.data.to_string().unwrap_or_default();
 
+                if this.readonly && original != value.as_str() {
+                    editor.update(cx, |state, cx| state.set_value(original, window, cx));
+                    this.value_modified = false;
+                    return;
+                }
                 this.value_modified = original != value.as_str();
                 cx.notify();
             }
@@ -606,10 +615,10 @@ impl Render for ZedisBytesEditor {
                 let editor = Input::new(&self.editor)
                     .flex_1()
                     .bordered(false)
-                    // 由于gpui-component调整之后，
-                    // 设置disabled之后文字颜色模糊，因此暂时禁用
-                    // TODO 后续如果有优化更调整
-                    // .disabled(self.readonly)
+                    // Deliberately NOT `.disabled(self.readonly)`: disabled
+                    // renders the text at half opacity, too dim for a value
+                    // viewer. Read-only is enforced by the InputEvent::Change
+                    // subscription instead (edits snap back to the original).
                     .appearance(false)
                     .p_0()
                     .w_full()
