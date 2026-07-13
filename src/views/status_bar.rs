@@ -803,25 +803,46 @@ impl ZedisStatusBar {
     /// metric chips — latency / memory / clients / slow log.
     fn render_telemetry(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
-        // Health dot + label. Colors mirror the latency palette so the cluster
-        // reads as one health unit; muted = no heartbeat result yet.
-        let (health_color, health_label) = match server_state.health {
-            ConnectionHealth::Connected => (rgb(0x69b083).into(), i18n_status_bar(cx, "conn_connected")),
-            ConnectionHealth::Reconnecting => (cx.theme().yellow, i18n_status_bar(cx, "conn_reconnecting")),
-            ConnectionHealth::Offline => (cx.theme().red, i18n_status_bar(cx, "conn_offline")),
-            ConnectionHealth::Unknown => (cx.theme().muted_foreground, i18n_status_bar(cx, "conn_connecting")),
+        // Health icon + label. A chain link (connected) vs a broken one (link
+        // down) carries the state in the *shape*, not just the color — a bare
+        // colored dot was too easy to miss. Colors mirror the latency palette so
+        // the cluster reads as one health unit.
+        //
+        // `Unknown` (still connecting) keeps the intact link at the muted color:
+        // nothing is broken yet, so a red-flavoured "unlink" would over-alarm.
+        let (health_color, health_icon, health_label) = match server_state.health {
+            ConnectionHealth::Connected => (
+                rgb(0x69b083).into(),
+                CustomIconName::Link,
+                i18n_status_bar(cx, "conn_connected"),
+            ),
+            ConnectionHealth::Reconnecting => (
+                cx.theme().yellow,
+                CustomIconName::Unlink,
+                i18n_status_bar(cx, "conn_reconnecting"),
+            ),
+            ConnectionHealth::Offline => (
+                cx.theme().red,
+                CustomIconName::Unlink,
+                i18n_status_bar(cx, "conn_offline"),
+            ),
+            ConnectionHealth::Unknown => (
+                cx.theme().muted_foreground,
+                CustomIconName::Link,
+                i18n_status_bar(cx, "conn_connecting"),
+            ),
         };
-        // When the link is down the dot doubles as a one-click reconnect
+        // When the link is down the icon doubles as a one-click reconnect
         // affordance. The heartbeat alone leaves `server_status` Idle, so a
         // plain re-select would no-op — `reconnect()` forces the reload.
         let is_link_down = matches!(
             server_state.health,
             ConnectionHealth::Offline | ConnectionHealth::Reconnecting
         );
-        // Connected → the dot doubles as a one-click *disconnect*; when down it's
+        // Connected → the icon doubles as a one-click *disconnect*; when down it's
         // a *reconnect*. `Unknown` (still connecting) stays inert.
         let is_connected = server_state.health == ConnectionHealth::Connected;
-        let dot_clickable = is_link_down || is_connected;
+        let icon_clickable = is_link_down || is_connected;
         let health_tooltip = if is_link_down {
             let hint = i18n_status_bar(cx, "conn_reconnect_hint");
             let reason = i18n_status_bar(cx, server_state.last_connection_error.reason_key());
@@ -845,23 +866,28 @@ impl ZedisStatusBar {
                     .items_center()
                     .gap_2()
                     .child(
-                        div()
-                            .id("zedis-conn-health")
-                            .size(px(8.))
-                            .rounded_full()
-                            .bg(health_color)
-                            .when(dot_clickable, |this| {
-                                this.cursor_pointer().on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.server_state.update(cx, |state, cx| {
-                                        if is_connected {
-                                            state.disconnect(cx);
-                                        } else {
-                                            state.reconnect(cx);
-                                        }
-                                    });
-                                }))
-                            })
-                            .tooltip(move |window, cx| Tooltip::new(health_tooltip.clone()).build(window, cx)),
+                        // Same ghost button as the metric icons beside it, so the
+                        // hover treatment (and the plain arrow cursor — `Button`
+                        // only forces `cursor_pointer` on the `link` variant)
+                        // matches the rest of the bar. The icon keeps its own
+                        // health color, which the hover style doesn't touch.
+                        // Inert while still connecting: nothing to connect or
+                        // disconnect yet.
+                        Button::new("zedis-status-bar-conn-health")
+                            .ghost()
+                            .small()
+                            .disabled(!icon_clickable)
+                            .icon(Icon::new(health_icon).text_color(health_color))
+                            .tooltip(health_tooltip)
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.server_state.update(cx, |state, cx| {
+                                    if is_connected {
+                                        state.disconnect(cx);
+                                    } else {
+                                        state.reconnect(cx);
+                                    }
+                                });
+                            })),
                     )
                     .child(Label::new(health_label).text_color(status_text)),
             )
