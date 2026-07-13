@@ -1,18 +1,18 @@
 [package]
 name = "zedis-db"
-version = "0.1.0"
-edition = "2024"
-authors = ["Tree Xie <tree.xie@outlook.com>"]
-categories = ["database"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+categories.workspace = true
 keywords = ["redis"]
 description = "Local storage layer for Zedis: redb-backed managers and proto descriptors."
-license = "Apache-2.0"
-homepage = "https://github.com/vicanso/zedis"
-repository = "https://github.com/vicanso/zedis"
-documentation = "https://github.com/vicanso/zedis"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation.workspace = true
 exclude = []
 readme = "./README.md"
-rust-version = "1.88.0"
+rust-version.workspace = true
 
 [dependencies]
 dashmap = { workspace = true }

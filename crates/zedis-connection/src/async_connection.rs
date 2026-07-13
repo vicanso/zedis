@@ -32,7 +32,22 @@ use std::{sync::LazyLock, time::Duration};
 use tracing::{debug, error};
 use zedis_core::ttl_cache::{TtlCache, now_secs};
 
+/// Name reported to Redis via `CLIENT SETNAME` — visible in `CLIENT LIST`,
+/// `CLIENT INFO` and the slow log, so operators can tell which Zedis version
+/// a connection came from.
+///
+/// The version is this crate's `CARGO_PKG_VERSION`, which tracks the app only
+/// because every workspace member inherits `version` from `[workspace.package]`
+/// (see the root `Cargo.toml`). Giving this crate a version of its own would
+/// silently ship that number to Redis instead — it reported `zedis:v0.1.0` for
+/// a while after the crate was split out. `client_name_matches_app_version` in
+/// the app crate locks the two together.
 const CLIENT_NAME: &str = concat!("zedis:v", env!("CARGO_PKG_VERSION"));
+
+/// The `CLIENT SETNAME` value this build reports to Redis, e.g. `zedis:v0.5.4`.
+pub fn client_name() -> &'static str {
+    CLIENT_NAME
+}
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 

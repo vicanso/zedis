@@ -11271,7 +11271,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-connection"
-version = "0.1.0"
+version = "0.5.4"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -11306,7 +11306,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-core"
-version = "0.1.0"
+version = "0.5.4"
 dependencies = [
  "dashmap",
  "directories",
@@ -11320,7 +11320,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-db"
-version = "0.1.0"
+version = "0.5.4"
 dependencies = [
  "dashmap",
  "prost-reflect",
@@ -11411,7 +11411,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-ui"
-version = "0.1.0"
+version = "0.5.4"
 dependencies = [
  "gpui",
  "gpui-component",

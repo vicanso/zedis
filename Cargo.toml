@@ -1,15 +1,15 @@
 [package]
 name = "zedis-gui"
-version = "0.5.4"
-edition = "2024"
-authors = ["Tree Xie <tree.xie@outlook.com>"]
-categories = ["database"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+categories.workspace = true
 keywords = ["redis", "redis-manager", "gpui", "redis-client", "gui"]
 description = "A blazing-fast, native Redis GUI built with Rust and GPUI."
-license = "Apache-2.0"
-homepage = "https://github.com/vicanso/zedis"
-repository = "https://github.com/vicanso/zedis"
-documentation = "https://github.com/vicanso/zedis"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation.workspace = true
 exclude = [
     "CHANGELOG.md",
     "test/*",
@@ -24,7 +24,7 @@ exclude = [
 ]
 readme = "./README.md"
 build = "build.rs"
-rust-version = "1.88.0"
+rust-version.workspace = true
 
 [[bin]]
 name = "zedis"
@@ -32,6 +32,22 @@ path = "src/main.rs"
 
 [workspace]
 members = ["crates/*", "zedis-cmd-builder"]
+
+# Single source of truth for the app version. `zedis-connection` builds the
+# `CLIENT SETNAME` value from `CARGO_PKG_VERSION`, so a sub-crate carrying its
+# own version would report *that* to Redis (it shipped `zedis:v0.1.0` for a
+# while after the crates were split out). Inheriting here keeps every member —
+# and the name Redis sees — on the app's version, bumped in one place.
+[workspace.package]
+version = "0.5.4"
+edition = "2024"
+authors = ["Tree Xie <tree.xie@outlook.com>"]
+categories = ["database"]
+license = "Apache-2.0"
+homepage = "https://github.com/vicanso/zedis"
+repository = "https://github.com/vicanso/zedis"
+documentation = "https://github.com/vicanso/zedis"
+rust-version = "1.88.0"
 
 [dependencies]
 ahash = "0.8.12"

@@ -15,3 +15,22 @@
 // Thin forwarding shim: the connection layer lives in the
 // `zedis-connection` crate; call sites keep `crate::connection::…`.
 pub use zedis_connection::*;
+
+#[cfg(test)]
+mod tests {
+    /// The name Redis sees (`CLIENT SETNAME`) is built from
+    /// `zedis-connection`'s `CARGO_PKG_VERSION`, which only equals the app
+    /// version because every member inherits `version` from
+    /// `[workspace.package]`. Give that crate a version of its own and Redis
+    /// starts seeing *it* — exactly the `zedis:v0.1.0` regression that shipped
+    /// when the connection layer was first extracted. This asserts across the
+    /// crate boundary: the constant here is the *app*'s version.
+    #[test]
+    fn client_name_matches_app_version() {
+        assert_eq!(
+            zedis_connection::client_name(),
+            format!("zedis:v{}", env!("CARGO_PKG_VERSION")),
+            "zedis-connection must inherit `version` from [workspace.package]"
+        );
+    }
+}
