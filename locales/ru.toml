@@ -573,6 +573,8 @@ field_errors_title = "Ошибка сохранения Proto"
 field_errors_message = "Проверьте следующие поля и повторите попытку:\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "Команды"
+all_commands = "Все команды"
 timestamp = "Временная метка"
 duration = "Длительность"
 command = "Команда"

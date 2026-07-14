@@ -574,6 +574,8 @@ field_errors_title = "Échec de l'enregistrement du Proto"
 field_errors_message = "Veuillez vérifier les champs suivants et réessayer :\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "Commandes"
+all_commands = "Toutes les commandes"
 timestamp = "Horodatage"
 duration = "Durée"
 command = "Commande"

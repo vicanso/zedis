@@ -147,6 +147,12 @@ pub enum SlowlogAction {
     ExportCsv,
     /// Export the filtered slow-log rows to a JSON file.
     ExportJson,
+    /// Toggle one command in the command filter, by its index into the panel's
+    /// `available_commands`. An index rather than the name keeps the action
+    /// `Copy`, which the derive requires.
+    ToggleCommand(u32),
+    /// Drop every command from the filter — back to "all commands".
+    ClearCommands,
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {

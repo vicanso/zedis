@@ -172,6 +172,10 @@ impl SlowLogRow {
 /// that unrelated background events on a busy server don't all match.
 const CORRELATION_WINDOW_SECS: i64 = 5;
 
+/// Width of the toolbar's keyword box — the args it searches are long, so give
+/// it room to hold a recognisable fragment of a key.
+const KEYWORD_INPUT_WIDTH: f32 = 180.0;
+
 /// Pick the Latency event whose `timestamp` is closest to `slow_ts`,
 /// provided it falls within `±CORRELATION_WINDOW_SECS`. Returns
 /// `(event_name, signed_delta_seconds)` so the chip can show direction
@@ -251,22 +255,34 @@ impl SlowlogTableDelegate {
         cx: &mut gpui::App,
     ) -> Self {
         let content_width = content_area_width(window, cx);
-        let timestamp_width = 200.;
+        // Cells are `[label ..flex_1..][copy button ..flex_none..]` and the copy
+        // button only appears on hover, taking ~28px out of the label's box — so
+        // text that fits at rest gets clipped the moment the pointer lands on the
+        // row. Both of these budget for it, on top of the 20px of side padding:
+        //   timestamp: "2026-07-14 22:31:05" — 19 mono chars
+        //   client:    "10.51.168.20:53166" — sized for the address only. The
+        //              client *name* is appended after it ("… (zedis:v0.5.5)") and
+        //              is allowed to ellipsize: it repeats across every row of the
+        //              same client, whereas the address is what tells them apart.
+        let timestamp_width = 240.;
         let duration_width = 130.;
         let command_width = 150.;
-        let client_width = 200.;
+        let client_width = 240.;
         // Wide enough for "<event> +Ns" — event names cap around 24 chars
         // (e.g. "active-defrag-cycle"). Fixed instead of stretchy so the
         // chip stays compact next to client info.
         let correlated_width = 170.;
         // Subtract a small gutter (10 px) so the table doesn't overflow horizontally.
-        let remaining_width = content_width.as_f32()
+        // `args` is the flexible column; floor it so a narrow window scrolls the
+        // table horizontally instead of collapsing the column to nothing.
+        let remaining_width = (content_width.as_f32()
             - timestamp_width
             - duration_width
             - command_width
             - client_width
             - correlated_width
-            - 10.;
+            - 10.)
+            .max(200.);
 
         let make_paddings = || {
             Some(Edges {
@@ -558,6 +574,10 @@ pub struct ZedisSlowlogEditor {
     /// Minimum duration filter in milliseconds. 0 means no filter.
     min_duration_ms: u64,
     duration_input_state: Entity<InputState>,
+    /// Free-text filter, already trimmed + lowercased. Matched against the
+    /// command, its arguments and the client. Empty means no filter.
+    keyword: String,
+    keyword_state: Entity<InputState>,
 
     // --- Latency tab state (LATENCY LATEST / HISTORY / GRAPH / RESET) ---
     current_tab: PerformanceTab,
@@ -631,6 +651,24 @@ impl ZedisSlowlogEditor {
             }),
         );
 
+        // Free-text filter over command / args / client — the duration threshold
+        // only answers "how slow", not "what". Filters live as you type: the rows
+        // are already in memory (SLOWLOG GET is capped), so there is nothing to
+        // debounce.
+        let keyword_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_common(cx, "keyword_placeholder"))
+        });
+        subscriptions.push(
+            cx.subscribe_in(&keyword_state, window, |this, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    this.keyword = state.read(cx).value().trim().to_lowercase();
+                    this.apply_filters(cx);
+                }
+            }),
+        );
+
         // Refresh table whenever the server delivers updated slow-log data or the
         // active server connection changes. The early-return on equal timestamps
         // prevents redundant re-renders when the data hasn't actually changed.
@@ -675,6 +713,8 @@ impl ZedisSlowlogEditor {
             selected_commands: HashSet::new(),
             min_duration_ms: 0,
             duration_input_state,
+            keyword: String::new(),
+            keyword_state,
             current_tab: PerformanceTab::SlowLog,
             latency_events: Vec::new(),
             latency_threshold_ms: 0,
@@ -1089,6 +1129,18 @@ impl ZedisSlowlogEditor {
                 {
                     return false;
                 }
+                // Keyword: command / args / client. The key you are hunting for
+                // lives in `args`, which is exactly what the duration threshold
+                // and the command filter cannot reach.
+                if !self.keyword.is_empty() {
+                    let kw = self.keyword.as_str();
+                    if !row.command.to_lowercase().contains(kw)
+                        && !row.args.to_lowercase().contains(kw)
+                        && !row.client.to_lowercase().contains(kw)
+                    {
+                        return false;
+                    }
+                }
                 true
             })
             .cloned()
@@ -1188,7 +1240,7 @@ impl gpui::Render for ZedisSlowlogEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let is_empty = self.row_count == 0;
         let total_count = self.all_rows.len();
-        let has_filter = !self.selected_commands.is_empty() || self.min_duration_ms > 0;
+        let has_filter = !self.selected_commands.is_empty() || self.min_duration_ms > 0 || !self.keyword.is_empty();
 
         // Count label: show "filtered/total" when filters are active
         let count_label = if has_filter {
@@ -1196,26 +1248,6 @@ impl gpui::Render for ZedisSlowlogEditor {
         } else {
             format!("({})", total_count)
         };
-
-        // Build command filter buttons
-        let command_buttons: Vec<_> = self
-            .available_commands
-            .iter()
-            .enumerate()
-            .map(|(i, cmd)| {
-                let is_selected = self.selected_commands.contains(cmd);
-                let cmd_clone = cmd.clone();
-                let mut btn = Button::new(("cmd-filter", i)).label(cmd.clone()).xsmall().px_2();
-                if is_selected {
-                    btn = btn.primary();
-                } else {
-                    btn = btn.outline();
-                }
-                btn.on_click(cx.listener(move |this, _, _window, cx| {
-                    this.toggle_command(cmd_clone.clone(), cx);
-                }))
-            })
-            .collect();
 
         v_flex()
             .size_full()
@@ -1287,7 +1319,7 @@ impl gpui::Render for ZedisSlowlogEditor {
                                     .text_sm(),
                             ),
                     )
-                    .child(self.render_toolbar_actions(command_buttons, cx)),
+                    .child(self.render_toolbar_actions(cx)),
             )
             // Body — slowlog table or latency panel depending on active tab.
             .child(
@@ -1331,6 +1363,18 @@ impl gpui::Render for ZedisSlowlogEditor {
             .on_action(cx.listener(|this, event: &SlowlogAction, _window, cx| match event {
                 SlowlogAction::ExportCsv => this.export_csv(cx),
                 SlowlogAction::ExportJson => this.export_json(cx),
+                SlowlogAction::ToggleCommand(ix) => {
+                    // The action carries an index into `available_commands` (it has
+                    // to be `Copy`), so resolve it back to the name here. A stale
+                    // index — the list is rebuilt on every refresh — simply misses.
+                    if let Some(cmd) = this.available_commands.get(*ix as usize).cloned() {
+                        this.toggle_command(cmd, cx);
+                    }
+                }
+                SlowlogAction::ClearCommands => {
+                    this.selected_commands.clear();
+                    this.apply_filters(cx);
+                }
             }))
             .into_any_element()
     }
@@ -1340,13 +1384,37 @@ impl ZedisSlowlogEditor {
     /// Tab-aware right-side toolbar. SlowLog tab keeps the existing
     /// min-duration / command-filter chips; Latency tab swaps in
     /// Refresh + Reset actions.
-    fn render_toolbar_actions(&self, command_buttons: Vec<Button>, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render_toolbar_actions(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // Commands, as a checkable dropdown rather than a chip per command: a busy
+        // server logs dozens of distinct commands, and one chip each ran the
+        // toolbar off the edge. A dropdown is a fixed-width control however long
+        // the list gets — and, unlike a plain single-select, it keeps the
+        // multi-select the chips had ("show me HGETALL *and* SMEMBERS").
+        let selected_count = self.selected_commands.len();
+        let commands = self.available_commands.clone();
+        let selected = self.selected_commands.clone();
+        let command_label: SharedString = if selected_count == 0 {
+            i18n_slowlog_editor(cx, "command_filter")
+        } else {
+            format!("{} ({selected_count})", i18n_slowlog_editor(cx, "command_filter")).into()
+        };
+
         match self.current_tab {
             PerformanceTab::SlowLog => ZedisDivider::new()
                 .child(
                     h_flex()
                         .gap_1()
                         .items_center()
+                        // Keyword leads: it is the widest control and the one
+                        // reached for first. The duration threshold is a secondary,
+                        // narrow refinement, so it follows.
+                        .child(
+                            Input::new(&self.keyword_state)
+                                .xsmall()
+                                .cleanable(true)
+                                .w(px(KEYWORD_INPUT_WIDTH))
+                                .mr_2(),
+                        )
                         .child(
                             Label::new(i18n_slowlog_editor(cx, "min_duration"))
                                 .text_color(cx.theme().muted_foreground)
@@ -1355,8 +1423,30 @@ impl ZedisSlowlogEditor {
                         .child(Input::new(&self.duration_input_state).xsmall().w(px(60.)))
                         .child(Label::new("ms").text_color(cx.theme().muted_foreground).text_sm()),
                 )
-                .when(!command_buttons.is_empty(), |this| {
-                    this.child(h_flex().gap_2().children(command_buttons))
+                .when(!commands.is_empty(), |this| {
+                    this.child(
+                        Button::new("slowlog-command-filter")
+                            .outline()
+                            .small()
+                            .label(command_label.clone())
+                            .dropdown_menu(move |mut menu, _window, _cx| {
+                                menu = menu.menu_element_with_check(
+                                    selected.is_empty(),
+                                    Box::new(SlowlogAction::ClearCommands),
+                                    move |_, cx| Label::new(i18n_slowlog_editor(cx, "all_commands")),
+                                );
+                                menu = menu.separator();
+                                for (i, cmd) in commands.iter().enumerate() {
+                                    let cmd = cmd.clone();
+                                    menu = menu.menu_element_with_check(
+                                        selected.contains(&cmd),
+                                        Box::new(SlowlogAction::ToggleCommand(i as u32)),
+                                        move |_, _cx| Label::new(cmd.clone()),
+                                    );
+                                }
+                                menu
+                            }),
+                    )
                 })
                 // Export the currently-filtered rows (CSV / JSON). Only
                 // shown when there is at least one row to export.

@@ -572,6 +572,8 @@ field_errors_title = "保存 Proto 失败"
 field_errors_message = "请验证以下字段并重试:\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "命令"
+all_commands = "全部命令"
 timestamp = "时间"
 duration = "耗时"
 command = "命令"

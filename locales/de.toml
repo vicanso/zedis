@@ -573,6 +573,8 @@ field_errors_title = "Proto speichern fehlgeschlagen"
 field_errors_message = "Bitte überprüfen Sie die folgenden Felder und versuchen Sie es erneut:\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "Befehle"
+all_commands = "Alle Befehle"
 timestamp = "Zeitstempel"
 duration = "Dauer"
 command = "Befehl"

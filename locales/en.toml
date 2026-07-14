@@ -573,6 +573,8 @@ field_errors_title = "Save Proto Failed"
 field_errors_message = "Please verify the following fields and try again:\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "Commands"
+all_commands = "All commands"
 timestamp = "Timestamp"
 duration = "Duration"
 command = "Command"

@@ -573,6 +573,8 @@ field_errors_title = "Error al guardar Proto"
 field_errors_message = "Por favor, verifique los siguientes campos e inténtelo de nuevo:\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "Comandos"
+all_commands = "Todos los comandos"
 timestamp = "Marca de tiempo"
 duration = "Duración"
 command = "Comando"

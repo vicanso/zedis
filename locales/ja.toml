@@ -573,6 +573,8 @@ field_errors_title = "Proto の保存に失敗しました"
 field_errors_message = "以下のフィールドを確認して再試行してください:\n\n%{errors}"
 
 [slowlog_editor]
+command_filter = "コマンド"
+all_commands = "すべてのコマンド"
 timestamp = "タイムスタンプ"
 duration = "実行時間"
 command = "コマンド"
