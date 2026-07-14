@@ -4,5 +4,9 @@ extend-ignore-re = [
     "(?s)(#|//)\\s*spellchecker:off.*?\\n\\s*(#|//)\\s*spellchecker:on",
 ]
 
+[default.extend-words]
+# Redis notify-keyspace-events event-class string (K + E + A), not "ACHE".
+AKE = "AKE"
+
 [files]
 extend-exclude = ["*.md", "*.toml", "assets/**"]
