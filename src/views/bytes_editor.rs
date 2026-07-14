@@ -684,21 +684,21 @@ impl ZedisBytesEditor {
                     cx.stop_propagation();
                 }
             }))
-            // Collapse chevron — hides the bar again, back to the slim toggle.
+            // Collapse control — chevron *and* label in one button, mirroring the
+            // collapsed toggle: there the whole "JSONPath" text expands the bar,
+            // so the whole text has to collapse it again. Keeping the label as a
+            // separate `Label` shrank the click target to the bare icon the moment
+            // the bar opened.
             .child(
                 Button::new("jsonpath-collapse")
                     .ghost()
                     .xsmall()
                     .icon(IconName::ChevronDown)
+                    .label(i18n_editor(cx, "jsonpath_label"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.jsonpath_open = false;
                         cx.notify();
                     })),
-            )
-            .child(
-                Label::new(i18n_editor(cx, "jsonpath_label"))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground),
             )
             .child(
                 Input::new(&self.jsonpath_input)

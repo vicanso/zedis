@@ -39,6 +39,7 @@ use gpui_component::{
     label::Label,
     menu::DropdownMenu,
     notification::Notification,
+    tooltip::Tooltip,
     v_flex,
 };
 use humansize::{DECIMAL, format_size};

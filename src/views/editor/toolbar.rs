@@ -449,21 +449,30 @@ impl ZedisEditor {
             )
             .child(KeyTypeBadge::new(key_type).into_any_element())
             .child(
-                // Key name — hugs its content and truncates when long (`min_w_0`
-                // + ellipsis) instead of growing, so the size can sit right
-                // after it; the flex spacer below pushes the actions right.
-                div().min_w_0().overflow_hidden().child(
-                    Label::new(key)
-                        // Monospace so the key reads like the identifier it is.
-                        // Bold felt too heavy and Menlo ships no lighter emphasis
-                        // face (only Regular/Bold), so we keep the regular weight.
-                        .font_family(get_mono_font_family())
-                        .text_ellipsis()
-                        .whitespace_nowrap(),
-                ),
+                // Key name. Its width comes from `flex_1` — it grows into whatever
+                // the fixed elements leave — and *not* from its content: a
+                // content-sized box here resolved to ~zero, collapsing the key to a
+                // bare "…" while the row still had room to spare. Growing also makes
+                // it the element that absorbs a narrow window, which is what
+                // `min_w_0` + ellipsis are for. The full name is on hover, since a
+                // long key is truncated by design.
+                div()
+                    .id("zedis-editor-key-name")
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(
+                        Label::new(key.clone())
+                            // Monospace so the key reads like the identifier it is.
+                            // Bold felt too heavy and Menlo ships no lighter emphasis
+                            // face (only Regular/Bold), so we keep the regular weight.
+                            .font_family(get_mono_font_family())
+                            .text_ellipsis()
+                            .whitespace_nowrap(),
+                    )
+                    .tooltip(move |window, cx| Tooltip::new(key.clone()).build(window, cx)),
             )
             .children(size_el)
-            .child(div().flex_1())
             .children(btns)
     }
 }
