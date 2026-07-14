@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{Capability, RedisServer, get_connection_manager, open_monitor_connection};
+use crate::connection::{Capability, RedisServer, get_connection_manager, get_server, open_monitor_connection};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-    content_area_width, i18n_common, i18n_monitor, i18n_status_bar,
+    content_area_width, escalate_dangerous_body, i18n_common, i18n_monitor, i18n_status_bar,
 };
 /// Redis MONITOR live viewer.
 ///
@@ -35,6 +35,7 @@ use gpui_component::notification::Notification;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::Button,
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -43,6 +44,7 @@ use gpui_component::{
 };
 use std::collections::VecDeque;
 use tracing::error;
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -172,10 +174,17 @@ impl MonitorTableDelegate {
     fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &gpui::App) -> Self {
         let content_width = content_area_width(window, cx);
 
-        let ts_width = 160.;
-        let node_width = 180.;
+        // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
+        // button only appears on hover — it takes ~36px out of the label's box, so
+        // text that fits at rest is clipped the moment the pointer lands on the
+        // row. These budget for it, on top of the 20px of side padding:
+        //   timestamp: "22:31:05.123" — 12 mono chars (~101px)
+        //   node:      "10.51.168.20:31545" — the master's host:port, ~18 (~151px)
+        //   client:    "127.0.0.1:60866" — ~15 (~126px)
+        let ts_width = 190.;
+        let node_width = 240.;
         let db_width = 80.;
-        let client_width = 180.;
+        let client_width = 220.;
         let cmd_width = 120.;
         let remaining = content_width.as_f32() - ts_width - node_width - db_width - client_width - cmd_width - 10.;
         let args_width = remaining.max(200.);
@@ -488,6 +497,40 @@ impl ZedisMonitor {
         cx.notify();
     }
 
+    /// Start, but confirm first on a high-risk (production-tagged) server.
+    ///
+    /// MONITOR is not the free read it looks like: the server formats *every*
+    /// command it executes into a string and pushes it to each MONITOR client,
+    /// on its single command thread — Redis's own docs measure a >50% throughput
+    /// drop from one attached client. On a cluster we attach to every master, so
+    /// each node pays it. Cheap servers start straight away; production gets one
+    /// sentence explaining the cost before anything is attached.
+    fn confirm_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.monitoring || !self.server_state.read(cx).can(Capability::Observe) {
+            return;
+        }
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let high_risk = get_server(&server_id).map(|s| s.is_high_risk_tag()).unwrap_or(false);
+        if !high_risk {
+            self.handle_start(cx);
+            return;
+        }
+
+        let body = escalate_dangerous_body(cx, &server_id, i18n_monitor(cx, "start_confirm_prompt"));
+        let button_props = DialogButtonProps::default()
+            .cancel_text(i18n_common(cx, "cancel"))
+            .ok_text(i18n_monitor(cx, "start"));
+        let entity = cx.entity();
+        ZedisDialog::new_alert(i18n_monitor(cx, "start_confirm_title"), body)
+            .button_props(button_props)
+            .on_ok(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.handle_start(cx));
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
     fn handle_start(&mut self, cx: &mut Context<Self>) {
         // Observe is a read-class capability (allowed on read-only
         // connections); routed through the matrix so a stricter future mode
@@ -725,8 +768,8 @@ impl Render for ZedisMonitor {
                                         .small()
                                         .icon(Icon::new(CustomIconName::Zap))
                                         .label(i18n_monitor(cx, "start"))
-                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                            this.handle_start(cx);
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_start(window, cx);
                                         })),
                                 )
                             })

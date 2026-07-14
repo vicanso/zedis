@@ -760,6 +760,8 @@ ttl_summary_label = "%{sampled} échantillonnées (≈ %{estimated} estimées) �
 ttl_dominant_label = "Plus grand seau : %{bucket} (%{count} clés)"
 
 [monitor]
+start_confirm_title = "Démarrer MONITOR sur un serveur de production ?"
+start_confirm_prompt = "Avec MONITOR, le serveur formate chaque commande exécutée et la pousse vers ce client, sur son unique thread de commandes — Redis mesure une chute de débit de plus de 50%. Dans un cluster, chaque maître en paie le prix. Gardez la session courte et arrêtez-la dès que vous avez terminé."
 monitor_failed = "Ãchec du dÃ©marrage de MONITOR"
 title = "Moniteur en direct"
 start = "Démarrer"

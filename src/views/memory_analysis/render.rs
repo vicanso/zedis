@@ -63,22 +63,14 @@ impl ZedisMemoryAnalysis {
                         this.child(stat_item(cx, "progress", self.progress.clone()))
                     }),
             )
-            // Sort-mode toggle for the single-key TopN table.
-            .child({
-                let heat_available = self.heat != HeatProbe::None;
-                let mode = self.sort_mode;
-                let make = |id: &'static str, key: &'static str, target: SortMode, enabled: bool| {
-                    let active = mode == target;
-                    Button::new(id)
-                        .small()
-                        .when(active, |b| b.primary())
-                        .when(!active, |b| b.outline())
-                        .disabled(!enabled)
-                        .label(i18n_memory_analysis(cx, key))
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.set_sort_mode(target, cx);
-                        }))
-                };
+            // Ranking for the single-key TopN table. A dropdown rather than one
+            // button per mode: the toolbar is already crowded, and this is a
+            // single-valued choice — exactly what a select is for.
+            //
+            // Wrapped in a fixed-width box: `Select`'s outer element is
+            // `size_full`, so on its own it stretches to fill the row (its own
+            // `.w()` only refines the inner input).
+            .child(
                 h_flex()
                     .gap_2()
                     .items_center()
@@ -87,10 +79,13 @@ impl ZedisMemoryAnalysis {
                             .text_color(cx.theme().muted_foreground)
                             .text_sm(),
                     )
-                    .child(make("sort-mode-size", "rank_size", SortMode::Size, true))
-                    .child(make("sort-mode-hot", "rank_hot", SortMode::Hot, heat_available))
-                    .child(make("sort-mode-cold", "rank_cold", SortMode::Cold, heat_available))
-            })
+                    .child(
+                        div()
+                            .w(px(RANK_SELECT_WIDTH))
+                            .flex_none()
+                            .child(Select::new(&self.sort_state).small()),
+                    ),
+            )
             // ─── User interaction operation area ───
             .child(
                 h_flex()
@@ -765,6 +760,19 @@ impl gpui::Render for ZedisMemoryAnalysis {
             let ratio_text = format!("{:.4}", self.ratio);
             self.ratio_input_state
                 .update(cx, |s, cx| s.set_value(ratio_text, window, cx));
+        }
+
+        // The heat probe resolved (or the server changed): Hot/Cold appear or
+        // disappear from the "rank by" dropdown. Rebuilding drops the selection,
+        // so re-select the active mode — which `start_analysis` has already
+        // reset to Size when the probe came back empty.
+        if self.should_rebuild_sort_items.take().is_some() {
+            let options = sort_options(self.heat != HeatProbe::None, cx);
+            let selected = options.iter().position(|o| o.mode == self.sort_mode).unwrap_or(0);
+            self.sort_state.update(cx, |state, cx| {
+                state.set_items(options, window, cx);
+                state.set_selected_index(Some(IndexPath::new(selected)), window, cx);
+            });
         }
 
         let is_running = self.status == AnalysisStatus::Running;

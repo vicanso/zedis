@@ -759,6 +759,8 @@ ttl_summary_label = "%{sampled} サンプリング(≈ %{estimated} 推定) — 
 ttl_dominant_label = "最大バケット: %{bucket} (%{count} 件)"
 
 [monitor]
+start_confirm_title = "本番サーバーで MONITOR を開始しますか？"
+start_confirm_prompt = "MONITOR は、サーバーが実行するすべてのコマンドを文字列化してこのクライアントへ送信します。しかも単一のコマンドスレッド上で行われ、Redis の計測ではスループットが 50% 以上低下します。クラスタでは各マスターがこの負荷を負います。観察は短時間にとどめ、終わったらすぐ停止してください。"
 monitor_failed = "MONITOR ã®éå§ã«å¤±æãã¾ãã"
 title = "ライブモニター"
 start = "開始"

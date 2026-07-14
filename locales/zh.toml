@@ -758,6 +758,8 @@ ttl_summary_label = "%{sampled} 已采样(≈ %{estimated} 估算)—— %{no_tt
 ttl_dominant_label = "最大桶:%{bucket}(%{count} 个键)"
 
 [monitor]
+start_confirm_title = "在生产服务器上启动 MONITOR？"
+start_confirm_prompt = "MONITOR 会让服务器把执行的每一条命令格式化后推送给该客户端，且发生在它唯一的命令线程上——Redis 官方实测吞吐量下降超过 50%。集群下每个主节点都要承担这份开销。请尽量缩短观察时间，用完立即停止。"
 monitor_failed = "MONITOR å¯å¨å¤±è´¥"
 title = "实时监控"
 start = "启动"

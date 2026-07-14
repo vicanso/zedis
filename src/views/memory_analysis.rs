@@ -17,7 +17,7 @@ use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_ma
 use crate::error::Error;
 use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands};
 use crate::states::{
-    ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, get_metrics_cache, i18n_common,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, get_metrics_cache, i18n_common,
     i18n_memory_analysis,
 };
 use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
@@ -33,10 +33,11 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,
     label::Label,
+    select::{Select, SelectEvent, SelectItem, SelectState},
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -65,6 +66,9 @@ const TABLE_ROW_HEIGHT: f32 = 32.;
 const SECTION_TITLE_HEIGHT: f32 = 30.;
 
 const DEFAULT_SCAN_COUNT: u64 = 100;
+
+/// Width of the "rank by" dropdown — fits the longest localized mode label.
+const RANK_SELECT_WIDTH: f32 = 110.0;
 
 /// Default target number of keys to *probe* (`MEMORY USAGE`/`TTL`) per run. On
 /// a larger DB the default sample ratio is scaled down so roughly this many
@@ -179,6 +183,45 @@ enum SortMode {
     Cold,
 }
 
+/// One entry of the "rank by" dropdown.
+#[derive(Clone, Debug)]
+struct SortOption {
+    label: SharedString,
+    mode: SortMode,
+}
+
+impl SelectItem for SortOption {
+    type Value = SortMode;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.mode
+    }
+}
+
+/// Ranking choices for the single-key table. Hot/Cold need a heat metric
+/// (`maxmemory-policy` must be LFU or LRU), so they are simply absent when the
+/// server exposes neither: a `Select` cannot grey out one of its items, and an
+/// option that silently does nothing is worse than one that isn't offered.
+fn sort_options(heat_available: bool, cx: &gpui::App) -> Vec<SortOption> {
+    let mut options = vec![SortOption {
+        label: i18n_memory_analysis(cx, "rank_size"),
+        mode: SortMode::Size,
+    }];
+    if heat_available {
+        options.push(SortOption {
+            label: i18n_memory_analysis(cx, "rank_hot"),
+            mode: SortMode::Hot,
+        });
+        options.push(SortOption {
+            label: i18n_memory_analysis(cx, "rank_cold"),
+            mode: SortMode::Cold,
+        });
+    }
+    options
+}
+
 // ─── Column constants ────────────────────────────────────────────────────────
 
 const COL_PREFIX: &str = "prefix";
@@ -285,6 +328,12 @@ pub struct ZedisMemoryAnalysis {
     heat: HeatProbe,
     /// User-selected ranking mode for the single-key table.
     sort_mode: SortMode,
+    /// The "rank by" dropdown. Its item list depends on whether the server
+    /// exposes a heat metric, so it is rebuilt whenever `heat` changes.
+    sort_state: Entity<SelectState<Vec<SortOption>>>,
+    /// Set when `heat` changed; the next render (which has a `Window`) rebuilds
+    /// the dropdown's items and re-selects the active mode.
+    should_rebuild_sort_items: Option<bool>,
     /// Cached group of top-N selectors so toggling Size/Hot/Cold doesn't
     /// re-run the scan.
     single_groups: SingleKeyTopGroups,
@@ -371,10 +420,52 @@ impl ZedisMemoryAnalysis {
             }),
         );
 
+        // `dbsize` gates the Analyze button, and it only lands once the connection
+        // has run DBSIZE (`ServerEvent::ServerInfoUpdated`). Reading it once at
+        // construction is not enough: restoring the app straight onto this route
+        // builds the view *before* the server finishes connecting, so `dbsize`
+        // stayed `None` forever and the button was permanently dead. Track it.
+        subscriptions.push(cx.subscribe(&server_state, |this, state, event, cx| {
+            if !matches!(event, ServerEvent::ServerInfoUpdated | ServerEvent::ServerSelected(_)) {
+                return;
+            }
+            let dbsize = state.read(cx).dbsize();
+            if this.dbsize == dbsize {
+                return;
+            }
+            // First time we learn the key count: re-derive the sampling default,
+            // which was computed against an unknown size (and so defaulted to
+            // 100%). A ratio the user has since typed is left alone.
+            if this.dbsize.is_none() {
+                this.ratio = default_sample_ratio(dbsize);
+                this.ratio_dirty = true;
+            }
+            this.dbsize = dbsize;
+            this.update_est_commands();
+            cx.notify();
+        }));
+
+        // Heat is unknown until a scan reads `maxmemory-policy`, so the dropdown
+        // starts with Size alone and gains Hot/Cold once the probe resolves.
+        let sort_state = cx.new(|cx| SelectState::new(sort_options(false, cx), Some(IndexPath::new(0)), window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &sort_state,
+            window,
+            |this, _state, event: &SelectEvent<Vec<SortOption>>, _window, cx| match event {
+                SelectEvent::Confirm(value) => {
+                    if let Some(mode) = *value {
+                        this.set_sort_mode(mode, cx);
+                    }
+                }
+            },
+        ));
+
         let mut this = Self {
             policy: SharedString::default(),
             heat: HeatProbe::None,
             sort_mode: SortMode::Size,
+            sort_state,
+            should_rebuild_sort_items: None,
             single_groups: SingleKeyTopGroups::new(TOP_N),
             server_state,
             prefix_table,
@@ -561,6 +652,9 @@ impl ZedisMemoryAnalysis {
                 if heat == HeatProbe::None && this.sort_mode != SortMode::Size {
                     this.sort_mode = SortMode::Size;
                 }
+                // The probe decides whether Hot/Cold are offered at all, so the
+                // dropdown's items follow it.
+                this.should_rebuild_sort_items = Some(true);
             });
 
             let mut prefix_map: HashMap<String, PrefixStats> = HashMap::new();
