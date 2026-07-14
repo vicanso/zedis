@@ -16,7 +16,6 @@ use crate::error::Error;
 use redb::{Database, TableDefinition};
 use std::sync::OnceLock;
 use tracing::debug;
-use zedis_core::env::is_development;
 use zedis_core::fs::get_or_create_config_dir;
 
 pub mod error;
@@ -81,12 +80,9 @@ fn get_database() -> Result<&'static Database> {
 }
 
 pub fn init_database() -> Result<()> {
-    let dir = get_or_create_config_dir()?;
-    let db_path = if is_development() {
-        dir.join("zedis-dev.redb")
-    } else {
-        dir.join("zedis.redb")
-    };
+    // Same file name in both environments — a development run is isolated by its
+    // own config *directory* (`<config_dir>/dev`), not by a `-dev` file suffix.
+    let db_path = get_or_create_config_dir()?.join("zedis.redb");
     debug!(path = db_path.display().to_string(), "create database");
     let db = Database::create(&db_path)?;
     let write_txn = db.begin_write()?;

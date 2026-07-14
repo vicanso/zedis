@@ -38,11 +38,11 @@
 //! message), backed by a `VecDeque` ring buffer with O(1) push/evict.
 
 use crate::connection::{get_connection_manager, get_server};
-use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_keyspace_notifications,
+    ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props, i18n_common,
+    i18n_keyspace_notifications,
 };
 use crate::views::open_key_in_editor;
 use ahash::AHashSet;
@@ -159,9 +159,8 @@ struct KeyspaceTableDelegate {
 }
 
 impl KeyspaceTableDelegate {
-    fn new(server_state: Entity<ZedisServerState>, window: &mut Window) -> Self {
-        let window_width = window.viewport_size().width;
-        let content_width = window_width - SIDEBAR_WIDTH;
+    fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &gpui::App) -> Self {
+        let content_width = content_area_width(window, cx);
 
         let time_width = 160.;
         let db_width = 60.;
@@ -428,7 +427,7 @@ impl ZedisKeyspaceNotifications {
                 .placeholder(i18n_keyspace_notifications(cx, "key_pattern_placeholder"))
         });
 
-        let delegate = KeyspaceTableDelegate::new(server_state.clone(), window);
+        let delegate = KeyspaceTableDelegate::new(server_state.clone(), window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         let mut subscriptions = Vec::new();

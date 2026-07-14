@@ -14,12 +14,11 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, RedisServer, get_connection_manager, open_monitor_connection};
-use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-    i18n_common, i18n_monitor, i18n_status_bar,
+    content_area_width, i18n_common, i18n_monitor, i18n_status_bar,
 };
 /// Redis MONITOR live viewer.
 ///
@@ -170,9 +169,8 @@ struct MonitorTableDelegate {
 }
 
 impl MonitorTableDelegate {
-    fn new(server_state: Entity<ZedisServerState>, window: &mut Window) -> Self {
-        let window_width = window.viewport_size().width;
-        let content_width = window_width - SIDEBAR_WIDTH;
+    fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &gpui::App) -> Self {
+        let content_width = content_area_width(window, cx);
 
         let ts_width = 160.;
         let node_width = 180.;
@@ -442,7 +440,7 @@ pub struct ZedisMonitor {
 impl ZedisMonitor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        let delegate = MonitorTableDelegate::new(server_state.clone(), window);
+        let delegate = MonitorTableDelegate::new(server_state.clone(), window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         subscriptions.push(cx.subscribe(&server_state, |this, _, event, cx| {

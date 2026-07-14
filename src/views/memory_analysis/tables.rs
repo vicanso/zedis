@@ -110,9 +110,9 @@ impl PrefixTableDelegate {
         rows: Vec<PrefixRow>,
         server_state: Entity<ZedisServerState>,
         window: &mut Window,
-        _cx: &mut gpui::App,
+        cx: &mut gpui::App,
     ) -> Self {
-        let content_width = (window.viewport_size().width - SIDEBAR_WIDTH).as_f32();
+        let content_width = content_area_width(window, cx).as_f32();
 
         // Use padding offsets to prevent horizontal scrollbars
         let padding_offset = 16.0;
@@ -299,9 +299,9 @@ impl SingleKeyTableDelegate {
         rows: Vec<SingleKeyRow>,
         server_state: Entity<ZedisServerState>,
         window: &mut Window,
-        _cx: &mut gpui::App,
+        cx: &mut gpui::App,
     ) -> Self {
-        let content_width = (window.viewport_size().width - SIDEBAR_WIDTH).as_f32();
+        let content_width = content_area_width(window, cx).as_f32();
 
         let padding_offset = 16.0;
         let scrollbar_offset = 10.0;

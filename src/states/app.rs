@@ -15,14 +15,12 @@
 use crate::connection::{
     RedisServer, get_server, get_servers, save_servers, set_redis_connection_timeout, set_redis_response_timeout,
 };
-use crate::constants::SIDEBAR_WIDTH;
+use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
-use crate::helpers::{
-    UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, is_development, unix_ts,
-};
+use crate::helpers::{UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts};
 use crate::states::i18n_common;
 use chrono::Local;
-use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString};
+use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString, Window};
 use gpui_component::{ThemeMode, dialog::DialogButtonProps};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -254,12 +252,9 @@ const LIGHT_THEME_MODE: &str = "light";
 const DARK_THEME_MODE: &str = "dark";
 
 fn get_or_create_server_config() -> Result<PathBuf> {
-    let config_dir = get_or_create_config_dir()?;
-    let path = if is_development() {
-        config_dir.join("zedis-dev.toml")
-    } else {
-        config_dir.join("zedis.toml")
-    };
+    // Same file name in both environments — a development run is isolated by its
+    // own config *directory* (`<config_dir>/dev`), not by a `-dev` file suffix.
+    let path = get_or_create_config_dir()?.join("zedis.toml");
     if path.exists() {
         return Ok(path);
     }
@@ -598,7 +593,17 @@ impl ZedisAppState {
         let bounds = self.bounds?;
         let width = bounds.size.width.as_f32();
         let (key_tree_width, _, _) = get_key_tree_widths(self.key_tree_width);
-        Some((width - SIDEBAR_WIDTH.as_f32() - key_tree_width.as_f32()).into())
+        Some((width - self.sidebar_px().as_f32() - key_tree_width.as_f32()).into())
+    }
+    /// The sidebar's *current* width — the icon rail is far narrower than the
+    /// expanded panel, so anything sizing itself against the sidebar has to ask
+    /// rather than assume [`SIDEBAR_WIDTH`].
+    pub fn sidebar_px(&self) -> Pixels {
+        if self.sidebar_collapsed() {
+            SIDEBAR_COLLAPSED_WIDTH
+        } else {
+            SIDEBAR_WIDTH
+        }
     }
     pub fn set_key_tree_width(&mut self, width: Pixels) {
         self.key_tree_width = width;
@@ -1291,6 +1296,19 @@ impl ZedisAppState {
         })
         .detach();
     }
+}
+
+/// Width the content pane actually gets: the viewport minus the sidebar *as it
+/// currently is*. Table views size their columns from this, and reading it as
+/// the expanded [`SIDEBAR_WIDTH`] left them ~128px short whenever the sidebar was
+/// collapsed to its icon rail.
+///
+/// Note this is sampled when a view builds its columns; collapsing the sidebar
+/// while such a view is already open won't re-lay it out until the view is
+/// rebuilt (it is dropped on route change).
+pub fn content_area_width(window: &Window, cx: &App) -> Pixels {
+    let sidebar = cx.global::<ZedisGlobalStore>().read(cx).sidebar_px();
+    window.viewport_size().width - sidebar
 }
 
 /// Update app state in background, persist to disk, and refresh UI

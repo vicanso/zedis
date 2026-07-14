@@ -14,7 +14,6 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, RedisServer, get_connection_manager, open_single_connection};
-use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
 use crate::helpers::{format_duration, get_mono_font_family};
 /// Redis Client Management viewer.
@@ -23,19 +22,21 @@ use crate::helpers::{format_duration, get_mono_font_family};
 /// Supports sorting by IP, connected time, and idle time, and allows
 /// killing individual client connections via `CLIENT KILL ID`.
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
-    i18n_clients_manager, i18n_common,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props,
+    escalate_dangerous_body, i18n_clients_manager, i18n_common,
 };
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::notification::Notification;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    select::{Select, SelectEvent, SelectItem, SelectState},
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    tooltip::Tooltip,
     v_flex,
 };
 use redis::cmd;
@@ -120,6 +121,47 @@ fn parse_client_list(raw: &str, node: &RedisServer) -> Vec<ClientRow> {
         .collect()
 }
 
+/// One entry of the client-type filter. `flag` is the letter `CLIENT LIST`
+/// reports in its `flags=` field, so filtering is a plain `contains`:
+/// `N` normal · `S` replica · `M` master · `O` monitor · `P` pub/sub ·
+/// `b` blocked. `None` is the unfiltered default.
+#[derive(Clone, Debug)]
+struct FlagOption {
+    label: SharedString,
+    flag: Option<char>,
+}
+
+impl SelectItem for FlagOption {
+    type Value = Option<char>;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.flag
+    }
+}
+
+/// The filter's entries, in menu order. `i18n` labels are resolved by the caller.
+const FLAG_FILTERS: [(&str, Option<char>); 7] = [
+    ("flag_all", None),
+    ("flag_normal", Some('N')),
+    ("flag_replica", Some('S')),
+    ("flag_master", Some('M')),
+    ("flag_monitor", Some('O')),
+    ("flag_pubsub", Some('P')),
+    ("flag_blocked", Some('b')),
+];
+
+/// The action column holds exactly one xsmall icon button (kill), centered — so
+/// it is sized once and never flexes. 60px also lets the "Action" header sit
+/// unclipped, provided the column drops the 10px side paddings the text columns
+/// use (the button is centered, so it needs none).
+const ACTION_COLUMN_WIDTH: f32 = 80.0;
+
+/// What Redis puts in `cmd=` for a connection that has never run a command —
+/// the literal four letters, not an absent field (see `catClientInfoString`).
+const REDIS_NO_COMMAND: &str = "NULL";
+
 const COLUMN_ID: &str = "id";
 const COLUMN_ADDR: &str = "addr";
 const COLUMN_NAME: &str = "name";
@@ -146,19 +188,30 @@ struct ClientsTableDelegate {
 }
 
 impl ClientsTableDelegate {
-    fn new(rows: Vec<ClientRow>, readonly: bool, window: &mut Window, _cx: &mut gpui::App) -> Self {
-        let window_width = window.viewport_size().width;
-        let content_width = window_width - SIDEBAR_WIDTH;
+    fn new(rows: Vec<ClientRow>, readonly: bool, window: &mut Window, cx: &mut gpui::App) -> Self {
+        let content_width = content_area_width(window, cx);
         let id_width = 120.;
-        let name_width = 150.;
+        // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
+        // button only appears on hover — so it steals ~28px from the label's box
+        // and clips text that fitted perfectly at rest. Both widths budget for it.
+        //
+        // addr must fit the longest IPv4 form, "255.255.255.255:65535" — 21 mono
+        // chars (~176px) plus 20px of padding.
+        //
+        // name is deliberately the smallest column that still identifies the
+        // client ("zedis…" is enough to tell ours apart); most clients set no
+        // name at all, so every pixel spent here is taken from `cmd`, which is
+        // what you actually read when diagnosing. Longer names ellipsize and can
+        // be read via the copy button.
+        let name_width = 120.;
+        let addr_width = 240.;
         let age_width = 110.;
         let idle_width = 110.;
         let db_width = 100.;
         let flags_width = 80.;
-        let addr_width = 200.;
         // CLIENT KILL is gated by the capability matrix.
         let can_kill = Capability::KillClient.allowed(readonly);
-        let action_width = if can_kill { 60. } else { 0. };
+        let action_width = if can_kill { ACTION_COLUMN_WIDTH } else { 0. };
         let remaining_width = content_width.as_f32()
             - id_width
             - name_width
@@ -169,7 +222,9 @@ impl ClientsTableDelegate {
             - action_width
             - addr_width
             - 10.;
-        let cmd_width = remaining_width;
+        // `cmd` is the flexible column, but a narrow window must not drive it to
+        // zero (or negative) — the table scrolls horizontally instead.
+        let cmd_width = remaining_width.max(160.);
 
         let make_paddings = || {
             Some(Edges {
@@ -219,7 +274,12 @@ impl ClientsTableDelegate {
             .zip(widths.iter())
             .map(|(&key, &width)| {
                 let mut column = Column::new(key, SharedString::default()).width(width).map(|mut col| {
-                    col.paddings = make_paddings();
+                    // The action column's cell is a centered button and its header
+                    // is a single word — the text columns' side paddings would only
+                    // eat 20 of its 60px and clip the header.
+                    if key != COLUMN_ACTION {
+                        col.paddings = make_paddings();
+                    }
                     col
                 });
                 if sortable_cols.contains(&key) {
@@ -245,8 +305,10 @@ impl ClientsTableDelegate {
     /// - `keyword` — fuzzy match on addr, name, id, db, flags, cmd
     /// - `min_idle` — filter clients idle for at least N seconds
     /// - `min_age`  — filter clients connected for at least N seconds
-    fn apply_filter(&mut self, keyword: &str, min_idle: Option<u64>, min_age: Option<u64>) {
-        if keyword.is_empty() && min_idle.is_none() && min_age.is_none() {
+    /// - `flag`     — client type, as its `CLIENT LIST` flag letter (see
+    ///   [`FLAG_FILTERS`]); `None` keeps every type
+    fn apply_filter(&mut self, keyword: &str, min_idle: Option<u64>, min_age: Option<u64>, flag: Option<char>) {
+        if keyword.is_empty() && min_idle.is_none() && min_age.is_none() && flag.is_none() {
             self.rows = self.all_rows.clone();
             return;
         }
@@ -263,6 +325,13 @@ impl ClientsTableDelegate {
                 }
                 if let Some(n) = min_age
                     && row.age < n
+                {
+                    return false;
+                }
+                // Client type: the `flags=` field is a set of letters, so a
+                // membership test is the whole rule.
+                if let Some(flag) = flag
+                    && !row.flags.contains(flag)
                 {
                     return false;
                 }
@@ -435,6 +504,25 @@ impl TableDelegate for ClientsTableDelegate {
                 .into_any_element();
         }
 
+        // `cmd` is the *last command run*, and Redis writes the literal string
+        // "NULL" for a connection that has never run one. Printed as-is it reads
+        // like a command actually named NULL, so show a muted placeholder and put
+        // the meaning in a tooltip. There is nothing worth copying either, so this
+        // cell drops the copy button.
+        if col_key == COLUMN_CMD
+            && let Some(row) = self.rows.get(row_ix)
+            && row.command == REDIS_NO_COMMAND
+        {
+            let tooltip = i18n_clients_manager(cx, "cmd_none_tooltip");
+            return h_flex()
+                .id(("cmd-none", row_ix))
+                .size_full()
+                .when_some(column.paddings, |this, paddings| this.paddings(paddings))
+                .child(Label::new("—").text_color(cx.theme().muted_foreground))
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .into_any_element();
+        }
+
         // Flags column: render S as HardDrive icon, N as Laptop icon
         if col_key == COLUMN_FLAGS {
             let Some(row) = self.rows.get(row_ix) else {
@@ -518,6 +606,8 @@ impl TableDelegate for ClientsTableDelegate {
 }
 
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
+/// Wide enough for the longest localized client-type label.
+const FLAG_SELECT_WIDTH: f32 = 120.0;
 
 pub struct ZedisClientsManager {
     server_state: Entity<ZedisServerState>,
@@ -525,6 +615,8 @@ pub struct ZedisClientsManager {
     keyword_state: Entity<InputState>,
     idle_state: Entity<InputState>,
     age_state: Entity<InputState>,
+    /// Client-type filter (`CLIENT LIST` flag letter) — see [`FLAG_FILTERS`].
+    flag_state: Entity<SelectState<Vec<FlagOption>>>,
     row_count: usize,
     /// Set when `CLIENT LIST` fails, so the empty body shows the error
     /// instead of a misleading "no clients" message.
@@ -570,12 +662,32 @@ impl ZedisClientsManager {
             }));
         }
 
+        let flag_options = FLAG_FILTERS
+            .iter()
+            .map(|(key, flag)| FlagOption {
+                label: i18n_clients_manager(cx, key),
+                flag: *flag,
+            })
+            .collect::<Vec<_>>();
+        // Index 0 is "all" — the unfiltered default.
+        let flag_state = cx.new(|cx| SelectState::new(flag_options, Some(IndexPath::new(0)), window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &flag_state,
+            window,
+            |this, _state, event: &SelectEvent<Vec<FlagOption>>, _window, cx| match event {
+                // Re-filter as soon as a type is picked; no need to press the
+                // search button like the free-text fields require.
+                SelectEvent::Confirm(_) => this.handle_filter(cx),
+            },
+        ));
+
         let mut this = Self {
             server_state,
             table_state: table_state.clone(),
             keyword_state,
             idle_state,
             age_state,
+            flag_state,
             row_count: 0,
             error: None,
             _fetch_task: None,
@@ -588,17 +700,18 @@ impl ZedisClientsManager {
         this
     }
 
-    fn filter_params(&self, cx: &gpui::Context<Self>) -> (String, Option<u64>, Option<u64>) {
+    fn filter_params(&self, cx: &gpui::Context<Self>) -> (String, Option<u64>, Option<u64>, Option<char>) {
         let keyword = self.keyword_state.read(cx).value().to_string();
         let min_idle = self.idle_state.read(cx).value().parse::<u64>().ok();
         let min_age = self.age_state.read(cx).value().parse::<u64>().ok();
-        (keyword, min_idle, min_age)
+        let flag = self.flag_state.read(cx).selected_value().copied().flatten();
+        (keyword, min_idle, min_age, flag)
     }
 
     fn handle_filter(&mut self, cx: &mut gpui::Context<Self>) {
-        let (keyword, min_idle, min_age) = self.filter_params(cx);
+        let (keyword, min_idle, min_age, flag) = self.filter_params(cx);
         self.table_state.update(cx, |state, _| {
-            state.delegate_mut().apply_filter(&keyword, min_idle, min_age);
+            state.delegate_mut().apply_filter(&keyword, min_idle, min_age, flag);
         });
         self.row_count = self.table_state.read(cx).delegate().rows.len();
         cx.notify();
@@ -631,12 +744,12 @@ impl ZedisClientsManager {
             let _ = handle.update(cx, move |this, cx| {
                 match result {
                     Ok(rows) => {
-                        let (keyword, min_idle, min_age) = this.filter_params(cx);
+                        let (keyword, min_idle, min_age, flag) = this.filter_params(cx);
                         table_state.update(cx, |state, _| {
                             state.delegate_mut().all_rows = rows;
                             state.delegate_mut().readonly = readonly;
                             state.delegate_mut().server_id = server_id_for_delegate;
-                            state.delegate_mut().apply_filter(&keyword, min_idle, min_age);
+                            state.delegate_mut().apply_filter(&keyword, min_idle, min_age, flag);
                         });
                         this.row_count = table_state.read(cx).delegate().rows.len();
                         this.error = None;
@@ -882,11 +995,27 @@ impl gpui::Render for ZedisClientsManager {
                         h_flex()
                             .gap_2()
                             .items_center()
+                            // Keyword leads: it is the widest control and the one
+                            // reached for first. The type filter is a secondary
+                            // facet, so it follows.
                             .child(
                                 Input::new(&self.keyword_state)
                                     .w(px(KEYWORD_INPUT_WIDTH))
                                     .cleanable(true)
                                     .small(),
+                            )
+                            // Client type (CLIENT LIST flag) — applies on pick, so
+                            // "show me just the normal clients" is one click.
+                            //
+                            // Wrapped in a fixed-width box: `Select`'s outer element
+                            // is `size_full`, so on its own it stretches to fill the
+                            // toolbar (its own `.w()` only refines the inner input),
+                            // shoving everything after it to the right.
+                            .child(
+                                div()
+                                    .w(px(FLAG_SELECT_WIDTH))
+                                    .flex_none()
+                                    .child(Select::new(&self.flag_state).small()),
                             )
                             .child(Input::new(&self.idle_state).w(px(80.)).cleanable(true).small())
                             .child(Input::new(&self.age_state).w(px(80.)).cleanable(true).small())

@@ -19,6 +19,7 @@
 //! - App Store build detection (for macOS sandboxing)
 //! - Configuration directory management with migration support
 
+use crate::env::is_development;
 use directories::{ProjectDirs, UserDirs};
 use home::home_dir;
 use path_absolutize::Absolutize;
@@ -201,7 +202,50 @@ pub fn get_or_create_config_dir() -> Result<PathBuf> {
         let _ = fs::remove_dir_all(&old_config_path);
     }
 
+    if is_development() {
+        return dev_config_dir(config_dir);
+    }
+
     Ok(config_dir.to_path_buf())
+}
+
+/// `<config_dir>/dev` — where a `RUST_ENV=dev` run keeps *everything*, under the
+/// same file names as production.
+///
+/// Isolation used to be per-file (`zedis-dev.toml`, `zedis-dev.redb`), which
+/// only covered two of them: the server list, the session options and the SSH
+/// keys were shared with the installed app. So deleting a server while
+/// developing silently orphaned the production proto configs that keyed off its
+/// id — the data was intact, but pointed at a server that no longer existed.
+/// One directory, one rule: dev writes never leave `dev/`.
+fn dev_config_dir(config_dir: &Path) -> Result<PathBuf> {
+    let dev_dir = config_dir.join("dev");
+    if dev_dir.exists() {
+        return Ok(dev_dir);
+    }
+    fs::create_dir_all(&dev_dir)?;
+
+    // First run on the new layout — carry the old dev session over instead of
+    // resetting it. Best-effort throughout: a failure just leaves that file out.
+    // Legacy per-file variants move in under their production names.
+    for (legacy, name) in [("zedis-dev.toml", "zedis.toml"), ("zedis-dev.redb", "zedis.redb")] {
+        let from = config_dir.join(legacy);
+        if from.exists() {
+            let _ = fs::rename(&from, dev_dir.join(name));
+        }
+    }
+    // These were *shared* with production, so dev would otherwise start with no
+    // servers at all — and the proto/script configs it already holds key off
+    // those server ids. Seeded by copy: production's copies are never touched
+    // again after this.
+    for name in ["redis-servers.toml", "redis-sessions.toml", "ssh_agent_keys"] {
+        let from = config_dir.join(name);
+        if from.exists() {
+            let _ = fs::copy(&from, dev_dir.join(name));
+        }
+    }
+
+    Ok(dev_dir)
 }
 
 pub fn resolve_path(path: &str) -> String {

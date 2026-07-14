@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
+use crate::assets::CustomIconName;
 /// Redis Slow Log viewer.
 ///
 /// Displays a table of slow-query log entries fetched from the server's
@@ -25,10 +26,10 @@ use crate::connection::{
 use crate::error::Error;
 use crate::helpers::{SlowlogAction, build_csv, get_mono_font_family};
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_slowlog_editor,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props, i18n_common,
+    i18n_slowlog_editor,
 };
 use crate::views::export_to_file;
-use crate::{assets::CustomIconName, constants::SIDEBAR_WIDTH};
 use ahash::AHashMap;
 use chrono::TimeZone;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px};
@@ -247,10 +248,9 @@ impl SlowlogTableDelegate {
         rows: Vec<SlowLogRow>,
         editor: WeakEntity<ZedisSlowlogEditor>,
         window: &mut Window,
-        _cx: &mut gpui::App,
+        cx: &mut gpui::App,
     ) -> Self {
-        let window_width = window.viewport_size().width;
-        let content_width = window_width - SIDEBAR_WIDTH;
+        let content_width = content_area_width(window, cx);
         let timestamp_width = 200.;
         let duration_width = 130.;
         let command_width = 150.;
