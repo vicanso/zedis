@@ -18,7 +18,7 @@ use crate::connection::{
 };
 use crate::error::Error;
 use crate::helpers::{
-    card_background, decrypt_share, get_mono_font_family, is_share_token, resolve_path, resolve_tag_chip,
+    EditorAction, card_background, decrypt_share, get_mono_font_family, is_share_token, resolve_path, resolve_tag_chip,
 };
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
@@ -26,7 +26,8 @@ use crate::states::{
 };
 use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global, open_connection_diagnostics};
 use gpui::{
-    Action, Anchor, ClipboardItem, Entity, ExternalPaths, SharedString, Subscription, Window, div, prelude::*, px,
+    Action, Anchor, ClipboardItem, Entity, ExternalPaths, FocusHandle, Focusable, SharedString, Subscription, Window,
+    div, prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::DropdownMenu;
@@ -77,6 +78,10 @@ enum ServersCardAction {
 /// Uses a responsive grid layout that adjusts columns based on viewport width.
 pub struct ZedisServers {
     should_popup_new_server: bool,
+    /// Focus root for the page. Actions only travel the focus path, so the
+    /// container has to hold focus for the `cmd-f` binding to reach the
+    /// `EditorAction::Search` handler below (same pattern as the key tree).
+    focus_handle: FocusHandle,
     /// Toolbar search box — live-filters the card grid by name / host /
     /// description.
     search_state: Entity<InputState>,
@@ -84,6 +89,24 @@ pub struct ZedisServers {
     /// Live subscription on the import dialog's text input — replaced each
     /// time the dialog opens so a pasted file path is read back into the box.
     import_input_sub: Option<Subscription>,
+}
+
+/// Toolbar search predicate: name / host / description, case-insensitive.
+/// `query` must already be trimmed and lowercased; an empty one matches
+/// everything. Shared by the grid and the Enter shortcut so the two can never
+/// disagree about what "matches" means.
+fn matches_query(server: &RedisServer, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    server.name.to_lowercase().contains(query)
+        || server.host.to_lowercase().contains(query)
+        || server
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains(query)
 }
 
 impl ZedisServers {
@@ -130,20 +153,50 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "search_placeholder"))
         });
         subscriptions.push(
-            cx.subscribe_in(&search_state, window, |_this, _state, event, _window, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
+            cx.subscribe_in(&search_state, window, |this, _state, event, _window, cx| match event {
+                InputEvent::Change => cx.notify(),
+                // Enter opens the match when the filter has narrowed the grid to
+                // exactly one server — the "type a few letters, hit enter" flow.
+                InputEvent::PressEnter { .. } => this.open_only_match(cx),
+                _ => {}
             }),
         );
 
+        // Focused up front so `cmd-f` works on arrival, without a click first —
+        // an action is only offered to the elements on the focus path.
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+
         Self {
             should_popup_new_server: false,
+            focus_handle,
             search_state,
             _subscriptions: subscriptions,
             import_input_sub: None,
         }
     }
+    /// Enter in the filter box: open the server *if the query leaves exactly
+    /// one*. Zero or several matches leave nothing unambiguous to open, so the
+    /// key does nothing rather than guessing (opening the first of many would be
+    /// a connection to the wrong instance — not a mistake worth risking).
+    fn open_only_match(&mut self, cx: &mut Context<Self>) {
+        let query = self.search_state.read(cx).value().trim().to_lowercase();
+        let Ok(servers) = get_servers() else { return };
+        let mut matched = servers.iter().filter(|server| matches_query(server, &query));
+        // Exactly one: a first match, and no second.
+        let (Some(server), None) = (matched.next(), matched.next()) else {
+            return;
+        };
+        let id = server.id.clone();
+        info!(server = %id, "opening the only server matching the filter");
+        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+            store.update(cx, |state, cx| {
+                let db = state.last_db_for(&id);
+                state.connect_server(id.clone(), db, cx);
+            });
+        });
+    }
+
     /// Show confirmation dialog and remove server from configuration
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>, server_id: &str) {
         let mut server = "--".to_string();
@@ -1213,16 +1266,7 @@ impl Render for ZedisServers {
         let query = self.search_state.read(cx).value().trim().to_lowercase();
         let mut groups: Vec<(Option<String>, Vec<RedisServer>)> = Vec::new();
         for server in &all_servers {
-            if !query.is_empty()
-                && !server.name.to_lowercase().contains(&query)
-                && !server.host.to_lowercase().contains(&query)
-                && !server
-                    .description
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&query)
-            {
+            if !matches_query(server, &query) {
                 continue;
             }
             let g = server
@@ -1573,6 +1617,16 @@ impl Render for ZedisServers {
         gpui_component::v_flex()
             .gap_4()
             .w_full()
+            .track_focus(&self.focus_handle)
+            // `cmd-f` (the same `EditorAction::Search` the key tree binds) puts the
+            // caret in the toolbar's filter box. Anything else is propagated so the
+            // other editor bindings still reach their own handlers.
+            .on_action(cx.listener(|this, e: &EditorAction, window, cx| match e {
+                EditorAction::Search => {
+                    this.search_state.focus_handle(cx).focus(window, cx);
+                }
+                _ => cx.propagate(),
+            }))
             // Footer "⋯" dropdown actions are dispatched here.
             .on_action(cx.listener(|this, e: &ServersCardAction, window, cx| match e {
                 ServersCardAction::Export(id) => {

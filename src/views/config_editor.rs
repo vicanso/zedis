@@ -23,7 +23,7 @@ use crate::{
     },
     views::{ZedisCopyKeyDialog, config_doc::config_doc, confirm_dangerous_command},
 };
-use gpui::{App, Entity, FocusHandle, Hsla, SharedString, Subscription, Window, div, prelude::*, px, rgb};
+use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
@@ -812,9 +812,9 @@ impl ZedisConfigEditor {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let fg = cx.theme().foreground;
-        // Fixed brand blue, matching the sidebar's selected-server accent bar
-        // (theme `primary` reads too faint against the card fill in some themes).
-        let accent_bar: Hsla = rgb(0x6b95c4).into();
+        // The theme's primary, same accent the sidebar and key tree use for their
+        // selection bars — so a named theme restyles all three together.
+        let accent_bar = cx.theme().primary;
 
         let mut cards: Vec<gpui::AnyElement> = Vec::with_capacity(configs.len());
         for (k, v) in configs {

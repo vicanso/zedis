@@ -15,7 +15,7 @@
 use crate::{
     assets::{Assets, CustomIconName},
     connection::get_servers,
-    constants::EDITOR_KEY_BAR_HEIGHT,
+    constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT},
     helpers::resolve_tag_color,
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save},
 };
@@ -233,9 +233,13 @@ impl ZedisSidebar {
         // group section to set Home apart visually as a top-level
         // entry, distinct from the group/server tree below it.
         let divider_color = cx.theme().border;
-        // Selection accent (#6b95c4, same in both themes): drives both the left
-        // bar and the selected server's database icon.
+        // Icon accent (#6b95c4, same in both themes) for the selected server's
+        // database icon / monogram.
         let accent_color: Hsla = rgb(0x6b95c4).into();
+        // The left bar marking the selected row uses the theme's primary (the
+        // same blue as primary buttons, set in `main.rs`) — a deliberately
+        // stronger accent than the icon's.
+        let selection_bar_color = cx.theme().primary;
         // Green status dot on the selected server's row (#69b083 — same green as
         // the status-bar "Connected" indicator).
         let connected_color: Hsla = rgb(0x69b083).into();
@@ -528,8 +532,9 @@ impl ZedisSidebar {
                                 this.child(
                                     Label::new(name)
                                         .text_xs()
-                                        // Bold the selected server's name (design).
-                                        .when(is_current, |this| this.font_extrabold())
+                                        // Not restyled on selection: the left bar (and
+                                        // the icon) carry the accent, the name stays in
+                                        // the default foreground.
                                         .whitespace_nowrap()
                                         .text_ellipsis()
                                         .flex_1()
@@ -583,7 +588,7 @@ impl ZedisSidebar {
                                     .bottom(px(6.))
                                     .w(px(2.5))
                                     .rounded_sm()
-                                    .bg(accent_color),
+                                    .bg(selection_bar_color),
                             )
                         })
                         .child(item)
@@ -607,13 +612,12 @@ impl ZedisSidebar {
 
 impl Render for ZedisSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The collapse/expand toggle lives in a fixed (non-scrolling) bottom
-        // bar in BOTH states, so it never changes place — and the top slot
-        // stays "Home" whether the sidebar is expanded or an icon rail.
+        // The collapse/expand toggle lives in a fixed (non-scrolling) bottom bar
+        // that is always present — on every route and in both states, so the rail
+        // can always be expanded again (it used to vanish once a server was
+        // selected, stranding whoever collapsed it). The top slot stays "Home"
+        // either way.
         let sidebar_collapsed = cx.global::<ZedisGlobalStore>().read(cx).sidebar_collapsed();
-        // Collapsing is only offered on the Home page (no server selected);
-        // server routes keep the full sidebar and hide the toggle.
-        let can_collapse = self.state.server_id.is_empty();
         let border = cx.theme().border;
         let collapse_label = i18n_sidebar(cx, "collapse");
         v_flex()
@@ -629,35 +633,36 @@ impl Render for ZedisSidebar {
                     .min_h_0()
                     .child(self.render_server_list(window, cx)),
             )
-            .when(can_collapse, |this| {
-                this.child(
-                    h_flex()
-                        .flex_none()
-                        .w_full()
-                        .py_1()
-                        .border_t_1()
-                        .border_color(border)
-                        .when(sidebar_collapsed, |this| this.justify_center())
-                        .when(!sidebar_collapsed, |this| this.justify_end().px_2())
-                        .child({
-                            let mut toggle = Button::new("sidebar-collapse-toggle").ghost();
-                            if sidebar_collapsed {
-                                // The collapsed rail is too narrow for text — icon-only.
-                                toggle = toggle.icon(IconName::ChevronRight);
-                            } else {
-                                // Short label with the chevron on its right: `.icon()`
-                                // always renders left of the label, so append the icon
-                                // as a child instead (Button renders children after
-                                // the label).
-                                toggle = toggle.label(collapse_label).child(Icon::new(IconName::ChevronLeft));
-                            }
-                            toggle.on_click(move |_, _window, cx| {
-                                update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
-                                    state.toggle_sidebar_collapsed();
-                                });
-                            })
-                        }),
-                )
-            })
+            .child(
+                h_flex()
+                    .flex_none()
+                    .w_full()
+                    // Same height as the status bar to its right (which now ends at
+                    // the sidebar's edge), so the toggle sits on that bar's line.
+                    // No top border: the sidebar is one continuous panel, and a rule
+                    // here would only cut it in two.
+                    .h(STATUS_BAR_HEIGHT)
+                    .items_center()
+                    .when(sidebar_collapsed, |this| this.justify_center())
+                    .when(!sidebar_collapsed, |this| this.justify_end().px_2())
+                    .child({
+                        let mut toggle = Button::new("sidebar-collapse-toggle").ghost();
+                        if sidebar_collapsed {
+                            // The collapsed rail is too narrow for text — icon-only.
+                            toggle = toggle.icon(IconName::ChevronRight);
+                        } else {
+                            // Short label with the chevron on its right: `.icon()`
+                            // always renders left of the label, so append the icon
+                            // as a child instead (Button renders children after
+                            // the label).
+                            toggle = toggle.label(collapse_label).child(Icon::new(IconName::ChevronLeft));
+                        }
+                        toggle.on_click(move |_, _window, cx| {
+                            update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
+                                state.toggle_sidebar_collapsed();
+                            });
+                        })
+                    }),
+            )
     }
 }

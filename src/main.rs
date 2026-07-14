@@ -956,16 +956,17 @@ fn restore_default_themes(cx: &mut App) {
     };
     // The stock default themes use a neutral (near-black / near-white) primary,
     // so primary buttons are pure high-contrast fills that invert with the mode.
-    // Override it to the Zedis brand blue (same accent as the sidebar's selected
-    // bar) so primary buttons read as the app's color in both modes; a white
-    // label stays legible on the mid-blue. The hover/active shades are also set
-    // explicitly — the default configs pin them to neutrals (a near-white hover
-    // in dark), so they must be overridden too or the button flashes white.
+    // Override it to the Zedis brand blue so primary buttons read as the app's
+    // color in both modes; white on this blue clears 4.5:1, so the label stays
+    // legible. The hover/active shades are also set explicitly — the default
+    // configs pin them to neutrals (a near-white hover in dark), so they must be
+    // overridden too or the button flashes white; they step the primary down to
+    // 85% / 75% brightness.
     for cfg in [&mut light, &mut dark] {
-        cfg.colors.primary = Some("#6b95c4".into());
+        cfg.colors.primary = Some("#1f6feb".into());
         cfg.colors.primary_foreground = Some("#ffffff".into());
-        cfg.colors.primary_hover = Some("#5a83b0".into());
-        cfg.colors.primary_active = Some("#4e73a0".into());
+        cfg.colors.primary_hover = Some("#1a5ec8".into());
+        cfg.colors.primary_active = Some("#1753b0".into());
     }
     let theme = Theme::global_mut(cx);
     theme.light_theme = Rc::new(light);
@@ -1170,10 +1171,11 @@ impl Render for Zedis {
                 .update(cx, |state, cx| state.connect_server(id, db, cx));
         }
 
-        // The status bar spans the full window width as a bottom row (beneath the
-        // sidebar + content), so it's rendered here at the root rather than inside
-        // the content column. Shown only on server routes (mirrors content.rs's
-        // route match, where Home/Settings/Protos/Scripts have no status bar).
+        // The status bar is the bottom row *of the content column*, not of the
+        // window: it starts where the sidebar ends, which is what lets the sidebar
+        // run the full height (down to the window's bottom edge) instead of
+        // stopping at a full-width bar. Shown only on server routes (mirrors
+        // content.rs's route match — Home/Settings/Protos/Scripts have none).
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
         let show_status_bar = route.is_server();
         let status_bar = self.active_content().read(cx).status_bar();
@@ -1204,23 +1206,25 @@ impl Render for Zedis {
                     .w_full()
                     .bg(cx.theme().background)
                     .child(div().w(sidebar_width).flex_none().h_full().child(self.sidebar.clone()))
-                    // Tab strip lives inside the content column (above it),
-                    // so the sidebar keeps the full body height and the strip
-                    // matches the content width.
+                    // Content column: tab strip on top, then the content itself,
+                    // then the status bar. All three are bounded by the column, so
+                    // they line up with each other and leave the sidebar its own
+                    // full-height strip to the left.
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
                             .h_full()
                             .children(self.render_tab_bar(cx))
-                            .child(self.active_content()),
+                            // `flex_1` + `min_h_0`: the content takes what's left
+                            // after the strip and the status bar, and yields (rather
+                            // than overflowing) instead of pushing the bar off-screen.
+                            .child(div().flex_1().min_h_0().w_full().child(self.active_content()))
+                            .when(show_status_bar, |this| this.child(status_bar)),
                     )
                     .children(dialog_layer)
                     .children(notification_layer),
             )
-            // Full-width status bar beneath the sidebar + content. Server routes
-            // only; the sidebar above stops at this row's top edge.
-            .when(show_status_bar, |this| this.child(status_bar))
             // Command palette overlays everything (absolute, full-size
             // when open; zero-footprint when closed).
             .child(self.command_palette.clone())

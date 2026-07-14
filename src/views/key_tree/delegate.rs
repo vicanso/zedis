@@ -138,8 +138,9 @@ impl ListDelegate for KeyTreeDelegate {
         } else {
             Hsla::black().alpha(0.03)
         };
-        // Selection accent (#6b95c4, both themes) for the left bar.
-        let accent_color: Hsla = rgb(0x6b95c4).into();
+        // Selection accent for the left bar — the theme's primary, same as the
+        // sidebar's selected-server bar.
+        let accent_color = cx.theme().primary;
 
         // Folders sit one brightness step below leaves; an *expanded* folder
         // steps back up to full foreground (with its open icon, see above) so
