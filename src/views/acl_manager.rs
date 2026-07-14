@@ -148,17 +148,7 @@ impl ZedisAclManager {
 
     fn open_editor(&mut self, target: AclUser, is_new: bool, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let entity = cx.entity().downgrade();
-        let username_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(i18n_acl(cx, "username_placeholder"))
-                .default_value(target.username.clone())
-        });
-        let rules_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .auto_grow(3, 10)
-                .placeholder(i18n_acl(cx, "rules_placeholder"))
-                .default_value(target.to_rules_text())
-        });
+        let editor = cx.new(|cx| ZedisAclEditor::new(&target, is_new, window, cx));
 
         let title = if is_new {
             i18n_acl(cx, "add_user_title")
@@ -166,133 +156,22 @@ impl ZedisAclManager {
             i18n_acl(cx, "edit_user_title")
         };
 
-        // Capture all i18n strings up front — the dialog `child` closure has
-        // no `cx` parameter, so anything pulled from the locale must be cloned
-        // into the closure ahead of time.
-        let username_label = i18n_acl(cx, "username");
-        let rules_label = i18n_acl(cx, "rules_help");
-        let presets_label = i18n_acl(cx, "presets");
-        let preset_full = i18n_acl(cx, "preset_full");
-        let preset_readonly = i18n_acl(cx, "preset_readonly");
-        let preset_disabled = i18n_acl(cx, "preset_disabled");
-        let preset_clear = i18n_acl(cx, "preset_clear");
-        let status_label = i18n_acl(cx, "status_chips");
-        let categories_label = i18n_acl(cx, "category_chips");
-        let wildcards_label = i18n_acl(cx, "wildcards");
-
-        let body_username = username_state.clone();
-        let body_rules = rules_state.clone();
-
-        let username_state_for_submit = username_state.clone();
-        let rules_state_for_submit = rules_state.clone();
-
+        let body = editor.clone();
         ZedisDialog::new(title)
             .w(px(620.))
+            .ok_text(i18n_common(cx, "save"))
+            .cancel_text(i18n_common(cx, "cancel"))
             .button_props(
                 dialog_button_props(cx)
                     .ok_text(i18n_common(cx, "save"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                // Toggle a literal token on the rules textarea (add if missing,
-                // remove if present). Order otherwise preserved.
-                let make_chip = |id: &'static str, token: &'static str| {
-                    let rules = body_rules.clone();
-                    Button::new(id)
-                        .small()
-                        .ghost()
-                        .label(token)
-                        .on_click(move |_, window, cx| {
-                            rules.update(cx, |state, cx| {
-                                let current = state.value().to_string();
-                                let next = toggle_rule_token(&current, token);
-                                state.set_value(SharedString::from(next), window, cx);
-                            });
-                        })
-                };
-                // Replace the entire rules textarea with a templated string.
-                let make_preset = |id: &'static str, label: SharedString, rules_text: &'static str| {
-                    let rules = body_rules.clone();
-                    Button::new(id)
-                        .small()
-                        .outline()
-                        .label(label)
-                        .on_click(move |_, window, cx| {
-                            rules.update(cx, |state, cx| {
-                                state.set_value(SharedString::from(rules_text), window, cx);
-                            });
-                        })
-                };
-
-                v_flex()
-                    .gap_3()
-                    // w_full() picks up the dialog's explicit width set above,
-                    // giving the chip rows a real constraint to wrap against.
-                    .w_full()
-                    .child(Label::new(username_label.clone()))
-                    .child(Input::new(&body_username).appearance(true).disabled(!is_new))
-                    .child(Label::new(presets_label.clone()).text_xs())
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(make_preset("acl-preset-full", preset_full.clone(), "on +@all ~* &*"))
-                            .child(make_preset(
-                                "acl-preset-ro",
-                                preset_readonly.clone(),
-                                "on -@all +@read ~* &*",
-                            ))
-                            .child(make_preset("acl-preset-off", preset_disabled.clone(), "off"))
-                            .child(make_preset("acl-preset-clear", preset_clear.clone(), "")),
-                    )
-                    .child(Label::new(status_label.clone()).text_xs())
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(make_chip("acl-chip-on", "on"))
-                            .child(make_chip("acl-chip-off", "off"))
-                            .child(make_chip("acl-chip-nopass", "nopass"))
-                            .child(make_chip("acl-chip-sanitize", "sanitize-payload"))
-                            .child(make_chip("acl-chip-skip-sanitize", "skip-sanitize-payload"))
-                            .child(make_chip("acl-chip-resetpass", "resetpass")),
-                    )
-                    .child(Label::new(categories_label.clone()).text_xs())
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(make_chip("acl-chip-all", "+@all"))
-                            .child(make_chip("acl-chip-read", "+@read"))
-                            .child(make_chip("acl-chip-write", "+@write"))
-                            .child(make_chip("acl-chip-keyspace", "+@keyspace"))
-                            .child(make_chip("acl-chip-pubsub", "+@pubsub"))
-                            .child(make_chip("acl-chip-scripting", "+@scripting"))
-                            .child(make_chip("acl-chip-no-dangerous", "-@dangerous"))
-                            .child(make_chip("acl-chip-no-admin", "-@admin")),
-                    )
-                    .child(Label::new(wildcards_label.clone()).text_xs())
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(make_chip("acl-chip-allkeys", "~*"))
-                            .child(make_chip("acl-chip-allchans", "&*"))
-                            .child(make_chip("acl-chip-resetkeys", "resetkeys"))
-                            .child(make_chip("acl-chip-resetchans", "resetchannels")),
-                    )
-                    .child(Label::new(rules_label.clone()))
-                    .child(Input::new(&body_rules).appearance(true))
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
                 let Some(this) = entity.upgrade() else { return true };
-                let username = username_state_for_submit.read(cx).value().to_string();
-                let rules = rules_state_for_submit.read(cx).value().to_string();
-                let username = username.trim().to_string();
+                let form = editor.read(cx);
+                let username = form.username_state.read(cx).value().trim().to_string();
+                let rules = form.rules_state.read(cx).value().to_string();
                 if username.is_empty() {
                     return true;
                 }
@@ -645,6 +524,130 @@ impl ZedisAclManager {
                         .child(Label::new(pw_summary).text_xs().whitespace_normal()),
                 )
             })
+    }
+}
+
+/// The add/edit form for one ACL user, as a **view entity** rather than
+/// elements built inline in the dialog's `child` closure — `InputState` is
+/// itself a view, so it wants a stable host (this is the shape
+/// `key_tag_dialog` uses).
+///
+/// The chip rows are laid out as fixed rows instead of one `flex_wrap()` row:
+/// a wrapping flex container in the dialog body left the sibling `Input`s
+/// unable to render their text or hold a click.
+struct ZedisAclEditor {
+    username_state: Entity<InputState>,
+    rules_state: Entity<InputState>,
+    /// Username is the identity of an ACL user, so it is only editable while
+    /// creating one.
+    is_new: bool,
+}
+
+impl ZedisAclEditor {
+    fn new(target: &AclUser, is_new: bool, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
+        let username_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_acl(cx, "username_placeholder"))
+                .default_value(target.username.clone())
+        });
+        let rules_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(3, 10)
+                .placeholder(i18n_acl(cx, "rules_placeholder"))
+                .default_value(target.to_rules_text())
+        });
+        Self {
+            username_state,
+            rules_state,
+            is_new,
+        }
+    }
+
+    /// Toggle a literal token on the rules textarea — clicking the same chip
+    /// twice undoes itself. Order is otherwise preserved.
+    fn chip(&self, id: &'static str, token: &'static str) -> Button {
+        let rules = self.rules_state.clone();
+        Button::new(id)
+            .small()
+            .ghost()
+            .label(token)
+            .on_click(move |_, window, cx| {
+                rules.update(cx, |state, cx| {
+                    let current = state.value().to_string();
+                    let next = toggle_rule_token(&current, token);
+                    state.set_value(SharedString::from(next), window, cx);
+                });
+            })
+    }
+
+    /// Replace the whole rules textarea with a templated rule string.
+    fn preset(&self, id: &'static str, label: SharedString, rules_text: &'static str) -> Button {
+        let rules = self.rules_state.clone();
+        Button::new(id)
+            .small()
+            .outline()
+            .label(label)
+            .on_click(move |_, window, cx| {
+                rules.update(cx, |state, cx| {
+                    state.set_value(SharedString::from(rules_text), window, cx);
+                });
+            })
+    }
+
+    fn chip_row(&self, chips: impl IntoIterator<Item = Button>) -> impl IntoElement {
+        h_flex().w_full().gap_2().children(chips)
+    }
+}
+
+impl gpui::Render for ZedisAclEditor {
+    fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(Label::new(i18n_acl(cx, "username")))
+            .child(Input::new(&self.username_state).appearance(true).disabled(!self.is_new))
+            .child(Label::new(i18n_acl(cx, "presets")).text_xs())
+            .child(self.chip_row([
+                self.preset("acl-preset-full", i18n_acl(cx, "preset_full"), "on +@all ~* &*"),
+                self.preset(
+                    "acl-preset-ro",
+                    i18n_acl(cx, "preset_readonly"),
+                    "on -@all +@read ~* &*",
+                ),
+                self.preset("acl-preset-off", i18n_acl(cx, "preset_disabled"), "off"),
+                self.preset("acl-preset-clear", i18n_acl(cx, "preset_clear"), ""),
+            ]))
+            .child(Label::new(i18n_acl(cx, "status_chips")).text_xs())
+            .child(self.chip_row([
+                self.chip("acl-chip-on", "on"),
+                self.chip("acl-chip-off", "off"),
+                self.chip("acl-chip-nopass", "nopass"),
+                self.chip("acl-chip-sanitize", "sanitize-payload"),
+                self.chip("acl-chip-skip-sanitize", "skip-sanitize-payload"),
+                self.chip("acl-chip-resetpass", "resetpass"),
+            ]))
+            .child(Label::new(i18n_acl(cx, "category_chips")).text_xs())
+            .child(self.chip_row([
+                self.chip("acl-chip-all", "+@all"),
+                self.chip("acl-chip-read", "+@read"),
+                self.chip("acl-chip-write", "+@write"),
+                self.chip("acl-chip-keyspace", "+@keyspace"),
+                self.chip("acl-chip-pubsub", "+@pubsub"),
+                self.chip("acl-chip-scripting", "+@scripting"),
+            ]))
+            .child(self.chip_row([
+                self.chip("acl-chip-no-dangerous", "-@dangerous"),
+                self.chip("acl-chip-no-admin", "-@admin"),
+            ]))
+            .child(Label::new(i18n_acl(cx, "wildcards")).text_xs())
+            .child(self.chip_row([
+                self.chip("acl-chip-allkeys", "~*"),
+                self.chip("acl-chip-allchans", "&*"),
+                self.chip("acl-chip-resetkeys", "resetkeys"),
+                self.chip("acl-chip-resetchans", "resetchannels"),
+            ]))
+            .child(Label::new(i18n_acl(cx, "rules_help")))
+            .child(Input::new(&self.rules_state).appearance(true))
     }
 }
 

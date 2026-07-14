@@ -169,6 +169,15 @@ impl ZedisDialog {
 
     /// Opens the dialog on the given window.
     pub fn open(self, window: &mut Window, cx: &mut App) {
+        // gpui_component's `Dialog` renders a footer only when one is set —
+        // `button_props` alone produces no buttons. So a non-alert dialog with
+        // an `on_ok` but neither `ok_text` nor `footer_child` registers a
+        // callback that nothing can ever reach.
+        debug_assert!(
+            self.alert || self.on_ok.is_none() || self.ok_text.is_some() || self.footer_child.is_some(),
+            "ZedisDialog \"{}\" has on_ok but no footer — set .ok_text(…) or .footer_child(…)",
+            self.title
+        );
         let title = self.title;
         let icon = self.icon;
         let message = self.message;
