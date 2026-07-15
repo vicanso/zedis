@@ -66,7 +66,7 @@ pub use functions::{
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
-pub use lua_script::{ScriptRunOutcome, run_script};
+pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,
     RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager, plan_reshard_slots,

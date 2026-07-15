@@ -184,4 +184,49 @@ impl LuaScriptManager {
         // top of the list, which is surprising.
         Self::upsert(id, script)
     }
+
+    /// Whether another entry (excluding `except_id`) already uses this
+    /// display name. Used for soft duplicate-name warnings in the form.
+    pub fn name_taken(name: &str, except_id: Option<&str>) -> bool {
+        let needle = name.trim();
+        if needle.is_empty() {
+            return false;
+        }
+        LUA_SCRIPT_CACHE.iter().any(|item| {
+            if except_id.is_some_and(|id| item.key() == id) {
+                return false;
+            }
+            item.value().name.trim() == needle
+        })
+    }
+
+    /// Portable export payload (no id / counters / timestamps).
+    pub fn export_all() -> Vec<LuaScriptExport> {
+        let mut items: Vec<LuaScriptExport> = LUA_SCRIPT_CACHE
+            .iter()
+            .map(|item| {
+                let s = item.value();
+                LuaScriptExport {
+                    name: s.name.clone(),
+                    code: s.code.clone(),
+                    default_keys: s.default_keys.clone(),
+                    default_args: s.default_args.clone(),
+                }
+            })
+            .collect();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items
+    }
+}
+
+/// Wire shape for clipboard / file import-export. Intentionally omits
+/// runtime stats so a dump is re-importable on another machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LuaScriptExport {
+    pub name: String,
+    pub code: String,
+    #[serde(default)]
+    pub default_keys: Vec<String>,
+    #[serde(default)]
+    pub default_args: Vec<String>,
 }

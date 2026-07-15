@@ -91,6 +91,65 @@ fn build_evalsha(sha: &str, keys: &[String], args: &[String]) -> redis::Cmd {
     c
 }
 
+/// `SCRIPT LOAD` — warm the server cache without executing. Returns
+/// the SHA Redis computed (should match the locally stored digest).
+pub async fn script_load(conn: &mut RedisAsyncConn, code: &str) -> Result<String> {
+    let sha: String = cmd("SCRIPT").arg("LOAD").arg(code).query_async(conn).await?;
+    Ok(sha)
+}
+
+/// `SCRIPT EXISTS sha [sha …]` — one bool per digest, same order.
+pub async fn script_exists(conn: &mut RedisAsyncConn, shas: &[String]) -> Result<Vec<bool>> {
+    if shas.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut c = cmd("SCRIPT");
+    c.arg("EXISTS");
+    for sha in shas {
+        c.arg(sha.as_str());
+    }
+    let flags: Vec<i32> = c.query_async(conn).await?;
+    Ok(flags.into_iter().map(|n| n != 0).collect())
+}
+
+/// `SCRIPT FLUSH [SYNC|ASYNC]` — wipe the entire Lua script cache.
+pub async fn script_flush(conn: &mut RedisAsyncConn, async_mode: bool) -> Result<()> {
+    let mut c = cmd("SCRIPT");
+    c.arg("FLUSH");
+    c.arg(if async_mode { "ASYNC" } else { "SYNC" });
+    let _: () = c.query_async(conn).await?;
+    Ok(())
+}
+
+/// Highest 1-based KEYS index referenced in source (`KEYS[1]`,
+/// `KEYS[2]`, …). `0` when the script never touches KEYS.
+pub fn max_keys_index(code: &str) -> usize {
+    let mut max = 0usize;
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i + 6 < bytes.len() {
+        // Case-sensitive match for `KEYS[` — Redis Lua is case-sensitive
+        // on the KEYS table name.
+        if &bytes[i..i + 5] == b"KEYS[" {
+            let mut j = i + 5;
+            let mut n: usize = 0;
+            let mut saw_digit = false;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                saw_digit = true;
+                n = n.saturating_mul(10).saturating_add((bytes[j] - b'0') as usize);
+                j += 1;
+            }
+            if saw_digit && j < bytes.len() && bytes[j] == b']' {
+                max = max.max(n);
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    max
+}
+
 fn is_no_script(err: &redis::RedisError) -> bool {
     let msg = err.to_string();
     // Redis wire error code is `NOSCRIPT` for "No matching script.
@@ -160,5 +219,16 @@ mod tests {
         // path via Error::to_string-like checks.
         let synthetic = "NOSCRIPT No matching script. Please use EVAL.";
         assert!(synthetic.contains("NOSCRIPT"));
+    }
+
+    #[test]
+    fn max_keys_index_scans_source() {
+        assert_eq!(max_keys_index("return 1"), 0);
+        assert_eq!(max_keys_index("return redis.call('GET', KEYS[1])"), 1);
+        assert_eq!(
+            max_keys_index("redis.call('MGET', KEYS[1], KEYS[3]); return KEYS[2]"),
+            3
+        );
+        assert_eq!(max_keys_index("-- KEYS[9] in a comment still counts\nreturn 1"), 9);
     }
 }

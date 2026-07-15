@@ -19,25 +19,31 @@
 //! from the saved defaults so re-running is one click. EVALSHA hit
 //! vs. miss is recorded after every successful run so the user can
 //! spot scripts that keep getting flushed out of Redis's cache.
+//! Server cache status is probed via `SCRIPT EXISTS` / `SCRIPT LOAD`.
 
 use crate::{
     assets::CustomIconName,
-    connection::{Capability, ScriptRunOutcome, get_connection_manager, run_script},
-    db::{LuaScript, LuaScriptManager},
+    connection::{
+        Capability, ScriptRunOutcome, get_connection_manager, max_keys_index, run_script, script_exists, script_flush,
+        script_load,
+    },
+    db::{LuaScript, LuaScriptExport, LuaScriptManager},
     error::Error,
     helpers::{get_mono_font_family, unix_ts},
     states::{
-        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_lua_scripts,
+        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+        i18n_common, i18n_lua_scripts,
     },
 };
 use ahash::AHashMap;
-use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState, TabSize},
     label::Label,
+    notification::Notification,
     scroll::ScrollableElement,
     v_flex,
 };
@@ -47,9 +53,52 @@ use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// SHA prefix length shown in the card header — full 40 chars are
-/// pointless in a list, eight unambiguously identify the script.
+/// SHA prefix length shown in the card header.
 const SHA_PREVIEW_CHARS: usize = 12;
+
+struct CodeTemplate {
+    id: &'static str,
+    label_key: &'static str,
+    name: &'static str,
+    source: &'static str,
+    default_keys: &'static str,
+    default_args: &'static str,
+}
+
+const TEMPLATES: &[CodeTemplate] = &[
+    CodeTemplate {
+        id: "get",
+        label_key: "template_get",
+        name: "get_key",
+        source: "-- GET KEYS[1]\nreturn redis.call('GET', KEYS[1])\n",
+        default_keys: "mykey",
+        default_args: "",
+    },
+    CodeTemplate {
+        id: "set",
+        label_key: "template_set",
+        name: "set_key",
+        source: "-- SET KEYS[1] ARGV[1]\nreturn redis.call('SET', KEYS[1], ARGV[1])\n",
+        default_keys: "mykey",
+        default_args: "value",
+    },
+    CodeTemplate {
+        id: "incr_ttl",
+        label_key: "template_incr_ttl",
+        name: "incr_with_ttl",
+        source: "-- INCR KEYS[1]; expire if first write (ARGV[1]=ttl seconds)\nlocal n = redis.call('INCR', KEYS[1])\nif n == 1 then\n  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]) or 60)\nend\nreturn n\n",
+        default_keys: "counter:demo",
+        default_args: "3600",
+    },
+    CodeTemplate {
+        id: "hgetall",
+        label_key: "template_hgetall",
+        name: "hgetall",
+        source: "-- HGETALL KEYS[1]\nreturn redis.call('HGETALL', KEYS[1])\n",
+        default_keys: "hash:demo",
+        default_args: "",
+    },
+];
 
 /// In-flight script editor. `target_id` is `Some` when editing an
 /// existing entry; `None` for a brand-new script.
@@ -65,8 +114,6 @@ struct EditForm {
 struct RunForm {
     keys: Entity<InputState>,
     args: Entity<InputState>,
-    /// Most recent run outcome, formatted for display. `None` until
-    /// the user clicks Run for the first time on this card.
     last: Option<RunResult>,
 }
 
@@ -80,42 +127,39 @@ struct RunResult {
 pub struct ZedisLuaScriptLibrary {
     server_state: Entity<ZedisServerState>,
     scripts: Vec<(String, LuaScript)>,
-    /// Per-card Run form state, keyed by script id. Lazily created on
-    /// first expand, cached afterwards so re-expanding is instant.
     run_forms: AHashMap<String, RunForm>,
-    /// Which cards currently show their Run / code panels.
     run_expanded: AHashMap<String, bool>,
     code_expanded: AHashMap<String, bool>,
-    /// Lazily-created read-only Lua viewers for the inline code
-    /// preview (one per script id). Cleared on every reload so an
-    /// edit landing in the DB flushes the cached source view.
     code_viewers: AHashMap<String, Entity<InputState>>,
+    /// Server-side SCRIPT EXISTS cache, keyed by script id.
+    /// `None` = not probed yet; `Some(true/false)` = last probe.
+    cache_status: AHashMap<String, bool>,
+    filter: Entity<InputState>,
     edit_form: Option<EditForm>,
     error: Option<SharedString>,
-    /// Script id currently running. Used to disable the Run button
-    /// for that card while in flight; other cards stay clickable.
     running: Option<String>,
     saving: bool,
+    pending_notification: Option<Notification>,
     _run_task: Option<Task<()>>,
-    _save_task: Option<Task<()>>,
+    _probe_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisLuaScriptLibrary {
-    pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
+    pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| {
             if let ServerEvent::ServerSelected(_) = event {
-                // Server change clears any pending Run state since
-                // the next run will go to a different host — keep
-                // the library itself though, it's global.
                 this.run_forms.clear();
                 this.run_expanded.clear();
                 this.code_viewers.clear();
+                this.cache_status.clear();
                 this.error = None;
+                this.probe_cache(cx);
                 cx.notify();
             }
         }));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_lua_scripts(cx, "filter_placeholder")));
         let mut this = Self {
             server_state,
             scripts: Vec::new(),
@@ -123,26 +167,32 @@ impl ZedisLuaScriptLibrary {
             run_expanded: AHashMap::new(),
             code_expanded: AHashMap::new(),
             code_viewers: AHashMap::new(),
+            cache_status: AHashMap::new(),
+            filter,
             edit_form: None,
             error: None,
             running: None,
             saving: false,
+            pending_notification: None,
             _run_task: None,
-            _save_task: None,
+            _probe_task: None,
             _subscriptions: subscriptions,
         };
-        this.reload(cx);
+        this.refresh_list(cx);
+        this.probe_cache(cx);
         this
     }
 
-    /// Pull the latest library snapshot from the local DB cache. Pure
-    /// in-memory operation — no network round-trip needed.
-    fn reload(&mut self, cx: &mut gpui::Context<Self>) {
+    /// Refresh the in-memory list without dropping code viewers
+    /// (callers that change source should invalidate specifically).
+    fn refresh_list(&mut self, cx: &mut gpui::Context<Self>) {
         self.scripts = LuaScriptManager::list_with_id();
-        // Drop stale code viewers / run forms tied to ids that may
-        // have been deleted. Cheap to recreate on next render.
-        self.code_viewers.clear();
         cx.notify();
+    }
+
+    fn reload(&mut self, cx: &mut gpui::Context<Self>) {
+        self.refresh_list(cx);
+        self.probe_cache(cx);
     }
 
     fn toggle_code(&mut self, id: String, cx: &mut gpui::Context<Self>) {
@@ -152,26 +202,18 @@ impl ZedisLuaScriptLibrary {
     }
 
     fn toggle_run(&mut self, id: String, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        // Defense in depth — the run toggle is hidden without EvalScript.
         if !self.server_state.read(cx).can(Capability::EvalScript) {
             return;
         }
         let want_open = !*self.run_expanded.entry(id.clone()).or_insert(false);
         self.run_expanded.insert(id.clone(), want_open);
         if want_open && !self.run_forms.contains_key(&id) {
-            // Build the Run form lazily — most scripts in a library
-            // aren't run during a given session, so creating one
-            // InputState per script up-front would waste entities.
             let script = match LuaScriptManager::get(&id) {
                 Ok(s) => s,
                 Err(_) => return,
             };
             let keys_default = script.default_keys.join("\n");
             let args_default = script.default_args.join("\n");
-            // `auto_grow(2, 6)` makes the input multi-line — required
-            // because placeholders / defaults are line-separated lists
-            // and feeding `\n` into a single-line input panics
-            // `shape_line` during render.
             let keys = cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(2, 6)
@@ -189,8 +231,6 @@ impl ZedisLuaScriptLibrary {
         cx.notify();
     }
 
-    /// Open the unified create/edit form. `existing` pre-fills the
-    /// fields; `None` opens a blank form for a new script.
     fn open_form(&mut self, existing: Option<&(String, LuaScript)>, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let (target_id, name_val, code_val, keys_val, args_val) = match existing {
             Some((id, s)) => (
@@ -203,11 +243,9 @@ impl ZedisLuaScriptLibrary {
             None => (
                 None,
                 SharedString::default(),
-                SharedString::from(
-                    "-- Lua script. KEYS / ARGV are populated from the run form.\nreturn redis.call('GET', KEYS[1])",
-                ),
-                SharedString::default(),
-                SharedString::default(),
+                SharedString::from(TEMPLATES[0].source),
+                SharedString::from(TEMPLATES[0].default_keys),
+                SharedString::from(TEMPLATES[0].default_args),
             ),
         };
         let name = cx.new(|cx| {
@@ -229,8 +267,6 @@ impl ZedisLuaScriptLibrary {
                 .default_value(code_val)
         });
         let default_keys = cx.new(|cx| {
-            // Multi-line: one KEY per line, same constraint as the
-            // run-form keys input.
             InputState::new(window, cx)
                 .auto_grow(2, 6)
                 .placeholder(i18n_lua_scripts(cx, "default_keys_placeholder"))
@@ -249,11 +285,38 @@ impl ZedisLuaScriptLibrary {
             default_keys,
             default_args,
         });
+        self.error = None;
         cx.notify();
     }
 
     fn close_form(&mut self, cx: &mut gpui::Context<Self>) {
         self.edit_form = None;
+        cx.notify();
+    }
+
+    fn apply_template(&mut self, template_id: &str, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let Some(tpl) = TEMPLATES.iter().find(|t| t.id == template_id) else {
+            return;
+        };
+        let Some(form) = self.edit_form.as_ref() else {
+            return;
+        };
+        // Only pre-fill name when creating a new script (or empty name).
+        let current_name = form.name.read(cx).value().to_string();
+        if form.target_id.is_none() || current_name.trim().is_empty() {
+            form.name.update(cx, |s, cx| {
+                s.set_value(tpl.name.to_string(), window, cx);
+            });
+        }
+        form.code.update(cx, |s, cx| {
+            s.set_value(tpl.source.to_string(), window, cx);
+        });
+        form.default_keys.update(cx, |s, cx| {
+            s.set_value(tpl.default_keys.to_string(), window, cx);
+        });
+        form.default_args.update(cx, |s, cx| {
+            s.set_value(tpl.default_args.to_string(), window, cx);
+        });
         cx.notify();
     }
 
@@ -274,17 +337,14 @@ impl ZedisLuaScriptLibrary {
         let id = form.target_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let default_keys = parse_lines(&form.default_keys.read(cx).value());
         let default_args = parse_lines(&form.default_args.read(cx).value());
+        // Default KEYS are optional pre-fills for the Run panel — do not
+        // block save when they under-supply KEYS[n] references in code.
 
-        // Preserve existing usage counters when editing — only the
-        // code / name / defaults are being changed.
         let existing = LuaScriptManager::get(&id).ok();
         let now = unix_ts();
         let created_at = existing.as_ref().map(|s| s.created_at).unwrap_or(now);
         let calls = existing.as_ref().map(|s| s.calls).unwrap_or(0);
         let evalsha_hits = existing.as_ref().map(|s| s.evalsha_hits).unwrap_or(0);
-        // Recompute SHA every time — code may have changed, and even
-        // the same code would produce the same hash, so the cost is
-        // a single redis::Script::new call.
         let sha = redis::Script::new(&code).get_hash().to_string();
 
         let script = LuaScript {
@@ -303,13 +363,12 @@ impl ZedisLuaScriptLibrary {
             cx.notify();
             return;
         }
-        // Successful save → close form, refresh list, drop stale
-        // cached editor for this id so the next code-preview render
-        // picks up the new source.
         self.edit_form = None;
         self.error = None;
         self.code_viewers.remove(&id);
-        self.reload(cx);
+        self.cache_status.remove(&id);
+        self.refresh_list(cx);
+        self.probe_cache(cx);
     }
 
     fn confirm_delete(&mut self, id: String, name: SharedString, window: &mut Window, cx: &mut gpui::Context<Self>) {
@@ -339,7 +398,8 @@ impl ZedisLuaScriptLibrary {
                         this.run_expanded.remove(&id_clone);
                         this.code_expanded.remove(&id_clone);
                         this.code_viewers.remove(&id_clone);
-                        this.reload(cx);
+                        this.cache_status.remove(&id_clone);
+                        this.refresh_list(cx);
                     }
                     Err(e) => {
                         this.error = Some(e.to_string().into());
@@ -351,10 +411,32 @@ impl ZedisLuaScriptLibrary {
             .open(window, cx);
     }
 
-    /// Execute the script for the given card. Reads KEYS / ARGS from
-    /// that card's Run form, dispatches `EVALSHA` (with `SCRIPT LOAD +
-    /// EVAL` fallback), and records the hit/miss into the script's
-    /// lifetime counters.
+    fn duplicate(&mut self, id: String, cx: &mut gpui::Context<Self>) {
+        let Ok(src) = LuaScriptManager::get(&id) else {
+            return;
+        };
+        let new_id = Uuid::now_v7().to_string();
+        let now = unix_ts();
+        let copy = LuaScript {
+            name: format!("{} (copy)", src.name),
+            code: src.code,
+            sha: src.sha,
+            default_keys: src.default_keys,
+            default_args: src.default_args,
+            calls: 0,
+            evalsha_hits: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = LuaScriptManager::upsert(&new_id, copy) {
+            self.error = Some(e.to_string().into());
+            cx.notify();
+            return;
+        }
+        self.refresh_list(cx);
+        self.probe_cache(cx);
+    }
+
     fn run(&mut self, id: String, cx: &mut gpui::Context<Self>) {
         if !self.server_state.read(cx).can(Capability::EvalScript) {
             return;
@@ -373,6 +455,22 @@ impl ZedisLuaScriptLibrary {
         };
         let keys = parse_lines(&form.keys.read(cx).value());
         let args = parse_lines(&form.args.read(cx).value());
+        let needed = max_keys_index(&script.code);
+        if needed > keys.len() {
+            if let Some(form) = self.run_forms.get_mut(&id) {
+                form.last = Some(RunResult {
+                    formatted: format!(
+                        "{}: need {needed} KEYS, got {}",
+                        i18n_lua_scripts(cx, "keys_count_mismatch"),
+                        keys.len()
+                    ),
+                    was_hit: false,
+                    error: true,
+                });
+            }
+            cx.notify();
+            return;
+        }
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         if server_id.is_empty() {
@@ -396,11 +494,11 @@ impl ZedisLuaScriptLibrary {
                 this.running = None;
                 match result {
                     Ok(outcome) => {
-                        // Persist the hit/miss to disk so the rate
-                        // accumulates across sessions.
                         if let Err(e) = LuaScriptManager::record_call(&id_for_task, outcome.was_hit) {
                             tracing::warn!(error = %e, "failed to record script call");
                         }
+                        // Successful run implies the digest is now cached.
+                        this.cache_status.insert(id_for_task.clone(), true);
                         if let Some(form) = this.run_forms.get_mut(&id_for_task) {
                             form.last = Some(RunResult {
                                 formatted: outcome.formatted,
@@ -408,11 +506,10 @@ impl ZedisLuaScriptLibrary {
                                 error: false,
                             });
                         }
-                        this.reload(cx);
+                        // Refresh counters without wiping code viewers.
+                        this.refresh_list(cx);
                     }
                     Err(e) => {
-                        // Errors don't count as hits/misses — the
-                        // script never reached the cache check.
                         if let Some(form) = this.run_forms.get_mut(&id_for_task) {
                             form.last = Some(RunResult {
                                 formatted: e.to_string(),
@@ -426,12 +523,254 @@ impl ZedisLuaScriptLibrary {
             });
         }));
     }
+
+    fn save_run_as_defaults(&mut self, id: String, cx: &mut gpui::Context<Self>) {
+        let Some(form) = self.run_forms.get(&id) else { return };
+        let keys = parse_lines(&form.keys.read(cx).value());
+        let args = parse_lines(&form.args.read(cx).value());
+        let Ok(mut script) = LuaScriptManager::get(&id) else {
+            return;
+        };
+        script.default_keys = keys;
+        script.default_args = args;
+        script.updated_at = unix_ts();
+        if let Err(e) = LuaScriptManager::upsert(&id, script) {
+            self.error = Some(e.to_string().into());
+            cx.notify();
+            return;
+        }
+        self.pending_notification = Some(Notification::info(i18n_lua_scripts(cx, "defaults_saved")));
+        self.refresh_list(cx);
+    }
+
+    fn warm_script(&mut self, id: String, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::EvalScript) {
+            return;
+        }
+        let Ok(script) = LuaScriptManager::get(&id) else {
+            return;
+        };
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            self.error = Some(i18n_lua_scripts(cx, "no_server").clone());
+            cx.notify();
+            return;
+        }
+        let code = script.code.clone();
+        let expected_sha = script.sha.clone();
+        let id_for_task = id.clone();
+        self._probe_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let returned = script_load(&mut conn, &code).await?;
+                Ok::<_, Error>((returned, expected_sha))
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                match result {
+                    Ok((returned, expected)) => {
+                        if returned != expected {
+                            this.error = Some(format!("SHA mismatch: client={expected} server={returned}").into());
+                        } else {
+                            this.cache_status.insert(id_for_task, true);
+                            this.pending_notification = Some(Notification::info(i18n_lua_scripts(cx, "warm_ok")));
+                        }
+                    }
+                    Err(e) => {
+                        this.error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn probe_cache(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.scripts.is_empty() {
+            self.cache_status.clear();
+            return;
+        }
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        let pairs: Vec<(String, String)> = self.scripts.iter().map(|(id, s)| (id.clone(), s.sha.clone())).collect();
+        self._probe_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let shas: Vec<String> = pairs.iter().map(|(_, s)| s.clone()).collect();
+                let flags = script_exists(&mut conn, &shas).await?;
+                let mut map = AHashMap::new();
+                for ((id, _), ok) in pairs.into_iter().zip(flags) {
+                    map.insert(id, ok);
+                }
+                Ok::<_, Error>(map)
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                if let Ok(map) = result {
+                    this.cache_status = map;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn confirm_flush(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::EvalScript) {
+            return;
+        }
+        let entity = cx.entity().downgrade();
+        let title = i18n_lua_scripts(cx, "flush_title");
+        let message = i18n_lua_scripts(cx, "flush_message");
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, message))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_lua_scripts(cx, "flush_confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .on_ok(move |_, _w, cx| {
+                let Some(this) = entity.upgrade() else { return true };
+                let server_id_inner = server_id.clone();
+                this.update(cx, |this, cx| {
+                    this.error = None;
+                    this._probe_task = Some(cx.spawn(async move |handle, cx| {
+                        let task = cx.background_spawn(async move {
+                            let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
+                            script_flush(&mut conn, false).await
+                        });
+                        let result: Result<()> = task.await.map_err(Into::into);
+                        let _ = handle.update(cx, |this, cx| match result {
+                            Ok(()) => {
+                                info!("SCRIPT FLUSH succeeded");
+                                for flag in this.cache_status.values_mut() {
+                                    *flag = false;
+                                }
+                                this.pending_notification = Some(Notification::info(i18n_lua_scripts(cx, "flush_ok")));
+                                cx.notify();
+                            }
+                            Err(e) => {
+                                this.error = Some(e.to_string().into());
+                                cx.notify();
+                            }
+                        });
+                    }));
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    fn export_to_clipboard(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let items = LuaScriptManager::export_all();
+        match serde_json::to_string_pretty(&items) {
+            Ok(json) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(json));
+                self.pending_notification = Some(Notification::info(i18n_lua_scripts(cx, "export_ok")));
+            }
+            Err(e) => {
+                self.error = Some(e.to_string().into());
+            }
+        }
+        cx.notify();
+    }
+
+    fn import_from_clipboard(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            self.error = Some(i18n_lua_scripts(cx, "import_empty"));
+            cx.notify();
+            return;
+        };
+        let Some(text) = item.text() else {
+            self.error = Some(i18n_lua_scripts(cx, "import_empty"));
+            cx.notify();
+            return;
+        };
+        let parsed: std::result::Result<Vec<LuaScriptExport>, _> = serde_json::from_str(text.trim());
+        let items = match parsed {
+            Ok(v) if !v.is_empty() => v,
+            Ok(_) => {
+                self.error = Some(i18n_lua_scripts(cx, "import_empty"));
+                cx.notify();
+                return;
+            }
+            Err(_) => {
+                self.error = Some(i18n_lua_scripts(cx, "import_bad"));
+                cx.notify();
+                return;
+            }
+        };
+        let entity = cx.entity().downgrade();
+        let title = i18n_lua_scripts(cx, "import_title");
+        let message: SharedString = format!(
+            "{}\n\n{}: {}",
+            i18n_lua_scripts(cx, "import_message"),
+            i18n_lua_scripts(cx, "import_count_label"),
+            items.len(),
+        )
+        .into();
+        ZedisDialog::new_alert(title, message)
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_lua_scripts(cx, "import_confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .on_ok(move |_, _w, cx| {
+                let Some(this) = entity.upgrade() else { return true };
+                this.update(cx, |this, cx| {
+                    let now = unix_ts();
+                    let mut ok = 0usize;
+                    for item in &items {
+                        if item.name.trim().is_empty() || item.code.trim().is_empty() {
+                            continue;
+                        }
+                        let id = Uuid::now_v7().to_string();
+                        let sha = redis::Script::new(&item.code).get_hash().to_string();
+                        let script = LuaScript {
+                            name: item.name.clone(),
+                            code: item.code.clone(),
+                            sha,
+                            default_keys: item.default_keys.clone(),
+                            default_args: item.default_args.clone(),
+                            calls: 0,
+                            evalsha_hits: 0,
+                            created_at: now,
+                            updated_at: now,
+                        };
+                        if LuaScriptManager::upsert(&id, script).is_ok() {
+                            ok += 1;
+                        }
+                    }
+                    this.pending_notification = Some(Notification::info(format!(
+                        "{}: {ok}",
+                        i18n_lua_scripts(cx, "import_ok")
+                    )));
+                    this.refresh_list(cx);
+                    this.probe_cache(cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    fn filtered_scripts(&self, cx: &gpui::Context<Self>) -> Vec<(String, LuaScript)> {
+        let q = self.filter.read(cx).value().to_string();
+        let q = q.trim().to_ascii_lowercase();
+        if q.is_empty() {
+            return self.scripts.clone();
+        }
+        self.scripts
+            .iter()
+            .filter(|(_, s)| s.name.to_ascii_lowercase().contains(&q) || s.sha.to_ascii_lowercase().starts_with(&q))
+            .cloned()
+            .collect()
+    }
 }
 
-/// Split a multi-line input field into trimmed, non-empty entries.
-/// Used to parse KEYS / ARGS / default_keys / default_args — the user
-/// types one value per line, blank lines and surrounding whitespace
-/// are ignored.
 fn parse_lines(s: &str) -> Vec<String> {
     s.lines()
         .map(str::trim)
@@ -449,8 +788,6 @@ fn format_hit_rate(calls: u64, hits: u64) -> String {
     }
 }
 
-/// DJB2-style stable hash so element IDs derived from script UUIDs
-/// compile to `u32` for gpui's `ElementId::From<(&str, u32)>`.
 fn id_hash(s: &str) -> u32 {
     let mut h: u32 = 5381;
     for b in s.bytes() {
@@ -461,6 +798,9 @@ fn id_hash(s: &str) -> u32 {
 
 impl gpui::Render for ZedisLuaScriptLibrary {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        if let Some(notification) = self.pending_notification.take() {
+            window.push_notification(notification, cx);
+        }
         let muted = cx.theme().muted_foreground;
         let header = self.render_header(cx).into_any_element();
 
@@ -470,33 +810,39 @@ impl gpui::Render for ZedisLuaScriptLibrary {
                 .size_full()
                 .overflow_hidden()
                 .child(header)
-                .child(
-                    div()
-                        .flex_1()
-                        .w_full()
-                        .min_h_0()
-                        .overflow_y_scrollbar()
-                        .child(form_panel),
-                )
+                .child(form_panel)
                 .into_any_element();
         }
 
+        let filtered = self.filtered_scripts(cx);
         let body: gpui::AnyElement = if self.scripts.is_empty() {
+            v_flex()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .gap_3()
+                .child(Label::new(i18n_lua_scripts(cx, "empty")).text_color(muted))
+                .child(
+                    Button::new("lua-empty-new")
+                        .outline()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(i18n_lua_scripts(cx, "new_script"))
+                        .on_click(cx.listener(|this, _, w, cx| this.open_form(None, w, cx))),
+                )
+                .into_any_element()
+        } else if filtered.is_empty() {
             div()
                 .flex()
                 .items_center()
                 .justify_center()
                 .size_full()
-                .child(Label::new(i18n_lua_scripts(cx, "empty")).text_color(muted))
+                .child(Label::new(i18n_lua_scripts(cx, "filter_empty")).text_color(muted))
                 .into_any_element()
         } else {
-            let scripts_snapshot = self.scripts.clone();
-            let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(scripts_snapshot.len());
-            for (id, script) in &scripts_snapshot {
-                rows.push(
-                    self.render_card(id.clone(), script.clone(), window, cx)
-                        .into_any_element(),
-                );
+            let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(filtered.len());
+            for (id, script) in filtered {
+                rows.push(self.render_card(id, script, window, cx).into_any_element());
             }
             v_flex().gap_2().p_3().w_full().children(rows).into_any_element()
         };
@@ -510,10 +856,13 @@ impl gpui::Render for ZedisLuaScriptLibrary {
                 .into_any_element()
         });
 
+        let filter_bar = self.render_filter_bar(cx).into_any_element();
+
         v_flex()
             .size_full()
             .overflow_hidden()
             .child(header)
+            .child(filter_bar)
             .when_some(error_banner, |this, banner| this.child(banner))
             .child(div().flex_1().w_full().min_h_0().overflow_y_scrollbar().child(body))
             .into_any_element()
@@ -523,6 +872,7 @@ impl gpui::Render for ZedisLuaScriptLibrary {
 impl ZedisLuaScriptLibrary {
     fn render_header(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let can_run = self.server_state.read(cx).can(Capability::EvalScript);
         let count = self.scripts.len();
         let count_label = if count == 0 {
             SharedString::default()
@@ -561,6 +911,33 @@ impl ZedisLuaScriptLibrary {
                     .items_center()
                     .gap_2()
                     .child(
+                        Button::new("lua-export")
+                            .ghost()
+                            .small()
+                            .label(i18n_lua_scripts(cx, "export"))
+                            .tooltip(i18n_lua_scripts(cx, "export_tooltip"))
+                            .disabled(self.scripts.is_empty())
+                            .on_click(cx.listener(|this, _, w, cx| this.export_to_clipboard(w, cx))),
+                    )
+                    .child(
+                        Button::new("lua-import")
+                            .ghost()
+                            .small()
+                            .label(i18n_lua_scripts(cx, "import"))
+                            .tooltip(i18n_lua_scripts(cx, "import_tooltip"))
+                            .on_click(cx.listener(|this, _, w, cx| this.import_from_clipboard(w, cx))),
+                    )
+                    .when(can_run, |this| {
+                        this.child(
+                            Button::new("lua-flush")
+                                .ghost()
+                                .small()
+                                .label(i18n_lua_scripts(cx, "flush"))
+                                .tooltip(i18n_lua_scripts(cx, "flush_tooltip"))
+                                .on_click(cx.listener(|this, _, w, cx| this.confirm_flush(w, cx))),
+                        )
+                    })
+                    .child(
                         Button::new("lua-new")
                             .outline()
                             .small()
@@ -579,6 +956,24 @@ impl ZedisLuaScriptLibrary {
             )
     }
 
+    fn render_filter_bar(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        if self.scripts.is_empty() {
+            return div().into_any_element();
+        }
+        h_flex()
+            .items_center()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .w(px(280.))
+                    .child(Input::new(&self.filter).appearance(true).small()),
+            )
+            .into_any_element()
+    }
+
     fn render_card(
         &mut self,
         id: String,
@@ -586,8 +981,6 @@ impl ZedisLuaScriptLibrary {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
-        // EVAL/EVALSHA mutate server state (Capability::EvalScript); the
-        // local script library itself (redb) stays editable read-only.
         let can_run = self.server_state.read(cx).can(Capability::EvalScript);
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
@@ -595,7 +988,9 @@ impl ZedisLuaScriptLibrary {
         let run_expanded = *self.run_expanded.get(&id).unwrap_or(&false);
         let is_running = self.running.as_ref() == Some(&id);
         let card_hash = id_hash(&id);
+        let cached = self.cache_status.get(&id).copied();
 
+        let sha_full = script.sha.clone();
         let sha_short: SharedString = if script.sha.len() > SHA_PREVIEW_CHARS {
             SharedString::from(format!("{}…", &script.sha[..SHA_PREVIEW_CHARS]))
         } else {
@@ -612,7 +1007,6 @@ impl ZedisLuaScriptLibrary {
         )
         .into();
 
-        // Lazy code-viewer creation, gated on the expand state.
         if code_expanded && !self.code_viewers.contains_key(&id) {
             let value = SharedString::from(script.code.clone());
             let viewer = cx.new(|cx| {
@@ -631,9 +1025,12 @@ impl ZedisLuaScriptLibrary {
         let id_run_toggle = id.clone();
         let id_code_toggle = id.clone();
         let id_run_btn = id.clone();
+        let id_dup = id.clone();
+        let id_warm = id.clone();
         let script_for_edit = script.clone();
         let id_for_edit = id.clone();
         let name_for_delete = SharedString::from(script.name.clone());
+        let code_for_copy = script.code.clone();
 
         let code_block: Option<gpui::AnyElement> = if code_expanded {
             self.code_viewers.get(&id).map(|viewer| {
@@ -699,6 +1096,7 @@ impl ZedisLuaScriptLibrary {
                         .into_any_element()
                 });
 
+                let id_save_defaults = id.clone();
                 div()
                     .border_t_1()
                     .border_color(cx.theme().border)
@@ -731,13 +1129,29 @@ impl ZedisLuaScriptLibrary {
                                     .child(Input::new(&form.args).appearance(true).small()),
                             )
                             .child(
-                                Button::new(("lua-run-btn", card_hash))
-                                    .primary()
-                                    .small()
-                                    .icon(IconName::Search)
-                                    .label(i18n_lua_scripts(cx, "run"))
-                                    .disabled(is_running)
-                                    .on_click(cx.listener(move |this, _, _w, cx| this.run(id_run_btn.clone(), cx))),
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        Button::new(("lua-run-btn", card_hash))
+                                            .primary()
+                                            .small()
+                                            .icon(IconName::SquareTerminal)
+                                            .label(i18n_lua_scripts(cx, "run"))
+                                            .disabled(is_running)
+                                            .on_click(
+                                                cx.listener(move |this, _, _w, cx| this.run(id_run_btn.clone(), cx)),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new(("lua-save-defaults", card_hash))
+                                            .outline()
+                                            .small()
+                                            .label(i18n_lua_scripts(cx, "save_defaults"))
+                                            .tooltip(i18n_lua_scripts(cx, "save_defaults_tooltip"))
+                                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                                this.save_run_as_defaults(id_save_defaults.clone(), cx)
+                                            })),
+                                    ),
                             ),
                     )
                     .when_some(result_block, |this, block| this.child(block))
@@ -746,6 +1160,20 @@ impl ZedisLuaScriptLibrary {
         } else {
             None
         };
+
+        let cache_chip: Option<gpui::AnyElement> = cached.map(|ok| {
+            let (label, color) = if ok {
+                (i18n_lua_scripts(cx, "cache_hit"), cx.theme().green)
+            } else {
+                (i18n_lua_scripts(cx, "cache_miss"), cx.theme().yellow)
+            };
+            div()
+                .px_2()
+                .rounded_sm()
+                .bg(color.opacity(0.18))
+                .child(Label::new(label).text_xs().text_color(color))
+                .into_any_element()
+        });
 
         v_flex()
             .border_1()
@@ -764,13 +1192,30 @@ impl ZedisLuaScriptLibrary {
                             .text_color(foreground),
                     )
                     .child(
-                        Label::new(sha_short)
-                            .font_family(get_mono_font_family())
-                            .text_xs()
-                            .text_color(muted),
+                        Button::new(("lua-copy-sha", card_hash))
+                            .ghost()
+                            .small()
+                            .label(sha_short)
+                            .tooltip(i18n_lua_scripts(cx, "copy_sha_tooltip"))
+                            .on_click(cx.listener(move |_, _, w, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(sha_full.clone()));
+                                w.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+                            })),
                     )
+                    .when_some(cache_chip, |this, chip| this.child(chip))
                     .child(Label::new(stats_label).text_xs().text_color(muted))
                     .child(div().flex_1())
+                    .child(
+                        Button::new(("lua-copy-code", card_hash))
+                            .ghost()
+                            .small()
+                            .icon(IconName::Copy)
+                            .tooltip(i18n_lua_scripts(cx, "copy_code_tooltip"))
+                            .on_click(cx.listener(move |_, _, w, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(code_for_copy.clone()));
+                                w.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+                            })),
+                    )
                     .child(
                         Button::new(("lua-toggle-code", card_hash))
                             .ghost()
@@ -784,10 +1229,18 @@ impl ZedisLuaScriptLibrary {
                     )
                     .when(can_run, |this| {
                         this.child(
+                            Button::new(("lua-warm", card_hash))
+                                .ghost()
+                                .small()
+                                .label(i18n_lua_scripts(cx, "warm"))
+                                .tooltip(i18n_lua_scripts(cx, "warm_tooltip"))
+                                .on_click(cx.listener(move |this, _, _w, cx| this.warm_script(id_warm.clone(), cx))),
+                        )
+                        .child(
                             Button::new(("lua-toggle-run", card_hash))
                                 .outline()
                                 .small()
-                                .icon(IconName::Search)
+                                .icon(IconName::SquareTerminal)
                                 .label(if run_expanded {
                                     i18n_lua_scripts(cx, "hide_run")
                                 } else {
@@ -798,6 +1251,14 @@ impl ZedisLuaScriptLibrary {
                                 ),
                         )
                     })
+                    .child(
+                        Button::new(("lua-dup", card_hash))
+                            .ghost()
+                            .small()
+                            .label(i18n_lua_scripts(cx, "duplicate"))
+                            .tooltip(i18n_lua_scripts(cx, "duplicate_tooltip"))
+                            .on_click(cx.listener(move |this, _, _w, cx| this.duplicate(id_dup.clone(), cx))),
+                    )
                     .child(
                         Button::new(("lua-edit", card_hash))
                             .outline()
@@ -836,6 +1297,54 @@ impl ZedisLuaScriptLibrary {
             i18n_lua_scripts(cx, "new_title")
         };
         let saving = self.saving;
+        let code_text = form.code.read(cx).value().to_string();
+        let name_text = form.name.read(cx).value().to_string();
+        let keys = parse_lines(&form.default_keys.read(cx).value());
+        let sha = if code_text.trim().is_empty() {
+            SharedString::default()
+        } else {
+            SharedString::from(redis::Script::new(&code_text).get_hash().to_string())
+        };
+        let needed = max_keys_index(&code_text);
+        let name_dup = LuaScriptManager::name_taken(name_text.trim(), form.target_id.as_deref());
+
+        let mut hints: Vec<gpui::AnyElement> = Vec::new();
+        if !sha.is_empty() {
+            hints.push(
+                Label::new(format!("SHA1 {sha}"))
+                    .font_family(get_mono_font_family())
+                    .text_xs()
+                    .text_color(muted)
+                    .into_any_element(),
+            );
+        }
+        if name_dup {
+            hints.push(
+                Label::new(i18n_lua_scripts(cx, "name_duplicate"))
+                    .text_xs()
+                    .text_color(cx.theme().yellow)
+                    .into_any_element(),
+            );
+        }
+        if needed > keys.len() {
+            hints.push(
+                Label::new(format!(
+                    "{}: KEYS[{needed}] vs {} default(s)",
+                    i18n_lua_scripts(cx, "keys_count_mismatch"),
+                    keys.len()
+                ))
+                .text_xs()
+                .text_color(cx.theme().yellow)
+                .into_any_element(),
+            );
+        } else if needed > 0 {
+            hints.push(
+                Label::new(format!("KEYS[1..{needed}]"))
+                    .text_xs()
+                    .text_color(cx.theme().green)
+                    .into_any_element(),
+            );
+        }
 
         let error_banner: Option<gpui::AnyElement> = self.error.as_ref().map(|e| {
             div()
@@ -846,78 +1355,125 @@ impl ZedisLuaScriptLibrary {
                 .into_any_element()
         });
 
+        let mut template_btns: Vec<gpui::AnyElement> = Vec::with_capacity(TEMPLATES.len());
+        for tpl in TEMPLATES {
+            let tid = tpl.id;
+            template_btns.push(
+                Button::new(("lua-tpl", id_hash(tid)))
+                    .outline()
+                    .small()
+                    .label(i18n_lua_scripts(cx, tpl.label_key))
+                    .disabled(saving)
+                    .on_click(cx.listener(move |this, _, w, cx| this.apply_template(tid, w, cx)))
+                    .into_any_element(),
+            );
+        }
+
         v_flex()
-            .gap_3()
-            .p_4()
+            .flex_1()
+            .min_h_0()
             .w_full()
             .when_some(error_banner, |this, banner| this.child(banner))
-            .child(Label::new(title_text).text_sm().text_color(cx.theme().foreground))
             .child(
                 v_flex()
-                    .gap_1()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .gap_2()
+                    .p_4()
+                    .child(Label::new(title_text).text_sm().text_color(cx.theme().foreground))
                     .child(
-                        Label::new(i18n_lua_scripts(cx, "name_label"))
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                    .child(Input::new(&form.name).appearance(true)),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        Label::new(i18n_lua_scripts(cx, "code_label"))
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                    .child(
-                        div()
-                            .h(px(300.0))
-                            .w_full()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .rounded_sm()
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .flex_wrap()
                             .child(
-                                Input::new(&form.code)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .focus_bordered(false)
-                                    .h_full()
-                                    .font_family(get_mono_font_family()),
+                                Label::new(i18n_lua_scripts(cx, "templates_label"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .children(template_btns),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                Label::new(i18n_lua_scripts(cx, "name_label"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .child(Input::new(&form.name).appearance(true)),
+                    )
+                    .when(!hints.is_empty(), |this| {
+                        this.child(h_flex().items_center().gap_3().flex_wrap().children(hints))
+                    })
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .gap_1()
+                            .child(
+                                Label::new(i18n_lua_scripts(cx, "code_label"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h(px(200.0))
+                                    .w_full()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .rounded_sm()
+                                    .child(
+                                        Input::new(&form.code)
+                                            .appearance(false)
+                                            .bordered(false)
+                                            .focus_bordered(false)
+                                            .h_full()
+                                            .font_family(get_mono_font_family()),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_start()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .flex_1()
+                                    .child(
+                                        Label::new(i18n_lua_scripts(cx, "default_keys_label"))
+                                            .text_xs()
+                                            .text_color(muted),
+                                    )
+                                    .child(Input::new(&form.default_keys).appearance(true)),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .flex_1()
+                                    .child(
+                                        Label::new(i18n_lua_scripts(cx, "default_args_label"))
+                                            .text_xs()
+                                            .text_color(muted),
+                                    )
+                                    .child(Input::new(&form.default_args).appearance(true)),
                             ),
                     ),
             )
+            // Sticky footer
             .child(
                 h_flex()
-                    .gap_3()
-                    .items_start()
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .flex_1()
-                            .child(
-                                Label::new(i18n_lua_scripts(cx, "default_keys_label"))
-                                    .text_xs()
-                                    .text_color(muted),
-                            )
-                            .child(Input::new(&form.default_keys).appearance(true)),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .flex_1()
-                            .child(
-                                Label::new(i18n_lua_scripts(cx, "default_args_label"))
-                                    .text_xs()
-                                    .text_color(muted),
-                            )
-                            .child(Input::new(&form.default_args).appearance(true)),
-                    ),
-            )
-            .child(
-                h_flex()
+                    .items_center()
                     .gap_2()
                     .justify_end()
+                    .px_4()
+                    .py_3()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
                     .child(
                         Button::new("lua-cancel")
                             .small()
