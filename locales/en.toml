@@ -1216,6 +1216,7 @@ cmd_settings = "Open Settings"
 title = "Persistence"
 back_to_editor = "Back"
 loading_state = "Server is loading data from disk. Persistence actions are disabled until loading completes."
+refresh_tooltip = "Refresh INFO + CONFIG"
 
 # Status cards
 card_last_save = "Last RDB save"
@@ -1227,15 +1228,39 @@ state_now = "Just now"
 state_ago = "%{ago} ago"
 state_ok = "ok"
 state_failed = "failed"
+last_duration = "last took %{duration}"
+changes_clean = "No pending writes since last save"
+changes_pending = "Writes not yet in RDB"
 aof_enabled = "Enabled"
 aof_disabled = "Disabled"
+aof_enabled_hint = "BGREWRITEAOF available below"
+aof_disabled_hint = "appendonly is off — rewrite hidden"
 aof_growth = "%{ratio}× growth"
 aof_no_baseline = "No baseline yet"
 
-# Failure banners
+# Failure / info banners
 rdb_failure_banner = "Last RDB save failed. Check Redis logs and disk space before retrying."
 aof_failure_banner = "Last AOF rewrite failed. Check Redis logs and disk space before retrying."
 aof_write_failure_banner = "Last AOF write failed. Investigate disk space or fsync errors immediately."
+stale_banner = "Last RDB snapshot is %{age} old. Consider BGSAVE if you rely on point-in-time recovery."
+
+# Policy section
+policy_title = "Policy & paths"
+policy_loading = "Loading CONFIG…"
+policy_unavailable = "CONFIG GET not available (permission denied or restricted environment)."
+policy_save = "RDB save"
+policy_aof = "AOF"
+policy_path = "Paths"
+save_disabled = "save \"\" (auto-RDB disabled)"
+open_config = "Open Config"
+
+# Cluster nodes
+nodes_title = "Per-master status"
+node_col_addr = "Node"
+node_col_last_save = "Last save"
+node_col_changes = "Changes"
+node_col_status = "RDB status"
+node_col_aof = "AOF"
 
 # Action area
 actions_title = "Actions"
@@ -1249,6 +1274,7 @@ bgrewriteaof_button = "Run BGREWRITEAOF"
 bgrewriteaof_in_progress = "Rewriting AOF…"
 elapsed_running = "Running for %{elapsed}"
 readonly_tooltip = "Disabled — connection is read-only"
+loading_tooltip = "Disabled — server is still loading data from disk"
 in_progress_tooltip = "Already running — wait for the current fork to finish"
 
 # Confirmation dialogs
@@ -1263,6 +1289,10 @@ bgsave_started_title = "BGSAVE started"
 bgsave_started_message = "Background snapshot in progress. The panel will update when it completes."
 bgrewriteaof_started_title = "BGREWRITEAOF started"
 bgrewriteaof_started_message = "Background AOF rewrite in progress. The panel will update when it completes."
+bgsave_finished_ok = "BGSAVE finished successfully"
+bgsave_finished_fail = "BGSAVE finished with failure — check Redis logs"
+bgrewriteaof_finished_ok = "BGREWRITEAOF finished successfully"
+bgrewriteaof_finished_fail = "BGREWRITEAOF finished with failure — check Redis logs"
 
 [keyspace_notifications]
 help = "**What it does**\nSubscribes to Redis keyspace events and shows key changes (set/del/expire/…) as they happen.\n\n**Reading the table**\nEach row is one event: the command, the affected key, and its database.\n\n**Notes**\nRequires the server's `notify-keyspace-events` to be enabled — the panel offers a one-click enable when it is off. Only events fired while this panel is open are shown; it is not a historical log."

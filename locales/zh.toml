@@ -1215,6 +1215,7 @@ cmd_settings = "打开设置"
 title = "持久化管理"
 back_to_editor = "返回"
 loading_state = "服务器正在从磁盘加载数据，加载完成前持久化操作不可用。"
+refresh_tooltip = "刷新 INFO 与 CONFIG"
 
 # 状态卡片
 card_last_save = "上次 RDB 快照"
@@ -1226,15 +1227,39 @@ state_now = "刚刚"
 state_ago = "%{ago}前"
 state_ok = "正常"
 state_failed = "失败"
+last_duration = "上次耗时 %{duration}"
+changes_clean = "自上次保存后无待写入变更"
+changes_pending = "变更尚未写入 RDB"
 aof_enabled = "已启用"
 aof_disabled = "未启用"
+aof_enabled_hint = "下方可执行 BGREWRITEAOF"
+aof_disabled_hint = "appendonly 关闭 — 重写操作已隐藏"
 aof_growth = "膨胀 %{ratio}×"
 aof_no_baseline = "尚无重写基线"
 
-# 失败横幅
+# 失败 / 信息横幅
 rdb_failure_banner = "上次 RDB 快照失败,请检查 Redis 日志和磁盘空间后再重试。"
 aof_failure_banner = "上次 AOF 重写失败,请检查 Redis 日志和磁盘空间后再重试。"
 aof_write_failure_banner = "上次 AOF 写入失败,请立即排查磁盘空间或 fsync 错误。"
+stale_banner = "上次 RDB 快照已有 %{age}。若依赖时间点恢复，建议执行 BGSAVE。"
+
+# 策略与路径
+policy_title = "策略与路径"
+policy_loading = "正在加载 CONFIG…"
+policy_unavailable = "无法 CONFIG GET（权限不足或受限环境）。"
+policy_save = "RDB save"
+policy_aof = "AOF"
+policy_path = "路径"
+save_disabled = "save \"\"（已关闭自动 RDB）"
+open_config = "打开配置"
+
+# 集群节点
+nodes_title = "各主节点状态"
+node_col_addr = "节点"
+node_col_last_save = "上次保存"
+node_col_changes = "变更"
+node_col_status = "RDB 状态"
+node_col_aof = "AOF"
 
 # 操作区
 actions_title = "操作"
@@ -1248,6 +1273,7 @@ bgrewriteaof_button = "执行 BGREWRITEAOF"
 bgrewriteaof_in_progress = "正在重写 AOF…"
 elapsed_running = "已运行 %{elapsed}"
 readonly_tooltip = "已禁用——连接处于只读模式"
+loading_tooltip = "已禁用——服务器仍在从磁盘加载数据"
 in_progress_tooltip = "已经在运行——请等待当前 fork 完成"
 
 # 确认对话框
@@ -1262,6 +1288,10 @@ bgsave_started_title = "BGSAVE 已启动"
 bgsave_started_message = "后台快照正在进行,完成后面板将自动更新。"
 bgrewriteaof_started_title = "BGREWRITEAOF 已启动"
 bgrewriteaof_started_message = "后台 AOF 重写正在进行,完成后面板将自动更新。"
+bgsave_finished_ok = "BGSAVE 已成功完成"
+bgsave_finished_fail = "BGSAVE 完成但失败 — 请检查 Redis 日志"
+bgrewriteaof_finished_ok = "BGREWRITEAOF 已成功完成"
+bgrewriteaof_finished_fail = "BGREWRITEAOF 完成但失败 — 请检查 Redis 日志"
 
 [keyspace_notifications]
 help = "**作用**\n订阅 Redis 键空间事件,实时展示 key 的变化(set/del/expire/…)。\n\n**如何解读**\n每行是一个事件:命令、受影响的 key,以及所在数据库。\n\n**说明**\n需服务器启用 `notify-keyspace-events`——未开启时面板提供一键开启。仅显示面板打开期间触发的事件,不是历史日志。"

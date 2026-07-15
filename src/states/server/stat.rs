@@ -266,6 +266,22 @@ pub struct ReplicaInfo {
     pub lag_bytes: i64,
 }
 
+/// One master's RDB/AOF snapshot for the Persistence panel's per-node
+/// table (cluster only — standalone leaves this empty and uses
+/// aggregated `metrics` alone).
+#[derive(Debug, Default, Clone)]
+pub struct PersistenceNodeSnapshot {
+    /// `host:port` label for the master.
+    pub label: SharedString,
+    pub rdb_last_save_time: i64,
+    pub rdb_changes_since_last_save: u64,
+    pub rdb_bgsave_in_progress: bool,
+    pub rdb_last_bgsave_success: bool,
+    pub aof_enabled: bool,
+    pub aof_rewrite_in_progress: bool,
+    pub aof_current_size: u64,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RedisInfo {
     pub meta: RedisServerMeta,
@@ -277,6 +293,9 @@ pub struct RedisInfo {
     /// `INFO replication` `slave_n` lines; empty when the connection has no
     /// replicas (or when the user is connected to a replica directly).
     pub replicas: Vec<ReplicaInfo>,
+    /// Per-master persistence rows. Empty on standalone (the top-level
+    /// cards already cover the single node).
+    pub persistence_nodes: Vec<PersistenceNodeSnapshot>,
 }
 
 /// Aggregates metrics from multiple Redis Cluster nodes into a single global view.
@@ -660,10 +679,31 @@ impl ZedisServerState {
                     None
                 };
 
-                let (_, list): (_, Vec<String>) =
+                let (servers, list): (_, Vec<String>) =
                     client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
+                // Cluster only: keep a per-master persistence row so the
+                // Persistence panel can show which node is still forking.
+                let persistence_nodes = if servers.len() > 1 {
+                    servers
+                        .iter()
+                        .zip(infos.iter())
+                        .map(|(srv, node)| PersistenceNodeSnapshot {
+                            label: format!("{}:{}", srv.host, srv.port).into(),
+                            rdb_last_save_time: node.metrics.rdb_last_save_time,
+                            rdb_changes_since_last_save: node.metrics.rdb_changes_since_last_save,
+                            rdb_bgsave_in_progress: node.metrics.rdb_bgsave_in_progress,
+                            rdb_last_bgsave_success: node.metrics.rdb_last_bgsave_success,
+                            aof_enabled: node.metrics.aof_enabled,
+                            aof_rewrite_in_progress: node.metrics.aof_rewrite_in_progress,
+                            aof_current_size: node.metrics.aof_current_size,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let mut info = aggregate_redis_info(infos);
+                info.persistence_nodes = persistence_nodes;
                 info.metrics.timestamp_ms = unix_ts_millis();
                 info.metrics.latency_ms = latency.as_millis() as u64;
                 Ok((info, slow_logs))
