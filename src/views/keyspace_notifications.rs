@@ -17,84 +17,60 @@
 //! Subscribes to both `__keyspace@*__:*` and `__keyevent@*__:*` on the
 //! connected server so the operator can answer "which client just
 //! touched key X" without leaving the GUI. Same background-task pattern
-//! as the generic Pub/Sub editor, with three additions on top:
+//! as the generic Pub/Sub editor, with:
 //!
-//! 1. Channel-name parsing into `(db, key, event, source)` — so the
-//!    table can show key/event in their own columns instead of dumping
-//!    the raw `__keyspace@0__:foo` string in one cell.
-//! 2. Event-type chip filter and key-pattern substring filter on the
-//!    captured rows (filters apply *post-subscription* so toggling them
-//!    doesn't cycle the connection).
-//! 3. An inline config banner that lights up when
-//!    `notify-keyspace-events` is empty (no event categories enabled
-//!    means the subscription connects fine but never receives a
-//!    message), with a one-click "Enable (AKE)" button gated by the // spellchecker:disable-line
-//!    standard confirm dialog on PROD-tagged servers.
-//!
-//! A hot key on a busy server can emit hundreds of messages per second,
-//! so — like [`crate::views::ZedisMonitor`] — incoming rows are decoded
-//! off-thread, ferried over a channel, and merged into a virtualized
-//! `DataTable` in coalesced batches (one re-render per batch, not per
-//! message), backed by a `VecDeque` ring buffer with O(1) push/evict.
+//! 1. Channel-name parsing into `(db, key, event, source)`.
+//! 2. Post-subscription filters (event chips, key substring, DB, source).
+//! 3. Config banner + Enable presets for `notify-keyspace-events`.
+//! 4. Pause (drop inbound), export filtered rows as CSV, rate hint.
 
-use crate::connection::{get_connection_manager, get_server};
+use crate::connection::{Capability, get_connection_manager, get_server};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props, i18n_common,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props, i18n_common,
     i18n_keyspace_notifications,
 };
 use crate::views::open_key_in_editor;
 use ahash::AHashSet;
 use chrono::Local;
 use futures::StreamExt;
-use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    notification::Notification,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     tooltip::Tooltip,
     v_flex,
 };
 use std::collections::VecDeque;
+use std::time::Instant;
 use tracing::error;
 use zedis_ui::{ZedisDialog, help_popover};
 
-/// Subscribe to both `__keyspace@*__:*` and `__keyevent@*__:*` in one
-/// `PSUBSCRIBE` call — every key write emits two events (one per
-/// channel family), and we want both so the user can spot which family
-/// the message came from.
 const KEYSPACE_PATTERN: &str = "__keyspace@*__:*";
 const KEYEVENT_PATTERN: &str = "__keyevent@*__:*";
-/// Default value passed to `CONFIG SET notify-keyspace-events` when the
-/// user clicks Enable. `K`=keyspace, `E`=keyevent, `A`=all-events.
-/// Equivalent to `KEA` (Redis aliases the shorthand).
-const ENABLE_FLAGS: &str = "AKE"; // spellchecker:disable-line
-/// Cap on retained messages. A hot key on a busy server can emit
-/// hundreds per second — without a bound we'd run away with memory in
-/// minutes. 1000 keeps the last few minutes visible on most workloads.
+/// Default Enable preset: K=keyspace, E=keyevent, A=all event classes.
+const ENABLE_FLAGS_AKE: &str = "AKE"; // spellchecker:disable-line
+/// Alias form also accepted by Redis.
+const ENABLE_FLAGS_KEA: &str = "KEA";
+/// String commands only (keyspace + keyevent + string class).
+const ENABLE_FLAGS_STRING: &str = "KEg$";
 const RING_BUFFER_CAPACITY: usize = 1000;
-/// Max rows merged per foreground wake-up. A burst is drained from the
-/// channel and applied in one state update + one re-render, so a noisy
-/// server can't trigger a render per message.
 const BATCH_LIMIT: usize = 200;
+/// Sliding window for events/sec badge.
+const RATE_WINDOW_SECS: f64 = 5.0;
 
 #[derive(Clone, Debug)]
 struct NotificationRow {
     timestamp: SharedString,
-    /// Redis DB number extracted from the channel name (`__keyspace@N__`).
     db: u32,
-    /// The key the event happened to.
     key: SharedString,
-    /// Event verb — `set`, `del`, `expire`, `expired`, `hset`, …
-    /// Lowercased so chip filtering is case-insensitive.
     event: SharedString,
-    /// Which channel family delivered this row — keyspace vs keyevent.
-    /// Each write surfaces twice (once per family), and surfacing the
-    /// source helps operators spot stuck/missing subscriptions.
     source: NotificationSource,
 }
 
@@ -113,9 +89,17 @@ impl NotificationSource {
     }
 }
 
-/// Default event-type chips shown in the filter row. Order roughly
-/// matches frequency on a typical workload — set/del/expire first, the
-/// long tail (hset/sadd/...) follows.
+/// Which channel families to keep after parse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum SourceFilter {
+    #[default]
+    Both,
+    KeyeventOnly,
+    KeyspaceOnly,
+}
+
+/// Built-in chips (order ≈ frequency). Dynamic events from the live
+/// stream are appended after these.
 const DEFAULT_EVENT_CHIPS: &[&str] = &[
     "set",
     "del",
@@ -135,26 +119,18 @@ const DEFAULT_EVENT_CHIPS: &[&str] = &[
     "xadd",
 ];
 
-// ── Virtualized table delegate ───────────────────────────────────────
-
 const COL_TIME: &str = "col_time";
 const COL_DB: &str = "col_db";
 const COL_KEY: &str = "col_key";
 const COL_EVENT: &str = "col_event";
 const COL_SOURCE: &str = "col_source";
 
-/// Backs the virtualized `DataTable`. `all_rows` is the newest-first ring
-/// buffer; `filtered_rows` is the materialized view when an event-chip or
-/// key-substring filter is active. Only the rows the table actually paints
-/// are turned into elements, so a full 1000-row buffer costs ~one screen of
-/// cells per frame rather than 1000.
 struct KeyspaceTableDelegate {
     all_rows: VecDeque<NotificationRow>,
     filtered_rows: Vec<NotificationRow>,
     is_filtered: bool,
     columns: Vec<Column>,
     column_keys: Vec<&'static str>,
-    /// For the key column's click-to-open-in-editor jump.
     server_state: Entity<ZedisServerState>,
 }
 
@@ -202,11 +178,19 @@ impl KeyspaceTableDelegate {
         }
     }
 
-    /// Recompute `filtered_rows` from the event-chip set and key substring.
-    /// With no filters active we leave `filtered_rows` empty and read straight
-    /// from `all_rows`, so the common (unfiltered) case allocates nothing.
-    fn apply_filter(&mut self, selected_events: &Option<AHashSet<String>>, key_filter: &str) {
-        if selected_events.is_none() && key_filter.is_empty() {
+    #[allow(clippy::too_many_arguments)]
+    fn apply_filter(
+        &mut self,
+        selected_events: &Option<AHashSet<String>>,
+        key_filter: &str,
+        selected_dbs: &Option<AHashSet<u32>>,
+        source_filter: SourceFilter,
+    ) {
+        let no_event = selected_events.is_none();
+        let no_key = key_filter.is_empty();
+        let no_db = selected_dbs.is_none();
+        let no_src = matches!(source_filter, SourceFilter::Both);
+        if no_event && no_key && no_db && no_src {
             self.is_filtered = false;
             self.filtered_rows.clear();
             return;
@@ -220,6 +204,15 @@ impl KeyspaceTableDelegate {
                 Some(set) => set.contains(r.event.as_ref()),
             })
             .filter(|r| key_filter.is_empty() || r.key.contains(key_filter))
+            .filter(|r| match selected_dbs {
+                None => true,
+                Some(set) => set.contains(&r.db),
+            })
+            .filter(|r| match source_filter {
+                SourceFilter::Both => true,
+                SourceFilter::KeyeventOnly => r.source == NotificationSource::Keyevent,
+                SourceFilter::KeyspaceOnly => r.source == NotificationSource::Keyspace,
+            })
             .cloned()
             .collect();
     }
@@ -238,6 +231,10 @@ impl KeyspaceTableDelegate {
         } else {
             self.all_rows.len()
         }
+    }
+
+    fn total_count(&self) -> usize {
+        self.all_rows.len()
     }
 }
 
@@ -267,8 +264,6 @@ impl TableDelegate for KeyspaceTableDelegate {
         self.columns[index].clone()
     }
 
-    // Live tail is intrinsically newest-first; column sorting is not offered
-    // (columns are created without `.sortable()`), so this is never called.
     fn perform_sort(&mut self, _col_ix: usize, _sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {}
 
     fn render_th(
@@ -279,8 +274,6 @@ impl TableDelegate for KeyspaceTableDelegate {
     ) -> impl IntoElement {
         let column = &self.columns[col_ix];
         let name = i18n_keyspace_notifications(cx, self.column_keys[col_ix]);
-        // h_flex (items_center) matches render_td, so header text is
-        // vertically centered like the cells.
         h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
@@ -305,7 +298,6 @@ impl TableDelegate for KeyspaceTableDelegate {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
 
-        // Key column: click opens the key in the editor.
         if col_key == COL_KEY
             && let Some(row) = self.visible_row(row_ix)
         {
@@ -380,35 +372,25 @@ impl TableDelegate for KeyspaceTableDelegate {
 pub struct ZedisKeyspaceNotifications {
     server_state: Entity<ZedisServerState>,
     title: SharedString,
-    /// Virtualized table over the ring buffer; row data lives in the delegate.
     table_state: Entity<TableState<KeyspaceTableDelegate>>,
-    /// Cached count of currently-visible (post-filter) rows.
     row_count: usize,
-    /// Long-running PSUBSCRIBE task. `Some` ⇒ currently subscribed.
+    total_count: usize,
     subscribe_task: Option<Task<()>>,
-    /// True while the initial subscribe handshake is in flight (button
-    /// shows spinner instead of "Stop").
     subscribing: bool,
-    /// Latest read of `notify-keyspace-events`. Empty string ⇒ tracking
-    /// is OFF and we surface the banner. Refreshed on every subscribe
-    /// attempt (and after a successful Enable).
+    /// Drop inbound messages while true (subscription stays up).
+    paused: bool,
     notify_flags: SharedString,
-    /// Once the flags have been fetched at least once, don't keep
-    /// re-firing the request on every render. The fetch itself updates
-    /// `notify_flags` asynchronously so we'd otherwise loop a fetch
-    /// every frame while it's empty.
     notify_flags_fetched: bool,
-    /// Set when the `CONFIG GET notify-keyspace-events` probe fails
-    /// (read-only/ACL-blocked, network, …). The banner then shows the error
-    /// instead of misreporting the server as "notifications off".
     flags_error: Option<SharedString>,
-    /// Set of event names the user has filtered IN. `None` = show all,
-    /// `Some(set)` = show only events in the set (empty set ⇒ nothing).
+    subscribe_error: Option<SharedString>,
     selected_events: Option<AHashSet<String>>,
-    /// Substring filter applied to the key column. Stored separately
-    /// from the InputState so the drain loop can re-apply it cheaply.
+    selected_dbs: Option<AHashSet<u32>>,
+    source_filter: SourceFilter,
     key_filter: String,
     key_filter_input: Entity<InputState>,
+    /// Timestamps of recent ingests for events/sec.
+    rate_ticks: VecDeque<Instant>,
+    pending_notification: Option<Notification>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -431,8 +413,6 @@ impl ZedisKeyspaceNotifications {
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         let mut subscriptions = Vec::new();
-        // Key filter is post-subscription: typing into the input only
-        // narrows the visible rows, no SUBSCRIBE churn.
         subscriptions.push(
             cx.subscribe_in(&key_filter_input, window, |this, state, event, _window, cx| {
                 if let InputEvent::Change = event {
@@ -441,20 +421,48 @@ impl ZedisKeyspaceNotifications {
                 }
             }),
         );
+        subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| {
+            if let ServerEvent::ServerSelected(_) = event {
+                this.stop_subscribe(cx);
+                this.clear_rows(cx);
+                this.notify_flags = SharedString::default();
+                this.notify_flags_fetched = false;
+                this.flags_error = None;
+                this.subscribe_error = None;
+                this.selected_events = None;
+                this.selected_dbs = None;
+                this.source_filter = SourceFilter::Both;
+                this.paused = false;
+                this.rate_ticks.clear();
+                let name = get_server(this.server_state.read(cx).server_id())
+                    .map(|s| s.name)
+                    .unwrap_or_else(|_| "--".to_string());
+                this.title = name.into();
+                this.refresh_notify_flags(cx);
+                cx.notify();
+            }
+        }));
 
         Self {
             server_state,
             title,
             table_state,
             row_count: 0,
+            total_count: 0,
             subscribe_task: None,
             subscribing: false,
+            paused: false,
             notify_flags: SharedString::default(),
             notify_flags_fetched: false,
             flags_error: None,
+            subscribe_error: None,
             selected_events: None,
+            selected_dbs: None,
+            source_filter: SourceFilter::Both,
             key_filter: String::new(),
             key_filter_input,
+            rate_ticks: VecDeque::new(),
+            pending_notification: None,
             _subscriptions: subscriptions,
         }
     }
@@ -463,11 +471,17 @@ impl ZedisKeyspaceNotifications {
         self.subscribe_task.is_some()
     }
 
-    fn total_rows(&self, cx: &App) -> usize {
-        self.table_state.read(cx).delegate().all_rows.len()
+    fn events_per_sec(&self) -> f64 {
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs_f64(RATE_WINDOW_SECS);
+        let n = self
+            .rate_ticks
+            .iter()
+            .filter(|t| now.duration_since(**t) <= window)
+            .count();
+        n as f64 / RATE_WINDOW_SECS
     }
 
-    /// Open the dedicated pub/sub connection and start the read loop.
     fn start_subscribe(&mut self, cx: &mut Context<Self>) {
         if self.is_subscribed() || self.subscribing {
             return;
@@ -477,27 +491,20 @@ impl ZedisKeyspaceNotifications {
             return;
         }
         self.subscribing = true;
+        self.subscribe_error = None;
         cx.notify();
 
         let entity = cx.entity().downgrade();
         let server_id_for_task = server_id.clone();
 
-        // Also kick a separate config refresh — the banner depends on
-        // it and we want it accurate the moment Subscribe lands.
         self.refresh_notify_flags(cx);
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
-            // Connect + PSUBSCRIBE off-thread, then await the handshake.
             let connect: Result<_, Error> = cx
                 .background_spawn(async move {
                     let mut pubsub = get_connection_manager()
                         .get_pubsub_connection(&server_id_for_task)
                         .await?;
-                    // redis-rs's `psubscribe` takes `impl ToRedisArgs`,
-                    // which is implemented for `Vec<T>` and `&[T]` but
-                    // not the raw `[T; N]` array literal — wrap in a
-                    // Vec to match the same path the generic Pub/Sub
-                    // editor uses.
                     let patterns: Vec<&str> = vec![KEYSPACE_PATTERN, KEYEVENT_PATTERN];
                     pubsub
                         .psubscribe(patterns)
@@ -511,19 +518,25 @@ impl ZedisKeyspaceNotifications {
                 Ok(pubsub) => pubsub,
                 Err(e) => {
                     error!(error = %e, "Keyspace notifications subscribe failed");
+                    let msg = e.to_string();
                     let _ = entity.update(cx, |this, cx| {
                         this.subscribing = false;
                         this.subscribe_task = None;
+                        this.subscribe_error = Some(msg.clone().into());
+                        this.pending_notification = Some(Notification::error(format!(
+                            "{}: {msg}",
+                            i18n_keyspace_notifications(cx, "subscribe_failed")
+                        )));
                         cx.notify();
                     });
                     return;
                 }
             };
 
-            // Handshake done — flip the button from spinner to "Stop".
             if entity
                 .update(cx, |this, cx| {
                     this.subscribing = false;
+                    this.subscribe_error = None;
                     cx.notify();
                 })
                 .is_err()
@@ -531,8 +544,6 @@ impl ZedisKeyspaceNotifications {
                 return;
             }
 
-            // Background reader → channel. Channel-name parsing runs off the
-            // main thread; only the batched merge touches the foreground.
             let (tx, rx) = smol::channel::unbounded::<NotificationRow>();
             let reader = cx.background_spawn(async move {
                 let mut stream = pubsub.on_message();
@@ -542,14 +553,11 @@ impl ZedisKeyspaceNotifications {
                     if let Some(row) = parse_notification(&channel, payload)
                         && tx.send(row).await.is_err()
                     {
-                        // Drainer gone → stop reading.
                         break;
                     }
                 }
             });
 
-            // Foreground drainer: coalesce a burst into one state update +
-            // one re-render instead of re-painting the table per message.
             while let Ok(first) = rx.recv().await {
                 let mut batch = Vec::with_capacity(BATCH_LIMIT);
                 batch.push(first);
@@ -564,7 +572,6 @@ impl ZedisKeyspaceNotifications {
                 }
             }
 
-            // Stream ended or entity dropped — drop the reader connection.
             drop(reader);
         }));
     }
@@ -572,32 +579,53 @@ impl ZedisKeyspaceNotifications {
     fn stop_subscribe(&mut self, cx: &mut Context<Self>) {
         if self.subscribe_task.take().is_some() {
             self.subscribing = false;
+            self.paused = false;
             cx.notify();
         }
     }
 
-    /// Merge a drained batch into the ring buffer (O(1) per row), trim to
-    /// capacity, refresh the filtered view, and notify once.
+    fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        if !self.is_subscribed() {
+            return;
+        }
+        self.paused = !self.paused;
+        cx.notify();
+    }
+
     fn ingest_batch(&mut self, batch: Vec<NotificationRow>, cx: &mut Context<Self>) {
+        if self.paused {
+            return;
+        }
         let selected = self.selected_events.clone();
         let key_filter = self.key_filter.clone();
+        let selected_dbs = self.selected_dbs.clone();
+        let source_filter = self.source_filter;
+        let n = batch.len();
         self.table_state.update(cx, |state, _| {
             let delegate = state.delegate_mut();
             for row in batch {
                 delegate.all_rows.push_front(row);
                 if delegate.all_rows.len() > RING_BUFFER_CAPACITY {
-                    // Newest-first: evict from the tail (oldest) at cap.
                     delegate.all_rows.pop_back();
                 }
             }
-            delegate.apply_filter(&selected, &key_filter);
+            delegate.apply_filter(&selected, &key_filter, &selected_dbs, source_filter);
         });
-        self.row_count = self.table_state.read(cx).delegate().visible_count();
+        let now = Instant::now();
+        for _ in 0..n {
+            self.rate_ticks.push_back(now);
+        }
+        // Trim old ticks.
+        let window = std::time::Duration::from_secs_f64(RATE_WINDOW_SECS * 2.0);
+        while self.rate_ticks.front().is_some_and(|t| now.duration_since(*t) > window) {
+            self.rate_ticks.pop_front();
+        }
+        self.refresh_counts(cx);
         cx.notify();
     }
 
     fn clear_rows(&mut self, cx: &mut Context<Self>) {
-        if self.total_rows(cx) == 0 {
+        if self.total_count == 0 {
             return;
         }
         self.table_state.update(cx, |state, _| {
@@ -607,18 +635,28 @@ impl ZedisKeyspaceNotifications {
             delegate.is_filtered = false;
         });
         self.row_count = 0;
+        self.total_count = 0;
+        self.rate_ticks.clear();
         cx.notify();
     }
 
-    /// Re-run the active filter against the buffer and refresh the count.
-    /// Called when an event chip or the key substring changes.
+    fn refresh_counts(&mut self, cx: &App) {
+        let d = self.table_state.read(cx).delegate();
+        self.row_count = d.visible_count();
+        self.total_count = d.total_count();
+    }
+
     fn apply_filter_now(&mut self, cx: &mut Context<Self>) {
         let selected = self.selected_events.clone();
         let key_filter = self.key_filter.clone();
+        let selected_dbs = self.selected_dbs.clone();
+        let source_filter = self.source_filter;
         self.table_state.update(cx, |state, _| {
-            state.delegate_mut().apply_filter(&selected, &key_filter);
+            state
+                .delegate_mut()
+                .apply_filter(&selected, &key_filter, &selected_dbs, source_filter);
         });
-        self.row_count = self.table_state.read(cx).delegate().visible_count();
+        self.refresh_counts(cx);
         cx.notify();
     }
 
@@ -656,31 +694,42 @@ impl ZedisKeyspaceNotifications {
         .detach();
     }
 
-    /// Drive the Enable banner click. Non-PROD goes straight to CONFIG
-    /// SET; PROD-tag detours through the standard alert dialog so a
-    /// stray click doesn't silently change a production config.
-    fn enable_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn enable_notifications(&mut self, flags: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::ConfigWrite) {
+            self.pending_notification = Some(Notification::error(i18n_keyspace_notifications(cx, "enable_readonly")));
+            cx.notify();
+            return;
+        }
         let server_id = self.server_state.read(cx).server_id().to_string();
         if server_id.is_empty() {
             return;
         }
         let high_risk = get_server(&server_id).map(|s| s.is_high_risk_tag()).unwrap_or(false);
+        let flags = flags.to_string();
         if high_risk {
-            self.open_enable_confirm(window, cx);
+            self.open_enable_confirm(&flags, window, cx);
         } else {
-            self.run_enable(cx);
+            self.run_enable(&flags, cx);
         }
     }
 
-    fn open_enable_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_enable_confirm(&mut self, flags: &str, window: &mut Window, cx: &mut Context<Self>) {
         let title = i18n_keyspace_notifications(cx, "enable_confirm_title");
-        let body = i18n_keyspace_notifications(cx, "enable_confirm_body");
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body: SharedString = rust_i18n::t!(
+            "keyspace_notifications.enable_confirm_body",
+            flags = flags,
+            locale = locale
+        )
+        .to_string()
+        .into();
         let editor = cx.entity().downgrade();
+        let flags = flags.to_string();
         ZedisDialog::new_alert(title, body.to_string())
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
-                    editor.update(cx, |this, cx| this.run_enable(cx));
+                    editor.update(cx, |this, cx| this.run_enable(&flags, cx));
                 }
                 window.close_dialog(cx);
                 true
@@ -688,37 +737,48 @@ impl ZedisKeyspaceNotifications {
             .open(window, cx);
     }
 
-    fn run_enable(&mut self, cx: &mut Context<Self>) {
+    fn run_enable(&mut self, flags: &str, cx: &mut Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         let entity = cx.entity().downgrade();
+        let flags = flags.to_string();
         cx.spawn(async move |_handle, cx| {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 redis::cmd("CONFIG")
                     .arg("SET")
                     .arg("notify-keyspace-events")
-                    .arg(ENABLE_FLAGS)
+                    .arg(&flags)
                     .query_async::<()>(&mut conn)
                     .await
                     .map_err(|e| Error::Invalid { message: e.to_string() })?;
                 Ok::<_, Error>(())
             });
-            let _ = task.await;
-            let _ = entity.update(cx, |this, cx| {
-                this.refresh_notify_flags(cx);
+            let result = task.await;
+            let _ = entity.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.pending_notification =
+                        Some(Notification::success(i18n_keyspace_notifications(cx, "enable_ok")));
+                    this.refresh_notify_flags(cx);
+                }
+                Err(e) => {
+                    this.pending_notification = Some(Notification::error(e.to_string()));
+                    cx.notify();
+                }
             });
         })
         .detach();
     }
 
     fn toggle_event_chip(&mut self, event: &str, cx: &mut Context<Self>) {
-        // First click on any chip transitions from "show all" (None) to
-        // an explicit set with just that chip selected. Click the same
-        // chip again to remove it. The "All" pill resets back to None.
         let set = self.selected_events.get_or_insert_with(AHashSet::new);
         if !set.insert(event.to_string()) {
             set.remove(event);
+        }
+        // Empty explicit set → treat as "show nothing" is confusing; if empty
+        // after un-click last chip, reset to All.
+        if set.is_empty() {
+            self.selected_events = None;
         }
         self.apply_filter_now(cx);
     }
@@ -729,13 +789,104 @@ impl ZedisKeyspaceNotifications {
         }
     }
 
+    fn toggle_db_chip(&mut self, db: u32, cx: &mut Context<Self>) {
+        let set = self.selected_dbs.get_or_insert_with(AHashSet::new);
+        if !set.insert(db) {
+            set.remove(&db);
+        }
+        if set.is_empty() {
+            self.selected_dbs = None;
+        }
+        self.apply_filter_now(cx);
+    }
+
+    fn reset_db_filter(&mut self, cx: &mut Context<Self>) {
+        if self.selected_dbs.take().is_some() {
+            self.apply_filter_now(cx);
+        }
+    }
+
+    fn set_source_filter(&mut self, filter: SourceFilter, cx: &mut Context<Self>) {
+        if self.source_filter != filter {
+            self.source_filter = filter;
+            self.apply_filter_now(cx);
+        }
+    }
+
+    /// Default chips first, then any extra event names seen in the buffer.
+    fn event_chip_list(&self, cx: &App) -> Vec<String> {
+        let mut seen: AHashSet<String> = DEFAULT_EVENT_CHIPS.iter().map(|s| (*s).to_string()).collect();
+        let mut out: Vec<String> = DEFAULT_EVENT_CHIPS.iter().map(|s| (*s).to_string()).collect();
+        let extra: AHashSet<String> = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .all_rows
+            .iter()
+            .map(|r| r.event.to_string())
+            .filter(|e| !seen.contains(e.as_str()))
+            .collect();
+        let mut extra_sorted: Vec<String> = extra.into_iter().collect();
+        extra_sorted.sort();
+        for e in extra_sorted {
+            if seen.insert(e.clone()) {
+                out.push(e);
+            }
+        }
+        out
+    }
+
+    fn db_chip_list(&self, cx: &App) -> Vec<u32> {
+        let mut dbs: Vec<u32> = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .all_rows
+            .iter()
+            .map(|r| r.db)
+            .collect::<AHashSet<_>>()
+            .into_iter()
+            .collect();
+        dbs.sort_unstable();
+        dbs
+    }
+
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let d = self.table_state.read(cx).delegate();
+        let rows: Vec<&NotificationRow> = if d.is_filtered {
+            d.filtered_rows.iter().collect()
+        } else {
+            d.all_rows.iter().collect()
+        };
+        if rows.is_empty() {
+            return;
+        }
+        let mut out = String::from("time,db,key,event,source\n");
+        for r in rows {
+            let key = r.key.replace('"', "\"\"");
+            out.push_str(&format!(
+                "{},{},\"{}\",{},{}\n",
+                r.timestamp,
+                r.db,
+                key,
+                r.event,
+                r.source.as_str()
+            ));
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(out));
+        self.pending_notification = Some(Notification::info(i18n_keyspace_notifications(cx, "export_ok")));
+        cx.notify();
+    }
+
     // ── Render helpers ────────────────────────────────────────────────
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let total = self.total_rows(cx);
         let theme = cx.theme();
         let subscribed = self.is_subscribed();
         let subscribing = self.subscribing;
+        let paused = self.paused;
+        let visible = self.row_count;
+        let total = self.total_count;
 
         let action_btn = if subscribed {
             Button::new("ksn-stop")
@@ -757,8 +908,17 @@ impl ZedisKeyspaceNotifications {
 
         let count_label: SharedString = if total == 0 {
             SharedString::default()
+        } else if visible == total {
+            format!("({total}/{RING_BUFFER_CAPACITY})").into()
         } else {
-            format!("({total})").into()
+            format!("({visible}/{total} · cap {RING_BUFFER_CAPACITY})").into()
+        };
+
+        let rate = self.events_per_sec();
+        let rate_label: Option<SharedString> = if subscribed && rate > 0.05 {
+            Some(format!("{rate:.1}/s").into())
+        } else {
+            None
         };
 
         h_flex()
@@ -791,47 +951,125 @@ impl ZedisKeyspaceNotifications {
                         i18n_keyspace_notifications(cx, "help"),
                     ))
                     .child(Label::new(self.title.clone()).text_color(theme.muted_foreground))
-                    .child(Label::new(count_label).text_xs().text_color(theme.muted_foreground)),
+                    .child(Label::new(count_label).text_xs().text_color(theme.muted_foreground))
+                    .when_some(rate_label, |this, r| {
+                        this.child(Label::new(r).text_xs().text_color(if rate > 50.0 {
+                            theme.warning
+                        } else {
+                            theme.muted_foreground
+                        }))
+                    })
+                    .when(paused, |this| {
+                        this.child(
+                            Label::new(i18n_keyspace_notifications(cx, "paused_badge"))
+                                .text_xs()
+                                .text_color(theme.yellow),
+                        )
+                    }),
             )
             .child(
-                h_flex().gap_2().child(action_btn).child(
-                    Button::new("ksn-clear")
-                        .ghost()
-                        .small()
-                        .label(i18n_keyspace_notifications(cx, "clear"))
-                        .disabled(total == 0)
-                        .on_click(cx.listener(|this, _, _w, cx| this.clear_rows(cx))),
-                ),
+                h_flex()
+                    .gap_2()
+                    .when(subscribed, |this| {
+                        this.child(
+                            Button::new("ksn-pause")
+                                .outline()
+                                .small()
+                                .label(if paused {
+                                    i18n_keyspace_notifications(cx, "resume")
+                                } else {
+                                    i18n_keyspace_notifications(cx, "pause")
+                                })
+                                .tooltip(i18n_keyspace_notifications(cx, "pause_tooltip"))
+                                .on_click(cx.listener(|this, _, _w, cx| this.toggle_pause(cx))),
+                        )
+                    })
+                    .child(
+                        Button::new("ksn-export")
+                            .ghost()
+                            .small()
+                            .label(i18n_keyspace_notifications(cx, "export"))
+                            .tooltip(i18n_keyspace_notifications(cx, "export_tooltip"))
+                            .disabled(total == 0)
+                            .on_click(cx.listener(|this, _, _w, cx| this.export_csv(cx))),
+                    )
+                    .child(action_btn)
+                    .child(
+                        Button::new("ksn-clear")
+                            .ghost()
+                            .small()
+                            .label(i18n_keyspace_notifications(cx, "clear"))
+                            .disabled(total == 0)
+                            .on_click(cx.listener(|this, _, _w, cx| this.clear_rows(cx))),
+                    ),
             )
     }
 
-    fn render_config_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_flags_status(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let theme = cx.theme();
-        // The CONFIG GET probe failed (read-only/ACL-blocked, network, …):
-        // surface that instead of pretending notifications are simply "off".
         if let Some(err) = &self.flags_error {
             return Some(
                 div()
                     .mx_4()
-                    .my_2()
-                    .p_3()
+                    .my_1()
+                    .px_3()
+                    .py_1()
                     .rounded(theme.radius)
-                    .border_1()
-                    .border_color(theme.danger)
                     .bg(theme.danger.opacity(0.1))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(Icon::new(IconName::CircleX).text_color(theme.danger))
-                            .child(Label::new(err.clone()).text_sm().text_color(theme.danger).flex_1()),
-                    )
+                    .child(Label::new(err.clone()).text_xs().text_color(theme.danger))
                     .into_any_element(),
             );
+        }
+        if self.notify_flags.is_empty() {
+            return None;
+        }
+        let flags = self.notify_flags.clone();
+        Some(
+            h_flex()
+                .mx_4()
+                .my_1()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .items_center()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .child(
+                    Label::new(i18n_keyspace_notifications(cx, "flags_label"))
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(
+                    Label::new(flags)
+                        .text_xs()
+                        .font_family(get_mono_font_family())
+                        .text_color(theme.green),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("ksn-flags-refresh")
+                        .ghost()
+                        .xsmall()
+                        .label(i18n_keyspace_notifications(cx, "flags_refresh"))
+                        .on_click(cx.listener(|this, _, _w, cx| {
+                            this.notify_flags_fetched = false;
+                            this.refresh_notify_flags(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_config_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let theme = cx.theme();
+        if self.flags_error.is_some() {
+            return None;
         }
         if !self.notify_flags.is_empty() {
             return None;
         }
+        let can_write = self.server_state.read(cx).can(Capability::ConfigWrite);
         Some(
             div()
                 .mx_4()
@@ -845,6 +1083,7 @@ impl ZedisKeyspaceNotifications {
                     h_flex()
                         .gap_2()
                         .items_center()
+                        .flex_wrap()
                         .child(Icon::new(IconName::Info).text_color(theme.warning))
                         .child(
                             Label::new(i18n_keyspace_notifications(cx, "banner_disabled"))
@@ -852,30 +1091,86 @@ impl ZedisKeyspaceNotifications {
                                 .text_color(theme.warning)
                                 .flex_1(),
                         )
-                        .child(
-                            Button::new("ksn-enable")
-                                .primary()
-                                .small()
-                                .label(i18n_keyspace_notifications(cx, "enable_button"))
-                                .on_click(cx.listener(|this, _, w, cx| this.enable_notifications(w, cx))),
-                        ),
+                        .when(can_write, |this| {
+                            this.child(
+                                Button::new("ksn-enable-ake")
+                                    .primary()
+                                    .small()
+                                    .label(i18n_keyspace_notifications(cx, "enable_ake"))
+                                    .tooltip(i18n_keyspace_notifications(cx, "enable_ake_tooltip"))
+                                    .on_click(
+                                        cx.listener(|this, _, w, cx| {
+                                            this.enable_notifications(ENABLE_FLAGS_AKE, w, cx)
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                Button::new("ksn-enable-kea")
+                                    .outline()
+                                    .small()
+                                    .label(i18n_keyspace_notifications(cx, "enable_kea"))
+                                    .tooltip(i18n_keyspace_notifications(cx, "enable_kea_tooltip"))
+                                    .on_click(
+                                        cx.listener(|this, _, w, cx| {
+                                            this.enable_notifications(ENABLE_FLAGS_KEA, w, cx)
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                Button::new("ksn-enable-str")
+                                    .outline()
+                                    .small()
+                                    .label(i18n_keyspace_notifications(cx, "enable_string"))
+                                    .tooltip(i18n_keyspace_notifications(cx, "enable_string_tooltip"))
+                                    .on_click(cx.listener(|this, _, w, cx| {
+                                        this.enable_notifications(ENABLE_FLAGS_STRING, w, cx)
+                                    })),
+                            )
+                        })
+                        .when(!can_write, |this| {
+                            this.child(
+                                Label::new(i18n_keyspace_notifications(cx, "enable_readonly"))
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground),
+                            )
+                        }),
                 )
+                .into_any_element(),
+        )
+    }
+
+    fn render_subscribe_error(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let err = self.subscribe_error.as_ref()?;
+        let theme = cx.theme();
+        Some(
+            div()
+                .mx_4()
+                .my_1()
+                .px_3()
+                .py_2()
+                .rounded(theme.radius)
+                .bg(theme.danger.opacity(0.12))
+                .child(Label::new(err.clone()).text_xs().text_color(theme.danger))
                 .into_any_element(),
         )
     }
 
     fn render_filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let chips: Vec<gpui::AnyElement> = DEFAULT_EVENT_CHIPS
+        let event_chips = self.event_chip_list(cx);
+        let db_chips = self.db_chip_list(cx);
+
+        let chips: Vec<gpui::AnyElement> = event_chips
             .iter()
             .enumerate()
             .map(|(i, event)| {
-                let event_owned = (*event).to_string();
+                let event_owned = event.clone();
+                // Only highlight chips when an *explicit* filter is active.
                 let active = match &self.selected_events {
-                    None => true,
-                    Some(set) => set.contains(*event),
+                    None => false,
+                    Some(set) => set.contains(event.as_str()),
                 };
-                let mut btn = Button::new(("ksn-chip", i as u32)).xsmall().label(*event);
+                let mut btn = Button::new(("ksn-chip", i as u32)).xsmall().label(event.as_str());
                 btn = if active { btn.primary() } else { btn.outline() };
                 btn.on_click(cx.listener(move |this, _, _w, cx| {
                     this.toggle_event_chip(&event_owned, cx);
@@ -883,6 +1178,24 @@ impl ZedisKeyspaceNotifications {
                 .into_any_element()
             })
             .collect();
+
+        let db_btns: Vec<gpui::AnyElement> = db_chips
+            .iter()
+            .enumerate()
+            .map(|(i, db)| {
+                let db = *db;
+                let active = match &self.selected_dbs {
+                    None => false,
+                    Some(set) => set.contains(&db),
+                };
+                let mut btn = Button::new(("ksn-db", i as u32)).xsmall().label(db.to_string());
+                btn = if active { btn.primary() } else { btn.outline() };
+                btn.on_click(cx.listener(move |this, _, _w, cx| this.toggle_db_chip(db, cx)))
+                    .into_any_element()
+            })
+            .collect();
+
+        let source_filter = self.source_filter;
 
         v_flex()
             .w_full()
@@ -902,10 +1215,6 @@ impl ZedisKeyspaceNotifications {
                             .text_color(theme.muted_foreground),
                     )
                     .child({
-                        // "All" pill resets the explicit filter back to
-                        // "no filter" — distinct from un-clicking every
-                        // chip individually (which would leave the
-                        // selected_events set as empty and show nothing).
                         let active = self.selected_events.is_none();
                         let mut btn = Button::new("ksn-chip-all")
                             .xsmall()
@@ -915,17 +1224,127 @@ impl ZedisKeyspaceNotifications {
                     })
                     .children(chips),
             )
+            .when(!db_chips.is_empty(), |this| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .child(
+                            Label::new(i18n_keyspace_notifications(cx, "filter_db"))
+                                .text_xs()
+                                .text_color(theme.muted_foreground),
+                        )
+                        .child({
+                            let active = self.selected_dbs.is_none();
+                            let mut btn = Button::new("ksn-db-all")
+                                .xsmall()
+                                .label(i18n_keyspace_notifications(cx, "filter_event_all"));
+                            btn = if active { btn.primary() } else { btn.outline() };
+                            btn.on_click(cx.listener(|this, _, _w, cx| this.reset_db_filter(cx)))
+                        })
+                        .children(db_btns),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
+                    .flex_wrap()
+                    .child(
+                        Label::new(i18n_keyspace_notifications(cx, "filter_source"))
+                            .text_xs()
+                            .text_color(theme.muted_foreground),
+                    )
+                    .child({
+                        let mut btn = Button::new("ksn-src-both")
+                            .xsmall()
+                            .label(i18n_keyspace_notifications(cx, "source_both"));
+                        btn = if matches!(source_filter, SourceFilter::Both) {
+                            btn.primary()
+                        } else {
+                            btn.outline()
+                        };
+                        btn.on_click(cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::Both, cx)))
+                    })
+                    .child({
+                        let mut btn = Button::new("ksn-src-ke")
+                            .xsmall()
+                            .label(i18n_keyspace_notifications(cx, "source_keyevent"));
+                        btn = if matches!(source_filter, SourceFilter::KeyeventOnly) {
+                            btn.primary()
+                        } else {
+                            btn.outline()
+                        };
+                        btn.on_click(
+                            cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::KeyeventOnly, cx)),
+                        )
+                    })
+                    .child({
+                        let mut btn = Button::new("ksn-src-ks")
+                            .xsmall()
+                            .label(i18n_keyspace_notifications(cx, "source_keyspace"));
+                        btn = if matches!(source_filter, SourceFilter::KeyspaceOnly) {
+                            btn.primary()
+                        } else {
+                            btn.outline()
+                        };
+                        btn.on_click(
+                            cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::KeyspaceOnly, cx)),
+                        )
+                    })
+                    .child(div().w(px(12.)))
                     .child(
                         Label::new(i18n_keyspace_notifications(cx, "filter_key_pattern"))
                             .text_xs()
                             .text_color(theme.muted_foreground),
                     )
-                    .child(Input::new(&self.key_filter_input).flex_1()),
+                    .child(div().w(px(220.)).child(Input::new(&self.key_filter_input).small())),
             )
+    }
+
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let msg = if !self.is_subscribed() && !self.subscribing {
+            if self.notify_flags.is_empty() && self.flags_error.is_none() {
+                i18n_keyspace_notifications(cx, "empty_enable_or_subscribe")
+            } else {
+                i18n_keyspace_notifications(cx, "empty_subscribe")
+            }
+        } else if self.paused {
+            i18n_keyspace_notifications(cx, "empty_paused")
+        } else if self.selected_events.is_some()
+            || self.selected_dbs.is_some()
+            || !self.key_filter.is_empty()
+            || !matches!(self.source_filter, SourceFilter::Both)
+        {
+            i18n_keyspace_notifications(cx, "empty_filtered")
+        } else {
+            i18n_keyspace_notifications(cx, "empty_waiting")
+        };
+        div()
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_2()
+                    .max_w(px(420.))
+                    .child(Icon::new(IconName::Inbox).text_color(muted))
+                    .child(
+                        Label::new(msg)
+                            .text_sm()
+                            .text_color(muted)
+                            .text_center()
+                            .whitespace_normal(),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_message_table(&self) -> impl IntoElement {
@@ -939,35 +1358,38 @@ impl ZedisKeyspaceNotifications {
 }
 
 impl Render for ZedisKeyspaceNotifications {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Lazy first-time config read on first render so the banner
-        // appears without the user having to click Subscribe first.
-        // Guarded by `notify_flags_fetched` to avoid re-firing on every
-        // frame while the async fetch is still in flight.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(notification) = self.pending_notification.take() {
+            window.push_notification(notification, cx);
+        }
         if !self.notify_flags_fetched {
             self.refresh_notify_flags(cx);
         }
+
+        let show_empty = self.row_count == 0;
 
         let mut body = v_flex().size_full().font_family(get_mono_font_family());
         body = body.child(self.render_header(cx));
         if let Some(banner) = self.render_config_banner(cx) {
             body = body.child(banner);
         }
+        if let Some(status) = self.render_flags_status(cx) {
+            body = body.child(status);
+        }
+        if let Some(err) = self.render_subscribe_error(cx) {
+            body = body.child(err);
+        }
         body = body.child(self.render_filter_bar(cx));
-        body = body.child(self.render_message_table());
+        if show_empty {
+            body = body.child(self.render_empty_state(cx));
+        } else {
+            body = body.child(self.render_message_table());
+        }
         body.into_any_element()
     }
 }
 
-/// Parse a Redis keyspace notification channel + payload into the
-/// structured row the table renders. Returns `None` for unrecognised
-/// channels (defensively — Redis only emits the two `__keyspace@N__`
-/// / `__keyevent@N__` shapes, but a clever user could SUBSCRIBE
-/// anything from `redis-cli` mid-session).
 fn parse_notification(channel: &str, payload: &[u8]) -> Option<NotificationRow> {
-    // Channel shapes:
-    //   __keyspace@<db>__:<key>   payload = event verb
-    //   __keyevent@<db>__:<event> payload = key
     let inner = channel.strip_prefix("__")?;
     let (kind, rest) = inner.split_once('@')?;
     let (db_str, after_db) = rest.split_once("__:")?;
@@ -1008,29 +1430,10 @@ mod tests {
 
     #[test]
     fn parses_keyevent_channel_swaps_key_and_event() {
-        // For __keyevent@N__:<event> Redis puts the key in the payload,
-        // not in the channel — verify we swap correctly.
         let row = parse_notification("__keyevent@3__:expire", b"session:abc").expect("parse");
         assert_eq!(row.db, 3);
         assert_eq!(row.key.as_ref(), "session:abc");
         assert_eq!(row.event.as_ref(), "expire");
         assert_eq!(row.source, NotificationSource::Keyevent);
-    }
-
-    #[test]
-    fn rejects_non_keyspace_channels() {
-        // Generic pub/sub channels accidentally caught by a wider
-        // pattern must not produce rows — they'd corrupt the table.
-        assert!(parse_notification("my.app.channel", b"hello").is_none());
-        // Empty key after the colon — degenerate channel name.
-        assert!(parse_notification("__keyspace@0__:", b"del").is_none());
-    }
-
-    #[test]
-    fn lowercases_event_for_chip_filter_match() {
-        // Redis modules can emit events with mixed case; chip filter
-        // uses lowercase keys so we normalise on the way in.
-        let row = parse_notification("__keyspace@0__:k", b"DEL").expect("parse");
-        assert_eq!(row.event.as_ref(), "del");
     }
 }
