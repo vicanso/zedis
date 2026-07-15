@@ -58,7 +58,11 @@ pub use dump_restore::{
     ConflictMode, ConflictPreview, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key,
     dump_keys_chunk, preview_dump_conflicts, restore_keys_chunk,
 };
-pub use functions::{FunctionLibrary, function_delete, function_list, function_load};
+pub use functions::{
+    FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, LibraryValidateError, LibraryValidation,
+    function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
+    function_stats, validate_library_source,
+};
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
