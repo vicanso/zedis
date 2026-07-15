@@ -38,6 +38,7 @@ use crate::{
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_search,
     },
+    views::open_key_in_editor,
 };
 use gpui::{Action, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
@@ -149,8 +150,16 @@ pub struct ZedisSearchManager {
     groupby_input: Entity<InputState>,
     reducer_args_input: Entity<InputState>,
     reducer_alias_input: Entity<InputState>,
+    /// SORTBY field name (empty = no sort clause).
+    sort_by_input: Entity<InputState>,
+    /// DIALECT version string (empty = omit / server default).
+    dialect_input: Entity<InputState>,
 
     reducer_fn: ReducerFn,
+    /// When SORTBY is set: `true` = DESC, `false` = ASC.
+    sort_desc: bool,
+    /// Collapse the schema inspector to free space for results.
+    schema_collapsed: bool,
     last_result: Option<LastResult>,
     error: Option<SharedString>,
     loading_indexes: bool,
@@ -215,6 +224,8 @@ impl ZedisSearchManager {
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_search(cx, "reducer_args_placeholder")));
         let reducer_alias_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_search(cx, "reducer_alias_placeholder")));
+        let sort_by_input = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_search(cx, "sortby_placeholder")));
+        let dialect_input = cx.new(|cx| InputState::new(window, cx).default_value("2"));
 
         let mut this = Self {
             server_state,
@@ -233,7 +244,11 @@ impl ZedisSearchManager {
             groupby_input,
             reducer_args_input,
             reducer_alias_input,
+            sort_by_input,
+            dialect_input,
             reducer_fn: ReducerFn::Count,
+            sort_desc: false,
+            schema_collapsed: false,
             last_result: None,
             error: None,
             loading_indexes: false,
@@ -727,12 +742,21 @@ impl ZedisSearchManager {
                 } else {
                     Some(close)
                 };
+                let sort_raw = self.sort_by_input.read(cx).value().to_string();
+                let sort_by = {
+                    let t = sort_raw.trim();
+                    if t.is_empty() { None } else { Some(t.to_string()) }
+                };
+                let dialect = parse_u32(&self.dialect_input.read(cx).value());
                 let opts = SearchOptions {
                     limit: (offset, count),
                     return_fields,
                     highlight_fields,
                     highlight_open,
                     highlight_close,
+                    sort_by,
+                    sort_desc: self.sort_desc,
+                    dialect,
                 };
                 let index_for_task = index.clone();
                 self._query_task = Some(cx.spawn(async move |handle, cx| {
@@ -799,6 +823,111 @@ impl ZedisSearchManager {
             }
         }
         cx.notify();
+    }
+
+    /// Insert a type-aware query fragment for `field` into the query bar
+    /// (e.g. `@price:[  ]` for NUMERIC, `@brand:{}` for TAG).
+    fn insert_field_query(&mut self, field: &FieldSchema, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let snippet = field_query_snippet(field);
+        self.query_input.update(cx, |state, cx| {
+            let cur = state.value().to_string();
+            let next = if cur.trim().is_empty() {
+                snippet
+            } else {
+                format!("{} {}", cur.trim_end(), snippet)
+            };
+            state.set_value(SharedString::from(next), window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Replace the query bar with `query` and optionally run immediately.
+    fn apply_example_query(&mut self, query: &str, run: bool, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.query_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(query.to_string()), window, cx);
+        });
+        if run {
+            self.run(window, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// Move the LIMIT offset by `pages` pages (−1 / +1) and re-run.
+    fn page_by(&mut self, pages: i32, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let offset = parse_u32(&self.limit_offset_input.read(cx).value()).unwrap_or(0);
+        let count = parse_u32(&self.limit_count_input.read(cx).value())
+            .unwrap_or(DEFAULT_LIMIT_COUNT)
+            .max(1);
+        let step = count.saturating_mul(pages.unsigned_abs());
+        let mut next = if pages < 0 {
+            offset.saturating_sub(step)
+        } else {
+            offset.saturating_add(step)
+        };
+        if let Some(LastResult::Search(r)) = &self.last_result
+            && r.total > 0
+        {
+            let max_off = ((r.total - 1) / u64::from(count)) * u64::from(count);
+            next = next.min(max_off.min(u64::from(u32::MAX)) as u32);
+        }
+        self.limit_offset_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(next.to_string()), window, cx);
+        });
+        self.run(window, cx);
+    }
+
+    fn open_hit_key(&mut self, doc_id: SharedString, cx: &mut gpui::Context<Self>) {
+        open_key_in_editor(&self.server_state, doc_id, cx);
+    }
+
+    fn toggle_schema_collapsed(&mut self, cx: &mut gpui::Context<Self>) {
+        self.schema_collapsed = !self.schema_collapsed;
+        cx.notify();
+    }
+
+    fn toggle_sort_desc(&mut self, cx: &mut gpui::Context<Self>) {
+        self.sort_desc = !self.sort_desc;
+        cx.notify();
+    }
+
+    /// Example (label, query) pairs derived from the current schema, plus `*`.
+    fn example_queries(&self) -> Vec<(SharedString, String)> {
+        let mut out = vec![("*".into(), "*".to_string())];
+        let Some(info) = &self.index_info else {
+            return out;
+        };
+        for field in info.fields.iter().take(4) {
+            let q = field_query_example(field);
+            let label: SharedString = format!("@{}", field.name).into();
+            out.push((label, q));
+        }
+        out
+    }
+}
+
+/// Type-aware fragment for chip-click insert (cursor-friendly placeholders).
+fn field_query_snippet(field: &FieldSchema) -> String {
+    match field.kind() {
+        FieldKind::Numeric => format!("@{}:[0 100]", field.name),
+        FieldKind::Tag => format!("@{}:{{tag}}", field.name),
+        FieldKind::Text => format!("@{}:term", field.name),
+        FieldKind::Geo => format!("@{}:[0 0 1 km]", field.name),
+        FieldKind::Vector => format!("*=>[KNN 10 @{} $BLOB]", field.name),
+        FieldKind::GeoShape | FieldKind::Unknown(_) => format!("@{}", field.name),
+    }
+}
+
+/// Slightly cleaner example string for empty-state buttons.
+fn field_query_example(field: &FieldSchema) -> String {
+    match field.kind() {
+        FieldKind::Numeric => format!("@{}:[0 1000]", field.name),
+        FieldKind::Tag => format!("@{}:{{*}}", field.name),
+        FieldKind::Text => format!("@{}:*", field.name),
+        FieldKind::Geo => format!("@{}:[0 0 10 km]", field.name),
+        FieldKind::Vector => format!("*=>[KNN 10 @{} $BLOB]", field.name),
+        FieldKind::GeoShape | FieldKind::Unknown(_) => format!("@{}", field.name),
     }
 }
 

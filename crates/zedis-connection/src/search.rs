@@ -135,6 +135,13 @@ pub struct SearchOptions {
     /// "wrap with these markers" preset.
     pub highlight_open: Option<String>,
     pub highlight_close: Option<String>,
+    /// `SORTBY <field> [ASC|DESC]`. Field must be SORTABLE in the schema.
+    pub sort_by: Option<String>,
+    /// When `sort_by` is set, `false` = ASC (default), `true` = DESC.
+    pub sort_desc: bool,
+    /// Query dialect version (`DIALECT N`). `None` omits the clause so the
+    /// server default applies. Dialects ≥ 2 unlock modern syntax.
+    pub dialect: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -390,8 +397,21 @@ pub async fn ft_search(
             c.arg("TAGS").arg(open.as_str()).arg(close.as_str());
         }
     }
+    if let Some(field) = &opts.sort_by
+        && !field.is_empty()
+    {
+        c.arg("SORTBY").arg(field.as_str());
+        if opts.sort_desc {
+            c.arg("DESC");
+        } else {
+            c.arg("ASC");
+        }
+    }
     let (offset, count) = opts.limit;
     c.arg("LIMIT").arg(offset).arg(count);
+    if let Some(d) = opts.dialect {
+        c.arg("DIALECT").arg(d);
+    }
     let value: Value = c.query_async(conn).await?;
     parse_search(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.SEARCH {index} returned unexpected shape"),

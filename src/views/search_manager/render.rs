@@ -218,6 +218,17 @@ impl ZedisSearchManager {
                         // way into races.
                         .child(div().flex_1())
                         .child(
+                            Button::new("search-schema-toggle")
+                                .ghost()
+                                .xsmall()
+                                .label(if self.schema_collapsed {
+                                    i18n_search(cx, "schema_expand")
+                                } else {
+                                    i18n_search(cx, "schema_collapse")
+                                })
+                                .on_click(cx.listener(|this, _, _w, cx| this.toggle_schema_collapsed(cx))),
+                        )
+                        .child(
                             Button::new("search-alter-add-field")
                                 .ghost()
                                 .small()
@@ -250,13 +261,54 @@ impl ZedisSearchManager {
                 .into_any_element()
         };
 
+        let panel_h = if self.schema_collapsed {
+            px(40.0)
+        } else {
+            px(SCHEMA_PANEL_HEIGHT)
+        };
+        let content: gpui::AnyElement = if self.schema_collapsed {
+            self.render_schema_collapsed_strip(cx).into_any_element()
+        } else {
+            body
+        };
         div()
-            .h(px(SCHEMA_PANEL_HEIGHT))
+            .h(panel_h)
             .w_full()
             .border_b_1()
             .border_color(cx.theme().border)
             .overflow_y_scrollbar()
-            .child(body)
+            .child(content)
+    }
+
+    /// One-line strip when the schema panel is collapsed.
+    pub(super) fn render_schema_collapsed_strip(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let summary = if let Some(info) = &self.index_info {
+            format!(
+                "{} · {} {} · {} fields",
+                info.key_type,
+                info.num_docs,
+                i18n_search(cx, "docs_unit"),
+                info.fields.len()
+            )
+        } else {
+            i18n_search(cx, "schema_label").to_string()
+        };
+        h_flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .h_full()
+            .child(Label::new(i18n_search(cx, "schema_label")).text_sm().text_color(muted))
+            .child(Label::new(summary).text_xs().text_color(muted))
+            .child(div().flex_1())
+            .child(
+                Button::new("search-schema-expand")
+                    .ghost()
+                    .xsmall()
+                    .label(i18n_search(cx, "schema_expand"))
+                    .on_click(cx.listener(|this, _, _w, cx| this.toggle_schema_collapsed(cx))),
+            )
     }
 
     pub(super) fn render_schema_row(&self, field: FieldSchema, cx: &mut gpui::Context<Self>) -> impl IntoElement {
@@ -307,10 +359,19 @@ impl ZedisSearchManager {
                     .into_any_element(),
             );
         }
+        let field_for_click = field.clone();
+        let hover = cx.theme().table_hover;
         h_flex()
+            .id(SharedString::from(format!("schema-row-{}", field.name)))
             .gap_2()
             .items_center()
             .px_2()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.insert_field_query(&field_for_click, window, cx);
+            }))
             .child(
                 self.chip(field.kind_str.clone().into(), kind_color, cx)
                     .into_any_element(),
@@ -333,14 +394,21 @@ impl ZedisSearchManager {
     }
 
     pub(super) fn render_query_bar(&self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        // Build field hint chips so users see what they can query.
+        // Clickable field chips: insert type-aware query fragments.
         let mut hint_chips: Vec<gpui::AnyElement> = Vec::new();
         if let Some(info) = &self.index_info {
             for field in info.fields.iter().take(8) {
+                let field_click = field.clone();
+                let name = field.name.clone();
                 hint_chips.push(
-                    Label::new(format!("@{}", field.name))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
+                    Button::new(SharedString::from(format!("hint-field-{name}")))
+                        .ghost()
+                        .xsmall()
+                        .label(SharedString::from(format!("@{name}")))
+                        .tooltip(SharedString::from(field_query_snippet(field)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.insert_field_query(&field_click, window, cx);
+                        }))
                         .into_any_element(),
                 );
             }
@@ -395,6 +463,7 @@ impl ZedisSearchManager {
                             h_flex()
                                 .gap_2()
                                 .items_center()
+                                .flex_wrap()
                                 .child(Label::new(i18n_search(cx, "fields_hint")).text_xs().text_color(muted))
                                 .children(hint_chips),
                         )
@@ -415,30 +484,53 @@ impl ZedisSearchManager {
             .child(Input::new(&self.limit_count_input).small().w(px(70.0)));
 
         let mode_specific = match mode {
-            SearchMode::Search => v_flex()
-                .gap_2()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(Label::new(i18n_search(cx, "return_label")).text_xs().text_color(muted))
-                        .child(Input::new(&self.return_input).small().flex_1()),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            Label::new(i18n_search(cx, "highlight_label"))
-                                .text_xs()
-                                .text_color(muted),
-                        )
-                        .child(Input::new(&self.highlight_fields_input).small().flex_1())
-                        .child(Label::new(i18n_search(cx, "tags_label")).text_xs().text_color(muted))
-                        .child(Input::new(&self.highlight_open_input).small().w(px(72.0)))
-                        .child(Input::new(&self.highlight_close_input).small().w(px(72.0))),
-                )
-                .into_any_element(),
+            SearchMode::Search => {
+                let sort_desc = self.sort_desc;
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new(i18n_search(cx, "return_label")).text_xs().text_color(muted))
+                            .child(Input::new(&self.return_input).small().flex_1()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Label::new(i18n_search(cx, "highlight_label"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .child(Input::new(&self.highlight_fields_input).small().flex_1())
+                            .child(Label::new(i18n_search(cx, "tags_label")).text_xs().text_color(muted))
+                            .child(Input::new(&self.highlight_open_input).small().w(px(72.0)))
+                            .child(Input::new(&self.highlight_close_input).small().w(px(72.0))),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new(i18n_search(cx, "sortby_label")).text_xs().text_color(muted))
+                            .child(Input::new(&self.sort_by_input).small().w(px(140.0)))
+                            .child(
+                                Button::new("search-sort-dir")
+                                    .outline()
+                                    .xsmall()
+                                    .label(if sort_desc {
+                                        i18n_search(cx, "sort_desc")
+                                    } else {
+                                        i18n_search(cx, "sort_asc")
+                                    })
+                                    .on_click(cx.listener(|this, _, _w, cx| this.toggle_sort_desc(cx))),
+                            )
+                            .child(Label::new(i18n_search(cx, "dialect_label")).text_xs().text_color(muted))
+                            .child(Input::new(&self.dialect_input).small().w(px(48.0))),
+                    )
+                    .into_any_element()
+            }
             SearchMode::Aggregate => {
                 let reducer_label = i18n_search(cx, "reducer_label");
                 let current_reducer_label: SharedString = self.reducer_fn.as_str().to_string().into();
@@ -879,25 +971,70 @@ impl ZedisSearchManager {
         match &self.last_result {
             Some(LastResult::Search(r)) => self.render_search_result(r.clone(), cx).into_any_element(),
             Some(LastResult::Aggregate(r)) => self.render_aggregate_result(r.clone(), cx).into_any_element(),
-            None => div()
-                .p_4()
-                .child(Label::new(i18n_search(cx, "run_hint")).text_color(muted))
-                .into_any_element(),
+            None => self.render_empty_results(cx).into_any_element(),
         }
+    }
+
+    /// Empty state with example-query CTAs so the panel is not a dead end.
+    pub(super) fn render_empty_results(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let examples = self.example_queries();
+        let mut chips: Vec<gpui::AnyElement> = Vec::new();
+        for (i, (label, query)) in examples.into_iter().enumerate() {
+            let q = query.clone();
+            chips.push(
+                Button::new(SharedString::from(format!("search-example-{i}")))
+                    .outline()
+                    .xsmall()
+                    .label(label)
+                    .tooltip(SharedString::from(query))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.apply_example_query(&q, true, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        v_flex()
+            .p_4()
+            .gap_3()
+            .child(Label::new(i18n_search(cx, "run_hint")).text_color(muted))
+            .when(!chips.is_empty(), |this| {
+                this.child(
+                    v_flex()
+                        .gap_2()
+                        .child(Label::new(i18n_search(cx, "example_hint")).text_xs().text_color(muted))
+                        .child(h_flex().gap_2().flex_wrap().children(chips)),
+                )
+            })
     }
 
     pub(super) fn render_search_result(&self, r: SearchResult, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let mark_bg = cx.theme().yellow.opacity(0.35);
+        let offset = parse_u32(&self.limit_offset_input.read(cx).value()).unwrap_or(0);
+        let can_prev = offset > 0;
+        let can_next = (u64::from(offset) + r.hits.len() as u64) < r.total;
+
         let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(r.hits.len());
+        if r.hits.is_empty() {
+            rows.push(
+                div()
+                    .p_4()
+                    .child(Label::new(i18n_search(cx, "no_results")).text_color(muted))
+                    .into_any_element(),
+            );
+        }
         for hit in &r.hits {
             let id = hit.doc_id.clone();
+            let id_for_open = SharedString::from(id.clone());
             let mut field_lines: Vec<gpui::AnyElement> = Vec::new();
             for (k, v) in &hit.fields {
                 field_lines.push(
                     h_flex()
                         .gap_2()
+                        .items_start()
                         .child(Label::new(k.clone()).text_xs().text_color(muted))
-                        .child(Label::new(v.clone()).text_sm().whitespace_normal())
+                        .child(render_highlighted_value(v, mark_bg, cx.theme().foreground))
                         .into_any_element(),
                 );
             }
@@ -908,7 +1045,22 @@ impl ZedisSearchManager {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(Label::new(id).text_sm().text_color(cx.theme().foreground))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new(SharedString::from(format!("open-hit-{id}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .label(SharedString::from(id))
+                                    .tooltip(i18n_search(cx, "open_key"))
+                                    .on_click(cx.listener(move |this, _, _w, cx| {
+                                        this.open_hit_key(id_for_open.clone(), cx);
+                                    })),
+                            )
+                            .child(div().flex_1()),
+                    )
                     .child(v_flex().gap_1().children(field_lines))
                     .into_any_element(),
             );
@@ -920,6 +1072,7 @@ impl ZedisSearchManager {
                     .gap_2()
                     .px_3()
                     .py_1()
+                    .items_center()
                     .bg(cx.theme().muted.opacity(0.4))
                     .child(
                         Label::new(format!("{} {}", i18n_search(cx, "total_label"), r.total))
@@ -930,6 +1083,23 @@ impl ZedisSearchManager {
                         Label::new(format!("{} {}", i18n_search(cx, "returned_label"), r.hits.len()))
                             .text_xs()
                             .text_color(muted),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("search-page-prev")
+                            .outline()
+                            .xsmall()
+                            .label(i18n_search(cx, "page_prev"))
+                            .disabled(!can_prev || self.running_query)
+                            .on_click(cx.listener(|this, _, window, cx| this.page_by(-1, window, cx))),
+                    )
+                    .child(
+                        Button::new("search-page-next")
+                            .outline()
+                            .xsmall()
+                            .label(i18n_search(cx, "page_next"))
+                            .disabled(!can_next || self.running_query)
+                            .on_click(cx.listener(|this, _, window, cx| this.page_by(1, window, cx))),
                     ),
             )
             .children(rows)
@@ -971,6 +1141,66 @@ impl ZedisSearchManager {
             )
             .children(rows)
     }
+}
+
+/// Render a field value, highlighting segments wrapped in `<mark>…</mark>`
+/// (or custom tags still containing the word `mark` from HIGHLIGHT TAGS).
+fn render_highlighted_value(value: &str, mark_bg: gpui::Hsla, fg: gpui::Hsla) -> gpui::AnyElement {
+    // Split on a simple mark pattern so HIGHLIGHT results read visually.
+    // Supports default `<mark>` / `</mark>` and plain text without tags.
+    let open = "<mark>";
+    let close = "</mark>";
+    if !value.contains(open) {
+        return Label::new(value.to_string())
+            .text_sm()
+            .text_color(fg)
+            .whitespace_normal()
+            .into_any_element();
+    }
+    let mut parts: Vec<gpui::AnyElement> = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find(open) {
+        let before = &rest[..start];
+        if !before.is_empty() {
+            parts.push(
+                Label::new(before.to_string())
+                    .text_sm()
+                    .text_color(fg)
+                    .into_any_element(),
+            );
+        }
+        let after_open = &rest[start + open.len()..];
+        if let Some(end) = after_open.find(close) {
+            let marked = &after_open[..end];
+            parts.push(
+                div()
+                    .px_0p5()
+                    .rounded_sm()
+                    .bg(mark_bg)
+                    .child(
+                        Label::new(marked.to_string())
+                            .text_sm()
+                            .text_color(fg)
+                            .font_weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .into_any_element(),
+            );
+            rest = &after_open[end + close.len()..];
+        } else {
+            parts.push(
+                Label::new(after_open.to_string())
+                    .text_sm()
+                    .text_color(fg)
+                    .into_any_element(),
+            );
+            rest = "";
+            break;
+        }
+    }
+    if !rest.is_empty() {
+        parts.push(Label::new(rest.to_string()).text_sm().text_color(fg).into_any_element());
+    }
+    h_flex().gap_0().flex_wrap().children(parts).into_any_element()
 }
 
 /// View-private action enum for dropdown items. Variants carry indices
