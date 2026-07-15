@@ -9,6 +9,7 @@ use std::borrow::Cow;
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
 #[include = "commands.json"]
+#[include = "config_docs/*.json"]
 #[include = "icon.png"]
 #[include = "icon-light.png"]
 #[include = "themes/*.json"]

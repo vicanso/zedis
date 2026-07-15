@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::views::config_doc::ConfigDocMap;
 use crate::{
     assets::CustomIconName,
     connection::{Capability, DangerKind, get_connection_manager, get_server, get_servers},
@@ -21,7 +22,7 @@ use crate::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
         i18n_config_editor,
     },
-    views::{ZedisCopyKeyDialog, config_doc::config_doc, confirm_dangerous_command},
+    views::{ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
 };
 use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -293,6 +294,12 @@ pub struct ZedisConfigEditor {
     pending_notification: Option<Notification>,
     /// Active cross-server config comparison (`None` = normal editor view).
     diff: Option<ConfigDiff>,
+    /// redis.conf help for the current UI language. Loaded once when this
+    /// view is created (and reloaded only if the locale flips while open);
+    /// not re-fetched on scroll/repaint.
+    config_docs: ConfigDocMap,
+    /// Locale flag the `config_docs` map was loaded for (`true` = zh).
+    config_docs_zh: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -324,6 +331,7 @@ impl ZedisConfigEditor {
             }
         }));
 
+        let config_docs_zh = cx.global::<ZedisGlobalStore>().read(cx).locale().starts_with("zh");
         let mut this = Self {
             server_state,
             focus_handle: cx.focus_handle(),
@@ -341,10 +349,21 @@ impl ZedisConfigEditor {
             error: None,
             pending_notification: None,
             diff: None,
+            config_docs: load_config_docs(config_docs_zh),
+            config_docs_zh,
             _subscriptions: subscriptions,
         };
         this.load_configs(cx);
         this
+    }
+
+    /// Reload help JSON only when the UI language no longer matches the map.
+    fn refresh_docs_if_locale_changed(&mut self, cx: &App) {
+        let zh = cx.global::<ZedisGlobalStore>().read(cx).locale().starts_with("zh");
+        if zh != self.config_docs_zh {
+            self.config_docs = load_config_docs(zh);
+            self.config_docs_zh = zh;
+        }
     }
 
     fn load_configs(&mut self, cx: &mut Context<Self>) {
@@ -567,6 +586,7 @@ impl ZedisConfigEditor {
         key: SharedString,
         value: SharedString,
         font_family: &SharedString,
+        docs: &ConfigDocMap,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let border = cx.theme().border;
@@ -692,11 +712,9 @@ impl ZedisConfigEditor {
         } else {
             let edit_key = key.clone();
             let edit_value = value.clone();
-            // Official redis.conf description for the `?` help popover, in the
-            // app language (Chinese when the locale starts "zh"); `None` → no
-            // `?` shown.
-            let zh = cx.global::<ZedisGlobalStore>().read(cx).locale().starts_with("zh");
-            let doc = config_doc(&key, zh);
+            // Official redis.conf description for the `?` help popover;
+            // `None` → no `?` shown. Map is loaded once per paint by the caller.
+            let doc = docs.get(key.as_ref()).cloned();
             let value_el = if matches!(kind, ConfigKind::Bool) {
                 let on = value.as_ref() == "yes";
                 h_flex()
@@ -800,6 +818,7 @@ impl ZedisConfigEditor {
 
     /// A titled section: a header (accent bar + mono label + description +
     /// count) over a responsive grid of parameter cards.
+    #[allow(clippy::too_many_arguments)]
     fn render_group(
         &self,
         label: SharedString,
@@ -807,6 +826,7 @@ impl ZedisConfigEditor {
         configs: &[(SharedString, SharedString)],
         cols: u16,
         font_family: &SharedString,
+        docs: &ConfigDocMap,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let border = cx.theme().border;
@@ -818,7 +838,7 @@ impl ZedisConfigEditor {
 
         let mut cards: Vec<gpui::AnyElement> = Vec::with_capacity(configs.len());
         for (k, v) in configs {
-            cards.push(self.render_card(k.clone(), v.clone(), font_family, cx));
+            cards.push(self.render_card(k.clone(), v.clone(), font_family, docs, cx));
         }
 
         v_flex()
@@ -1087,6 +1107,8 @@ impl Render for ZedisConfigEditor {
                     })
                     .into_any_element()
             } else {
+                // View-scoped map: loaded in `new`, not on every scroll/repaint.
+                self.refresh_docs_if_locale_changed(cx);
                 let mut sections = v_flex().w_full().gap_6().px_4().py_3();
                 for (i, group) in CONFIG_GROUPS.iter().enumerate() {
                     if buckets[i].is_empty() {
@@ -1098,6 +1120,7 @@ impl Render for ZedisConfigEditor {
                         &buckets[i],
                         cols,
                         &font_family,
+                        &self.config_docs,
                         cx,
                     ));
                 }
@@ -1108,6 +1131,7 @@ impl Render for ZedisConfigEditor {
                         &others,
                         cols,
                         &font_family,
+                        &self.config_docs,
                         cx,
                     ));
                 }
