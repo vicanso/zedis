@@ -31,15 +31,16 @@
 //! the body run through `escalate_dangerous_body` so production-tagged
 //! servers get the escalated warning.
 
-use crate::connection::{CLUSTER_HASH_SLOTS, ClusterSlotMap};
+use crate::assets::CustomIconName;
+use crate::connection::{CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap};
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ClusterMasterRanges, ClusterNodeLoad, ServerEvent, ZedisServerState, dialog_button_props, escalate_dangerous_body,
-    fetch_cluster_node_loads, i18n_topology, plan_cluster_reshard, source_owners_for_slots,
+    ClusterMasterRanges, ClusterNodeLoad, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
+    escalate_dangerous_body, fetch_cluster_node_loads, i18n_topology, plan_cluster_reshard, source_owners_for_slots,
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -49,6 +50,20 @@ use gpui_component::{
 use std::time::Duration;
 use tracing::info;
 use zedis_ui::ZedisDialog;
+
+/// Shorten a cluster node id for display (first 8 hex chars).
+fn short_node_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+/// Colour the role glyph: master green, fail red, replica muted.
+fn role_marker_color(marker: &str, muted: Hsla, success: Hsla, danger: Hsla) -> Hsla {
+    match marker {
+        "●" => success,
+        "✗" => danger,
+        _ => muted,
+    }
+}
 
 /// Fixed master palette for slot bar + load cards (cycled by color_index).
 const MASTER_PALETTE: [u32; 8] = [
@@ -115,12 +130,16 @@ pub struct ZedisTopology {
     meet_input: Entity<InputState>,
     replicate_target_input: Entity<InputState>,
     replicate_master_input: Entity<InputState>,
+    /// Inline validation for Meet / Replicate forms.
+    form_error: Option<SharedString>,
     // Reshard wizard inputs.
     reshard_source_input: Entity<InputState>,
     reshard_target_input: Entity<InputState>,
     reshard_count_input: Entity<InputState>,
     planned_slots: Vec<u16>,
     plan_error: Option<SharedString>,
+    /// True while a reshard batch is in flight (Execute confirmed → done/fail).
+    reshard_running: bool,
     // Load heatmap.
     node_loads: Vec<ClusterNodeLoad>,
     load_error: Option<SharedString>,
@@ -152,6 +171,11 @@ impl ZedisTopology {
                 ServerEvent::ServerRedisInfoUpdated | ServerEvent::ServerSelected(_)
             ) {
                 this.detect_mode(cx);
+                // Reshard completion refreshes INFO — drop the in-flight flag so
+                // Execute becomes available again after success or failure toast.
+                if this.reshard_running {
+                    this.reshard_running = false;
+                }
                 if this.mode == TopologyMode::Cluster {
                     this.ensure_load_poll(cx);
                 }
@@ -166,11 +190,13 @@ impl ZedisTopology {
             meet_input,
             replicate_target_input,
             replicate_master_input,
+            form_error: None,
             reshard_source_input,
             reshard_target_input,
             reshard_count_input,
             planned_slots: Vec::new(),
             plan_error: None,
+            reshard_running: false,
             node_loads: Vec::new(),
             load_error: None,
             load_metric: LoadMetric::Memory,
@@ -193,6 +219,66 @@ impl ZedisTopology {
             "Standalone" => TopologyMode::Standalone,
             _ => TopologyMode::Unknown,
         };
+    }
+
+    fn can_cluster_write(&self, cx: &Context<Self>) -> bool {
+        self.server_state.read(cx).can(Capability::ClusterWrite)
+    }
+
+    fn can_sentinel_write(&self, cx: &Context<Self>) -> bool {
+        self.server_state.read(cx).can(Capability::SentinelWrite)
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.server_state.update(cx, |state, cx| {
+            state.refresh_redis_info(cx);
+        });
+        // Force load re-sample on next poll cycle by clearing cache.
+        if self.mode == TopologyMode::Cluster {
+            self.node_loads.clear();
+            self.load_poll_task = None;
+            self.ensure_load_poll(cx);
+        }
+        cx.notify();
+    }
+
+    fn fill_replicate_target(&mut self, addr: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.form_error = None;
+        self.replicate_target_input.update(cx, |input, cx| {
+            input.set_value(addr, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn fill_replicate_master(&mut self, node_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.form_error = None;
+        self.replicate_master_input.update(cx, |input, cx| {
+            input.set_value(node_id, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn fill_reshard_source(&mut self, node_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.plan_error = None;
+        self.reshard_source_input.update(cx, |input, cx| {
+            input.set_value(node_id, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn fill_reshard_target(&mut self, node_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.plan_error = None;
+        self.reshard_target_input.update(cx, |input, cx| {
+            input.set_value(node_id, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn clear_reshard_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reshard_source_input.update(cx, |input, cx| {
+            input.set_value(SharedString::default(), window, cx);
+        });
+        cx.notify();
     }
 
     fn ensure_load_poll(&mut self, cx: &mut Context<Self>) {
@@ -269,7 +355,7 @@ impl ZedisTopology {
             (ClusterTab::Load, "tab_load"),
             (ClusterTab::Reshard, "tab_reshard"),
         ];
-        let mut row = h_flex().gap_1().items_center();
+        let mut row = h_flex().gap_1().items_center().flex_1();
         for (tab, key) in tabs {
             let active = self.cluster_tab == tab;
             let label = i18n_topology(cx, key);
@@ -284,7 +370,48 @@ impl ZedisTopology {
                     })),
             );
         }
-        row.into_any_element()
+        h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(row)
+            .child(
+                Button::new("topo-refresh")
+                    .outline()
+                    .small()
+                    .icon(Icon::new(CustomIconName::RotateCw))
+                    .tooltip(i18n_topology(cx, "refresh_tooltip"))
+                    .on_click(cx.listener(|this, _, _window, cx| this.refresh(cx))),
+            )
+            .into_any_element()
+    }
+
+    fn render_readonly_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.can_cluster_write(cx) {
+            return None;
+        }
+        let theme = cx.theme();
+        Some(
+            div()
+                .p_2()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.warning)
+                .bg(theme.warning.opacity(0.1))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Icon::new(IconName::Info).text_color(theme.warning))
+                        .child(
+                            Label::new(i18n_topology(cx, "readonly_banner"))
+                                .text_xs()
+                                .text_color(theme.warning),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     // ── Nodes tab (existing ops) ──────────────────────────────────────
@@ -296,82 +423,163 @@ impl ZedisTopology {
             ClusterTab::Load => self.render_load_tab(cx),
             ClusterTab::Reshard => self.render_reshard_tab(window, cx),
         };
-        v_flex()
-            .gap_3()
-            .child(self.render_cluster_tabs(cx))
-            .child(body)
-            .into_any_element()
+        let mut col = v_flex().gap_3().child(self.render_cluster_tabs(cx));
+        if let Some(banner) = self.render_readonly_banner(cx) {
+            col = col.child(banner);
+        }
+        col.child(body).into_any_element()
     }
 
     fn render_nodes_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let desc = self.server_state.read(cx).nodes_description();
         let muted = cx.theme().muted_foreground;
+        let success = cx.theme().success;
+        let danger = cx.theme().danger;
         let hover = cx.theme().table_hover;
+        let can_write = self.can_cluster_write(cx);
         let failover_label = i18n_topology(cx, "failover_button");
         let force_failover_label = i18n_topology(cx, "force_failover_button");
         let forget_label = i18n_topology(cx, "forget_button");
         let meet_label = i18n_topology(cx, "meet_button");
         let replicate_label = i18n_topology(cx, "replicate_button");
+        let fill_hint = i18n_topology(cx, "click_fill_hint");
 
-        let meet_form = h_flex()
-            .gap_2()
-            .items_center()
-            .child(Input::new(&self.meet_input).small().flex_1())
+        let form_error_el = self
+            .form_error
+            .as_ref()
+            .map(|err| Label::new(err.clone()).text_xs().text_color(danger).into_any_element());
+
+        let meet_form = v_flex()
+            .gap_1()
+            .child(Label::new(i18n_topology(cx, "meet_label")).text_xs().text_color(muted))
             .child(
-                Button::new("topo-meet-btn")
-                    .primary()
-                    .small()
-                    .label(meet_label)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let raw = this.meet_input.read(cx).value().to_string();
-                        let Some((host, port_str)) = raw.rsplit_once(':') else {
-                            return;
-                        };
-                        let Ok(port) = port_str.parse::<u16>() else {
-                            return;
-                        };
-                        this.open_meet_dialog(SharedString::from(host.to_string()), port, window, cx);
-                    })),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.meet_input).small().flex_1())
+                    .child(
+                        Button::new("topo-meet-btn")
+                            .primary()
+                            .small()
+                            .label(meet_label)
+                            .disabled(!can_write)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if !this.can_cluster_write(cx) {
+                                    return;
+                                }
+                                let raw = this.meet_input.read(cx).value().to_string();
+                                let raw = raw.trim();
+                                let Some((host, port_str)) = raw.rsplit_once(':') else {
+                                    this.form_error = Some(i18n_topology(cx, "err_meet_host_port"));
+                                    cx.notify();
+                                    return;
+                                };
+                                let host = host.trim();
+                                if host.is_empty() {
+                                    this.form_error = Some(i18n_topology(cx, "err_meet_host_port"));
+                                    cx.notify();
+                                    return;
+                                }
+                                let Ok(port) = port_str.trim().parse::<u16>() else {
+                                    this.form_error = Some(i18n_topology(cx, "err_meet_host_port"));
+                                    cx.notify();
+                                    return;
+                                };
+                                this.form_error = None;
+                                this.open_meet_dialog(SharedString::from(host.to_string()), port, window, cx);
+                            })),
+                    ),
             );
 
-        let replicate_form = h_flex()
-            .gap_2()
-            .items_center()
-            .child(Input::new(&self.replicate_target_input).small().flex_1())
-            .child(Input::new(&self.replicate_master_input).small().flex_1())
+        let replicate_form = v_flex()
+            .gap_1()
             .child(
-                Button::new("topo-replicate-btn")
-                    .primary()
-                    .small()
-                    .label(replicate_label)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let target = this.replicate_target_input.read(cx).value().to_string();
-                        let master_id = this.replicate_master_input.read(cx).value().to_string();
-                        if target.is_empty() || master_id.is_empty() {
-                            return;
-                        }
-                        this.open_replicate_dialog(
-                            SharedString::from(target),
-                            SharedString::from(master_id),
-                            window,
-                            cx,
-                        );
-                    })),
+                Label::new(i18n_topology(cx, "replicate_label"))
+                    .text_xs()
+                    .text_color(muted),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.replicate_target_input).small().flex_1())
+                    .child(Input::new(&self.replicate_master_input).small().flex_1())
+                    .child(
+                        Button::new("topo-replicate-btn")
+                            .primary()
+                            .small()
+                            .label(replicate_label)
+                            .disabled(!can_write)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if !this.can_cluster_write(cx) {
+                                    return;
+                                }
+                                let target = this.replicate_target_input.read(cx).value().trim().to_string();
+                                let master_id = this.replicate_master_input.read(cx).value().trim().to_string();
+                                if target.is_empty() {
+                                    this.form_error = Some(i18n_topology(cx, "err_replicate_target"));
+                                    cx.notify();
+                                    return;
+                                }
+                                if master_id.is_empty() {
+                                    this.form_error = Some(i18n_topology(cx, "err_replicate_master"));
+                                    cx.notify();
+                                    return;
+                                }
+                                this.form_error = None;
+                                this.open_replicate_dialog(
+                                    SharedString::from(target),
+                                    SharedString::from(master_id),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ),
             );
 
         if desc.topology.is_empty() {
-            return v_flex()
-                .gap_3()
-                .child(meet_form)
-                .child(replicate_form)
+            let mut empty = v_flex().gap_3().child(meet_form).child(replicate_form);
+            if let Some(err) = form_error_el {
+                empty = empty.child(err);
+            }
+            return empty
                 .child(Label::new(i18n_topology(cx, "cluster_placeholder")).text_color(muted))
                 .into_any_element();
         }
 
-        let summary = SharedString::from(format!(
-            "{} · masters {} · replicas {}",
-            desc.server_type, desc.master_nodes, desc.slave_nodes
-        ));
+        let master_count = desc.topology.len();
+        let replica_count: usize = desc.topology.iter().map(|m| m.replicas.len()).sum();
+        let fail_count: usize = desc
+            .topology
+            .iter()
+            .map(|m| {
+                let mut n = if m.master.role_marker == "✗" { 1 } else { 0 };
+                n += m.replicas.iter().filter(|r| r.role_marker == "✗").count();
+                n
+            })
+            .sum();
+        let assigned = desc.slot_map.assigned_slots;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let summary: SharedString = rust_i18n::t!(
+            "topology.nodes_summary",
+            masters = master_count,
+            replicas = replica_count,
+            slots = assigned,
+            locale = locale
+        )
+        .to_string()
+        .into();
+        let fail_badge = if fail_count > 0 {
+            Some(
+                Label::new(SharedString::from(
+                    rust_i18n::t!("topology.nodes_failed", count = fail_count, locale = locale).to_string(),
+                ))
+                .text_xs()
+                .text_color(danger),
+            )
+        } else {
+            None
+        };
 
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         for master in desc.topology.iter() {
@@ -379,16 +587,65 @@ impl ZedisTopology {
             let m_node_id = master.master.node_id.clone();
             let m_role = master.master.role_marker.clone();
             let m_annot = master.master.annotation.clone();
+            let role_color = role_marker_color(&m_role, muted, success, danger);
+            let short_id = short_node_id(&m_node_id);
+            let slot_count = desc
+                .slot_map
+                .masters
+                .iter()
+                .find(|m| m.node_id == m_node_id)
+                .map(|m| m.slot_count)
+                .unwrap_or(0);
+            let color_idx = desc
+                .slot_map
+                .masters
+                .iter()
+                .find(|m| m.node_id == m_node_id)
+                .map(|m| m.color_index)
+                .unwrap_or(0);
+            let stripe = master_color(color_idx);
+
+            let id_for_fill = m_node_id.clone();
             let mut master_row = h_flex()
                 .id(SharedString::from(format!("topo-mrow-{m_addr}")))
                 .items_center()
                 .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
                 .hover(move |s| s.bg(hover))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !id_for_fill.is_empty() {
+                        this.fill_replicate_master(id_for_fill.clone().into(), window, cx);
+                    }
+                }))
+                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(stripe))
+                .child(Label::new(m_role).text_xs().text_color(role_color))
                 .child(Label::new(m_addr.clone()).font_semibold())
-                .child(Label::new(m_role).text_xs().text_color(muted))
-                .child(Label::new(m_annot).text_xs().text_color(muted))
+                .when(!short_id.is_empty(), |row| {
+                    row.child(
+                        Label::new(SharedString::from(short_id))
+                            .text_xs()
+                            .text_color(muted)
+                            .font_family(get_mono_font_family()),
+                    )
+                })
+                .when(!m_annot.is_empty(), |row| {
+                    row.child(Label::new(m_annot).text_xs().text_color(muted))
+                })
+                .when(slot_count > 0, |row| {
+                    row.child(
+                        Label::new(SharedString::from(
+                            rust_i18n::t!("topology.slots_count_label", count = slot_count, locale = locale)
+                                .to_string(),
+                        ))
+                        .text_xs()
+                        .text_color(muted),
+                    )
+                })
                 .child(div().flex_1());
-            if !m_node_id.is_empty() {
+            if can_write && !m_node_id.is_empty() {
                 let id_for_click = m_node_id.clone();
                 let addr_for_click = m_addr.clone();
                 master_row = master_row.child(
@@ -413,65 +670,98 @@ impl ZedisTopology {
                 let r_node_id = replica.node_id.clone();
                 let r_role = replica.role_marker.clone();
                 let r_annot = replica.annotation.clone();
+                let role_color = role_marker_color(&r_role, muted, success, danger);
+                let short_id = short_node_id(&r_node_id);
                 let failover_target = r_addr.clone();
                 let force_failover_target = r_addr.clone();
+                let addr_for_fill = r_addr.clone();
                 let mut replica_row = h_flex()
                     .id(SharedString::from(format!("topo-rrow-{r_addr}")))
                     .items_center()
                     .gap_2()
                     .pl_6()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
                     .hover(move |s| s.bg(hover))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.fill_replicate_target(addr_for_fill.clone().into(), window, cx);
+                    }))
+                    .child(Label::new(r_role).text_xs().text_color(role_color))
                     .child(Label::new(r_addr.clone()).text_color(muted))
-                    .child(Label::new(r_role).text_xs().text_color(muted))
-                    .child(Label::new(r_annot).text_xs().text_color(muted))
-                    .child(div().flex_1())
-                    .child(
-                        Button::new(SharedString::from(format!("topo-failover-{r_addr}")))
-                            .ghost()
-                            .small()
-                            .label(failover_label.clone())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_failover_dialog(failover_target.clone().into(), false, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("topo-force-failover-{r_addr}")))
-                            .ghost()
-                            .small()
-                            .label(force_failover_label.clone())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_failover_dialog(force_failover_target.clone().into(), true, window, cx);
-                            })),
-                    );
-                if !r_node_id.is_empty() {
-                    let id_for_click = r_node_id.clone();
-                    let addr_for_click = r_addr.clone();
-                    replica_row = replica_row.child(
-                        Button::new(SharedString::from(format!("topo-forget-{r_node_id}")))
-                            .ghost()
-                            .small()
-                            .label(forget_label.clone())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_forget_dialog(
-                                    id_for_click.clone().into(),
-                                    addr_for_click.clone().into(),
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    );
+                    .when(!short_id.is_empty(), |row| {
+                        row.child(
+                            Label::new(SharedString::from(short_id))
+                                .text_xs()
+                                .text_color(muted)
+                                .font_family(get_mono_font_family()),
+                        )
+                    })
+                    .when(!r_annot.is_empty(), |row| {
+                        row.child(Label::new(r_annot).text_xs().text_color(muted))
+                    })
+                    .child(div().flex_1());
+                if can_write {
+                    replica_row = replica_row
+                        .child(
+                            Button::new(SharedString::from(format!("topo-failover-{r_addr}")))
+                                .ghost()
+                                .small()
+                                .label(failover_label.clone())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_failover_dialog(failover_target.clone().into(), false, window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("topo-force-failover-{r_addr}")))
+                                .danger()
+                                .small()
+                                .label(force_failover_label.clone())
+                                .tooltip(i18n_topology(cx, "force_failover_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_failover_dialog(force_failover_target.clone().into(), true, window, cx);
+                                })),
+                        );
+                    if !r_node_id.is_empty() {
+                        let id_for_click = r_node_id.clone();
+                        let addr_for_click = r_addr.clone();
+                        replica_row = replica_row.child(
+                            Button::new(SharedString::from(format!("topo-forget-{r_node_id}")))
+                                .ghost()
+                                .small()
+                                .label(forget_label.clone())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_forget_dialog(
+                                        id_for_click.clone().into(),
+                                        addr_for_click.clone().into(),
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        );
+                    }
                 }
                 rows.push(replica_row.into_any_element());
             }
         }
 
-        v_flex()
+        let mut col = v_flex()
             .gap_3()
-            .child(Label::new(summary).text_xs().text_color(muted))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Label::new(summary).text_xs().text_color(muted))
+                    .when_some(fail_badge, |this, badge| this.child(badge)),
+            )
+            .child(Label::new(fill_hint).text_xs().text_color(muted))
             .child(meet_form)
-            .child(replicate_form)
-            .child(v_flex().gap_2().children(rows))
-            .into_any_element()
+            .child(replicate_form);
+        if let Some(err) = form_error_el {
+            col = col.child(err);
+        }
+        col.child(v_flex().gap_1().children(rows)).into_any_element()
     }
 
     // ── Slots tab ─────────────────────────────────────────────────────
@@ -487,17 +777,44 @@ impl ZedisTopology {
                 .into_any_element();
         }
 
-        let summary = SharedString::from(format!(
-            "{}: {} / {CLUSTER_HASH_SLOTS} · {} masters · {} migrations",
-            i18n_topology(cx, "slots_title"),
-            slot_map.assigned_slots,
-            slot_map.masters.len(),
-            slot_map.migrations.len()
-        ));
+        let unassigned = CLUSTER_HASH_SLOTS.saturating_sub(slot_map.assigned_slots);
+        let pct = if CLUSTER_HASH_SLOTS == 0 {
+            0
+        } else {
+            (slot_map.assigned_slots as u64 * 100) / u64::from(CLUSTER_HASH_SLOTS)
+        };
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let summary: SharedString = rust_i18n::t!(
+            "topology.slots_summary",
+            assigned = slot_map.assigned_slots,
+            total = CLUSTER_HASH_SLOTS,
+            pct = pct,
+            masters = slot_map.masters.len(),
+            migrations = slot_map.migrations.len(),
+            unassigned = unassigned,
+            locale = locale
+        )
+        .to_string()
+        .into();
 
         v_flex()
             .gap_3()
-            .child(Label::new(summary).text_xs().text_color(muted))
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(Label::new(summary).text_xs().text_color(muted))
+                    .child(
+                        Button::new("slots-to-load")
+                            .ghost()
+                            .small()
+                            .label(i18n_topology(cx, "goto_load"))
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                this.set_cluster_tab(ClusterTab::Load, cx);
+                            })),
+                    ),
+            )
             .child(self.render_slot_bar(slot_map, cx))
             .child(self.render_slot_legend(slot_map, cx))
             .child(self.render_migrations_list(slot_map, cx))
@@ -561,10 +878,16 @@ impl ZedisTopology {
 
     fn render_slot_legend(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
+        let hover = cx.theme().table_hover;
+        let border = cx.theme().border;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let mut chips: Vec<gpui::AnyElement> = Vec::new();
         for m in &slot_map.masters {
             let color = master_color(m.color_index);
-            let short_id: String = m.node_id.chars().take(8).collect();
+            let short_id = short_node_id(&m.node_id);
+            let id_for_fill = m.node_id.clone();
+            let slots_label =
+                rust_i18n::t!("topology.slots_count_label", count = m.slot_count, locale = locale).to_string();
             chips.push(
                 h_flex()
                     .id(SharedString::from(format!("legend-{}", m.node_id)))
@@ -574,15 +897,23 @@ impl ZedisTopology {
                     .py_1()
                     .rounded_md()
                     .border_1()
-                    .border_color(cx.theme().border)
+                    .border_color(border)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        // Click legend → fill reshard target and jump to Reshard.
+                        this.fill_reshard_target(id_for_fill.clone().into(), window, cx);
+                        this.set_cluster_tab(ClusterTab::Reshard, cx);
+                    }))
                     .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(color))
                     .child(Label::new(m.addr.clone()).text_xs())
-                    .child(Label::new(SharedString::from(short_id)).text_xs().text_color(muted))
                     .child(
-                        Label::new(SharedString::from(format!("{} slots", m.slot_count)))
+                        Label::new(SharedString::from(short_id))
                             .text_xs()
-                            .text_color(muted),
+                            .text_color(muted)
+                            .font_family(get_mono_font_family()),
                     )
+                    .child(Label::new(SharedString::from(slots_label)).text_xs().text_color(muted))
                     .into_any_element(),
             );
         }
@@ -632,6 +963,7 @@ impl ZedisTopology {
 
     fn render_load_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let metric_row = h_flex()
             .gap_1()
             .child(
@@ -665,6 +997,16 @@ impl ZedisTopology {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.load_metric = LoadMetric::Clients;
                         cx.notify();
+                    })),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("load-to-reshard")
+                    .ghost()
+                    .small()
+                    .label(i18n_topology(cx, "goto_reshard"))
+                    .on_click(cx.listener(|this, _, _w, cx| {
+                        this.set_cluster_tab(ClusterTab::Reshard, cx);
                     })),
             );
 
@@ -712,8 +1054,11 @@ impl ZedisTopology {
                 LoadMetric::Ops => format!("{} ops/s", n.ops_per_sec),
                 LoadMetric::Clients => format!("{} clients", n.connected_clients),
             };
-            let short_id: String = n.node_id.chars().take(8).collect();
+            let short_id = short_node_id(&n.node_id);
             let stripe = master_color(n.color_index);
+            let slots_label =
+                rust_i18n::t!("topology.slots_count_label", count = n.slot_count, locale = locale).to_string();
+            let id_for_fill = n.node_id.clone();
             cards.push(
                 v_flex()
                     .id(SharedString::from(format!("load-card-{}", n.node_id)))
@@ -723,11 +1068,18 @@ impl ZedisTopology {
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
+                    .cursor_pointer()
                     .bg({
                         let mut c = heat;
                         c.a = 0.25;
                         c
                     })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        // Click load card → target for reshard (heavier masters
+                        // are the usual source; fill as source when above avg).
+                        this.fill_reshard_source(id_for_fill.clone(), window, cx);
+                        this.set_cluster_tab(ClusterTab::Reshard, cx);
+                    }))
                     .child(
                         h_flex()
                             .gap_2()
@@ -735,13 +1087,14 @@ impl ZedisTopology {
                             .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(stripe))
                             .child(Label::new(n.addr.clone()).font_semibold()),
                     )
-                    .child(Label::new(SharedString::from(short_id)).text_xs().text_color(muted))
-                    .child(Label::new(SharedString::from(value_label)).text_sm())
                     .child(
-                        Label::new(SharedString::from(format!("{} slots", n.slot_count)))
+                        Label::new(SharedString::from(short_id))
                             .text_xs()
-                            .text_color(muted),
+                            .text_color(muted)
+                            .font_family(get_mono_font_family()),
                     )
+                    .child(Label::new(SharedString::from(value_label)).text_sm())
+                    .child(Label::new(SharedString::from(slots_label)).text_xs().text_color(muted))
                     .into_any_element(),
             );
         }
@@ -749,6 +1102,11 @@ impl ZedisTopology {
         v_flex()
             .gap_3()
             .child(Label::new(i18n_topology(cx, "load_title")).font_semibold())
+            .child(
+                Label::new(i18n_topology(cx, "load_click_hint"))
+                    .text_xs()
+                    .text_color(muted),
+            )
             .child(metric_row)
             .child(h_flex().gap_3().flex_wrap().children(cards))
             .into_any_element()
@@ -758,15 +1116,28 @@ impl ZedisTopology {
 
     fn render_reshard_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let primary = cx.theme().primary;
+        let can_write = self.can_cluster_write(cx);
         let desc = self.server_state.read(cx).nodes_description();
+        let selected_source = self.reshard_source_input.read(cx).value().to_string();
+        let selected_target = self.reshard_target_input.read(cx).value().to_string();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
 
-        // Quick-pick chips for target (and optional source).
+        // Master pickers: each row is a master with Source / Target buttons.
+        // Selected side is highlighted so the free-text fields stay as power-user
+        // fallback while the common path is one click.
         let mut master_chips: Vec<gpui::AnyElement> = Vec::new();
         for m in &desc.slot_map.masters {
             let id = m.node_id.clone();
             let id_as_source = id.clone();
             let id_as_target = id.clone();
             let color = master_color(m.color_index);
+            let is_src = !selected_source.is_empty() && selected_source == id;
+            let is_tgt = !selected_target.is_empty() && selected_target == id;
+            let short_id = short_node_id(&m.node_id);
+            let slots_label =
+                rust_i18n::t!("topology.slots_count_label", count = m.slot_count, locale = locale).to_string();
             master_chips.push(
                 h_flex()
                     .id(SharedString::from(format!("reshard-chip-{}", m.node_id)))
@@ -776,29 +1147,36 @@ impl ZedisTopology {
                     .py_1()
                     .rounded_md()
                     .border_1()
-                    .border_color(cx.theme().border)
+                    .border_color(if is_src || is_tgt { primary } else { border })
                     .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
                     .child(Label::new(m.addr.clone()).text_xs())
                     .child(
+                        Label::new(SharedString::from(short_id))
+                            .text_xs()
+                            .text_color(muted)
+                            .font_family(get_mono_font_family()),
+                    )
+                    .child(Label::new(SharedString::from(slots_label)).text_xs().text_color(muted))
+                    .child(
                         Button::new(SharedString::from(format!("reshard-src-{}", m.node_id)))
-                            .ghost()
+                            .when(is_src, |b| b.primary())
+                            .when(!is_src, |b| b.ghost())
                             .small()
-                            .label("src")
+                            .label(i18n_topology(cx, "reshard_as_source"))
+                            .disabled(!can_write || self.reshard_running)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.reshard_source_input.update(cx, |input, cx| {
-                                    input.set_value(id_as_source.clone(), window, cx);
-                                });
+                                this.fill_reshard_source(id_as_source.clone().into(), window, cx);
                             })),
                     )
                     .child(
                         Button::new(SharedString::from(format!("reshard-tgt-{}", m.node_id)))
-                            .ghost()
+                            .when(is_tgt, |b| b.primary())
+                            .when(!is_tgt, |b| b.ghost())
                             .small()
-                            .label("dst")
+                            .label(i18n_topology(cx, "reshard_as_target"))
+                            .disabled(!can_write || self.reshard_running)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.reshard_target_input.update(cx, |input, cx| {
-                                    input.set_value(id_as_target.clone(), window, cx);
-                                });
+                                this.fill_reshard_target(id_as_target.clone().into(), window, cx);
                             })),
                     )
                     .into_any_element(),
@@ -809,6 +1187,7 @@ impl ZedisTopology {
             .primary()
             .small()
             .label(i18n_topology(cx, "reshard_plan"))
+            .disabled(!can_write || self.reshard_running)
             .on_click(cx.listener(|this, _, _window, cx| {
                 this.run_plan(cx);
             }));
@@ -816,13 +1195,31 @@ impl ZedisTopology {
         let execute_btn = Button::new("reshard-exec")
             .danger()
             .small()
-            .label(i18n_topology(cx, "reshard_execute"))
-            .disabled(self.planned_slots.is_empty())
+            .label(if self.reshard_running {
+                i18n_topology(cx, "reshard_running")
+            } else {
+                i18n_topology(cx, "reshard_execute")
+            })
+            .disabled(!can_write || self.planned_slots.is_empty() || self.reshard_running)
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_reshard_dialog(window, cx);
             }));
 
-        let preview: gpui::AnyElement = if let Some(err) = &self.plan_error {
+        let clear_src_btn = Button::new("reshard-clear-src")
+            .ghost()
+            .small()
+            .label(i18n_topology(cx, "reshard_clear_source"))
+            .disabled(selected_source.trim().is_empty() || self.reshard_running)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.clear_reshard_source(window, cx);
+            }));
+
+        let preview: gpui::AnyElement = if self.reshard_running {
+            Label::new(i18n_topology(cx, "reshard_progress"))
+                .text_xs()
+                .text_color(muted)
+                .into_any_element()
+        } else if let Some(err) = &self.plan_error {
             Label::new(err.clone()).text_color(cx.theme().danger).into_any_element()
         } else if self.planned_slots.is_empty() {
             Label::new(i18n_topology(cx, "reshard_pick_target"))
@@ -830,9 +1227,10 @@ impl ZedisTopology {
                 .text_color(muted)
                 .into_any_element()
         } else {
-            let preview_slots = if self.planned_slots.len() > 24 {
+            let n = self.planned_slots.len();
+            let preview_slots = if n > 24 {
                 let head: Vec<String> = self.planned_slots.iter().take(20).map(|s| s.to_string()).collect();
-                format!("{} … (+{} more)", head.join(", "), self.planned_slots.len() - 20)
+                format!("{} … (+{} more)", head.join(", "), n - 20)
             } else {
                 self.planned_slots
                     .iter()
@@ -840,15 +1238,12 @@ impl ZedisTopology {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            let title: SharedString = rust_i18n::t!("topology.reshard_will_move", count = n, locale = locale)
+                .to_string()
+                .into();
             v_flex()
                 .gap_1()
-                .child(
-                    Label::new(SharedString::from(format!(
-                        "Will move {} slots",
-                        self.planned_slots.len()
-                    )))
-                    .font_semibold(),
-                )
+                .child(Label::new(title).font_semibold())
                 .child(
                     Label::new(SharedString::from(preview_slots))
                         .text_xs()
@@ -865,16 +1260,51 @@ impl ZedisTopology {
                     .text_xs()
                     .text_color(muted),
             )
-            .child(h_flex().gap_2().flex_wrap().children(master_chips))
+            .child(
+                Label::new(i18n_topology(cx, "reshard_pick_masters"))
+                    .text_xs()
+                    .text_color(muted),
+            )
+            .child(v_flex().gap_1().children(master_chips))
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Input::new(&self.reshard_source_input).small().flex_1())
-                    .child(Input::new(&self.reshard_target_input).small().flex_1())
-                    .child(Input::new(&self.reshard_count_input).small().w(px(100.))),
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .flex_1()
+                            .child(
+                                Label::new(i18n_topology(cx, "reshard_source_field"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .child(Input::new(&self.reshard_source_input).small()),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .flex_1()
+                            .child(
+                                Label::new(i18n_topology(cx, "reshard_target_field"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .child(Input::new(&self.reshard_target_input).small()),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .w(px(110.))
+                            .child(
+                                Label::new(i18n_topology(cx, "reshard_count_field"))
+                                    .text_xs()
+                                    .text_color(muted),
+                            )
+                            .child(Input::new(&self.reshard_count_input).small()),
+                    ),
             )
-            .child(h_flex().gap_2().child(plan_btn).child(execute_btn))
+            .child(h_flex().gap_2().child(plan_btn).child(execute_btn).child(clear_src_btn))
             .child(preview)
             .into_any_element()
     }
@@ -890,10 +1320,16 @@ impl ZedisTopology {
             if t.is_empty() { None } else { Some(t.to_string()) }
         };
         let target_id = target_raw.trim().to_string();
+        if target_id.is_empty() {
+            self.plan_error = Some(i18n_topology(cx, "err_reshard_target"));
+            self.planned_slots.clear();
+            cx.notify();
+            return;
+        }
         let count: u32 = match count_raw.trim().parse() {
             Ok(n) if n > 0 => n,
             _ => {
-                self.plan_error = Some("Slot count must be a positive integer".into());
+                self.plan_error = Some(i18n_topology(cx, "err_reshard_count"));
                 self.planned_slots.clear();
                 cx.notify();
                 return;
@@ -915,14 +1351,28 @@ impl ZedisTopology {
             }
             Err(e) => {
                 self.planned_slots.clear();
-                self.plan_error = Some(e.into());
+                // Map known English planner errors to i18n keys.
+                let key = match e.as_str() {
+                    "no source slots available" => "err_reshard_no_source",
+                    other if other.contains("target") => "err_reshard_target",
+                    _ => "err_reshard_plan",
+                };
+                let mapped = if key == "err_reshard_plan" {
+                    SharedString::from(e)
+                } else {
+                    i18n_topology(cx, key)
+                };
+                self.plan_error = Some(mapped);
             }
         }
         cx.notify();
     }
 
     fn open_reshard_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.planned_slots.is_empty() {
+        if self.planned_slots.is_empty() || self.reshard_running {
+            return;
+        }
+        if !self.can_cluster_write(cx) {
             return;
         }
         let desc = self.server_state.read(cx).nodes_description();
@@ -935,7 +1385,7 @@ impl ZedisTopology {
             .map(|m| m.addr.to_string())
             .unwrap_or_default();
         if target_addr.is_empty() {
-            self.plan_error = Some("Target master not found in current topology".into());
+            self.plan_error = Some(i18n_topology(cx, "err_reshard_target_missing"));
             cx.notify();
             return;
         }
@@ -966,17 +1416,21 @@ impl ZedisTopology {
         };
 
         let title = i18n_topology(cx, "reshard_confirm_title");
-        let body = format!(
-            "Move {} hash slots onto master {target_id} ({target_addr}). \
-             Each slot is SETSLOT-migrated and keys are MIGRATEd. \
-             This changes cluster slot ownership and may briefly block writes on those slots.",
-            self.planned_slots.len()
-        );
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = rust_i18n::t!(
+            "topology.reshard_confirm_body",
+            count = self.planned_slots.len(),
+            target_id = target_id.as_str(),
+            target_addr = target_addr.as_str(),
+            locale = locale
+        )
+        .to_string();
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
         let slots = self.planned_slots.clone();
         let target_addr_s: SharedString = target_addr.into();
         let target_id_s: SharedString = target_id.into();
+        let entity = cx.entity().downgrade();
         ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
@@ -987,6 +1441,13 @@ impl ZedisTopology {
                 server_state.update(cx, |state, cx| {
                     state.cluster_reshard(t_addr, t_id, slots, source_by_slot, cx);
                 });
+                if let Some(this) = entity.upgrade() {
+                    this.update(cx, |this, cx| {
+                        this.reshard_running = true;
+                        this.planned_slots.clear();
+                        cx.notify();
+                    });
+                }
                 window.close_dialog(cx);
                 true
             })
@@ -999,6 +1460,9 @@ impl ZedisTopology {
         let desc = self.server_state.read(cx).nodes_description();
         let muted = cx.theme().muted_foreground;
         let hover = cx.theme().table_hover;
+        let success = cx.theme().success;
+        let danger = cx.theme().danger;
+        let can_write = self.can_sentinel_write(cx);
 
         if desc.topology.is_empty() {
             return Label::new(i18n_topology(cx, "sentinel_placeholder"))
@@ -1006,10 +1470,17 @@ impl ZedisTopology {
                 .into_any_element();
         }
 
-        let summary = SharedString::from(format!(
-            "{} · masters {} · replicas {}",
-            desc.server_type, desc.master_nodes, desc.slave_nodes
-        ));
+        let master_count = desc.topology.len();
+        let replica_count: usize = desc.topology.iter().map(|m| m.replicas.len()).sum();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let summary: SharedString = rust_i18n::t!(
+            "topology.sentinel_summary",
+            masters = master_count,
+            replicas = replica_count,
+            locale = locale
+        )
+        .to_string()
+        .into();
         let failover_label = i18n_topology(cx, "sentinel_failover_button");
         let reset_label = i18n_topology(cx, "sentinel_reset_button");
         let remove_label = i18n_topology(cx, "sentinel_remove_button");
@@ -1020,23 +1491,27 @@ impl ZedisTopology {
             let m_name = master.master.master_name.clone();
             let m_role = master.master.role_marker.clone();
             let m_annot = master.master.annotation.clone();
+            let role_color = role_marker_color(&m_role, muted, success, danger);
             let mut master_row = h_flex()
                 .id(SharedString::from(format!("topo-snt-mrow-{m_addr}")))
                 .items_center()
                 .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
                 .hover(move |s| s.bg(hover))
+                .child(Label::new(m_role).text_xs().text_color(role_color))
                 .child(Label::new(m_addr).font_semibold())
-                .child(Label::new(m_role).text_xs().text_color(muted))
                 .child(Label::new(m_annot).text_xs().text_color(muted))
                 .child(div().flex_1());
-            if !m_name.is_empty() {
+            if can_write && !m_name.is_empty() {
                 let name_for_failover = m_name.clone();
                 let name_for_reset = m_name.clone();
                 let name_for_remove = m_name.clone();
                 master_row = master_row
                     .child(
                         Button::new(SharedString::from(format!("topo-snt-failover-{m_name}")))
-                            .ghost()
+                            .danger()
                             .small()
                             .label(failover_label.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1065,26 +1540,57 @@ impl ZedisTopology {
             rows.push(master_row.into_any_element());
 
             for replica in master.replicas.iter() {
+                let r_role = replica.role_marker.clone();
+                let role_color = role_marker_color(&r_role, muted, success, danger);
                 rows.push(
                     h_flex()
                         .id(SharedString::from(format!("topo-snt-rrow-{}", replica.addr)))
                         .items_center()
                         .gap_2()
                         .pl_6()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
                         .hover(move |s| s.bg(hover))
+                        .child(Label::new(r_role).text_xs().text_color(role_color))
                         .child(Label::new(replica.addr.clone()).text_color(muted))
-                        .child(Label::new(replica.role_marker.clone()).text_xs().text_color(muted))
                         .child(Label::new(replica.annotation.clone()).text_xs().text_color(muted))
                         .into_any_element(),
                 );
             }
         }
 
-        v_flex()
-            .gap_3()
-            .child(Label::new(summary).text_xs().text_color(muted))
-            .child(v_flex().gap_2().children(rows))
-            .into_any_element()
+        let mut col = v_flex().gap_3().child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(Label::new(summary).text_xs().text_color(muted))
+                .child(
+                    Button::new("topo-snt-refresh")
+                        .outline()
+                        .small()
+                        .icon(Icon::new(CustomIconName::RotateCw))
+                        .tooltip(i18n_topology(cx, "refresh_tooltip"))
+                        .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
+                ),
+        );
+        if !can_write {
+            let theme = cx.theme();
+            col = col.child(
+                div()
+                    .p_2()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.warning)
+                    .bg(theme.warning.opacity(0.1))
+                    .child(
+                        Label::new(i18n_topology(cx, "readonly_banner"))
+                            .text_xs()
+                            .text_color(theme.warning),
+                    ),
+            );
+        }
+        col.child(v_flex().gap_1().children(rows)).into_any_element()
     }
 
     // ── Confirm dialogs (unchanged behaviour) ─────────────────────────
@@ -1096,18 +1602,26 @@ impl ZedisTopology {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title = i18n_topology(cx, "failover_confirm_title");
-        let body = if force {
-            format!(
-                "Force-promote replica {target_addr} to master, skipping the master-handshake \
-                 step. Use only when the existing master is unreachable — risks split-brain if \
-                 the old master returns before the cluster reconciles."
-            )
+        let title = if force {
+            i18n_topology(cx, "force_failover_confirm_title")
         } else {
-            format!(
-                "Promote replica {target_addr} to master. The existing master will demote to \
-                 a replica. This may briefly interrupt writes."
+            i18n_topology(cx, "failover_confirm_title")
+        };
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = if force {
+            rust_i18n::t!(
+                "topology.force_failover_confirm_body",
+                addr = target_addr.as_ref(),
+                locale = locale
             )
+            .to_string()
+        } else {
+            rust_i18n::t!(
+                "topology.failover_confirm_body",
+                addr = target_addr.as_ref(),
+                locale = locale
+            )
+            .to_string()
         };
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
@@ -1275,12 +1789,33 @@ impl Render for ZedisTopology {
                 .into_any_element(),
         };
 
+        // Cluster/Sentinel headers already include refresh; stand-alone still
+        // gets a refresh so the mode can flip once CLUSTER INFO arrives.
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .child(Label::new(title).text_lg().font_bold())
+            .when(
+                matches!(self.mode, TopologyMode::Standalone | TopologyMode::Unknown),
+                |this| {
+                    this.child(
+                        Button::new("topo-header-refresh")
+                            .outline()
+                            .small()
+                            .icon(Icon::new(CustomIconName::RotateCw))
+                            .tooltip(i18n_topology(cx, "refresh_tooltip"))
+                            .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
+                    )
+                },
+            );
+
         v_flex()
             .size_full()
             .font_family(get_mono_font_family())
             .p_4()
             .gap_3()
-            .child(Label::new(title).text_lg().font_bold())
+            .child(header)
             .child(body)
     }
 }

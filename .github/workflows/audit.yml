@@ -8,8 +8,11 @@ on:
       - main
     paths:
       - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
   schedule:
     - cron: "0 16 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,15 +20,22 @@ permissions:
 jobs:
   security-audit:
     permissions:
-      checks: write # for rustsec/audit-check to create check
-      contents: read # for actions/checkout to fetch code
-      issues: write # for rustsec/audit-check to create issues
+      # rustsec/audit-check posts results as a Check Run. That API requires
+      # a GitHub App token — the automatic GITHUB_TOKEN qualifies; a classic
+      # PAT (secrets.GH_TOKEN) is rejected with:
+      #   "You must authenticate via a GitHub App"
+      checks: write
+      contents: read
+      # Optional: open issues for advisories. Safe with GITHUB_TOKEN on
+      # the default branch; skip if you prefer report-only.
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: Audit Check
-        # https://github.com/rustsec/audit-check/issues/2
+        # https://github.com/rustsec/audit-check
+        # Node 24 runtime is already selected by the action (v2.0.0+).
         uses: rustsec/audit-check@v2.0.0
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
