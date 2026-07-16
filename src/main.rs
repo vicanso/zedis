@@ -45,9 +45,9 @@ use zedis_ui::ZedisDialog;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // Pointed at the empty `locales_stub/` so the macro embeds no translations at
-// compile time; the real `locales/*.toml` are loaded (compressed) at runtime by
-// `i18n_loader::runtime_backend`, which the `t!` lookups resolve through. See
-// `src/i18n_loader.rs`.
+// compile time; the real `locales/*.toml` stay compressed until the lazy
+// backend from `i18n_loader::runtime_backend` inflates a locale on its first
+// `t!` lookup. See `src/i18n_loader.rs`.
 rust_i18n::i18n!(
     "locales_stub",
     fallback = "en",
