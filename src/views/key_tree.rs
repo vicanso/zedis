@@ -58,7 +58,11 @@ use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
 
@@ -76,6 +80,10 @@ use delegate::*;
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
 const TREE_INDENT_OFFSET: f32 = 8.0; // Additional offset for all items
 const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
+/// Coalescing window for `KeyTreeUpdated` bursts: the scanner emits one event
+/// per SCAN page, so a large keyspace would otherwise trigger a full-tree
+/// rebuild (clone + sort + build) hundreds of times per scan.
+const KEY_TREE_UPDATE_COALESCE: Duration = Duration::from_millis(100);
 /// Fixed width of the TTL chip, in pixels. Sized to fit the two-digit cap
 /// of `format_ttl_chip` (`59s` / `59m`) at 10px font with 1px borders.
 const TTL_CHIP_WIDTH: f32 = 34.0;
@@ -203,6 +211,14 @@ pub struct ZedisKeyTree {
 
     auto_refresh_task: Option<Task<()>>,
 
+    /// Trailing-edge rebuild scheduled while scan pages are streaming in;
+    /// dropping it cancels the pending rebuild.
+    pending_tree_update: Option<Task<()>>,
+
+    /// When the last `KeyTreeUpdated`-driven rebuild started — the
+    /// leading-edge check in `schedule_key_tree_update`.
+    last_tree_update_at: Option<Instant>,
+
     state: KeyTreeState,
 
     current_keyword: Entity<SharedString>,
@@ -289,7 +305,7 @@ impl ZedisKeyTree {
                     this.reset(cx);
                 }
                 ServerEvent::KeyTreeUpdated => {
-                    this.update_key_tree(true, cx);
+                    this.schedule_key_tree_update(cx);
                 }
                 ServerEvent::ServerInfoUpdated => {
                     let readonly = server_state.read(cx).readonly();
@@ -317,6 +333,9 @@ impl ZedisKeyTree {
                     this.reset_expand(cx);
                 }
                 ServerEvent::KeyScanFinished => {
+                    // Flush any coalesced rebuild first so the expansion
+                    // pass below sees the final key set.
+                    this.flush_key_tree_update(cx);
                     this.check_and_expand_keys(cx);
                     // Record what the freshly-built tree was scanned
                     // for, so a later same-target refresh is recognised
@@ -411,6 +430,8 @@ impl ZedisKeyTree {
             server_state,
             should_enter_add_key_mode: None,
             auto_refresh_task: None,
+            pending_tree_update: None,
+            last_tree_update_at: None,
             last_observed_scroll_y: 0.0,
             _subscriptions: subscriptions,
         };
@@ -491,6 +512,44 @@ impl ZedisKeyTree {
                 }
             });
             self.state.expanded_items = expanded_items;
+        }
+    }
+
+    /// Coalesce `KeyTreeUpdated` bursts into at most one rebuild per
+    /// [`KEY_TREE_UPDATE_COALESCE`] window. The first event of a burst
+    /// rebuilds immediately (so the first scan page renders at once); the
+    /// rest fold into one trailing rebuild, which snapshots whatever pages
+    /// have landed by the time it fires — no event is ever lost, later
+    /// pages just ride along.
+    fn schedule_key_tree_update(&mut self, cx: &mut Context<Self>) {
+        if self.pending_tree_update.is_some() {
+            // The pending rebuild reads server state when it fires, so it
+            // already covers this event.
+            return;
+        }
+        let since_last = self.last_tree_update_at.map(|at| at.elapsed()).unwrap_or(Duration::MAX);
+        if since_last >= KEY_TREE_UPDATE_COALESCE {
+            self.last_tree_update_at = Some(Instant::now());
+            self.update_key_tree(true, cx);
+            return;
+        }
+        let wait = KEY_TREE_UPDATE_COALESCE - since_last;
+        self.pending_tree_update = Some(cx.spawn(async move |handle, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = handle.update(cx, |this, cx| {
+                this.pending_tree_update = None;
+                this.last_tree_update_at = Some(Instant::now());
+                this.update_key_tree(true, cx);
+            });
+        }));
+    }
+
+    /// Run any coalesced rebuild now — used on `KeyScanFinished` so
+    /// follow-up work (auto-expansion) operates on the final key set.
+    fn flush_key_tree_update(&mut self, cx: &mut Context<Self>) {
+        if self.pending_tree_update.take().is_some() {
+            self.last_tree_update_at = Some(Instant::now());
+            self.update_key_tree(true, cx);
         }
     }
 
@@ -578,12 +637,12 @@ impl ZedisKeyTree {
                     let start = std::time::Instant::now();
                     // Source switch: tag filter → local metadata union
                     // (covers tagged keys not yet in the SCAN page);
-                    // otherwise the SCAN snapshot is the source.
-                    // Then local AND of type + tag + TTL on that set.
-                    let raw_keys = (*keys_snapshot).clone();
+                    // otherwise the SCAN snapshot is the source (cloned out
+                    // of the Arc only on this path — the union path builds
+                    // its own Vec). Then local AND of type + tag + TTL.
                     let source = match tag_filter_snapshot {
-                        Some(color) => build_tagged_keys_list(color, &raw_keys, &metadata_snapshot),
-                        None => raw_keys,
+                        Some(color) => build_tagged_keys_list(color, &keys_snapshot, &metadata_snapshot),
+                        None => (*keys_snapshot).clone(),
                     };
                     let keys_input = apply_local_key_filters(
                         source,

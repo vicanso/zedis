@@ -297,7 +297,9 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
         key_ttls,
         metadata,
     } = input;
-    keys.sort_unstable_by_key(|(k, _)| k.clone());
+    // `sort_unstable_by_key` would clone the `SharedString` on *every*
+    // comparison (~n·log n Arc bumps); compare by borrow instead.
+    keys.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     // Effective expansion = the user-expanded folders plus any single-child
     // folder chains hanging off them, so drilling into a deep single-child
     // namespace (`app:user` → `profile` → leaves) opens straight through in

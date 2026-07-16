@@ -15,7 +15,10 @@
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     helpers::{apply_fonts, get_or_create_config_dir, parse_duration},
-    states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
+    states::{
+        ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
+        update_app_state_and_save_quiet,
+    },
 };
 use gpui::{
     App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
@@ -337,25 +340,29 @@ impl ZedisSettingEditor {
         let config_dir_state =
             cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
 
+        // AI credentials have no visual output — persist without the
+        // app-wide window refresh.
         subscriptions.push(Self::bind_blur_save(cx, &ai_base_url_state, window, |text, cx| {
-            update_app_state_and_save(cx, "save_ai_base_url", move |state, _| {
+            update_app_state_and_save_quiet(cx, "save_ai_base_url", move |state, _| {
                 state.set_ai_base_url(text);
             });
         }));
         subscriptions.push(Self::bind_blur_save(cx, &ai_api_key_state, window, |text, cx| {
-            update_app_state_and_save(cx, "save_ai_api_key", move |state, _| {
+            update_app_state_and_save_quiet(cx, "save_ai_api_key", move |state, _| {
                 state.set_ai_api_key(text);
             });
         }));
         subscriptions.push(Self::bind_blur_save(cx, &ai_model_state, window, |text, cx| {
-            update_app_state_and_save(cx, "save_ai_model", move |state, _| {
+            update_app_state_and_save_quiet(cx, "save_ai_model", move |state, _| {
                 state.set_ai_model(text);
             });
         }));
 
-        // Continuous font size (rem px) via a slider, 12–22px. The save is
-        // debounced; `cx.notify()` re-renders the row so the px readout tracks
-        // the thumb live.
+        // Continuous font size (rem px) via a slider, 12–22px. The state
+        // updates per change so reads stay live, but the disk write and the
+        // app-wide refresh are debounced until the thumb settles;
+        // `cx.notify()` re-renders the row so the px readout tracks the
+        // thumb live.
         let font_size_slider = cx.new(|_| {
             SliderState::new()
                 .min(12.0)
@@ -369,7 +376,7 @@ impl ZedisSettingEditor {
             |_view, _slider, event: &SliderEvent, _window, cx| {
                 if let SliderEvent::Change(SliderValue::Single(rem)) = event {
                     let rem = *rem;
-                    update_app_state_and_save(cx, "save_font_size", move |state, _| {
+                    update_app_state_and_save_debounced(cx, "save_font_size", move |state, _| {
                         state.set_font_rem_px(Some(rem));
                     });
                     cx.notify();

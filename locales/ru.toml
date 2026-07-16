@@ -110,7 +110,6 @@ topology = "Топология"
 settings_tooltip = "Открыть настройки"
 github_tooltip = "Поставить звезду на GitHub"
 yes = "Да"
-no = "Нет"
 
 [servers]
 export_passphrase_placeholder = "Пароль (необязательно) — зашифровать экспорт как токен обмена"

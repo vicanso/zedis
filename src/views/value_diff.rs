@@ -51,8 +51,88 @@ use std::time::Duration;
 /// reference the same signature without drifting.
 pub type DiffCloseCallback = Arc<dyn Fn(&mut Window, &mut gpui::App) + 'static>;
 
+/// Everything derivable from the (immutable) `DiffSession` bytes, computed
+/// once in [`ZedisValueDiff::new`]. The view repaints on scroll / hover /
+/// focus, and re-running decode + JSON parse + the O(n·m) LCS per frame on
+/// a multi-MB value made every repaint pay for a diff that never changes.
+struct DiffComputation {
+    identical: bool,
+    ops: Vec<DiffOp>,
+    left_lines: Vec<SharedString>,
+    right_lines: Vec<SharedString>,
+    /// Merge-patch block state: `None` — not applicable (non-JSON session
+    /// or an unparsable side); `Some(None)` — applicable but the patch is
+    /// empty; `Some(Some(body))` — the pretty-printed RFC 7396 patch.
+    merge_patch: Option<Option<SharedString>>,
+}
+
+impl DiffComputation {
+    fn new(session: &DiffSession) -> Self {
+        // UTF-8 lossy decode — diff is text-oriented; binary keys that
+        // happen to carry invalid UTF-8 sequences get `U+FFFD` substitutes
+        // in the affected lines. The Hex view round-trip stays inside the
+        // bytes editor (which is the proper place for byte-level
+        // inspection), so we trade a touch of fidelity for far simpler
+        // diff rendering.
+        let left_raw = String::from_utf8_lossy(&session.reference_bytes).into_owned();
+        let right_raw = String::from_utf8_lossy(&session.current_bytes).into_owned();
+
+        // Parse both sides as JSON regardless of the session's `is_json`
+        // flag — a plain String key that happens to hold JSON still
+        // benefits from line-aligned pretty printing on both sides. The
+        // parsed values feed both the pretty-print and the merge patch, so
+        // each side is parsed exactly once.
+        let parsed_left = serde_json::from_str::<JsonValue>(&left_raw).ok();
+        let parsed_right = serde_json::from_str::<JsonValue>(&right_raw).ok();
+
+        // Pretty-print JSON to maximise line-level diff signal — a single
+        // minified blob would collapse all changes onto one line. Only
+        // reformat if both sides parse, so a half-broken JSON value still
+        // renders raw bytes rather than silently losing content.
+        let (left, right) = match (&parsed_left, &parsed_right) {
+            (Some(l), Some(r)) => (
+                serde_json::to_string_pretty(l).unwrap_or(left_raw),
+                serde_json::to_string_pretty(r).unwrap_or(right_raw),
+            ),
+            _ => (left_raw, right_raw),
+        };
+
+        // The merge-patch block stays guarded by `is_json` so we don't
+        // suggest `JSON.MERGE` for a plain SET key; a diff against an
+        // unparsable side would mislead, so hide rather than fake one.
+        let merge_patch = if session.is_json
+            && let (Some(l), Some(r)) = (&parsed_left, &parsed_right)
+        {
+            Some(
+                json_merge_diff(l, r).map(|v| SharedString::from(serde_json::to_string_pretty(&v).unwrap_or_default())),
+            )
+        } else {
+            None
+        };
+
+        let identical = left == right;
+        let ops = if identical {
+            Vec::new()
+        } else {
+            line_diff(&left, &right)
+        };
+        // Materialise lines as `SharedString` up front so the per-frame row
+        // build clones an Arc handle instead of re-allocating each line.
+        let to_lines = |s: &str| s.lines().map(|l| SharedString::from(l.to_string())).collect();
+
+        Self {
+            identical,
+            ops,
+            left_lines: to_lines(&left),
+            right_lines: to_lines(&right),
+            merge_patch,
+        }
+    }
+}
+
 pub struct ZedisValueDiff {
     session: Arc<DiffSession>,
+    computed: DiffComputation,
     on_close: DiffCloseCallback,
     /// Shared by the scroll viewport and the always-on sibling scrollbar
     /// so the bar tracks the diff body's offset.
@@ -65,35 +145,14 @@ pub struct ZedisValueDiff {
 
 impl ZedisValueDiff {
     pub fn new(session: DiffSession, on_close: DiffCloseCallback, cx: &mut Context<Self>) -> Self {
+        let computed = DiffComputation::new(&session);
         Self {
             session: Arc::new(session),
+            computed,
             on_close,
             scroll_handle: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             focused: false,
-        }
-    }
-
-    /// UTF-8 lossy decode — diff is text-oriented; binary keys that
-    /// happen to carry invalid UTF-8 sequences get `U+FFFD` substitutes
-    /// in the affected lines. The Hex view round-trip stays inside the
-    /// bytes editor (which is the proper place for byte-level inspection),
-    /// so we trade a touch of fidelity for far simpler diff rendering.
-    fn decode(&self, bytes: &bytes::Bytes) -> String {
-        String::from_utf8_lossy(bytes).into_owned()
-    }
-
-    /// Pretty-print JSON to maximise line-level diff signal — a single
-    /// minified blob would collapse all changes onto one line. We only
-    /// reformat if both sides parse, so a half-broken JSON value still
-    /// renders raw bytes rather than silently losing content.
-    fn maybe_jsonify(&self, raw: &str, both_valid: bool) -> String {
-        if !both_valid {
-            return raw.to_string();
-        }
-        match serde_json::from_str::<JsonValue>(raw) {
-            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| raw.to_string()),
-            Err(_) => raw.to_string(),
         }
     }
 
@@ -144,7 +203,7 @@ impl ZedisValueDiff {
     fn render_pane(
         &self,
         title: SharedString,
-        lines: &[&str],
+        lines: &[SharedString],
         ops: &[DiffOp],
         is_left: bool,
         cx: &mut Context<Self>,
@@ -180,7 +239,7 @@ impl ZedisValueDiff {
             };
 
             let line_text: SharedString = match idx_opt {
-                Some(idx) => lines.get(idx).copied().unwrap_or("").to_string().into(),
+                Some(idx) => lines.get(idx).cloned().unwrap_or_default(),
                 None => SharedString::default(),
             };
             let line_no: SharedString = match idx_opt {
@@ -239,21 +298,15 @@ impl ZedisValueDiff {
 
     /// Optional RFC 7396 merge patch block — only rendered when the
     /// session was opened on a key Redis identified as JSON, AND both
-    /// snapshots parse cleanly. A diff against an unparsable side
-    /// would mislead, so we hide rather than fake one.
-    fn render_merge_patch_block(&self, left: &str, right: &str, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if !self.session.is_json {
-            return None;
-        }
+    /// snapshots parse cleanly (precomputed in [`DiffComputation`]).
+    fn render_merge_patch_block(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let patch = self.computed.merge_patch.as_ref()?;
         let theme = cx.theme();
-        let parsed_l = serde_json::from_str::<JsonValue>(left).ok()?;
-        let parsed_r = serde_json::from_str::<JsonValue>(right).ok()?;
-        let patch = json_merge_diff(&parsed_l, &parsed_r);
 
         let label = i18n_editor(cx, "diff_patch_label");
         let body: SharedString = match patch {
             None => i18n_editor(cx, "diff_patch_empty"),
-            Some(v) => serde_json::to_string_pretty(&v).unwrap_or_default().into(),
+            Some(body) => body.clone(),
         };
         Some(
             v_flex()
@@ -291,27 +344,10 @@ impl Render for ZedisValueDiff {
             self.focus_handle.focus(window, cx);
         }
         let theme = cx.theme();
-        let left_raw = self.decode(&self.session.reference_bytes);
-        let right_raw = self.decode(&self.session.current_bytes);
-
-        // Try parsing both sides as JSON regardless of the session's
-        // `is_json` flag — a plain String key that happens to hold JSON
-        // still benefits from line-aligned pretty printing on both
-        // sides. The merge-patch block stays guarded by `is_json` so
-        // we don't suggest `JSON.MERGE` for a plain SET key.
-        let both_json_valid = serde_json::from_str::<JsonValue>(&left_raw).is_ok()
-            && serde_json::from_str::<JsonValue>(&right_raw).is_ok();
-        let left = self.maybe_jsonify(&left_raw, both_json_valid);
-        let right = self.maybe_jsonify(&right_raw, both_json_valid);
-
-        let identical = left == right;
-        let ops = if identical {
-            Vec::new()
-        } else {
-            line_diff(&left, &right)
-        };
-        let left_lines: Vec<&str> = left.lines().collect();
-        let right_lines: Vec<&str> = right.lines().collect();
+        // Decode / JSON parse / LCS all live in `self.computed` — the
+        // session bytes never change after construction, so render only
+        // lays out the precomputed rows.
+        let identical = self.computed.identical;
 
         let body: gpui::AnyElement = if identical {
             div()
@@ -336,8 +372,8 @@ impl Render for ZedisValueDiff {
             };
             let right_title = i18n_editor(cx, "diff_current_label");
 
-            let left_pane = self.render_pane(left_title, &left_lines, &ops, true, cx);
-            let right_pane = self.render_pane(right_title, &right_lines, &ops, false, cx);
+            let left_pane = self.render_pane(left_title, &self.computed.left_lines, &self.computed.ops, true, cx);
+            let right_pane = self.render_pane(right_title, &self.computed.right_lines, &self.computed.ops, false, cx);
 
             h_flex()
                 .w_full()
@@ -353,7 +389,7 @@ impl Render for ZedisValueDiff {
         let patch_block = if identical {
             None
         } else {
-            self.render_merge_patch_block(&left, &right, cx)
+            self.render_merge_patch_block(cx)
         };
 
         // Single scroll region for the whole diff: header stays pinned at

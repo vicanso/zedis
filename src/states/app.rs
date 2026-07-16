@@ -27,6 +27,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use sys_locale::get_locale;
 use tracing::{error, info, warn};
@@ -1311,34 +1312,43 @@ pub fn content_area_width(window: &Window, cx: &App) -> Pixels {
     window.viewport_size().width - sidebar
 }
 
-/// Update app state in background, persist to disk, and refresh UI
+/// Debounce window for high-frequency config saves (panel drags, sliders).
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// Generation counter behind [`update_app_state_and_save_debounced`]: each
+/// debounced call bumps it, sleeps, and only the call still holding the
+/// latest generation performs the write — coalescing a drag's event stream
+/// into one disk write regardless of which view the events came from.
+static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Shared core for the `update_app_state_and_save*` helpers.
 ///
-/// This helper function abstracts the common pattern for updating global state:
-/// 1. Apply mutation to app state
-/// 2. Save updated state to disk asynchronously
-/// 3. Refresh all windows to apply changes
-///
-/// Used for theme and locale changes to ensure consistency across the app.
-///
-/// # Arguments
-/// * `cx` - Context for spawning async tasks
-/// * `action_name` - Human-readable action name for logging
-/// * `mutation` - Callback to modify the app state
-#[inline]
-pub fn update_app_state_and_save<F>(cx: &App, action_name: &'static str, mutation: F)
+/// 1. Apply the mutation to the global app state (always immediate).
+/// 2. If `debounce`, wait out [`SAVE_DEBOUNCE`] and yield to a newer call.
+/// 3. Snapshot the state *after* the wait (so the write carries every
+///    mutation applied during the quiet window) and persist it to disk.
+/// 4. If `refresh`, refresh all windows to apply visual changes.
+fn apply_and_save<F>(cx: &App, action_name: &'static str, refresh: bool, debounce: bool, mutation: F)
 where
     F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
 {
     let store = cx.global::<ZedisGlobalStore>().clone();
 
     cx.spawn(async move |cx| {
-        // Step 1: Update global state with the mutation
-        let state = store.update(cx, |state, cx| {
-            mutation(state, cx);
-            state.clone() // Return clone for async persistence
-        });
+        store.update(cx, |state, cx| mutation(state, cx));
 
-        // Step 2: Persist to disk in background executor
+        if debounce {
+            let generation = SAVE_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+            cx.background_executor().timer(SAVE_DEBOUNCE).await;
+            if SAVE_GENERATION.load(Ordering::Acquire) != generation {
+                // Superseded by a newer debounced save; that call will
+                // persist a state snapshot that already includes this
+                // mutation.
+                return;
+            }
+        }
+
+        let state = store.update(cx, |state, _| state.clone());
         cx.background_executor()
             .spawn(async move {
                 if let Err(e) = save_app_state(&state) {
@@ -1349,10 +1359,66 @@ where
             })
             .await;
 
-        // Step 3: Refresh windows to apply visual changes (theme/locale)
-        cx.update(|cx| cx.refresh_windows());
+        if refresh {
+            cx.update(|cx| cx.refresh_windows());
+        }
     })
     .detach();
+}
+
+/// Update app state, persist to disk, and refresh all windows.
+///
+/// Use for changes with app-wide visual effect (theme, locale, layout
+/// preferences read by other windows).
+#[inline]
+pub fn update_app_state_and_save<F>(cx: &App, action_name: &'static str, mutation: F)
+where
+    F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
+{
+    apply_and_save(cx, action_name, true, false, mutation);
+}
+
+/// Update app state and persist to disk *without* refreshing windows.
+///
+/// Use for bookkeeping state with no visual output (open tabs, update-check
+/// timestamps, AI credentials) — any visible side effect at those call sites
+/// already goes through its own store update + notify.
+#[inline]
+pub fn update_app_state_and_save_quiet<F>(cx: &App, action_name: &'static str, mutation: F)
+where
+    F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
+{
+    apply_and_save(cx, action_name, false, false, mutation);
+}
+
+/// Update app state immediately, but debounce the disk write (and the final
+/// window refresh) behind a [`SAVE_DEBOUNCE`] quiet window.
+///
+/// Use on high-frequency event streams — slider changes and the like — where
+/// writing the whole TOML per event is pure churn but the settled value must
+/// still repaint every window (e.g. the app font size). The in-memory state
+/// updates per event, so live UI reads stay current; only persistence and the
+/// app-wide repaint wait for the stream to settle. A quit inside the quiet
+/// window can lose the last write (same trade-off as the window-bounds save
+/// in `main.rs`).
+#[inline]
+pub fn update_app_state_and_save_debounced<F>(cx: &App, action_name: &'static str, mutation: F)
+where
+    F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
+{
+    apply_and_save(cx, action_name, true, true, mutation);
+}
+
+/// [`update_app_state_and_save_debounced`] without the settled-time window
+/// refresh — for high-frequency streams whose visual effect is already
+/// local to the emitting view (panel-resize drags: the view tracks the
+/// width in its own field and repaints itself per event).
+#[inline]
+pub fn update_app_state_and_save_quiet_debounced<F>(cx: &App, action_name: &'static str, mutation: F)
+where
+    F: FnOnce(&mut ZedisAppState, &App) + Send + 'static + Clone,
+{
+    apply_and_save(cx, action_name, false, true, mutation);
 }
 
 pub fn dialog_button_props(cx: &App) -> DialogButtonProps {

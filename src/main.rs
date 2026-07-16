@@ -11,7 +11,7 @@ use crate::helpers::{
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
     SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_sidebar,
-    i18n_update, save_app_state, update_app_state_and_save,
+    i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
 };
 use crate::views::{
     DialogCallback, ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar,
@@ -469,7 +469,7 @@ impl Zedis {
             .filter(|tab| !tab.server_id.is_empty())
             .map(|tab| (tab.server_id.clone(), tab.db))
             .collect();
-        update_app_state_and_save(cx, "save_open_tabs", move |state, _| state.set_open_tabs(tabs.clone()));
+        update_app_state_and_save_quiet(cx, "save_open_tabs", move |state, _| state.set_open_tabs(tabs.clone()));
     }
 
     /// Kick off a background check for a newer release. A `manual` check always
@@ -487,7 +487,7 @@ impl Zedis {
         }
         // Reset the once-per-day throttle on every attempt so a transient
         // failure doesn't immediately retry on the next launch.
-        update_app_state_and_save(cx, "mark_update_checked", |state, _| state.mark_update_checked());
+        update_app_state_and_save_quiet(cx, "mark_update_checked", |state, _| state.mark_update_checked());
         // Flag the check so the title-bar chip can show a loading spinner.
         cx.global::<ZedisGlobalStore>()
             .clone()
@@ -1053,7 +1053,7 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
     let on_skip: DialogCallback = Rc::new(move |_window, cx| {
         info!(version = %skip, "update: version skipped by user");
         let version = skip.clone();
-        update_app_state_and_save(cx, "skip_update_version", move |state, _| {
+        update_app_state_and_save_quiet(cx, "skip_update_version", move |state, _| {
             state.set_skipped_version(version.clone());
         });
         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
@@ -1106,7 +1106,7 @@ fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut W
             // the dialog then closes itself once the download settles.
             if !downloaded.get() {
                 let version = skip_version.clone();
-                update_app_state_and_save(cx, "skip_update_version", move |state, _| {
+                update_app_state_and_save_quiet(cx, "skip_update_version", move |state, _| {
                     state.set_skipped_version(version.clone());
                 });
                 cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {

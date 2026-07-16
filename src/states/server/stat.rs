@@ -679,8 +679,12 @@ impl ZedisServerState {
                     None
                 };
 
-                let (servers, list): (_, Vec<String>) =
-                    client.query_async_masters(vec![cmd("INFO").arg("ALL").clone()]).await?;
+                // Default `INFO` (not `ALL`): it already carries every section
+                // `RedisInfo::parse` reads, while `ALL` additionally streams
+                // `commandstats`/`latencystats` — payloads that scale with the
+                // number of distinct commands and were parsed into nothing —
+                // on every heartbeat tick, per master.
+                let (servers, list): (_, Vec<String>) = client.query_async_masters(vec![cmd("INFO")]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 // Cluster only: keep a per-master persistence row so the
                 // Persistence panel can show which node is still forking.

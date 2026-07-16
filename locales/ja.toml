@@ -110,7 +110,6 @@ topology = "トポロジー"
 settings_tooltip = "設定を開く"
 github_tooltip = "GitHub でスターを付ける"
 yes = "はい"
-no = "いいえ"
 
 [servers]
 export_passphrase_placeholder = "パスフレーズ（任意）— エクスポートを共有トークンとして暗号化"

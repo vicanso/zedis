@@ -753,17 +753,22 @@ impl RedisClient {
     }
 
     /// One bounded round of **search-by-value**: SCAN a single page across all
-    /// masters, then for each *string* key read its value (size-gated) and
+    /// masters, then for each key read its value (size-gated) and
     /// case-insensitively substring-match it against `needle_lower` (which must
-    /// already be lowercased). Non-string keys and values larger than
-    /// `max_value_bytes` are skipped (the latter counted in `skipped_oversized`).
+    /// already be lowercased). Unsupported types are ignored; values/containers
+    /// larger than the caps are skipped (counted in `skipped_oversized`).
     ///
     /// The caller drives this in a cancellable loop, accumulating across pages
     /// until the keyspace is exhausted (`done`) or a scan/time budget trips —
-    /// results are an explicit **sample**, never guaranteed exhaustive. Reads
-    /// route per-key through the shared cluster-aware connection (they pipeline
-    /// and don't block), guarded by the caller's caps rather than a dedicated
-    /// connection.
+    /// results are an explicit **sample**, never guaranteed exhaustive.
+    ///
+    /// Reads are batched into three pipelines per master (TYPE → length gate →
+    /// value fetch), so a page costs ~3 round trips per master instead of 2–3
+    /// per *key* — the per-key serial version burned the whole time budget on
+    /// network latency before touching most of the page. A key that vanishes
+    /// mid-round types as "none" (dropped) or reads as empty (no match); a
+    /// mid-round *type change* can fail the round's pipeline, which surfaces
+    /// as this round's error — same contract as the key-tree `scan`.
     pub async fn scan_values_round(
         &self,
         pattern: &str,
@@ -774,113 +779,175 @@ impl RedisClient {
         page_count: u64,
     ) -> Result<ValueSearchRound> {
         let (cursors, keys_per_node) = self.scan_nodes(cursors, pattern, page_count, None).await?;
-        let mut conn = self.connection.clone();
-        let mut matches = Vec::new();
+        let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        // Every per-node collection below is indexed/zipped against the
+        // master list; `scan_nodes` output is aligned with it by
+        // construction, so a mismatch means stale cursors from a different
+        // topology — refuse loudly instead of misrouting pipelines.
+        if keys_per_node.len() != master_addrs.len() {
+            return Err(Error::Invalid {
+                message: "scan pages and master addresses length mismatch".to_string(),
+            });
+        }
+
         let mut scanned = 0usize;
         let mut skipped_oversized = 0usize;
-        for keys in keys_per_node {
+
+        // Phase 1 — resolve every key's type, one pipeline per master.
+        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        for (idx, keys) in keys_per_node.iter().enumerate() {
+            scanned += keys.len();
+            if keys.is_empty() {
+                continue;
+            }
+            let mut pipe = redis::pipe();
             for key in keys {
-                scanned += 1;
-                let key_str = key.as_str();
-                // A key may vanish mid-scan; treat read errors as "no match".
-                let key_type: String = cmd("TYPE")
-                    .arg(key_str)
-                    .query_async(&mut conn)
-                    .await
-                    .unwrap_or_default();
-                // Only the first match per key is recorded (one row per key);
-                // the inline preview shows the full value. Containers are gated
-                // on element count so a giant collection isn't pulled whole.
+                pipe.cmd("TYPE").arg(key.as_str());
+            }
+            pipes[idx] = Some(pipe);
+        }
+        let type_results = query_async_masters_pipeline(master_addrs.clone(), self.db, pipes).await?;
+
+        let redis_string = |val: &Value| match val {
+            Value::SimpleString(s) => s.clone(),
+            Value::BulkString(d) => String::from_utf8_lossy(d).into_owned(),
+            _ => String::new(),
+        };
+
+        // Keep the per-node grouping throughout so follow-up pipelines stay
+        // routed to the master that owns the keys. Streams and module types
+        // aren't searched.
+        let mut candidates_per_node: Vec<Vec<(String, String)>> = Vec::with_capacity(keys_per_node.len());
+        for (keys, types) in keys_per_node.into_iter().zip(type_results) {
+            let mut node_candidates = Vec::with_capacity(keys.len());
+            if let Some(types) = types {
+                for (key, type_val) in keys.into_iter().zip(types) {
+                    let key_type = redis_string(&type_val);
+                    if matches!(key_type.as_str(), "string" | "hash" | "list" | "set" | "zset") {
+                        node_candidates.push((key, key_type));
+                    }
+                }
+            }
+            candidates_per_node.push(node_candidates);
+        }
+
+        // Phase 2 — size gate: one length-probe pipeline per master.
+        // Containers are gated on element count so a giant collection isn't
+        // pulled whole.
+        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        for (idx, candidates) in candidates_per_node.iter().enumerate() {
+            if candidates.is_empty() {
+                continue;
+            }
+            let mut pipe = redis::pipe();
+            for (key, key_type) in candidates {
+                let len_cmd = match key_type.as_str() {
+                    "string" => "STRLEN",
+                    "hash" => "HLEN",
+                    "list" => "LLEN",
+                    "set" => "SCARD",
+                    _ => "ZCARD",
+                };
+                pipe.cmd(len_cmd).arg(key.as_str());
+            }
+            pipes[idx] = Some(pipe);
+        }
+        let len_results = query_async_masters_pipeline(master_addrs.clone(), self.db, pipes).await?;
+
+        let mut survivors_per_node: Vec<Vec<(String, String)>> = Vec::with_capacity(candidates_per_node.len());
+        for (candidates, lens) in candidates_per_node.into_iter().zip(len_results) {
+            let mut node_survivors = Vec::with_capacity(candidates.len());
+            if let Some(lens) = lens {
+                for ((key, key_type), len_val) in candidates.into_iter().zip(lens) {
+                    let len = match len_val {
+                        Value::Int(n) => n.max(0) as u64,
+                        // A vanished key answers 0 — keep it; its read below
+                        // comes back empty and simply doesn't match.
+                        _ => 0,
+                    };
+                    let cap = if key_type == "string" {
+                        max_value_bytes
+                    } else {
+                        max_container_elems
+                    };
+                    if len > cap {
+                        skipped_oversized += 1;
+                    } else {
+                        node_survivors.push((key, key_type));
+                    }
+                }
+            }
+            survivors_per_node.push(node_survivors);
+        }
+
+        // Phase 3 — value reads for the keys that passed the gate.
+        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
+        for (idx, survivors) in survivors_per_node.iter().enumerate() {
+            if survivors.is_empty() {
+                continue;
+            }
+            let mut pipe = redis::pipe();
+            for (key, key_type) in survivors {
+                match key_type.as_str() {
+                    "string" => pipe.cmd("GET").arg(key.as_str()),
+                    "hash" => pipe.cmd("HGETALL").arg(key.as_str()),
+                    "list" => pipe.cmd("LRANGE").arg(key.as_str()).arg(0).arg(-1),
+                    "set" => pipe.cmd("SMEMBERS").arg(key.as_str()),
+                    _ => pipe.cmd("ZRANGE").arg(key.as_str()).arg(0).arg(-1),
+                };
+            }
+            pipes[idx] = Some(pipe);
+        }
+        let value_results = query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+
+        // Match evaluation is pure CPU from here. Only the first match per
+        // key is recorded (one row per key); the inline preview shows the
+        // full value. Conversion failures read as empty — "no match" —
+        // mirroring the old per-key `unwrap_or_default` semantics.
+        let mut matches = Vec::new();
+        for (survivors, values) in survivors_per_node.into_iter().zip(value_results) {
+            let Some(values) = values else {
+                continue;
+            };
+            for ((key, key_type), value) in survivors.into_iter().zip(values) {
                 let location = match key_type.as_str() {
                     "string" => {
-                        let len: u64 = cmd("STRLEN").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
-                        if len > max_value_bytes {
-                            skipped_oversized += 1;
-                            continue;
-                        }
-                        let value: Vec<u8> = cmd("GET").arg(key_str).query_async(&mut conn).await.unwrap_or_default();
+                        let value: Vec<u8> = Vec::from_redis_value(value).unwrap_or_default();
                         contains_needle(&value, needle_lower).then_some(MatchLocation::Value)
                     }
                     "hash" => {
-                        let n: u64 = cmd("HLEN").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
-                        if n > max_container_elems {
-                            skipped_oversized += 1;
-                            continue;
-                        }
-                        let fields: Vec<(Vec<u8>, Vec<u8>)> = cmd("HGETALL")
-                            .arg(key_str)
-                            .query_async(&mut conn)
-                            .await
-                            .unwrap_or_default();
+                        let fields: Vec<(Vec<u8>, Vec<u8>)> = Vec::from_redis_value(value).unwrap_or_default();
                         fields
                             .into_iter()
                             .find(|(f, v)| contains_needle(f, needle_lower) || contains_needle(v, needle_lower))
                             .map(|(f, _)| MatchLocation::Field(truncate_member(&f)))
                     }
                     "list" => {
-                        let n: u64 = cmd("LLEN").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
-                        if n > max_container_elems {
-                            skipped_oversized += 1;
-                            continue;
-                        }
-                        let items: Vec<Vec<u8>> = cmd("LRANGE")
-                            .arg(key_str)
-                            .arg(0)
-                            .arg(-1)
-                            .query_async(&mut conn)
-                            .await
-                            .unwrap_or_default();
+                        let items: Vec<Vec<u8>> = Vec::from_redis_value(value).unwrap_or_default();
                         items
                             .into_iter()
                             .position(|e| contains_needle(&e, needle_lower))
                             .map(MatchLocation::Index)
                     }
-                    "set" => {
-                        let n: u64 = cmd("SCARD").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
-                        if n > max_container_elems {
-                            skipped_oversized += 1;
-                            continue;
-                        }
-                        let members: Vec<Vec<u8>> = cmd("SMEMBERS")
-                            .arg(key_str)
-                            .query_async(&mut conn)
-                            .await
-                            .unwrap_or_default();
+                    // set / zset
+                    _ => {
+                        let members: Vec<Vec<u8>> = Vec::from_redis_value(value).unwrap_or_default();
                         members
                             .into_iter()
                             .find(|m| contains_needle(m, needle_lower))
                             .map(|m| MatchLocation::Member(truncate_member(&m)))
                     }
-                    "zset" => {
-                        let n: u64 = cmd("ZCARD").arg(key_str).query_async(&mut conn).await.unwrap_or(0);
-                        if n > max_container_elems {
-                            skipped_oversized += 1;
-                            continue;
-                        }
-                        let members: Vec<Vec<u8>> = cmd("ZRANGE")
-                            .arg(key_str)
-                            .arg(0)
-                            .arg(-1)
-                            .query_async(&mut conn)
-                            .await
-                            .unwrap_or_default();
-                        members
-                            .into_iter()
-                            .find(|m| contains_needle(m, needle_lower))
-                            .map(|m| MatchLocation::Member(truncate_member(&m)))
-                    }
-                    // Streams and module types aren't searched.
-                    _ => None,
                 };
                 if let Some(location) = location {
                     matches.push(ValueMatch {
-                        key: key.clone(),
+                        key,
                         key_type,
                         location,
                     });
                 }
             }
         }
+
         let done = cursors.iter().all(|&c| c == 0);
         Ok(ValueSearchRound {
             cursors,

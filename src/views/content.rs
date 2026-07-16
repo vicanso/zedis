@@ -15,7 +15,8 @@
 use crate::{
     helpers::{EditorAction, get_key_tree_widths},
     states::{
-        GlobalEvent, Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, save_app_state,
+        GlobalEvent, Route, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, i18n_common,
+        update_app_state_and_save_quiet_debounced,
     },
     views::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
@@ -30,7 +31,7 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashMap;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use zedis_ui::ZedisSkeletonLoading;
 
 // Constants for UI dimensions
@@ -410,16 +411,13 @@ impl ZedisContent {
                     return;
                 };
                 this.key_tree_width = *width;
-                let mut value = cx.global::<ZedisGlobalStore>().value(cx);
-                value.set_key_tree_width(*width);
-                cx.background_spawn(async move {
-                    if let Err(e) = save_app_state(&value) {
-                        error!(error = %e, "Failed to save key tree width");
-                    } else {
-                        info!("Key tree width saved successfully");
-                    }
-                })
-                .detach();
+                // Drags fire a stream of resize events — update state per
+                // event, write the config once the drag settles. Quiet: the
+                // width repaints locally via `this.key_tree_width` already.
+                let width = *width;
+                update_app_state_and_save_quiet_debounced(cx, "save_key_tree_width", move |state, _| {
+                    state.set_key_tree_width(width);
+                });
             }))
     }
 }

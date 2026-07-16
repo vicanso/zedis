@@ -21,7 +21,7 @@ use crate::{
     helpers::{EditorAction, build_csv, humanize_keystroke},
     states::{
         KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
-        i18n_list_editor, save_app_state,
+        i18n_list_editor, update_app_state_and_save_quiet_debounced,
     },
     views::export_to_file,
 };
@@ -1090,14 +1090,12 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                         return;
                     };
                     this.panel_width = Some(width);
-                    let mut value = cx.global::<ZedisGlobalStore>().value(cx);
-                    value.set_kv_edit_panel_width(width);
-                    cx.background_spawn(async move {
-                        if let Err(e) = save_app_state(&value) {
-                            tracing::error!(error = %e, "Failed to save kv panel width");
-                        }
-                    })
-                    .detach();
+                    // Drags fire a stream of resize events — update state per
+                    // event, write the config once the drag settles. Quiet:
+                    // the width repaints locally via `this.panel_width`.
+                    update_app_state_and_save_quiet_debounced(cx, "save_kv_edit_panel_width", move |state, _| {
+                        state.set_kv_edit_panel_width(width);
+                    });
                 }))
                 .into_any_element()
         } else {

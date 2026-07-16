@@ -110,7 +110,6 @@ topology = "Topología"
 settings_tooltip = "Abrir ajustes"
 github_tooltip = "Marcar en GitHub"
 yes = "Sí"
-no = "No"
 
 [servers]
 export_passphrase_placeholder = "Contraseña (opcional): cifra la exportación como token para compartir"
