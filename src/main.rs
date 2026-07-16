@@ -3,10 +3,10 @@ use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
-    MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo, apply_fonts,
-    download_and_verify, fetch_latest_release, focus_installer_ui, get_or_create_config_dir, init_logger,
-    installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages,
-    unix_ts_millis, with_app_identity,
+    MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
+    WorkspaceTabAction, apply_fonts, download_and_verify, fetch_latest_release, focus_installer_ui,
+    get_or_create_config_dir, init_logger, installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys,
+    open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -1355,6 +1355,15 @@ impl Render for Zedis {
                 TabAction::Close(ix) => this.close_tab(*ix, cx),
                 TabAction::CloseOthers(ix) => this.close_others(*ix, cx),
                 TabAction::CloseRight(ix) => this.close_right(*ix, cx),
+            }))
+            // ⌘1–⌘8 / Ctrl+1–8: jump to the Nth workspace tab (1-based key).
+            // No-op when that index is not open yet (or already active).
+            .on_action(cx.listener(|this, e: &WorkspaceTabAction, _window, cx| {
+                let WorkspaceTabAction::Select(ix) = *e;
+                if ix < this.tabs.len() {
+                    this.activate_tab(ix, cx);
+                    this.project_active_tab(cx);
+                }
             }))
             .on_action(cx.listener(|_this, _e: &NavAction, _window, cx| {
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {

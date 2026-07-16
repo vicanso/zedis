@@ -42,6 +42,14 @@ pub enum NavAction {
     Back,
 }
 
+/// Jump to a workspace tab by index. Bound as ⌘1–⌘8 / Ctrl+1–8
+/// (`secondary-1` … `secondary-8`); the payload is **0-based**. Out-of-range
+/// indexes (fewer tabs open than the number pressed) are ignored.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum WorkspaceTabAction {
+    Select(usize),
+}
+
 /// Command palette (⌘K). `Toggle` opens it (or closes if already open).
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum PaletteAction {
@@ -281,7 +289,7 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
         },
         ShortcutGroup {
             title_key: "group_navigation",
-            items: &[("escape", "back")],
+            items: &[("escape", "back"), ("cmd-1 … cmd-8", "workspace_tab")],
         },
     ]
 }
@@ -338,5 +346,15 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.
         KeyBinding::new("tab", JsonPathAction::AcceptCompletion, Some("JsonPathBar")),
+        // Workspace tabs: ⌘1–⌘8 / Ctrl+1–8 → activate that tab (1-based
+        // key, 0-based index). Cap matches `MAX_TABS` (8) in `main.rs`.
+        KeyBinding::new("secondary-1", WorkspaceTabAction::Select(0), None),
+        KeyBinding::new("secondary-2", WorkspaceTabAction::Select(1), None),
+        KeyBinding::new("secondary-3", WorkspaceTabAction::Select(2), None),
+        KeyBinding::new("secondary-4", WorkspaceTabAction::Select(3), None),
+        KeyBinding::new("secondary-5", WorkspaceTabAction::Select(4), None),
+        KeyBinding::new("secondary-6", WorkspaceTabAction::Select(5), None),
+        KeyBinding::new("secondary-7", WorkspaceTabAction::Select(6), None),
+        KeyBinding::new("secondary-8", WorkspaceTabAction::Select(7), None),
     ]
 }

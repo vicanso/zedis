@@ -30,21 +30,24 @@
 //!   skipped and why it stopped; results are never claimed exhaustive.
 //!
 //! Clicking a hit previews its value **inline** in the right-hand pane (the
-//! "Open" button there still jumps to the editor). MVP scope: string values,
-//! case-insensitive substring. (Hash / list / set / zset members and regex
-//! are deliberately left for later.)
+//! "Open" button there still jumps to the editor). Supports string / hash /
+//! list / set / zset with case-insensitive substring matching.
 
+use crate::components::KeyTypeBadge;
 use crate::connection::{MatchLocation, ValueMatch, ValueSearchRound, get_connection_manager};
 use crate::helpers::{build_csv, get_mono_font_family};
-use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_value_search};
+use crate::states::{KeyType, ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_value_search};
 use crate::views::export_to_file;
-use gpui::{Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{
+    ClipboardItem, Context, Entity, ScrollHandle, SharedString, Subscription, Task, Window, div, prelude::*, px,
+};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, StyledExt,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     label::Label,
+    notification::Notification,
     v_flex,
 };
 use std::time::Instant;
@@ -65,6 +68,9 @@ const PAGE_COUNT: u64 = 128;
 const MAX_MATCHES: usize = 500;
 /// Bytes of a value rendered in the preview pane before truncating.
 const PREVIEW_MAX_BYTES: usize = 64 * 1024;
+
+/// Example prefixes offered on the empty state (fill the prefix field only).
+const EXAMPLE_PREFIXES: &[&str] = &["session:", "user:", "cache:", "job:"];
 
 /// Why a search loop stopped — drives the honest summary line.
 #[derive(Clone, Copy, PartialEq)]
@@ -90,6 +96,8 @@ pub struct ZedisValueSearch {
     server_state: Entity<ZedisServerState>,
     prefix_input: Entity<InputState>,
     query_input: Entity<InputState>,
+    /// Local filter over already-found matches (key substring).
+    filter_input: Entity<InputState>,
     running: bool,
     matches: Vec<ValueMatch>,
     scanned: usize,
@@ -103,9 +111,12 @@ pub struct ZedisValueSearch {
 
     /// Currently-previewed match (also the highlighted row).
     selected: Option<SharedString>,
+    selected_type: Option<SharedString>,
+    selected_location: Option<MatchLocation>,
     preview: Option<Preview>,
     preview_task: Option<Task<()>>,
     preview_scroll: ScrollHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ZedisValueSearch {
@@ -114,10 +125,32 @@ impl ZedisValueSearch {
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_value_search(cx, "prefix_placeholder")));
         let query_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_value_search(cx, "query_placeholder")));
+        let filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_value_search(cx, "filter_placeholder")));
+
+        // Enter in either field starts the search (when not already running).
+        let mut subscriptions = vec![cx.subscribe_in(&query_input, window, |this, _s, event, _w, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) && !this.running {
+                this.start_search(cx);
+            }
+        })];
+        subscriptions.push(cx.subscribe_in(&prefix_input, window, |this, _s, event, _w, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) && !this.running {
+                this.start_search(cx);
+            }
+        }));
+        // Local filter is pure UI — re-render on every keystroke.
+        subscriptions.push(cx.subscribe(&filter_input, |_this, _s, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
+
         Self {
             server_state,
             prefix_input,
             query_input,
+            filter_input,
             running: false,
             matches: Vec::new(),
             scanned: 0,
@@ -128,9 +161,12 @@ impl ZedisValueSearch {
             task: None,
             scroll: ScrollHandle::new(),
             selected: None,
+            selected_type: None,
+            selected_location: None,
             preview: None,
             preview_task: None,
             preview_scroll: ScrollHandle::new(),
+            _subscriptions: subscriptions,
         }
     }
 
@@ -162,6 +198,8 @@ impl ZedisValueSearch {
         self.stop_reason = None;
         self.error = None;
         self.selected = None;
+        self.selected_type = None;
+        self.selected_location = None;
         self.preview = None;
         self.preview_task = None;
         self.running = true;
@@ -260,9 +298,26 @@ impl ZedisValueSearch {
         cx.notify();
     }
 
+    fn apply_example_prefix(&mut self, prefix: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let p: SharedString = prefix.to_string().into();
+        self.prefix_input.update(cx, |input, cx| {
+            input.set_value(p, window, cx);
+        });
+        self.error = None;
+        cx.notify();
+    }
+
     /// Preview a matched key's value inline (right pane), without leaving.
-    fn select_result(&mut self, key: SharedString, cx: &mut Context<Self>) {
+    fn select_result(
+        &mut self,
+        key: SharedString,
+        key_type: SharedString,
+        location: MatchLocation,
+        cx: &mut Context<Self>,
+    ) {
         self.selected = Some(key.clone());
+        self.selected_type = Some(key_type);
+        self.selected_location = Some(location);
         self.preview = Some(Preview::Loading);
         cx.notify();
         let server_id = self.server_state.read(cx).server_id().to_string();
@@ -274,6 +329,10 @@ impl ZedisValueSearch {
             }
             .await;
             let _ = this.update(cx, |this, cx| {
+                // Ignore stale previews if the user already clicked another row.
+                if this.selected.as_deref() != Some(key.as_ref()) {
+                    return;
+                }
                 this.preview = Some(match fetched {
                     Ok(text) => Preview::Value(truncate_preview(text)),
                     Err(e) => Preview::Error(e.to_string().into()),
@@ -289,6 +348,22 @@ impl ZedisValueSearch {
         cx.global::<ZedisGlobalStore>()
             .clone()
             .update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+    }
+
+    fn copy_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Preview::Value(text)) = &self.preview else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+        window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+    }
+
+    fn copy_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = &self.selected else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(key.to_string()));
+        window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
     }
 
     /// Export the current hits to a CSV (`key`, `type`, where it matched).
@@ -308,31 +383,189 @@ impl ZedisValueSearch {
         export_to_file(cx, server_state, csv.into_bytes(), "value-search.csv", success, error);
     }
 
-    fn summary_line(&self, cx: &Context<Self>) -> SharedString {
-        let reason = match self.stop_reason {
+    fn filter_text(&self, cx: &Context<Self>) -> String {
+        self.filter_input.read(cx).value().trim().to_lowercase()
+    }
+
+    fn filtered_matches<'a>(&'a self, filter: &str) -> Vec<&'a ValueMatch> {
+        self.matches
+            .iter()
+            .filter(|m| filter.is_empty() || m.key.to_lowercase().contains(filter))
+            .collect()
+    }
+
+    fn reason_label(&self, cx: &Context<Self>) -> SharedString {
+        match self.stop_reason {
             Some(StopReason::Done) => i18n_value_search(cx, "reason_done"),
             Some(StopReason::Capped) => i18n_value_search(cx, "reason_capped"),
             Some(StopReason::Timeout) => i18n_value_search(cx, "reason_timeout"),
             Some(StopReason::Cancelled) => i18n_value_search(cx, "reason_cancelled"),
-            None => i18n_value_search(cx, "searching"),
-        };
+            None if self.running => i18n_value_search(cx, "searching"),
+            None => SharedString::default(),
+        }
+    }
+
+    fn render_stat_chip(
+        label: SharedString,
+        value: SharedString,
+        muted: gpui::Hsla,
+        border: gpui::Hsla,
+    ) -> gpui::AnyElement {
+        h_flex()
+            .gap_1()
+            .items_center()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .child(Label::new(label).text_xs().text_color(muted))
+            .child(Label::new(value).text_xs().font_semibold())
+            .into_any_element()
+    }
+
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let danger = cx.theme().danger;
+        let warning = cx.theme().warning;
+
+        if let Some(err) = &self.error {
+            return div()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(danger)
+                .bg(danger.opacity(0.1))
+                .child(Label::new(err.clone()).text_xs().text_color(danger))
+                .into_any_element();
+        }
+
+        if !self.running && self.stop_reason.is_none() {
+            return Label::new(i18n_value_search(cx, "guardrails_hint"))
+                .text_xs()
+                .text_color(muted)
+                .into_any_element();
+        }
+
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        rust_i18n::t!(
-            "value_search.summary",
-            scanned = self.scanned,
-            matched = self.matches.len(),
-            skipped = self.skipped,
-            reason = reason,
-            locale = locale
-        )
-        .to_string()
-        .into()
+        let mut row = h_flex().gap_2().items_center().flex_wrap();
+        row = row.child(Self::render_stat_chip(
+            i18n_value_search(cx, "stat_scanned"),
+            SharedString::from(self.scanned.to_string()),
+            muted,
+            border,
+        ));
+        row = row.child(Self::render_stat_chip(
+            i18n_value_search(cx, "stat_matched"),
+            SharedString::from(self.matches.len().to_string()),
+            muted,
+            border,
+        ));
+        row = row.child(Self::render_stat_chip(
+            i18n_value_search(cx, "stat_skipped"),
+            SharedString::from(self.skipped.to_string()),
+            muted,
+            border,
+        ));
+        let reason = self.reason_label(cx);
+        if !reason.is_empty() {
+            row = row.child(Self::render_stat_chip(
+                i18n_value_search(cx, "stat_status"),
+                reason,
+                muted,
+                border,
+            ));
+        }
+        if self.truncated {
+            row = row.child(
+                Label::new(i18n_value_search(cx, "truncated"))
+                    .text_xs()
+                    .text_color(warning),
+            );
+        }
+        // Cap reminder while running.
+        if self.running {
+            let budget: SharedString = rust_i18n::t!(
+                "value_search.budget_running",
+                cap = SCAN_CAP,
+                secs = TIME_BUDGET_SECS,
+                locale = locale
+            )
+            .to_string()
+            .into();
+            row = row.child(Label::new(budget).text_xs().text_color(muted));
+        }
+        row.into_any_element()
+    }
+
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let mut examples = h_flex().gap_2().flex_wrap();
+        for p in EXAMPLE_PREFIXES {
+            let prefix = (*p).to_string();
+            let label = (*p).to_string();
+            examples = examples.child(
+                Button::new(SharedString::from(format!("vs-ex-{p}")))
+                    .outline()
+                    .small()
+                    .label(SharedString::from(label))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.apply_example_prefix(&prefix, window, cx);
+                    })),
+            );
+        }
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .child(Icon::new(IconName::Search).text_color(muted))
+            .child(Label::new(i18n_value_search(cx, "empty_title")).font_semibold())
+            .child(
+                Label::new(i18n_value_search(cx, "empty_body"))
+                    .text_sm()
+                    .text_color(muted)
+                    .text_center(),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .max_w(px(480.))
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(border)
+                    .child(
+                        Label::new(i18n_value_search(cx, "empty_guardrails_title"))
+                            .text_xs()
+                            .font_semibold(),
+                    )
+                    .child(
+                        Label::new(i18n_value_search(cx, "empty_guardrails_body"))
+                            .text_xs()
+                            .text_color(muted),
+                    ),
+            )
+            .child(
+                Label::new(i18n_value_search(cx, "empty_examples"))
+                    .text_xs()
+                    .text_color(muted),
+            )
+            .child(examples)
+            .into_any_element()
     }
 
     fn render_results(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
+        let filter = self.filter_text(cx);
+        let filtered = self.filtered_matches(&filter);
+
         if self.matches.is_empty() {
-            // Nothing typed/run yet → empty; running → searching; done → none.
             let msg = if self.running {
                 i18n_value_search(cx, "searching")
             } else if self.stop_reason.is_some() {
@@ -345,53 +578,85 @@ impl ZedisValueSearch {
                 .child(Label::new(msg).text_sm().text_color(muted))
                 .into_any_element();
         }
+
+        if filtered.is_empty() {
+            return div()
+                .p_4()
+                .child(
+                    Label::new(i18n_value_search(cx, "filter_no_matches"))
+                        .text_sm()
+                        .text_color(muted),
+                )
+                .into_any_element();
+        }
+
         // Stronger than the usual `table_even` so the match list is easy to
         // scan row-by-row.
         let stripe = cx.theme().muted.opacity(0.5);
         let active = cx.theme().list_active;
         let hover = cx.theme().table_hover;
+        let border = cx.theme().border;
         let selected = self.selected.clone();
         let mut list = v_flex().w_full();
-        for (ix, vm) in self.matches.iter().enumerate() {
+        for (ix, vm) in filtered.into_iter().enumerate() {
             let is_stripe = ix % 2 != 0;
             let is_selected = selected.as_deref() == Some(vm.key.as_str());
             let key_click = vm.key.clone();
+            let type_click: SharedString = vm.key_type.clone().into();
+            let loc_click = vm.location.clone();
+            let key_type = KeyType::from(vm.key_type.as_str());
             // A muted second line names where the needle matched (field /
             // index / member); plain string values carry no location.
-            let loc: Option<SharedString> = match &vm.location {
+            let loc_label: Option<SharedString> = match &vm.location {
                 MatchLocation::Value => None,
                 MatchLocation::Field(f) => Some(format!("{}: {f}", i18n_value_search(cx, "loc_field")).into()),
                 MatchLocation::Index(i) => Some(format!("[{i}]").into()),
                 MatchLocation::Member(m) => Some(format!("{}: {m}", i18n_value_search(cx, "loc_member")).into()),
             };
-            let mut content = v_flex()
-                .min_w_0()
-                .child(Label::new(vm.key.clone()).text_xs().truncate());
-            if let Some(loc) = loc {
-                content = content.child(Label::new(loc).text_xs().text_color(muted).truncate());
-            }
+            let open_key = vm.key.clone();
             list = list.child(
-                div()
+                h_flex()
                     .id(SharedString::from(format!("vs-row-{ix}")))
                     .w_full()
-                    .px_3()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
                     .py_1()
                     .cursor_pointer()
                     .when(is_stripe && !is_selected, |this| this.bg(stripe))
                     .when(is_selected, |this| this.bg(active))
-                    // Row-hover highlight for the pointer's current match; the
-                    // selected row keeps its `active` fill (no hover override).
                     .when(!is_selected, |this| this.hover(move |s| s.bg(hover)))
-                    .on_click(cx.listener(move |this, _, _w, cx| this.select_result(key_click.clone().into(), cx)))
-                    .child(content),
+                    .on_click(cx.listener(move |this, _, _w, cx| {
+                        this.select_result(key_click.clone().into(), type_click.clone(), loc_click.clone(), cx);
+                    }))
+                    .child(KeyTypeBadge::new(key_type).plain(true))
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .flex_1()
+                            .child(Label::new(SharedString::from(vm.key.clone())).text_xs().truncate())
+                            .when_some(loc_label, |col, loc| {
+                                col.child(Label::new(loc).text_xs().text_color(muted).truncate())
+                            }),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("vs-open-row-{ix}")))
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowRight)
+                            .tooltip(i18n_value_search(cx, "open"))
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                this.open_key(open_key.clone().into(), cx);
+                            })),
+                    ),
             );
         }
         if self.truncated {
             list = list.child(
-                div().px_3().py_1().child(
+                div().px_3().py_1().border_t_1().border_color(border).child(
                     Label::new(i18n_value_search(cx, "truncated"))
                         .text_xs()
-                        .text_color(cx.theme().yellow),
+                        .text_color(cx.theme().warning),
                 ),
             );
         }
@@ -402,11 +667,16 @@ impl ZedisValueSearch {
         let muted = cx.theme().muted_foreground;
         match &self.preview {
             None => div()
+                .size_full()
                 .p_4()
+                .flex()
+                .items_center()
+                .justify_center()
                 .child(
                     Label::new(i18n_value_search(cx, "preview_hint"))
                         .text_sm()
-                        .text_color(muted),
+                        .text_color(muted)
+                        .text_center(),
                 )
                 .into_any_element(),
             Some(Preview::Loading) => div()
@@ -420,8 +690,23 @@ impl ZedisValueSearch {
             Some(Preview::Value(text)) => {
                 let key = self.selected.clone().unwrap_or_default();
                 let key_open = key.clone();
+                let key_type = self
+                    .selected_type
+                    .as_deref()
+                    .map(KeyType::from)
+                    .unwrap_or(KeyType::Unknown);
+                let loc_label: Option<SharedString> = match &self.selected_location {
+                    Some(MatchLocation::Field(f)) => {
+                        Some(format!("{}: {f}", i18n_value_search(cx, "loc_field")).into())
+                    }
+                    Some(MatchLocation::Index(i)) => Some(format!("[{i}]").into()),
+                    Some(MatchLocation::Member(m)) => {
+                        Some(format!("{}: {m}", i18n_value_search(cx, "loc_member")).into())
+                    }
+                    _ => None,
+                };
                 v_flex()
-                    .w_full()
+                    .size_full()
                     .gap_2()
                     .p_3()
                     .child(
@@ -429,28 +714,55 @@ impl ZedisValueSearch {
                             .w_full()
                             .gap_2()
                             .items_center()
+                            .child(KeyTypeBadge::new(key_type).plain(true))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .child(Label::new(key).text_xs().font_semibold().truncate()),
                             )
+                            .when_some(loc_label, |row, loc| {
+                                row.child(Label::new(loc).text_xs().text_color(muted))
+                            })
+                            .child(
+                                Button::new("vs-copy-key")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Copy)
+                                    .tooltip(i18n_value_search(cx, "copy_key_tooltip"))
+                                    .on_click(cx.listener(|this, _, w, cx| this.copy_key(w, cx))),
+                            )
+                            .child(
+                                Button::new("vs-copy-value")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Copy)
+                                    .tooltip(i18n_value_search(cx, "copy_value_tooltip"))
+                                    .on_click(cx.listener(|this, _, w, cx| this.copy_preview(w, cx))),
+                            )
                             .child(
                                 Button::new("vs-open")
                                     .small()
-                                    .ghost()
+                                    .primary()
                                     .label(i18n_value_search(cx, "open"))
                                     .on_click(cx.listener(move |this, _, _w, cx| this.open_key(key_open.clone(), cx))),
                             ),
                     )
-                    .child(div().w_full().text_xs().child(text.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .text_xs()
+                            .font_family(get_mono_font_family())
+                            .child(text.clone()),
+                    )
                     .into_any_element()
             }
         }
     }
 }
 
-/// Truncate a type-aware preview string to [`PREVIEW_MAX_BYTES`] (char-safe).
 /// Format a match location for a CSV cell (machine-readable, no i18n).
 fn location_csv(loc: &MatchLocation) -> String {
     match loc {
@@ -475,14 +787,21 @@ fn truncate_preview(mut text: String) -> SharedString {
 
 impl Render for ZedisValueSearch {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+        let show_results_pane = self.running || self.stop_reason.is_some() || !self.matches.is_empty();
+
         let action = if self.running {
             Button::new("vs-stop")
                 .outline()
+                .small()
                 .label(i18n_value_search(cx, "stop"))
                 .on_click(cx.listener(|this, _, _w, cx| this.stop_search(cx)))
         } else {
             Button::new("vs-search")
                 .primary()
+                .small()
+                .icon(IconName::Search)
                 .label(i18n_value_search(cx, "search"))
                 .on_click(cx.listener(|this, _, _w, cx| this.start_search(cx)))
         };
@@ -491,35 +810,85 @@ impl Render for ZedisValueSearch {
             .w_full()
             .gap_2()
             .items_center()
-            .child(div().w(px(260.)).child(Input::new(&self.prefix_input)))
-            .child(div().flex_1().child(Input::new(&self.query_input)))
+            .child(div().w(px(220.)).child(Input::new(&self.prefix_input).small()))
+            .child(div().flex_1().child(Input::new(&self.query_input).small()))
             .child(action)
             .when(!self.matches.is_empty(), |this| {
                 this.child(
                     Button::new("vs-export-csv")
                         .outline()
+                        .small()
                         .label(i18n_common(cx, "export_csv"))
+                        .tooltip(i18n_value_search(cx, "export_tooltip"))
                         .on_click(cx.listener(|this, _, _w, cx| this.export_csv(cx))),
                 )
             });
 
-        // Error takes precedence; otherwise show the sampling summary once a
-        // search has started.
-        let status = if let Some(err) = self.error.clone() {
-            Some(Label::new(err).text_xs().text_color(cx.theme().danger))
-        } else if self.running || self.stop_reason.is_some() {
-            Some(
-                Label::new(self.summary_line(cx))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground),
-            )
+        let body: gpui::AnyElement = if !show_results_pane {
+            self.render_empty_state(cx)
         } else {
-            None
+            let results = self.render_results(cx);
+            let preview = self.render_preview(cx);
+            let filter_bar = h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .px_2()
+                .py_1()
+                .border_b_1()
+                .border_color(border)
+                .child(
+                    Label::new(SharedString::from({
+                        let filter = self.filter_text(cx);
+                        let shown = self.filtered_matches(&filter).len();
+                        let total = self.matches.len();
+                        if filter.is_empty() {
+                            format!("{total}")
+                        } else {
+                            format!("{shown}/{total}")
+                        }
+                    }))
+                    .text_xs()
+                    .text_color(muted),
+                )
+                .child(div().flex_1().child(Input::new(&self.filter_input).small()));
+
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .gap_0()
+                .child(
+                    v_flex()
+                        .w(px(340.))
+                        .h_full()
+                        .border_r_1()
+                        .border_color(border)
+                        .child(filter_bar)
+                        .child(
+                            div()
+                                .id("vs-results")
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .child(results),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("vs-preview")
+                        .flex_1()
+                        .h_full()
+                        .min_w_0()
+                        .overflow_scroll()
+                        .track_scroll(&self.preview_scroll)
+                        .child(preview),
+                )
+                .into_any_element()
         };
 
-        let results = self.render_results(cx);
-        let preview = self.render_preview(cx);
-        let border = cx.theme().border;
         v_flex()
             .size_full()
             .font_family(get_mono_font_family())
@@ -528,7 +897,7 @@ impl Render for ZedisValueSearch {
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .py_2()
+                    .h(px(40.))
                     .border_b_1()
                     .border_color(border)
                     .child(
@@ -552,35 +921,8 @@ impl Render for ZedisValueSearch {
                     .gap_2()
                     .p_3()
                     .child(header)
-                    .when_some(status, |this, label| this.child(label))
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("vs-results")
-                                    .w(px(320.))
-                                    .h_full()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.scroll)
-                                    .child(results),
-                            )
-                            .child(
-                                div()
-                                    .id("vs-preview")
-                                    .flex_1()
-                                    .h_full()
-                                    .min_w_0()
-                                    .border_l_1()
-                                    .border_color(border)
-                                    .overflow_scroll()
-                                    .track_scroll(&self.preview_scroll)
-                                    .child(preview),
-                            ),
-                    ),
+                    .child(self.render_status_bar(cx))
+                    .child(div().flex_1().min_h_0().w_full().child(body)),
             )
     }
 }
