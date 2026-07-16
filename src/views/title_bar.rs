@@ -23,7 +23,7 @@ use crate::{
         i18n_sidebar, i18n_status_bar,
     },
 };
-use gpui::{Anchor, App, Context, SharedString, Subscription, Window, prelude::*};
+use gpui::{Anchor, App, Context, Hsla, SharedString, Subscription, Window, div, prelude::*, rgb};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
@@ -31,6 +31,15 @@ use gpui_component::{
     label::Label,
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
 };
+
+/// Centered title-bar identity for the active connection (hidden on Home).
+struct TitleBarServerInfo {
+    name: SharedString,
+    host: SharedString,
+    db: usize,
+    /// High-risk (PROD) chip — only set when `is_high_risk_tag()`.
+    prod_label: Option<SharedString>,
+}
 
 pub struct ZedisTitleBar {
     _subscriptions: Vec<Subscription>,
@@ -60,22 +69,39 @@ impl ZedisTitleBar {
         }
     }
 
-    /// Resolve the display name of the currently selected server, if any.
+    /// Resolve the active connection's title-bar identity, if any.
     ///
     /// The selected server is persisted across restarts, but the Home
     /// page is a server-agnostic chooser — showing the previously
     /// selected name there is misleading, so hide it on `Route::Home`.
-    fn selected_server_info(cx: &App) -> Option<(SharedString, SharedString)> {
+    fn selected_server_info(cx: &App) -> Option<TitleBarServerInfo> {
         let state = cx.global::<ZedisGlobalStore>().read(cx);
         if state.route() == Route::Home {
             return None;
         }
-        let (server_id, _db) = state.selected_server()?.clone();
+        let (server_id, db) = state.selected_server()?.clone();
         let server = get_server(&server_id).ok()?;
         // `host:port` — the name is user-chosen and may not say which real
         // instance it is; the address confirms the actual target.
         let host = SharedString::from(format!("{}:{}", server.host, server.port));
-        Some((SharedString::from(server.name), host))
+        // PROD / high-risk only — Dev/UAT stay in the status bar so the
+        // title bar doesn't grow a chip on every low-risk connection.
+        let prod_label = if server.is_high_risk_tag() {
+            Some(
+                server
+                    .tag_label()
+                    .map(|s| SharedString::from(s.to_string()))
+                    .unwrap_or_else(|| SharedString::from("PROD")),
+            )
+        } else {
+            None
+        };
+        Some(TitleBarServerInfo {
+            name: SharedString::from(server.name),
+            host,
+            db,
+            prod_label,
+        })
     }
 
     fn render_settings_menu(this: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
@@ -242,32 +268,63 @@ impl Render for ZedisTitleBar {
         // True while re-checking on click — the chip shows a loading spinner.
         let update_checking = cx.global::<ZedisGlobalStore>().read(cx).update_checking();
 
-        // Centered title: active server name (primary) + its host:port (muted,
-        // mono, secondary) so you can confirm which real instance is connected.
+        // Centered title: name · host:port · db N · [Prod] (last, soft tint).
         // Empty on Home / when no server is selected.
         let muted = cx.theme().muted_foreground;
         let mono: SharedString = get_mono_font_family().into();
+        // Soft tint only (no border). Status bar keeps the solid magenta fill.
+        let (prod_bg, prod_fg): (Hsla, Hsla) = if cx.theme().is_dark() {
+            (rgb(0x3f1a2e).into(), rgb(0xf9a8d4).into())
+        } else {
+            (rgb(0xfdf2f8).into(), rgb(0xbe185d).into())
+        };
         let center =
             h_flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .child(h_flex().gap_1p5().items_center().when_some(
-                    Self::selected_server_info(cx),
-                    |this, (name, host)| {
-                        this.child(Icon::new(CustomIconName::Database).small()).child(
-                            // Name + host share one baseline, so the smaller
-                            // muted host sits on the name's line instead of
-                            // floating mid-height (what `items_center` did with
-                            // the mixed font sizes).
-                            h_flex()
-                                .items_baseline()
-                                .gap_1p5()
-                                .child(Label::new(name).font_semibold())
-                                .child(Label::new(host).text_xs().text_color(muted).font_family(mono.clone())),
-                        )
-                    },
-                ));
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .when_some(Self::selected_server_info(cx), |this, info| {
+                            let db_label: SharedString = format!("db {}", info.db).into();
+                            // Name + host + db first; PROD trails so it doesn't
+                            // steal focus from the connection identity.
+                            // `items_center` (not baseline): name is semibold
+                            // default size while host/db are `text_xs` — baseline
+                            // alignment made the smaller lines sit low and look
+                            // off-center next to the name.
+                            let mut row = this.child(Icon::new(CustomIconName::Database).small()).child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .child(Label::new(info.name).font_semibold())
+                                    .child(
+                                        Label::new(info.host)
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .font_family(mono.clone()),
+                                    )
+                                    .child(
+                                        Label::new(db_label)
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .font_family(mono.clone()),
+                                    ),
+                            );
+                            if let Some(label) = info.prod_label {
+                                row = row.child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(prod_bg)
+                                        .child(Label::new(label).text_xs().text_color(prod_fg)),
+                                );
+                            }
+                            row
+                        }),
+                );
 
         TitleBar::new()
             // left placeholder balances the right actions so `center` stays centered

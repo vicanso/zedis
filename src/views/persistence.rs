@@ -49,6 +49,19 @@ use zedis_ui::{ZedisDialog, ZedisSkeletonLoading};
 /// Soft staleness threshold for the "snapshot is old" info banner.
 const STALE_SAVE_SECS: i64 = 6 * 3600;
 
+/// Labels + state for a BGSAVE / BGREWRITEAOF action card.
+struct PersistenceActionCard {
+    id: &'static str,
+    title_key: &'static str,
+    description_key: &'static str,
+    button_label_key: &'static str,
+    in_progress_label_key: &'static str,
+    in_progress: bool,
+    in_progress_elapsed_sec: i64,
+    can_write: bool,
+    loading: bool,
+}
+
 /// Read-only CONFIG subset shown under the status cards.
 #[derive(Debug, Clone, Default)]
 struct PersistenceConfig {
@@ -782,21 +795,23 @@ impl ZedisPersistence {
     }
 
     // ── Action cards ───────────────────────────────────────────────────
-    #[allow(clippy::too_many_arguments)]
     fn render_action_card(
         &self,
         cx: &mut Context<Self>,
-        id: &'static str,
-        title_key: &'static str,
-        description_key: &'static str,
-        button_label_key: &'static str,
-        in_progress_label_key: &'static str,
-        in_progress: bool,
-        in_progress_elapsed_sec: i64,
-        can_write: bool,
-        loading: bool,
+        card: PersistenceActionCard,
         on_click: impl Fn(&mut ZedisPersistence, &mut Window, &mut Context<ZedisPersistence>) + 'static,
     ) -> impl IntoElement {
+        let PersistenceActionCard {
+            id,
+            title_key,
+            description_key,
+            button_label_key,
+            in_progress_label_key,
+            in_progress,
+            in_progress_elapsed_sec,
+            can_write,
+            loading,
+        } = card;
         let theme = cx.theme();
         let disabled = !can_write || loading || in_progress;
 
@@ -861,15 +876,17 @@ impl ZedisPersistence {
     fn render_bgsave_card(&self, m: &RedisMetrics, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_action_card(
             cx,
-            "persistence-bgsave",
-            "bgsave_title",
-            "bgsave_description",
-            "bgsave_button",
-            "bgsave_in_progress",
-            m.rdb_bgsave_in_progress,
-            m.rdb_current_bgsave_time_sec,
-            self.can_write(cx),
-            m.loading,
+            PersistenceActionCard {
+                id: "persistence-bgsave",
+                title_key: "bgsave_title",
+                description_key: "bgsave_description",
+                button_label_key: "bgsave_button",
+                in_progress_label_key: "bgsave_in_progress",
+                in_progress: m.rdb_bgsave_in_progress,
+                in_progress_elapsed_sec: m.rdb_current_bgsave_time_sec,
+                can_write: self.can_write(cx),
+                loading: m.loading,
+            },
             Self::open_bgsave_dialog,
         )
     }
@@ -877,15 +894,17 @@ impl ZedisPersistence {
     fn render_bgrewriteaof_card(&self, m: &RedisMetrics, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_action_card(
             cx,
-            "persistence-bgrewriteaof",
-            "bgrewriteaof_title",
-            "bgrewriteaof_description",
-            "bgrewriteaof_button",
-            "bgrewriteaof_in_progress",
-            m.aof_rewrite_in_progress,
-            m.aof_current_rewrite_time_sec,
-            self.can_write(cx),
-            m.loading,
+            PersistenceActionCard {
+                id: "persistence-bgrewriteaof",
+                title_key: "bgrewriteaof_title",
+                description_key: "bgrewriteaof_description",
+                button_label_key: "bgrewriteaof_button",
+                in_progress_label_key: "bgrewriteaof_in_progress",
+                in_progress: m.aof_rewrite_in_progress,
+                in_progress_elapsed_sec: m.aof_current_rewrite_time_sec,
+                can_write: self.can_write(cx),
+                loading: m.loading,
+            },
             Self::open_bgrewriteaof_dialog,
         )
     }

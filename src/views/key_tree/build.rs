@@ -267,27 +267,36 @@ pub(super) fn single_child_expanded_set(
     effective
 }
 
-// Eight distinct concerns: input keys, keyword filter, expansion state,
-// separator, depth cap, TTL map, metadata map, and tag filter. Bundling
-// them into a struct would add more boilerplate than clarity since each
-// caller already constructs them in different scopes.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn new_key_tree_items(
-    mut keys: Vec<(SharedString, KeyType)>,
-    keyword: SharedString,
-    expanded_items: AHashSet<SharedString>,
-    suppressed: AHashSet<SharedString>,
-    separator: &str,
-    max_key_tree_depth: usize,
-    key_ttls: &AHashMap<SharedString, i64>,
-    // Pre-loaded client-side annotations for the current server.
-    // Looked up by exact key name when building leaf items so each
-    // row carries its own tag/note copy and `render_item` doesn't
-    // have to touch the manager per frame. Empty map is fine — no
-    // metadata simply means no badges. Tag / type / TTL filtering
-    // happens upstream via [`apply_local_key_filters`].
-    metadata: &std::collections::HashMap<String, KeyMetadata>,
-) -> Vec<KeyTreeItem> {
+/// Inputs for [`new_key_tree_items`] — keeps the builder signature under
+/// clippy's argument limit without losing the per-concern docs.
+pub(super) struct KeyTreeBuildInput<'a> {
+    pub keys: Vec<(SharedString, KeyType)>,
+    pub keyword: SharedString,
+    pub expanded_items: AHashSet<SharedString>,
+    pub suppressed: AHashSet<SharedString>,
+    pub separator: &'a str,
+    pub max_key_tree_depth: usize,
+    pub key_ttls: &'a AHashMap<SharedString, i64>,
+    /// Pre-loaded client-side annotations for the current server.
+    /// Looked up by exact key name when building leaf items so each
+    /// row carries its own tag/note copy and `render_item` doesn't
+    /// have to touch the manager per frame. Empty map is fine — no
+    /// metadata simply means no badges. Tag / type / TTL filtering
+    /// happens upstream via [`apply_local_key_filters`].
+    pub metadata: &'a std::collections::HashMap<String, KeyMetadata>,
+}
+
+pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeItem> {
+    let KeyTreeBuildInput {
+        mut keys,
+        keyword,
+        expanded_items,
+        suppressed,
+        separator,
+        max_key_tree_depth,
+        key_ttls,
+        metadata,
+    } = input;
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     // Effective expansion = the user-expanded folders plus any single-child
     // folder chains hanging off them, so drilling into a deep single-child

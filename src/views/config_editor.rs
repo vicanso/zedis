@@ -818,17 +818,15 @@ impl ZedisConfigEditor {
 
     /// A titled section: a header (accent bar + mono label + description +
     /// count) over a responsive grid of parameter cards.
-    #[allow(clippy::too_many_arguments)]
-    fn render_group(
-        &self,
-        label: SharedString,
-        desc: SharedString,
-        configs: &[(SharedString, SharedString)],
-        cols: u16,
-        font_family: &SharedString,
-        docs: &ConfigDocMap,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    fn render_group(&self, group: ConfigGroupSection<'_>, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let ConfigGroupSection {
+            label,
+            desc,
+            configs,
+            cols,
+            font_family,
+            docs,
+        } = group;
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let fg = cx.theme().foreground;
@@ -872,6 +870,16 @@ impl ZedisConfigEditor {
             .child(div().grid().grid_cols(cols).items_start().gap_3().children(cards))
             .into_any_element()
     }
+}
+
+/// Inputs for [`ZedisConfigEditor::render_group`].
+struct ConfigGroupSection<'a> {
+    label: SharedString,
+    desc: SharedString,
+    configs: &'a [(SharedString, SharedString)],
+    cols: u16,
+    font_family: &'a SharedString,
+    docs: &'a ConfigDocMap,
 }
 
 impl Render for ZedisConfigEditor {
@@ -1115,23 +1123,27 @@ impl Render for ZedisConfigEditor {
                         continue;
                     }
                     sections = sections.child(self.render_group(
-                        SharedString::from(group.label),
-                        i18n_config_editor(cx, group.desc_key),
-                        &buckets[i],
-                        cols,
-                        &font_family,
-                        &self.config_docs,
+                        ConfigGroupSection {
+                            label: SharedString::from(group.label),
+                            desc: i18n_config_editor(cx, group.desc_key),
+                            configs: &buckets[i],
+                            cols,
+                            font_family: &font_family,
+                            docs: &self.config_docs,
+                        },
                         cx,
                     ));
                 }
                 if !others.is_empty() {
                     sections = sections.child(self.render_group(
-                        i18n_config_editor(cx, "group_others"),
-                        i18n_config_editor(cx, "group_others_desc"),
-                        &others,
-                        cols,
-                        &font_family,
-                        &self.config_docs,
+                        ConfigGroupSection {
+                            label: i18n_config_editor(cx, "group_others"),
+                            desc: i18n_config_editor(cx, "group_others_desc"),
+                            configs: &others,
+                            cols,
+                            font_family: &font_family,
+                            docs: &self.config_docs,
+                        },
                         cx,
                     ));
                 }

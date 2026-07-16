@@ -593,16 +593,16 @@ impl ZedisKeyTree {
                         &key_ttls_snapshot,
                         &metadata_snapshot,
                     );
-                    let mut items = new_key_tree_items(
-                        keys_input,
+                    let mut items = new_key_tree_items(KeyTreeBuildInput {
+                        keys: keys_input,
                         keyword,
                         expanded_items,
                         suppressed,
-                        &separator,
+                        separator: &separator,
                         max_key_tree_depth,
-                        &key_ttls_snapshot,
-                        &metadata_snapshot,
-                    );
+                        key_ttls: &key_ttls_snapshot,
+                        metadata: &metadata_snapshot,
+                    });
                     // Stamp the inline-spinner flag on folders whose lazy
                     // prefix-scan is still running. Skipped entirely when
                     // nothing is scanning (the common case).

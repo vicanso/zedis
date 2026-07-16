@@ -16,6 +16,8 @@ Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](ht
 
 Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.expect("…")` or proper matching in test code, never `.unwrap()`.
 
+**Avoid `#[allow(clippy::…)]`.** Prefer fixing the underlying smell so the lint is clean: e.g. `too_many_arguments` → group parameters into a struct (as with status-bar `MetricChip`); dead code → delete or use it; needless `mut` → drop it. Reach for `allow` only as a last resort when the lint is a genuine false positive or an unavoidable external-API constraint, and keep the attribute as narrow as possible with a one-line comment explaining why.
+
 ## Build-time locale parity gate (bites immediately)
 
 `build.rs` enforces that **every** `locales/<lang>.toml` has the exact same key set as `locales/en.toml`. The 8 locales are `en, zh, de, es, fr, ja, pt, ru`. Adding or removing any UI string means editing **all 8 files** or `cargo check` panics. `build.rs` only re-runs when `locales/` changes — `touch locales/en.toml` to force the check. Translate natively where a section is already translated in that locale (most are); English fallback only where the surrounding section is itself untranslated.

@@ -178,7 +178,6 @@ impl KeyspaceTableDelegate {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_filter(
         &mut self,
         selected_events: &Option<AHashSet<String>>,

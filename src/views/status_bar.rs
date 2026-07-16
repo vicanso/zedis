@@ -23,7 +23,7 @@ use crate::{
         i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
     },
 };
-use gpui::{Anchor, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
+use gpui::{Anchor, App, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -76,10 +76,11 @@ fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (S
     (label.into(), color)
 }
 
-/// Formats the node count and version information.
+/// Formats the node count only (`masters / replicas`). Redis version lives
+/// in the nodes tooltip so the bar stays short.
 #[inline]
-fn format_nodes(nodes: (usize, usize), version: &str) -> SharedString {
-    format!("{} / {} (v{})", nodes.0, nodes.1, version).into()
+fn format_nodes(nodes: (usize, usize)) -> SharedString {
+    format!("{} / {}", nodes.0, nodes.1).into()
 }
 
 /// The design's recessive status-bar text color (t2): `#878d97` dark /
@@ -107,10 +108,14 @@ fn format_lag_bytes(bytes: i64) -> String {
 /// state from the most recent `INFO replication` heartbeat — used to splice
 /// `lag X / Ys` onto the matching topology line. Falls back gracefully when
 /// the lag map has nothing for a given replica address (e.g. a fail node).
+///
+/// `version` is shown here (not in the bar label) so the compact
+/// `masters / replicas` chip stays short.
 #[inline]
 fn format_nodes_description(
     description: Arc<RedisClientDescription>,
     replicas: &[ReplicaInfo],
+    version: &str,
     cx: &Context<ZedisStatusBar>,
 ) -> SharedString {
     let t = i18n_sidebar(cx, "server_type");
@@ -118,10 +123,14 @@ fn format_nodes_description(
     let slave_nodes = i18n_sidebar(cx, "slave_nodes");
     let modules_label = i18n_sidebar(cx, "modules");
     let topology_label = i18n_sidebar(cx, "topology");
-    let mut messages = Vec::with_capacity(5);
+    let version_label = i18n_status_bar(cx, "redis_version");
+    let mut messages = Vec::with_capacity(6);
 
     if description.is_valkey {
         messages.push(format!("Valkey: {}", i18n_sidebar(cx, "yes")));
+    }
+    if !version.is_empty() {
+        messages.push(format!("{version_label}: {version}"));
     }
     messages.push(format!("{t}: {}", description.server_type.as_str()));
     if description.topology.is_empty() {
@@ -166,6 +175,18 @@ fn format_nodes_description(
 }
 
 // --- Local State ---
+
+/// Inputs for a clickable status-bar metric chip (icon + value → tool page).
+struct MetricChip {
+    id: &'static str,
+    icon: CustomIconName,
+    label: SharedString,
+    label_color: Hsla,
+    icon_color: Hsla,
+    min_label_w: Option<gpui::Pixels>,
+    tooltip: SharedString,
+    view: ServerView,
+}
 
 #[derive(Default)]
 struct StatusBarServerState {
@@ -459,13 +480,14 @@ impl ZedisStatusBar {
             last_connection_error: state.last_connection_error(),
             used_memory: used_memory.into(),
             clients: clients.into(),
-            nodes: format_nodes(state.nodes(), state.version()),
+            nodes: format_nodes(state.nodes()),
             scan_finished: state.scan_completed(),
             slow_log_tips,
             soft_wrap: state.soft_wrap(),
             nodes_description: format_nodes_description(
                 state.nodes_description().clone(),
                 redis_info.replicas.as_slice(),
+                state.version(),
                 cx,
             ),
             tag,
@@ -895,78 +917,96 @@ impl ZedisStatusBar {
                 h_flex()
                     .items_center()
                     .gap_3()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("zedis-status-bar-server-metrics")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(CustomIconName::Activity).text_color(status_text))
-                                    .tooltip(i18n_status_bar(cx, "toggle_metrics_tooltip"))
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_view(ServerView::Metrics, cx);
-                                        });
-                                    })),
-                            )
-                            .child(
-                                Label::new(latency_text)
-                                    .text_color(latency_color)
-                                    .min_w(px(LATENCY_LABEL_MIN_WIDTH)),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("zedis-status-bar-server-memory-analysis")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(CustomIconName::MemoryStick).text_color(status_text))
-                                    .tooltip(i18n_status_bar(cx, "toggle_memory_analysis_tooltip"))
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_view(ServerView::MemoryAnalysis, cx);
-                                        });
-                                    })),
-                            )
-                            .child(Label::new(server_state.used_memory.clone()).text_color(status_text)),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("zedis-status-bar-clients")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(CustomIconName::AudioWaveform).text_color(status_text))
-                                    .tooltip(i18n_status_bar(cx, "toggle_clients_tooltip"))
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_view(ServerView::Clients, cx);
-                                        });
-                                    })),
-                            )
-                            .child(Label::new(server_state.clients.clone()).text_color(status_text)),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("zedis-status-bar-server-slow-logs")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(CustomIconName::Snail).text_color(status_text))
-                                    .tooltip(i18n_status_bar(cx, "toggle_slowlog_tooltip"))
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                            state.toggle_view(ServerView::Slowlog, cx);
-                                        });
-                                    })),
-                            )
-                            .child(Label::new(server_state.slow_log_tips.clone()).text_color(status_text)),
-                    ),
+                    // Whole chip is clickable (icon + value), with a tooltip that
+                    // names both the metric and the destination page.
+                    .child(Self::metric_chip(MetricChip {
+                        id: "zedis-status-bar-server-metrics",
+                        icon: CustomIconName::Activity,
+                        label: latency_text,
+                        label_color: latency_color,
+                        icon_color: status_text,
+                        min_label_w: Some(px(LATENCY_LABEL_MIN_WIDTH)),
+                        tooltip: SharedString::from(format!(
+                            "{} · {}",
+                            i18n_status_bar(cx, "metric_latency_hint"),
+                            i18n_status_bar(cx, "toggle_metrics_tooltip")
+                        )),
+                        view: ServerView::Metrics,
+                    }))
+                    .child(Self::metric_chip(MetricChip {
+                        id: "zedis-status-bar-server-memory-analysis",
+                        icon: CustomIconName::MemoryStick,
+                        label: server_state.used_memory.clone(),
+                        label_color: status_text,
+                        icon_color: status_text,
+                        min_label_w: None,
+                        tooltip: SharedString::from(format!(
+                            "{} · {}",
+                            i18n_status_bar(cx, "metric_memory_hint"),
+                            i18n_status_bar(cx, "toggle_memory_analysis_tooltip")
+                        )),
+                        view: ServerView::MemoryAnalysis,
+                    }))
+                    .child(Self::metric_chip(MetricChip {
+                        id: "zedis-status-bar-clients",
+                        icon: CustomIconName::AudioWaveform,
+                        label: server_state.clients.clone(),
+                        label_color: status_text,
+                        icon_color: status_text,
+                        min_label_w: None,
+                        tooltip: SharedString::from(format!(
+                            "{} · {}",
+                            i18n_status_bar(cx, "clients_stat_tooltip"),
+                            i18n_status_bar(cx, "toggle_clients_tooltip")
+                        )),
+                        view: ServerView::Clients,
+                    }))
+                    .child(Self::metric_chip(MetricChip {
+                        id: "zedis-status-bar-server-slow-logs",
+                        icon: CustomIconName::Snail,
+                        label: server_state.slow_log_tips.clone(),
+                        label_color: status_text,
+                        icon_color: status_text,
+                        min_label_w: None,
+                        tooltip: SharedString::from(format!(
+                            "{} · {}",
+                            i18n_status_bar(cx, "slowlog_stat_tooltip"),
+                            i18n_status_bar(cx, "toggle_slowlog_tooltip")
+                        )),
+                        view: ServerView::Slowlog,
+                    })),
+            )
+    }
+
+    /// Icon + value chip that opens a tool page on click. The whole row is
+    /// the hit target so the number is not "display-only".
+    fn metric_chip(chip: MetricChip) -> impl IntoElement {
+        let MetricChip {
+            id,
+            icon,
+            label,
+            label_color,
+            icon_color,
+            min_label_w,
+            tooltip,
+            view,
+        } = chip;
+        h_flex()
+            .id(id)
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .on_click(move |_, _window, cx| {
+                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                    state.toggle_view(view, cx);
+                });
+            })
+            .child(Icon::new(icon).text_color(icon_color))
+            .child(
+                Label::new(label)
+                    .text_color(label_color)
+                    .when_some(min_label_w, |this, w| this.min_w(w)),
             )
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1025,14 +1065,40 @@ impl ZedisStatusBar {
         let Some(data) = &self.state.error else {
             return h_flex().flex_1();
         };
-        // error message is always on the right
-        h_flex().flex_1().child(
-            Label::new(data.message.clone())
-                .mr_2()
+        // Full text in tooltip — the middle slot truncates when the bar is
+        // crowded, so hover still surfaces the complete error.
+        let full = data.message.clone();
+        let tip = full.clone();
+        h_flex().flex_1().min_w_0().child(
+            div()
+                .id("zedis-status-bar-error")
                 .w_full()
-                .text_xs()
-                .text_color(cx.theme().red)
-                .text_align(TextAlign::Right),
+                .min_w_0()
+                .mr_2()
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .child(
+                    Label::new(full)
+                        .w_full()
+                        .text_xs()
+                        .text_color(cx.theme().red)
+                        .text_align(TextAlign::Right)
+                        .truncate(),
+                ),
+        )
+    }
+
+    /// Soft Wrap only applies to the string/bytes value editor — hide it on
+    /// tool pages and when no string value is selected.
+    fn show_soft_wrap(&self, cx: &App) -> bool {
+        if self.state.data_format.is_none() {
+            return false;
+        }
+        matches!(
+            cx.global::<ZedisGlobalStore>().read(cx).route(),
+            crate::states::Route::Server {
+                view: ServerView::Editor,
+                ..
+            }
         )
     }
 }
@@ -1094,7 +1160,9 @@ impl Render for ZedisStatusBar {
             .child(
                 ZedisDivider::new()
                     .child(self.render_telemetry(window, cx))
-                    .child(self.render_editor_settings(window, cx))
+                    .when(self.show_soft_wrap(cx), |this| {
+                        this.child(self.render_editor_settings(window, cx))
+                    })
                     .when(self.state.data_format.is_some(), |this| {
                         this.child(
                             h_flex()

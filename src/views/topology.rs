@@ -35,8 +35,9 @@ use crate::assets::CustomIconName;
 use crate::connection::{CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap};
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ClusterMasterRanges, ClusterNodeLoad, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props,
-    escalate_dangerous_body, fetch_cluster_node_loads, i18n_topology, plan_cluster_reshard, source_owners_for_slots,
+    ClusterMasterRanges, ClusterNodeLoad, ReplicaInfo, ServerEvent, ZedisGlobalStore, ZedisServerState,
+    dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, i18n_topology, plan_cluster_reshard,
+    source_owners_for_slots,
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
 use gpui_component::{
@@ -63,6 +64,25 @@ fn role_marker_color(marker: &str, muted: Hsla, success: Hsla, danger: Hsla) -> 
         "✗" => danger,
         _ => muted,
     }
+}
+
+/// Compact lag-bytes label (same shape as the status-bar tooltip helper).
+fn format_lag_bytes(bytes: i64) -> String {
+    if bytes <= 0 {
+        return "0".into();
+    }
+    humansize::format_size(bytes as u64, humansize::FormatSizeOptions::default().decimal_places(1))
+}
+
+/// Strip optional `@busport` so CLUSTER NODES addresses match INFO replication.
+fn addr_key(addr: &str) -> &str {
+    addr.split('@').next().unwrap_or(addr)
+}
+
+/// Find live lag for a topology replica address.
+fn lag_for_addr<'a>(replicas: &'a [ReplicaInfo], addr: &str) -> Option<&'a ReplicaInfo> {
+    let key = addr_key(addr);
+    replicas.iter().find(|r| addr_key(r.addr.as_ref()) == key)
 }
 
 /// Fixed master palette for slot bar + load cards (cycled by color_index).
@@ -456,7 +476,8 @@ impl ZedisTopology {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Input::new(&self.meet_input).small().flex_1())
+                    // Default (medium) input size — `.small()` was too tight for host:port.
+                    .child(Input::new(&self.meet_input).flex_1())
                     .child(
                         Button::new("topo-meet-btn")
                             .primary()
@@ -502,8 +523,8 @@ impl ZedisTopology {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Input::new(&self.replicate_target_input).small().flex_1())
-                    .child(Input::new(&self.replicate_master_input).small().flex_1())
+                    .child(Input::new(&self.replicate_target_input).flex_1())
+                    .child(Input::new(&self.replicate_master_input).flex_1())
                     .child(
                         Button::new("topo-replicate-btn")
                             .primary()
@@ -560,6 +581,16 @@ impl ZedisTopology {
             .sum();
         let assigned = desc.slot_map.assigned_slots;
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        // Live lag from INFO replication (heartbeat) — matched onto topology
+        // replica rows by host:port. Empty when connected to a replica or
+        // when the master has not reported any slaves yet.
+        let replica_lags: Vec<ReplicaInfo> = self
+            .server_state
+            .read(cx)
+            .redis_info()
+            .map(|info| info.replicas.clone())
+            .unwrap_or_default();
+        let warning = cx.theme().warning;
         let summary: SharedString = rust_i18n::t!(
             "topology.nodes_summary",
             masters = master_count,
@@ -675,6 +706,33 @@ impl ZedisTopology {
                 let failover_target = r_addr.clone();
                 let force_failover_target = r_addr.clone();
                 let addr_for_fill = r_addr.clone();
+                // Lag chip: always shown on replica rows. Unknown → muted "—";
+                // elevated lag_seconds / lag_bytes use warning colour.
+                let lag_info = lag_for_addr(&replica_lags, &r_addr);
+                let (lag_label, lag_color): (SharedString, Hsla) = if let Some(lag) = lag_info {
+                    let text: SharedString = rust_i18n::t!(
+                        "topology.replica_lag",
+                        bytes = format_lag_bytes(lag.lag_bytes),
+                        secs = lag.lag_seconds,
+                        locale = locale
+                    )
+                    .to_string()
+                    .into();
+                    // Soft warn from 3s / 256KB; strong warn from 10s / 4MB.
+                    // Sub-second lag is not reported (Redis lag is integer
+                    // seconds), and 1–2s is common under light load.
+                    let color = if lag.lag_seconds >= 10 || lag.lag_bytes >= 4 * 1024 * 1024 {
+                        danger
+                    } else if lag.lag_seconds >= 3 || lag.lag_bytes >= 256 * 1024 {
+                        warning
+                    } else {
+                        muted
+                    };
+                    (text, color)
+                } else {
+                    (i18n_topology(cx, "replica_lag_unknown"), muted)
+                };
+                let lag_state = lag_info.map(|l| l.state.clone()).unwrap_or_default();
                 let mut replica_row = h_flex()
                     .id(SharedString::from(format!("topo-rrow-{r_addr}")))
                     .items_center()
@@ -700,6 +758,15 @@ impl ZedisTopology {
                     })
                     .when(!r_annot.is_empty(), |row| {
                         row.child(Label::new(r_annot).text_xs().text_color(muted))
+                    })
+                    .child(
+                        Label::new(lag_label)
+                            .text_xs()
+                            .text_color(lag_color)
+                            .font_family(get_mono_font_family()),
+                    )
+                    .when(!lag_state.is_empty() && lag_state.as_ref() != "online", |row| {
+                        row.child(Label::new(lag_state).text_xs().text_color(warning))
                     })
                     .child(div().flex_1());
                 if can_write {
@@ -1279,7 +1346,7 @@ impl ZedisTopology {
                                     .text_xs()
                                     .text_color(muted),
                             )
-                            .child(Input::new(&self.reshard_source_input).small()),
+                            .child(Input::new(&self.reshard_source_input)),
                     )
                     .child(
                         v_flex()
@@ -1290,18 +1357,18 @@ impl ZedisTopology {
                                     .text_xs()
                                     .text_color(muted),
                             )
-                            .child(Input::new(&self.reshard_target_input).small()),
+                            .child(Input::new(&self.reshard_target_input)),
                     )
                     .child(
                         v_flex()
                             .gap_1()
-                            .w(px(110.))
+                            .w(px(120.))
                             .child(
                                 Label::new(i18n_topology(cx, "reshard_count_field"))
                                     .text_xs()
                                     .text_color(muted),
                             )
-                            .child(Input::new(&self.reshard_count_input).small()),
+                            .child(Input::new(&self.reshard_count_input)),
                     ),
             )
             .child(h_flex().gap_2().child(plan_btn).child(execute_btn).child(clear_src_btn))
