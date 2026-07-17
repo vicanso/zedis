@@ -62,7 +62,7 @@ Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。本�
 ### 模块面板
 **RediSearch（FT.*）与 Functions（Lua library）的专用面板。**
 
-**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器。模块 / 版本不满足时自动隐藏。
+**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS`。模块 / 版本不满足时自动隐藏。
 
 ### Redis Streams
 **浏览、实时跟踪、管理消费者组，全程不离开 GUI。**
@@ -93,22 +93,27 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动
 ### 性能诊断
 **慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。**
 
-Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），并把过滤后的视图导出为 **CSV/JSON**；外加关键字过滤的实时 `MONITOR`、客户端管理（`CLIENT LIST/KILL`）、以及来自 `INFO commandstats` 的每命令 **次/秒** 表。
+Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），并把过滤后的视图导出为 **CSV/JSON**；外加关键字过滤的实时 `MONITOR`、客户端管理（`CLIENT LIST/KILL`）、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。
 
 ### 按值搜索
 **找出*值里包含*某段文本的 key（带护栏的采样扫描）。**
 
-Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 key 前缀、1 万键 / 10 秒上限（可取消）、跳过超 1 MiB 的值——覆盖 string 值、hash 字段、list/set/zset 成员，每条命中标注命中位置。结果是明确的**采样**，绝不号称完整。
+Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 key 前缀、1 万键 / 10 秒上限（可取消）、跳过超 1 MiB 的值——覆盖 string 值、hash 字段、list/set/zset 成员，每条命中标注命中位置。空态引导与结果侧 key 过滤让流程更清晰；结果是明确的**采样**，绝不号称完整。
 
 ### 集群健康与管理
-**带复制延迟的拓扑树，以及 failover / forget / meet / replicate。**
+**带复制延迟的拓扑树、slot 分布图、逐节点负载，以及重分片向导。**
 
-以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` 与 `SENTINEL FAILOVER` / `RESET` / `REMOVE`，每个写操作都过确认对话框、PROD 升级。仅在多节点部署出现。
+以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` 与 `SENTINEL FAILOVER` / `RESET` / `REMOVE`，每个写操作都过确认对话框、PROD 升级。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`。仅在多节点部署出现。
 
 ### 持久化与键事件
 **RDB/AOF 状态 + 一键保存，外加实时键事件排查。**
 
-持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级）。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供一键开启 `notify-keyspace-events`。
+持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级），集群下逐节点显示状态行，并有 **Policy & 路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
+
+### CONFIG 编辑器
+**带类型与内联参数文档的 `CONFIG GET/SET` 编辑器。**
+
+运行时参数以类型化编辑器呈现而非裸字符串，常用参数带内联的本地化帮助文档——每个旋钮是干什么的，就写在你改它的地方。写入经 `CONFIG SET` 执行，走 PROD 升级的确认对话框。
 
 ---
 
@@ -122,7 +127,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Key 编辑与历史
 **重命名、字段级 TTL、文件导入导出、批量粘贴、版本历史。**
 
-原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。删除 key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，工具菜单可恢复、TTL 原样保留；设置中可关闭）——生产环境手滑删 key 不再是不可挽回的事故。
+原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。删除 key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，工具菜单可恢复、TTL 原样保留；设置中可关闭）——生产环境手滑删 key 不再是不可挽回的事故。超大的 String/JSON 值绝不盲目加载：编辑器先显示大小，点击**仍要加载**才真正拉取。
 
 ### 批量 Key 操作
 **多选删除、批量 TTL、DUMP/RESTORE 导入导出、自动刷新。**
@@ -146,7 +151,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 连接安全
 **环境标签 + 对生产升级措辞的确认对话框。**
 
-为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏，并可把任意连接锁为**只读**。破坏性操作（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。
+为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏；标题栏同时显示当前 **db**，高风险连接时附轻量 **Prod** 徽章。并可把任意连接锁为**只读**。破坏性操作（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。
 
 ### ACL 用户管理（Redis 6+）
 **覆盖完整 ACL 生命周期的 GUI。**
@@ -165,7 +170,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 工作区标签页
 **多个连接并排工作 —— Cmd/Ctrl+点击服务器即可在新标签页打开。**
 
-每个标签页持有独立的连接与视图状态（键树展开、滚动、选中在切换后不丢失）。标签条仅在两个及以上标签页时出现（上限 8 个）：点击切换，中键或 × 关闭，拖拽排序，右键提供关闭 / 关闭其他 / 关闭右侧。后台标签页的心跳降为每 30 秒刷新一次，标签页列表会在下次启动时恢复，后台标签页在首次点击时才惰性建连。
+每个标签页持有独立的连接与视图状态（键树展开、滚动、选中在切换后不丢失）。标签条仅在两个及以上标签页时出现（上限 8 个）：点击（或 **⌘1–8**）切换，中键或 × 关闭，拖拽排序，右键提供关闭 / 关闭其他 / 关闭右侧。后台标签页的心跳降为每 30 秒刷新一次，标签页列表会在下次启动时恢复，后台标签页在首次点击时才惰性建连。
 
 ### 命令面板与快捷键
 **⌘K 模糊导航 + ⌘/ 快捷键速查。**
@@ -180,4 +185,4 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Lua 脚本库
 **保存、复用、以 EVALSHA 运行 Lua 脚本，带命中率统计。**
 
-本地保存的具名 Lua 脚本库（源码 + 预算 SHA1），一键 **EVALSHA 优先** 执行，预填 `KEYS` / `ARGS` 默认值便于一键重跑，并记录终身命中 / 未命中计数以发现总被刷出 Redis 缓存的脚本。（与 **Functions** 不同——后者管理服务端 `FUNCTION` library。）
+本地保存的具名 Lua 脚本库（源码 + 预算 SHA1），带起步模板，一键 **EVALSHA 优先** 执行，预填 `KEYS` / `ARGS` 默认值便于一键重跑，并记录终身命中 / 未命中计数以发现总被刷出 Redis 缓存的脚本——外加缓存控制（**预热** = 仅 `SCRIPT LOAD` 不执行，及带确认保护的 `SCRIPT FLUSH`）与脚本库导入导出。（与 **Functions** 不同——后者管理服务端 `FUNCTION` library。）

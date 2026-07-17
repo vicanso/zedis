@@ -3,7 +3,7 @@ use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
-    MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
+    EditorAction, MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
     WorkspaceTabAction, apply_fonts, download_and_verify, fetch_latest_release, focus_installer_ui,
     get_or_create_config_dir, init_logger, installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys,
     open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
@@ -249,7 +249,7 @@ impl Zedis {
                         .iter()
                         .position(|tab| tab.server_id.as_str() == server_id.as_str() && tab.db == *db)
                     {
-                        this.activate_tab(ix, cx);
+                        this.activate_tab(ix, None, cx);
                         this.project_active_tab(cx);
                     } else if this.tabs.len() >= MAX_TABS {
                         this.pending_notification = Some(Notification::warning(i18n_common(cx, "tab_limit")));
@@ -339,7 +339,13 @@ impl Zedis {
     /// route/server broadcasts, the incoming one resumes, and the palettes
     /// are rebound to the incoming tab's server state. No-op when `ix` is
     /// already active (or out of range).
-    fn activate_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+    ///
+    /// When `window` is provided, defers a focus reclaim onto the incoming
+    /// content: a mouse click on the tab pill leaves focus on the strip (a
+    /// sibling of the page), so content-local keybinding handlers never see
+    /// actions until the user clicks the page. ⌘F is also handled at the
+    /// window root as a second line of defense.
+    fn activate_tab(&mut self, ix: usize, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if ix == self.active_tab || ix >= self.tabs.len() {
             return;
         }
@@ -351,6 +357,15 @@ impl Zedis {
             .content
             .update(cx, |content, cx| content.set_active(true, cx));
         self.rebind_palettes(cx);
+        if let Some(window) = window {
+            // After the click/key event settles (focus may still be on the
+            // tab pill), move it onto the page root so Esc/⌘F have a path.
+            cx.defer_in(window, |this, window, cx| {
+                this.active_content().update(cx, |content, cx| {
+                    content.reclaim_focus(window, cx);
+                });
+            });
+        }
         cx.notify();
     }
 
@@ -796,8 +811,8 @@ impl Zedis {
                             this.close_tab(ix, cx);
                         }),
                     )
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.activate_tab(ix, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_tab(ix, Some(window), cx);
                         this.project_active_tab(cx);
                     }))
                     .child(
@@ -1358,12 +1373,24 @@ impl Render for Zedis {
             }))
             // ⌘1–⌘8 / Ctrl+1–8: jump to the Nth workspace tab (1-based key).
             // No-op when that index is not open yet (or already active).
-            .on_action(cx.listener(|this, e: &WorkspaceTabAction, _window, cx| {
+            .on_action(cx.listener(|this, e: &WorkspaceTabAction, window, cx| {
                 let WorkspaceTabAction::Select(ix) = *e;
                 if ix < this.tabs.len() {
-                    this.activate_tab(ix, cx);
+                    this.activate_tab(ix, Some(window), cx);
                     this.project_active_tab(cx);
                 }
+            }))
+            // ⌘F / secondary-f: always focus the active page's filter box.
+            // Must live on the window root — after a tab switch focus often
+            // sits on the tab pill (sibling of content), so handlers only on
+            // `ZedisContent` / `ZedisServers` never see the action.
+            .on_action(cx.listener(|this, e: &EditorAction, window, cx| match e {
+                EditorAction::Search => {
+                    this.active_content().update(cx, |content, cx| {
+                        content.focus_search(window, cx);
+                    });
+                }
+                _ => cx.propagate(),
             }))
             .on_action(cx.listener(|_this, _e: &NavAction, _window, cx| {
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {

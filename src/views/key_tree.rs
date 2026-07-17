@@ -248,6 +248,11 @@ pub struct ZedisKeyTree {
 }
 
 impl ZedisKeyTree {
+    /// Put the caret in the keyword filter (`EditorAction::Search` / ⌘F).
+    pub fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        self.keyword_state.focus_handle(cx).focus(window, cx);
+    }
+
     /// Create a new key tree view with event subscriptions
     ///
     /// Sets up reactive updates when server state changes and

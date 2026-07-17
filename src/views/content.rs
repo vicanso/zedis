@@ -25,7 +25,7 @@ use crate::{
         ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology, ZedisValueSearch,
     },
 };
-use gpui::{AnyView, Entity, FocusHandle, Pixels, Subscription, Window, div, prelude::*, px};
+use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
@@ -138,9 +138,21 @@ impl ZedisContent {
     /// (`main.rs`) when the active tab changes; see the `active` field.
     /// Also flips the server state's `background` flag so an inactive tab's
     /// heartbeat drops to the relaxed cadence (and recovers on activation).
+    ///
+    /// Activating a tab re-arms [`Self::should_focus`]: the previous tab's
+    /// focused element is unmounted, and `project_active_tab` often short-
+    /// circuits `go_to` when the global route is unchanged (two Home tabs),
+    /// so no `RouteChanged` would restore a focus path. Without this, ⌘F /
+    /// Esc land on nothing until the user clicks the page.
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         self.active = active;
         self.server_state.update(cx, |state, _| state.set_background(!active));
+        if active {
+            // Flag only — callers (`activate_tab`, close handlers) always
+            // `cx.notify()` / `project_active_tab` next. Notifying here would
+            // paint once against the *old* global route before projection.
+            self.should_focus = true;
+        }
     }
 
     /// Sets up subscriptions to automatically clean up cached views when
@@ -261,15 +273,60 @@ impl ZedisContent {
         }
     }
 
-    /// Render the server management view (home page)
-    fn render_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let servers = self
-            .servers
+    /// Lazily create (or reuse) the Home/Settings server-list view.
+    fn ensure_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ZedisServers> {
+        self.servers
             .get_or_insert_with(|| {
                 debug!("Creating new servers view");
                 cx.new(|cx| ZedisServers::new(window, cx))
             })
-            .clone();
+            .clone()
+    }
+
+    /// Focus the page's primary search/filter box (⌘F / `EditorAction::Search`).
+    ///
+    /// Called from the window root as well as the content shell: after a tab
+    /// click focus often sits on the tab pill (a *sibling* of this view), so
+    /// handlers only registered under content never see the action.
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let route = cx.global::<ZedisGlobalStore>().read(cx).route();
+        match route {
+            Route::Home | Route::Settings => {
+                let servers = self.ensure_servers(window, cx);
+                servers.update(cx, |servers, cx| {
+                    servers.focus_search(window, cx);
+                });
+            }
+            _ if route.is_server() => {
+                if let Some(key_tree) = self.key_tree.clone() {
+                    key_tree.update(cx, |tree, cx| {
+                        tree.focus_search(window, cx);
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Reclaim a focus path onto this content after a tab switch. The tab
+    /// strip click leaves focus on the pill; without this, non-Search
+    /// keybindings (Esc, …) also have nowhere to land when `go_to` no-ops.
+    pub fn reclaim_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let route = cx.global::<ZedisGlobalStore>().read(cx).route();
+        match route {
+            Route::Home | Route::Settings => {
+                let servers = self.ensure_servers(window, cx);
+                servers.focus_handle(cx).focus(window, cx);
+            }
+            _ => {
+                self.focus_handle.focus(window, cx);
+            }
+        }
+    }
+
+    /// Render the server management view (home page)
+    fn render_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let servers = self.ensure_servers(window, cx);
         // A long server list (many connections / groups) must scroll instead
         // of overflowing and clipping the lower cards. Mirror the bounded-box
         // pattern the other routes use: a `flex_1 relative` shell with an
@@ -425,9 +482,7 @@ impl ZedisContent {
 impl Render for ZedisContent {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<ZedisGlobalStore>().read(cx).route();
-        if std::mem::take(&mut self.should_focus) {
-            self.focus_handle.focus(window, cx);
-        }
+        let should_focus = std::mem::take(&mut self.should_focus);
         let base = v_flex()
             .id("main-container")
             .track_focus(&self.focus_handle)
@@ -441,10 +496,50 @@ impl Render for ZedisContent {
             .h_full();
 
         match route {
-            Route::Home | Route::Settings => base.child(self.render_servers(window, cx)).into_any_element(),
-            Route::Protos => base.child(self.render_proto_editor(window, cx)).into_any_element(),
-            Route::Scripts => base.child(self.render_script_editor(window, cx)).into_any_element(),
+            Route::Home | Route::Settings => {
+                // Ensure the servers view exists *before* focusing. After
+                // RouteChanged we used to focus the content shell only —
+                // and `EditorAction::Search` (⌘F) is handled on the servers
+                // page root, which is *not* on the focus path when the
+                // shell holds focus. Re-target the servers focus handle so
+                // ⌘F reaches the toolbar filter (same contract as key-tree).
+                let servers = self.ensure_servers(window, cx);
+                if should_focus {
+                    servers.focus_handle(cx).focus(window, cx);
+                }
+                // Belt-and-suspenders: if focus lands on the content shell
+                // (or a Home-route ancestor that bubbles here), still focus
+                // the filter. The servers view's own handler covers the
+                // page-root case.
+                base.on_action(cx.listener(|this, e: &EditorAction, window, cx| match e {
+                    EditorAction::Search => {
+                        if let Some(servers) = this.servers.clone() {
+                            servers.update(cx, |servers, cx| {
+                                servers.focus_search(window, cx);
+                            });
+                        }
+                    }
+                    _ => cx.propagate(),
+                }))
+                .child(self.render_servers(window, cx))
+                .into_any_element()
+            }
+            Route::Protos => {
+                if should_focus {
+                    self.focus_handle.focus(window, cx);
+                }
+                base.child(self.render_proto_editor(window, cx)).into_any_element()
+            }
+            Route::Scripts => {
+                if should_focus {
+                    self.focus_handle.focus(window, cx);
+                }
+                base.child(self.render_script_editor(window, cx)).into_any_element()
+            }
             _ => {
+                if should_focus {
+                    self.focus_handle.focus(window, cx);
+                }
                 let is_busy = self.server_state.read(cx).is_busy();
                 // Tool panel for the current route; `None` ⇒ the editor
                 // suite. Created only when actually shown (not while the

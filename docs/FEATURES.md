@@ -62,7 +62,7 @@ A viewer that matches but fails to decode falls through to native handling, so a
 ### Module Browsers
 **Dedicated panels for RediSearch (FT.*) and Functions (Lua libraries).**
 
-**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor. Both auto-hide when the module / version isn't present.
+**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor, starter templates, direct **`FCALL`** invocation, and `DUMP` / `RESTORE` / `FLUSH` / `STATS`. Both auto-hide when the module / version isn't present.
 
 ### Redis Streams
 **Browse, live-tail, and manage consumer groups without leaving the GUI.**
@@ -93,22 +93,27 @@ Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` a
 ### Performance Diagnostics
 **Slow Log ↔ Latency, live MONITOR, clients, and command stats.**
 
-The Performance panel cross-links **Slow Log** entries with `LATENCY` events (±5 s chips jump to the `LATENCY HISTORY` sparkline) and exports the filtered view to **CSV/JSON**; plus live `MONITOR` with keyword filtering, client management (`CLIENT LIST/KILL`), and a per-command **calls/second** table from `INFO commandstats`.
+The Performance panel cross-links **Slow Log** entries with `LATENCY` events (±5 s chips jump to the `LATENCY HISTORY` sparkline) and exports the filtered view to **CSV/JSON**; plus live `MONITOR` with keyword filtering, client management (`CLIENT LIST/KILL`), and a per-command **calls/second** table from `INFO commandstats` with a summary row, idle/self-connection noise filtering, and export.
 
 ### Value Search
 **Find which key *contains* some text (a guarded, sampled scan).**
 
-Redis can't index values, so this `O(keyspace)` search runs behind guardrails: a mandatory key prefix, a 10k-key / 10s cap (cancellable), and skipped over-1 MiB values — searching string values, hash fields, and list/set/sorted-set members, with each hit showing where it matched. Results are an explicit **sample**, never claimed exhaustive.
+Redis can't index values, so this `O(keyspace)` search runs behind guardrails: a mandatory key prefix, a 10k-key / 10s cap (cancellable), and skipped over-1 MiB values — searching string values, hash fields, and list/set/sorted-set members, with each hit showing where it matched. An empty-state guide and result-side key filter keep the flow clear; results are an explicit **sample**, never claimed exhaustive.
 
 ### Cluster Health & Management
-**Topology tree with replication lag, plus failover / forget / meet / replicate.**
+**Topology tree with replication lag, a slot map, per-node load, and a reshard wizard.**
 
-Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per-replica lag from `INFO replication`), then act: `CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` and `SENTINEL FAILOVER` / `RESET` / `REMOVE`, each through the confirm dialog with PROD escalation. Only appears on multi-node deployments.
+Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per-replica lag from `INFO replication`), then act: `CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` and `SENTINEL FAILOVER` / `RESET` / `REMOVE`, each through the confirm dialog with PROD escalation. Three more tabs go deeper: **Slots** maps every master's slot ranges and in-flight migrations, **Load** samples memory / OPS / clients across the masters, and the **Reshard** wizard moves slots between masters — pick a target (and optionally a source, one click from a Load card), preview the plan, then execute a confirm-guarded `CLUSTER RESHARD`. Only appears on multi-node deployments.
 
 ### Persistence & Keyspace Events
 **RDB/AOF status with one-click saves, plus live key-event triage.**
 
-A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (PROD-escalated). Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with a one-click `notify-keyspace-events` enable.
+A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (PROD-escalated), per-node status rows on clusters, and a **Policy & paths** card showing the configured `save` rules and AOF settings from `CONFIG GET`. Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with one-click `notify-keyspace-events` presets, pause, and export.
+
+### CONFIG Editor
+**A typed `CONFIG GET/SET` editor with inline parameter docs.**
+
+Runtime parameters render with type-aware editors instead of raw strings, and the common parameters carry inline, localized help docs — what a knob does, right where you change it. Writes go through `CONFIG SET` behind the PROD-escalated confirm dialog.
 
 ---
 
@@ -122,7 +127,7 @@ Keys group into a nested tree by `:` with compact TTL chips (green live / red ex
 ### Key Editing & History
 **Rename, per-field TTL, file import/export, bulk paste, and version history.**
 
-Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXPIRE`/`HPERSIST`, Redis 7.4+), **value file export/import** (binary-safe, `KEEPTTL`), **bulk paste** of TSV/CSV into Hash/List/Set/ZSet, and a client-side **last-10-versions** write history with diff & one-click restore. Deleting a key first stashes its `DUMP` payload into a **local recycle bin** (24h, restorable from the Tools menu, TTL preserved; opt-out in Settings) — a fat-finger delete on production is no longer final.
+Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXPIRE`/`HPERSIST`, Redis 7.4+), **value file export/import** (binary-safe, `KEEPTTL`), **bulk paste** of TSV/CSV into Hash/List/Set/ZSet, and a client-side **last-10-versions** write history with diff & one-click restore. Deleting a key first stashes its `DUMP` payload into a **local recycle bin** (24h, restorable from the Tools menu, TTL preserved; opt-out in Settings) — a fat-finger delete on production is no longer final. Oversized String/JSON values are never loaded blindly: the editor shows the size and fetches only on an explicit **Load anyway**.
 
 ### Bulk Key Operations
 **Multi-select delete, batch TTL, DUMP/RESTORE import/export, auto-refresh.**
@@ -146,7 +151,7 @@ Tags, notes, favorites and search history live in a **local redb file** — zero
 ### Connection Safety
 **Environment tags + confirm dialogs that escalate on production.**
 
-Tag each server with a preset environment — **Dev / UAT / Prod** — shown as a colored chip in the sidebar and status bar, and lock any connection **read-only**. Destructive actions (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`, key/server delete, `XGROUP DESTROY`, cluster ops...) are intercepted with a confirm dialog that escalates its wording on a **Prod** server.
+Tag each server with a preset environment — **Dev / UAT / Prod** — shown as a colored chip in the sidebar and status bar; the title bar also shows the active **db** and a quiet **Prod** badge when the connection is high-risk. Lock any connection **read-only**. Destructive actions (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`, key/server delete, `XGROUP DESTROY`, cluster ops...) are intercepted with a confirm dialog that escalates its wording on a **Prod** server.
 
 ### ACL Management (Redis 6+)
 **GUI for the full ACL lifecycle.**
@@ -165,7 +170,7 @@ Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, priv
 ### Workspace Tabs
 **Multiple connections side by side — Cmd/Ctrl-click a server to open it in a new tab.**
 
-Each tab keeps its own connection and view state (key tree expansion, scroll, selection survive tab switches). The tab strip appears only with two or more tabs (max 8): click activates, middle-click or × closes, drag reorders, and right-click offers close / close-others / close-to-the-right. Background tabs relax their heartbeat to one refresh per 30 seconds, and the open-tab list is restored on the next launch with background tabs reconnecting lazily on first activation.
+Each tab keeps its own connection and view state (key tree expansion, scroll, selection survive tab switches). The tab strip appears only with two or more tabs (max 8): click (or **⌘1–8**) activates, middle-click or × closes, drag reorders, and right-click offers close / close-others / close-to-the-right. Background tabs relax their heartbeat to one refresh per 30 seconds, and the open-tab list is restored on the next launch with background tabs reconnecting lazily on first activation.
 
 ### Command Palette & Shortcuts
 **⌘K fuzzy navigation and a ⌘/ keyboard-shortcut reference.**
@@ -180,4 +185,4 @@ Version-aware command completion with inline argument/summary hints. A one-click
 ### Lua Script Library
 **Save, reuse, and EVALSHA-run Lua scripts with hit-rate stats.**
 
-A local library of named Lua scripts (source + precomputed SHA1) with one-click **EVALSHA-first** execution, saved `KEYS` / `ARGS` defaults for one-click re-runs, and lifetime hit/miss counters to spot scripts being flushed from Redis's cache. (Distinct from **Functions** — that manages server-side `FUNCTION` libraries.)
+A local library of named Lua scripts (source + precomputed SHA1) with starter templates, one-click **EVALSHA-first** execution, saved `KEYS` / `ARGS` defaults for one-click re-runs, and lifetime hit/miss counters to spot scripts being flushed from Redis's cache — plus cache control (**Warm** = `SCRIPT LOAD` without executing, and a guarded `SCRIPT FLUSH`) and library import/export. (Distinct from **Functions** — that manages server-side `FUNCTION` libraries.)

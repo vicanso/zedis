@@ -26,8 +26,8 @@ use crate::states::{
 };
 use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global, open_connection_diagnostics};
 use gpui::{
-    Action, Anchor, ClipboardItem, Entity, ExternalPaths, FocusHandle, Focusable, SharedString, Subscription, Window,
-    div, prelude::*, px,
+    Action, Anchor, App, ClipboardItem, Entity, ExternalPaths, FocusHandle, Focusable, SharedString, Subscription,
+    Window, div, prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::DropdownMenu;
@@ -164,6 +164,8 @@ impl ZedisServers {
 
         // Focused up front so `cmd-f` works on arrival, without a click first —
         // an action is only offered to the elements on the focus path.
+        // Note: `ZedisContent` may re-focus its own shell after RouteChanged;
+        // content re-targets this handle on Home (see content.rs).
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
@@ -175,6 +177,12 @@ impl ZedisServers {
             import_input_sub: None,
         }
     }
+
+    /// Put the caret in the toolbar filter box (`EditorAction::Search` / ⌘F).
+    pub fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        self.search_state.focus_handle(cx).focus(window, cx);
+    }
+
     /// Enter in the filter box: open the server *if the query leaves exactly
     /// one*. Zero or several matches leave nothing unambiguous to open, so the
     /// key does nothing rather than guessing (opening the first of many would be
@@ -1206,6 +1214,12 @@ fn format_updated_relative(updated_at: &str, locale: &str) -> String {
         t!("servers.relative_months", count = (days / 30) as usize, locale = locale).to_string()
     } else {
         t!("servers.relative_years", count = (days / 365) as usize, locale = locale).to_string()
+    }
+}
+
+impl Focusable for ZedisServers {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 
