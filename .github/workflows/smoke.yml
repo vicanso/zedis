@@ -1,0 +1,71 @@
+name: "Smoke"
+# Per-push first-frame smoke gate for Linux.
+#
+# The nightly (publish.yml, 18:00 UTC) already builds Linux and runs the
+# same ZEDIS_SMOKE_TEST check, but a commit made during the day isn't
+# exercised until the next nightly — historically the first signal was a
+# tag build. This workflow closes that gap: every push to main builds the
+# release binary (same toolchain / features as publish) and boots it under
+# Xvfb + software Vulkan. No packaging, no uploads.
+on:
+  push:
+    branches: ["main"]
+    # Docs-only pushes can't affect first-frame paint — skip them. Locales
+    # and assets stay in: both are embedded into the binary and parsed on
+    # the startup path.
+    paths:
+      - "src/**"
+      - "crates/**"
+      - "zedis-cmd-builder/**"
+      - "locales/**"
+      - "assets/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - ".github/workflows/smoke.yml"
+  workflow_dispatch:
+
+# A rapid push series only needs the newest commit smoked.
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in lockstep with publish.yml so this catches exactly what a
+  # release build would hit.
+  RUST_TOOLCHAIN: 1.95.0
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev \
+            xvfb mesa-vulkan-drivers libvulkan1
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-unknown-linux-gnu
+      - name: rust cache
+        # Same key as publish.yml's linux x86_64 job so the nightly and this
+        # gate share one build cache instead of maintaining two.
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-x86_64-unknown-linux-gnu-build
+      - name: build
+        run: cargo build --release --features mimalloc
+      - name: smoke test (first frame must paint)
+        # Boots the real binary in ZEDIS_SMOKE_TEST mode: exit 0 once the
+        # first frame paints, exit 2 if none does within 30s — the failure
+        # mode of the "window never appears" regression class.
+        timeout-minutes: 5
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: xvfb-run -a ./target/release/zedis
