@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.0](https://github.com/vicanso/zedis/compare/v0.5.4..v0.6.0) - 2026-07-17
+## [0.6.1](https://github.com/vicanso/zedis/compare/v0.5.4..v0.6.1) - 2026-07-17
 
 ### ⛰️  Features
 
@@ -60,7 +60,10 @@
 - *(i18n)* Drop 46 unused locale keys across all languages - ([5c8ea3c](https://github.com/vicanso/zedis/commit/5c8ea3c2676b775cc535068be8a9a6989192280d))
 - *(publish)* Rewrite upload_asset.sh with the gh CLI - ([ff945bd](https://github.com/vicanso/zedis/commit/ff945bd4b43a5ce1f9645252def830d85b5682bb))
 - *(publish)* Don't create a draft when the tag already has a release - ([b2e463c](https://github.com/vicanso/zedis/commit/b2e463c0d06cd6531592ea122f358f302f756b95))
+- *(smoke)* Linux smoke was never green — drop the self-drive, go best-effort - ([ecf226f](https://github.com/vicanso/zedis/commit/ecf226f7f7891339ff2149890f0bf68811fa02e6))
+- *(smoke)* Self-drive frames in smoke mode; add per-push Linux gate - ([00010db](https://github.com/vicanso/zedis/commit/00010db703dcc0d5cb5272c18d45e4fa7afbd432))
 - *(test)* Run the workspace test suite in CI; lock tab-move arithmetic - ([6e6a909](https://github.com/vicanso/zedis/commit/6e6a90908b0add3863e0adf13b4d5f17f84e9362))
+- Version 0.6.0 - ([a617f85](https://github.com/vicanso/zedis/commit/a617f85d4bb43349417956817e42d839e9067980))
 
 ### I18n
 
