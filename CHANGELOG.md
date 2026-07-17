@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.6.0](https://github.com/vicanso/zedis/compare/v0.5.4..v0.6.0) - 2026-07-17
+
+### ⛰️  Features
+
+- *(capability)* Wire read-class capabilities; harden CI publish flow - ([b118996](https://github.com/vicanso/zedis/commit/b118996516a41dda40c80feae4903c27966e4636))
+- *(command-stats)* Filter idle/self noise, summary, export, fix first-sample flash - ([856b803](https://github.com/vicanso/zedis/commit/856b8039e8e18c3727e40b8fb5c28820c8ad49ad))
+- *(config)* Add help text for 39 more Redis config params - ([7c2635d](https://github.com/vicanso/zedis/commit/7c2635de903903e7220e3561817ccb0134687d72))
+- *(functions)* Sticky form + templates, FCALL, filter, DUMP/RESTORE/FLUSH/STATS - ([fcbb7a2](https://github.com/vicanso/zedis/commit/fcbb7a21469b0217b747d5606db28cedf38ac04d))
+- *(keyspace)* Empty states, filters, pause/export, enable presets - ([4e4aa9a](https://github.com/vicanso/zedis/commit/4e4aa9a42ba683121fc32fdc7773ccf68642efd4))
+- *(kv-table)* Resizable entry panel width, persisted globally - ([ce39eb1](https://github.com/vicanso/zedis/commit/ce39eb18da496769923d4409fc470e3d13e62b28))
+- *(lua-scripts)* Sticky form, templates, cache warm/flush, filter, import/export - ([b122e8b](https://github.com/vicanso/zedis/commit/b122e8b15b1d45c13566b88ce3c51269e73d154c))
+- *(persistence)* Richer status cards, CONFIG policy, cluster rows, completion toasts - ([c51f715](https://github.com/vicanso/zedis/commit/c51f7159cf1c50694f16b207e97e39526a33c3d4))
+- *(tabs)* Per-tab ⌘1–8 shortcut hints; fix inactive title color - ([81aec22](https://github.com/vicanso/zedis/commit/81aec22ca55d6846e50ae78d4c755dce3f4b118c))
+- *(tabs)* Middle-click close, context menu, drag reorder - ([5ad3f10](https://github.com/vicanso/zedis/commit/5ad3f107a27813cfdb05f671c7f1c76266b866f9))
+- *(topology)* Nodes UX, ClusterWrite gate, reshard pickers, slot/load links - ([aac057f](https://github.com/vicanso/zedis/commit/aac057f104bf11512c487a4e349bdc28cc509431))
+- *(update)* Live download progress, then quit to install - ([c06bd69](https://github.com/vicanso/zedis/commit/c06bd697e454316004f1dbc486d8b13ce55c132a))
+- *(value)* Size-gate oversized String/JSON loads; enforce read-only in bytes editor - ([cee17ab](https://github.com/vicanso/zedis/commit/cee17abd5e30d71774357086b631289d30338645))
+- Polish status/title bar and topology lag; drop clippy allows - ([01807ef](https://github.com/vicanso/zedis/commit/01807efb7b0fd795ad784cf05c6d22b46bf22985))
+- Value-search UX polish and ⌘1–8 workspace tab switching - ([c4a0e86](https://github.com/vicanso/zedis/commit/c4a0e861facaaad6f338ca389fbe27689768196d))
+
+### 🐛 Bug Fixes
+
+- *(acl)* Restore the user editor — missing footer, inputs losing state - ([b0a594e](https://github.com/vicanso/zedis/commit/b0a594e20f0771d637c76e6739b8f10a5a3aaa14))
+- *(editor)* Stop the key name collapsing to an ellipsis - ([addc659](https://github.com/vicanso/zedis/commit/addc659bec2f42cdb146fa6e3500ddd155e4d2b3))
+- *(focus)* Keep ⌘F working after workspace tab switches - ([7447d97](https://github.com/vicanso/zedis/commit/7447d97244350dfab21f3ff7803498a322a1340f))
+- *(tables)* Vertically center header text in all custom render_th - ([3071f26](https://github.com/vicanso/zedis/commit/3071f26fcfe39d38dba38640e4c03bd73707a3a9))
+- *(ui)* Scrollbars clipped by max_h in trash dialog and import preview - ([409a495](https://github.com/vicanso/zedis/commit/409a495ca094a265f7199b16aadbe320afe07bf2))
+- *(value)* Keep NUL-bearing bytes as Bytes so bitmaps are detected - ([5e2a54a](https://github.com/vicanso/zedis/commit/5e2a54aaaa93d149b85e30280a3d3e49da401634))
+
+### 🚜 Refactor
+
+- *(clients)* Filter by client type; fix truncated cells - ([93941ba](https://github.com/vicanso/zedis/commit/93941ba023a343ee0ea36f79823100fce2502ff4))
+- *(config)* Move help docs to embedded per-locale JSON - ([76d194d](https://github.com/vicanso/zedis/commit/76d194d8670aed25e22b74474bc0cbab69293cb5))
+- *(connection)* Extract the connection layer into zedis-connection - ([8d31935](https://github.com/vicanso/zedis/commit/8d319356ecf28d082d11eee87471364e9ff85b9f))
+- *(connection)* Drop the gpui dependency from the connection layer - ([ced69a7](https://github.com/vicanso/zedis/commit/ced69a7ce3657c66f80afa17acd9c919decee19f))
+- *(db)* Extract zedis-db and split the error type by domain - ([e2b131b](https://github.com/vicanso/zedis/commit/e2b131bcbb260c39b628c61bfbed8d2d69ee10c5))
+- *(search)* Smarter query chips, examples, pagination, SORTBY/DIALECT - ([b46de6e](https://github.com/vicanso/zedis/commit/b46de6e12f54b4b369f5c126bb58f65fd62c7512))
+- *(sidebar)* Label on the collapse toggle when expanded - ([33e623d](https://github.com/vicanso/zedis/commit/33e623dc4922c3660d3c025bfbf522025ca91db1))
+- *(slowlog)* Keyword filter; commands as a checkable dropdown - ([a922ce1](https://github.com/vicanso/zedis/commit/a922ce14af217488981ec08a90979bf8170b7d99))
+- *(status-bar)* Show connection health as a link/unlink icon ([#111](https://github.com/orhun/git-cliff/issues/111)) - ([23e0e73](https://github.com/vicanso/zedis/commit/23e0e735168c495844c51721d6e4a2fa96c9cbd3))
+- *(ui)* Primary blue, full-height sidebar, filter shortcuts - ([5d47713](https://github.com/vicanso/zedis/commit/5d477135ffc20ab03f4e1d5d89cdf2e579999b85))
+- *(views)* Memory-analysis dropdown + Analyze fix; MONITOR production warning - ([baef9a0](https://github.com/vicanso/zedis/commit/baef9a054f8454aa75637f7d003c9f3ce6e39976))
+- *(views)* Split the four largest view files into submodules - ([656eccf](https://github.com/vicanso/zedis/commit/656eccf8b51c27f987ab715ba412c5b7053ec038))
+
+### 📚 Documentation
+
+- Crate READMEs and workspace-tab interactions in FEATURES - ([c3ce9ab](https://github.com/vicanso/zedis/commit/c3ce9ab297bbdf4ff3a1c2758a941830535f0444))
+
+### ⚡ Performance
+
+- *(i18n)* Parse embedded locales lazily, one per first lookup - ([7f314af](https://github.com/vicanso/zedis/commit/7f314af580e9d421228b88200c97f35a7e571b51))
+- *(key-tree)* Arc-share key TTLs and cut build-time string churn - ([e85e0c1](https://github.com/vicanso/zedis/commit/e85e0c1160b2e3054c6a0ebf830a942dd91535ba))
+- Cut idle cluster/UI churn and speed value-search / palette paths - ([2232cc8](https://github.com/vicanso/zedis/commit/2232cc804dacae2855883db0996780a5d60d2458))
+- Cut redundant I/O and per-frame work across hot paths - ([28ade35](https://github.com/vicanso/zedis/commit/28ade3517ab475fd396e22650d8f4d8379439004))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(i18n)* Drop 46 unused locale keys across all languages - ([5c8ea3c](https://github.com/vicanso/zedis/commit/5c8ea3c2676b775cc535068be8a9a6989192280d))
+- *(publish)* Rewrite upload_asset.sh with the gh CLI - ([ff945bd](https://github.com/vicanso/zedis/commit/ff945bd4b43a5ce1f9645252def830d85b5682bb))
+- *(publish)* Don't create a draft when the tag already has a release - ([b2e463c](https://github.com/vicanso/zedis/commit/b2e463c0d06cd6531592ea122f358f302f756b95))
+- *(test)* Run the workspace test suite in CI; lock tab-move arithmetic - ([6e6a909](https://github.com/vicanso/zedis/commit/6e6a90908b0add3863e0adf13b4d5f17f84e9362))
+
+### I18n
+
+- Fill in the English fallbacks across all 7 non-en locales - ([105dccc](https://github.com/vicanso/zedis/commit/105dccc6b8da39cd4aaa54fa3550c5daa96e55fa))
+
 ## [0.5.4](https://github.com/vicanso/zedis/compare/v0.5.2..v0.5.4) - 2026-07-11
 
 ### ⛰️  Features
