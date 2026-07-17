@@ -5,8 +5,8 @@ use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_M
 use crate::helpers::{
     EditorAction, MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
     WorkspaceTabAction, apply_fonts, download_and_verify, fetch_latest_release, focus_installer_ui,
-    get_or_create_config_dir, init_logger, installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys,
-    open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
+    get_or_create_config_dir, humanize_keystroke, init_logger, installer_requires_quit, is_app_store_build, logs_dir,
+    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -770,7 +770,8 @@ impl Zedis {
         }
         let home_label = i18n_sidebar(cx, "home");
         let border = cx.theme().border;
-        let active_bg = cx.theme().foreground.alpha(0.1);
+        let foreground = cx.theme().foreground;
+        let active_bg = foreground.alpha(0.1);
         let muted = cx.theme().muted_foreground;
         let strip = h_flex()
             .w_full()
@@ -794,6 +795,19 @@ impl Zedis {
                     }
                 };
                 let is_active = ix == self.active_tab;
+                // Per-tab jump shortcut (⌘1–8 / Ctrl+1–8): tabs are capped at
+                // 8, so every pill gets a hint. Rendered per-platform via
+                // `humanize_keystroke`, matching the ⌘/ overlay's symbols.
+                // The hint always sits one shade below its title: `muted`
+                // under the active tab's full-foreground title, faded muted
+                // under an inactive tab's already-muted title.
+                let shortcut: SharedString = humanize_keystroke(&format!("cmd-{}", ix + 1)).into();
+                let shortcut_color = if is_active { muted } else { muted.alpha(0.6) };
+                // `Label` doesn't inherit a parent's `text_color` (its render
+                // unconditionally sets the theme foreground before refining
+                // with its own style), so the title's active/inactive color
+                // must be set on the Label itself.
+                let title_color = if is_active { foreground } else { muted };
                 let preview_title = title.clone();
                 div()
                     .id(("content-tab", ix))
@@ -824,8 +838,16 @@ impl Zedis {
                             .rounded_md()
                             .cursor_pointer()
                             .when(is_active, |this| this.bg(active_bg))
+                            // Container-level color still covers the close
+                            // button's icon; the Labels set their own below.
                             .when(!is_active, |this| this.text_color(muted))
-                            .child(Label::new(title).text_sm().whitespace_nowrap())
+                            .child(Label::new(title).text_sm().text_color(title_color).whitespace_nowrap())
+                            .child(
+                                Label::new(shortcut)
+                                    .text_xs()
+                                    .text_color(shortcut_color)
+                                    .whitespace_nowrap(),
+                            )
                             .child(
                                 Button::new(("content-tab-close", ix))
                                     .ghost()
