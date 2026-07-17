@@ -349,61 +349,79 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
         }
 
         let mut dir = String::with_capacity(50);
-        let mut key_tree_item: Option<KeyTreeItem> = None;
+        // Deferred pending ancestor as `(id_len, label_len, depth, expanded)`
+        // spans into `dir` — in a dense namespace most folds hit an existing
+        // folder entry, so materialising id/label strings eagerly (the old
+        // shape) allocated two throwaway strings per key per level. Strings
+        // are now built only on first sight (the miss branch below).
+        let mut pending: Option<(usize, usize, usize, bool)> = None;
         for (index, k) in key.splitn(max_key_tree_depth, separator).enumerate() {
             let expanded = index == 0 || expanded_items_set.contains(dir.as_str());
-            if let Some(pending) = key_tree_item.take() {
-                match items.entry(pending.id.clone()) {
-                    Occupied(mut e) => {
-                        let existing = e.get_mut();
-                        if !existing.is_folder {
-                            promoted_leaves.push((
-                                existing.id.clone(),
-                                existing.key_type,
-                                existing.label.clone(),
-                                existing.depth,
-                            ));
-                        }
-                        existing.is_folder = true;
-                        existing.children_count += 1;
-                        existing.expanded = expanded;
+            if let Some((id_len, label_len, depth, _)) = pending.take() {
+                // `dir` still ends exactly at the pending path — the current
+                // segment is appended only after the fold.
+                let path = &dir[..id_len];
+                if let Some(existing) = items.get_mut(path) {
+                    if !existing.is_folder {
+                        promoted_leaves.push((
+                            existing.id.clone(),
+                            existing.key_type,
+                            existing.label.clone(),
+                            existing.depth,
+                        ));
                     }
-                    Vacant(e) => {
-                        let mut item = pending;
-                        item.is_folder = true;
-                        item.children_count = 1;
-                        item.expanded = expanded;
-                        e.insert(item);
-                    }
+                    existing.is_folder = true;
+                    existing.children_count += 1;
+                    existing.expanded = expanded;
+                } else {
+                    let id: SharedString = path.to_string().into();
+                    let label: SharedString = dir[id_len - label_len..id_len].to_string().into();
+                    items.insert(
+                        id.clone(),
+                        KeyTreeItem {
+                            id,
+                            label,
+                            key_type,
+                            depth,
+                            expanded,
+                            is_folder: true,
+                            children_count: 1,
+                            ..Default::default()
+                        },
+                    );
                 }
             }
 
             if !expanded {
                 break;
             }
-            let name: SharedString = k.to_string().into();
             if index != 0 {
                 dir.push_str(separator);
             };
             dir.push_str(k);
-
-            key_tree_item = Some(KeyTreeItem {
-                id: dir.clone().into(),
-                label: name.clone(),
-                key_type,
-                depth: index,
-                expanded,
-                ..Default::default()
-            });
+            pending = Some((dir.len(), k.len(), index, expanded));
         }
-        if let Some(mut key_tree_item) = key_tree_item.take() {
+        if let Some((id_len, label_len, depth, expanded)) = pending.take() {
             // This is the deepest level for this key — guaranteed a leaf
-            // since no further segment was promoted. Stamp the live TTL
-            // and the client-side annotation (if any).
-            key_tree_item.ttl_secs = ttl_for_leaf;
-            key_tree_item.tag = tag_for_leaf;
-            key_tree_item.note = note_for_leaf.clone();
-            items.insert(key_tree_item.id.clone(), key_tree_item);
+            // since no further segment was promoted. `dir` now equals the
+            // full key, so the id reuses the key's `SharedString` (an Arc
+            // bump for heap-backed keys) instead of allocating a copy.
+            debug_assert_eq!(&dir[..id_len], key.as_ref());
+            let label: SharedString = dir[id_len - label_len..id_len].to_string().into();
+            items.insert(
+                key.clone(),
+                KeyTreeItem {
+                    id: key.clone(),
+                    label,
+                    key_type,
+                    depth,
+                    expanded,
+                    ttl_secs: ttl_for_leaf,
+                    tag: tag_for_leaf,
+                    note: note_for_leaf.clone(),
+                    ..Default::default()
+                },
+            );
         }
     }
 
@@ -416,7 +434,15 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
     for item in items.into_values() {
         let size = item.id.len() - item.label.len();
         let parent_id = if size == 0 { "" } else { &item.id[..(size - 1)] };
-        children_map.entry(parent_id.to_string()).or_default().push(item);
+        // `entry(parent_id.to_string())` would allocate the key for every
+        // item; allocate only when the bucket doesn't exist yet (folders
+        // are a small fraction of items).
+        match children_map.get_mut(parent_id) {
+            Some(bucket) => bucket.push(item),
+            None => {
+                children_map.insert(parent_id.to_string(), vec![item]);
+            }
+        }
     }
 
     for (key_id, key_type, label, depth) in promoted_leaves {
@@ -430,19 +456,24 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
             Some(m) => (m.tag, SharedString::from(m.note.clone())),
             None => (None, SharedString::default()),
         };
-        children_map
-            .entry(parent_id.to_string())
-            .or_default()
-            .push(KeyTreeItem {
-                id: key_id,
-                label,
-                depth,
-                key_type,
-                ttl_secs,
-                tag,
-                note,
-                ..Default::default()
-            });
+        let leaf = KeyTreeItem {
+            // Clone (an Arc bump) — `parent_id` still borrows `key_id` for
+            // the bucket lookup below.
+            id: key_id.clone(),
+            label,
+            depth,
+            key_type,
+            ttl_secs,
+            tag,
+            note,
+            ..Default::default()
+        };
+        match children_map.get_mut(parent_id) {
+            Some(bucket) => bucket.push(leaf),
+            None => {
+                children_map.insert(parent_id.to_string(), vec![leaf]);
+            }
+        }
     }
 
     let mut result = Vec::with_capacity(children_map.values().map(|v| v.len()).sum());
@@ -460,9 +491,11 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
                     child.stripe = leaf_ix % 2 == 1;
                     leaf_ix += 1;
                 }
-                let child_id = child.id.to_string();
+                // SharedString clone instead of `to_string` — the id only
+                // needs to outlive the recursive call below.
+                let child_id = child.id.clone();
                 result.push(child);
-                build_sorted_list(&child_id, map, result);
+                build_sorted_list(child_id.as_ref(), map, result);
             }
         }
     }

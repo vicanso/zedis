@@ -593,7 +593,11 @@ impl ZedisKeyTree {
             let keys_snapshot: Vec<(SharedString, KeyType)> =
                 server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
             self.state.cached_keys = Arc::new(keys_snapshot);
-            self.state.cached_key_ttls = Arc::new(server_state.key_ttls().clone());
+            // Arc share, not a structural copy — the server side mutates
+            // its map through `Arc::make_mut`, so this snapshot stays
+            // immutable for the background build while writes COW at most
+            // once per build window.
+            self.state.cached_key_ttls = server_state.key_ttls_arc();
             self.state.cached_key_tree_id = key_tree_id.to_string().into();
         }
 

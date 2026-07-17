@@ -1045,8 +1045,9 @@ impl ZedisServerState {
                         // The key tree renders each key's TTL state from this
                         // cache (no entry → the TTL icon goes missing), so move
                         // it across too. RENAME preserves the TTL server-side.
-                        if let Some(ttl) = this.key_ttls.remove(&old_done) {
-                            this.key_ttls.insert(new_done.clone(), ttl);
+                        let key_ttls = Arc::make_mut(&mut this.key_ttls);
+                        if let Some(ttl) = key_ttls.remove(&old_done) {
+                            key_ttls.insert(new_done.clone(), ttl);
                         }
                         if let Some(history) = this.value_history.remove(&old_done) {
                             this.value_history.insert(new_done.clone(), history);
@@ -1154,8 +1155,9 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
+                    let key_ttls = Arc::make_mut(&mut this.key_ttls);
                     for key in &affected {
-                        this.key_ttls.insert(key.clone(), new_ttl);
+                        key_ttls.insert(key.clone(), new_ttl);
                     }
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
@@ -1196,7 +1198,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
-                    for (k, v) in this.key_ttls.iter_mut() {
+                    for (k, v) in Arc::make_mut(&mut this.key_ttls).iter_mut() {
                         if k.starts_with(prefix_done.as_str()) {
                             *v = new_ttl;
                         }
@@ -1285,7 +1287,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     this.keys.insert(key_clone.clone(), key_type);
-                    this.key_ttls.insert(key_clone.clone(), ttl_secs);
+                    Arc::make_mut(&mut this.key_ttls).insert(key_clone.clone(), ttl_secs);
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     this.select_key(key_clone, cx);
                     // Rebuild the tree from `keys` so the new row actually

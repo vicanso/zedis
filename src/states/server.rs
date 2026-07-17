@@ -267,7 +267,13 @@ pub struct ZedisServerState {
     /// during SCAN. `-1` = no expiry, `-2` = missing (key vanished between
     /// SCAN and the TTL pipeline). Kept separate from `keys` so older code
     /// paths that read `&AHashMap<SharedString, KeyType>` keep compiling.
-    key_ttls: AHashMap<SharedString, i64>,
+    ///
+    /// Behind an `Arc` so the key tree's background build snapshots it with
+    /// an Arc clone instead of a structural copy (with 500k keys that copy
+    /// was ~20MB resident, twice). Writers go through `Arc::make_mut`: the
+    /// map is copied at most once per build window (only while a snapshot
+    /// is actually held), which is what the per-rebuild clone used to cost.
+    key_ttls: Arc<AHashMap<SharedString, i64>>,
 
     /// In-memory write history per string key. Each entry is the bytes
     /// that were just overwritten by a SET, newest first. Capped at
@@ -311,7 +317,10 @@ impl ZedisServerState {
         self.keyword = SharedString::default();
         self.cursors = None;
         self.keys.clear();
-        self.key_ttls.clear();
+        // Fresh Arc instead of `make_mut(..).clear()` — when a build still
+        // holds the old snapshot, `make_mut` would copy the whole map just
+        // to empty it.
+        self.key_ttls = Arc::new(AHashMap::new());
         self.key_tree_id = Uuid::now_v7().to_string().into();
         self.scanning = false;
         self.scan_completed = false;
@@ -349,7 +358,7 @@ impl ZedisServerState {
         self.version = SharedString::default();
         self.nodes = (0, 0);
         self.keys.clear();
-        self.key_ttls.clear();
+        self.key_ttls = Arc::new(AHashMap::new());
         // History is scoped to the current server session; drop it when
         // we move to a different server to avoid restoring stale bytes
         // into the wrong target.
@@ -382,7 +391,8 @@ impl ZedisServerState {
     /// If any new keys were added, generates a new tree ID to trigger UI refresh
     fn extend_keys(&mut self, keys: Vec<(SharedString, SharedString, i64)>) {
         self.keys.reserve(keys.len());
-        self.key_ttls.reserve(keys.len());
+        let key_ttls = Arc::make_mut(&mut self.key_ttls);
+        key_ttls.reserve(keys.len());
         let mut insert_count = 0;
 
         for (key, key_type, ttl_secs) in keys {
@@ -400,7 +410,7 @@ impl ZedisServerState {
                 });
             // Always update the freshest TTL (it counts down) — replace
             // existing rather than insert_with.
-            self.key_ttls.insert(key, ttl_secs);
+            key_ttls.insert(key, ttl_secs);
         }
 
         // Update tree ID only if new keys were added
@@ -834,7 +844,13 @@ impl ZedisServerState {
     }
     /// Get the map of all loaded keys and their types
     pub fn key_ttls(&self) -> &AHashMap<SharedString, i64> {
-        &self.key_ttls
+        self.key_ttls.as_ref()
+    }
+
+    /// Shared handle to the TTL map for background snapshots (the key-tree
+    /// build) — an Arc clone instead of copying the whole map.
+    pub fn key_ttls_arc(&self) -> Arc<AHashMap<SharedString, i64>> {
+        Arc::clone(&self.key_ttls)
     }
     pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
         &self.keys
