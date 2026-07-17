@@ -64,6 +64,14 @@ jobs:
         # Boots the real binary in ZEDIS_SMOKE_TEST mode: exit 0 once the
         # first frame paints, exit 2 if none does within 30s — the failure
         # mode of the "window never appears" regression class.
+        #
+        # Best-effort for now: the first-frame signal has never fired under
+        # Xvfb + llvmpipe (see the matching note in publish.yml) — this
+        # step exists to keep a per-push record and to flip green the
+        # moment the headless present path is fixed, at which point drop
+        # continue-on-error to make it the hard pre-tag gate it was
+        # designed to be.
+        continue-on-error: true
         timeout-minutes: 5
         env:
           ZEDIS_SMOKE_TEST: "1"

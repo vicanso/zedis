@@ -1818,25 +1818,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("ZEDIS_SMOKE_OK");
                             std::process::exit(0);
                         });
-                        // Keep requesting frames until the hook above fires.
-                        // Under Xvfb + llvmpipe the first present can be
-                        // dropped, and once startup settles nothing else asks
-                        // for a frame (the startup config saves used to force
-                        // redraws via `refresh_windows`; they are quiet now) —
-                        // the app idles and the watchdog wins. This stays an
-                        // honest gate: redraw *requests* can't rescue a window
-                        // that never receives frames (the 0.4.5/0.4.6 hidden-
-                        // window regression still exits 2).
-                        // The loop never needs an exit: the smoke process
-                        // always terminates via the frame hook (exit 0) or
-                        // the 30s watchdog (exit 2).
-                        cx.spawn(async move |cx| {
-                            loop {
-                                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
-                                cx.update(|cx| cx.refresh_windows());
-                            }
-                        })
-                        .detach();
+                        // Note for CI: under Xvfb + llvmpipe this hook has
+                        // never fired — the frame-present signal doesn't
+                        // arrive in that environment even with redraws
+                        // forced every second (verified 2026-07-17), so the
+                        // Linux smoke step runs best-effort until that's
+                        // understood upstream. Real displays (macOS /
+                        // Windows runners, actual Linux desktops) fire it
+                        // normally.
                     }
                     let zedis_view = cx.new(|cx| Zedis::new(window, cx));
                     // Activate the target connection + view now that the views

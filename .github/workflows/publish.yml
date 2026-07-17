@@ -412,8 +412,17 @@ jobs:
           mv target/appimage/zedis.AppImage ./zedis.AppImage
           tar -czvf zedis-${{ matrix.suffix }}.AppImage.tar.gz zedis.AppImage
       - name: smoke test (first frame must paint)
-        # Hard gate (was best-effort while Xvfb + software Vulkan proved
-        # itself; recent nightly/tag runs have been consistently green).
+        # Best-effort, NOT a hard gate. History: this was flipped to a hard
+        # gate on the belief that "recent runs have been consistently
+        # green" — but those greens were this very continue-on-error
+        # swallowing ZEDIS_SMOKE_TIMEOUT (verified in the v0.5.4 job logs:
+        # the smoke never once passed under Xvfb + llvmpipe; the
+        # frame-present signal simply never arrives there, even with
+        # redraws forced every second). Every nightly since the hard gate
+        # (7-12 onward) failed here and shipped no Linux assets. Keep it
+        # reporting so the logs exist; tighten again only after the
+        # headless first-frame signal is fixed (gpui_wgpu / llvmpipe).
+        continue-on-error: true
         timeout-minutes: 5
         env:
           ZEDIS_SMOKE_TEST: "1"
