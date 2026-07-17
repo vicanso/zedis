@@ -40,6 +40,7 @@ use crate::states::{KeyType, ServerView, ZedisGlobalStore, ZedisServerState, i18
 use crate::views::export_to_file;
 use gpui::{
     ClipboardItem, Context, Entity, ScrollHandle, SharedString, Subscription, Task, Window, div, prelude::*, px,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -50,7 +51,7 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 /// Hard cap on keys examined per search.
 const SCAN_CAP: usize = 10_000;
@@ -92,6 +93,17 @@ enum Preview {
     Error(SharedString),
 }
 
+/// Snapshot of one filtered result row for the virtualized list —
+/// `uniform_list`'s range closure is `'static` and only receives
+/// `&mut App`, so it renders from this owned copy instead of borrowing
+/// the view. Clones are Arc bumps / small strings.
+struct ResultRow {
+    key: SharedString,
+    key_type: SharedString,
+    location: MatchLocation,
+    is_selected: bool,
+}
+
 pub struct ZedisValueSearch {
     server_state: Entity<ZedisServerState>,
     prefix_input: Entity<InputState>,
@@ -107,7 +119,16 @@ pub struct ZedisValueSearch {
     stop_reason: Option<StopReason>,
     error: Option<SharedString>,
     task: Option<Task<()>>,
-    scroll: ScrollHandle,
+
+    /// Monotonic revision of `matches` (bumped on clear and on every result
+    /// round) — the filter cache below keys on it instead of comparing
+    /// contents.
+    matches_rev: u64,
+    /// Indices into `matches` that pass the key filter, cached under
+    /// `filtered_signature` so plain repaints don't re-lowercase every key.
+    filtered_cache: Vec<usize>,
+    /// `(filter, matches_rev)` the cache was computed for.
+    filtered_signature: Option<(String, u64)>,
 
     /// Currently-previewed match (also the highlighted row).
     selected: Option<SharedString>,
@@ -159,7 +180,9 @@ impl ZedisValueSearch {
             stop_reason: None,
             error: None,
             task: None,
-            scroll: ScrollHandle::new(),
+            matches_rev: 0,
+            filtered_cache: Vec::new(),
+            filtered_signature: None,
             selected: None,
             selected_type: None,
             selected_location: None,
@@ -192,6 +215,7 @@ impl ZedisValueSearch {
         let needle = query.to_lowercase();
 
         self.matches.clear();
+        self.matches_rev += 1;
         self.scanned = 0;
         self.skipped = 0;
         self.truncated = false;
@@ -256,6 +280,7 @@ impl ZedisValueSearch {
                         }
                         this.matches.push(m);
                     }
+                    this.matches_rev += 1;
                     cx.notify();
                     if done {
                         Some(StopReason::Done)
@@ -387,11 +412,26 @@ impl ZedisValueSearch {
         self.filter_input.read(cx).value().trim().to_lowercase()
     }
 
-    fn filtered_matches<'a>(&'a self, filter: &str) -> Vec<&'a ValueMatch> {
-        self.matches
+    /// Refresh `filtered_cache` for `filter` (already lowercased). Keyed on
+    /// `(filter, matches_rev)`: plain repaints (hover, selection, preview
+    /// loads) reuse the cache; only typing in the filter box or a new result
+    /// round re-lowercases the keys.
+    fn ensure_filtered(&mut self, filter: &str) {
+        if self
+            .filtered_signature
+            .as_ref()
+            .is_some_and(|(f, rev)| f == filter && *rev == self.matches_rev)
+        {
+            return;
+        }
+        self.filtered_cache = self
+            .matches
             .iter()
-            .filter(|m| filter.is_empty() || m.key.to_lowercase().contains(filter))
-            .collect()
+            .enumerate()
+            .filter(|(_, m)| filter.is_empty() || m.key.to_lowercase().contains(filter))
+            .map(|(i, _)| i)
+            .collect();
+        self.filtered_signature = Some((filter.to_string(), self.matches_rev));
     }
 
     fn reason_label(&self, cx: &Context<Self>) -> SharedString {
@@ -562,8 +602,6 @@ impl ZedisValueSearch {
 
     fn render_results(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
-        let filter = self.filter_text(cx);
-        let filtered = self.filtered_matches(&filter);
 
         if self.matches.is_empty() {
             let msg = if self.running {
@@ -579,7 +617,7 @@ impl ZedisValueSearch {
                 .into_any_element();
         }
 
-        if filtered.is_empty() {
+        if self.filtered_cache.is_empty() {
             return div()
                 .p_4()
                 .child(
@@ -596,63 +634,108 @@ impl ZedisValueSearch {
         let active = cx.theme().list_active;
         let hover = cx.theme().table_hover;
         let border = cx.theme().border;
+
+        // Snapshot everything the row closure needs up front —
+        // `uniform_list`'s range callback is `'static`, so it renders from
+        // this owned copy instead of borrowing the view.
         let selected = self.selected.clone();
-        let mut list = v_flex().w_full();
-        for (ix, vm) in filtered.into_iter().enumerate() {
-            let is_stripe = ix % 2 != 0;
-            let is_selected = selected.as_deref() == Some(vm.key.as_str());
-            let key_click = vm.key.clone();
-            let type_click: SharedString = vm.key_type.clone().into();
-            let loc_click = vm.location.clone();
-            let key_type = KeyType::from(vm.key_type.as_str());
-            // A muted second line names where the needle matched (field /
-            // index / member); plain string values carry no location.
-            let loc_label: Option<SharedString> = match &vm.location {
-                MatchLocation::Value => None,
-                MatchLocation::Field(f) => Some(format!("{}: {f}", i18n_value_search(cx, "loc_field")).into()),
-                MatchLocation::Index(i) => Some(format!("[{i}]").into()),
-                MatchLocation::Member(m) => Some(format!("{}: {m}", i18n_value_search(cx, "loc_member")).into()),
-            };
-            let open_key = vm.key.clone();
-            list = list.child(
-                h_flex()
-                    .id(SharedString::from(format!("vs-row-{ix}")))
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .when(is_stripe && !is_selected, |this| this.bg(stripe))
-                    .when(is_selected, |this| this.bg(active))
-                    .when(!is_selected, |this| this.hover(move |s| s.bg(hover)))
-                    .on_click(cx.listener(move |this, _, _w, cx| {
-                        this.select_result(key_click.clone().into(), type_click.clone(), loc_click.clone(), cx);
-                    }))
-                    .child(KeyTypeBadge::new(key_type).plain(true))
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .child(Label::new(SharedString::from(vm.key.clone())).text_xs().truncate())
-                            .when_some(loc_label, |col, loc| {
-                                col.child(Label::new(loc).text_xs().text_color(muted).truncate())
-                            }),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("vs-open-row-{ix}")))
-                            .ghost()
-                            .small()
-                            .icon(IconName::ArrowRight)
-                            .tooltip(i18n_value_search(cx, "open"))
-                            .on_click(cx.listener(move |this, _, _w, cx| {
-                                this.open_key(open_key.clone().into(), cx);
-                            })),
-                    ),
-            );
-        }
+        let loc_field = i18n_value_search(cx, "loc_field");
+        let loc_member = i18n_value_search(cx, "loc_member");
+        let open_tooltip = i18n_value_search(cx, "open");
+        let rows: Arc<Vec<ResultRow>> = Arc::new(
+            self.filtered_cache
+                .iter()
+                .map(|&i| {
+                    let vm = &self.matches[i];
+                    ResultRow {
+                        key: SharedString::from(vm.key.clone()),
+                        key_type: SharedString::from(vm.key_type.clone()),
+                        location: vm.location.clone(),
+                        is_selected: selected.as_deref() == Some(vm.key.as_str()),
+                    }
+                })
+                .collect(),
+        );
+        let entity = cx.entity();
+
+        // Virtualized: only the rows inside the viewport build elements —
+        // the previous version materialised up to MAX_MATCHES interactive
+        // rows on every repaint.
+        let list = uniform_list("vs-results-list", rows.len(), move |range, _window, _cx| {
+            let mut out = Vec::with_capacity(range.len());
+            for ix in range {
+                let row = &rows[ix];
+                let is_stripe = ix % 2 != 0;
+                let is_selected = row.is_selected;
+                let key_type = KeyType::from(row.key_type.as_ref());
+                // A muted second line names where the needle matched (field /
+                // index / member); plain string values carry no location.
+                let loc_label: Option<SharedString> = match &row.location {
+                    MatchLocation::Value => None,
+                    MatchLocation::Field(f) => Some(format!("{loc_field}: {f}").into()),
+                    MatchLocation::Index(i) => Some(format!("[{i}]").into()),
+                    MatchLocation::Member(m) => Some(format!("{loc_member}: {m}").into()),
+                };
+                let select_entity = entity.clone();
+                let select_key = row.key.clone();
+                let select_type = row.key_type.clone();
+                let select_loc = row.location.clone();
+                let open_entity = entity.clone();
+                let open_key = row.key.clone();
+                out.push(
+                    h_flex()
+                        .id(SharedString::from(format!("vs-row-{ix}")))
+                        .w_full()
+                        // Fixed row height — `uniform_list` sizes every row
+                        // from the first; tall enough for the location line.
+                        .h(px(40.))
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .cursor_pointer()
+                        .when(is_stripe && !is_selected, |this| this.bg(stripe))
+                        .when(is_selected, |this| this.bg(active))
+                        .when(!is_selected, |this| this.hover(move |s| s.bg(hover)))
+                        .on_click(move |_, _w, cx| {
+                            let key = select_key.clone();
+                            let key_type = select_type.clone();
+                            let location = select_loc.clone();
+                            select_entity.update(cx, |this, cx| {
+                                this.select_result(key, key_type, location, cx);
+                            });
+                        })
+                        .child(KeyTypeBadge::new(key_type).plain(true))
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .flex_1()
+                                .child(Label::new(row.key.clone()).text_xs().truncate())
+                                .when_some(loc_label, |col, loc| {
+                                    col.child(Label::new(loc).text_xs().text_color(muted).truncate())
+                                }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("vs-open-row-{ix}")))
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowRight)
+                                .tooltip(open_tooltip.clone())
+                                .on_click(move |_, _w, cx| {
+                                    let key = open_key.clone();
+                                    open_entity.update(cx, |this, cx| this.open_key(key, cx));
+                                }),
+                        ),
+                );
+            }
+            out
+        })
+        .flex_1()
+        .min_h_0()
+        .w_full();
+
+        let mut col = v_flex().size_full().child(list);
         if self.truncated {
-            list = list.child(
+            col = col.child(
                 div().px_3().py_1().border_t_1().border_color(border).child(
                     Label::new(i18n_value_search(cx, "truncated"))
                         .text_xs()
@@ -660,7 +743,7 @@ impl ZedisValueSearch {
                 ),
             );
         }
-        list.into_any_element()
+        col.into_any_element()
     }
 
     fn render_preview(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -827,6 +910,10 @@ impl Render for ZedisValueSearch {
         let body: gpui::AnyElement = if !show_results_pane {
             self.render_empty_state(cx)
         } else {
+            // Refresh the filter cache once per frame; the results list and
+            // the shown/total label both read it.
+            let filter = self.filter_text(cx);
+            self.ensure_filtered(&filter);
             let results = self.render_results(cx);
             let preview = self.render_preview(cx);
             let filter_bar = h_flex()
@@ -839,8 +926,7 @@ impl Render for ZedisValueSearch {
                 .border_color(border)
                 .child(
                     Label::new(SharedString::from({
-                        let filter = self.filter_text(cx);
-                        let shown = self.filtered_matches(&filter).len();
+                        let shown = self.filtered_cache.len();
                         let total = self.matches.len();
                         if filter.is_empty() {
                             format!("{total}")
@@ -866,14 +952,9 @@ impl Render for ZedisValueSearch {
                         .border_color(border)
                         .child(filter_bar)
                         .child(
-                            div()
-                                .id("vs-results")
-                                .flex_1()
-                                .min_h_0()
-                                .w_full()
-                                .overflow_y_scroll()
-                                .track_scroll(&self.scroll)
-                                .child(results),
+                            // `uniform_list` scrolls itself — no outer
+                            // overflow/scroll-handle wrapper needed.
+                            div().id("vs-results").flex_1().min_h_0().w_full().child(results),
                         ),
                 )
                 .child(

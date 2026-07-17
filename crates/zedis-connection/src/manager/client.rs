@@ -817,8 +817,17 @@ impl RedisClient {
         // Keep the per-node grouping throughout so follow-up pipelines stay
         // routed to the master that owns the keys. Streams and module types
         // aren't searched.
+        //
+        // Invariant for all three phase-result zips below: `None` means "no
+        // pipeline was submitted for this node", which by construction only
+        // happens when that node's input list is empty — node *failures*
+        // (connect, timeout, server error) fail the whole
+        // `query_async_masters_pipeline` call instead of yielding `None`,
+        // so an `if let Some` here never silently drops real keys. The
+        // debug_asserts pin that contract against future changes.
         let mut candidates_per_node: Vec<Vec<(String, String)>> = Vec::with_capacity(keys_per_node.len());
         for (keys, types) in keys_per_node.into_iter().zip(type_results) {
+            debug_assert_eq!(types.is_some(), !keys.is_empty());
             let mut node_candidates = Vec::with_capacity(keys.len());
             if let Some(types) = types {
                 for (key, type_val) in keys.into_iter().zip(types) {
@@ -856,6 +865,7 @@ impl RedisClient {
 
         let mut survivors_per_node: Vec<Vec<(String, String)>> = Vec::with_capacity(candidates_per_node.len());
         for (candidates, lens) in candidates_per_node.into_iter().zip(len_results) {
+            debug_assert_eq!(lens.is_some(), !candidates.is_empty());
             let mut node_survivors = Vec::with_capacity(candidates.len());
             if let Some(lens) = lens {
                 for ((key, key_type), len_val) in candidates.into_iter().zip(lens) {
@@ -906,6 +916,7 @@ impl RedisClient {
         // mirroring the old per-key `unwrap_or_default` semantics.
         let mut matches = Vec::new();
         for (survivors, values) in survivors_per_node.into_iter().zip(value_results) {
+            debug_assert_eq!(values.is_some(), !survivors.is_empty());
             let Some(values) = values else {
                 continue;
             };

@@ -41,35 +41,40 @@ fn is_word_boundary(prev: Option<char>, cur: char) -> bool {
     }
 }
 
-/// Returns `Some(score)` when every char of `query` occurs in
-/// `candidate` in order (case-insensitive), else `None`. Higher score
-/// = better match. An empty query matches everything with score 0 so
-/// the palette can show the full list before any typing.
-pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+/// Lowercase a query once for scoring a whole batch of candidates —
+/// pairs with [`fuzzy_score_prepared`]. [`fuzzy_score`] re-derives this
+/// per call, which is wasteful when one keystroke scores thousands of
+/// keys.
+pub fn prepare_fuzzy_query(query: &str) -> Vec<char> {
+    query.chars().flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// [`fuzzy_score`] with the query pre-lowercased via
+/// [`prepare_fuzzy_query`]. Allocation-free per candidate: the
+/// word-boundary check tracks the previous char in a register instead
+/// of materialising the candidate as a `Vec<char>`.
+pub fn fuzzy_score_prepared(query: &[char], candidate: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-
-    let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-    let cand: Vec<char> = candidate.chars().collect();
 
     let mut qi = 0usize;
     let mut score = 0i32;
     let mut consecutive = false;
     let mut matched_any = false;
+    let mut prev: Option<char> = None;
 
-    for (idx, &cc) in cand.iter().enumerate() {
-        if qi >= q.len() {
+    for cc in candidate.chars() {
+        if qi >= query.len() {
             break;
         }
         // Compare case-insensitively without allocating per char.
         let cc_lower = cc.to_lowercase().next().unwrap_or(cc);
-        if cc_lower == q[qi] {
+        if cc_lower == query[qi] {
             score += MATCH_BASE;
             if consecutive {
                 score += CONSECUTIVE_BONUS;
             }
-            let prev = if idx == 0 { None } else { Some(cand[idx - 1]) };
             if is_word_boundary(prev, cc) {
                 score += WORD_START_BONUS;
             }
@@ -82,9 +87,18 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
                 score += LEADING_GAP_PENALTY;
             }
         }
+        prev = Some(cc);
     }
 
-    if qi == q.len() { Some(score) } else { None }
+    if qi == query.len() { Some(score) } else { None }
+}
+
+/// Returns `Some(score)` when every char of `query` occurs in
+/// `candidate` in order (case-insensitive), else `None`. Higher score
+/// = better match. An empty query matches everything with score 0 so
+/// the palette can show the full list before any typing.
+pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+    fuzzy_score_prepared(&prepare_fuzzy_query(query), candidate)
 }
 
 #[cfg(test)]

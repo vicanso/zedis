@@ -297,6 +297,13 @@ impl ZedisServerState {
         }
     }
 
+    /// Whether this state belongs to an inactive (background) workspace tab.
+    /// View-owned poll loops (e.g. the command-stats sampler) read this to
+    /// pause their own traffic while the tab is hidden.
+    pub fn is_background(&self) -> bool {
+        self.background
+    }
+
     /// Reset all scan-related state (clears keys, cursors, etc.)
     ///
     /// Called when switching servers or starting a new scan

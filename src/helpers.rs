@@ -43,7 +43,7 @@ pub use zedis_core::csv::build_csv;
 pub use zedis_core::diff::*;
 pub use zedis_core::env::is_development;
 pub use zedis_core::fs::*;
-pub use zedis_core::fuzzy::fuzzy_score;
+pub use zedis_core::fuzzy::{fuzzy_score, fuzzy_score_prepared, prepare_fuzzy_query};
 pub use zedis_core::hex::{bytes_to_hex_text, parse_hex_text};
 pub use zedis_core::jsonpath::{
     JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,

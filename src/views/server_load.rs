@@ -137,12 +137,20 @@ impl ZedisServerLoad {
             loop {
                 let conn = match this.update(cx, |this, cx| {
                     let s = this.server_state.read(cx);
-                    (s.server_id().to_string(), s.db())
+                    // A backgrounded workspace tab keeps this view alive —
+                    // don't keep streaming `INFO commandstats` (a payload
+                    // that scales with the number of distinct commands) for
+                    // a hidden panel. On re-activation the next tick samples
+                    // again; the delta then averages over the hidden window.
+                    if s.is_background() {
+                        return None;
+                    }
+                    Some((s.server_id().to_string(), s.db()))
                 }) {
                     Ok(c) => c,
                     Err(_) => break,
                 };
-                if !conn.0.is_empty() {
+                if let Some(conn) = conn.filter(|c| !c.0.is_empty()) {
                     let result = fetch_command_stats(conn.0, conn.1).await;
                     if this
                         .update(cx, |this, cx| {

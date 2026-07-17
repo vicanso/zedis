@@ -19,7 +19,7 @@
 
 use crate::connection::get_servers;
 use crate::db::get_favorites_manager;
-use crate::helpers::{ShortcutsAction, fuzzy_score};
+use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, prepare_fuzzy_query};
 use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
@@ -69,6 +69,10 @@ struct PaletteItem {
     hint: gpui::SharedString,
     /// String the fuzzy query is scored against.
     search: String,
+    /// Score already computed against the *current* query during
+    /// `build_items` (key rows are scored there to cap them) — `ranked`
+    /// reuses it instead of scoring the same string a second time.
+    prescore: Option<i32>,
     command: PaletteCommand,
 }
 
@@ -108,6 +112,16 @@ pub struct ZedisCommandPalette {
     /// selection silently moves off-screen and looks like it ran past
     /// the last element.
     scroll_handle: ScrollHandle,
+    /// Built candidate list + ranking, cached under `items_signature`:
+    /// `render` runs on every notify (arrow-key selection moves, hover)
+    /// but only a changed query — or a key-tree page landing mid-scan —
+    /// should re-clone the server list and re-score thousands of keys.
+    cached_items: Vec<PaletteItem>,
+    cached_order: Vec<usize>,
+    /// `(scope, query, key_tree_id)` the cache was built for; `None`
+    /// forces a rebuild (set on every open so favorites/server edits
+    /// from the previous session are re-read).
+    items_signature: Option<(Scope, String, String)>,
 }
 
 impl ZedisCommandPalette {
@@ -125,6 +139,9 @@ impl ZedisCommandPalette {
             focus_handle: cx.focus_handle(),
             pending_focus: false,
             scroll_handle: ScrollHandle::new(),
+            cached_items: Vec::new(),
+            cached_order: Vec::new(),
+            items_signature: None,
         }
     }
 
@@ -143,6 +160,9 @@ impl ZedisCommandPalette {
         if self.open {
             self.selected = 0;
             self.pending_focus = true;
+            // Rebuild on open: servers/favorites/route may have changed
+            // since the cache was last filled.
+            self.items_signature = None;
             // Snapshot the active server's favorites once per open — the
             // build_items run on every keystroke must stay DB-free.
             let server_id = self.server_state.read(cx).server_id().to_string();
@@ -215,6 +235,7 @@ impl ZedisCommandPalette {
                             label: format!("★ {key}").into(),
                             hint: gpui::SharedString::default(),
                             search: key.to_string(),
+                            prescore: None,
                             command: PaletteCommand::Key(key.clone()),
                         });
                     }
@@ -260,6 +281,7 @@ impl ZedisCommandPalette {
                         label: label.clone(),
                         hint: gpui::SharedString::default(),
                         search: label.to_string(),
+                        prescore: None,
                         command: PaletteCommand::Route(route),
                     });
                 }
@@ -268,6 +290,7 @@ impl ZedisCommandPalette {
                     label: shortcuts_label.clone(),
                     hint: gpui::SharedString::default(),
                     search: shortcuts_label.to_string(),
+                    prescore: None,
                     command: PaletteCommand::ShowShortcuts,
                 });
             }
@@ -286,6 +309,7 @@ impl ZedisCommandPalette {
                         label: server.name.clone().into(),
                         hint: hint.into(),
                         search,
+                        prescore: None,
                         command: PaletteCommand::Server(server.id.clone()),
                     });
                 }
@@ -296,18 +320,23 @@ impl ZedisCommandPalette {
                 // tree filter.
                 if in_server_context && !query.is_empty() {
                     let state = self.server_state.read(cx);
+                    // Lowercase the query once for the whole batch.
+                    let prepared = prepare_fuzzy_query(query);
                     let mut scored: Vec<(i32, gpui::SharedString, &'static str)> = state
                         .keys()
                         .iter()
-                        .filter_map(|(k, t)| fuzzy_score(query, k).map(|s| (s, k.clone(), t.as_str())))
+                        .filter_map(|(k, t)| fuzzy_score_prepared(&prepared, k).map(|s| (s, k.clone(), t.as_str())))
                         .collect();
                     scored.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
                     scored.truncate(KEY_RESULT_CAP);
-                    for (_, key, type_hint) in scored {
+                    for (score, key, type_hint) in scored {
                         items.push(PaletteItem {
                             label: key.clone(),
                             hint: type_hint.into(),
                             search: key.to_string(),
+                            // Carry the score so `ranked` doesn't fuzzy-match
+                            // the same key against the same query again.
+                            prescore: Some(score),
                             command: PaletteCommand::Key(key),
                         });
                     }
@@ -320,11 +349,17 @@ impl ZedisCommandPalette {
 
     /// Filter+rank `items` by `query`. Returns indices into `items`, best
     /// match first. Empty query keeps the natural (insertion) order.
-    fn ranked(&self, items: &[PaletteItem], query: &str) -> Vec<usize> {
+    fn ranked(items: &[PaletteItem], query: &str) -> Vec<usize> {
+        let prepared = prepare_fuzzy_query(query);
         let mut scored: Vec<(i32, usize)> = items
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| fuzzy_score(query, &it.search).map(|s| (s, i)))
+            .filter_map(|(i, it)| match it.prescore {
+                // Key rows were already scored against this same query in
+                // `build_items` — reuse instead of scoring twice.
+                Some(s) => Some((s, i)),
+                None => fuzzy_score_prepared(&prepared, &it.search).map(|s| (s, i)),
+            })
             .collect();
         // Stable sort, higher score first. Equal scores (e.g. empty
         // query → all 0) keep insertion order (sort_by_key is stable).
@@ -403,8 +438,22 @@ impl Render for ZedisCommandPalette {
         }
 
         let (scope, query_str) = self.parse_query(cx);
-        let items = self.build_items(scope, &query_str, cx);
-        let order = self.ranked(&items, &query_str);
+        // Rebuild + re-rank only when the inputs actually changed: the
+        // query text, the scope sigil, or the loaded key set (a scan page
+        // landing while the palette is open bumps `key_tree_id`). Plain
+        // notifies — arrow-key selection, hover — reuse the cache.
+        let key_tree_id = self.server_state.read(cx).key_tree_id().to_string();
+        let signature_current = self
+            .items_signature
+            .as_ref()
+            .is_some_and(|(s, q, id)| *s == scope && q == &query_str && id == &key_tree_id);
+        if !signature_current {
+            self.cached_items = self.build_items(scope, &query_str, cx);
+            self.cached_order = Self::ranked(&self.cached_items, &query_str);
+            self.items_signature = Some((scope, query_str.clone(), key_tree_id));
+        }
+        let items = &self.cached_items;
+        let order = &self.cached_order;
         let count = order.len();
         // Clamp selection to the filtered list.
         let selected = if count == 0 { 0 } else { self.selected.min(count - 1) };

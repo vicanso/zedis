@@ -302,6 +302,13 @@ impl ZedisTopology {
     }
 
     fn ensure_load_poll(&mut self, cx: &mut Context<Self>) {
+        // Poll only while the Load tab is actually showing — sampling every
+        // master on an interval for a hidden heatmap is wasted traffic. The
+        // task is dropped (cancelled) in `set_cluster_tab` when the user
+        // switches away, and re-created here on return.
+        if self.cluster_tab != ClusterTab::Load {
+            return;
+        }
         if self.load_poll_task.is_some() {
             return;
         }
@@ -364,6 +371,10 @@ impl ZedisTopology {
         self.cluster_tab = tab;
         if tab == ClusterTab::Load {
             self.ensure_load_poll(cx);
+        } else {
+            // Dropping the task cancels the poll loop (and its in-flight
+            // sample) the moment the heatmap is no longer visible.
+            self.load_poll_task = None;
         }
         cx.notify();
     }

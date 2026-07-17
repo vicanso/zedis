@@ -405,6 +405,23 @@ pub(crate) async fn query_async_masters_pipeline(
 /// instance only — they are not gossiped), so an ad-hoc connection
 /// to that specific host:port is the correct shape.
 pub async fn open_node_connection(server_name: &str, host_port: &str) -> Result<MultiplexedConnection> {
+    open_node_connection_inner(server_name, host_port, false).await
+}
+
+/// Cache-backed variant of [`open_node_connection`] for *recurring* per-node
+/// traffic — the Topology Load poll samples every master on an interval, and
+/// rebuilding a fresh TCP+auth (+TLS/SSH) handshake per node per tick is
+/// pure churn. The pooled `MultiplexedConnection` is shared and must not be
+/// used for connection-scoped state.
+pub async fn open_node_connection_cached(server_name: &str, host_port: &str) -> Result<MultiplexedConnection> {
+    open_node_connection_inner(server_name, host_port, true).await
+}
+
+async fn open_node_connection_inner(
+    server_name: &str,
+    host_port: &str,
+    use_cache: bool,
+) -> Result<MultiplexedConnection> {
     // rsplit so hostnames with colons in them (rare; technically only
     // IPv6 literals would have them, and those should arrive bracketed)
     // still parse — we take the LAST colon as the port separator.
@@ -417,5 +434,5 @@ pub async fn open_node_connection(server_name: &str, host_port: &str) -> Result<
     let mut config = get_server(server_name)?;
     config.host = host.to_string();
     config.port = port;
-    open_single_connection(&config, 0, false).await
+    open_single_connection(&config, 0, use_cache).await
 }

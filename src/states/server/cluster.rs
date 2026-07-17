@@ -35,9 +35,13 @@
 //!   * Reshard — for each slot: SETSLOT MIGRATING/IMPORTING on source
 //!     and target, MIGRATE keys, then SETSLOT NODE on every master.
 
-use crate::connection::{Capability, get_connection_manager, get_server, open_node_connection, plan_reshard_slots};
+use crate::connection::{
+    Capability, get_connection_manager, get_server, open_node_connection, open_node_connection_cached,
+    plan_reshard_slots,
+};
 use crate::error::Error;
 use crate::states::{ServerTask, ZedisServerState};
+use futures::future::try_join_all;
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use tracing::warn;
@@ -296,38 +300,46 @@ impl ZedisServerState {
 /// Fetch `INFO` memory/stats from each cluster master for the load heatmap.
 /// Runs outside `ZedisServerState::spawn` so the Topology view can poll
 /// without competing with the server-task busy gate.
+///
+/// This runs on a poll interval, so it is shaped for repetition: masters are
+/// sampled **concurrently** on **pooled** connections (a fresh TCP+auth
+/// handshake per master per tick was pure churn), and it fetches default
+/// `INFO` — the three fields read below live in the default sections, while
+/// `INFO all` additionally streamed the command-scaled stats just to be
+/// thrown away.
 pub async fn fetch_cluster_node_loads(
     server_id: &str,
     masters: &[(String, String, u32, usize)], // id, addr, slot_count, color_index
 ) -> Result<Vec<ClusterNodeLoad>, Error> {
-    let mut out = Vec::with_capacity(masters.len());
-    for (node_id, addr, slot_count, color_index) in masters {
-        let mut conn = open_node_connection(server_id, addr).await?;
-        let info: String = cmd("INFO").arg("all").query_async(&mut conn).await?;
-        let mut used_memory = 0u64;
-        let mut ops_per_sec = 0u64;
-        let mut connected_clients = 0u64;
-        for line in info.lines() {
-            if let Some((k, v)) = line.split_once(':') {
-                match k {
-                    "used_memory" => used_memory = v.parse().unwrap_or(0),
-                    "instantaneous_ops_per_sec" => ops_per_sec = v.parse().unwrap_or(0),
-                    "connected_clients" => connected_clients = v.parse().unwrap_or(0),
-                    _ => {}
+    let tasks = masters
+        .iter()
+        .map(|(node_id, addr, slot_count, color_index)| async move {
+            let mut conn = open_node_connection_cached(server_id, addr).await?;
+            let info: String = cmd("INFO").query_async(&mut conn).await?;
+            let mut used_memory = 0u64;
+            let mut ops_per_sec = 0u64;
+            let mut connected_clients = 0u64;
+            for line in info.lines() {
+                if let Some((k, v)) = line.split_once(':') {
+                    match k {
+                        "used_memory" => used_memory = v.parse().unwrap_or(0),
+                        "instantaneous_ops_per_sec" => ops_per_sec = v.parse().unwrap_or(0),
+                        "connected_clients" => connected_clients = v.parse().unwrap_or(0),
+                        _ => {}
+                    }
                 }
             }
-        }
-        out.push(ClusterNodeLoad {
-            node_id: node_id.clone().into(),
-            addr: addr.clone().into(),
-            used_memory,
-            ops_per_sec,
-            connected_clients,
-            slot_count: *slot_count,
-            color_index: *color_index,
+            Ok::<ClusterNodeLoad, Error>(ClusterNodeLoad {
+                node_id: node_id.clone().into(),
+                addr: addr.clone().into(),
+                used_memory,
+                ops_per_sec,
+                connected_clients,
+                slot_count: *slot_count,
+                color_index: *color_index,
+            })
         });
-    }
-    Ok(out)
+    try_join_all(tasks).await
 }
 
 /// Master ownership row used by the reshard planner / source mapper.

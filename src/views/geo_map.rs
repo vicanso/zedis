@@ -36,7 +36,7 @@ use crate::{
 use gpui::{
     BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, Window, bounds,
-    canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black,
+    canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt,
@@ -754,6 +754,7 @@ impl ZedisGeoMap {
 
     fn render_side_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let list_active = cx.theme().list_active;
         let mut col = v_flex().w(px(220.)).h_full().flex_none().gap_1().child(
             Label::new(i18n_geo_map(cx, "points"))
                 .text_xs()
@@ -761,43 +762,66 @@ impl ZedisGeoMap {
                 .text_color(muted),
         );
 
-        let mut list = v_flex().w_full().gap_0p5();
         if let Some(data) = self.data.as_ref() {
-            for (ix, p) in data.points.iter().enumerate() {
-                let active = self.hovered == Some(ix);
-                list = list.child(
-                    h_flex()
-                        .id(("geo-row", ix))
-                        .w_full()
-                        .gap_2()
-                        .items_baseline()
-                        .px_1()
-                        .rounded_md()
-                        .when(active, |s| s.bg(cx.theme().list_active))
-                        .hover(|s| s.bg(cx.theme().list_active))
-                        .cursor_pointer()
-                        .on_mouse_move(cx.listener(move |this, _, _window, cx| {
-                            if this.hovered != Some(ix) {
-                                this.hovered = Some(ix);
-                                cx.notify();
-                            }
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(Label::new(p.member.clone()).text_xs().truncate()),
-                        )
-                        .child(
-                            Label::new(format!("{:.3}, {:.3}", p.lon, p.lat))
-                                .text_xs()
-                                .text_color(muted),
-                        ),
-                );
-            }
+            // Virtualized: with up to GEO_CAP points, only the rows in the
+            // viewport build elements. That also makes the hover→notify
+            // cross-highlight (list row ↔ canvas point) cheap — a repaint
+            // rebuilds ~a screenful of rows, not the whole list. The range
+            // closure is `'static`, so it holds its own `Rc` of the points
+            // and reaches the view through its entity handle.
+            let points = data.points.clone();
+            let hovered = self.hovered;
+            let entity = cx.entity();
+            let list = uniform_list("geo-side-list", points.len(), move |range, _window, _cx| {
+                let mut out = Vec::with_capacity(range.len());
+                for ix in range {
+                    let p = &points[ix];
+                    let active = hovered == Some(ix);
+                    let entity = entity.clone();
+                    out.push(
+                        h_flex()
+                            .id(("geo-row", ix))
+                            .w_full()
+                            .gap_2()
+                            .items_baseline()
+                            .px_1()
+                            .rounded_md()
+                            .when(active, |s| s.bg(list_active))
+                            .hover(move |s| s.bg(list_active))
+                            .cursor_pointer()
+                            .on_mouse_move(move |_, _window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    if this.hovered != Some(ix) {
+                                        this.hovered = Some(ix);
+                                        cx.notify();
+                                    }
+                                });
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(Label::new(p.member.clone()).text_xs().truncate()),
+                            )
+                            .child(
+                                Label::new(format!("{:.3}, {:.3}", p.lon, p.lat))
+                                    .text_xs()
+                                    .text_color(muted),
+                            ),
+                    );
+                }
+                out
+            })
+            .flex_1()
+            .min_h_0()
+            .w_full();
+            col = col.child(list);
 
+            // Invalid members (no/zero coordinates) — typically a handful,
+            // so this block stays unvirtualized below the list, capped and
+            // scrollable on its own if it does grow.
             if !data.invalid.is_empty() {
-                list = list.child(
+                let mut invalid_list = v_flex().w_full().gap_0p5().child(
                     Label::new(i18n_geo_map(cx, "invalid"))
                         .text_xs()
                         .font_semibold()
@@ -805,7 +829,7 @@ impl ZedisGeoMap {
                         .pt_2(),
                 );
                 for (ix, member) in data.invalid.iter().enumerate() {
-                    list = list.child(
+                    invalid_list = invalid_list.child(
                         h_flex()
                             .id(("geo-invalid", ix))
                             .w_full()
@@ -813,17 +837,16 @@ impl ZedisGeoMap {
                             .child(Label::new(member.clone()).text_xs().text_color(muted).truncate()),
                     );
                 }
+                col = col.child(
+                    div()
+                        .id("geo-invalid-list")
+                        .flex_none()
+                        .max_h(px(160.))
+                        .overflow_y_scroll()
+                        .child(invalid_list),
+                );
             }
         }
-
-        col = col.child(
-            div()
-                .id("geo-side-list")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(list),
-        );
         col
     }
 }
