@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.1](https://github.com/vicanso/zedis/compare/v0.5.4..v0.6.1) - 2026-07-17
+## [0.6.2](https://github.com/vicanso/zedis/compare/v0.5.4..v0.6.2) - 2026-07-18
 
 ### ⛰️  Features
 
@@ -23,6 +23,7 @@
 ### 🐛 Bug Fixes
 
 - *(acl)* Restore the user editor — missing footer, inputs losing state - ([b0a594e](https://github.com/vicanso/zedis/commit/b0a594e20f0771d637c76e6739b8f10a5a3aaa14))
+- *(config)* Stop edit cards ballooning in the parameter grid - ([338f8e8](https://github.com/vicanso/zedis/commit/338f8e88ba6a9fc454964b8ed8f58b9e99769d2b))
 - *(editor)* Stop the key name collapsing to an ellipsis - ([addc659](https://github.com/vicanso/zedis/commit/addc659bec2f42cdb146fa6e3500ddd155e4d2b3))
 - *(focus)* Keep ⌘F working after workspace tab switches - ([7447d97](https://github.com/vicanso/zedis/commit/7447d97244350dfab21f3ff7803498a322a1340f))
 - *(tables)* Vertically center header text in all custom render_th - ([3071f26](https://github.com/vicanso/zedis/commit/3071f26fcfe39d38dba38640e4c03bd73707a3a9))
@@ -63,6 +64,7 @@
 - *(smoke)* Linux smoke was never green — drop the self-drive, go best-effort - ([ecf226f](https://github.com/vicanso/zedis/commit/ecf226f7f7891339ff2149890f0bf68811fa02e6))
 - *(smoke)* Self-drive frames in smoke mode; add per-push Linux gate - ([00010db](https://github.com/vicanso/zedis/commit/00010db703dcc0d5cb5272c18d45e4fa7afbd432))
 - *(test)* Run the workspace test suite in CI; lock tab-move arithmetic - ([6e6a909](https://github.com/vicanso/zedis/commit/6e6a90908b0add3863e0adf13b4d5f17f84e9362))
+- Version 0.6.1 - ([c32b053](https://github.com/vicanso/zedis/commit/c32b05333a13f18bddf66341b253490ebc13b29a))
 - Version 0.6.0 - ([a617f85](https://github.com/vicanso/zedis/commit/a617f85d4bb43349417956817e42d839e9067980))
 
 ### I18n
