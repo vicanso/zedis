@@ -1,12 +1,20 @@
 name: "Smoke"
-# Per-push first-frame smoke gate for Linux.
+# Per-push build + first-frame smoke gate.
 #
-# The nightly (publish.yml, 18:00 UTC) already builds Linux and runs the
-# same ZEDIS_SMOKE_TEST check, but a commit made during the day isn't
-# exercised until the next nightly — historically the first signal was a
-# tag build. This workflow closes that gap: every push to main builds the
-# release binary (same toolchain / features as publish) and boots it under
-# Xvfb + software Vulkan. No packaging, no uploads.
+# The nightly (publish.yml, 18:00 UTC) exercises all platforms, but a
+# commit made during the day isn't checked until the next nightly —
+# historically the first signal was a tag build. This closes that gap on
+# every push to main, with a job per concern:
+#
+# - macos: the real first-frame gate (hard). macOS is the primary user
+#   platform and its runners have a WindowServer, so ZEDIS_SMOKE_TEST is
+#   a reliable signal there — the same check publish.yml hard-gates.
+# - linux: primarily a cross-platform *build* gate (x11/wayland features
+#   and cfg(target_os) branches only compile here); its smoke step stays
+#   best-effort because the first-frame signal never fires under Xvfb +
+#   llvmpipe (see publish.yml).
+#
+# No packaging, no uploads; caches are shared with publish.yml's jobs.
 on:
   push:
     branches: ["main"]
@@ -37,6 +45,32 @@ env:
   RUST_TOOLCHAIN: 1.97.1
 
 jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin
+      - name: rust cache
+        # Same key as publish.yml's macos aarch64 job to share one cache.
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-build-aarch64-apple-darwin
+      - name: build
+        run: cargo build --release --features mimalloc
+      - name: smoke test (first frame must paint)
+        # Hard gate: exit 0 once the first frame paints, exit 2 if none
+        # does within 30s — the "window never appears" regression class.
+        timeout-minutes: 5
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: ./target/release/zedis
+
   linux:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
