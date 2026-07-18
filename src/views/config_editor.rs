@@ -30,7 +30,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState, NumberInput},
+    input::{Input, InputEvent, InputState},
     label::Label,
     notification::Notification,
     spinner::Spinner,
@@ -307,11 +307,11 @@ impl ZedisConfigEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter_state = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by key..."));
         let edit_state = cx.new(|cx| InputState::new(window, cx));
-        // Numeric values use a NumberInput (with ↑/↓ steppers) for a numeric
-        // feel, but the input is NOT pattern-restricted — many "numeric-looking"
-        // configs legitimately take spaces / units / multiple segments (e.g.
-        // `save 3600 1 300 100`, `maxmemory 100mb`), so hard-blocking keystrokes
-        // would trap the user. The steppers safely no-op on non-numeric values.
+        // Shared single-line field for values classified as numeric. Kept as a
+        // plain `InputState` (not `NumberInput`) so the edit card can pin a
+        // fixed control height — `NumberInput`'s internal `flex_1` ballooned
+        // the grid card. Values are still free text so multi-token configs
+        // (e.g. `save 3600 1`) remain editable if reclassified later.
         let number_state = cx.new(|cx| InputState::new(window, cx));
         let mut subscriptions = Vec::new();
 
@@ -604,6 +604,19 @@ impl ZedisConfigEditor {
 
         if self.editing_key.as_ref() == Some(&key) {
             let save_key = key.clone();
+            // Fixed control-row height. `Input` paints with `.size_full()` and
+            // `InputState` with `.flex_1()` / `.flex_grow_1()`; inside a CSS
+            // grid card those percentages can resolve against the scroll
+            // viewport (or the stretched grid track) instead of the control's
+            // natural line height — the card then balloons into a tall empty
+            // primary outline with the steppers at the bottom. Settings avoids
+            // this by parking `NumberInput` in a fixed-width box; we pin both
+            // width and height explicitly. 32px matches `Size::Medium` (`h_8`).
+            // Fixed line height for text fields only (`Size::Medium` → `h_8`).
+            // Bool / enum keep natural height so the checkbox and dropdown
+            // aren't clipped by `overflow_hidden`.
+            const EDIT_CONTROL_H: f32 = 32.;
+            let pin_control_h = matches!(kind, ConfigKind::Number | ConfigKind::Text);
             let editor = match kind {
                 ConfigKind::Enum(_) => self
                     .enum_select
@@ -618,23 +631,40 @@ impl ZedisConfigEditor {
                         cx.notify();
                     }))
                     .into_any_element(),
-                ConfigKind::Number => NumberInput::new(&self.number_state).w_full().into_any_element(),
+                // Prefer a plain `Input` over `NumberInput` here: NumberInput's
+                // root is itself an `h_flex().flex_1()`, which re-introduces the
+                // grow bug even when the outer wrapper is height-pinned. The
+                // steppers are nice-to-have; a single-line field is reliable.
+                // (Settings uses NumberInput only inside a fixed-width column
+                // of a horizontal row, not a vertical grid card.)
+                ConfigKind::Number => Input::new(&self.number_state)
+                    .w_full()
+                    .h(px(EDIT_CONTROL_H))
+                    .font_family(font_family.clone())
+                    .appearance(true)
+                    .into_any_element(),
                 ConfigKind::Text => Input::new(&self.edit_state)
                     .w_full()
+                    .h(px(EDIT_CONTROL_H))
                     .font_family(font_family.clone())
                     .appearance(true)
                     .into_any_element(),
             };
-            v_flex()
-                .flex_1()
+            // Same outer shape as the display card (`div`, not growing
+            // `v_flex().flex_1()`): content-sized, shared surface, primary
+            // border while editing.
+            div()
+                .id(SharedString::from(format!("config-card-edit-{key}")))
+                .w_full()
                 .min_w_0()
-                .gap_2()
                 .p_3()
                 .border_1()
                 .border_color(primary)
                 .rounded(radius)
+                .bg(card_bg)
                 .child(
                     h_flex()
+                        .w_full()
                         .items_center()
                         .justify_between()
                         .gap_2()
@@ -652,9 +682,17 @@ impl ZedisConfigEditor {
                                 .text_color(primary),
                         ),
                 )
-                .child(editor)
+                .child(
+                    div()
+                        .w_full()
+                        .mt_2()
+                        .when(pin_control_h, |this| this.h(px(EDIT_CONTROL_H)).overflow_hidden())
+                        .child(editor),
+                )
                 .child(
                     h_flex()
+                        .w_full()
+                        .mt_2()
                         .gap_2()
                         .child(
                             Button::new("config-save")
