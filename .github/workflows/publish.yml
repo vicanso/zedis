@@ -12,7 +12,7 @@ on:
 env:
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.95.0
+  RUST_TOOLCHAIN: 1.97.1
   APP_NAME: Zedis
 
 jobs:

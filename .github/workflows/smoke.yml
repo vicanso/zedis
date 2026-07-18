@@ -34,7 +34,7 @@ env:
   CARGO_TERM_COLOR: always
   # Keep in lockstep with publish.yml so this catches exactly what a
   # release build would hit.
-  RUST_TOOLCHAIN: 1.95.0
+  RUST_TOOLCHAIN: 1.97.1
 
 jobs:
   linux:

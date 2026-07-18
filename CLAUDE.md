@@ -12,7 +12,7 @@ Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](ht
 - Tests: `make test` (`cargo test --workspace`) — the sub-crates (zedis-core / zedis-connection / zedis-db) have their own suites, so a bare `cargo test` misses them. Run a subset by substring filter, e.g. `cargo test -p zedis-core fuzzy`, `cargo test config::`.
 - Run dev: `make dev` (`bacon run`); with logs: `make debug` (`RUST_LOG=DEBUG`).
 - Release: `make release` (`cargo build --release --features mimalloc`).
-- Toolchain: Rust **1.95.0**, edition 2024.
+- Toolchain: Rust **1.97.1**, edition 2024.
 
 Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.expect("…")` or proper matching in test code, never `.unwrap()`.
 
