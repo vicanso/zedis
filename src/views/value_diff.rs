@@ -26,7 +26,9 @@
 //! to editing; the diff view's purpose is *understanding the change*,
 //! not making one.
 
-use crate::helpers::{DiffOp, ValueDiffAction, format_duration, get_mono_font_family, line_diff, unix_ts};
+use crate::helpers::{
+    DiffOp, ValueDiffAction, format_duration, get_mono_font_family, humanize_keystroke, line_diff, unix_ts,
+};
 use crate::states::{ZedisGlobalStore, i18n_editor, json_merge_diff};
 // Sibling-relative path: `editor` is a private child of `views`, so
 // the crate-rooted path doesn't resolve. As siblings under the same
@@ -194,6 +196,9 @@ impl ZedisValueDiff {
                     .small()
                     .icon(IconName::Close)
                     .label(i18n_editor(cx, "diff_view_close"))
+                    // Esc closes too (`ValueDiffAction` in the ValueDiff
+                    // key context) — surface that on the visible control.
+                    .tooltip(humanize_keystroke("escape"))
                     .on_click(move |_, w, cx| on_close(w, cx)),
             )
     }

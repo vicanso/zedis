@@ -360,7 +360,16 @@ impl ZedisKeyTree {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                .placeholder(i18n_common(cx, "keyword_placeholder"))
+                // Placeholder carries the focus shortcut (⌘F / Ctrl+F via
+                // `humanize_keystroke`, matching `EditorAction::Search`'s
+                // `secondary-f` binding) so the affordance is discoverable
+                // right where it lands. Single-line — a `\n` in a
+                // placeholder panics the wrapped-lines cache (see CLAUDE.md).
+                .placeholder(format!(
+                    "{} ({})",
+                    i18n_common(cx, "keyword_placeholder"),
+                    humanize_keystroke("cmd-f")
+                ))
         });
         // initial focus
         keyword_state.update(cx, |state, cx| {

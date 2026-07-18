@@ -29,8 +29,8 @@ use crate::{
     error::Error,
     helpers::get_mono_font_family,
     states::{
-        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
-        i18n_common, i18n_functions,
+        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
+        escalate_dangerous_body, i18n_common, i18n_functions,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -756,7 +756,7 @@ impl ZedisFunctionEditor {
                             .ghost()
                             .small()
                             .icon(IconName::ArrowLeft)
-                            .tooltip(i18n_common(cx, "back_to_editor"))
+                            .tooltip(back_to_editor_tooltip(cx))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                     store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));

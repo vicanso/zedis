@@ -17,10 +17,10 @@ use crate::{
     assets::CustomIconName,
     connection::{Capability, DangerKind, get_connection_manager, get_server, get_servers},
     error::Error,
-    helpers::{ConfigEditAction, card_background, get_mono_font_family},
+    helpers::{ConfigEditAction, card_background, get_mono_font_family, humanize_keystroke},
     states::{
-        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common,
-        i18n_config_editor,
+        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
+        i18n_common, i18n_config_editor,
     },
     views::{ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
 };
@@ -739,6 +739,9 @@ impl ZedisConfigEditor {
                                 .ghost()
                                 .flex_1()
                                 .label(i18n_common(cx, "cancel"))
+                                // Esc cancels too (`ConfigEditAction` in the
+                                // ConfigEdit key context).
+                                .tooltip(humanize_keystroke("escape"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.editing_key = None;
                                     this.enum_select = None;
@@ -996,7 +999,7 @@ impl Render for ZedisConfigEditor {
                             .ghost()
                             .small()
                             .icon(IconName::ArrowLeft)
-                            .tooltip(i18n_common(cx, "back_to_editor"))
+                            .tooltip(back_to_editor_tooltip(cx))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                     store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));

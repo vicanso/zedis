@@ -22,8 +22,8 @@ use crate::helpers::{format_duration, get_mono_font_family};
 /// Supports sorting by IP, connected time, and idle time, and allows
 /// killing individual client connections via `CLIENT KILL ID`.
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props,
-    escalate_dangerous_body, i18n_clients_manager, i18n_common,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
+    dialog_button_props, escalate_dangerous_body, i18n_clients_manager, i18n_common,
 };
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
@@ -976,7 +976,7 @@ impl gpui::Render for ZedisClientsManager {
                                     .ghost()
                                     .small()
                                     .icon(IconName::ArrowLeft)
-                                    .tooltip(i18n_common(cx, "back_to_editor"))
+                                    .tooltip(back_to_editor_tooltip(cx))
                                     .on_click(|_, _w, cx| {
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                             store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));

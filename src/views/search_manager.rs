@@ -36,7 +36,8 @@ use crate::{
     error::Error,
     helpers::get_mono_font_family,
     states::{
-        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_search,
+        ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
+        i18n_common, i18n_search,
     },
     views::open_key_in_editor,
 };

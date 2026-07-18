@@ -17,8 +17,8 @@ use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_ma
 use crate::error::Error;
 use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands};
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, get_metrics_cache, i18n_common,
-    i18n_memory_analysis,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
+    get_metrics_cache, i18n_common, i18n_memory_analysis,
 };
 use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 /// Redis Memory Analysis viewer.

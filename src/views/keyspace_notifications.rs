@@ -28,8 +28,8 @@ use crate::connection::{Capability, get_connection_manager, get_server};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, content_area_width, dialog_button_props, i18n_common,
-    i18n_keyspace_notifications,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
+    dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
 use crate::views::open_key_in_editor;
 use ahash::AHashSet;
@@ -937,7 +937,7 @@ impl ZedisKeyspaceNotifications {
                             .ghost()
                             .small()
                             .icon(IconName::ArrowLeft)
-                            .tooltip(i18n_common(cx, "back_to_editor"))
+                            .tooltip(back_to_editor_tooltip(cx))
                             .on_click(|_, _w, cx| {
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                     store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));

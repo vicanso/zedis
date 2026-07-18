@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::ZedisGlobalStore;
+use crate::helpers::humanize_keystroke;
 use gpui::App;
 use gpui::SharedString;
 use rust_i18n::t;
@@ -20,6 +21,19 @@ use rust_i18n::t;
 pub fn i18n_common<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("common.{key}"), locale = locale).into()
+}
+
+/// Tooltip for the tool pages' back-to-editor button with the `Esc` shortcut
+/// appended — every tool page binds Esc to the same navigation
+/// (`NavAction::Back` in the `Workspace` context), so the hint lives here
+/// once instead of being repeated at every call site.
+pub fn back_to_editor_tooltip(cx: &App) -> SharedString {
+    format!(
+        "{} ({})",
+        i18n_common(cx, "back_to_editor"),
+        humanize_keystroke("escape")
+    )
+    .into()
 }
 
 pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> SharedString {

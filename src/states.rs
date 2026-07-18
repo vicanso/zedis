@@ -20,6 +20,7 @@ mod session;
 
 pub use crate::error::ConnectionErrorKind;
 pub use app::*;
+pub use i18n::back_to_editor_tooltip;
 pub use i18n::i18n_acl;
 pub use i18n::i18n_bitmap;
 pub use i18n::i18n_clients_manager;

@@ -18,7 +18,7 @@ use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-    content_area_width, escalate_dangerous_body, i18n_common, i18n_monitor, i18n_status_bar,
+    back_to_editor_tooltip, content_area_width, escalate_dangerous_body, i18n_common, i18n_monitor, i18n_status_bar,
 };
 /// Redis MONITOR live viewer.
 ///
@@ -729,7 +729,7 @@ impl Render for ZedisMonitor {
                                     .ghost()
                                     .small()
                                     .icon(IconName::ArrowLeft)
-                                    .tooltip(i18n_common(cx, "back_to_editor"))
+                                    .tooltip(back_to_editor_tooltip(cx))
                                     .on_click(|_, _w, cx| {
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                             store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
