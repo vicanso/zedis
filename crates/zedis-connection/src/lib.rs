@@ -33,6 +33,7 @@ mod functions;
 mod latency;
 mod lua_script;
 mod manager;
+mod multi_search;
 mod search;
 mod ssh_cluster_connection;
 mod ssh_stream;
@@ -67,6 +68,8 @@ pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
+pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
+
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,
     RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager, plan_reshard_slots,

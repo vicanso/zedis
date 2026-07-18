@@ -3,10 +3,11 @@ use crate::connection::{clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
-    EditorAction, MemuAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
-    WorkspaceTabAction, apply_fonts, download_and_verify, fetch_latest_release, focus_installer_ui,
-    get_or_create_config_dir, humanize_keystroke, init_logger, installer_requires_quit, is_app_store_build, logs_dir,
-    new_hot_keys, open_installer, register_extra_languages, unix_ts_millis, with_app_identity,
+    EditorAction, MemuAction, MultiSearchAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction,
+    UpdateAction, UpdateInfo, WorkspaceTabAction, apply_fonts, download_and_verify, fetch_latest_release,
+    focus_installer_ui, get_or_create_config_dir, humanize_keystroke, init_logger, installer_requires_quit,
+    is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages, unix_ts_millis,
+    with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -14,9 +15,9 @@ use crate::states::{
     i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
 };
 use crate::views::{
-    DialogCallback, ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar,
-    ZedisTitleBar, ZedisUpdateDialog, open_about_window, open_migration_import_window, open_settings_window,
-    open_trash_dialog,
+    DialogCallback, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette, ZedisShortcutsOverlay,
+    ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, open_about_window, open_migration_import_window,
+    open_settings_window, open_trash_dialog,
 };
 use gpui::{
     Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
@@ -129,6 +130,7 @@ pub struct Zedis {
     pending_new_tab: Option<(String, usize)>,
     command_palette: Entity<ZedisCommandPalette>,
     recent_keys_palette: Entity<ZedisRecentKeysPalette>,
+    multi_search: Entity<ZedisMultiSearch>,
     shortcuts_overlay: Entity<ZedisShortcutsOverlay>,
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
@@ -196,6 +198,7 @@ impl Zedis {
         let server_state = tabs[active_tab].content.read(cx).server_state();
         let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), window, cx));
         let recent_keys_palette = cx.new(|cx| ZedisRecentKeysPalette::new(server_state, window, cx));
+        let multi_search = cx.new(|cx| ZedisMultiSearch::new(window, cx));
         let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
         let global_state = cx.global::<ZedisGlobalStore>().state();
         cx.subscribe(&global_state, |this, _server_state, event, cx| {
@@ -316,6 +319,7 @@ impl Zedis {
             pending_new_tab: None,
             command_palette,
             recent_keys_palette,
+            multi_search,
             shortcuts_overlay,
             pending_notification: None,
             title_bar,
@@ -749,6 +753,12 @@ impl Zedis {
     /// it works regardless of focus, matching the command palette.
     pub fn toggle_recent_keys_palette(&mut self, cx: &mut Context<Self>) {
         self.recent_keys_palette.update(cx, |palette, cx| palette.toggle(cx));
+    }
+
+    /// Toggle the multi-database search palette (⌘⇧F). Global handler so
+    /// it works regardless of focus, matching the command palette.
+    pub fn toggle_multi_search(&mut self, cx: &mut Context<Self>) {
+        self.multi_search.update(cx, |palette, cx| palette.toggle(cx));
     }
 
     /// Toggle the keyboard-shortcuts overlay. Like the command palette
@@ -1267,6 +1277,7 @@ impl Render for Zedis {
             .child(self.command_palette.clone())
             // Recent-keys Quick Open (⌘P); same overlay model.
             .child(self.recent_keys_palette.clone())
+            .child(self.multi_search.clone())
             // Keyboard-shortcuts reference overlay (⌘/), same overlay
             // model as the palette; rendered last so it stacks on top.
             .child(self.shortcuts_overlay.clone());
@@ -1894,6 +1905,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cx.on_action(move |_: &RecentKeysAction, cx: &mut App| {
                         if let Some(view) = weak_zedis_recent.upgrade() {
                             view.update(cx, |zedis, cx| zedis.toggle_recent_keys_palette(cx));
+                        }
+                    });
+                    // Global (focus-independent) ⌘⇧F — multi-database search.
+                    let weak_zedis_multi_search = zedis_view.downgrade();
+                    cx.on_action(move |_: &MultiSearchAction, cx: &mut App| {
+                        if let Some(view) = weak_zedis_multi_search.upgrade() {
+                            view.update(cx, |zedis, cx| zedis.toggle_multi_search(cx));
                         }
                     });
                     // Global (focus-independent) ⌘/ handler — same

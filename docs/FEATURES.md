@@ -172,6 +172,11 @@ Full **TLS/SSL** (custom CA, client certs) and **SSH tunneling** (password, priv
 
 Each tab keeps its own connection and view state (key tree expansion, scroll, selection survive tab switches). The tab strip appears only with two or more tabs (max 8): click (or **⌘1–8**) activates, middle-click or × closes, drag reorders, and right-click offers close / close-others / close-to-the-right. Background tabs relax their heartbeat to one refresh per 30 seconds, and the open-tab list is restored on the next launch with background tabs reconnecting lazily on first activation.
 
+### Multi-Database Key Search
+**⌘⇧F — find a key across many connections at once.**
+
+An overlay that searches a key name across a chosen scope: every open tab's connection, one server group, or an explicit checkbox set of servers (with select-all; both the scope and the per-server scan limit are remembered). The cheap exact lookup runs first and shows instantly; if nothing matches exactly, a capped `SCAN` runs automatically — and when exact hits exist, the scan waits behind a button so the fast answer is never delayed. Clicking a hit jumps straight to that server, db, and key.
+
 ### Command Palette & Shortcuts
 **⌘K fuzzy navigation and a ⌘/ keyboard-shortcut reference.**
 

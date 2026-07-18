@@ -213,6 +213,20 @@ impl ZedisContent {
                     if connection_changed {
                         this.drop_editor_suite();
                     }
+                    // Multi-database search handoff: if the palette queued a
+                    // key for exactly this connection, select it now —
+                    // `select_key` loads the value through the connection
+                    // manager on its own, so it needn't wait for the scan.
+                    // Ordered *after* the suite drop so `KeySelected` (and
+                    // the ValueUpdated following the async load) land on the
+                    // rebuilt views, not on ones about to be dropped.
+                    let pending = cx.global::<ZedisGlobalStore>().clone().update(cx, |state, _| {
+                        state.take_multi_search_pending_key(server_id.as_ref(), *db)
+                    });
+                    if let Some(key) = pending {
+                        this.server_state
+                            .update(cx, |state, cx| state.select_key(key.into(), cx));
+                    }
                     // `select` flips `server_status` to Loading — re-render so
                     // the busy skeleton appears immediately (and clears later
                     // when ServerInfoUpdated fires below).

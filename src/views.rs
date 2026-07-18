@@ -42,6 +42,7 @@ mod memory_analysis;
 mod metrics;
 mod migration_window;
 mod monitor;
+mod multi_search;
 mod persistence;
 mod probabilistic_editor;
 mod proto_editor;
@@ -106,6 +107,7 @@ pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make
 pub(crate) use migration_window::dirs_default_directory;
 pub use migration_window::{open_migration_export_window, open_migration_import_window};
 pub use monitor::ZedisMonitor;
+pub use multi_search::ZedisMultiSearch;
 pub use persistence::ZedisPersistence;
 pub use probabilistic_editor::ZedisProbabilisticEditor;
 pub use proto_editor::ZedisProtoEditor;

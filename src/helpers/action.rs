@@ -56,6 +56,13 @@ pub enum PaletteAction {
     Toggle,
 }
 
+/// Multi-database search palette (⌘⇧F): search a key across a selected
+/// set of connections. Global, focus-independent — mirrors `PaletteAction`.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum MultiSearchAction {
+    Toggle,
+}
+
 /// Recent-keys palette (⌘P). Opens a Quick-Open style picker for the
 /// current connection's MRU keys. Handled by a global, focus-independent
 /// handler in `main.rs` (same model as [`PaletteAction`]).
@@ -269,6 +276,7 @@ pub fn shortcut_reference() -> &'static [ShortcutGroup] {
             items: &[
                 ("cmd-k", "command_palette"),
                 ("cmd-p", "recent_keys"),
+                ("cmd-shift-f", "multi_search"),
                 ("cmd-/", "keyboard_shortcuts"),
                 ("cmd-q", "quit"),
             ],
@@ -301,6 +309,9 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // Ctrl+W on the respective platforms.
         KeyBinding::new("secondary-w", MemuAction::Close, None),
         KeyBinding::new("secondary-k", PaletteAction::Toggle, None),
+        // Multi-database search — ⌘⇧F, deliberately adjacent to the
+        // key-tree filter's ⌘F ("search here" vs "search everywhere").
+        KeyBinding::new("secondary-shift-f", MultiSearchAction::Toggle, None),
         // Quick-open recent keys (Zed/VS Code ⌘P style). Global so it works
         // from tool pages and after the picker closes (focus-independent).
         KeyBinding::new("secondary-p", RecentKeysAction::Toggle, None),

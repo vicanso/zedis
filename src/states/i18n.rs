@@ -36,6 +36,11 @@ pub fn back_to_editor_tooltip(cx: &App) -> SharedString {
     .into()
 }
 
+pub fn i18n_multi_search<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("multi_search.{key}"), locale = locale).into()
+}
+
 pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("sidebar.{key}"), locale = locale).into()

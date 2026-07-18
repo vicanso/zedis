@@ -368,6 +368,23 @@ pub struct WindowPlacement {
     pub bounds: Bounds<Pixels>,
 }
 
+/// Persisted scope of the multi-database search palette (which
+/// connections a search fans out to). Only ids are stored for the
+/// explicit list — names/groups resolve live so renames don't break it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum MultiSearchScope {
+    /// Search every open workspace tab's connection. (Alias keeps configs
+    /// written by the pre-rename build parsing — a bad variant would fail
+    /// the whole `ZedisAppState` deserialize and reset the config.)
+    #[default]
+    #[serde(alias = "ActiveTab")]
+    OpenTabs,
+    /// Search every connection in one server group (by group name).
+    Group(String),
+    /// Search an explicit set of connections (server ids).
+    Servers(Vec<String>),
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     // Runtime route — the single source of truth for "where am I", including
@@ -419,6 +436,17 @@ pub struct ZedisAppState {
     max_key_tree_depth: Option<usize>,
     auto_expand_threshold: Option<usize>,
     key_scan_count: Option<usize>,
+    /// Multi-database search palette: which connections to search.
+    /// Persisted so the palette reopens with the last scope.
+    #[serde(default)]
+    multi_search_scope: MultiSearchScope,
+    /// Multi-database search palette: per-server SCAN result cap.
+    multi_search_scan_count: Option<usize>,
+    /// One-shot handoff from the multi-database search palette: once the
+    /// clicked hit's `(server, db)` connects, the editor selects this key.
+    /// Runtime only.
+    #[serde(skip)]
+    multi_search_pending_key: Option<(String, usize, String)>,
     max_truncate_length: Option<usize>,
     redis_connection_timeout: Option<Duration>,
     redis_response_timeout: Option<Duration>,
@@ -826,6 +854,39 @@ impl ZedisAppState {
     }
     pub fn key_scan_count(&self) -> usize {
         self.key_scan_count.unwrap_or(10_000)
+    }
+    pub fn multi_search_scope(&self) -> MultiSearchScope {
+        self.multi_search_scope.clone()
+    }
+    pub fn set_multi_search_scope(&mut self, scope: MultiSearchScope) {
+        self.multi_search_scope = scope;
+    }
+    pub fn multi_search_scan_count(&self) -> usize {
+        // Per-server result cap. Defaults low: the palette's primary path
+        // is the exact lookup; SCAN is discovery, and 10 hits per server
+        // is usually enough to spot the right key — raise it (persisted)
+        // when it isn't.
+        self.multi_search_scan_count.unwrap_or(10)
+    }
+    pub fn set_multi_search_scan_count(&mut self, count: usize) {
+        // 0 = "reset to default" (cleared input); otherwise clamp to a
+        // sane per-server range so a typo can't turn SCAN into a flood.
+        self.multi_search_scan_count = if count == 0 { None } else { Some(count.clamp(10, 5_000)) };
+    }
+    /// Arm the "select this key once its server connects" handoff.
+    pub fn set_multi_search_pending_key(&mut self, server_id: String, db: usize, key: String) {
+        self.multi_search_pending_key = Some((server_id, db, key));
+    }
+    /// Consume the pending selection if it matches the connection that
+    /// just came up; a mismatch leaves it armed (another select is
+    /// still in flight) — it's runtime-only state either way.
+    pub fn take_multi_search_pending_key(&mut self, server_id: &str, db: usize) -> Option<String> {
+        match &self.multi_search_pending_key {
+            Some((sid, sdb, _)) if sid == server_id && *sdb == db => {
+                self.multi_search_pending_key.take().map(|(_, _, key)| key)
+            }
+            _ => None,
+        }
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
         // 0 means "reset to default" (cleared input) — store None so the

@@ -725,6 +725,15 @@ impl RedisClient {
         }
     }
 
+    /// `TYPE` for a single key on the shared connection — answers "none"
+    /// when the key doesn't exist, which doubles as an existence probe
+    /// (used by the multi-database exact lookup).
+    pub async fn key_type(&self, key: &str) -> Result<String> {
+        let mut conn = self.connection.clone();
+        let key_type: String = cmd("TYPE").arg(key).query_async(&mut conn).await?;
+        Ok(key_type)
+    }
+
     /// Fetch `INFO commandstats`, aggregated across all master nodes on a
     /// cluster (where the reply is a per-node map) or the single node
     /// otherwise. Returns one [`CommandStat`] per command.
