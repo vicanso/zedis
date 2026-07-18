@@ -23,13 +23,14 @@ use crate::{
         i18n_sidebar, i18n_status_bar,
     },
 };
-use gpui::{Anchor, App, Context, Hsla, SharedString, Subscription, Window, div, prelude::*, rgb};
+use gpui::{Anchor, App, Context, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, rgb};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+    tooltip::Tooltip,
 };
 
 /// Centered title-bar identity for the active connection (hidden on Home).
@@ -339,6 +340,9 @@ impl Render for ZedisTitleBar {
                             Some(pct) => format!("{pct}%"),
                             None => format!("v{v}"),
                         };
+                        let dismiss_hover_bg = cx.theme().foreground.alpha(0.12);
+                        let dismiss_fg = cx.theme().muted_foreground;
+                        let dismiss_tooltip = i18n_status_bar(cx, "update_dismiss");
                         this.child(
                             Button::new("zedis-titlebar-update")
                                 .ghost()
@@ -352,6 +356,36 @@ impl Render for ZedisTitleBar {
                                 .tooltip(i18n_status_bar(cx, "update_available"))
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);
+                                })
+                                // Inline session-only dismiss (tab-pill pattern:
+                                // Button renders children after the label).
+                                // Clears the chip until the next check — the
+                                // persistent "skip this version" stays in the
+                                // update dialog's ×. Hidden while downloading:
+                                // the chip is the only progress surface then.
+                                // `stop_propagation` on mouse-down keeps the ×
+                                // from also triggering the outer download click.
+                                .when(download_progress.is_none(), |this| {
+                                    this.child(
+                                        div()
+                                            .id("zedis-titlebar-update-dismiss")
+                                            .flex_none()
+                                            .ml_0p5()
+                                            .p_0p5()
+                                            .rounded_sm()
+                                            .cursor_pointer()
+                                            .hover(move |s| s.bg(dismiss_hover_bg))
+                                            .tooltip(move |window, cx| {
+                                                Tooltip::new(dismiss_tooltip.clone()).build(window, cx)
+                                            })
+                                            .child(Icon::new(IconName::Close).xsmall().text_color(dismiss_fg))
+                                            .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                                cx.stop_propagation();
+                                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                    store.update(cx, |state, cx| state.set_available_update(None, cx));
+                                                });
+                                            }),
+                                    )
                                 }),
                         )
                     })
