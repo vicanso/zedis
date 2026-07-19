@@ -146,7 +146,8 @@ impl Render for ZedisKeyTree {
                     }
                 }
                 KeyTreeAction::RefreshAll => {
-                    this.handle_filter(cx);
+                    // Refresh keeps the expanded folders in place.
+                    this.handle_filter(false, cx);
                 }
                 KeyTreeAction::CollapseAllKeys => {
                     if !this.server_state.read(cx).can(Capability::CollapseTree) {
@@ -204,7 +205,9 @@ impl Render for ZedisKeyTree {
                     this.keyword_state.update(cx, |state, cx| {
                         state.set_value(keyword, window, cx);
                     });
-                    this.handle_filter(cx);
+                    // Picking a keyword (history / "search this prefix") is a
+                    // fresh query.
+                    this.handle_filter(true, cx);
                 }
                 KeyTreeAction::Clear => {
                     this.handle_clear_history(cx);

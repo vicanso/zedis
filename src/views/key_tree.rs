@@ -324,8 +324,8 @@ impl ZedisKeyTree {
                 }
                 ServerEvent::EditionActionTriggered(action) if action == &EditorAction::ReloadKeyTree => {
                     // Manual refresh (cmd-r / ⋯ menu): re-scan with the
-                    // current keyword + query mode.
-                    this.handle_filter(cx);
+                    // current keyword + query mode, keeping expanded folders.
+                    this.handle_filter(false, cx);
                 }
                 ServerEvent::KeySelected(key) => {
                     this.update_expand(key.clone(), cx);
@@ -393,7 +393,8 @@ impl ZedisKeyTree {
         // Subscribe to search input events (Enter key triggers filter)
         subscriptions.push(cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
             if let InputEvent::PressEnter { .. } = &event {
-                view.handle_filter(cx);
+                // Explicit search from the box → always a fresh query.
+                view.handle_filter(true, cx);
             }
         }));
 
@@ -737,7 +738,17 @@ impl ZedisKeyTree {
         export_to_file(cx, server_state, csv.into_bytes(), "keys.csv", success, error);
     }
 
-    fn handle_filter(&mut self, cx: &mut Context<Self>) {
+    /// Run a keyword filter. `force_new_query` marks a scan the user kicked
+    /// off from the search box (Enter / the search button / a history pick):
+    /// it is always treated as a brand-new query, so the tree fully collapses
+    /// and every lazy-load folder's expansion is dropped — even when the
+    /// keyword is unchanged. Only the refresh paths (⌘R / ⋯ "Refresh keys" /
+    /// auto-refresh) pass `false` to keep the expanded folders in place. This
+    /// is what stops an in-flight "Load more" from leaving `string:` expanded
+    /// but half-loaded after the user re-searches the same (e.g. empty) term:
+    /// a fresh global scan never restores a folder's per-prefix "Load more",
+    /// so the folder must reset to a clean, collapsed state instead.
+    fn handle_filter(&mut self, force_new_query: bool, cx: &mut Context<Self>) {
         // Don't trigger filter while already scanning
         let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
@@ -746,15 +757,17 @@ impl ZedisKeyTree {
         }
 
         let keyword = self.keyword_state.read(cx).value();
-        // Same keyword + query mode as the displayed tree ⇒ this is a
-        // refresh, not a new query: keep the folder-expanded state
-        // (the `KeyScanReset` handler consumes this flag).
+        // Same keyword + query mode as the displayed tree ⇒ a refresh, not a
+        // new query: keep the folder-expanded state (the `KeyScanReset` handler
+        // consumes this flag). An explicit search-box search (`force_new_query`)
+        // is never a refresh — it always collapses, so no folder is left
+        // expanded-but-half-loaded.
         // `last_scan` is owned by the `KeyScanFinished` handler (so the
         // *initial* load — which never calls `handle_filter` — also
         // seeds it). Here we only read it to tell a refresh apart from
         // a new query.
         let scan_sig = (keyword.clone(), self.state.query_mode);
-        self.state.preserve_expand_on_scan = self.state.last_scan.as_ref() == Some(&scan_sig);
+        self.state.preserve_expand_on_scan = !force_new_query && self.state.last_scan.as_ref() == Some(&scan_sig);
         self.state.keyword = keyword.clone();
 
         let server_id_clone = server_state.server_id().to_string();

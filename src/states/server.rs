@@ -240,6 +240,16 @@ pub struct ZedisServerState {
     /// Number of scan iterations performed
     scan_times: usize,
 
+    /// Monotonic scan-session counter, bumped by [`Self::reset_scan`]. Every
+    /// in-flight prefix scan captures the epoch at launch and bails on
+    /// completion if it no longer matches — so a lazy folder scan / "Load
+    /// more" still streaming when the user re-runs the search can't write its
+    /// stale keys and `incomplete_prefixes`/`loaded_prefixes` entries back
+    /// onto the freshly-reset tree. A keyword check alone can't catch this:
+    /// an empty-keyword browse re-searched with an empty keyword keeps the
+    /// same keyword, so only a generation bump distinguishes the sessions.
+    scan_epoch: u64,
+
     /// Unique ID for current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
 
@@ -325,6 +335,11 @@ impl ZedisServerState {
         self.scanning = false;
         self.scan_completed = false;
         self.scan_times = 0;
+        // New scan session: bump the epoch so any prefix scan still in flight
+        // from the previous session (a folder expand / "Load more" that hadn't
+        // finished) is recognised as stale and drops its result instead of
+        // re-injecting keys and resurrecting `incomplete_prefixes` entries.
+        self.scan_epoch = self.scan_epoch.wrapping_add(1);
         self.loaded_prefixes.clear();
         self.scanning_prefixes.clear();
         self.incomplete_prefixes.clear();

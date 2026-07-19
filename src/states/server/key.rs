@@ -42,6 +42,21 @@ use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+/// Per-page cursor/position state threaded through the recursive
+/// [`ZedisServerState::scan_prefix_page`] loop (grouped so the function
+/// stays under clippy's argument-count limit).
+struct ScanPrefixPage {
+    /// SCAN cursors to resume from; `None` on the first page.
+    cursors: Option<Vec<u64>>,
+    /// Zero-based page index within this batch (caps at `SCAN_PREFIX_MAX_PAGES`).
+    iteration: usize,
+    /// Matched keys accumulated so far in this batch.
+    loaded: usize,
+    /// Scan-session epoch captured at launch. A mismatch on completion means
+    /// the tree was reset (re-search / filter change) and the page is stale.
+    epoch: u64,
+}
+
 /// Best-effort stash of a key into the local recycle bin before deletion:
 /// `DUMP` + `PTTL`, framed into the redb trash table (24h retention).
 /// Every failure path only warns and falls through to a permanent delete —
@@ -487,7 +502,13 @@ impl ZedisServerState {
         // Mark this prefix as in-flight so the matching folder row shows an
         // inline spinner until the (up to 5-round) scan finishes.
         self.scanning_prefixes.insert(prefix.clone());
-        self.scan_prefix_page(self.server_id.clone(), prefix, None, 0, 0, cx);
+        let page = ScanPrefixPage {
+            cursors: None,
+            iteration: 0,
+            loaded: 0,
+            epoch: self.scan_epoch,
+        };
+        self.scan_prefix_page(self.server_id.clone(), prefix, page, cx);
     }
 
     /// Performs a single SCAN page for `scan_prefix`, inserting the matched keys
@@ -505,11 +526,15 @@ impl ZedisServerState {
         &mut self,
         server_id: SharedString,
         prefix: SharedString,
-        cursors: Option<Vec<u64>>,
-        iteration: usize,
-        loaded: usize,
+        page: ScanPrefixPage,
         cx: &mut Context<Self>,
     ) {
+        let ScanPrefixPage {
+            cursors,
+            iteration,
+            loaded,
+            epoch,
+        } = page;
         // Bail if the active server changed while paging.
         if self.server_id != server_id {
             return;
@@ -538,6 +563,18 @@ impl ZedisServerState {
                 Ok((keys, new_cursor, done))
             },
             move |this, result, cx| {
+                // Stale page from a previous scan session: the user re-ran the
+                // search (or changed the type filter) while this folder scan was
+                // still streaming. `reset_scan` already cleared the keys,
+                // `scanning_prefixes` and `incomplete_prefixes` and bumped the
+                // epoch — applying this result would re-inject the old prefix's
+                // keys and resurrect its `incomplete_prefixes`/`loaded_prefixes`
+                // entry (making the folder's "Load more" flip-flop). Drop it.
+                // A keyword check can't catch an empty→empty re-search; the epoch
+                // can. (`spawn_with_arg` already guards server/db switches.)
+                if this.scan_epoch != epoch {
+                    return;
+                }
                 let mut finished = true;
                 if let Ok((keys, new_cursor, done)) = result {
                     let batch_loaded = loaded + keys.len();
@@ -567,9 +604,12 @@ impl ZedisServerState {
                         this.scan_prefix_page(
                             server_id,
                             prefix.clone(),
-                            Some(new_cursor),
-                            iteration + 1,
-                            batch_loaded,
+                            ScanPrefixPage {
+                                cursors: Some(new_cursor),
+                                iteration: iteration + 1,
+                                loaded: batch_loaded,
+                                epoch,
+                            },
                             cx,
                         );
                         finished = false;
@@ -610,7 +650,13 @@ impl ZedisServerState {
         // Re-mark in-flight (spinner) and resume from the saved cursor with a
         // fresh page budget.
         self.scanning_prefixes.insert(prefix.clone());
-        self.scan_prefix_page(self.server_id.clone(), prefix, Some(cursors), 0, 0, cx);
+        let page = ScanPrefixPage {
+            cursors: Some(cursors),
+            iteration: 0,
+            loaded: 0,
+            epoch: self.scan_epoch,
+        };
+        self.scan_prefix_page(self.server_id.clone(), prefix, page, cx);
     }
 
     /// Force-refreshes keys under a prefix, bypassing all load caches.

@@ -473,7 +473,8 @@ impl ZedisKeyTree {
             .disabled(scanning)
             .icon(IconName::Search)
             .on_click(cx.listener(|this, _, _, cx| {
-                this.handle_filter(cx);
+                // Explicit search from the box → always a fresh query.
+                this.handle_filter(true, cx);
             }));
         // keyword input
         let keyword_input = Input::new(&self.keyword_state)
