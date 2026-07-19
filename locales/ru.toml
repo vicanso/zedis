@@ -1603,6 +1603,7 @@ restore_exists = "Не удалось восстановить: \"%{key}\" уж�
 restore_failed = "Не удалось восстановить: %{error}"
 
 [multi_search]
+title = "Поиск по базам"
 placeholder = "Имя ключа или шаблон…"
 scope_open_tabs = "Открытые вкладки"
 scope_group = "Группа"
@@ -1613,7 +1614,9 @@ scan_count = "Лимит сканирования"
 searching = "Поиск…"
 no_results = "Совпадений нет"
 no_targets = "В области нет подключений"
-load_scan = "Также сканировать по шаблону"
+load_scan = "Сканировать ещё"
 truncated = "Часть серверов достигла лимита сканирования"
 section_exact = "Точные совпадения"
 section_scan = "Совпадения сканирования"
+hint_idle = "Введите имя ключа и Enter. Сначала точные TYPE, иначе SCAN."
+hint_footer = "Лимит SCAN на сервер · Enter — поиск"

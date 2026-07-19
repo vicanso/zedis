@@ -1603,6 +1603,7 @@ restore_exists = "Wiederherstellen fehlgeschlagen: \"%{key}\" existiert bereits 
 restore_failed = "Wiederherstellen fehlgeschlagen: %{error}"
 
 [multi_search]
+title = "Multi-Datenbank-Suche"
 placeholder = "Schlüsselname oder Muster…"
 scope_open_tabs = "Geöffnete Tabs"
 scope_group = "Gruppe"
@@ -1613,7 +1614,9 @@ scan_count = "Scan-Limit"
 searching = "Suche läuft…"
 no_results = "Keine Treffer"
 no_targets = "Keine Verbindungen im Bereich"
-load_scan = "Zusätzlich nach Mustertreffern scannen"
+load_scan = "Weiter scannen"
 truncated = "Einige Server haben das Scan-Limit erreicht"
 section_exact = "Exakte Treffer"
 section_scan = "Scan-Treffer"
+hint_idle = "Schlüsselname eingeben und Enter. Exakte TYPE-Treffer zuerst; SCAN wenn nichts passt."
+hint_footer = "SCAN-Limit pro Server · Enter zum Suchen"

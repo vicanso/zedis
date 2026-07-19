@@ -1603,6 +1603,7 @@ restore_exists = "復元に失敗しました: \"%{key}\" は既にサーバー�
 restore_failed = "復元に失敗しました: %{error}"
 
 [multi_search]
+title = "複数データベース検索"
 placeholder = "キー名またはパターン…"
 scope_open_tabs = "開いているタブ"
 scope_group = "グループ"
@@ -1613,7 +1614,9 @@ scan_count = "スキャン上限"
 searching = "検索中…"
 no_results = "一致なし"
 no_targets = "対象の接続がありません"
-load_scan = "パターン一致もスキャンする"
+load_scan = "さらにスキャン"
 truncated = "一部のサーバーがスキャン上限に達しました"
 section_exact = "完全一致"
 section_scan = "スキャン一致"
+hint_idle = "キー名を入力して Enter。先に TYPE の完全一致、なければ SCAN。"
+hint_footer = "サーバーごとの SCAN 上限 · Enter で検索"

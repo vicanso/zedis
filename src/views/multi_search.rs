@@ -25,6 +25,10 @@
 //! (ids only, so renames don't break it). The per-server SCAN cap is
 //! persisted too. Clicking a hit connects to that server/db and selects
 //! the key through the pending-key handoff consumed in `content.rs`.
+//!
+//! Query + results survive close/reopen (in memory, per session): after
+//! jumping to one hit the palette reopens on the same list so the user can
+//! pick a different result without re-searching.
 
 use crate::components::KeyTypeBadge;
 use crate::connection::{
@@ -32,7 +36,7 @@ use crate::connection::{
 };
 use crate::states::{KeyType, MultiSearchScope, ZedisGlobalStore, i18n_multi_search, update_app_state_and_save_quiet};
 use gpui::{
-    Context, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription, Task, Window, div, prelude::*, px,
+    Context, Entity, FocusHandle, Hsla, KeyDownEvent, SharedString, Subscription, Task, Window, div, prelude::*, px,
     uniform_list,
 };
 use gpui_component::{
@@ -54,15 +58,6 @@ enum ScopeKind {
     OpenTabs,
     Group,
     Servers,
-}
-
-/// A line in the virtualized result list: a section header ("Exact
-/// matches" / "Scan matches") or a clickable hit. Headers share the
-/// uniform row height, which is what lets grouping ride `uniform_list`.
-#[derive(Clone)]
-enum DisplayRow {
-    Header(SharedString),
-    Hit(HitRow),
 }
 
 /// One result row (exact or scan hit) with everything the jump needs.
@@ -153,11 +148,15 @@ impl ZedisMultiSearch {
     /// Open (or close). Loads the persisted scope + scan cap and snapshots
     /// the server/group lists; input focus is deferred to `render` (the
     /// global action handler has no `Window`).
+    ///
+    /// The previous query and results are deliberately **kept**: jumping to
+    /// a hit closes the palette, and reopening it should show the same list
+    /// so the user can pick a different result without re-searching. A new
+    /// search (Enter) still clears everything via `start_search`.
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
         self.open = !self.open;
         if self.open {
             self.pending_focus = true;
-            self.clear_results();
             self.servers = get_servers()
                 .unwrap_or_default()
                 .into_iter()
@@ -453,6 +452,7 @@ impl ZedisMultiSearch {
 
     fn render_scope_row(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
+        let muted_bg = cx.theme().muted.opacity(0.35);
         let scope_button = |id: &'static str, label: SharedString, kind: ScopeKind, current: ScopeKind| {
             let button = Button::new(id).small().label(label);
             if kind == current {
@@ -461,10 +461,15 @@ impl ZedisMultiSearch {
                 button.ghost()
             }
         };
+        // Segmented control on a subtle rail so the three modes read as one
+        // control, not three loose buttons floating under the search field.
         let mut row = h_flex()
             .flex_wrap()
             .items_center()
-            .gap_1p5()
+            .gap_1()
+            .p_0p5()
+            .rounded_lg()
+            .bg(muted_bg)
             .child(
                 scope_button(
                     "multi-search-scope-open-tabs",
@@ -496,11 +501,12 @@ impl ZedisMultiSearch {
         if self.scope_kind == ScopeKind::Group {
             self.ensure_group_select(window, cx);
             row = match &self.group_select {
-                Some((select, _)) => row.child(div().w(px(200.)).child(select.clone())),
+                Some((select, _)) => row.child(div().w(px(180.)).ml_1().child(select.clone())),
                 None => row.child(
                     Label::new(i18n_multi_search(cx, "no_groups"))
                         .text_xs()
-                        .text_color(muted),
+                        .text_color(muted)
+                        .ml_1(),
                 ),
             };
         }
@@ -509,7 +515,9 @@ impl ZedisMultiSearch {
 
     fn render_server_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let all_selected = !self.servers.is_empty() && self.selected_servers.len() == self.servers.len();
-        let mut list = v_flex().gap_0p5().child(
+        // Wider gap than the previous `gap_0p5` — dense checkboxes felt glued
+        // together; `gap_2` matches the panel's vertical rhythm.
+        let mut list = v_flex().gap_2().child(
             Checkbox::new("multi-search-select-all")
                 .checked(all_selected)
                 .label(i18n_multi_search(cx, "select_all"))
@@ -540,10 +548,103 @@ impl ZedisMultiSearch {
                     })),
             );
         }
+        // Definite height (not `max_h`) so the picker scrolls — same scroll
+        // gotcha as elsewhere: `max_h` + overflow can clip without a range.
+        let picker_h = px(((self.servers.len() + 1) as f32 * 28.).min(180.));
         div()
             .id("multi-search-server-picker")
-            .max_h(px(160.))
+            .h(picker_h)
             .overflow_y_scroll()
+            .child(list)
+            .into_any_element()
+    }
+
+    /// One section (exact or scan): a compact natural-height header, then a
+    /// `uniform_list` of hits only. Headers used to share the list's row
+    /// height (`items_end` in a 44px slot), which left a dead band between
+    /// the scope tabs and "Exact matches".
+    fn render_hit_section(
+        &self,
+        section_id: &'static str,
+        title: SharedString,
+        hits: Vec<HitRow>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let hover = cx.theme().list_active;
+        // Same recipe as the key tree's leaf zebra (`key_tree/delegate.rs`):
+        // faint white-on-dark / black-on-light on odd indices so dense
+        // result lists stay scannable. Dark needs a higher alpha.
+        let is_dark = cx.theme().is_dark();
+        let stripe_bg = if is_dark {
+            Hsla::white().alpha(0.06)
+        } else {
+            Hsla::black().alpha(0.03)
+        };
+        // Two-line hit rows; definite `h` only (never `max_h` — CLAUDE.md).
+        const ROW_H: f32 = 40.;
+        let list_height = px((hits.len() as f32 * ROW_H).min(ROW_H * 8.));
+        let hits: Arc<Vec<HitRow>> = Arc::new(hits);
+        let entity = cx.entity();
+        // Bake the section into the ElementId strings — `(&str, &str)` is not
+        // a valid id tuple, and exact/scan lists must not share the same id.
+        let list_id: SharedString = format!("multi-search-{section_id}").into();
+        let row_prefix: SharedString = format!("multi-search-row-{section_id}").into();
+        let list = uniform_list(list_id, hits.len(), move |range, _window, _cx| {
+            let mut out = Vec::with_capacity(range.len());
+            for ix in range {
+                let row = &hits[ix];
+                let entity = entity.clone();
+                let row_for_click = row.clone();
+                let target: SharedString = format!("{} · db {}", row.server_name, row.db).into();
+                let row_id: SharedString = format!("{row_prefix}-{ix}").into();
+                // 2nd, 4th, … within this section (same leaf banding as key tree).
+                let is_stripe = ix % 2 == 1;
+                out.push(
+                    h_flex()
+                        .id(row_id)
+                        .w_full()
+                        .h(px(ROW_H))
+                        .items_center()
+                        .gap_2()
+                        .px_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .when(is_stripe, |this| this.bg(stripe_bg))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(move |_, window, cx| {
+                            let row = row_for_click.clone();
+                            entity.update(cx, |this, cx| this.execute(&row, window, cx));
+                        })
+                        .child(KeyTypeBadge::new(KeyType::from(row.key_type.as_ref())).plain(true))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0()
+                                .child(Label::new(row.key.clone()).text_sm().truncate())
+                                .child(Label::new(target).text_xs().text_color(muted).truncate()),
+                        ),
+                );
+            }
+            out
+        })
+        .h(list_height)
+        .w_full();
+        v_flex()
+            .w_full()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .px_1()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(Label::new(title).text_xs().font_semibold().text_color(muted)),
+            )
             .child(list)
             .into_any_element()
     }
@@ -556,91 +657,30 @@ impl ZedisMultiSearch {
             } else if self.scan_ran {
                 i18n_multi_search(cx, "no_results")
             } else {
-                SharedString::default()
+                // Idle: short how-to so the panel doesn't look like a blank box.
+                i18n_multi_search(cx, "hint_idle")
             };
-            if message.is_empty() {
-                return div().into_any_element();
-            }
             return div()
-                .p_3()
+                .w_full()
+                .px_1()
+                .py_2()
                 .child(Label::new(message).text_sm().text_color(muted))
                 .into_any_element();
         }
 
-        let hover = cx.theme().list_active;
-        // Group into sections: exact hits first under their own header,
-        // then scan hits under theirs. `rows` is already ordered
-        // exact-before-scan (pass 1 pushes before pass 2 appends), so a
-        // stable partition by the flag is a plain split.
-        let mut display: Vec<DisplayRow> = Vec::with_capacity(self.rows.len() + 2);
-        for (want_exact, header_key) in [(true, "section_exact"), (false, "section_scan")] {
-            let mut any = false;
-            for row in self.rows.iter().filter(|r| r.exact == want_exact) {
-                if !any {
-                    display.push(DisplayRow::Header(i18n_multi_search(cx, header_key)));
-                    any = true;
-                }
-                display.push(DisplayRow::Hit(row.clone()));
+        // Exact first, then scan — each section is header + list so the
+        // header stays content-height (no padded uniform-list slot).
+        let mut body = v_flex().w_full().gap_2();
+        for (want_exact, header_key, section_id) in [(true, "section_exact", "exact"), (false, "section_scan", "scan")]
+        {
+            let hits: Vec<HitRow> = self.rows.iter().filter(|r| r.exact == want_exact).cloned().collect();
+            if hits.is_empty() {
+                continue;
             }
+            let title: SharedString = format!("{} · {}", i18n_multi_search(cx, header_key), hits.len()).into();
+            body = body.child(self.render_hit_section(section_id, title, hits, cx));
         }
-        // `uniform_list` scrolls internally and needs a definite height —
-        // fit short lists to their content (rows × row height) and cap the
-        // rest, so a couple of exact hits don't leave a 300px blank gap
-        // above the "also scan" button (see the scroll gotcha in CLAUDE.md:
-        // never `max_h` here).
-        let list_height = px((display.len() as f32 * 36.).min(320.));
-        let display: Arc<Vec<DisplayRow>> = Arc::new(display);
-        let entity = cx.entity();
-        uniform_list("multi-search-results", display.len(), move |range, _window, _cx| {
-            let mut out = Vec::with_capacity(range.len());
-            for ix in range {
-                match &display[ix] {
-                    DisplayRow::Header(label) => out.push(
-                        h_flex()
-                            .id(("multi-search-header", ix))
-                            .w_full()
-                            .h(px(36.))
-                            .items_end()
-                            .px_2()
-                            .pb_1()
-                            .child(Label::new(label.clone()).text_xs().font_semibold().text_color(muted)),
-                    ),
-                    DisplayRow::Hit(row) => {
-                        let entity = entity.clone();
-                        let row_for_click = row.clone();
-                        let target: SharedString = format!("{} · db {}", row.server_name, row.db).into();
-                        out.push(
-                            h_flex()
-                                .id(("multi-search-row", ix))
-                                .w_full()
-                                .h(px(36.))
-                                .items_center()
-                                .gap_2()
-                                .px_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(hover))
-                                .on_click(move |_, window, cx| {
-                                    let row = row_for_click.clone();
-                                    entity.update(cx, |this, cx| this.execute(&row, window, cx));
-                                })
-                                .child(KeyTypeBadge::new(KeyType::from(row.key_type.as_ref())).plain(true))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(Label::new(row.key.clone()).text_sm().truncate()),
-                                )
-                                .child(Label::new(target).text_xs().text_color(muted)),
-                        );
-                    }
-                }
-            }
-            out
-        })
-        .h(list_height)
-        .w_full()
-        .into_any_element()
+        body.into_any_element()
     }
 }
 
@@ -653,8 +693,12 @@ impl Render for ZedisMultiSearch {
         if self.pending_focus {
             self.pending_focus = false;
             self.query.update(cx, |state, cx| {
-                state.set_value(SharedString::default(), window, cx);
+                // Keep the previous query (its results are still listed
+                // below) but select it whole, so typing immediately starts
+                // a fresh search while Enter re-runs the old one.
+                let len = state.value().len();
                 state.focus(window, cx);
+                state.set_selected_range(0..len, cx);
             });
             let count = cx.global::<ZedisGlobalStore>().read(cx).multi_search_scan_count();
             self.scan_count_input.update(cx, |state, cx| {
@@ -666,16 +710,23 @@ impl Render for ZedisMultiSearch {
         let panel_bg = theme.background;
         let border = theme.border;
         let muted = theme.muted_foreground;
+        let warning = theme.warning;
+        let danger = theme.danger;
         let radius_lg = theme.radius_lg;
+        let radius = theme.radius;
 
         // Stays visible *through* the scan (loading spinner + disabled)
         // so clicking it doesn't just make it vanish with no feedback;
         // it only leaves once the scan finished.
         let show_scan_button = self.has_exact && !self.scan_ran;
+        let has_footer_notes = self.truncated || !self.errors.is_empty();
 
         let panel = v_flex()
-            .w(px(680.))
-            .mt_20()
+            // Slightly narrower than before: the old 680px row left a dead
+            // middle between key and server; denser rows + 560px keep the
+            // eye on the list.
+            .w(px(560.))
+            .mt_16()
             .rounded(radius_lg)
             .border_1()
             .border_color(border)
@@ -684,54 +735,98 @@ impl Render for ZedisMultiSearch {
             .p_3()
             .gap_2()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // Title row — names the palette and surfaces Esc (the dim
+            // backdrop also closes, but a label helps discoverability).
             .child(
                 h_flex()
+                    .w_full()
                     .items_center()
-                    .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.query)))
-                    .child(
-                        Label::new(i18n_multi_search(cx, "scan_count"))
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                    // Same control size as the query input beside it — a
-                    // `.small()` box next to a regular one read as misaligned.
-                    .child(div().w(px(112.)).child(Input::new(&self.scan_count_input))),
+                    .justify_between()
+                    .child(Label::new(i18n_multi_search(cx, "title")).text_sm().font_semibold())
+                    .child(Label::new("Esc").text_xs().text_color(muted)),
             )
+            // Query is the only full-width primary control. Scan limit
+            // used to sit beside it and stole visual weight from typing.
+            .child(div().w_full().child(Input::new(&self.query)))
             .child(self.render_scope_row(window, cx))
             .when(self.scope_kind == ScopeKind::Servers, |this| {
                 this.child(self.render_server_picker(cx))
             })
             .child(self.render_results(cx))
-            // "Also scan" sits *below* the exact matches (scan hasn't run
-            // yet at this point, so every listed row is an exact hit).
-            .when(show_scan_button, |this| {
+            .when(has_footer_notes, |this| {
                 this.child(
-                    Button::new("multi-search-run-scan")
-                        .outline()
-                        // The icon slot is required for feedback: Button's
-                        // loading spinner renders by *replacing the icon*
-                        // (`when_some(self.icon, …)` in gpui-component), so a
-                        // label-only button would just grey out with no
-                        // spinner while the scan runs.
-                        .icon(IconName::Search)
-                        .label(i18n_multi_search(cx, "load_scan"))
-                        .loading(self.searching)
-                        .disabled(self.searching)
-                        .on_click(cx.listener(|this, _, _w, cx| this.run_scan(cx))),
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .when(self.truncated, |this| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(radius)
+                                    .border_1()
+                                    .border_color(warning.opacity(0.45))
+                                    .bg(warning.opacity(0.1))
+                                    .child(
+                                        Label::new(i18n_multi_search(cx, "truncated"))
+                                            .text_xs()
+                                            .text_color(warning),
+                                    ),
+                            )
+                        })
+                        .children(self.errors.iter().map(|e| {
+                            div()
+                                .w_full()
+                                .px_2()
+                                .py_1()
+                                .rounded(radius)
+                                .border_1()
+                                .border_color(danger.opacity(0.4))
+                                .bg(danger.opacity(0.08))
+                                .child(Label::new(e.clone()).text_xs().text_color(danger))
+                        })),
                 )
             })
-            .when(self.truncated, |this| {
-                this.child(
-                    Label::new(i18n_multi_search(cx, "truncated"))
-                        .text_xs()
-                        .text_color(cx.theme().warning),
-                )
-            })
-            .children(
-                self.errors
-                    .iter()
-                    .map(|e| Label::new(e.clone()).text_xs().text_color(cx.theme().danger)),
+            // Footer: scan limit (left) + "Also scan" or hint (right).
+            // Keeping the scan action on the same row as its limit avoids a
+            // full-width secondary button between the list and the settings.
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .pt_3()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        Label::new(i18n_multi_search(cx, "scan_count"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(div().w(px(72.)).child(Input::new(&self.scan_count_input).small()))
+                    .child(div().flex_1())
+                    .when(show_scan_button, |this| {
+                        this.child(
+                            Button::new("multi-search-run-scan")
+                                .small()
+                                .outline()
+                                // Icon required: Button's loading spinner
+                                // replaces the icon slot, not the label.
+                                .icon(IconName::Search)
+                                .label(i18n_multi_search(cx, "load_scan"))
+                                .loading(self.searching)
+                                .disabled(self.searching)
+                                .on_click(cx.listener(|this, _, _w, cx| this.run_scan(cx))),
+                        )
+                    })
+                    .when(!show_scan_button, |this| {
+                        this.child(
+                            Label::new(i18n_multi_search(cx, "hint_footer"))
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                    }),
             );
 
         div()
@@ -741,6 +836,8 @@ impl Render for ZedisMultiSearch {
             .size_full()
             .flex()
             .justify_center()
+            // Top-align so the panel stays content-sized (default stretch
+            // would pull it to half the window — same gotcha as the ⌘K palette).
             .items_start()
             .bg(gpui::hsla(0., 0., 0., 0.4))
             .track_focus(&self.focus_handle)

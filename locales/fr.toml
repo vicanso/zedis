@@ -1604,6 +1604,7 @@ restore_exists = "Échec de la restauration : \"%{key}\" existe déjà sur le se
 restore_failed = "Échec de la restauration : %{error}"
 
 [multi_search]
+title = "Recherche multi-bases"
 placeholder = "Nom de clé ou motif…"
 scope_open_tabs = "Onglets ouverts"
 scope_group = "Groupe"
@@ -1614,7 +1615,9 @@ scan_count = "Limite de scan"
 searching = "Recherche…"
 no_results = "Aucune correspondance"
 no_targets = "Aucune connexion dans la portée"
-load_scan = "Scanner aussi les correspondances de motif"
+load_scan = "Scanner plus"
 truncated = "Certains serveurs ont atteint la limite de scan"
 section_exact = "Correspondances exactes"
 section_scan = "Correspondances du scan"
+hint_idle = "Saisissez un nom de clé puis Entrée. Correspondances TYPE d’abord ; SCAN si rien."
+hint_footer = "Limite SCAN par serveur · Entrée pour chercher"
