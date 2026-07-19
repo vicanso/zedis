@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Zedis — Native, GPU-accelerated Redis GUI</title>
+    <title>Zedis — Fast native Redis GUI &amp; Redis Insight alternative</title>
     <meta
       name="description"
-      content="Zedis is a blazing-fast, native Redis GUI built with Rust and GPUI. Browse millions of keys, understand your data, and stay safe on production."
+      content="A native Redis GUI that opens million-key databases without freezing. Auto-decodes JSON, Protobuf and compressed values, handles clusters, and imports your Redis Insight connections in one paste."
     />
-    <meta property="og:title" content="Zedis — Native Redis GUI" />
+    <meta property="og:title" content="Zedis — Fast native Redis GUI" />
     <meta
       property="og:description"
-      content="GPU-accelerated Redis client. Native performance, smart viewers, live metrics, privacy-first."
+      content="Opens million-key Redis databases without freezing. Smart value decoding, cluster-aware, and one-paste Redis Insight import. Native, GPU-accelerated, no telemetry."
     />
     <meta property="og:type" content="website" />
     <meta
@@ -76,7 +76,7 @@
     <main>
       <section class="hero">
         <div class="wrap">
-          <h1>Native Redis GUI.<br />Blazingly fast.</h1>
+          <h1>Opens your million-key<br />database without the spinner.</h1>
           <p class="tagline">
             Built with Rust and GPUI (the same engine as
             <a href="https://zed.dev" target="_blank" rel="noopener">Zed</a>).
@@ -126,11 +126,20 @@
         </div>
       </section>
 
+      <section class="migrate">
+        <div class="wrap">
+          <p class="migrate-banner">
+            <strong>🔄 Already on Redis Insight?</strong>
+            Paste its database export and every connection migrates in at once — no re-entering hosts and passwords one by one.
+          </p>
+        </div>
+      </section>
+
       <section id="why" class="alt">
         <div class="wrap">
           <h2 class="section-title">Why Zedis?</h2>
           <p class="section-sub">
-            Tired of Electron clients that freeze on big keys or burn gigabytes of RAM for a JSON string? So were we.
+            Tired of clients that freeze on big keys, burn gigabytes of RAM for a JSON string, fumble cluster mode, or show your compressed and binary values as garbled bytes? So were we.
           </p>
           <div class="why-grid">
             <div class="why-card">

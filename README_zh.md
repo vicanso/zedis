@@ -3,7 +3,7 @@
 <h1 align="center">Zedis</h1>
 
 <p align="center">
-  <strong>一个使用 Rust 🦀 和 GPUI ⚡️ 构建的高性能、GPU 加速的 Redis 客户端</strong>
+  <strong>能打开你那个百万级 key 的库而不转圈的 Redis 客户端 —— 原生、GPU 加速,由 Rust 🦀 和 GPUI ⚡️ 驱动</strong>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 
 ## 🤔 为什么选择 Zedis？
 
-厌倦了那些仅仅为了显示一个 JSON 字符串就吃掉几 GB 内存的 Electron Redis 客户端，或者在你不小心点击了一个包含 10 万个元素的键时直接卡死？我们也有同感。
+厌倦了那些仅仅为了显示一个 JSON 字符串就吃掉几 GB 内存、点开一个 10 万元素的键就直接卡死、集群模式操作处处别扭、把压缩和二进制 value 显示成一堆乱码的 Electron Redis 客户端？我们也有同感。
 
 **Zedis** 专为追求原生性能的开发者而生，从零开始打造。由 **GPUI**（[Zed Editor](https://zed.dev) 背后同款渲染引擎）驱动，即便在浏览超大数据库时，Zedis 也能以极低的内存占用，带来流畅丝滑的 60+ FPS 原生体验。
 
@@ -33,6 +33,9 @@
 - 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥加密存储、破坏性操作对生产环境升级确认措辞。
 - 🌐 **连接一切** —— TLS/SSL、SSH 隧道、Cluster/Sentinel、Redis Insight 导入，以及 8 种界面语言。
 - ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、Batch 模式、跨服务器复制/对比。
+
+> ### 🔄 已经在用 Redis Insight?
+> **粘贴它导出的数据库配置,所有连接一次迁入** —— 不用一个个重填地址、端口和密码。花大约一分钟,就能拿你真实的连接试试 Zedis,快不快自己判断。
 
 ## 📸 截图
 

@@ -297,6 +297,28 @@ section.alt {
   font-size: 0.95rem;
 }
 
+/* —— Redis Insight migration strip (below the hero) —— */
+
+.migrate {
+  padding: 1rem 0 0.25rem;
+}
+
+.migrate-banner {
+  margin: 0;
+  padding: 0.9rem 1.25rem;
+  background: var(--accent-dim);
+  border: 1px solid rgba(91, 143, 217, 0.3);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.migrate-banner strong {
+  color: var(--accent);
+}
+
 /* —— Why —— */
 
 .why-grid {

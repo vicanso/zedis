@@ -3,7 +3,7 @@
 <h1 align="center">Zedis</h1>
 
 <p align="center">
-  <strong>A High-Performance, GPU-Accelerated Redis GUI Client Built with Rust 🦀 and GPUI ⚡️</strong>
+  <strong>The Redis GUI that opens your million-key database without the spinner — native, GPU-accelerated with Rust 🦀 and GPUI ⚡️</strong>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 
 ## 🤔 Why Zedis?
 
-Tired of Electron-based Redis clients that eat gigabytes of RAM just to display a JSON string, or freeze entirely when you accidentally click a key with 100,000 elements? We were too.
+Tired of Electron-based Redis clients that eat gigabytes of RAM just to display a JSON string, freeze the instant you open a key with 100,000 elements, turn cluster mode into a chore, or render your compressed and binary values as garbled bytes? We were too.
 
 **Zedis** is built from the ground up for developers who demand native performance. Powered by **GPUI** (the same rendering engine behind the [Zed Editor](https://zed.dev)), Zedis delivers a native, buttery-smooth 60+ FPS experience with a minimal memory footprint — even when navigating massive databases.
 
@@ -33,6 +33,9 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels, Cluster/Sentinel, Redis Insight import, and 8 UI languages.
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, batch mode, and cross-server copy/diff.
+
+> ### 🔄 Already using Redis Insight?
+> **Paste its database export and every connection lands at once** — no re-entering hosts, ports, and passwords one by one. Point Zedis at your real setup in about a minute, then judge the speed for yourself.
 
 ## 📸 Screenshots
 

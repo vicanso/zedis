@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Zedis — 原生 GPU 加速 Redis 客户端</title>
+    <title>Zedis — 高速原生 Redis 客户端 / Redis Insight 替代品</title>
     <meta
       name="description"
-      content="Zedis 是使用 Rust 与 GPUI 构建的高性能原生 Redis GUI。百万级键流畅浏览，智能数据查看，隐私优先。"
+      content="打得开百万级 key 的库而不卡死的原生 Redis 客户端。自动解码 JSON、Protobuf 与压缩值，支持集群，并能一次粘贴导入你的 Redis Insight 连接。"
     />
-    <meta property="og:title" content="Zedis — 原生 Redis GUI" />
+    <meta property="og:title" content="Zedis — 高速原生 Redis 客户端" />
     <meta
       property="og:description"
-      content="GPU 加速的 Redis 客户端。原生性能、智能查看器、实时指标、隐私优先。"
+      content="打开百万级 key 的库不卡死。智能解码 value、集群友好、一次粘贴导入 Redis Insight 连接。原生 GPU 加速，无遥测。"
     />
     <meta property="og:type" content="website" />
     <meta
@@ -61,7 +61,7 @@
     <main>
       <section class="hero">
         <div class="wrap">
-          <h1>原生 Redis GUI<br />极速流畅</h1>
+          <h1>打得开你那个<br />百万级 key 的库,还不卡死</h1>
           <p class="tagline">
             使用 Rust 与 GPUI（与
             <a href="https://zed.dev" target="_blank" rel="noopener">Zed Editor</a>
@@ -111,11 +111,20 @@
         </div>
       </section>
 
+      <section class="migrate">
+        <div class="wrap">
+          <p class="migrate-banner">
+            <strong>🔄 已经在用 Redis Insight?</strong>
+            粘贴它导出的数据库配置，所有连接一次迁入 —— 不用一个个重填地址和密码。
+          </p>
+        </div>
+      </section>
+
       <section id="why" class="alt">
         <div class="wrap">
           <h2 class="section-title">为什么选 Zedis？</h2>
           <p class="section-sub">
-            厌倦了 Electron 客户端在大 key 上卡死、或者显示一个 JSON 就吃掉数 GB 内存？我们也是。
+            厌倦了客户端在大 key 上卡死、显示一个 JSON 就吃掉数 GB 内存、集群模式操作处处别扭、把压缩和二进制 value 显示成一堆乱码？我们也是。
           </p>
           <div class="why-grid">
             <div class="why-card">
