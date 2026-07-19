@@ -62,7 +62,6 @@ impl ListDelegate for KeyTreeDelegate {
         // Select event routes the click to `load_more_prefix` (see
         // `select_item_by_index`).
         if entry.load_more_prefix.is_some() {
-            let primary = cx.theme().primary;
             let muted = cx.theme().muted_foreground;
             let loaded_count = entry.children_count;
             let label = entry.label.clone();
@@ -77,9 +76,17 @@ impl ListDelegate for KeyTreeDelegate {
                         // folder — centering it made nested folders' stacked
                         // "Load more" rows indistinguishable.
                         .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
-                        .text_color(primary)
-                        .child(Icon::new(CustomIconName::ChevronsDown))
-                        .child(Label::new(label).text_sm().text_color(primary).text_ellipsis())
+                        // Same as kv-table headers: body foreground + bold mono
+                        // (no primary accent). System UI fonts often don't
+                        // paint BOLD without a real family face.
+                        .child(Icon::new(CustomIconName::ChevronsDown).text_color(cx.theme().foreground))
+                        .child(
+                            Label::new(label)
+                                .text_sm()
+                                .font_family(get_mono_font_family())
+                                .font_weight(FontWeight::BOLD)
+                                .text_ellipsis(),
+                        )
                         // Loaded-so-far count at the right edge, mirroring the
                         // folder rows' count column (bare number, no wording).
                         .when(loaded_count > 0, |this| {

@@ -27,7 +27,7 @@ use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
     helpers::format_duration,
-    states::{KeyType, RedisValue, ZedisServerState},
+    states::{KeyType, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -242,13 +242,13 @@ impl ZedisHashEditor {
         };
 
         let mut columns = vec![
-            KvTableColumn::new("Field", Some(field_width)),
-            KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
+            KvTableColumn::new(i18n_kv_table(cx, "field").as_ref(), Some(field_width)),
+            KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref()).field_type(ZedisFormFieldType::Editor),
         ];
         if supports_field_ttl {
             // TTL column: shows seconds remaining (empty = no expiry). Optional
             // so the add/edit form never forces a TTL.
-            columns.push(KvTableColumn::new("TTL(s)", Some(120.)).optional());
+            columns.push(KvTableColumn::new(i18n_kv_table(cx, "ttl_seconds").as_ref(), Some(120.)).optional());
         }
 
         let table_state = cx.new(|cx| ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx));

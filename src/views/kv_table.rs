@@ -279,7 +279,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     this.total_count = fetcher.count();
 
                     // Check if columns changed (e.g., Stream with new fields)
-                    if let Some(new_columns) = fetcher.columns() {
+                    if let Some(new_columns) = fetcher.columns(cx) {
                         let columns_changed = new_columns.len() != this.columns.len()
                             || new_columns
                                 .iter()

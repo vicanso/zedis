@@ -428,6 +428,11 @@ add_value_success_tips = "フィールドを追加しました。確認するに
 update_exist_field_value_success_tips = "フィールド値を更新しました。"
 
 [kv_table]
+field = "フィールド"
+value = "値"
+score = "スコア"
+entry_id = "エントリ ID"
+ttl_seconds = "TTL(秒)"
 search_tooltip = "増分スキャン（SCAN）を開始"
 add_value_tooltip = "新しい値を追加"
 info_tooltip = "ストリーム情報を表示 (XINFO GROUPS)"

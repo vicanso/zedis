@@ -428,6 +428,11 @@ add_value_success_tips = "Campo adicionado. Pode ser necessário atualizar para 
 update_exist_field_value_success_tips = "Valor do campo atualizado."
 
 [kv_table]
+field = "Campo"
+value = "Valor"
+score = "Pontuação"
+entry_id = "ID da entrada"
+ttl_seconds = "TTL(s)"
 search_tooltip = "Iniciar varredura incremental (SCAN)"
 add_value_tooltip = "Adicionar novo valor"
 info_tooltip = "Mostrar info do stream (XINFO GROUPS)"

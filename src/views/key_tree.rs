@@ -36,8 +36,8 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    Action, Anchor, App, AppContext, ClipboardItem, Entity, FocusHandle, Focusable, Hsla, ScrollStrategy, SharedString,
-    Subscription, Task, Window, div, prelude::*, px, rgb,
+    Action, Anchor, App, AppContext, ClipboardItem, Entity, FocusHandle, Focusable, FontWeight, Hsla, ScrollStrategy,
+    SharedString, Subscription, Task, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,

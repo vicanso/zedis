@@ -428,6 +428,11 @@ add_value_success_tips = "Champ ajouté. Vous devrez peut-être actualiser pour 
 update_exist_field_value_success_tips = "Valeur du champ mise à jour."
 
 [kv_table]
+field = "Champ"
+value = "Valeur"
+score = "Score"
+entry_id = "ID d'entrée"
+ttl_seconds = "TTL(s)"
 search_tooltip = "Démarrer le scan incrémental (SCAN)"
 add_value_tooltip = "Ajouter une nouvelle valeur"
 info_tooltip = "Afficher les infos du stream (XINFO GROUPS)"

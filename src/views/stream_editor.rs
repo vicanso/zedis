@@ -133,14 +133,15 @@ impl ZedisKvFetcher for ZedisStreamValues {
     fn readonly_on_edit(&self) -> bool {
         true
     }
-    fn columns(&self) -> Option<Vec<KvTableColumn>> {
+    fn columns(&self, cx: &App) -> Option<Vec<KvTableColumn>> {
+        let entry_id = i18n_kv_table(cx, "entry_id");
         Some(
             self.fields
                 .iter()
                 .enumerate()
                 .map(|(index, field)| {
                     if index == 0 {
-                        KvTableColumn::new_auto_created("Entry Id")
+                        KvTableColumn::new_auto_created(entry_id.as_ref())
                     } else {
                         KvTableColumn::new(field.as_str(), None).field_type(ZedisFormFieldType::Editor)
                     }
@@ -386,6 +387,7 @@ impl ZedisStreamEditor {
             vec![]
         };
 
+        let entry_id = i18n_kv_table(cx, "entry_id");
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisStreamValues>::new(
                 fields
@@ -393,7 +395,7 @@ impl ZedisStreamEditor {
                     .enumerate()
                     .map(|(index, field)| {
                         if index == 0 {
-                            KvTableColumn::new_auto_created("Entry Id")
+                            KvTableColumn::new_auto_created(entry_id.as_ref())
                         } else {
                             KvTableColumn::new(field.as_str(), None).field_type(ZedisFormFieldType::Editor)
                         }

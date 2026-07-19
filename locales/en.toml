@@ -428,6 +428,11 @@ add_value_success_tips = "Field added. You may need to refresh to view it."
 update_exist_field_value_success_tips = "Field value updated."
 
 [kv_table]
+field = "Field"
+value = "Value"
+score = "Score"
+entry_id = "Entry Id"
+ttl_seconds = "TTL(s)"
 search_tooltip = "Start incremental scan (SCAN)"
 add_value_tooltip = "Add new value"
 info_tooltip = "Show stream info (XINFO GROUPS)"

@@ -428,6 +428,11 @@ add_value_success_tips = "Поле добавлено. Возможно, пот�
 update_exist_field_value_success_tips = "Значение поля обновлено."
 
 [kv_table]
+field = "Поле"
+value = "Значение"
+score = "Оценка"
+entry_id = "ID записи"
+ttl_seconds = "TTL(с)"
 search_tooltip = "Начать инкрементальное сканирование (SCAN)"
 add_value_tooltip = "Добавить новое значение"
 info_tooltip = "Показать информацию о потоке (XINFO GROUPS)"

@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use super::{KvTableColumn, KvTableColumnType};
+use crate::helpers::get_mono_font_family;
 use crate::states::{KeyType, RedisValue, ZedisServerState, i18n_common};
-use gpui::{App, ClipboardItem, Edges, Entity, SharedString, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, IconName, StyledExt, WindowExt,
+    IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -104,7 +105,7 @@ pub trait ZedisKvFetcher: 'static {
 
     /// Returns updated column definitions if they may change dynamically (e.g., Stream fields).
     /// Default returns `None` (columns are static).
-    fn columns(&self) -> Option<Vec<KvTableColumn>> {
+    fn columns(&self, _cx: &App) -> Option<Vec<KvTableColumn>> {
         None
     }
 
@@ -264,20 +265,23 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
-        let primary_color = cx.theme().primary;
 
         // h_flex (items_center) matches render_td below, so the header text
         // is vertically centered like the cells; flex_1 keeps the label
         // full-width so per-column text_align (e.g. the right-aligned index
         // column) still applies.
+        // Same foreground as body cells (no primary accent) — hierarchy is
+        // bold weight only. JetBrains Mono is required so BOLD actually
+        // paints (system UI fonts often don't synthesize heavy weights).
         h_flex()
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .child(
                 Label::new(column.name.clone())
                     .text_align(column.align)
-                    .text_color(primary_color)
                     .text_sm()
+                    .font_family(get_mono_font_family())
+                    .font_weight(FontWeight::BOLD)
                     .flex_1(),
             )
     }

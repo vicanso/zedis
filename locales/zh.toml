@@ -427,6 +427,11 @@ update_exist_field_value_success_tips = "字段值已更新。"
 
 
 [kv_table]
+field = "字段"
+value = "值"
+score = "分值"
+entry_id = "条目 ID"
+ttl_seconds = "TTL(秒)"
 search_tooltip = "点击开始增量扫描 (SCAN)"
 add_value_tooltip = "添加新值"
 info_tooltip = "查看 Stream 信息 (XINFO GROUPS)"

@@ -26,7 +26,7 @@
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
-    states::{KeyType, RedisValue, ZedisServerState},
+    states::{KeyType, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -188,8 +188,8 @@ impl ZedisZsetEditor {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisZsetValues>::new(
                 vec![
-                    KvTableColumn::new_flex("Value").field_type(ZedisFormFieldType::Editor),
-                    KvTableColumn::new("Score", Some(150.)),
+                    KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref()).field_type(ZedisFormFieldType::Editor),
+                    KvTableColumn::new(i18n_kv_table(cx, "score").as_ref(), Some(150.)),
                 ],
                 server_state,
                 window,
