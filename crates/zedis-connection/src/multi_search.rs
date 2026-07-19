@@ -101,6 +101,22 @@ fn scan_pattern(query: &str) -> String {
 /// value-search guardrail philosophy: results are an explicit sample.
 const SCAN_EXAMINE_BUDGET: u64 = 50_000;
 
+/// `COUNT` hint per `SCAN` round — how many keys each round trip examines,
+/// **decoupled** from `per_server_cap` (which bounds collected *results*).
+/// The cap used to double as the COUNT, so the common default cap of 10
+/// issued `SCAN … COUNT 10` and a sparse pattern needed ~5 000 round trips
+/// to spend the examine budget below — latency-bound and visibly slow.
+///
+/// 1000 is the conventional `SCAN COUNT` ceiling: it spends the 50 000
+/// budget in ~50 round trips (was ~5 000), and each `SCAN` still examines
+/// only ~1000 buckets server-side — sub-millisecond even on a busy instance.
+/// Going higher buys diminishing round-trip savings (~50 → ~25 at 2 000)
+/// while each call's O(COUNT) bucket scan starts to add measurable latency
+/// for other clients on a loaded production Redis, which this palette may
+/// well be pointed at. MATCH/TYPE filtering happens within the batch, so a
+/// large COUNT never inflates the payload.
+const SCAN_PAGE_COUNT: u64 = 1000;
+
 /// Capped `SCAN` per target. Pages until `per_server_cap` **results** are
 /// collected, the examine budget is spent, or the (per-master) cursors are
 /// exhausted; `truncated` marks either early stop. Types come for free
@@ -111,7 +127,6 @@ pub async fn multi_search_scan(
     per_server_cap: usize,
 ) -> Vec<MultiSearchServerResult> {
     let pattern = scan_pattern(&query);
-    let page_count = (per_server_cap as u64).clamp(10, 1000);
     let tasks = targets.into_iter().map(|(server_id, db)| {
         let pattern = pattern.clone();
         async move {
@@ -126,11 +141,11 @@ pub async fn multi_search_scan(
             let mut cursors = None;
             let mut examined: u64 = 0;
             loop {
-                match client.scan(cursors, &pattern, page_count, false, None).await {
+                match client.scan(cursors, &pattern, SCAN_PAGE_COUNT, false, None).await {
                     Ok((next, page)) => {
                         // COUNT is a per-cursor hint; on a cluster each of N
                         // masters examines ~COUNT keys per round.
-                        examined += page_count * next.len().max(1) as u64;
+                        examined += SCAN_PAGE_COUNT * next.len().max(1) as u64;
                         for (key, key_type, _ttl) in page {
                             if out.hits.len() >= per_server_cap {
                                 out.truncated = true;
