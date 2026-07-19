@@ -218,7 +218,7 @@ impl TableDelegate for PrefixTableDelegate {
             .child(
                 Label::new(i18n_memory_analysis(cx, self.column_keys[col_ix]))
                     .text_align(col.align)
-                    .text_color(cx.theme().primary)
+                    .text_color(cx.theme().muted_foreground)
                     .text_sm()
                     .flex_1(),
             )
@@ -388,7 +388,7 @@ impl TableDelegate for SingleKeyTableDelegate {
             .child(
                 Label::new(i18n_memory_analysis(cx, self.column_keys[col_ix]))
                     .text_align(col.align)
-                    .text_color(cx.theme().primary)
+                    .text_color(cx.theme().muted_foreground)
                     .text_sm()
                     .flex_1(),
             )

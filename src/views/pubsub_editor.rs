@@ -143,7 +143,7 @@ impl TableDelegate for PubsubTableDelegate {
             .child(
                 Label::new(column.name.clone())
                     .text_align(column.align)
-                    .text_color(cx.theme().primary)
+                    .text_color(cx.theme().muted_foreground)
                     .text_sm()
                     .flex_1(),
             )

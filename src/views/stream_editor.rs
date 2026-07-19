@@ -325,7 +325,7 @@ impl TableDelegate for SimpleTableDelegate {
         h_flex()
             .size_full()
             .px_2()
-            .child(Label::new(name).text_sm().text_color(cx.theme().primary))
+            .child(Label::new(name).text_sm().text_color(cx.theme().muted_foreground))
     }
     fn render_td(
         &mut self,
