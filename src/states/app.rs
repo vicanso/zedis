@@ -17,7 +17,9 @@ use crate::connection::{
 };
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
-use crate::helpers::{UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts};
+use crate::helpers::{
+    DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts,
+};
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString, Window};
@@ -734,13 +736,20 @@ impl ZedisAppState {
         self.persist_nav(cx);
     }
     /// Effective UI font size in rem px: the slider value if set, else the
-    /// legacy `font_size` enum's pixels, else `None` (gpui's 16px default).
+    /// legacy `font_size` enum's pixels, else `None` (falls through to
+    /// `Theme::font_size`, which Zedis pins to [`crate::helpers::DEFAULT_UI_FONT_SIZE`]).
     pub fn font_rem_px(&self) -> Option<f32> {
         self.font_rem_px
             .or_else(|| self.font_size.and_then(FontSize::to_pixels))
     }
     pub fn set_font_rem_px(&mut self, px: Option<f32>) {
-        self.font_rem_px = px;
+        // A value equal to the pinned default carries no information — store None
+        // so the config stays clean and the rem falls back to
+        // DEFAULT_UI_FONT_SIZE via the theme (gpui-component's `Root` sets the rem
+        // base from `theme.font_size` each frame). Mirrors the max_key_tree_depth
+        // "0 ⇒ None" reset. Epsilon compare since the slider steps in whole px and
+        // clippy forbids `==` on f32.
+        self.font_rem_px = px.filter(|v| (*v - DEFAULT_UI_FONT_SIZE).abs() >= f32::EPSILON);
     }
     /// UI font family, `None` when unset or blank (falls back to system).
     pub fn ui_font_family(&self) -> Option<String> {

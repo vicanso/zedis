@@ -900,6 +900,9 @@ impl ZedisStatusBar {
                 Button::new("zedis-status-bar-conn-health")
                     .ghost()
                     .small()
+                    // Dense status-bar row: small's default px_3 leaves too much
+                    // air between adjacent chips; compact → px_1p5.
+                    .compact()
                     .disabled(!icon_clickable)
                     .icon(Icon::new(health_icon).mr_1().text_color(health_color))
                     .label(health_label)
@@ -918,7 +921,9 @@ impl ZedisStatusBar {
             .child(
                 h_flex()
                     .items_center()
-                    .gap_2()
+                    // Chip internal padding already separates them; gap_1 is
+                    // enough once buttons are compact (gap_2 looked sparse).
+                    .gap_1()
                     // Whole chip is clickable (icon + value), with a tooltip that
                     // names both the metric and the destination page.
                     .child(Self::metric_chip(MetricChip {
@@ -995,6 +1000,9 @@ impl ZedisStatusBar {
         Button::new(id)
             .ghost()
             .small()
+            // Status-bar metric chips sit edge-to-edge; compact halves the
+            // horizontal padding (px_3 → px_1p5) so the cluster reads dense.
+            .compact()
             .icon(Icon::new(icon).mr_1().text_color(icon_color))
             .label(label)
             .text_color(label_color)

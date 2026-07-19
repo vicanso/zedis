@@ -4,10 +4,10 @@ use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
     EditorAction, MemuAction, MultiSearchAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction,
-    UpdateAction, UpdateInfo, WorkspaceTabAction, apply_fonts, download_and_verify, fetch_latest_release,
-    focus_installer_ui, get_or_create_config_dir, humanize_keystroke, init_logger, installer_requires_quit,
-    is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages, unix_ts_millis,
-    with_app_identity,
+    UpdateAction, UpdateInfo, WorkspaceTabAction, apply_default_ui_font_size, apply_fonts, download_and_verify,
+    fetch_latest_release, focus_installer_ui, get_or_create_config_dir, humanize_keystroke, init_logger,
+    installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages,
+    unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -279,6 +279,7 @@ impl Zedis {
                     cx.update(|cx| {
                         restore_default_themes(cx);
                         Theme::change(cx.window_appearance(), None, cx);
+                        apply_default_ui_font_size(cx);
                         cx.refresh_windows();
                     });
                 }));
@@ -983,6 +984,8 @@ fn apply_named_theme(name: &str, cx: &mut App) -> bool {
         return false;
     };
     Theme::global_mut(cx).apply_config(&config);
+    // apply_config resets font_size to stock 16 unless the theme JSON sets it.
+    apply_default_ui_font_size(cx);
     cx.refresh_windows();
     true
 }
@@ -1018,6 +1021,9 @@ fn restore_default_themes(cx: &mut App) {
     let theme = Theme::global_mut(cx);
     theme.light_theme = Rc::new(light);
     theme.dark_theme = Rc::new(dark);
+    // Not applied to the live Theme yet — caller still runs Theme::change.
+    // Pin rem base here too so a bare restore (if ever used alone) keeps 14.
+    apply_default_ui_font_size(cx);
 }
 
 /// Open the "update available" dialog on the main window. **Download** opens the
@@ -1307,6 +1313,7 @@ impl Render for Zedis {
                 restore_default_themes(cx);
                 // Apply theme immediately for instant visual feedback
                 Theme::change(render_mode, None, cx);
+                apply_default_ui_font_size(cx);
 
                 // Save preference to disk asynchronously
                 update_app_state_and_save(cx, "save_theme", move |state, _cx| {
@@ -1620,6 +1627,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
             Theme::change(mode, None, cx);
+            apply_default_ui_font_size(cx);
             cx.activate(true);
             let bounds = Bounds::centered(None, size(px(460.), px(220.)), cx);
             let opened = cx.open_window(
@@ -1719,6 +1727,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             Theme::change(mode, None, cx);
         }
+        // Theme::change / apply_named_theme reset font_size to stock 16; pin
+        // the app rem base before the first frame (Root reads theme.font_size).
+        apply_default_ui_font_size(cx);
         cx.set_global(app_store);
         // Apply the saved font preferences onto the (already-initialized)
         // Theme before the first frame, so the initial paint uses them.

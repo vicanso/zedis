@@ -14,7 +14,7 @@
 
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
-    helpers::{apply_fonts, get_or_create_config_dir, parse_duration},
+    helpers::{DEFAULT_UI_FONT_SIZE, apply_fonts, get_or_create_config_dir, parse_duration},
     states::{
         ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
         update_app_state_and_save_quiet,
@@ -161,7 +161,7 @@ impl ZedisSettingEditor {
         let show_key_tree_ttl = store.show_key_tree_ttl();
         let soft_delete = store.soft_delete();
         let auto_update_check = store.auto_update_check();
-        let font_rem = store.font_rem_px().unwrap_or(16.0);
+        let font_rem = store.font_rem_px().unwrap_or(DEFAULT_UI_FONT_SIZE);
         let ui_font = store.ui_font_family();
         let mono_font = store.mono_font_family();
         let locale = store.locale().to_string();

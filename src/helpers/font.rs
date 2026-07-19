@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use arc_swap::ArcSwap;
-use gpui::{App, SharedString};
+use gpui::{App, SharedString, px};
 use gpui_component::Theme;
 use std::sync::{Arc, LazyLock};
 
@@ -25,6 +25,20 @@ const DEFAULT_MONO_FONT: &str = "JetBrains Mono";
 /// GPUI's portable system-UI-font token (`.AppleSystemUIFont` on macOS, Segoe
 /// UI on Windows, the default sans on Linux). The default UI font.
 const DEFAULT_UI_FONT: &str = ".SystemUIFont";
+
+/// App-wide rem base (`1rem` / default body size). gpui-component ships 16
+/// (CSS convention); 14 sits closer to native desktop body (~13pt on macOS)
+/// without going as small as AppKit controls.
+///
+/// Written onto `Theme::font_size` so `Root` cascades it every frame. Must be
+/// re-applied after every `Theme::change` / `apply_config` — those rebuild
+/// Theme from stock defaults and reset `font_size` to 16.
+pub const DEFAULT_UI_FONT_SIZE: f32 = 14.0;
+
+/// Pin [`DEFAULT_UI_FONT_SIZE`] on the global theme after theme init or switch.
+pub fn apply_default_ui_font_size(cx: &mut App) {
+    Theme::global_mut(cx).font_size = px(DEFAULT_UI_FONT_SIZE);
+}
 
 /// Process-wide monospace family, read by every `.font_family(...)` mono call
 /// site (~80 of them) so a settings change reaches all of them without
