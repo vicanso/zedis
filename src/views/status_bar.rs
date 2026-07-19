@@ -23,7 +23,7 @@ use crate::{
         i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
     },
 };
-use gpui::{Anchor, App, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb};
+use gpui::{Anchor, App, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, rgb};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -37,12 +37,14 @@ use std::{sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
 
-/// Fixed slot width for the latency label: 5 mono chars at `text_sm`
-/// covers "999ms" / "1.23s" / "--". The heartbeat refreshes the value
-/// every 2s and the telemetry cluster is right-anchored, so without a
-/// reserved width a "9ms" ⇄ "10ms" flip shifts every element to the
-/// label's left (Activity icon, Connected dot) on each beat.
-const LATENCY_LABEL_MIN_WIDTH: f32 = 44.0;
+/// Fixed mono width for the latency label (value left-aligned, padding
+/// trailing): 5 chars covers "999ms" / "1.23s" / "--". The heartbeat
+/// refreshes the value every 2s and the
+/// telemetry cluster is right-anchored, so a "9ms" ⇄ "10ms" flip would resize
+/// the (now native, center-justified) latency button and shove the Connected
+/// chip beside it on each beat; padding the value to a fixed mono width keeps
+/// the button width constant instead.
+const LATENCY_LABEL_CHARS: usize = 5;
 
 /// Formats the database size and scan count string "count/total".
 #[inline]
@@ -183,7 +185,6 @@ struct MetricChip {
     label: SharedString,
     label_color: Hsla,
     icon_color: Hsla,
-    min_label_w: Option<gpui::Pixels>,
     tooltip: SharedString,
     view: ServerView,
 }
@@ -881,42 +882,43 @@ impl ZedisStatusBar {
         } else {
             server_state.latency.clone()
         };
+        // Left-aligned, fixed mono width: the padding trails the value so the
+        // button width stays constant (no resize jogging the Connected chip each
+        // beat) while the number sits at the left edge of its slot.
+        let latency_text: SharedString =
+            format!("{:<width$}", latency_text.as_ref(), width = LATENCY_LABEL_CHARS).into();
         let status_text = status_text_color(cx.theme().is_dark());
         ZedisDivider::new()
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        // Same ghost button as the metric icons beside it, so the
-                        // hover treatment (and the plain arrow cursor — `Button`
-                        // only forces `cursor_pointer` on the `link` variant)
-                        // matches the rest of the bar. The icon keeps its own
-                        // health color, which the hover style doesn't touch.
-                        // Inert while still connecting: nothing to connect or
-                        // disconnect yet.
-                        Button::new("zedis-status-bar-conn-health")
-                            .ghost()
-                            .small()
-                            .disabled(!icon_clickable)
-                            .icon(Icon::new(health_icon).text_color(health_color))
-                            .tooltip(health_tooltip)
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.server_state.update(cx, |state, cx| {
-                                    if is_connected {
-                                        state.disconnect(cx);
-                                    } else {
-                                        state.reconnect(cx);
-                                    }
-                                });
-                            })),
-                    )
-                    .child(Label::new(health_label).text_color(status_text)),
+                // One native ghost button covering icon + label, so the whole
+                // "Connected" chip is the click target (disconnect when up /
+                // reconnect when down) with the same hover background as the
+                // metric chips and the left-side buttons — the label used to sit
+                // outside the button and wasn't clickable. The icon keeps its own
+                // health color (`.text_color` colors only the label); inert while
+                // still connecting.
+                Button::new("zedis-status-bar-conn-health")
+                    .ghost()
+                    .small()
+                    .disabled(!icon_clickable)
+                    .icon(Icon::new(health_icon).mr_1().text_color(health_color))
+                    .label(health_label)
+                    .text_color(status_text)
+                    .tooltip(health_tooltip)
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| {
+                            if is_connected {
+                                state.disconnect(cx);
+                            } else {
+                                state.reconnect(cx);
+                            }
+                        });
+                    })),
             )
             .child(
                 h_flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
                     // Whole chip is clickable (icon + value), with a tooltip that
                     // names both the metric and the destination page.
                     .child(Self::metric_chip(MetricChip {
@@ -925,7 +927,6 @@ impl ZedisStatusBar {
                         label: latency_text,
                         label_color: latency_color,
                         icon_color: status_text,
-                        min_label_w: Some(px(LATENCY_LABEL_MIN_WIDTH)),
                         tooltip: SharedString::from(format!(
                             "{} · {}",
                             i18n_status_bar(cx, "metric_latency_hint"),
@@ -939,7 +940,6 @@ impl ZedisStatusBar {
                         label: server_state.used_memory.clone(),
                         label_color: status_text,
                         icon_color: status_text,
-                        min_label_w: None,
                         tooltip: SharedString::from(format!(
                             "{} · {}",
                             i18n_status_bar(cx, "metric_memory_hint"),
@@ -953,7 +953,6 @@ impl ZedisStatusBar {
                         label: server_state.clients.clone(),
                         label_color: status_text,
                         icon_color: status_text,
-                        min_label_w: None,
                         tooltip: SharedString::from(format!(
                             "{} · {}",
                             i18n_status_bar(cx, "clients_stat_tooltip"),
@@ -967,7 +966,6 @@ impl ZedisStatusBar {
                         label: server_state.slow_log_tips.clone(),
                         label_color: status_text,
                         icon_color: status_text,
-                        min_label_w: None,
                         tooltip: SharedString::from(format!(
                             "{} · {}",
                             i18n_status_bar(cx, "slowlog_stat_tooltip"),
@@ -978,8 +976,12 @@ impl ZedisStatusBar {
             )
     }
 
-    /// Icon + value chip that opens a tool page on click. The whole row is
-    /// the hit target so the number is not "display-only".
+    /// Icon + value chip that opens a tool page on click. A native ghost
+    /// `Button` (not a hand-rolled div) so the whole chip — icon *and* value —
+    /// is the hit target and gets the same hover-background treatment as the
+    /// terminal / readonly / tools buttons on the left, rather than only
+    /// flipping the cursor. The icon keeps its own color (muted, or the
+    /// latency palette); `.text_color` colors just the value label.
     fn metric_chip(chip: MetricChip) -> impl IntoElement {
         let MetricChip {
             id,
@@ -987,27 +989,21 @@ impl ZedisStatusBar {
             label,
             label_color,
             icon_color,
-            min_label_w,
             tooltip,
             view,
         } = chip;
-        h_flex()
-            .id(id)
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        Button::new(id)
+            .ghost()
+            .small()
+            .icon(Icon::new(icon).mr_1().text_color(icon_color))
+            .label(label)
+            .text_color(label_color)
+            .tooltip(tooltip)
             .on_click(move |_, _window, cx| {
                 cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
                     state.toggle_view(view, cx);
                 });
             })
-            .child(Icon::new(icon).text_color(icon_color))
-            .child(
-                Label::new(label)
-                    .text_color(label_color)
-                    .when_some(min_label_w, |this, w| this.min_w(w)),
-            )
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
