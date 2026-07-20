@@ -13,14 +13,15 @@
 // limitations under the License.
 
 use crate::helpers::{
-    MemuAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family, is_app_store_build,
+    MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family,
+    is_app_store_build,
 };
 use crate::{
     assets::CustomIconName,
     connection::get_server,
     states::{
         GlobalEvent, LocaleAction, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore,
-        i18n_sidebar, i18n_status_bar,
+        i18n_shortcuts, i18n_sidebar, i18n_status_bar,
     },
 };
 use gpui::{Anchor, App, Context, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, rgb};
@@ -196,6 +197,14 @@ impl ZedisTitleBar {
                 i18n_sidebar(cx, "command_palette"),
                 Icon::new(CustomIconName::Command),
                 Box::new(PaletteAction::Toggle),
+            )
+            // Multi-database search (⌘⇧F): the only global overlay without a
+            // click entry — surfaced here beside the palette for parity and
+            // discoverability. Label reuses the shortcuts-panel string.
+            .menu_with_icon(
+                i18n_shortcuts(cx, "multi_search"),
+                Icon::new(IconName::Search),
+                Box::new(MultiSearchAction::Toggle),
             )
             .menu_with_icon(
                 i18n_sidebar(cx, "keyboard_shortcuts"),
