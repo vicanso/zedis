@@ -84,6 +84,8 @@ update_tooltip = "Update item"
 copied_to_clipboard = "Copied to clipboard"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}-click to open or reveal its tab"
+open_in_new_tab_dup_hint = "%{key}-click to open a separate tab"
 collapse = "Collapse"
 home = "Home"
 theme = "Theme"

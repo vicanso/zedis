@@ -407,7 +407,7 @@ impl ZedisMultiSearch {
                     .is_some_and(|(id, active_db)| id == &server_id && *active_db == db);
                 let multi_tab = state.open_tabs().len() > 1;
                 if multi_tab && !same_as_active {
-                    state.open_server_in_new_tab(server_id, db, cx);
+                    state.reveal_or_open_server_tab(server_id, db, cx);
                 } else {
                     state.connect_server(server_id, db, cx);
                 }

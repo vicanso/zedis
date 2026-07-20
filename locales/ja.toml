@@ -84,6 +84,8 @@ update_tooltip = "項目を更新"
 copied_to_clipboard = "クリップボードにコピーしました"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+クリックでタブを開く／表示"
+open_in_new_tab_dup_hint = "%{key}+クリックで別のタブを開く"
 collapse = "折りたたむ"
 home = "ホーム"
 theme = "テーマ"

@@ -84,6 +84,8 @@ update_tooltip = "Mettre à jour l'élément"
 copied_to_clipboard = "Copié dans le presse-papiers"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+clic pour ouvrir ou afficher son onglet"
+open_in_new_tab_dup_hint = "%{key}+clic pour ouvrir un onglet séparé"
 collapse = "Réduire"
 home = "Accueil"
 theme = "Thème"

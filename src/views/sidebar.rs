@@ -16,7 +16,7 @@ use crate::{
     assets::{Assets, CustomIconName},
     connection::get_servers,
     constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT},
-    helpers::resolve_tag_color,
+    helpers::{humanize_keystroke, resolve_tag_color},
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save},
 };
 use gpui::{Context, Hsla, Image, ImageFormat, SharedString, Subscription, Window, div, img, prelude::*, px, rgb};
@@ -30,6 +30,7 @@ use gpui_component::{
     list::ListItem,
     v_flex,
 };
+use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
 
@@ -212,6 +213,25 @@ impl ZedisSidebar {
         // an APP_NAME constant just for this one site).
         let home_label = SharedString::from("ZEDIS");
         let ungrouped_label = i18n_servers(cx, "ungrouped_label");
+        // Discoverability hints appended to every server row's tooltip: the
+        // workspace-tab gestures (⌘/Ctrl+click to reveal-or-open, add Shift to
+        // force a duplicate tab) are otherwise invisible. `%{key}` is filled
+        // with the platform keystroke (⌘/⌘⇧ on macOS, Ctrl/Ctrl+Shift else).
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let new_tab_hint: SharedString = t!(
+            "sidebar.open_in_new_tab_hint",
+            key = humanize_keystroke("secondary"),
+            locale = locale
+        )
+        .to_string()
+        .into();
+        let dup_tab_hint: SharedString = t!(
+            "sidebar.open_in_new_tab_dup_hint",
+            key = humanize_keystroke("secondary-shift"),
+            locale = locale
+        )
+        .to_string()
+        .into();
         // `list_active` from the theme is intentionally subtle for
         // tightly-packed list views, but in this sparse sidebar it
         // reads as ~no change. Use a 10% foreground overlay instead:
@@ -567,11 +587,13 @@ impl ZedisSidebar {
                             }),
                     )
                     .on_click(move |e, _window, cx| {
-                        // Cmd/Ctrl+click opens the server in a new workspace
-                        // tab (or jumps to the tab already bound to it) —
-                        // allowed even on the current server, which a plain
-                        // re-click ignores.
-                        let in_new_tab = e.modifiers().secondary();
+                        // Cmd/Ctrl+click reveals (or opens) the server's
+                        // workspace tab; adding Shift forces a fresh duplicate
+                        // tab even when one already exists. Both are allowed on
+                        // the current server, which a plain re-click ignores.
+                        let mods = e.modifiers();
+                        let in_new_tab = mods.secondary();
+                        let force_new = in_new_tab && mods.shift;
                         if is_current && !in_new_tab {
                             return;
                         }
@@ -579,8 +601,10 @@ impl ZedisSidebar {
                             store.update(cx, |state, cx| {
                                 let id = server_id.to_string();
                                 let db = state.last_db_for(&id);
-                                if in_new_tab {
+                                if force_new {
                                     state.open_server_in_new_tab(id, db, cx);
+                                } else if in_new_tab {
+                                    state.reveal_or_open_server_tab(id, db, cx);
                                 } else {
                                     state.connect_server(id, db, cx);
                                 }
@@ -613,7 +637,25 @@ impl ZedisSidebar {
                             )
                         })
                         .child(item)
-                        .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
+                        .tooltip({
+                            let name = tooltip_text.clone();
+                            let hint = new_tab_hint.clone();
+                            let dup_hint = dup_tab_hint.clone();
+                            move |window, cx| {
+                                let name = name.clone();
+                                let hint = hint.clone();
+                                let dup_hint = dup_hint.clone();
+                                Tooltip::element(move |_window, cx| {
+                                    let muted = cx.theme().muted_foreground;
+                                    v_flex()
+                                        .gap_0p5()
+                                        .child(name.clone())
+                                        .child(div().text_xs().text_color(muted).child(hint.clone()))
+                                        .child(div().text_xs().text_color(muted).child(dup_hint.clone()))
+                                })
+                                .build(window, cx)
+                            }
+                        })
                         .into_any_element(),
                 );
             }

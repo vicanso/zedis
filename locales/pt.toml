@@ -84,6 +84,8 @@ update_tooltip = "Atualizar item"
 copied_to_clipboard = "Copiado para a área de transferência"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+clique para abrir ou exibir a aba"
+open_in_new_tab_dup_hint = "%{key}+clique para abrir uma aba separada"
 collapse = "Recolher"
 home = "Início"
 theme = "Tema"

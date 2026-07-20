@@ -84,6 +84,8 @@ update_tooltip = "Element aktualisieren"
 copied_to_clipboard = "In die Zwischenablage kopiert"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+Klick, um den Tab zu öffnen oder anzuzeigen"
+open_in_new_tab_dup_hint = "%{key}+Klick, um einen separaten Tab zu öffnen"
 collapse = "Einklappen"
 home = "Startseite"
 theme = "Design"

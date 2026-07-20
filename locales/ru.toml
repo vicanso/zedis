@@ -84,6 +84,8 @@ update_tooltip = "Обновить элемент"
 copied_to_clipboard = "Скопировано в буфер обмена"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+клик, чтобы открыть или показать её вкладку"
+open_in_new_tab_dup_hint = "%{key}+клик, чтобы открыть отдельную вкладку"
 collapse = "Свернуть"
 home = "Главная"
 theme = "Тема"

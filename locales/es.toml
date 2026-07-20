@@ -84,6 +84,8 @@ update_tooltip = "Actualizar elemento"
 copied_to_clipboard = "Copiado al portapapeles"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+clic para abrir o mostrar su pestaña"
+open_in_new_tab_dup_hint = "%{key}+clic para abrir una pestaña aparte"
 collapse = "Contraer"
 home = "Inicio"
 theme = "Tema"

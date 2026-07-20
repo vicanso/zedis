@@ -332,9 +332,11 @@ pub enum GlobalEvent {
     Notification(NotificationAction),
     /// User selected a different server
     ServerSelected(SharedString, usize),
-    /// Ask the workspace root (`main.rs`) to open the connection in a new
-    /// content tab — or re-activate the tab already bound to it.
-    ServerOpenInNewTab(SharedString, usize),
+    /// Ask the workspace root (`main.rs`) to open the connection in a content
+    /// tab. The `bool` forces a fresh tab: `false` re-activates the tab already
+    /// bound to `(id, db)` when one exists (reveal-or-open); `true` always
+    /// appends a new tab, even alongside an existing one.
+    ServerOpenInNewTab(SharedString, usize, bool),
     /// Server list config has been modified (add/remove/edit).
     ServerListUpdated,
     /// Route has been changed.
@@ -1121,12 +1123,20 @@ impl ZedisAppState {
             cx,
         );
     }
-    /// Request opening `(id, db)` in a new workspace tab (sidebar cmd+click).
-    /// The root (`Zedis` in main.rs) owns the tab list, so this only
-    /// broadcasts the request; the root creates or re-activates the tab and
-    /// then projects the selection back through `connect_server`.
+    /// Reveal the tab already bound to `(id, db)`, or open a new one when none
+    /// exists (sidebar ⌘/Ctrl+click). The root (`Zedis` in main.rs) owns the
+    /// tab list, so this only broadcasts the request; the root re-activates or
+    /// creates the tab and then projects the selection back through
+    /// `connect_server`.
+    pub fn reveal_or_open_server_tab(&mut self, id: String, db: usize, cx: &mut Context<Self>) {
+        cx.emit(GlobalEvent::ServerOpenInNewTab(id.into(), db, false));
+    }
+    /// Always open `(id, db)` in a fresh workspace tab, even when one is already
+    /// bound to it (sidebar ⌘/Ctrl+Shift+click) — lets the user run two
+    /// workspaces on the same connection. Same broadcast path as
+    /// [`Self::reveal_or_open_server_tab`], with dedup skipped by the root.
     pub fn open_server_in_new_tab(&mut self, id: String, db: usize, cx: &mut Context<Self>) {
-        cx.emit(GlobalEvent::ServerOpenInNewTab(id.into(), db));
+        cx.emit(GlobalEvent::ServerOpenInNewTab(id.into(), db, true));
     }
     /// Activate a connection: routes to it, keeping the current server view
     /// when one is active (the status-bar DB switch) and falling back to the

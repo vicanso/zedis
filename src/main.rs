@@ -246,12 +246,15 @@ impl Zedis {
                     }
                     this.persist_tabs(cx);
                 }
-                GlobalEvent::ServerOpenInNewTab(server_id, db) => {
-                    if let Some(ix) = this
-                        .tabs
-                        .iter()
-                        .position(|tab| tab.server_id.as_str() == server_id.as_str() && tab.db == *db)
-                    {
+                GlobalEvent::ServerOpenInNewTab(server_id, db, force) => {
+                    // `force` (⌘/Ctrl+Shift+click) skips the dedup lookup so a
+                    // duplicate tab on the same `(server, db)` can be opened.
+                    let existing = (!*force).then(|| {
+                        this.tabs
+                            .iter()
+                            .position(|tab| tab.server_id.as_str() == server_id.as_str() && tab.db == *db)
+                    });
+                    if let Some(ix) = existing.flatten() {
                         this.activate_tab(ix, None, cx);
                         this.project_active_tab(cx);
                     } else if this.tabs.len() >= MAX_TABS {
@@ -1418,6 +1421,19 @@ impl Render for Zedis {
                 if ix < this.tabs.len() {
                     this.activate_tab(ix, Some(window), cx);
                     this.project_active_tab(cx);
+                }
+            }))
+            // ⌘W / Ctrl+W closes the active workspace tab while more than one is
+            // open. With a single tab (or any non-Close menu action) it
+            // propagates to the app-level `MemuAction` handler, which hides the
+            // app on macOS / closes the window elsewhere — the red-button
+            // behavior. Handled here (not only globally) so the view's tab list
+            // is in reach; ⌘W stays bound to the one `MemuAction::Close`.
+            .on_action(cx.listener(|this, e: &MemuAction, _window, cx| {
+                if matches!(e, MemuAction::Close) && this.tabs.len() > 1 {
+                    this.close_tab(this.active_tab, cx);
+                } else {
+                    cx.propagate();
                 }
             }))
             // ⌘F / secondary-f: always focus the active page's filter box.

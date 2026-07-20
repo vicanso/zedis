@@ -83,6 +83,8 @@ update_tooltip = "更新项"
 copied_to_clipboard = "已复制到剪贴板"
 
 [sidebar]
+open_in_new_tab_hint = "%{key}+点击 打开或跳转到它的标签页"
+open_in_new_tab_dup_hint = "%{key}+点击 另开一个新标签页"
 collapse = "收起"
 home = "主页"
 theme = "主题"
