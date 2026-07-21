@@ -86,6 +86,7 @@ copied_to_clipboard = "Copié dans le presse-papiers"
 [sidebar]
 open_in_new_tab_hint = "%{key}+clic pour ouvrir ou afficher son onglet"
 open_in_new_tab_dup_hint = "%{key}+clic pour ouvrir un onglet séparé"
+open_in_current_tab_hint = "%{key}+clic pour basculer dans l'onglet actuel"
 collapse = "Réduire"
 home = "Accueil"
 theme = "Thème"
@@ -452,6 +453,10 @@ bulk_add_success = "%{count} lignes ajoutées"
 bulk_add_empty = "Rien à ajouter — collez au moins une ligne."
 
 [settings]
+section_tabs = "Onglets de l'espace de travail"
+section_tabs_desc = "Comment un clic sur un serveur utilise les onglets"
+sidebar_click_new_tab = "Ouvrir les serveurs dans un nouvel onglet"
+sidebar_click_new_tab_desc = "Cliquer sur un serveur dans la barre latérale ouvre un nouvel onglet au lieu de réutiliser l'onglet actuel"
 section_ai = "Analyse IA"
 section_ai_desc = "Point de terminaison compatible OpenAI pour analyser les rapports mémoire"
 ai_base_url = "URL de base IA"

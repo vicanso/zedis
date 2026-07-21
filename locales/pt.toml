@@ -86,6 +86,7 @@ copied_to_clipboard = "Copiado para a área de transferência"
 [sidebar]
 open_in_new_tab_hint = "%{key}+clique para abrir ou exibir a aba"
 open_in_new_tab_dup_hint = "%{key}+clique para abrir uma aba separada"
+open_in_current_tab_hint = "%{key}+clique para alternar na aba atual"
 collapse = "Recolher"
 home = "Início"
 theme = "Tema"
@@ -452,6 +453,10 @@ bulk_add_success = "%{count} linhas adicionadas"
 bulk_add_empty = "Nada para adicionar — cole pelo menos uma linha."
 
 [settings]
+section_tabs = "Abas do espaço de trabalho"
+section_tabs_desc = "Como clicar em um servidor usa as abas"
+sidebar_click_new_tab = "Abrir servidores em uma nova aba"
+sidebar_click_new_tab_desc = "Clicar em um servidor na barra lateral abre uma nova aba em vez de reutilizar a atual"
 section_ai = "Análise com IA"
 section_ai_desc = "Endpoint compatível com OpenAI para analisar relatórios de memória"
 ai_base_url = "URL base da IA"

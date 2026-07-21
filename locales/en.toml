@@ -86,6 +86,7 @@ copied_to_clipboard = "Copied to clipboard"
 [sidebar]
 open_in_new_tab_hint = "%{key}-click to open or reveal its tab"
 open_in_new_tab_dup_hint = "%{key}-click to open a separate tab"
+open_in_current_tab_hint = "%{key}-click to switch in the current tab"
 collapse = "Collapse"
 home = "Home"
 theme = "Theme"
@@ -452,6 +453,10 @@ bulk_add_success = "Added %{count} rows"
 bulk_add_empty = "Nothing to add — paste at least one row."
 
 [settings]
+section_tabs = "Workspace Tabs"
+section_tabs_desc = "How clicking a server opens workspace tabs"
+sidebar_click_new_tab = "Open servers in a new tab"
+sidebar_click_new_tab_desc = "Clicking a server in the sidebar opens a new workspace tab instead of reusing the current one"
 section_ai = "AI Analysis"
 section_ai_desc = "OpenAI-compatible endpoint used to analyze memory reports"
 ai_base_url = "AI Base URL"

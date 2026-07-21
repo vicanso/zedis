@@ -86,6 +86,7 @@ copied_to_clipboard = "Скопировано в буфер обмена"
 [sidebar]
 open_in_new_tab_hint = "%{key}+клик, чтобы открыть или показать её вкладку"
 open_in_new_tab_dup_hint = "%{key}+клик, чтобы открыть отдельную вкладку"
+open_in_current_tab_hint = "%{key}+клик, чтобы переключиться в текущей вкладке"
 collapse = "Свернуть"
 home = "Главная"
 theme = "Тема"
@@ -452,6 +453,10 @@ bulk_add_success = "Добавлено строк: %{count}"
 bulk_add_empty = "Нечего добавлять — вставьте хотя бы одну строку."
 
 [settings]
+section_tabs = "Вкладки рабочей области"
+section_tabs_desc = "Как клик по серверу использует вкладки"
+sidebar_click_new_tab = "Открывать серверы в новой вкладке"
+sidebar_click_new_tab_desc = "Клик по серверу на боковой панели открывает новую вкладку вместо повторного использования текущей"
 section_ai = "ИИ-анализ"
 section_ai_desc = "OpenAI-совместимая конечная точка для анализа отчётов о памяти"
 ai_base_url = "Базовый URL ИИ"

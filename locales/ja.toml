@@ -86,6 +86,7 @@ copied_to_clipboard = "クリップボードにコピーしました"
 [sidebar]
 open_in_new_tab_hint = "%{key}+クリックでタブを開く／表示"
 open_in_new_tab_dup_hint = "%{key}+クリックで別のタブを開く"
+open_in_current_tab_hint = "%{key}+クリックで現在のタブに切り替え"
 collapse = "折りたたむ"
 home = "ホーム"
 theme = "テーマ"
@@ -452,6 +453,10 @@ bulk_add_success = "%{count} 行を追加しました"
 bulk_add_empty = "追加するデータがありません — 少なくとも 1 行貼り付けてください。"
 
 [settings]
+section_tabs = "ワークスペースタブ"
+section_tabs_desc = "サーバーをクリックしたときのタブの扱い"
+sidebar_click_new_tab = "サーバーを新しいタブで開く"
+sidebar_click_new_tab_desc = "サイドバーでサーバーをクリックすると、現在のタブを再利用せずに新しいタブで開きます"
 section_ai = "AI 分析"
 section_ai_desc = "メモリレポートの分析に使う OpenAI 互換エンドポイント"
 ai_base_url = "AI ベース URL"

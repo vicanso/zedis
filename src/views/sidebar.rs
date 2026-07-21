@@ -217,12 +217,23 @@ impl ZedisSidebar {
         // workspace-tab gestures (⌘/Ctrl+click to reveal-or-open, add Shift to
         // force a duplicate tab) are otherwise invisible. `%{key}` is filled
         // with the platform keystroke (⌘/⌘⇧ on macOS, Ctrl/Ctrl+Shift else).
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let new_tab_hint: SharedString = t!(
-            "sidebar.open_in_new_tab_hint",
-            key = humanize_keystroke("secondary"),
-            locale = locale
-        )
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
+        let locale = store.locale().to_string();
+        // When the setting makes a plain click open a tab, ⌘/Ctrl+click inverts
+        // to switching in place — so the modifier hint flips accordingly.
+        let new_tab_hint: SharedString = if store.sidebar_click_new_tab() {
+            t!(
+                "sidebar.open_in_current_tab_hint",
+                key = humanize_keystroke("secondary"),
+                locale = locale
+            )
+        } else {
+            t!(
+                "sidebar.open_in_new_tab_hint",
+                key = humanize_keystroke("secondary"),
+                locale = locale
+            )
+        }
         .to_string()
         .into();
         let dup_tab_hint: SharedString = t!(
@@ -331,14 +342,30 @@ impl ZedisSidebar {
                         )
                     }),
             )
-            .on_click(move |_, _window, cx| {
-                if is_home_current {
+            .on_click(move |e, _window, cx| {
+                // Mirror the server rows: a plain click navigates the current
+                // tab to Home; the `sidebar_click_new_tab` setting (⌘/Ctrl
+                // inverts, ⌘⇧ forces) opens Home in a workspace tab instead. An
+                // empty server id is the Home "connection" the tab machinery
+                // already understands (project_active_tab / ServerSelected).
+                let mods = e.modifiers();
+                let secondary = mods.secondary();
+                let force_new = secondary && mods.shift;
+                let default_new_tab = cx.global::<ZedisGlobalStore>().read(cx).sidebar_click_new_tab();
+                let want_new_tab = force_new || (default_new_tab != secondary);
+                if is_home_current && !want_new_tab {
                     return;
                 }
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
-                        state.go_to(Route::Home, cx);
-                        state.clear_selected_server(cx);
+                        if force_new {
+                            state.open_server_in_new_tab(String::new(), 0, cx);
+                        } else if want_new_tab {
+                            state.reveal_or_open_server_tab(String::new(), 0, cx);
+                        } else {
+                            state.go_to(Route::Home, cx);
+                            state.clear_selected_server(cx);
+                        }
                     });
                 });
             });
@@ -587,14 +614,18 @@ impl ZedisSidebar {
                             }),
                     )
                     .on_click(move |e, _window, cx| {
-                        // Cmd/Ctrl+click reveals (or opens) the server's
-                        // workspace tab; adding Shift forces a fresh duplicate
-                        // tab even when one already exists. Both are allowed on
-                        // the current server, which a plain re-click ignores.
+                        // A no-modifier click either switches the current tab in
+                        // place or opens a workspace tab, per the
+                        // `sidebar_click_new_tab` setting. ⌘/Ctrl+click inverts
+                        // that choice for this click; ⌘⇧+click always forces a
+                        // fresh duplicate tab. The in-place case on the current
+                        // server is a no-op (as a plain re-click always was).
                         let mods = e.modifiers();
-                        let in_new_tab = mods.secondary();
-                        let force_new = in_new_tab && mods.shift;
-                        if is_current && !in_new_tab {
+                        let secondary = mods.secondary();
+                        let force_new = secondary && mods.shift;
+                        let default_new_tab = cx.global::<ZedisGlobalStore>().read(cx).sidebar_click_new_tab();
+                        let want_new_tab = force_new || (default_new_tab != secondary);
+                        if is_current && !want_new_tab {
                             return;
                         }
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
@@ -603,7 +634,7 @@ impl ZedisSidebar {
                                 let db = state.last_db_for(&id);
                                 if force_new {
                                     state.open_server_in_new_tab(id, db, cx);
-                                } else if in_new_tab {
+                                } else if want_new_tab {
                                     state.reveal_or_open_server_tab(id, db, cx);
                                 } else {
                                     state.connect_server(id, db, cx);

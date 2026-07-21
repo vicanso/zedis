@@ -479,6 +479,11 @@ pub struct ZedisAppState {
     /// is skipped (cheaper scans on large dbs) and no chip is rendered.
     /// Defaults to `true`.
     show_key_tree_ttl: Option<bool>,
+    /// When `true`, clicking a server in the sidebar opens it in a workspace
+    /// tab (reveal-or-open) instead of switching the current tab in place.
+    /// ⌘/Ctrl+click inverts this per click; ⌘⇧+click always duplicates.
+    /// Defaults to `false`.
+    sidebar_click_new_tab: Option<bool>,
     /// Server-page group section keys whose card grid is collapsed.
     /// Keyed by group label (or `"__none__"` for the ungrouped
     /// bucket). A renamed/deleted group simply leaves a harmless
@@ -924,6 +929,12 @@ impl ZedisAppState {
     }
     pub fn set_tray_enabled(&mut self, enabled: bool) {
         self.tray_enabled = Some(enabled);
+    }
+    pub fn sidebar_click_new_tab(&self) -> bool {
+        self.sidebar_click_new_tab.unwrap_or(false)
+    }
+    pub fn set_sidebar_click_new_tab(&mut self, enabled: bool) {
+        self.sidebar_click_new_tab = Some(enabled);
     }
     pub fn soft_delete(&self) -> bool {
         self.soft_delete.unwrap_or(true)

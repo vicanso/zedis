@@ -86,6 +86,7 @@ copied_to_clipboard = "Copiado al portapapeles"
 [sidebar]
 open_in_new_tab_hint = "%{key}+clic para abrir o mostrar su pestaña"
 open_in_new_tab_dup_hint = "%{key}+clic para abrir una pestaña aparte"
+open_in_current_tab_hint = "%{key}+clic para cambiar en la pestaña actual"
 collapse = "Contraer"
 home = "Inicio"
 theme = "Tema"
@@ -452,6 +453,10 @@ bulk_add_success = "Se añadieron %{count} filas"
 bulk_add_empty = "Nada que añadir — pegue al menos una fila."
 
 [settings]
+section_tabs = "Pestañas del espacio de trabajo"
+section_tabs_desc = "Cómo se usan las pestañas al hacer clic en un servidor"
+sidebar_click_new_tab = "Abrir servidores en una pestaña nueva"
+sidebar_click_new_tab_desc = "Al hacer clic en un servidor en la barra lateral se abre una pestaña nueva en lugar de reutilizar la actual"
 section_ai = "Análisis con IA"
 section_ai_desc = "Endpoint compatible con OpenAI para analizar informes de memoria"
 ai_base_url = "URL base de IA"

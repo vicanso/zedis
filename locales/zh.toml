@@ -85,6 +85,7 @@ copied_to_clipboard = "已复制到剪贴板"
 [sidebar]
 open_in_new_tab_hint = "%{key}+点击 打开或跳转到它的标签页"
 open_in_new_tab_dup_hint = "%{key}+点击 另开一个新标签页"
+open_in_current_tab_hint = "%{key}+点击 在当前标签页切换"
 collapse = "收起"
 home = "主页"
 theme = "主题"
@@ -451,6 +452,10 @@ bulk_add_success = "已添加 %{count} 行"
 bulk_add_empty = "没有要添加的内容 — 至少粘贴一行。"
 
 [settings]
+section_tabs = "工作区标签页"
+section_tabs_desc = "点击服务器时如何使用工作区标签页"
+sidebar_click_new_tab = "点击服务器时打开新标签页"
+sidebar_click_new_tab_desc = "在侧边栏点击服务器时打开新的工作区标签页，而不是复用当前标签页"
 section_ai = "AI 分析"
 section_ai_desc = "用于分析内存报告的 OpenAI 兼容接口"
 ai_base_url = "AI 服务地址"

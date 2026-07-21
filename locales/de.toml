@@ -86,6 +86,7 @@ copied_to_clipboard = "In die Zwischenablage kopiert"
 [sidebar]
 open_in_new_tab_hint = "%{key}+Klick, um den Tab zu öffnen oder anzuzeigen"
 open_in_new_tab_dup_hint = "%{key}+Klick, um einen separaten Tab zu öffnen"
+open_in_current_tab_hint = "%{key}+Klick, um im aktuellen Tab zu wechseln"
 collapse = "Einklappen"
 home = "Startseite"
 theme = "Design"
@@ -452,6 +453,10 @@ bulk_add_success = "%{count} Zeilen hinzugefügt"
 bulk_add_empty = "Nichts hinzuzufügen — bitte mindestens eine Zeile einfügen."
 
 [settings]
+section_tabs = "Arbeitsbereich-Tabs"
+section_tabs_desc = "Wie ein Klick auf einen Server Arbeitsbereich-Tabs verwendet"
+sidebar_click_new_tab = "Server in neuem Tab öffnen"
+sidebar_click_new_tab_desc = "Ein Klick auf einen Server in der Seitenleiste öffnet einen neuen Arbeitsbereich-Tab, statt den aktuellen wiederzuverwenden"
 section_ai = "KI-Analyse"
 section_ai_desc = "OpenAI-kompatibler Endpunkt zur Analyse von Speicherberichten"
 ai_base_url = "KI-Basis-URL"

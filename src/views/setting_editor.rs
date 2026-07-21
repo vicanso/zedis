@@ -21,8 +21,8 @@ use crate::{
     },
 };
 use gpui::{
-    App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, size,
+    App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, prelude::*,
+    px, size,
 };
 use gpui_component::{
     ActiveTheme, h_flex,
@@ -106,6 +106,7 @@ pub struct ZedisSettingEditor {
     tray_enabled: bool,
     show_key_tree_ttl: bool,
     soft_delete: bool,
+    sidebar_click_new_tab: bool,
     auto_update_check: bool,
     font_size_slider: Entity<SliderState>,
     locale_select: Entity<ZedisSelect>,
@@ -160,6 +161,7 @@ impl ZedisSettingEditor {
         let tray_enabled = store.tray_enabled();
         let show_key_tree_ttl = store.show_key_tree_ttl();
         let soft_delete = store.soft_delete();
+        let sidebar_click_new_tab = store.sidebar_click_new_tab();
         let auto_update_check = store.auto_update_check();
         let font_rem = store.font_rem_px().unwrap_or(DEFAULT_UI_FONT_SIZE);
         let ui_font = store.ui_font_family();
@@ -469,6 +471,7 @@ impl ZedisSettingEditor {
             tray_enabled,
             show_key_tree_ttl,
             soft_delete,
+            sidebar_click_new_tab,
             auto_update_check,
             font_size_slider,
             locale_select,
@@ -503,7 +506,9 @@ impl ZedisSettingEditor {
                     .child(Label::new(i18n_settings(cx, label_key)).text_sm())
                     .child(Label::new(i18n_settings(cx, &desc_key)).text_xs().text_color(muted)),
             )
-            .child(div().w(px(200.)).child(input_element))
+            // Right-align the control column so small controls (Switch) sit
+            // flush right; full-width Input/Select already fill the 200px box.
+            .child(h_flex().w(px(200.)).justify_end().child(input_element))
     }
 
     fn render_section_header(cx: &Context<Self>, title_key: &str, desc_key: &str) -> impl IntoElement {
@@ -622,6 +627,21 @@ impl Render for ZedisSettingEditor {
                     cx,
                     "max_truncate_length",
                     Input::new(&self.max_truncate_length_state),
+                ))
+                // — Workspace Tabs —
+                .child(Self::render_section_header(cx, "section_tabs", "section_tabs_desc"))
+                .child(Self::render_setting_row(
+                    cx,
+                    "sidebar_click_new_tab",
+                    Switch::new("sidebar-click-new-tab")
+                        .checked(self.sidebar_click_new_tab)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.sidebar_click_new_tab = *checked;
+                            let enabled = *checked;
+                            update_app_state_and_save(cx, "save_sidebar_click_new_tab", move |state, _| {
+                                state.set_sidebar_click_new_tab(enabled);
+                            });
+                        })),
                 ))
                 // — Redis Connection —
                 .child(Self::render_section_header(cx, "section_redis", "section_redis_desc"))

@@ -1222,9 +1222,15 @@ impl Render for Zedis {
             });
             self.active_tab = self.tabs.len() - 1;
             self.rebind_palettes(cx);
-            cx.global::<ZedisGlobalStore>()
-                .clone()
-                .update(cx, |state, cx| state.connect_server(id, db, cx));
+            cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                // An empty server id is a Home tab: route to Home instead of
+                // connecting (matches the sidebar Home button's new-tab path).
+                if id.is_empty() {
+                    state.clear_selected_server(cx);
+                } else {
+                    state.connect_server(id, db, cx);
+                }
+            });
         }
 
         // The status bar is the bottom row *of the content column*, not of the
