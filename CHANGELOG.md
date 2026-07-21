@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.6.3](https://github.com/vicanso/zedis/compare/v0.6.2..v0.6.3) - 2026-07-21
+
+### ⛰️  Features
+
+- *(multi-search)* Add title-bar menu entry to open it - ([bfebd7c](https://github.com/vicanso/zedis/commit/bfebd7c3291b37abcf8ae3742644280b30d0b5a0))
+- *(tabs)* Add "open servers in a new tab" preference - ([2891824](https://github.com/vicanso/zedis/commit/28918248c8186abeb54448c506cfbfc6d3803abe))
+- *(tabs)* Duplicate-tab gesture (⌘⇧-click) and ⌘W to close a tab - ([a737d09](https://github.com/vicanso/zedis/commit/a737d0939c95d1723e91853fc03bff2d7f5d07ec))
+- *(title-bar)* Inline × on the update chip to dismiss it for the session - ([1a5ad02](https://github.com/vicanso/zedis/commit/1a5ad02fc4318f30a70f1d2abddce27b269537d8))
+- *(ui)* Surface keyboard shortcuts on the controls they belong to - ([0068bff](https://github.com/vicanso/zedis/commit/0068bff0151221b3ee07df5a14e81cd04cd6848b))
+- Multi-database key search palette (⌘⇧F) - ([ec2d7c3](https://github.com/vicanso/zedis/commit/ec2d7c398129f15c209e2344ac242e0e32a230ca))
+
+### 🐛 Bug Fixes
+
+- *(key-tree)* Keep re-search clean while a prefix "Load more" is in flight - ([9f92019](https://github.com/vicanso/zedis/commit/9f92019e228763fda02573b373eaacd986fa5900))
+
+### 🚜 Refactor
+
+- *(settings)* Pin 14px default UI font size + compact status-bar chips - ([985822d](https://github.com/vicanso/zedis/commit/985822d4d3d4b74286ca1a5d7e2de3b26a91de5d))
+- *(status-bar)* Native ghost buttons for right-side chips - ([f439ab4](https://github.com/vicanso/zedis/commit/f439ab458453e2633dfc0fa65a8d646ee9b71058))
+- *(ui)* Polish multi-database search palette layout - ([1f4908b](https://github.com/vicanso/zedis/commit/1f4908bdab5ea0558d4f0600d12feac719f4edbe))
+- Change key tree min width - ([3f30f80](https://github.com/vicanso/zedis/commit/3f30f804807f6ea530861ab358de5f90d873a33c))
+
+### 📚 Documentation
+
+- Update readme - ([61fcecc](https://github.com/vicanso/zedis/commit/61fceccf32a66af4c7d0524283a30a04d09177f5))
+
+### ⚡ Performance
+
+- *(multi-search)* Use a fixed SCAN COUNT of 1000, not the result cap - ([ff79217](https://github.com/vicanso/zedis/commit/ff79217c71da48b519ff6e30b4ef072d7b8398aa))
+
+### 🎨 Styling
+
+- *(tables)* Mute column-header text (drop primary accent) - ([f164707](https://github.com/vicanso/zedis/commit/f164707d2fb6984342cf3c1e5573507f85ceacaa))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(smoke)* Add a hard macOS first-frame gate; linux stays a build gate - ([4643b41](https://github.com/vicanso/zedis/commit/4643b4115295bc3f7f9b842f17f4f5f745d972d4))
+- Pin all workflows to Rust 1.97.1 - ([9e5eb41](https://github.com/vicanso/zedis/commit/9e5eb41e30c7900b243aed63b5a21bc065132918))
+
+### I18n
+
+- *(kv-table)* Localize Field/Value/Score/Entry Id/TTL headers - ([0f1d066](https://github.com/vicanso/zedis/commit/0f1d066b4303e37925a9cd6a288bad8dcfb2d885))
+
 ## [0.6.2](https://github.com/vicanso/zedis/compare/v0.5.4..v0.6.2) - 2026-07-18
 
 ### ⛰️  Features
