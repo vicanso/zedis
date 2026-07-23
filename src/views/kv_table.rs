@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::Capability;
-use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT};
+use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT, WORKSPACE_TAB_BAR_HEIGHT};
 use crate::helpers::get_mono_font_family;
 use crate::{
     assets::CustomIconName,
@@ -762,6 +762,14 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             - STATUS_BAR_HEIGHT.as_f32()
             - EDITOR_KEY_BAR_HEIGHT.as_f32()
             - FOOTER_HEIGHT;
+        // The workspace tab strip (`main.rs::render_tab_bar`) only appears with
+        // more than one open tab, adding a bar above the content that the fixed
+        // chrome heights above don't cover. Subtract it when it's showing, or
+        // the form over-reserves by that height and its footer buttons overflow
+        // below the scroll fold.
+        if cx.global::<ZedisGlobalStore>().read(cx).open_tabs().len() > 1 {
+            reset_form_height -= WORKSPACE_TAB_BAR_HEIGHT.as_f32();
+        }
         // The field / editor height estimates below were tuned against a ~14px
         // base font. Scale them by the live rem size so a larger font enlarges
         // the reserved per-field space too, instead of overflowing the form and

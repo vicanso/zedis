@@ -42,3 +42,7 @@ pub const KEY_TREE_MIN_WIDTH: Pixels = px(330.0);
 pub const KEY_TREE_MAX_WIDTH: Pixels = px(800.0);
 pub const STATUS_BAR_HEIGHT: Pixels = px(35.0);
 pub const EDITOR_KEY_BAR_HEIGHT: Pixels = px(40.0);
+/// Height of the workspace tab strip (`main.rs::render_tab_bar`), which only
+/// appears with more than one open tab. Height estimate used by layout budgets
+/// that need to account for the extra bar above the content when it is shown.
+pub const WORKSPACE_TAB_BAR_HEIGHT: Pixels = px(30.0);
