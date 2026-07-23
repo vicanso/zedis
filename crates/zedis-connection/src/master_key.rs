@@ -20,7 +20,9 @@
 //! its own random key, resolved once per process:
 //!
 //! 1. **OS keychain** via `keyring` — macOS Keychain / Windows Credential
-//!    Manager. The preferred store.
+//!    Manager. The preferred store. Skipped for `RUST_ENV=dev` runs, whose
+//!    unsigned binary would otherwise make macOS re-prompt on every rebuild;
+//!    those use the key file (2) in the isolated `…/dev` config dir instead.
 //! 2. **`master.key` file** (`0600`) in the config dir — the fallback when no
 //!    keychain is reachable (headless Linux, CI, containers). It is also the
 //!    only store on Linux: we deliberately don't pull the Secret Service /
@@ -81,12 +83,15 @@ mod real {
     pub(super) fn resolve() -> [u8; 32] {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
-            // An isolated config dir (unit tests via `override_config_dir`, CI
-            // smoke runs via `ZEDIS_CONFIG_DIR`) must not read or write the
-            // user's real OS keychain — fall through to the key file beside
-            // that isolated config instead. `config_dir_override` is the single
-            // source of truth for both mechanisms.
-            if zedis_core::fs::config_dir_override().is_none() {
+            // Skip the OS keychain and fall through to the key file when either:
+            //  - the config dir is isolated (unit tests via `override_config_dir`,
+            //    CI smoke runs via `ZEDIS_CONFIG_DIR`) — `config_dir_override`
+            //    covers both; or
+            //  - this is a development run (`RUST_ENV=dev`): the dev binary is
+            //    unsigned / ad-hoc-signed, so macOS re-prompts for keychain
+            //    access on every rebuild. Dev already keeps everything under an
+            //    isolated `…/dev` config dir, so the key file lands there too.
+            if zedis_core::fs::config_dir_override().is_none() && !zedis_core::env::is_development() {
                 match keyring_key() {
                     Ok(key) => return key,
                     Err(e) => warn!(error = %e, "keychain unavailable; falling back to key file"),
