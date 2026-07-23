@@ -1635,3 +1635,4 @@ section_exact = "Exact matches"
 section_scan = "Scan matches"
 hint_idle = "Enter a key name and press Enter. Exact TYPE hits show first; SCAN runs if nothing matches."
 hint_footer = "Per-server SCAN cap · Enter to search"
+
