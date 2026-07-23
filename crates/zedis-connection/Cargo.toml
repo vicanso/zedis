@@ -45,6 +45,12 @@ uuid = { workspace = true }
 webpki-roots = { workspace = true }
 zedis-core = { path = "../zedis-core" }
 
+# Native OS keychain for the config-encryption key (macOS Keychain / Windows
+# Credential Manager). Deliberately absent on Linux — there `master_key.rs`
+# uses the 0600 key file instead of pulling the Secret Service / zbus stack.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+keyring = { workspace = true }
+
 [lints.clippy]
 # Match the root crate: no unwrap anywhere, tests included.
 unwrap_used = "deny"

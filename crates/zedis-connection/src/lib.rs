@@ -33,6 +33,7 @@ mod functions;
 mod latency;
 mod lua_script;
 mod manager;
+mod master_key;
 mod multi_search;
 mod search;
 mod ssh_cluster_connection;

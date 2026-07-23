@@ -20,6 +20,7 @@
 //! - Base64 encoding/decoding for storage and transport
 
 use crate::error::Error;
+use crate::master_key::{LEGACY_MASTER_KEY, master_key};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, Generate, KeyInit, array::Array, consts::U16},
@@ -35,12 +36,6 @@ pub use zedis_core::string::{
 };
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-/// Master encryption key for AES-256-GCM cipher.
-///
-/// WARNING: In production, this should be stored securely (e.g., keychain, env var)
-/// rather than hardcoded in the binary.
-const MASTER_KEY: &[u8; 32] = b"9dFVxjgeQTPfOXCoDdjpgMOlPhy2HE9E";
 
 /// Encrypts a plaintext string using AES-256-GCM encryption.
 ///
@@ -70,8 +65,15 @@ const MASTER_KEY: &[u8; 32] = b"9dFVxjgeQTPfOXCoDdjpgMOlPhy2HE9E";
 /// - The nonce is prepended to the ciphertext for decryption
 /// - GCM mode provides both confidentiality and authenticity
 pub fn encrypt(plain_text: &str) -> Result<String> {
-    // Initialize AES-256-GCM cipher with master key
-    let cipher = Aes256Gcm::new(MASTER_KEY.into());
+    // Always encrypt under the current machine-local key (keychain / key file);
+    // see `crate::master_key`.
+    encrypt_with_key(master_key(), plain_text)
+}
+
+/// Core of [`encrypt`], parameterized by key so tests can produce ciphertext
+/// under the legacy key and exercise the migration fallback in [`decrypt`].
+fn encrypt_with_key(key: &[u8; 32], plain_text: &str) -> Result<String> {
+    let cipher = Aes256Gcm::new(key.into());
 
     // Generate a random 96-bit nonce (number used once) via the ambient
     // system RNG (aes-gcm 0.11 `Generate`); type inferred from the encrypt call.
@@ -118,11 +120,20 @@ pub fn decrypt(cipher_text: &str) -> Result<String> {
         .decode(cipher_text)
         .map_err(|e| Error::Invalid { message: e.to_string() })?;
 
-    // Initialize cipher with master key
-    let cipher = Aes256Gcm::new(MASTER_KEY.into());
+    // Try the current machine-local key first, then the legacy embedded key so
+    // ciphertext written before the keychain migration still opens (it gets
+    // rewritten under the current key on the next save — lazy migration).
+    decrypt_with_key(master_key(), &data).or_else(|_| decrypt_with_key(&LEGACY_MASTER_KEY, &data))
+}
 
-    // Extract nonce from first 12 bytes
-    let nonce_bytes = &data[0..12];
+/// Decrypt `data` (`[nonce (12 bytes)][ciphertext]`) under a specific key.
+fn decrypt_with_key(key: &[u8; 32], data: &[u8]) -> Result<String> {
+    let cipher = Aes256Gcm::new(key.into());
+
+    // Extract nonce from first 12 bytes (guarded: never index a short slice).
+    let nonce_bytes = data.get(0..12).ok_or_else(|| Error::Invalid {
+        message: "invalid ciphertext length".to_string(),
+    })?;
     let nonce = Nonce::try_from(nonce_bytes).map_err(|_| Error::Invalid {
         message: "invalid nonce length".to_string(),
     })?;
@@ -257,7 +268,31 @@ pub fn decrypt_share(token: &str, passphrase: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt_share, encrypt_share, is_share_token};
+    use super::{decrypt, decrypt_share, encrypt, encrypt_share, encrypt_with_key, is_share_token};
+    use crate::master_key::LEGACY_MASTER_KEY;
+
+    #[test]
+    fn encrypt_decrypt_round_trip() {
+        let secret = "p@ss w0rd — 秘密";
+        let cipher = encrypt(secret).expect("encrypt");
+        assert_ne!(cipher, secret, "ciphertext must not equal plaintext");
+        assert_eq!(decrypt(&cipher).expect("decrypt"), secret);
+    }
+
+    #[test]
+    fn decrypt_falls_back_to_legacy_key() {
+        // Simulate a value written by an older build (legacy embedded key): the
+        // current key differs (see `master_key::resolve_master_key` under test),
+        // so decrypt must fall through to the legacy key.
+        let legacy_cipher = encrypt_with_key(&LEGACY_MASTER_KEY, "hunter2").expect("legacy encrypt");
+        assert_eq!(decrypt(&legacy_cipher).expect("decrypt legacy"), "hunter2");
+    }
+
+    #[test]
+    fn decrypt_rejects_short_input() {
+        // Base64 of 3 bytes — shorter than the 12-byte nonce; must error, not panic.
+        assert!(decrypt("AAAA").is_err());
+    }
 
     #[test]
     fn share_token_round_trip() {

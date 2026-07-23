@@ -30,7 +30,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 🦀 **Native, not Electron** — every pixel on the GPU, virtual-scrolled `SCAN`; millions of keys at 60+ FPS with tiny RAM.
 - 🧠 **Understands your data** — auto-decompresses and decodes JSON/JSONPath, Protobuf, MessagePack, timestamps, images and hex, with purpose-built viewers for every Redis type and module.
 - 📊 **Real-time observability** — live metrics, a memory analyzer with offline + AI recommendations, Slow Log ↔ Latency, `MONITOR`, and value search.
-- 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted, and destructive actions escalate their confirms on production.
+- 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels, Cluster/Sentinel, Redis Insight import, and 8 UI languages.
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, batch mode, and cross-server copy/diff.
 
@@ -86,8 +86,10 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | 🗂️ **Type & Module Viewers** | Bitmap · HyperLogLog · Vector Set (KNN) · Geo map · Bloom / Cuckoo / Count-Min / Top-K · Time Series · Streams (live-tail) · Pub/Sub · RediSearch · Functions |
 | 📊 **Observability** | Live metrics + 7-day history · memory analyzer + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health & slot reshard · persistence & keyspace events · typed CONFIG editor |
 | 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops · cross-server copy & diff |
-| 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · encrypted secrets · local-only, no telemetry |
+| 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · per-machine encrypted secrets · local-only, no telemetry |
 | ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘⇧F multi-database key search · ⌘/ shortcut reference · redis-cli with completion · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |
+
+> 🔐 **Where connection secrets live:** passwords and SSH keys are encrypted with a random **per-machine** key — kept in the **macOS Keychain** or **Windows Credential Manager**, and in a `0600`-permission key file under the config dir on **Linux** (no Secret Service / D-Bus dependency, so it works headless too). The key never leaves the machine, so a copied config won't decrypt elsewhere — use the passphrase-protected export to move connections between machines.
 
 📖 **[See the full feature tour →](./docs/FEATURES.md)**
 

@@ -41,7 +41,14 @@ pub fn override_config_dir(path: PathBuf) {
     let _ = CONFIG_DIR_OVERRIDE.set(path);
 }
 
-fn config_dir_override() -> Option<PathBuf> {
+/// The active config-dir override, if any — set in-process via
+/// [`override_config_dir`] or externally via `ZEDIS_CONFIG_DIR`. `Some` means
+/// the config dir is isolated (unit tests / CI smoke runs), which callers can
+/// use to keep machine-local side effects (e.g. the encryption master key)
+/// beside that isolated config rather than in a shared store like the OS
+/// keychain. Prefer this over reading `ZEDIS_CONFIG_DIR` directly so both
+/// override mechanisms stay covered by one source of truth.
+pub fn config_dir_override() -> Option<PathBuf> {
     if let Some(dir) = CONFIG_DIR_OVERRIDE.get() {
         return Some(dir.clone());
     }
