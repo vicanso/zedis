@@ -1454,7 +1454,18 @@ impl Render for Zedis {
                 }
                 _ => cx.propagate(),
             }))
-            .on_action(cx.listener(|_this, _e: &NavAction, _window, cx| {
+            .on_action(cx.listener(|_this, _e: &NavAction, window, cx| {
+                // Esc first dismisses an open dialog (the server editor,
+                // import/export, a confirm alert, …). This binding lives in the
+                // `Workspace` context and consumes Esc without propagating, so
+                // when a dialog's own `escape` handler doesn't win (e.g. focus
+                // isn't inside the dialog subtree) Esc would otherwise be
+                // swallowed here — doing nothing on Home, or worse, navigating
+                // the page *behind* the still-open dialog on a Server route.
+                if window.has_active_dialog(cx) {
+                    window.close_dialog(cx);
+                    return;
+                }
                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                     store.update(cx, |state, cx| {
                         if !matches!(
