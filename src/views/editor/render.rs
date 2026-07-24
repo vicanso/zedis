@@ -312,30 +312,257 @@ impl ZedisEditor {
     ///
     /// The editor pane is otherwise a blank rectangle on first connect —
     /// before the user clicks anything in the tree — which reads as dead
-    /// space. A calm muted icon + a one-line hint pointing at the key
-    /// tree gives the pane a deliberate resting state instead.
+    /// space. Layout:
+    /// 1. Calm hero (icon + title + hint)
+    /// 2. Quick-action buttons for the most common no-key flows
+    /// 3. One guide card: keyboard shortcuts, key-tree tips, and
+    ///    status-bar orientation
+    ///
+    /// Shortcut descriptions reuse the `shortcuts.` locale section so
+    /// the ⌘/ overlay and this list can never drift apart in wording.
     pub(super) fn render_no_key_selected(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let fg = theme.foreground;
+        let chip_bg = theme.muted;
+        let border = theme.border;
+        let radius = theme.radius;
+        let card_bg = card_background(cx);
+        let mono = get_mono_font_family();
+
+        // Only actions that work with nothing selected — key-bound ones
+        // (save / TTL / rename / delete) would be misleading here. Two
+        // columns: find/browse on the left, act on the right.
+        const FIND_HINTS: [(&str, &str); 4] = [
+            ("cmd-f", "search"),
+            ("cmd-k", "command_palette"),
+            ("cmd-p", "recent_keys"),
+            ("cmd-shift-f", "multi_search"),
+        ];
+        const ACT_HINTS: [(&str, &str); 4] = [
+            ("cmd-n", "new_key"),
+            ("cmd-r", "reload_keys"),
+            ("cmd-j", "terminal"),
+            ("cmd-/", "keyboard_shortcuts"),
+        ];
+
+        // Chip-first rows: fixed min width on the keystroke so labels
+        // start on one vertical line inside each column.
+        let kbd_chip = |keystroke: &str| {
+            div()
+                .min_w(px(52.))
+                .px_1p5()
+                .py_0p5()
+                .rounded(radius)
+                .bg(chip_bg)
+                .border_1()
+                .border_color(border)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Label::new(humanize_keystroke(keystroke))
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .text_color(fg.alpha(0.9)),
+                )
+        };
+        let hint_column = |cx: &mut Context<Self>, hints: &[(&str, &str)]| {
+            let mut column = v_flex().flex_1().min_w(px(168.)).gap_1p5();
+            for (keystroke, desc_key) in hints {
+                column = column.child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(kbd_chip(keystroke))
+                        .child(Label::new(i18n_shortcuts(cx, desc_key)).text_sm().text_color(muted)),
+                );
+            }
+            column
+        };
+
+        let tip_row = |icon: Icon, text: SharedString| {
+            h_flex()
+                .items_start()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(16.))
+                        .pt_0p5()
+                        .flex()
+                        .justify_center()
+                        .child(icon.with_size(px(13.)).text_color(muted.alpha(0.85))),
+                )
+                .child(Label::new(text).text_xs().text_color(muted).whitespace_normal())
+        };
+
+        // Quick actions: one click to the flows people reach for before
+        // they've picked a key. Labels reuse the shortcuts locale so
+        // wording matches the list below and the ⌘/ overlay.
+        let quick_actions = h_flex()
+            .mt_3()
+            .gap_2()
+            .flex_wrap()
+            .justify_center()
+            .child(
+                Button::new("empty-new-key")
+                    .outline()
+                    .small()
+                    .icon(IconName::Plus)
+                    .label(i18n_shortcuts(cx, "new_key"))
+                    .tooltip(humanize_keystroke("cmd-n"))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state
+                            .update(cx, |state, cx| state.emit_editor_action(EditorAction::Create, cx));
+                    })),
+            )
+            .child(
+                Button::new("empty-search")
+                    .outline()
+                    .small()
+                    .icon(IconName::Search)
+                    .label(i18n_shortcuts(cx, "search"))
+                    .tooltip(humanize_keystroke("cmd-f"))
+                    .on_click(cx.listener(|_this, _, window, cx| {
+                        window.dispatch_action(Box::new(EditorAction::Search), cx);
+                    })),
+            )
+            .child(
+                Button::new("empty-terminal")
+                    .outline()
+                    .small()
+                    .icon(IconName::SquareTerminal)
+                    .label(i18n_shortcuts(cx, "terminal"))
+                    .tooltip(humanize_keystroke("cmd-j"))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| state.toggle_terminal(cx));
+                    })),
+            )
+            .child(
+                Button::new("empty-multi-search")
+                    .outline()
+                    .small()
+                    .icon(IconName::Globe)
+                    .label(i18n_shortcuts(cx, "multi_search"))
+                    .tooltip(humanize_keystroke("cmd-shift-f"))
+                    .on_click(cx.listener(|_this, _, window, cx| {
+                        window.dispatch_action(Box::new(MultiSearchAction::Toggle), cx);
+                    })),
+            );
+
+        // One card for discoverability blocks — shared width, border, and
+        // hairline dividers keep hierarchy without floating sections.
+        let guide = v_flex()
+            .mt_4()
+            .w(px(480.))
+            .rounded(theme.radius_lg)
+            .border_1()
+            .border_color(border)
+            .bg(card_bg)
+            .overflow_hidden()
+            .child(
+                v_flex()
+                    .px_4()
+                    .pt_3()
+                    .pb_3()
+                    .gap_2p5()
+                    .child(
+                        Label::new(i18n_shortcuts(cx, "title"))
+                            .text_xs()
+                            .font_medium()
+                            .text_color(muted),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .flex_wrap()
+                            .gap_x_6()
+                            .gap_y_2()
+                            .child(hint_column(cx, &FIND_HINTS))
+                            .child(hint_column(cx, &ACT_HINTS)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .px_4()
+                    .py_3()
+                    .gap_1p5()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        Label::new(i18n_editor(cx, "tree_tips_title"))
+                            .text_xs()
+                            .font_medium()
+                            .text_color(muted),
+                    )
+                    .child(tip_row(
+                        Icon::new(IconName::FolderOpen),
+                        i18n_editor(cx, "tree_tip_select"),
+                    ))
+                    .child(tip_row(Icon::new(IconName::Menu), i18n_editor(cx, "tree_tip_context")))
+                    .child(tip_row(
+                        Icon::new(IconName::Settings2),
+                        i18n_editor(cx, "tree_tip_filters"),
+                    ))
+                    .child(tip_row(
+                        Icon::new(CustomIconName::SquareCheck),
+                        i18n_editor(cx, "tree_tip_multi"),
+                    )),
+            )
+            .child(
+                v_flex()
+                    .px_4()
+                    .py_3()
+                    .gap_1p5()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        Label::new(i18n_editor(cx, "status_bar_hints_title"))
+                            .text_xs()
+                            .font_medium()
+                            .text_color(muted),
+                    )
+                    .child(tip_row(
+                        Icon::new(IconName::Menu),
+                        i18n_editor(cx, "status_bar_hint_tools"),
+                    ))
+                    .child(tip_row(
+                        Icon::new(CustomIconName::Activity),
+                        i18n_editor(cx, "status_bar_hint_metrics"),
+                    ))
+                    .child(tip_row(
+                        Icon::new(CustomIconName::Link),
+                        i18n_editor(cx, "status_bar_hint_connection"),
+                    )),
+            );
+
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
+            // Optical centering: with the taller card the geometric
+            // center reads a little low — bias the whole block upward.
+            .pb(px(32.))
+            .px_6()
             .gap_2()
             .child(
                 Icon::new(IconName::Inbox)
-                    .with_size(px(44.))
-                    .text_color(muted.alpha(0.55)),
+                    .with_size(px(40.))
+                    .text_color(muted.alpha(0.5)),
             )
             .child(
                 Label::new(i18n_editor(cx, "no_key_selected_title"))
                     .font_medium()
-                    .text_color(cx.theme().foreground),
+                    .text_color(fg),
             )
             .child(
                 Label::new(i18n_editor(cx, "no_key_selected_hint"))
                     .text_sm()
-                    .text_color(muted),
+                    .text_color(muted)
+                    .text_center(),
             )
+            .child(quick_actions)
+            .child(guide)
     }
 }
 

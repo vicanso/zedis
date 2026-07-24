@@ -18,10 +18,14 @@ use crate::{
     connection::{ConflictMode, RestoreStatus, copy_key, get_connection_manager, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
-    helpers::{EditorAction, format_duration, get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl},
+    helpers::{
+        EditorAction, MultiSearchAction, card_background, format_duration, get_mono_font_family, humanize_keystroke,
+        unix_ts, validate_ttl,
+    },
     states::{
         DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
         dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
+        i18n_shortcuts,
     },
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
