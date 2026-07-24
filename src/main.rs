@@ -164,10 +164,12 @@ impl Zedis {
         // `selected_server`, which lands on the matching tab.
         let (saved_tabs, selected) = {
             let store = cx.global::<ZedisGlobalStore>().read(cx);
+            // An empty id is a persisted Home tab; server tabs are dropped
+            // only when their server no longer exists.
             let saved: Vec<(String, usize)> = store
                 .open_tabs()
                 .iter()
-                .filter(|(id, _)| get_server(id).is_ok())
+                .filter(|(id, _)| id.is_empty() || get_server(id).is_ok())
                 .cloned()
                 .collect();
             (saved, store.selected_server().cloned())
@@ -185,8 +187,15 @@ impl Zedis {
                 content,
             });
         }
-        if let Some((id, db)) = selected
-            && let Some(ix) = tabs.iter().position(|tab| tab.server_id == id && tab.db == db)
+        // Reactivate the tab the user left off on: the remembered selection's
+        // tab, or — when the session ended on Home (no selection) — the first
+        // Home tab, so a restored Home tab actually hosts the Home route
+        // instead of tab 0 showing Home under a server-bound tab.
+        let remembered = match &selected {
+            Some((id, db)) => tabs.iter().position(|tab| &tab.server_id == id && tab.db == *db),
+            None => tabs.iter().position(|tab| tab.server_id.is_empty()),
+        };
+        if let Some(ix) = remembered
             && ix != 0
         {
             active_tab = ix;
@@ -484,14 +493,10 @@ impl Zedis {
     }
 
     /// Persist the strip's `(server_id, db)` list so the next launch restores
-    /// the same workspace tabs. Tabs still on Home (empty id) are skipped.
+    /// the same workspace tabs. Home tabs persist as an empty id — dropping
+    /// them here made every Home tab vanish on restart.
     fn persist_tabs(&self, cx: &mut Context<Self>) {
-        let tabs: Vec<(String, usize)> = self
-            .tabs
-            .iter()
-            .filter(|tab| !tab.server_id.is_empty())
-            .map(|tab| (tab.server_id.clone(), tab.db))
-            .collect();
+        let tabs: Vec<(String, usize)> = self.tabs.iter().map(|tab| (tab.server_id.clone(), tab.db)).collect();
         update_app_state_and_save_quiet(cx, "save_open_tabs", move |state, _| state.set_open_tabs(tabs.clone()));
     }
 

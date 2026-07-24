@@ -217,13 +217,15 @@ impl ZedisMultiSearch {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         match self.scope_kind {
             // Every open workspace tab's `(server, db)` — kept in sync by
-            // `save_open_tabs` on each tab change. Deduped: two tabs can't
+            // `save_open_tabs` on each tab change. Home tabs (empty id) are
+            // not connections, so they're skipped. Deduped: two tabs can't
             // normally share a connection, but stay safe if that changes.
             ScopeKind::OpenTabs => {
                 let mut seen = HashSet::new();
                 let mut targets: Vec<(String, usize)> = store
                     .open_tabs()
                     .iter()
+                    .filter(|(id, _)| !id.is_empty())
                     .filter(|target| seen.insert((*target).clone()))
                     .cloned()
                     .collect();
@@ -389,10 +391,9 @@ impl ZedisMultiSearch {
     /// Tab routing: with multiple tabs open, reuse the tab already bound to
     /// this `(server, db)` or append a new one at the end (the root's
     /// `ServerOpenInNewTab` handler does exactly that); with a single tab,
-    /// connect in place — no tab churn. `open_tabs()` (the server-bound tab
-    /// list, synced on every tab change) stands in for strip visibility; a
-    /// lone Home tab beside one connection counts as single here and simply
-    /// degrades to the in-place connect. The already-active connection also
+    /// connect in place — no tab churn. `open_tabs()` (the persisted tab
+    /// list, Home tabs included, synced on every tab change) stands in for
+    /// strip visibility. The already-active connection also
     /// reconnects in place: `connect_server` re-emits `ServerSelected`
     /// unconditionally, which is what consumes the pending key.
     fn execute(&mut self, row: &HitRow, window: &mut Window, cx: &mut Context<Self>) {
