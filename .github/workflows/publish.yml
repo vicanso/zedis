@@ -62,12 +62,21 @@ jobs:
         # what pushes the tag) and the draft of a re-run; `gh release create`
         # alone would still add a draft next to a published release, and the
         # uploads would land on that draft instead of the published release.
+        #
+        # Probe via the Releases API (paginated), not `gh release list | grep`:
+        # list+grep has missed published releases on macOS runners and then
+        # left empty untagged drafts beside the real release.
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          if gh release list --json tagName -q '.[].tagName' | grep -qx "$GITHUB_REF_NAME"; then
-            echo "release for $GITHUB_REF_NAME already exists; skipping"
+          tag="$GITHUB_REF_NAME"
+          ids="$(
+            gh api --paginate "repos/${{ github.repository }}/releases" \
+              -q ".[] | select(.tag_name == \"${tag}\") | .id" 2>/dev/null || true
+          )"
+          if [ -n "$ids" ]; then
+            echo "release for $tag already exists; skipping"
           else
-            gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes ""
+            gh release create "$tag" --draft --title "$tag" --notes ""
           fi
   macos:
     needs: prepare_vars
@@ -220,7 +229,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
-          ./.github/workflows/upload_asset.sh "$DMG_NAME" $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh "$DMG_NAME" "$GITHUB_TOKEN"
       - name: Release Nightly Assets
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
@@ -338,9 +347,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          ./.github/workflows/upload_asset.sh ./${{ env.ZIP_NAME }} $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./${{ env.MSI_NAME }} $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./${{ env.MSI_ZIP_NAME }} $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh "./${{ env.ZIP_NAME }}" "$GITHUB_TOKEN"
+          ./.github/workflows/upload_asset.sh "./${{ env.MSI_NAME }}" "$GITHUB_TOKEN"
+          ./.github/workflows/upload_asset.sh "./${{ env.MSI_ZIP_NAME }}" "$GITHUB_TOKEN"
       - name: Release Nightly Assets
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
@@ -453,8 +462,8 @@ jobs:
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          ./.github/workflows/upload_asset.sh ./zedis-linux-${{ matrix.suffix }}.tar.gz $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./zedis-${{ matrix.suffix }}.AppImage.tar.gz $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh "./zedis-linux-${{ matrix.suffix }}.tar.gz" "$GITHUB_TOKEN"
+          ./.github/workflows/upload_asset.sh "./zedis-${{ matrix.suffix }}.AppImage.tar.gz" "$GITHUB_TOKEN"
       - name: Release Nightly Assets
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
@@ -515,5 +524,5 @@ jobs:
           echo "--- latest.json ---"; cat latest.json
       - name: upload checksum assets
         run: |
-          ./.github/workflows/upload_asset.sh ./SHA256SUMS $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./latest.json $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh ./SHA256SUMS "$GITHUB_TOKEN"
+          ./.github/workflows/upload_asset.sh ./latest.json "$GITHUB_TOKEN"

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.4](https://github.com/vicanso/zedis/compare/v0.6.3..v0.6.4) - 2026-07-24
+
+### ⛰️  Features
+
+- *(editor)* Enrich the no-key empty state with actions and tips - ([3330bcb](https://github.com/vicanso/zedis/commit/3330bcbadace3b09e80369ec3d1127eb4bb348be))
+- *(security)* Encrypt config secrets with a per-machine key ([#117](https://github.com/orhun/git-cliff/issues/117)) - ([012fe59](https://github.com/vicanso/zedis/commit/012fe596249d208efbfa5b4543ab8b56a5b4939e))
+
+### 🐛 Bug Fixes
+
+- *(dialog)* Dismiss open dialog on Esc instead of swallowing it - ([bd0c683](https://github.com/vicanso/zedis/commit/bd0c683aae95c8ec03a25e98aa19672257ca9433))
+- *(i18n)* Repair mojibake in translations and guard against it in build.rs ([#118](https://github.com/orhun/git-cliff/issues/118)) - ([1edc42f](https://github.com/vicanso/zedis/commit/1edc42f06519874a4fe42433a7e5c5fb56935bda))
+- *(kv-table)* Account for the workspace tab strip in edit-form height - ([9739ff1](https://github.com/vicanso/zedis/commit/9739ff1c334855c55f75d4ab15f425bd0aef2f3d))
+- *(tabs)* Persist Home tabs so they survive a restart - ([db7eee2](https://github.com/vicanso/zedis/commit/db7eee235d6ab083d902e4cd8802041f8089a682))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(master-key)* Skip the OS keychain for RUST_ENV=dev runs - ([309939d](https://github.com/vicanso/zedis/commit/309939d2af3137df26531ac7a839a6dd47594ccf))
+
 ## [0.6.3](https://github.com/vicanso/zedis/compare/v0.6.2..v0.6.3) - 2026-07-21
 
 ### ⛰️  Features
