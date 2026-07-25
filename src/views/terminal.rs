@@ -82,6 +82,20 @@ fn is_blocking_command(cmd_name: &str, args: &[String]) -> bool {
     false
 }
 
+/// Commands pasted from docs or a shell history often carry a leading
+/// `redis-cli`; drop that word so the rest of the line runs as a plain Redis
+/// command. Any connection flags after it (`-h`, `-p`, …) are left untouched —
+/// the terminal already talks to the selected server, and a pasted flag
+/// failing loudly beats silently pretending to honor it.
+fn strip_redis_cli_prefix(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    match trimmed.split_once(char::is_whitespace) {
+        Some((first, rest)) if first.eq_ignore_ascii_case("redis-cli") => rest.trim_start(),
+        None if trimmed.eq_ignore_ascii_case("redis-cli") => "",
+        _ => line,
+    }
+}
+
 /// Scrollback cap for the REPL output pane. The whole buffer is re-cloned
 /// into the read-only `InputState` on every command, so leaving it unbounded
 /// made a long session O(n²) in total output. ~200 KB ≈ a few thousand lines.
@@ -464,6 +478,18 @@ impl ZedisTerminal {
             cx.notify();
             return;
         }
+        // Strip any `redis-cli` prefix up front so the danger classifier, the
+        // executor, and the recorded history all see the real command.
+        let command: SharedString = if command.lines().any(|line| strip_redis_cli_prefix(line) != line) {
+            command
+                .lines()
+                .map(strip_redis_cli_prefix)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into()
+        } else {
+            command
+        };
         let server_id = self.server_state.read(cx).server_id().to_string();
 
         // Look for the first line that needs a confirm. If any line trips the
@@ -831,5 +857,21 @@ impl Render for ZedisTerminal {
                         .child(repl_row)
                     })
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_redis_cli_prefix;
+
+    #[test]
+    fn strips_leading_redis_cli() {
+        assert_eq!(strip_redis_cli_prefix("redis-cli GET foo"), "GET foo");
+        assert_eq!(strip_redis_cli_prefix("  REDIS-CLI  set k v"), "set k v");
+        assert_eq!(strip_redis_cli_prefix("redis-cli"), "");
+        // Only a whole leading word counts; embedded mentions stay untouched.
+        assert_eq!(strip_redis_cli_prefix("get redis-cli"), "get redis-cli");
+        assert_eq!(strip_redis_cli_prefix("redis-cli-tool run"), "redis-cli-tool run");
+        assert_eq!(strip_redis_cli_prefix("GET foo"), "GET foo");
     }
 }
