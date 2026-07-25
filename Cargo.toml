@@ -205,8 +205,8 @@ webpki-roots = "1.0.7"
 # use the same source form (no rev) here and let Cargo.lock pin the commit.
 # Pin only gpui-component's rev; after upgrade, confirm a single gpui via
 # `cargo tree -i gpui` and commit the lockfile.
-# component: 0775df394083c1ed74f36f846b78868d1267398f
-# zed (lockfile): 503292376ed04fca814c8b4533b38f90863675fb
+# component: bc174a7ec4534b2a4174fddde314b38d30d69093
+# zed (lockfile): 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "font-kit",
@@ -219,10 +219,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
 # LanguageConfig / LanguageRegistry; pulls tree-sitter + tree-sitter-json
 # only — not `tree-sitter-languages` (30+ parsers). Without this feature
 # only the WASM stub is built and LanguageConfig has no constructor.
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "0775df394083c1ed74f36f846b78868d1267398f", features = [
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "bc174a7ec4534b2a4174fddde314b38d30d69093", features = [
     "tree-sitter",
 ] }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "0775df394083c1ed74f36f846b78868d1267398f" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "bc174a7ec4534b2a4174fddde314b38d30d69093" }
 gpui_macros = { git = "https://github.com/zed-industries/zed" }
 # gpui = "0.2.2"
 # gpui-component = "0.5.1"
