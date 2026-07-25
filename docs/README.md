@@ -58,7 +58,7 @@ Language preference is stored in `localStorage` key `zedis-lang` (`en` \| `zh`) 
 Uses the same user-attachments URL as the README:
 
 ```text
-https://github.com/user-attachments/assets/36135174-16df-473b-8756-ea5931ec3c4b
+https://github.com/user-attachments/assets/d7007ecf-bbfd-4e68-bbaf-437091f711e7
 ```
 
 If the video fails to load, the hero falls back to a static screenshot.
