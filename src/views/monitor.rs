@@ -179,7 +179,7 @@ impl MonitorTableDelegate {
         // text that fits at rest is clipped the moment the pointer lands on the
         // row. These budget for it, on top of the 20px of side padding:
         //   timestamp: "22:31:05.123" — 12 mono chars (~101px)
-        //   node:      "10.51.168.20:31545" — the master's host:port, ~18 (~151px)
+        //   node:      "192.168.1.10:31545" — the master's host:port, ~18 (~151px)
         //   client:    "127.0.0.1:60866" — ~15 (~126px)
         let ts_width = 190.;
         let node_width = 240.;

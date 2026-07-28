@@ -260,7 +260,7 @@ impl SlowlogTableDelegate {
         // text that fits at rest gets clipped the moment the pointer lands on the
         // row. Both of these budget for it, on top of the 20px of side padding:
         //   timestamp: "2026-07-14 22:31:05" — 19 mono chars
-        //   client:    "10.51.168.20:53166" — sized for the address only. The
+        //   client:    "192.168.1.10:53166" — sized for the address only. The
         //              client *name* is appended after it ("… (zedis:v0.5.5)") and
         //              is allowed to ellipsize: it repeats across every row of the
         //              same client, whereas the address is what tells them apart.

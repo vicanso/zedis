@@ -21,6 +21,7 @@ use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smol::fs;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -114,6 +115,29 @@ fn parse_url(host: String) -> RedisUrl {
             host: host.to_string(),
             ..Default::default()
         }
+    }
+}
+
+/// Reduce a multi-host connection string — the comma-separated
+/// `scheme://[userinfo@]host1:p1,host2:p2,…` extension some clients use for
+/// cluster/sentinel seeds — to a standard single-host URI by dropping every
+/// address after the first, keeping any trailing path/query intact. Only
+/// commas in the host part count: a raw comma is legal inside userinfo, so
+/// a password like `pa,ss` passes through untouched. Returns the input
+/// unchanged when there is no host list (the common case).
+fn keep_first_host(uri: &str) -> Cow<'_, str> {
+    let Some(auth_start) = uri.find("://").map(|i| i + 3) else {
+        return Cow::Borrowed(uri);
+    };
+    let auth_end = uri[auth_start..]
+        .find(['/', '?', '#'])
+        .map_or(uri.len(), |i| auth_start + i);
+    let host_start = uri[auth_start..auth_end]
+        .rfind('@')
+        .map_or(auth_start, |i| auth_start + i + 1);
+    match uri[host_start..auth_end].find(',') {
+        Some(i) => Cow::Owned(format!("{}{}", &uri[..host_start + i], &uri[auth_end..])),
+        None => Cow::Borrowed(uri),
     }
 }
 
@@ -465,11 +489,17 @@ impl RedisServer {
     /// and the trailing `/db` segment is ignored — the database is
     /// chosen per-session in the UI, not stored on the server entry.
     ///
+    /// A comma-separated multi-host list (`host1:p1,host2:p2,…` — a
+    /// client-specific extension, not standard URI syntax) is reduced to
+    /// its first address: Zedis stores a single seed node and discovers
+    /// cluster topology at connect time. Query parameters (`?slow=…`) are
+    /// likewise client options with no Zedis equivalent and are ignored.
+    ///
     /// Returns `Err` for a malformed URI, a non-`redis(s)` scheme, or a
     /// missing host. The entry always gets a fresh `id` so importing
     /// the same URI twice yields two distinct entries.
     pub fn from_import_uri(uri: &str) -> Result<Self, ImportError> {
-        let parsed = Url::parse(uri.trim()).map_err(|e| ImportError::InvalidUri(e.to_string()))?;
+        let parsed = Url::parse(&keep_first_host(uri.trim())).map_err(|e| ImportError::InvalidUri(e.to_string()))?;
         let scheme = parsed.scheme();
         if scheme != "redis" && scheme != "rediss" {
             return Err(ImportError::UnsupportedScheme(scheme.to_string()));
@@ -951,6 +981,32 @@ mod tests {
         assert!(s.username.is_none());
         assert_eq!(s.password.as_deref(), Some("p@ss"));
         assert_eq!(s.port, 6380);
+    }
+
+    #[test]
+    fn import_uri_multi_host_takes_first_seed_and_ignores_query() {
+        // The comma-separated multi-host + client-options form some clients
+        // emit for clusters. Only the first address is kept — topology is
+        // discovered at connect — and the query options are dropped.
+        let s = RedisServer::from_import_uri(
+            "redis://:pass@192.168.1.10:31545,192.168.1.11:31167,192.168.1.12:30105/?slow=200ms&maxProcessing=1000",
+        )
+        .expect("import uri");
+        assert_eq!(s.host, "192.168.1.10");
+        assert_eq!(s.port, 31545);
+        assert!(s.username.is_none());
+        assert_eq!(s.password.as_deref(), Some("pass"));
+        assert!(s.tls.is_none());
+    }
+
+    #[test]
+    fn import_uri_comma_in_password_is_not_a_host_list() {
+        // A raw comma is legal inside userinfo — only commas after the
+        // last `@` (the host part) trigger the multi-host reduction.
+        let s = RedisServer::from_import_uri("redis://user:pa,ss@10.0.0.5:6380").expect("import uri");
+        assert_eq!(s.host, "10.0.0.5");
+        assert_eq!(s.port, 6380);
+        assert_eq!(s.password.as_deref(), Some("pa,ss"));
     }
 
     #[test]

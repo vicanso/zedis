@@ -44,6 +44,7 @@ use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
+use std::mem::take;
 use std::rc::Rc;
 use substring::Substring;
 use tracing::info;
@@ -1049,6 +1050,9 @@ impl ZedisServers {
 struct ImportServersBody {
     json_state: Entity<InputState>,
     pass_state: Entity<InputState>,
+    /// One-shot flag: focus the paste box on the first render only, so the
+    /// user can paste right away without clicking into the input.
+    should_focus: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1060,13 +1064,17 @@ impl ImportServersBody {
         Self {
             json_state,
             pass_state,
+            should_focus: true,
             _subscriptions: vec![sub],
         }
     }
 }
 
 impl Render for ImportServersBody {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if take(&mut self.should_focus) {
+            self.json_state.update(cx, |state, cx| state.focus(window, cx));
+        }
         let needs_pass = is_share_token(self.json_state.read(cx).value().as_ref());
         let hint_color = cx.theme().yellow;
         let drop_state = self.json_state.clone();
