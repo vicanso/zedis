@@ -500,15 +500,21 @@ impl ZedisSettingEditor {
             .gap_8()
             .py_2()
             .child(
+                // `min_w_0` lets the text column shrink below its content
+                // width so a long description wraps instead of squeezing the
+                // control column out of the row (default flex `min-width:
+                // auto` — same overflow the font-size slider row hit).
                 v_flex()
                     .flex_1()
+                    .min_w_0()
                     .gap_0p5()
                     .child(Label::new(i18n_settings(cx, label_key)).text_sm())
                     .child(Label::new(i18n_settings(cx, &desc_key)).text_xs().text_color(muted)),
             )
             // Right-align the control column so small controls (Switch) sit
             // flush right; full-width Input/Select already fill the 200px box.
-            .child(h_flex().w(px(200.)).justify_end().child(input_element))
+            // `flex_none` guarantees the 200px against a long description.
+            .child(h_flex().w(px(200.)).flex_none().justify_end().child(input_element))
     }
 
     fn render_section_header(cx: &Context<Self>, title_key: &str, desc_key: &str) -> impl IntoElement {
