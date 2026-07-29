@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.5](https://github.com/vicanso/zedis/compare/v0.6.4..v0.6.5) - 2026-07-29
+
+### ⛰️  Features
+
+- *(servers)* Accept multi-host redis URIs on import, auto-focus paste box - ([aa58461](https://github.com/vicanso/zedis/commit/aa5846182276f51f461dc7a249f1341523565f63))
+- *(terminal)* Strip a leading `redis-cli` from pasted commands - ([9ed249a](https://github.com/vicanso/zedis/commit/9ed249a53790dd1a5f388ed06023473f685026a6))
+
+### 🐛 Bug Fixes
+
+- *(palette)* Restore prior focus on dismiss instead of bare blur - ([84d158b](https://github.com/vicanso/zedis/commit/84d158b14f8843998d10fd65177da11d3c61de45))
+- *(settings)* Stop a long description from squeezing out the row's control - ([b51ee65](https://github.com/vicanso/zedis/commit/b51ee65040da1ff5d1c385222a63ef60255e75fc))
+- *(value-search)* Give the virtualized results list a definite height - ([fc5a9f6](https://github.com/vicanso/zedis/commit/fc5a9f69fb1e18a9849c6c0b5368d10f1ae2c541))
+
+### 📚 Documentation
+
+- Update docs - ([ac8e2ad](https://github.com/vicanso/zedis/commit/ac8e2ad30c9d2aac19271536c56870e645842bb5))
+
 ## [0.6.4](https://github.com/vicanso/zedis/compare/v0.6.3..v0.6.4) - 2026-07-24
 
 ### ⛰️  Features
