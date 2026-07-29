@@ -24,6 +24,7 @@ use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
+use std::mem::take;
 
 /// Cap on loaded-key matches shown in the palette. Keeps a non-empty query
 /// on a large keyspace from turning tens of thousands of loaded keys into
@@ -106,6 +107,11 @@ pub struct ZedisCommandPalette {
     /// independent global action handler that has no `Window`, so the
     /// actual input focus is deferred to the next render.
     pending_focus: bool,
+    /// Focus that was live when the palette opened; handed back on close.
+    prev_focus: Option<FocusHandle>,
+    /// Set on close; the next (closed) render restores `prev_focus` — or
+    /// blurs when there is none. Deferred because `toggle` has no `Window`.
+    pending_restore: bool,
     /// Scroll handle for the results list. The list overflows the
     /// fixed-height panel, so keyboard navigation calls
     /// `scroll_to_item` to keep the selected row in view — otherwise
@@ -138,6 +144,8 @@ impl ZedisCommandPalette {
             selected: 0,
             focus_handle: cx.focus_handle(),
             pending_focus: false,
+            prev_focus: None,
+            pending_restore: false,
             scroll_handle: ScrollHandle::new(),
             cached_items: Vec::new(),
             cached_order: Vec::new(),
@@ -176,19 +184,31 @@ impl ZedisCommandPalette {
             // without this the list stays scrolled where it was last
             // time while the selection is back at the top.
             self.scroll_handle.set_offset(gpui::Point::default());
+        } else {
+            self.pending_restore = true;
         }
         cx.notify();
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Close after executing a command: the route may just have changed,
+    /// so the pre-open focus target could be gone — blur instead of
+    /// restoring. Critical either way: when open we focus the search
+    /// input, and the closed render drops that element; leaving focus
+    /// orphaned on a handle no longer in the tree kills every
+    /// focus-routed keyboard action.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        self.prev_focus = None;
+        self.dismiss(cx);
+    }
+
+    /// Close and hand focus back to whatever had it before the palette
+    /// opened (Esc / backdrop / ⌘K re-toggle). A bare `blur()` leaves the
+    /// window with nothing focused, so every focus-routed keybinding dies
+    /// until the next click. The restore runs in the next (closed) render
+    /// pass, which — unlike `toggle` — has a `Window`.
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.open = false;
-        // Critical: when open we focus the search input. The closed
-        // render drops that element, orphaning focus on a handle no
-        // longer in the tree — keyboard actions (incl. the ⌘K
-        // keybinding) then have no dispatch path to the root and stop
-        // working. Blurring returns focus to the window root so ⌘K
-        // can reopen the palette.
-        window.blur();
+        self.pending_restore = true;
         cx.notify();
     }
 
@@ -372,7 +392,7 @@ impl ZedisCommandPalette {
         // The shortcuts overlay is owned by the `Zedis` root, not the
         // palette; close here and let its global action handler open it.
         if let PaletteCommand::ShowShortcuts = command {
-            self.close(window, cx);
+            self.close(cx);
             window.dispatch_action(Box::new(ShortcutsAction::Toggle), cx);
             return;
         }
@@ -385,7 +405,7 @@ impl ZedisCommandPalette {
             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                 store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
             });
-            self.close(window, cx);
+            self.close(cx);
             return;
         }
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
@@ -410,7 +430,7 @@ impl ZedisCommandPalette {
                 PaletteCommand::Key(_) => {}
             });
         });
-        self.close(window, cx);
+        self.close(cx);
     }
 }
 
@@ -423,7 +443,14 @@ impl Focusable for ZedisCommandPalette {
 impl Render for ZedisCommandPalette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
-            // Zero-footprint when closed.
+            // Zero-footprint when closed; hand back (or drop) the focus the
+            // palette took, deferred here from the window-less close paths.
+            if take(&mut self.pending_restore) {
+                match self.prev_focus.take() {
+                    Some(prev) => prev.focus(window, cx),
+                    None => window.blur(),
+                }
+            }
             return div().into_any_element();
         }
 
@@ -431,6 +458,8 @@ impl Render for ZedisCommandPalette {
         // reset and focus the search input on the first render after open.
         if self.pending_focus {
             self.pending_focus = false;
+            // Remember the pre-open focus so a dismissal can hand it back.
+            self.prev_focus = window.focused(cx);
             self.query.update(cx, |state, cx| {
                 state.set_value(gpui::SharedString::default(), window, cx);
                 state.focus(window, cx);
@@ -544,15 +573,15 @@ impl Render for ZedisCommandPalette {
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(|this, _, _window, cx| {
                     // Click on the dim backdrop closes.
-                    this.close(window, cx);
+                    this.dismiss(cx);
                 }),
             )
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => {
-                        this.close(window, cx);
+                        this.dismiss(cx);
                         cx.stop_propagation();
                     }
                     "down" => {

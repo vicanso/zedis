@@ -23,6 +23,7 @@ use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
+use std::mem::take;
 
 pub struct ZedisRecentKeysPalette {
     server_state: gpui::Entity<ZedisServerState>,
@@ -35,6 +36,11 @@ pub struct ZedisRecentKeysPalette {
     selected: usize,
     focus_handle: FocusHandle,
     pending_focus: bool,
+    /// Focus that was live when the palette opened; handed back on close.
+    prev_focus: Option<FocusHandle>,
+    /// Set on close; the next (closed) render restores `prev_focus` — or
+    /// blurs when there is none. Deferred because `toggle` has no `Window`.
+    pending_restore: bool,
     scroll_handle: ScrollHandle,
 }
 
@@ -53,6 +59,8 @@ impl ZedisRecentKeysPalette {
             selected: 0,
             focus_handle: cx.focus_handle(),
             pending_focus: false,
+            prev_focus: None,
+            pending_restore: false,
             scroll_handle: ScrollHandle::new(),
         }
     }
@@ -88,15 +96,28 @@ impl ZedisRecentKeysPalette {
             } else {
                 Vec::new()
             };
+        } else {
+            self.pending_restore = true;
         }
         cx.notify();
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Close after jumping to a key: the route just changed, so the
+    /// pre-open focus target may be gone — blur instead of restoring
+    /// (an orphaned focus handle would kill keyboard dispatch entirely).
+    fn close(&mut self, cx: &mut Context<Self>) {
+        self.prev_focus = None;
+        self.dismiss(cx);
+    }
+
+    /// Close and hand focus back to whatever had it before the palette
+    /// opened (Esc / backdrop / ⌘P re-toggle). A bare `blur()` leaves the
+    /// window with nothing focused, so every focus-routed keybinding dies
+    /// until the next click. The restore runs in the next (closed) render
+    /// pass, which — unlike `toggle` — has a `Window`.
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.open = false;
-        // Blur so focus returns to the window root — otherwise the next
-        // global hotkey has no dispatch path (same as command palette).
-        window.blur();
+        self.pending_restore = true;
         cx.notify();
     }
 
@@ -112,13 +133,13 @@ impl ZedisRecentKeysPalette {
         scored.into_iter().map(|(_, i)| i).collect()
     }
 
-    fn execute(&mut self, key: &gpui::SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    fn execute(&mut self, key: &gpui::SharedString, cx: &mut Context<Self>) {
         let key = key.clone();
         self.server_state.update(cx, |state, cx| state.select_key(key, cx));
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
         });
-        self.close(window, cx);
+        self.close(cx);
     }
 }
 
@@ -131,11 +152,19 @@ impl Focusable for ZedisRecentKeysPalette {
 impl Render for ZedisRecentKeysPalette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
+            if take(&mut self.pending_restore) {
+                match self.prev_focus.take() {
+                    Some(prev) => prev.focus(window, cx),
+                    None => window.blur(),
+                }
+            }
             return div().into_any_element();
         }
 
         if self.pending_focus {
             self.pending_focus = false;
+            // Remember the pre-open focus so a dismissal can hand it back.
+            self.prev_focus = window.focused(cx);
             self.query.update(cx, |state, cx| {
                 state.set_value(gpui::SharedString::default(), window, cx);
                 state.focus(window, cx);
@@ -196,8 +225,8 @@ impl Render for ZedisRecentKeysPalette {
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.execute(&key_for_click, window, cx);
+                        cx.listener(move |this, _, _window, cx| {
+                            this.execute(&key_for_click, cx);
                             cx.stop_propagation();
                         }),
                     );
@@ -222,14 +251,14 @@ impl Render for ZedisRecentKeysPalette {
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.close(window, cx);
+                cx.listener(|this, _, _window, cx| {
+                    this.dismiss(cx);
                 }),
             )
-            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => {
-                        this.close(window, cx);
+                        this.dismiss(cx);
                         cx.stop_propagation();
                     }
                     "down" => {
@@ -248,7 +277,7 @@ impl Render for ZedisRecentKeysPalette {
                     }
                     "enter" => {
                         if let Some(key) = &chosen {
-                            this.execute(key, window, cx);
+                            this.execute(key, cx);
                         }
                         cx.stop_propagation();
                     }
