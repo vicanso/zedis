@@ -53,7 +53,7 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
-use std::{sync::Arc, time::Instant};
+use std::{mem::take, sync::Arc, time::Instant};
 
 /// Hard cap on keys examined per search.
 const SCAN_CAP: usize = 10_000;
@@ -112,6 +112,9 @@ pub struct ZedisValueSearch {
     query_input: Entity<InputState>,
     /// Local filter over already-found matches (key substring).
     filter_input: Entity<InputState>,
+    /// One-shot flag: focus the prefix box on the first render only, so a
+    /// freshly opened panel is ready to type into.
+    should_focus: bool,
     running: bool,
     matches: Vec<ValueMatch>,
     scanned: usize,
@@ -174,6 +177,7 @@ impl ZedisValueSearch {
             prefix_input,
             query_input,
             filter_input,
+            should_focus: true,
             running: false,
             matches: Vec::new(),
             scanned: 0,
@@ -790,8 +794,12 @@ impl ZedisValueSearch {
                     }
                     _ => None,
                 };
+                // Content of a scroll viewport: at least pane-height, free to
+                // grow with the value so `vs-preview`'s `overflow_scroll` has
+                // a range (`size_full` would pin it to exactly one screen).
                 v_flex()
-                    .size_full()
+                    .w_full()
+                    .min_h_full()
                     .gap_2()
                     .p_3()
                     .child(
@@ -835,8 +843,6 @@ impl ZedisValueSearch {
                     )
                     .child(
                         div()
-                            .flex_1()
-                            .min_h_0()
                             .w_full()
                             .text_xs()
                             .font_family(get_mono_font_family())
@@ -871,7 +877,10 @@ fn truncate_preview(mut text: String) -> SharedString {
 }
 
 impl Render for ZedisValueSearch {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if take(&mut self.should_focus) {
+            self.prefix_input.update(cx, |state, cx| state.focus(window, cx));
+        }
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let show_results_pane = self.running || self.stop_reason.is_some() || !self.matches.is_empty();
@@ -955,8 +964,12 @@ impl Render for ZedisValueSearch {
                         .child(filter_bar)
                         .child(
                             // `uniform_list` scrolls itself — no outer
-                            // overflow/scroll-handle wrapper needed.
-                            div().id("vs-results").flex_1().min_h_0().w_full().child(results),
+                            // overflow/scroll-handle wrapper needed — but only
+                            // if a definite height reaches it: this wrapper
+                            // must be a flex container (a bare `div()` is
+                            // `display: Block`, which drops the height chain
+                            // and collapses the list to zero rows).
+                            v_flex().id("vs-results").flex_1().min_h_0().w_full().child(results),
                         ),
                 )
                 .child(
@@ -1005,7 +1018,10 @@ impl Render for ZedisValueSearch {
                     .p_3()
                     .child(header)
                     .child(self.render_status_bar(cx))
-                    .child(div().flex_1().min_h_0().w_full().child(body)),
+                    // Flex wrapper (not a bare block `div()`) so `body` keeps
+                    // a definite height — the virtualized results list sizes
+                    // its viewport from it.
+                    .child(v_flex().flex_1().min_h_0().w_full().child(body)),
             )
     }
 }
