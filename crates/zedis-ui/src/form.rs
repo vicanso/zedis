@@ -425,7 +425,9 @@ impl ZedisFormOptions {
         self
     }
 
-    /// Set the maximum height for the form content area when opened in a dialog.
+    /// Cap the **entire dialog panel** (title + scroll body + footer), not just
+    /// the form fields. The dialog body already scrolls; this only sets `max_h`
+    /// on the panel so that scrollbar can engage.
     pub fn dialog_max_height(mut self, max_height: Pixels) -> Self {
         self.dialog_max_height = Some(max_height);
         self
@@ -462,30 +464,41 @@ impl ZedisFormOptions {
             f
         });
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let mut d = dialog.overlay(true).overlay_closable(true);
             if let Some(w) = dialog_width {
                 d = d.width(w);
             }
+            // Apply max_h on the *dialog panel* so its built-in body
+            // `overflow_y_scrollbar` can engage. Nesting a max_h wrapper
+            // around the form and giving the form its own scrollbar
+            // produces a dead side track (content height equals the
+            // scroll viewport, so nothing scrolls) — the broken bar on
+            // the add/edit server dialog.
+            if let Some(mh) = max_height {
+                d = d.max_h(mh);
+            }
             if let Some(t) = &title {
                 d = d.title(t.clone());
             }
-            // Wrap in a max-height container if specified.
-            let child: AnyElement = if let Some(mh) = max_height {
-                div().max_h(mh).child(form.clone()).into_any_element()
-            } else {
-                form.clone().into_any_element()
-            };
+            // Action row lives in the dialog footer (sibling of the scroll
+            // body) so cancel/confirm/foot_actions stay pinned while fields
+            // scroll — same pattern as the update dialog.
+            let footer = form.update(cx, |form, cx| form.render_action_bar(window, cx));
             // Override the Dialog's default on_ok (which closes on Enter)
             // to trigger form validation and submit instead.
             let form_for_ok = form.clone();
-            d.child(child).on_ok(move |_, window, cx| {
+            let mut d = d.child(form.clone()).on_ok(move |_, window, cx| {
                 form_for_ok.update(cx, |form, cx| {
                     form.submit(window, cx);
                 });
                 // Don't close here — the submit handler closes on success.
                 false
-            })
+            });
+            if let Some(footer) = footer {
+                d = d.footer(footer);
+            }
+            d
         });
     }
 }
@@ -788,6 +801,67 @@ impl ZedisForm {
             cx.notify();
         }
     }
+
+    /// Cancel / confirm / custom foot actions.
+    ///
+    /// Shared by inline forms and dialog footers so the action row can live
+    /// outside a scroll container when the form is hosted in a Dialog.
+    fn render_action_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let parent_id = Arc::new(self.id.clone());
+        let buttons_disabled = self.disabled || self.is_processing;
+        let mut buttons = Vec::with_capacity(2);
+        if self.on_cancel.is_some() {
+            let button_id = ElementId::NamedChild(parent_id.clone(), "cancel".into());
+            buttons.push(
+                Button::new(button_id)
+                    .label(self.cancel_label.clone())
+                    .disabled(buttons_disabled)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.cancel(window, cx);
+                    })),
+            );
+        }
+        if self.on_submit.is_some() {
+            let button_id = ElementId::NamedChild(parent_id.clone(), "confirm".into());
+            buttons.push(
+                Button::new(button_id)
+                    .label(self.confirm_label.clone())
+                    .disabled(buttons_disabled)
+                    .when_some(self.confirm_tooltip.clone(), |this, tooltip| this.tooltip(tooltip))
+                    .primary()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.submit(window, cx);
+                    })),
+            );
+        }
+
+        let buttons = platform_buttons(buttons);
+        let mut right_buttons = h_flex().justify_end().gap_4();
+        let mut left_buttons = h_flex().justify_start().gap_4();
+
+        let mut exists_buttons = false;
+        if !buttons.is_empty() {
+            right_buttons = right_buttons.children(buttons);
+            exists_buttons = true;
+        }
+        if let Some(builder) = &self.foot_actions {
+            left_buttons = left_buttons.children(builder(window, cx));
+            exists_buttons = true;
+        }
+        if !exists_buttons {
+            return None;
+        }
+        Some(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(left_buttons)
+                .child(right_buttons)
+                .gap_4()
+                .into_any_element(),
+        )
+    }
+
     /// Disable or enable all form inputs and buttons.
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
@@ -1044,60 +1118,23 @@ impl Render for ZedisForm {
                 .child(field().child(Alert::error(alert_id, TextView::markdown(textview_id, error_text))));
         }
 
-        // Build action buttons (cancel on the left, confirm/primary on the right).
-        let buttons_disabled = form_disabled || self.is_processing;
-        let mut buttons = Vec::with_capacity(2);
-        if self.on_cancel.is_some() {
-            let button_id = ElementId::NamedChild(parent_id.clone(), "cancel".into());
-            buttons.push(
-                Button::new(button_id)
-                    .label(self.cancel_label.clone())
-                    .disabled(buttons_disabled)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.cancel(window, cx);
-                    })),
-            );
-        }
-        if self.on_submit.is_some() {
-            let button_id = ElementId::NamedChild(parent_id.clone(), "confirm".into());
-            buttons.push(
-                Button::new(button_id)
-                    .label(self.confirm_label.clone())
-                    .disabled(buttons_disabled)
-                    .when_some(self.confirm_tooltip.clone(), |this, tooltip| this.tooltip(tooltip))
-                    .primary()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.submit(window, cx);
-                    })),
-            );
+        // Inline forms keep the action bar in-body. Dialog forms hoist it to
+        // the Dialog footer (see `open_dialog`) so it stays pinned while the
+        // field list scrolls.
+        if !self.in_dialog
+            && let Some(bar) = self.render_action_bar(window, cx)
+        {
+            form_container = form_container.child(field().child(bar));
         }
 
-        let buttons = platform_buttons(buttons);
-        let mut right_buttons = h_flex().justify_end().gap_4();
-        let mut left_buttons = h_flex().justify_start().gap_4();
-
-        let mut exists_buttons = false;
-        if !buttons.is_empty() {
-            right_buttons = right_buttons.children(buttons);
-            exists_buttons = true;
+        // Dialog already owns the body scrollbar (gpui-component `Dialog`
+        // wraps children in `overflow_y_scrollbar`). Nesting another one
+        // here — especially under a `max_h` parent — leaves a non-scrolling
+        // side track. Standalone (non-dialog) forms still need their own.
+        if self.in_dialog {
+            form_container.into_any_element()
+        } else {
+            div().child(form_container).overflow_y_scrollbar().into_any_element()
         }
-        if let Some(builder) = &self.foot_actions {
-            let custom_elements = builder(window, cx);
-            left_buttons = left_buttons.children(custom_elements);
-            exists_buttons = true;
-        }
-        if exists_buttons {
-            form_container = form_container.child(
-                field().child(
-                    h_flex()
-                        .justify_between()
-                        .child(left_buttons)
-                        .child(right_buttons)
-                        .gap_4(),
-                ),
-            );
-        }
-
-        div().child(form_container).overflow_y_scrollbar()
     }
 }
