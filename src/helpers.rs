@@ -19,6 +19,7 @@ mod color;
 mod common;
 mod font;
 mod logger;
+mod proxy;
 mod syntax;
 mod tag;
 mod updater;
