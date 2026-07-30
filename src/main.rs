@@ -1447,10 +1447,13 @@ impl Render for Zedis {
                     cx.propagate();
                 }
             }))
-            // ⌘F / secondary-f: always focus the active page's filter box.
+            // ⌘F / secondary-f: focus the active page's filter box.
             // Must live on the window root — after a tab switch focus often
             // sits on the tab pill (sibling of content), so handlers only on
             // `ZedisContent` / `ZedisServers` never see the action.
+            // The binding carries `!Input`, so while focus is inside any
+            // gpui-component `Input` this never fires and a code editor's
+            // built-in ⌘F search panel takes the keystroke instead.
             .on_action(cx.listener(|this, e: &EditorAction, window, cx| match e {
                 EditorAction::Search => {
                     this.active_content().update(cx, |content, cx| {

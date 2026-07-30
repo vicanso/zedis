@@ -321,7 +321,13 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-n", EditorAction::Create, None),
         KeyBinding::new("secondary-t", EditorAction::UpdateTtl, None),
         KeyBinding::new("secondary-j", EditorAction::Cmd, None),
-        KeyBinding::new("secondary-f", EditorAction::Search, None),
+        // Focus the active page's filter box — except while focus is inside
+        // any gpui-component `Input`: a context-free binding out-ranks every
+        // context-bound one (`binding_enabled` gives it the full stack
+        // depth), so without `!Input` this would shadow the code editor's
+        // own ⌘F search panel and searching inside a value/script editor
+        // would be impossible.
+        KeyBinding::new("secondary-f", EditorAction::Search, Some("!Input")),
         // Rename the selected key. ⌘E is free on macOS text inputs (unlike
         // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
         // keys; the rename flow routes through its own dialog with an
