@@ -229,9 +229,12 @@ pub async fn probe_ssh_auth(server: &RedisServer) -> (DiagOutcome, Option<SshHan
     let ssh_user = server.ssh_username.clone().unwrap_or_default();
     let ssh_key = server.ssh_key.clone().unwrap_or_default();
     let ssh_password = server.ssh_password.clone().unwrap_or_default();
+    let ssh_key_passphrase = server.ssh_key_passphrase.clone().unwrap_or_default();
     let start = Instant::now();
-    let result =
-        run_in_tokio(async move { new_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password).await }).await;
+    let result = run_in_tokio(async move {
+        new_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password, &ssh_key_passphrase).await
+    })
+    .await;
     let elapsed = start.elapsed();
     match result {
         Ok(session) => (DiagOutcome::success(None, elapsed), Some(session)),

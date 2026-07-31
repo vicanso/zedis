@@ -427,6 +427,14 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "ssh_key_placeholder"))
                 .tab_index(2)
                 .field_type(ZedisFormFieldType::AutoGrow(2, 100)),
+            ZedisFormField::new("ssh_key_passphrase", i18n_servers(cx, "ssh_key_passphrase"))
+                .default_value(redis_server.ssh_key_passphrase.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "ssh_key_passphrase_placeholder"))
+                .mask()
+                // Meaningless without a key: appears as soon as the key field
+                // is filled, and is dropped from submission when it is not.
+                .visible_when_filled("ssh_key")
+                .tab_index(2),
             // tab advanced
             ZedisFormField::new("server_type", i18n_servers(cx, "server_type"))
                 .default_value(redis_server.server_type.unwrap_or(0).to_string())

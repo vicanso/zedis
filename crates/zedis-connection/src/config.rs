@@ -190,6 +190,10 @@ pub struct RedisServer {
     pub ssh_username: Option<String>,
     pub ssh_password: Option<String>,
     pub ssh_key: Option<String>,
+    /// Passphrase for an encrypted `ssh_key` — distinct from `ssh_password`
+    /// (login-password auth) so the two never share a field's semantics.
+    /// Encrypted at rest like the other secrets.
+    pub ssh_key_passphrase: Option<String>,
     pub tag: Option<String>,
     pub tag_color: Option<String>,
     pub require_confirm_writes: Option<bool>,
@@ -286,6 +290,7 @@ impl RedisServer {
             ssh_username: get_str("ssh_username"),
             ssh_password: get_str("ssh_password"),
             ssh_key: get_str("ssh_key"),
+            ssh_key_passphrase: get_str("ssh_key_passphrase"),
 
             server_type: get_parsed("server_type").map(|s| s as usize),
 
@@ -417,6 +422,7 @@ impl RedisServer {
             clone.password = None;
             clone.ssh_password = None;
             clone.ssh_key = None;
+            clone.ssh_key_passphrase = None;
             clone.client_cert = None;
             clone.client_key = None;
             clone.root_cert = None;
@@ -672,6 +678,7 @@ impl RedisServer {
             ssh_username: nested_str("sshOptions", "username"),
             ssh_password: nested_str("sshOptions", "password"),
             ssh_key: nested_str("sshOptions", "privateKey"),
+            ssh_key_passphrase: nested_str("sshOptions", "passphrase"),
             ..Default::default()
         })
     }
@@ -796,6 +803,9 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
         }
+        if let Some(passphrase) = &server.ssh_key_passphrase {
+            server.ssh_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
+        }
         configs.insert(server.id.clone(), server.clone());
     }
     SERVER_CONFIG_MAP.store(Arc::new(configs));
@@ -837,6 +847,9 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
         }
         if let Some(ssh_key) = &server.ssh_key {
             server.ssh_key = Some(encrypt(ssh_key)?);
+        }
+        if let Some(passphrase) = &server.ssh_key_passphrase {
+            server.ssh_key_passphrase = Some(encrypt(passphrase)?);
         }
     }
 
@@ -1078,7 +1091,7 @@ mod tests {
             "caCert": { "name": "ca", "certificate": "-----BEGIN CERTIFICATE-----CA-----END CERTIFICATE-----" },
             "clientCert": { "name": "cli", "certificate": "-----BEGIN CERTIFICATE-----CLI-----END CERTIFICATE-----", "key": "-----BEGIN PRIVATE KEY-----K-----END PRIVATE KEY-----" },
             "ssh": true,
-            "sshOptions": { "host": "bastion.example.com", "port": 2222, "username": "ops", "password": "sshpw", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----PK" }
+            "sshOptions": { "host": "bastion.example.com", "port": 2222, "username": "ops", "password": "sshpw", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----PK", "passphrase": "keypw" }
           }
         ]"#;
         let servers = RedisServer::from_import_multi(ri).expect("ri import");
@@ -1096,6 +1109,7 @@ mod tests {
         assert_eq!(s.ssh_username.as_deref(), Some("ops"));
         assert_eq!(s.ssh_password.as_deref(), Some("sshpw"));
         assert!(s.ssh_key.as_deref().expect("ssh key").contains("OPENSSH"));
+        assert_eq!(s.ssh_key_passphrase.as_deref(), Some("keypw"));
     }
 
     #[test]

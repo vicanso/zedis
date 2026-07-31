@@ -102,6 +102,11 @@ pub struct ZedisFormField {
     /// Unlike `tab_index`, when the condition is **not** met the field is both
     /// hidden from the UI **and** excluded from the submitted values.
     visible_on: Option<(SharedString, Vec<usize>)>,
+    /// Makes this field conditionally dependent on an Input-backed field
+    /// holding a non-blank value (e.g. a key passphrase that is meaningless
+    /// without a key). Same semantics as `visible_on`: hidden and excluded
+    /// from submission while the condition is not met.
+    visible_on_filled: Option<SharedString>,
     suffix_builder: Option<ZedisFormFieldSuffixBuilder>,
 }
 
@@ -129,6 +134,7 @@ impl ZedisFormField {
             mask: false,
             readonly: false,
             visible_on: None,
+            visible_on_filled: None,
             style: StyleRefinement::default(),
             suffix_builder: None,
         }
@@ -198,6 +204,15 @@ impl ZedisFormField {
     /// has its selected index in `indices`.
     pub fn visible_on(mut self, name: impl Into<SharedString>, indices: &[usize]) -> Self {
         self.visible_on = Some((name.into(), indices.to_vec()));
+        self
+    }
+
+    /// Make this field visible only while the Input-backed field with the
+    /// given name holds a non-blank value. Re-evaluated live as the user
+    /// types (the form re-renders on every input change); while hidden the
+    /// field is also excluded from the submitted values.
+    pub fn visible_when_filled(mut self, name: impl Into<SharedString>) -> Self {
+        self.visible_on_filled = Some(name.into());
         self
     }
 
@@ -688,8 +703,9 @@ impl ZedisForm {
     }
 
     /// Whether this field's value should be collected on form submission.
-    /// Only checks `visible_on` — fields on inactive tabs (`tab_index`) are
-    /// still submitted because tab switching is purely a UI concern.
+    /// Only checks `visible_on` / `visible_on_filled` — fields on inactive
+    /// tabs (`tab_index`) are still submitted because tab switching is
+    /// purely a UI concern.
     fn should_collect_field_value(&self, field: &ZedisFormField, cx: &App) -> bool {
         if let Some((ref radio_name, ref indices)) = field.visible_on {
             let selected = self.radio_group_selected(radio_name, cx);
@@ -697,7 +713,28 @@ impl ZedisForm {
                 return false;
             }
         }
+        if let Some(ref input_name) = field.visible_on_filled
+            && self.input_value(input_name, cx).trim().is_empty()
+        {
+            return false;
+        }
         true
+    }
+
+    /// Returns the live value of an Input-backed field by name (empty when
+    /// the name doesn't resolve to an input field).
+    fn input_value(&self, name: &str, cx: &App) -> String {
+        self.field_states
+            .iter()
+            .find_map(|(f, s)| {
+                if f.name.as_ref() == name
+                    && let ZedisFormFieldState::Input(state) = s
+                {
+                    return Some(state.read(cx).value().to_string());
+                }
+                None
+            })
+            .unwrap_or_default()
     }
 
     /// Returns the selected index of a RadioGroup field by name.

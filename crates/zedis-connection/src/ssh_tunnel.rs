@@ -287,12 +287,19 @@ async fn is_alive(session: Arc<SshHandle>) -> bool {
 /// * `addr` - SSH server address in "host:port" or "host" format (defaults to port 22)
 /// * `user` - SSH username for authentication
 /// * `key` - Optional SSH private key (file path or key content)
-/// * `password` - Optional password for key decryption or password authentication
+/// * `password` - Optional password for password authentication
+/// * `key_passphrase` - Optional passphrase decrypting an encrypted `key`
 ///
 /// # Returns
 ///
 /// An Arc-wrapped SSH session handle ready for use
-pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<Arc<SshHandle>> {
+pub async fn get_or_init_ssh_session(
+    addr: &str,
+    user: &str,
+    key: &str,
+    password: &str,
+    key_passphrase: &str,
+) -> Result<Arc<SshHandle>> {
     // Generate unique identifier for this SSH connection
     let id = format!("{user}@{addr}");
     // Check cache for existing session
@@ -306,7 +313,7 @@ pub async fn get_or_init_ssh_session(addr: &str, user: &str, key: &str, password
     }
     debug!(id, "start to create new ssh session");
     // Create new session if none exists or cached session is dead
-    let session = new_ssh_session(addr, user, key, password).await?;
+    let session = new_ssh_session(addr, user, key, password, key_passphrase).await?;
     info!(id, "new ssh session established");
     let session = Arc::new(session);
     // Cache the new session for future reuse
@@ -330,7 +337,8 @@ fn is_pem_format(data: &str) -> bool {
 /// * `addr` - SSH server address in "host:port" or "host" format (defaults to port 22)
 /// * `user` - SSH username for authentication
 /// * `key` - Optional SSH private key (file path or PEM/OpenSSH format content)
-/// * `password` - Optional password for key decryption or password authentication
+/// * `password` - Optional password for password authentication
+/// * `key_passphrase` - Optional passphrase decrypting an encrypted `key`
 ///
 /// # Returns
 ///
@@ -341,9 +349,16 @@ fn is_pem_format(data: &str) -> bool {
 /// 1. Public Key: If `key` is provided, attempts public key authentication
 ///    - If key is a valid file path, loads the key from disk
 ///    - Otherwise, decodes the key from the string content
+///    - An encrypted key is unlocked with `key_passphrase`
 /// 2. Password: If only `password` is provided, uses password authentication
 /// 3. Error: If neither key nor password is provided, returns an error
-pub(crate) async fn new_ssh_session(addr: &str, user: &str, key: &str, password: &str) -> Result<SshHandle> {
+pub(crate) async fn new_ssh_session(
+    addr: &str,
+    user: &str,
+    key: &str,
+    password: &str,
+    key_passphrase: &str,
+) -> Result<SshHandle> {
     // Configure SSH client with keepalive to maintain connection
     let config = russh::client::Config {
         keepalive_interval: Some(Duration::from_secs(5 * 60)),
@@ -382,14 +397,31 @@ pub(crate) async fn new_ssh_session(addr: &str, user: &str, key: &str, password:
             debug!(user, "ssh agent authentication (pinned public key)");
             authenticate_via_agent(&mut session, user, &cache_id, Some(target)).await?
         } else {
-            let key_pair = if is_pem_format(key) {
-                // Decode key from string content
-                decode_secret_key(key, None)?
-            } else {
-                let key = resolve_path(key);
-                // Load key from file path
-                load_secret_key(key, None)?
+            let passphrase = {
+                let trimmed = key_passphrase.trim();
+                (!trimmed.is_empty()).then_some(trimmed)
             };
+            let decoded = if is_pem_format(key) {
+                // Decode key from string content
+                decode_secret_key(key, passphrase)
+            } else {
+                // Load key from file path
+                load_secret_key(resolve_path(key), passphrase)
+            };
+            let key_pair = decoded.map_err(|e| match e {
+                // Encrypted key, no passphrase configured — point at the field
+                // instead of surfacing a bare parse error.
+                russh::keys::Error::KeyIsEncrypted => Error::Invalid {
+                    message: "the SSH key is encrypted — fill in the SSH key passphrase in the server settings"
+                        .to_string(),
+                },
+                // A passphrase was supplied but decoding still failed: almost
+                // always a wrong passphrase (russh reports it as a parse error).
+                e if passphrase.is_some() => Error::Invalid {
+                    message: format!("could not decrypt the SSH key (wrong passphrase?): {e}"),
+                },
+                e => e.into(),
+            })?;
             let key = Arc::new(key_pair);
             let key_with_alg = PrivateKeyWithHashAlg::new(key, None);
             debug!(user, "public key authentication");
@@ -702,6 +734,7 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
     let ssh_user = config.ssh_username.clone().unwrap_or_default();
     let ssh_key = config.ssh_key.clone().unwrap_or_default();
     let ssh_password = config.ssh_password.clone().unwrap_or_default();
+    let ssh_key_passphrase = config.ssh_key_passphrase.clone().unwrap_or_default();
     let host = config.host.to_string();
     let port = config.port;
     let connection_timeout = resolve_connection_timeout(config);
@@ -715,7 +748,8 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
     };
 
     run_in_tokio(async move {
-        let session = get_or_init_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password).await?;
+        let session =
+            get_or_init_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password, &ssh_key_passphrase).await?;
         let channel = session
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
             .await?;
