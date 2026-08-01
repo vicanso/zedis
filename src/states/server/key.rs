@@ -871,8 +871,16 @@ impl ZedisServerState {
         cx.notify();
     }
 
-    /// Publishes a message to a Redis channel.
-    pub fn publish_message(&mut self, channel: SharedString, message: SharedString, cx: &mut Context<Self>) {
+    /// Publishes a message to a Redis channel. `sharded` switches to
+    /// `SPUBLISH` (Redis 7+) — on clusters the message is then routed by
+    /// the channel's hash slot instead of being broadcast to every node.
+    pub fn publish_message(
+        &mut self,
+        channel: SharedString,
+        message: SharedString,
+        sharded: bool,
+        cx: &mut Context<Self>,
+    ) {
         let server_id = self.server_id.clone();
         let db = self.db;
         self.spawn_with_arg(
@@ -880,7 +888,7 @@ impl ZedisServerState {
             channel.clone(),
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: u64 = cmd("PUBLISH")
+                let _: u64 = cmd(if sharded { "SPUBLISH" } else { "PUBLISH" })
                     .arg(channel.as_str())
                     .arg(message.as_str())
                     .query_async(&mut conn)

@@ -621,6 +621,9 @@ timestamp = "Horodatage"
 channel = "Canal"
 message = "Message"
 no_messages = "Pas encore de messages. Abonnez-vous à un canal pour commencer à recevoir des messages."
+sharded = "Sharded"
+sharded_tooltip = "Pub/Sub sharded (SSUBSCRIBE / SPUBLISH, Redis 7+) : noms de canaux exacts, pas de motifs. En cluster, les messages sont routés selon le hash slot du canal au lieu d'être diffusés à tous les nœuds."
+subscribe_sharded_channel_placeholder = "Saisir le canal à abonner (noms exacts), plusieurs canaux séparés par des espaces"
 
 [script_editor]
 title = "Script Viewer Editor"

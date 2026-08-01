@@ -551,8 +551,10 @@ pub fn clear_expired_clients() -> (usize, usize) {
 
 mod client;
 mod pool;
+mod sharded_pubsub;
 mod slots;
 
+pub use sharded_pubsub::ShardedPubSub;
 pub use slots::plan_reshard_slots;
 #[allow(unused_imports)]
 use slots::*;

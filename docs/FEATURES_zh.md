@@ -72,7 +72,7 @@ Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。本�
 ### Pub/Sub
 **订阅频道、发布消息，带实时消息日志。**
 
-模式订阅（`PSUBSCRIBE`）、`PUBLISH` 消息编辑器，收到的消息流入环形缓冲的 `(time, channel, message)` 表格——Redis 中与 Streams 并列的另一种消息机制。
+模式订阅（`PSUBSCRIBE`）、`PUBLISH` 消息编辑器，收到的消息流入环形缓冲的 `(time, channel, message)` 表格——Redis 中与 Streams 并列的另一种消息机制。**分片**开关（Redis 7+）切换为 `SSUBSCRIBE` / `SPUBLISH`——集群模式下消息按频道哈希槽路由而非广播到所有节点，走独立的 RESP3 推送连接，故障转移后自动重新订阅。
 
 ---
 

@@ -794,6 +794,16 @@ impl ZedisServerState {
             .unwrap_or(false)
     }
 
+    /// Returns true when the server is at least Redis 7.0, where sharded
+    /// Pub/Sub (`SSUBSCRIBE` / `SPUBLISH`) was introduced. Gates the
+    /// Sharded toggle in the Pub/Sub panel.
+    pub fn supports_sharded_pubsub(&self) -> bool {
+        use semver::Version;
+        Version::parse(self.version.as_ref())
+            .map(|v| v >= Version::new(7, 0, 0))
+            .unwrap_or(false)
+    }
+
     /// Whether the Topology panel is meaningful: true for multi-node
     /// deployments (Cluster / Sentinel), false for Standalone where the panel
     /// would only show placeholder text. Compares the `ServerType` Debug repr

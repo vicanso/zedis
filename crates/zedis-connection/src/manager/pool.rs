@@ -175,7 +175,9 @@ impl ConnectionManager {
         }
     }
     /// Discovers Redis nodes and server type based on initial configuration.
-    async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
+    /// `pub(super)` so the sharded Pub/Sub sibling module can build its
+    /// dedicated connection from the same node discovery.
+    pub(super) async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_server(name)?;
         let (mut conn, server_type) = {
             let conn = match open_single_connection(&config, 0, false).await {

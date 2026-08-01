@@ -17,7 +17,7 @@
 /// Provides a UI for subscribing to Redis channels via pattern-based subscriptions
 /// and publishing messages. Received messages are displayed in a scrollable table
 /// with timestamp, channel, and message columns.
-use crate::connection::{Capability, get_connection_manager};
+use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
@@ -28,12 +28,14 @@ use gpui_component::notification::Notification;
 use gpui_component::{
     ActiveTheme, Disableable, IconName, StyledExt, WindowExt,
     button::Button,
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
+use redis::aio::PubSub;
 use std::collections::VecDeque;
 use tracing::{error, info};
 
@@ -48,6 +50,33 @@ struct PubsubMessage {
     timestamp: SharedString,
     channel: SharedString,
     message: SharedString,
+}
+
+/// The two subscription transports: classic Pub/Sub over the dedicated
+/// RESP2 connection (`PSUBSCRIBE`), or sharded Pub/Sub over a RESP3 push
+/// connection (`SSUBSCRIBE`, Redis 7+ — slot-routed on clusters instead
+/// of broadcast). Both yield [`redis::Msg`], so the reader/drainer path
+/// downstream is shared.
+enum SubscribeConn {
+    Plain(Box<PubSub>),
+    Sharded(Box<ShardedPubSub>),
+}
+
+/// Decode one incoming message and ferry it to the drainer. `Err` means
+/// the receiver (the view) is gone, so the reader loop should stop.
+async fn forward_message(
+    tx: &smol::channel::Sender<PubsubMessage>,
+    msg: &redis::Msg,
+) -> Result<(), smol::channel::SendError<PubsubMessage>> {
+    let channel: String = msg.get_channel_name().to_string();
+    let (_, text) = detect_and_decode(msg.get_payload_bytes(), 1024);
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    tx.send(PubsubMessage {
+        timestamp: timestamp.into(),
+        channel: channel.into(),
+        message: text,
+    })
+    .await
 }
 
 /// Table delegate that drives the message list display.
@@ -69,8 +98,10 @@ impl PubsubTableDelegate {
             .read(cx)
             .content_width()
             .unwrap_or(window_width);
-        // Fixed widths for timestamp and channel; the message column gets the rest.
-        let timestamp_width = 200.;
+        // Fixed widths for timestamp and channel; the message column gets the
+        // rest. Timestamp: "2026-08-01 12:34:56" = 19 mono chars + cell
+        // padding — 200px clipped the seconds.
+        let timestamp_width = 230.;
         let channel_width = 150.;
         let remaining_width = content_width.as_f32() - timestamp_width - channel_width - 10.;
         let columns = vec![
@@ -242,6 +273,11 @@ pub struct ZedisPubsubEditor {
     /// True while the initial subscribe handshake is in progress.
     subscribing: bool,
 
+    /// Sharded mode (`SSUBSCRIBE` / `SPUBLISH`, Redis 7+): exact channel
+    /// names instead of patterns, slot-routed on clusters. Toggled by the
+    /// checkbox in the subscribe bar (only shown when the server supports it).
+    sharded: bool,
+
     /// Holds the long-running subscription loop; `None` when not subscribed.
     subscribe_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -309,13 +345,15 @@ impl ZedisPubsubEditor {
             table_state,
             message_count: 0,
             subscribing: false,
+            sharded: false,
             subscribe_task: None,
             _subscriptions: subscriptions,
         }
     }
 
-    /// Starts a pattern-based subscription (`PSUBSCRIBE`).
-    /// The channel input supports space-separated patterns (e.g. "news.* alerts.*").
+    /// Starts a subscription. Classic mode is pattern-based (`PSUBSCRIBE`,
+    /// space-separated patterns like "news.* alerts.*"); sharded mode
+    /// (`SSUBSCRIBE`, Redis 7+) takes exact channel names instead.
     /// A background task is spawned that opens a dedicated Pub/Sub connection,
     /// subscribes, and then loops forever reading incoming messages until the
     /// stream ends or the entity is dropped.
@@ -327,6 +365,7 @@ impl ZedisPubsubEditor {
 
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
+        let sharded = self.sharded;
         self.subscribing = true;
         cx.notify();
 
@@ -337,20 +376,29 @@ impl ZedisPubsubEditor {
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
             // Establish a dedicated Pub/Sub connection on a background thread
             // so the UI thread stays responsive during the network handshake.
-            let result: Result<_, Error> = cx
+            let result: Result<SubscribeConn, Error> = cx
                 .background_spawn(async move {
-                    let mut pubsub = get_connection_manager().get_pubsub_connection(&server_id).await?;
-                    let channels = channel_clone.split(' ').collect::<Vec<&str>>();
-                    pubsub
-                        .psubscribe(channels)
-                        .await
-                        .map_err(|e| Error::Invalid { message: e.to_string() })?;
-                    Ok(pubsub)
+                    let channels = channel_clone
+                        .split(' ')
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<&str>>();
+                    if sharded {
+                        let mut pubsub = get_connection_manager().get_sharded_pubsub(&server_id).await?;
+                        pubsub.ssubscribe(&channels).await?;
+                        Ok(SubscribeConn::Sharded(Box::new(pubsub)))
+                    } else {
+                        let mut pubsub = get_connection_manager().get_pubsub_connection(&server_id).await?;
+                        pubsub
+                            .psubscribe(channels)
+                            .await
+                            .map_err(|e| Error::Invalid { message: e.to_string() })?;
+                        Ok(SubscribeConn::Plain(Box::new(pubsub)))
+                    }
                 })
                 .await;
 
             match result {
-                Ok(mut pubsub) => {
+                Ok(sub) => {
                     let _ = entity.update(cx, |this, cx| {
                         this.subscribing = false;
                         cx.notify();
@@ -360,20 +408,23 @@ impl ZedisPubsubEditor {
                     // decoding never lands on the UI thread; parsed entries
                     // are ferried over the channel to the drainer below.
                     let reader = cx.background_spawn(async move {
-                        use futures::StreamExt;
-                        let mut stream = pubsub.on_message();
-                        while let Some(msg) = stream.next().await {
-                            let channel: String = msg.get_channel_name().to_string();
-                            let (_, text) = detect_and_decode(msg.get_payload_bytes(), 1024);
-                            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            let entry = PubsubMessage {
-                                timestamp: timestamp.into(),
-                                channel: channel.into(),
-                                message: text,
-                            };
-                            // Receiver gone (entity dropped) — stop reading.
-                            if tx.send(entry).await.is_err() {
-                                break;
+                        match sub {
+                            SubscribeConn::Plain(mut pubsub) => {
+                                use futures::StreamExt;
+                                let mut stream = pubsub.on_message();
+                                while let Some(msg) = stream.next().await {
+                                    // Receiver gone (entity dropped) — stop reading.
+                                    if forward_message(&tx, &msg).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            SubscribeConn::Sharded(pubsub) => {
+                                while let Some(msg) = pubsub.recv().await {
+                                    if forward_message(&tx, &msg).await.is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
                     });
@@ -451,16 +502,19 @@ impl ZedisPubsubEditor {
             return;
         }
 
+        let sharded = self.sharded;
         self.server_state.update(cx, move |state, cx| {
-            state.publish_message(channel, message, cx);
+            state.publish_message(channel, message, sharded, cx);
         });
     }
 
-    /// Renders the top toolbar: a channel pattern input and a subscribe/unsubscribe toggle.
+    /// Renders the top toolbar: a channel pattern input, a Sharded toggle
+    /// (Redis 7+ only), and a subscribe/unsubscribe button.
     /// While an active subscription exists the input is disabled and the button switches
     /// to "unsubscribe".
     fn render_subscribe_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_subscriptions = self.subscribe_task.is_some();
+        let supports_sharded = self.server_state.read(cx).supports_sharded_pubsub();
         let subscribe_btn = if has_subscriptions {
             Button::new("pubsub-unsubscribe-btn")
                 .outline()
@@ -493,6 +547,32 @@ impl ZedisPubsubEditor {
                     .flex_1()
                     .disabled(has_subscriptions),
             )
+            .when(supports_sharded, |this| {
+                this.child(
+                    Checkbox::new("pubsub-sharded")
+                        .label(i18n_pubsub_editor(cx, "sharded"))
+                        .tooltip(i18n_pubsub_editor(cx, "sharded_tooltip"))
+                        .checked(self.sharded)
+                        // Mid-subscription the transport can't change; toggle
+                        // applies to the next subscribe (and to publishes).
+                        .disabled(has_subscriptions || self.subscribing)
+                        .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                            this.sharded = *checked;
+                            // Patterns don't exist in sharded mode — swap the
+                            // input hint to exact channel names.
+                            let key = if this.sharded {
+                                "subscribe_sharded_channel_placeholder"
+                            } else {
+                                "subscribe_channel_placeholder"
+                            };
+                            let placeholder = i18n_pubsub_editor(cx, key);
+                            this.subscribe_input_state.update(cx, |state, cx| {
+                                state.set_placeholder(placeholder, window, cx);
+                            });
+                            cx.notify();
+                        })),
+                )
+            })
             .child(subscribe_btn)
     }
 

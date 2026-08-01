@@ -620,6 +620,9 @@ timestamp = "Timestamp"
 channel = "Canal"
 message = "Mensagem"
 no_messages = "Sem mensagens ainda. Assine um canal para começar a receber mensagens."
+sharded = "Fragmentado"
+sharded_tooltip = "Pub/Sub fragmentado (SSUBSCRIBE / SPUBLISH, Redis 7+): nomes de canal exatos, sem padrões. Em clusters, as mensagens são roteadas pelo hash slot do canal em vez de transmitidas a todos os nós."
+subscribe_sharded_channel_placeholder = "Digite o canal para assinar (nomes exatos), múltiplos canais separados por espaços"
 
 [script_editor]
 title = "Script Viewer Editor"

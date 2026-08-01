@@ -620,6 +620,9 @@ timestamp = "Временная метка"
 channel = "Канал"
 message = "Сообщение"
 no_messages = "Сообщений пока нет. Подпишитесь на канал, чтобы начать получать сообщения."
+sharded = "Шардированный"
+sharded_tooltip = "Шардированный Pub/Sub (SSUBSCRIBE / SPUBLISH, Redis 7+): точные имена каналов, без шаблонов. В кластере сообщения маршрутизируются по хеш-слоту канала, а не рассылаются на все узлы."
+subscribe_sharded_channel_placeholder = "Введите канал для подписки (точные имена), несколько каналов через пробел"
 
 [script_editor]
 title = "Script Viewer Editor"

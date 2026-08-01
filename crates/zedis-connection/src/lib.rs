@@ -73,7 +73,8 @@ pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exa
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,
-    RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager, plan_reshard_slots,
+    RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager,
+    plan_reshard_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

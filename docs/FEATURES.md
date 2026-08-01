@@ -72,7 +72,7 @@ Browse entries, **live-tail** new messages (`XREAD BLOCK`, ring-buffered), inspe
 ### Pub/Sub
 **Subscribe to channels and publish messages, with a live message log.**
 
-Pattern-based subscriptions (`PSUBSCRIBE`), a `PUBLISH` composer, and incoming messages streamed into a ring-buffered `(time, channel, message)` table — Redis's other messaging primitive alongside Streams.
+Pattern-based subscriptions (`PSUBSCRIBE`), a `PUBLISH` composer, and incoming messages streamed into a ring-buffered `(time, channel, message)` table — Redis's other messaging primitive alongside Streams. A **Sharded** toggle (Redis 7+) switches to `SSUBSCRIBE` / `SPUBLISH` — on clusters messages are routed by the channel's hash slot instead of broadcast to every node, over a dedicated RESP3 push connection that survives failovers.
 
 ---
 

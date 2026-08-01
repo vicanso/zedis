@@ -619,6 +619,9 @@ timestamp = "时间"
 channel = "频道"
 message = "消息"
 no_messages = "暂无消息。订阅频道后开始接收消息。"
+sharded = "分片"
+sharded_tooltip = "分片 Pub/Sub（SSUBSCRIBE / SPUBLISH，Redis 7+）：使用精确频道名，不支持模式匹配。集群模式下消息按频道哈希槽路由，而不是广播到所有节点。"
+subscribe_sharded_channel_placeholder = "输入要订阅的频道（精确名称），多个频道用空格分隔"
 
 [script_editor]
 title = "Script Viewer Editor"

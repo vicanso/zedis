@@ -620,6 +620,9 @@ timestamp = "タイムスタンプ"
 channel = "チャンネル"
 message = "メッセージ"
 no_messages = "メッセージがありません。チャンネルを購読してメッセージの受信を開始してください。"
+sharded = "シャード"
+sharded_tooltip = "シャード型 Pub/Sub（SSUBSCRIBE / SPUBLISH、Redis 7+）：チャンネル名は完全一致で、パターンは使えません。クラスターではメッセージが全ノードへブロードキャストされず、チャンネルのハッシュスロットでルーティングされます。"
+subscribe_sharded_channel_placeholder = "購読するチャンネルを入力（完全一致）、複数チャンネルはスペースで区切る"
 
 [script_editor]
 title = "Script Viewer Editor"

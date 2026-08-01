@@ -730,6 +730,23 @@ fn build_tls_connector(config: &RedisServer) -> Result<TlsConnector> {
 ///
 /// A multiplexed Redis connection ready for use
 pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
+    open_single_ssh_tunnel_connection_inner(config, None).await
+}
+
+/// RESP3 variant of [`open_single_ssh_tunnel_connection`] for sharded
+/// Pub/Sub: server pushes (`ssubscribe` acks, `smessage` payloads) are
+/// forwarded onto `push_tx` instead of being dropped.
+pub async fn open_single_ssh_tunnel_push_connection(
+    config: &RedisServer,
+    push_tx: smol::channel::Sender<redis::PushInfo>,
+) -> Result<MultiplexedConnection> {
+    open_single_ssh_tunnel_connection_inner(config, Some(push_tx)).await
+}
+
+async fn open_single_ssh_tunnel_connection_inner(
+    config: &RedisServer,
+    push_tx: Option<smol::channel::Sender<redis::PushInfo>>,
+) -> Result<MultiplexedConnection> {
     let ssh_addr = config.ssh_addr.clone().unwrap_or_default();
     let ssh_user = config.ssh_username.clone().unwrap_or_default();
     let ssh_key = config.ssh_key.clone().unwrap_or_default();
@@ -755,10 +772,16 @@ pub async fn open_single_ssh_tunnel_connection(config: &RedisServer) -> Result<M
             .await?;
         debug!(ssh_addr, ssh_user, host, port, "open direct tcpip success");
         let ssh_stream = SshRedisStream::new(channel.into_stream());
-        let info = RedisConnectionInfo::default();
-        let conn_config = redis::AsyncConnectionConfig::new()
+        let mut info = RedisConnectionInfo::default();
+        let mut conn_config = redis::AsyncConnectionConfig::new()
             .set_connection_timeout(Some(connection_timeout))
             .set_response_timeout(Some(response_timeout));
+        if let Some(push_tx) = push_tx {
+            // Server pushes only exist on RESP3; the closure satisfies
+            // `AsyncPushSender` via redis's blanket `Fn` impl.
+            info = info.set_protocol(redis::ProtocolVersion::RESP3);
+            conn_config = conn_config.set_push_sender(move |push_info| push_tx.try_send(push_info));
+        }
 
         let mut connection = if let Some(tls_connector) = tls_connector {
             let server_name = ServerName::try_from(host.as_str())
