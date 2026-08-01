@@ -18,12 +18,15 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
     states::{
-        ConnectionErrorKind, ConnectionHealth, ErrorMessage, ReplicaInfo, ServerEvent, ServerTask, ServerToolsAction,
-        ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common, i18n_server_load,
-        i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
+        ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
+        ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
+        i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search,
+        save_session_option,
     },
 };
-use gpui::{Anchor, App, Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, rgb};
+use gpui::{
+    Anchor, App, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb,
+};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
@@ -33,7 +36,7 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenu},
     tooltip::Tooltip,
 };
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
 
@@ -227,10 +230,22 @@ struct StatusBarServerState {
     supports_topology: bool,
 }
 
+/// DB-dropdown row geometry, shared by the row renderer and the menu-width
+/// calculation so they can't drift apart. The rows render at `Size::Small`
+/// (⇒ `text_sm` = 14px) in the bar's JetBrains Mono (advance 0.6em), so a
+/// character is 14 × 0.6 = 8.4px.
+const DB_MENU_CHAR_W: f32 = 8.4;
+/// Fixed label column ("DB: 15" = 6 mono chars) so the counts line up.
+const DB_LABEL_COL_W: f32 = 52.;
+
 #[derive(Debug, Clone)]
 struct DbInfo {
     label: SharedString,
     db: usize,
+    /// Key count from the heartbeat's `INFO keyspace` (0 = empty or not
+    /// yet sampled) — rendered as a muted figure beside the label so the
+    /// dropdown answers "which db has the keys?" without switching.
+    keys: u64,
 }
 
 impl SelectItem for DbInfo {
@@ -241,6 +256,36 @@ impl SelectItem for DbInfo {
     fn value(&self) -> &Self::Value {
         &self.db
     }
+    // Dropdown row only — the trigger falls back to `title()` and stays
+    // a compact "DB: n".
+    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        h_flex()
+            .gap_3()
+            // Fixed label column so the counts line up (mono font cascades
+            // from the status bar).
+            .child(div().min_w(px(DB_LABEL_COL_W)).child(self.label.clone()))
+            .when(self.keys > 0, |this| {
+                this.child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(group_thousands(self.keys))),
+                )
+            })
+    }
+}
+
+/// Map the `INFO keyspace` section (`"db0"` → stats) onto a dense per-db
+/// key-count vec of length `databases` (missing dbs are empty ⇒ 0).
+fn keyspace_key_counts(keyspace: &HashMap<String, RedisKeySpaceStats>, databases: usize) -> Vec<u64> {
+    let mut counts = vec![0u64; databases];
+    for (name, stats) in keyspace {
+        if let Some(db) = name.strip_prefix("db").and_then(|s| s.parse::<usize>().ok())
+            && db < counts.len()
+        {
+            counts[db] = stats.keys;
+        }
+    }
+    counts
 }
 
 /// Local state for the status bar to cache formatted strings and colors.
@@ -263,6 +308,9 @@ pub struct ZedisStatusBar {
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
     databases: usize,
+    /// Latest per-db key counts (index = db) from `INFO keyspace`; a change
+    /// triggers a db-item rebuild so the dropdown shows fresh counts.
+    db_key_counts: Vec<u64>,
     readonly: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -400,6 +448,7 @@ impl ZedisStatusBar {
 
         let mut this = Self {
             databases,
+            db_key_counts: Vec::new(),
             should_rebuild_db_items: Some(databases),
             heartbeat_task: None,
             viewer_mode_state,
@@ -435,6 +484,12 @@ impl ZedisStatusBar {
             self.state.server_state.tag_color_key = None;
         }
         self.should_reset_db = Some(true);
+        // Drop the previous server's key counts right away — the new
+        // server's arrive with its first heartbeat INFO.
+        if !self.db_key_counts.is_empty() {
+            self.db_key_counts.clear();
+            self.should_rebuild_db_items = Some(self.databases);
+        }
         self.state.data_format = None;
         self.state.error = None;
     }
@@ -498,6 +553,14 @@ impl ZedisStatusBar {
             supports_functions,
             supports_topology,
         };
+        // Per-db key counts for the DB dropdown (#116). Rebuild the select
+        // items only on an actual change so the 2s heartbeat doesn't churn
+        // the dropdown state.
+        let db_key_counts = keyspace_key_counts(&redis_info.keyspace, self.databases);
+        if self.db_key_counts != db_key_counts {
+            self.db_key_counts = db_key_counts;
+            self.should_rebuild_db_items = Some(self.databases);
+        }
     }
     /// Start the heartbeat task. 2-second cadence keeps the chips
     /// (latency, used memory, connected clients, replication lag)
@@ -697,6 +760,23 @@ impl ZedisStatusBar {
         menu
     }
     /// Render the server status
+    /// DB-dropdown menu width, hugging the current content: the default
+    /// (`Length::Auto`) follows the narrow "DB N ▾" trigger and clips the
+    /// key counts, while any fixed width leaves blank space when counts
+    /// are small or absent. Sized from the widest count in the current
+    /// snapshot instead.
+    fn db_menu_width(&self) -> Pixels {
+        // px_2 row padding (16) + label column + gap to the check icon (4)
+        // + xsmall check icon (~14) + rounding slack (4).
+        let mut width = 16. + DB_LABEL_COL_W + 4. + 14. + 4.;
+        let max_keys = self.db_key_counts.iter().copied().max().unwrap_or(0);
+        if max_keys > 0 {
+            // gap_3 (12) + the widest grouped count at the mono advance.
+            width += 12. + group_thousands(max_keys).len() as f32 * DB_MENU_CHAR_W;
+        }
+        px(width)
+    }
+
     fn render_server_status(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
@@ -746,7 +826,12 @@ impl ZedisStatusBar {
                         // `appearance(false)`: drop the bordered input chrome so it
                         // reads as plain "DB N ▾" text that inherits the muted
                         // status-bar color (matches the design), not a bright box.
-                        this.child(Select::new(&self.db_state).small().appearance(false))
+                        this.child(
+                            Select::new(&self.db_state)
+                                .small()
+                                .appearance(false)
+                                .menu_width(self.db_menu_width()),
+                        )
                     })
                     .child(
                         Button::new("zedis-status-bar-server-toggle-readonly")
@@ -1134,6 +1219,7 @@ impl Render for ZedisStatusBar {
                 .map(|db| DbInfo {
                     label: format!("DB: {}", db).into(),
                     db,
+                    keys: self.db_key_counts.get(db).copied().unwrap_or(0),
                 })
                 .collect::<Vec<_>>();
             self.db_state.update(cx, |state, cx| {
@@ -1187,5 +1273,43 @@ mod tests {
     fn format_size_groups_both_counts() {
         assert_eq!(format_size(Some(500_000), 10_535).as_ref(), "10,535/500,000");
         assert_eq!(format_size(None, 10_535).as_ref(), "--");
+    }
+
+    #[test]
+    fn keyspace_key_counts_maps_dense_and_ignores_out_of_range() {
+        let mut keyspace = HashMap::new();
+        keyspace.insert(
+            "db0".to_string(),
+            RedisKeySpaceStats {
+                keys: 42,
+                ..Default::default()
+            },
+        );
+        keyspace.insert(
+            "db15".to_string(),
+            RedisKeySpaceStats {
+                keys: 7,
+                ..Default::default()
+            },
+        );
+        // Out of range for the configured db count — must not panic or land.
+        keyspace.insert(
+            "db99".to_string(),
+            RedisKeySpaceStats {
+                keys: 1,
+                ..Default::default()
+            },
+        );
+        // Not a keyspace line shape — ignored.
+        keyspace.insert("dbx".to_string(), RedisKeySpaceStats::default());
+
+        let counts = keyspace_key_counts(&keyspace, 16);
+        assert_eq!(counts.len(), 16);
+        assert_eq!(counts[0], 42);
+        assert_eq!(counts[15], 7);
+        // Every db INFO didn't mention is empty.
+        assert!(counts[1..15].iter().all(|&c| c == 0));
+
+        assert!(keyspace_key_counts(&keyspace, 0).is_empty());
     }
 }
