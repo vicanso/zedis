@@ -32,7 +32,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 📊 **Real-time observability** — live metrics, a memory analyzer with offline + AI recommendations, Slow Log ↔ Latency, `MONITOR`, and value search.
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, Redis Insight import, and 8 UI languages.
-- ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, batch mode, and cross-server copy/diff.
+- ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion + AI command assistant, batch mode, and cross-server copy/diff.
 
 > ### 🔄 Already using Redis Insight?
 > **Paste its database export and every connection lands at once** — no re-entering hosts, ports, and passwords one by one. Point Zedis at your real setup in about a minute, then judge the speed for yourself.
@@ -87,7 +87,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | 📊 **Observability** | Live metrics + 7-day history · memory analyzer (live scan or offline RDB file) + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health & slot reshard · persistence & keyspace events · typed CONFIG editor · raw INFO browser |
 | 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops · cross-server copy & diff |
 | 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · per-machine encrypted secrets · local-only, no telemetry |
-| ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘⇧F multi-database key search · ⌘/ shortcut reference · redis-cli with completion · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |
+| ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘⇧F multi-database key search · ⌘/ shortcut reference · redis-cli with completion · AI command assistant (`?` in terminal) · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |
 
 > 🔐 **Where connection secrets live:** passwords and SSH keys are encrypted with a random **per-machine** key — kept in the **macOS Keychain** or **Windows Credential Manager**, and in a `0600`-permission key file under the config dir on **Linux** (no Secret Service / D-Bus dependency, so it works headless too). The key never leaves the machine, so a copied config won't decrypt elsewhere — use the passphrase-protected export to move connections between machines.
 

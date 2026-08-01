@@ -19,11 +19,13 @@ use crate::{
     },
     db::get_cmd_history_manager,
     error::Error,
-    helpers::{get_mono_font_family, redis_value_to_string, starts_with_ignore_ascii_case},
-    states::{ServerEvent, ZedisServerState},
+    helpers::{
+        AiEndpoint, get_mono_font_family, redis_value_to_string, starts_with_ignore_ascii_case, suggest_command,
+    },
+    states::{ServerEvent, ZedisGlobalStore, ZedisServerState},
     views::confirm_dangerous_command,
 };
-use gpui::{Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
@@ -101,6 +103,22 @@ fn strip_redis_cli_prefix(line: &str) -> &str {
 /// made a long session O(n²) in total output. ~200 KB ≈ a few thousand lines.
 const MAX_OUTPUT_CHARS: usize = 200_000;
 
+/// Placeholder line shown in the output while a `?` AI request is in
+/// flight; removed when the reply (or error) lands. Distinctive on
+/// purpose so [`remove_last_line`] can't clip user output.
+const AI_WAITING_MSG: &str = "AI> … thinking — this can take a few seconds; you can keep running commands meanwhile";
+
+/// Remove the last occurrence of `line` (as a full line) from `buf`.
+/// Used to clear the AI waiting placeholder — searched rather than
+/// assumed-at-tail because the user can keep running commands while the
+/// request is in flight.
+fn remove_last_line(buf: &mut String, line: &str) {
+    let needle = format!("{line}\n");
+    if let Some(pos) = buf.rfind(&needle) {
+        buf.drain(pos..pos + needle.len());
+    }
+}
+
 /// Drop the oldest output once the scrollback buffer exceeds
 /// [`MAX_OUTPUT_CHARS`], cutting at a line boundary so the top stays clean.
 fn trim_output_scrollback(buf: &mut String) {
@@ -143,6 +161,13 @@ pub struct ZedisTerminal {
     cmd_suggestion_index: Option<usize>,
     cmd_history_index: Option<usize>,
     should_focus_input: bool,
+    /// In-flight `?` AI request; dropping it (server switch, panel
+    /// teardown) cancels the foreground update.
+    ai_task: Option<Task<()>>,
+    /// AI-suggested command waiting to be placed into the input box —
+    /// consumed by `render`, which has the `Window` that `set_value`
+    /// needs. The user reviews and hits Enter; nothing auto-executes.
+    pending_ai_fill: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -272,6 +297,8 @@ impl ZedisTerminal {
             cmd_suggestion_index: None,
             cmd_history_index: None,
             should_focus_input: false,
+            ai_task: None,
+            pending_ai_fill: None,
             _subscriptions: subscriptions,
         };
         this.reset_cmd_state(cx);
@@ -281,6 +308,9 @@ impl ZedisTerminal {
 
     fn reset_cmd_state(&mut self, _cx: &mut Context<Self>) {
         self.cmd_output_text = ZEDIS_LOGO.replace("{VERSION}", VERSION);
+        // Hardcoded English like the rest of this panel (not i18n'd).
+        self.cmd_output_text
+            .push_str("Type \"? <question>\" to ask AI for a command (endpoint configured in Settings).\n");
         self.cmd_output_dirty = true;
     }
 
@@ -478,6 +508,12 @@ impl ZedisTerminal {
             cx.notify();
             return;
         }
+        // `? <question>` — AI command assistant: the answer lands in the
+        // input box for review, never on the connection.
+        if let Some(question) = command.trim().strip_prefix('?') {
+            self.ask_ai(question.trim().to_string(), cx);
+            return;
+        }
         // Strip any `redis-cli` prefix up front so the danger classifier, the
         // executor, and the recorded history all see the real command.
         let command: SharedString = if command.lines().any(|line| strip_redis_cli_prefix(line) != line) {
@@ -527,6 +563,91 @@ impl ZedisTerminal {
             }
         }
         self.run_command_lines(command, cx);
+    }
+
+    /// `? <question>` handler: ask the configured AI endpoint for the
+    /// matching Redis command. The suggestion is placed into the input box
+    /// (via `pending_ai_fill`) and its explanation echoed to the output —
+    /// execution stays with the user, so the danger-confirm and read-only
+    /// gates apply unchanged when they hit Enter.
+    ///
+    /// Privacy: only the question plus server *metadata* (version,
+    /// deployment type, modules, current db) are sent — never key values.
+    fn ask_ai(&mut self, question: String, cx: &mut Context<Self>) {
+        use std::fmt::Write;
+        if question.is_empty() {
+            return;
+        }
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
+        if !store.ai_configured() {
+            let _ = writeln!(
+                self.cmd_output_text,
+                "? {question}\nAI endpoint is not configured. Set the base URL and API key in Settings first."
+            );
+            self.cmd_output_dirty = true;
+            cx.notify();
+            return;
+        }
+        let endpoint = AiEndpoint {
+            base_url: store.ai_base_url(),
+            api_key: store.ai_api_key(),
+            model: store.ai_model(),
+        };
+        let locale = store.locale().to_string();
+
+        let state = self.server_state.read(cx);
+        let description = state.nodes_description();
+        let server_context = format!(
+            "Redis version {}; deployment: {}; modules: [{}]; current db: {}",
+            state.version(),
+            description.server_type.as_str(),
+            description.modules,
+            state.db(),
+        );
+
+        // A second `?` while one is pending replaces the task (its
+        // completion never runs) — clear the previous placeholder so it
+        // can't linger in the scrollback forever.
+        remove_last_line(&mut self.cmd_output_text, AI_WAITING_MSG);
+        let _ = writeln!(self.cmd_output_text, "? {question}");
+        let _ = writeln!(self.cmd_output_text, "{AI_WAITING_MSG}");
+        self.cmd_output_dirty = true;
+        cx.notify();
+
+        self.ai_task = Some(cx.spawn(async move |handle, cx| {
+            // Blocking ureq call — keep it on the background pool.
+            let result = cx
+                .background_spawn(async move { suggest_command(&endpoint, &question, &server_context, &locale) })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                // The reply (or error) replaces the waiting placeholder.
+                remove_last_line(&mut this.cmd_output_text, AI_WAITING_MSG);
+                match result {
+                    Ok(reply) => {
+                        for command in &reply.commands {
+                            let _ = writeln!(this.cmd_output_text, "AI> {command}");
+                        }
+                        if !reply.explanation.is_empty() {
+                            let _ = writeln!(this.cmd_output_text, "{}", reply.explanation);
+                        }
+                        // Single command goes straight to the input box for
+                        // review; a multi-command answer stays in the output
+                        // (the REPL input is one line — use Batch to run all).
+                        if let Some(first) = reply.commands.first()
+                            && reply.commands.len() == 1
+                        {
+                            this.pending_ai_fill = Some(first.clone().into());
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(this.cmd_output_text, "AI error: {e}");
+                    }
+                }
+                trim_output_scrollback(&mut this.cmd_output_text);
+                this.cmd_output_dirty = true;
+                cx.notify();
+            });
+        }));
     }
 
     fn run_command_lines(&mut self, command: SharedString, cx: &mut Context<Self>) {
@@ -609,6 +730,14 @@ impl Render for ZedisTerminal {
             self.cmd_output_state.update(cx, |state, cx| {
                 state.set_value(text, window, cx);
                 state.set_cursor_position(Position::new(u32::MAX, u32::MAX), window, cx);
+            });
+            self.should_focus_input = true;
+        }
+        // An AI suggestion arrived — put it into the input box for review
+        // (deferred to render because `set_value` needs the `Window`).
+        if let Some(command) = self.pending_ai_fill.take() {
+            self.cmd_input_state.update(cx, |state, cx| {
+                state.set_value(command, window, cx);
             });
             self.should_focus_input = true;
         }
@@ -862,7 +991,26 @@ impl Render for ZedisTerminal {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_redis_cli_prefix;
+    use super::{remove_last_line, strip_redis_cli_prefix};
+
+    #[test]
+    fn remove_last_line_clears_waiting_placeholder() {
+        // Placeholder at the tail (the common case).
+        let mut buf = String::from("? question\nAI> waiting\n");
+        remove_last_line(&mut buf, "AI> waiting");
+        assert_eq!(buf, "? question\n");
+
+        // Commands ran while the request was in flight — the placeholder
+        // is mid-buffer and only the LAST occurrence goes.
+        let mut buf = String::from("AI> waiting\n? q2\nAI> waiting\n$ GET k\nvalue\n");
+        remove_last_line(&mut buf, "AI> waiting");
+        assert_eq!(buf, "AI> waiting\n? q2\n$ GET k\nvalue\n");
+
+        // Already trimmed out of the scrollback — no-op.
+        let mut buf = String::from("$ GET k\nvalue\n");
+        remove_last_line(&mut buf, "AI> waiting");
+        assert_eq!(buf, "$ GET k\nvalue\n");
+    }
 
     #[test]
     fn strips_leading_redis_cli() {

@@ -69,6 +69,94 @@ fn build_system_prompt(locale: &str) -> String {
     )
 }
 
+/// System prompt for the terminal command assistant (`?` prefix). The
+/// server context and reply language are appended per request.
+const COMMAND_PROMPT_BASE: &str = "You are a Redis command assistant inside a Redis GUI terminal. \
+The user describes what they want in natural language; reply with the exact Redis command to run. \
+Rules: Reply with ONE fenced code block containing the command — multiple lines only when a single \
+command cannot do it. No shell or redis-cli prompt prefixes inside the block. Never suggest KEYS on \
+a large keyspace; prefer SCAN-based approaches. When the request is ambiguous between a destructive \
+and a non-destructive reading, choose the non-destructive one. After the block, add at most two \
+short sentences of explanation. If the request cannot be accomplished with Redis commands, reply \
+with no code block and briefly say why.";
+
+/// Build the command-assistant system prompt: base rules + the server
+/// context (version / deployment / modules) + reply-language directive.
+fn build_command_prompt(server_context: &str, locale: &str) -> String {
+    format!(
+        "{COMMAND_PROMPT_BASE}\nServer context: {server_context}\nWrite the explanation in {}.",
+        language_name(locale)
+    )
+}
+
+/// Parsed command-assistant reply.
+pub struct AiCommandReply {
+    /// Command lines from the fenced block (empty when the model
+    /// answered in prose only, e.g. "not possible with Redis").
+    pub commands: Vec<String>,
+    /// Everything outside the fenced block, trimmed.
+    pub explanation: String,
+}
+
+/// Split a model reply into fenced-block command lines and surrounding
+/// explanation text. Tolerates a language tag on the opening fence and
+/// strips accidental prompt prefixes (`$ `, `redis> `, `> `) the model
+/// might add despite instructions.
+pub fn parse_command_reply(text: &str) -> AiCommandReply {
+    let mut commands = Vec::new();
+    let mut explanation = String::new();
+    let mut in_block = false;
+    let mut seen_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            // Only the first fenced block is treated as the command;
+            // later blocks (rare) fold into the explanation verbatim.
+            if !seen_block || in_block {
+                in_block = !in_block;
+                if !in_block {
+                    seen_block = true;
+                }
+                continue;
+            }
+        }
+        if in_block {
+            let cleaned = trimmed
+                .strip_prefix("$ ")
+                .or_else(|| trimmed.strip_prefix("> "))
+                .unwrap_or(trimmed);
+            // `redis>` / `127.0.0.1:6379>` style prompts.
+            let cleaned = match cleaned.split_once("> ") {
+                Some((prompt, rest)) if prompt.ends_with("redis") || prompt.contains(':') => rest,
+                _ => cleaned,
+            };
+            if !cleaned.is_empty() {
+                commands.push(cleaned.to_string());
+            }
+        } else {
+            explanation.push_str(line);
+            explanation.push('\n');
+        }
+    }
+    AiCommandReply {
+        commands,
+        explanation: explanation.trim().to_string(),
+    }
+}
+
+/// Ask the model for the Redis command matching a natural-language
+/// `question`. `server_context` carries version / deployment / modules
+/// (never key values). Blocking — run from a background task.
+pub fn suggest_command(
+    endpoint: &AiEndpoint,
+    question: &str,
+    server_context: &str,
+    locale: &str,
+) -> Result<AiCommandReply> {
+    let reply = chat_completion(endpoint, &build_command_prompt(server_context, locale), question)?;
+    Ok(parse_command_reply(&reply))
+}
+
 /// Connection parameters for an OpenAI-compatible chat-completions endpoint.
 pub struct AiEndpoint {
     /// Either an OpenAI-style base URL including the version path
@@ -111,6 +199,13 @@ impl AiEndpoint {
 /// Blocking — run from a background task. Returns a descriptive error
 /// (HTTP status + endpoint message when available) on failure.
 pub fn analyze_report(endpoint: &AiEndpoint, report: &str, locale: &str) -> Result<String> {
+    chat_completion(endpoint, &build_system_prompt(locale), report)
+}
+
+/// One blocking chat-completions round-trip: system + user message in,
+/// assistant text out. Shared by the memory-analysis report and the
+/// terminal command assistant.
+fn chat_completion(endpoint: &AiEndpoint, system_prompt: &str, user_content: &str) -> Result<String> {
     if endpoint.base_url.trim().is_empty() {
         return invalid("AI base URL is not configured");
     }
@@ -120,18 +215,17 @@ pub fn analyze_report(endpoint: &AiEndpoint, report: &str, locale: &str) -> Resu
 
     let url = endpoint.chat_completions_url();
     let model = endpoint.effective_model().to_string();
-    let system_prompt = build_system_prompt(locale);
     let body = json!({
         "model": model,
         "stream": false,
         "messages": [
             { "role": "system", "content": system_prompt },
-            { "role": "user", "content": report },
+            { "role": "user", "content": user_content },
         ],
     });
     let body = serde_json::to_string(&body)?;
     // URL + model are safe to log; the API key never is.
-    debug!(%url, %model, report_bytes = report.len(), "AI analysis: sending request");
+    debug!(%url, %model, request_bytes = user_content.len(), "AI request: sending");
 
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
@@ -150,7 +244,7 @@ pub fn analyze_report(endpoint: &AiEndpoint, report: &str, locale: &str) -> Resu
         .header("Content-Type", "application/json")
         .send(body.as_str())
         .map_err(|e| {
-            error!(%url, error = %e, "AI analysis: request failed (network/TLS)");
+            error!(%url, error = %e, "AI request: failed (network/TLS)");
             Error::Invalid {
                 message: format!("AI request failed: {e}"),
             }
@@ -158,7 +252,7 @@ pub fn analyze_report(endpoint: &AiEndpoint, report: &str, locale: &str) -> Resu
 
     let status = response.status();
     let text = response.into_body().read_to_string().map_err(|e| {
-        error!(%url, error = %e, "AI analysis: failed to read response body");
+        error!(%url, error = %e, "AI request: failed to read response body");
         Error::Invalid {
             message: format!("AI response read failed: {e}"),
         }
@@ -176,7 +270,7 @@ pub fn analyze_report(endpoint: &AiEndpoint, report: &str, locale: &str) -> Resu
             status = status.as_u16(),
             detail = %detail,
             response_body = %raw_body,
-            "AI analysis: endpoint returned an error status"
+            "AI request: endpoint returned an error status"
         );
         return Err(Error::Invalid {
             message: format!("AI endpoint error ({}): {detail}", status.as_u16()),
@@ -188,12 +282,12 @@ pub fn analyze_report(endpoint: &AiEndpoint, report: &str, locale: &str) -> Resu
         // Log a snippet of the raw body so an unexpected response shape
         // (e.g. a provider that nests content differently) is diagnosable.
         let snippet: String = text.chars().take(300).collect();
-        error!(%url, body_snippet = %snippet, "AI analysis: response missing choices[0].message.content");
+        error!(%url, body_snippet = %snippet, "AI request: response missing choices[0].message.content");
         Error::Invalid {
             message: "AI response did not contain choices[0].message.content".to_string(),
         }
     })?;
-    debug!(%url, reply_bytes = content.len(), "AI analysis: received reply");
+    debug!(%url, reply_bytes = content.len(), "AI request: received reply");
     Ok(content)
 }
 
@@ -289,6 +383,46 @@ mod tests {
         assert_eq!(language_name("xx"), "English");
         assert!(build_system_prompt("zh").ends_with("Write your entire response in Chinese."));
         assert!(build_system_prompt("de").contains("German"));
+    }
+
+    #[test]
+    fn parse_command_reply_extracts_block_and_explanation() {
+        let reply = parse_command_reply(
+            "Here you go:\n```redis\nZREVRANGE rank 0 9 WITHSCORES\n```\nReturns the ten highest-scoring members.",
+        );
+        assert_eq!(reply.commands, vec!["ZREVRANGE rank 0 9 WITHSCORES"]);
+        assert_eq!(
+            reply.explanation,
+            "Here you go:\nReturns the ten highest-scoring members."
+        );
+    }
+
+    #[test]
+    fn parse_command_reply_strips_prompt_prefixes_and_keeps_multiline() {
+        let reply =
+            parse_command_reply("```\n$ SCAN 0 MATCH session:* COUNT 1000\nredis> DEL a b\n127.0.0.1:6379> TTL k\n```");
+        assert_eq!(
+            reply.commands,
+            vec!["SCAN 0 MATCH session:* COUNT 1000", "DEL a b", "TTL k"]
+        );
+        assert!(reply.explanation.is_empty());
+    }
+
+    #[test]
+    fn parse_command_reply_prose_only_when_no_block() {
+        let reply = parse_command_reply("Redis has no command for that; use application-side logic.");
+        assert!(reply.commands.is_empty());
+        assert_eq!(
+            reply.explanation,
+            "Redis has no command for that; use application-side logic."
+        );
+    }
+
+    #[test]
+    fn command_prompt_carries_context_and_language() {
+        let prompt = build_command_prompt("Redis 7.2, cluster", "zh");
+        assert!(prompt.contains("Server context: Redis 7.2, cluster"));
+        assert!(prompt.ends_with("Write the explanation in Chinese."));
     }
 
     #[test]

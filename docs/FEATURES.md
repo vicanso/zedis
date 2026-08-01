@@ -190,9 +190,9 @@ An overlay that searches a key name across a chosen scope: every open tab's conn
 **⌘K** fuzzy-searches servers, panels, and the active connection's loaded keys (arrows to move, Enter to run, Esc to dismiss); **⌘/** opens a read-only, grouped overlay of every hotkey with per-platform symbols.
 
 ### Integrated CLI & Workbench
-**redis-cli terminal with completion plus a multi-line Batch mode.**
+**redis-cli terminal with completion, a multi-line Batch mode, and an AI command assistant.**
 
-Version-aware command completion with inline argument/summary hints. A one-click **Batch** mode swaps the REPL for a multi-line editor — one command per line, run with `⌘`/`Ctrl`+`Enter` (dangerous lines still route through the confirm dialog).
+Version-aware command completion with inline argument/summary hints. A one-click **Batch** mode swaps the REPL for a multi-line editor — one command per line, run with `⌘`/`Ctrl`+`Enter` (dangerous lines still route through the confirm dialog). Type **`? <question>`** to ask the configured AI endpoint for the matching command in plain language — the suggestion lands in the input box for review (never auto-executed, so the danger-confirm and read-only gates apply unchanged), with a short explanation in your UI language. Only the question and server *metadata* (version, deployment, modules) are sent — never key values.
 
 ### Lua Script Library
 **Save, reuse, and EVALSHA-run Lua scripts with hit-rate stats.**
