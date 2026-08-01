@@ -691,6 +691,9 @@ preferences = "Preferências..."
 quit = "Sair do Zedis"
 
 [memory_analysis]
+rdb_file = "Arquivo RDB"
+analyze_rdb = "Analisar RDB…"
+analyze_rdb_tooltip = "Analisa um dump RDB local offline — nenhum comando é enviado ao servidor. Os tamanhos são bytes serializados do arquivo; diferem da memória em tempo real, mas o ranking das chaves é confiável."
 help = "**O que faz**\nVaria o keyspace e classifica as chaves por memória estimada (e calor de acesso) para revelar chaves grandes.\n\n**Como ler os resultados**\n- **Size**: bytes estimados da chave (amostragem, não exato).\n- **Heat**: depende de `maxmemory-policy` — LFU mostra a frequência de acesso, LRU o tempo ocioso.\n\n**Notas**\nApenas comandos de leitura; `MEMORY USAGE` requer Redis 4.0+. Keyspaces grandes são amostrados, então os números são estimativas."
 reco_panel_title = "Recomendações"
 reco_healthy = "Nenhum problema encontrado — este espaço de chaves parece saudável."

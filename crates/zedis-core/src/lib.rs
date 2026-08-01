@@ -24,6 +24,7 @@ pub mod fs;
 pub mod fuzzy;
 pub mod hex;
 pub mod jsonpath;
+pub mod rdb;
 pub mod string;
 pub mod ttl;
 pub mod ttl_cache;

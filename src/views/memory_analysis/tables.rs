@@ -99,6 +99,9 @@ const PERM_KEY_WIDTH: f32 = 130.;
 
 pub(super) struct PrefixTableDelegate {
     pub(super) rows: Vec<PrefixRow>,
+    /// Rows came from an offline RDB file — the jump-to-key-tree action
+    /// would target the live connection, so it is suppressed.
+    pub(super) offline: bool,
     columns: Vec<Column>,
     column_keys: Vec<&'static str>,
     /// For the prefix column's search-in-key-tree jump.
@@ -156,6 +159,7 @@ impl PrefixTableDelegate {
 
         Self {
             rows,
+            offline: false,
             columns,
             column_keys,
             server_state,
@@ -247,8 +251,8 @@ impl TableDelegate for PrefixTableDelegate {
             .unwrap_or_else(|| "--".into());
 
         // Prefix column: hover action jumps to the key tree filtered by
-        // this prefix.
-        let jump = if col_ix == 0 {
+        // this prefix. Offline (RDB file) rows have no live keys to jump to.
+        let jump = if col_ix == 0 && !self.offline {
             self.rows.get(row_ix).map(|r| {
                 let prefix = r.prefix.clone();
                 let server_state = self.server_state.clone();
@@ -288,6 +292,9 @@ impl TableDelegate for PrefixTableDelegate {
 
 pub(super) struct SingleKeyTableDelegate {
     pub(super) rows: Vec<SingleKeyRow>,
+    /// Rows came from an offline RDB file — the open-in-editor action
+    /// would target the live connection, so it is suppressed.
+    pub(super) offline: bool,
     columns: Vec<Column>,
     column_keys: Vec<&'static str>,
     /// For the key column's open-in-editor jump.
@@ -330,6 +337,7 @@ impl SingleKeyTableDelegate {
 
         Self {
             rows,
+            offline: false,
             columns,
             column_keys,
             server_state,
@@ -415,8 +423,9 @@ impl TableDelegate for SingleKeyTableDelegate {
             })
             .unwrap_or_else(|| "--".into());
 
-        // Key column: hover action opens the key in the editor.
-        let jump = if col_ix == 0 {
+        // Key column: hover action opens the key in the editor. Offline
+        // (RDB file) rows have no live key to open.
+        let jump = if col_ix == 0 && !self.offline {
             self.rows.get(row_ix).map(|r| {
                 let key = r.key.clone();
                 let server_state = self.server_state.clone();

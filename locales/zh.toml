@@ -690,6 +690,9 @@ preferences = "偏好设置..."
 quit = "退出 Zedis"
 
 [memory_analysis]
+rdb_file = "RDB 文件"
+analyze_rdb = "分析 RDB…"
+analyze_rdb_tooltip = "离线解析本地 RDB 备份文件，不向服务器发送任何命令。大小为文件中的序列化字节数，与在线内存占用有差异，但键的大小排序可信。"
 help = "**作用**\n扫描键空间,按估算内存(及访问热度)对 key 排序,帮你找出大 key。\n\n**如何解读**\n- **Size**:该 key 的估算字节数(抽样,非精确值)。\n- **Heat**:取决于 `maxmemory-policy`——LFU 显示访问频率,LRU 显示空闲时间。\n\n**说明**\n仅使用只读命令;`MEMORY USAGE` 需 Redis 4.0+。大键空间为抽样,数值为估算。"
 reco_panel_title = "优化建议"
 reco_healthy = "未发现问题 —— 该键空间看起来很健康。"

@@ -33,6 +33,7 @@ pub(super) struct PrefixStats {
 /// Keeps a capped top-N collection sorted by an i64 ranking descending.
 /// Generic over both the row type and the ranking metric so we can run
 /// parallel pickers for "biggest", "hottest", "coldest" off the same scan.
+#[derive(Clone)]
 pub(super) struct TopN<T> {
     pub(super) items: Vec<T>,
     pub(super) limit: usize,
@@ -140,6 +141,7 @@ pub(super) fn build_prefix_rows(
 /// Three parallel top-N pickers fed by one scan: biggest by memory, hottest
 /// (FREQ desc / IDLETIME asc), coldest (inverse of hottest). Hot/Cold are
 /// only fed when the heat metric is available; otherwise they stay empty.
+#[derive(Clone)]
 pub(super) struct SingleKeyTopGroups {
     pub(super) by_size: TopN<SingleKeyRow>,
     pub(super) hottest: TopN<SingleKeyRow>,
@@ -160,6 +162,101 @@ impl SingleKeyTopGroups {
             SortMode::Size => self.by_size.items.clone(),
             SortMode::Hot => self.hottest.items.clone(),
             SortMode::Cold => self.coldest.items.clone(),
+        }
+    }
+}
+
+// ─── Shared fold ─────────────────────────────────────────────────────────────
+
+/// One key's contribution to the analysis accumulators.
+pub(super) struct KeySample<'a> {
+    pub(super) key: &'a str,
+    pub(super) memory_bytes: u64,
+    /// Remaining TTL in seconds; `-1` = no expiry.
+    pub(super) ttl: i64,
+    pub(super) key_type: &'a str,
+    pub(super) heat: HeatMetric,
+}
+
+/// The accumulators every analysis source folds into — the online SCAN
+/// loop and the offline RDB parse share [`add`](Self::add) so the two
+/// pipelines can't drift apart.
+pub(super) struct AnalysisAccumulators {
+    pub(super) prefix_map: HashMap<String, PrefixStats>,
+    pub(super) single_groups: SingleKeyTopGroups,
+    pub(super) ttl_histogram: TtlHistogram,
+}
+
+impl AnalysisAccumulators {
+    pub(super) fn new() -> Self {
+        Self {
+            prefix_map: HashMap::new(),
+            single_groups: SingleKeyTopGroups::new(TOP_N),
+            ttl_histogram: TtlHistogram::default(),
+        }
+    }
+
+    /// Classify one key into the prefix map, the top-N groups, and the
+    /// TTL histogram. Hot/Cold groups are only fed when the source has a
+    /// heat probe (the RDB file never does).
+    pub(super) fn add(&mut self, sample: KeySample, heat_probe: HeatProbe, key_separator: &str) {
+        let KeySample {
+            key,
+            memory_bytes: memory,
+            ttl,
+            key_type,
+            heat,
+        } = sample;
+
+        self.ttl_histogram.add(ttl);
+
+        if let Some(pos) = key.find(key_separator) {
+            let prefix = &key[..pos];
+            let stats = self.prefix_map.entry(prefix.to_string()).or_default();
+            stats.key_count += 1;
+            stats.memory_bytes += memory;
+            if ttl > 0 {
+                stats.ttl_sum += ttl;
+                stats.ttl_count += 1;
+            } else if ttl == -1 {
+                stats.perm_count += 1;
+            }
+            if !key_type.is_empty() && key_type != "none" {
+                stats.types.insert(key_type.to_string());
+            }
+        }
+
+        let memory_score = memory as i64;
+        let heat_score = heat_sort_key(heat);
+        let row_template = || SingleKeyRow {
+            key: key.to_string().into(),
+            memory_bytes: memory,
+            memory: format_memory(memory).into(),
+            key_type: SharedString::from(key_type.to_string()),
+            ttl: format_ttl(ttl as f64).into(),
+            ttl_secs: ttl,
+            heat,
+            heat_display: format_heat(heat),
+        };
+        if self.single_groups.by_size.should_insert(memory_score) {
+            self.single_groups
+                .by_size
+                .insert(row_template(), |r| r.memory_bytes as i64);
+        }
+        if heat_probe != HeatProbe::None && heat != HeatMetric::None {
+            if self.single_groups.hottest.should_insert(heat_score) {
+                self.single_groups
+                    .hottest
+                    .insert(row_template(), |r| heat_sort_key(r.heat));
+            }
+            // Coldest = inverse score — flip the sign so the same
+            // descending TopN logic gives us the bottom-N hot list.
+            let cold_score = -heat_score;
+            if self.single_groups.coldest.should_insert(cold_score) {
+                self.single_groups
+                    .coldest
+                    .insert(row_template(), |r| -heat_sort_key(r.heat));
+            }
         }
     }
 }

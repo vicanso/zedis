@@ -691,6 +691,9 @@ preferences = "Preferences..."
 quit = "Quit Zedis"
 
 [memory_analysis]
+rdb_file = "RDB File"
+analyze_rdb = "Analyze RDB…"
+analyze_rdb_tooltip = "Parse a local RDB dump offline — no commands hit the server. Sizes are serialized bytes in the file, so they differ from live memory but rank keys faithfully."
 help = "**What it does**\nScans the keyspace and ranks keys by estimated memory (and access heat) to surface big keys.\n\n**Reading the results**\n- **Size**: estimated bytes for that key (sampled, not exact).\n- **Heat**: depends on `maxmemory-policy` — LFU shows access frequency, LRU shows idle time.\n\n**Notes**\nRead-only commands only; `MEMORY USAGE` needs Redis 4.0+. Large keyspaces are sampled, so figures are estimates."
 reco_panel_title = "Recommendations"
 reco_healthy = "No issues found — this keyspace looks healthy."

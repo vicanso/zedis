@@ -691,6 +691,9 @@ preferences = "Einstellungen..."
 quit = "Zedis beenden"
 
 [memory_analysis]
+rdb_file = "RDB-Datei"
+analyze_rdb = "RDB analysieren…"
+analyze_rdb_tooltip = "Ein lokales RDB-Dump offline auswerten — es werden keine Befehle an den Server gesendet. Größen sind serialisierte Bytes in der Datei; sie weichen vom Live-Speicher ab, die Rangfolge der Schlüssel bleibt aber aussagekräftig."
 help = "**Funktion**\nDurchsucht den Keyspace und ordnet Keys nach geschätztem Speicher (und Zugriffs-Heat), um große Keys aufzuspüren.\n\n**Ergebnisse lesen**\n- **Size**: geschätzte Bytes für den Key (Stichprobe, nicht exakt).\n- **Heat**: hängt von `maxmemory-policy` ab — LFU zeigt Zugriffshäufigkeit, LRU die Leerlaufzeit.\n\n**Hinweise**\nNur Lesebefehle; `MEMORY USAGE` erfordert Redis 4.0+. Große Keyspaces werden gesampelt, die Werte sind Schätzungen."
 reco_panel_title = "Empfehlungen"
 reco_healthy = "Keine Probleme gefunden — dieser Schlüsselraum sieht gesund aus."

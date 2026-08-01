@@ -90,6 +90,8 @@ Beautifully rendered, GPU-accelerated time-series charts. Samples are also persi
 
 Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` auto-picked from `maxmemory-policy`), with a **TTL histogram** alongside. The moment a scan finishes, an **offline rule engine** flags issues automatically — big keys, keys that can't be evicted under a `volatile-*` policy, `noeviction`, high fragmentation, many tiny strings that should be a Hash, and memory-dominating prefixes — no config or network needed. One click also sends the report (key *names*, sizes, TTLs only — never values) to any **OpenAI-compatible** endpoint for inline advice in your UI language.
 
+Prefer not to touch production at all? **Analyze RDB** parses a local dump file offline — a streaming parser (every encoding up to Redis 7.4, values length-skipped so multi-GB files parse at I/O speed) feeds the same tables, TTL histogram, and rule engine, with zero commands sent to any server. Sizes are the keys' serialized bytes in the file: not equal to live memory, but a faithful ranking for big-key and prefix hunting.
+
 ### Performance Diagnostics
 **Slow Log ↔ Latency, live MONITOR, clients, and command stats.**
 

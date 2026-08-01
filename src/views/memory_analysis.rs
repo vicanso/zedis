@@ -15,7 +15,9 @@
 use crate::assets::CustomIconName;
 use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::error::Error;
-use crate::helpers::{AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands};
+use crate::helpers::{
+    AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands, unix_ts_millis,
+};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     get_metrics_cache, i18n_common, i18n_memory_analysis,
@@ -42,9 +44,11 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
+use zedis_core::rdb::RdbParser;
 use zedis_ui::{ZedisDivider, help_popover};
 
 mod render;
@@ -354,6 +358,11 @@ pub struct ZedisMemoryAnalysis {
     /// foreground update (the background HTTP call still finishes but
     /// its result is discarded).
     ai_task: Option<Task<()>>,
+    /// File name of the RDB dump currently analyzed — `Some` marks the
+    /// whole view as showing offline-file results (chips/rules that need
+    /// the live server hide, sizes are serialized bytes, jump actions are
+    /// suppressed). Cleared when an online scan starts.
+    rdb_file: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -488,6 +497,7 @@ impl ZedisMemoryAnalysis {
             ai_status: AiStatus::Idle,
             ai_output: None,
             ai_task: None,
+            rdb_file: None,
             _subscriptions: subscriptions,
         };
         this.update_est_commands();
@@ -551,10 +561,17 @@ impl ZedisMemoryAnalysis {
             window.push_notification(Notification::warning(i18n_memory_analysis(cx, "ai_no_data")), cx);
             return;
         }
+        // Offline RDB results: the live server's dbsize / sample ratio
+        // don't describe the file — report exact (unsampled) file data.
+        let (report_dbsize, report_ratio) = if self.rdb_file.is_some() {
+            (None, 1.0)
+        } else {
+            (self.dbsize, self.ratio)
+        };
         let report = build_markdown_report(
-            self.dbsize,
+            report_dbsize,
             &self.policy,
-            self.ratio,
+            report_ratio,
             &prefix_rows,
             &single_rows,
             &self.ttl_histogram,
@@ -587,8 +604,11 @@ impl ZedisMemoryAnalysis {
         }));
     }
 
-    fn start_analysis(&mut self, cx: &mut gpui::Context<Self>) {
-        // A fresh scan invalidates any previous AI advice.
+    /// Shared reset for both analysis sources (online SCAN / RDB file):
+    /// clears every accumulator, table, and prior advice, and flips the
+    /// tables' offline flag to match the new source.
+    fn reset_for_run(&mut self, offline: bool, cx: &mut gpui::Context<Self>) {
+        // A fresh run invalidates any previous AI advice.
         self.clear_ai_result(cx);
         self.status = AnalysisStatus::Running;
         self.scan_error = None;
@@ -602,11 +622,24 @@ impl ZedisMemoryAnalysis {
         // a partial new run.
         self.ttl_histogram = TtlHistogram::default();
         // Stale advice from a previous run is worse than none — clear it so
-        // the panel hides until the fresh scan completes and recomputes.
+        // the panel hides until the fresh run completes and recomputes.
         self.recommendations.clear();
 
-        self.prefix_table.update(cx, |s, _| s.delegate_mut().rows.clear());
-        self.single_table.update(cx, |s, _| s.delegate_mut().rows.clear());
+        self.prefix_table.update(cx, |s, _| {
+            let delegate = s.delegate_mut();
+            delegate.rows.clear();
+            delegate.offline = offline;
+        });
+        self.single_table.update(cx, |s, _| {
+            let delegate = s.delegate_mut();
+            delegate.rows.clear();
+            delegate.offline = offline;
+        });
+    }
+
+    fn start_analysis(&mut self, cx: &mut gpui::Context<Self>) {
+        self.reset_for_run(false, cx);
+        self.rdb_file = None;
 
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
@@ -657,12 +690,7 @@ impl ZedisMemoryAnalysis {
                 this.should_rebuild_sort_items = Some(true);
             });
 
-            let mut prefix_map: HashMap<String, PrefixStats> = HashMap::new();
-            let mut single_groups: SingleKeyTopGroups = SingleKeyTopGroups::new(TOP_N);
-            // Local TTL histogram populated alongside the existing
-            // accumulators. Snapshotted each round so the UI updates
-            // progressively — same pattern as `single_groups`.
-            let mut ttl_histogram: TtlHistogram = TtlHistogram::default();
+            let mut acc = AnalysisAccumulators::new();
             let mut cursors: Option<Vec<u64>> = None;
             let mut analysis_count: u64 = 0;
             // Set when a SCAN round errors; carried out of the loop so the
@@ -705,57 +733,17 @@ impl ZedisMemoryAnalysis {
 
                 // Classify and accumulate from the already-fetched data
                 for item in &keys_memory_usage {
-                    let key = &item.key;
-                    let memory = item.memory_usage;
-                    let ttl = item.ttl;
-                    let key_type = &item.key_type;
-
-                    // TTL distribution — uses the same `ttl` already
-                    // pulled by the SCAN pipeline. Cheap per-item op.
-                    ttl_histogram.add(ttl);
-
-                    if let Some(pos) = key.find(&key_separator) {
-                        let prefix = &key[..pos];
-                        let stats = prefix_map.entry(prefix.to_string()).or_default();
-                        stats.key_count += 1;
-                        stats.memory_bytes += memory;
-                        if ttl > 0 {
-                            stats.ttl_sum += ttl;
-                            stats.ttl_count += 1;
-                        } else if ttl == -1 {
-                            stats.perm_count += 1;
-                        }
-                        if !key_type.is_empty() && key_type != "none" {
-                            stats.types.insert(key_type.clone());
-                        }
-                    }
-
-                    let memory_score = memory as i64;
-                    let heat_score = heat_sort_key(item.heat);
-                    let row_template = || SingleKeyRow {
-                        key: key.clone().into(),
-                        memory_bytes: memory,
-                        memory: format_memory(memory).into(),
-                        key_type: SharedString::from(key_type.clone()),
-                        ttl: format_ttl(ttl as f64).into(),
-                        ttl_secs: ttl,
-                        heat: item.heat,
-                        heat_display: format_heat(item.heat),
-                    };
-                    if single_groups.by_size.should_insert(memory_score) {
-                        single_groups.by_size.insert(row_template(), |r| r.memory_bytes as i64);
-                    }
-                    if heat != HeatProbe::None && item.heat != HeatMetric::None {
-                        if single_groups.hottest.should_insert(heat_score) {
-                            single_groups.hottest.insert(row_template(), |r| heat_sort_key(r.heat));
-                        }
-                        // Coldest = inverse score — flip the sign so the same
-                        // descending TopN logic gives us the bottom-N hot list.
-                        let cold_score = -heat_score;
-                        if single_groups.coldest.should_insert(cold_score) {
-                            single_groups.coldest.insert(row_template(), |r| -heat_sort_key(r.heat));
-                        }
-                    }
+                    acc.add(
+                        KeySample {
+                            key: &item.key,
+                            memory_bytes: item.memory_usage,
+                            ttl: item.ttl,
+                            key_type: &item.key_type,
+                            heat: item.heat,
+                        },
+                        heat,
+                        &key_separator,
+                    );
                 }
 
                 // Update progress
@@ -765,26 +753,10 @@ impl ZedisMemoryAnalysis {
                     99
                 };
                 let progress_text: SharedString = format!("{}%", pct).into();
-                let prefix_rows = build_prefix_rows(&prefix_map, ratio, &key_separator);
+                let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator);
                 let pc = prefix_rows.len();
-                let groups_snapshot = SingleKeyTopGroups {
-                    by_size: TopN {
-                        items: single_groups.by_size.items.clone(),
-                        limit: single_groups.by_size.limit,
-                        min_score: single_groups.by_size.min_score,
-                    },
-                    hottest: TopN {
-                        items: single_groups.hottest.items.clone(),
-                        limit: single_groups.hottest.limit,
-                        min_score: single_groups.hottest.min_score,
-                    },
-                    coldest: TopN {
-                        items: single_groups.coldest.items.clone(),
-                        limit: single_groups.coldest.limit,
-                        min_score: single_groups.coldest.min_score,
-                    },
-                };
-                let ttl_snapshot = ttl_histogram.clone();
+                let groups_snapshot = acc.single_groups.clone();
+                let ttl_snapshot = acc.ttl_histogram.clone();
                 let _ = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.prefix_count = pc;
@@ -806,10 +778,10 @@ impl ZedisMemoryAnalysis {
             }
 
             // Final update
-            let prefix_rows = build_prefix_rows(&prefix_map, ratio, &key_separator);
+            let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator);
             let pc = prefix_rows.len();
-            let final_groups = single_groups;
-            let final_histogram = ttl_histogram;
+            let final_groups = acc.single_groups;
+            let final_histogram = acc.ttl_histogram;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(err) = scan_error {
                     // Surface the failure instead of a fake "100% / Finished".
@@ -833,6 +805,208 @@ impl ZedisMemoryAnalysis {
                         &final_histogram,
                         frag,
                     );
+                }
+                this.prefix_count = pc;
+                this.single_groups = final_groups;
+                this.ttl_histogram = final_histogram;
+                let mode = this.sort_mode;
+                let single_rows = this.single_groups.rows_for(mode);
+                this.single_count = single_rows.len();
+                prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
+                single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
+                cx.notify();
+            });
+        }));
+
+        cx.notify();
+    }
+
+    /// Toolbar entry point for the offline analysis: pick a local RDB
+    /// dump, then parse it. Extension is not filterable in the native
+    /// dialog — a non-RDB pick fails fast on the `REDIS` magic check.
+    fn handle_pick_rdb(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.status == AnalysisStatus::Running {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |handle, cx| {
+            let result = receiver.await;
+            let _ = handle.update(cx, |this, cx| {
+                if let Ok(Ok(Some(paths))) = result
+                    && let Some(path) = paths.into_iter().next()
+                {
+                    this.start_rdb_analysis(path, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Offline analysis: stream-parse a local RDB dump into the same
+    /// accumulators the online SCAN feeds. No Redis round-trips — sizes
+    /// are serialized bytes from the file (relative magnitudes are
+    /// faithful; live `MEMORY USAGE` overhead is not included), there is
+    /// no heat metric, no sampling (ratio 1.0), and per-key TTLs become
+    /// "remaining vs now".
+    fn start_rdb_analysis(&mut self, path: PathBuf, cx: &mut gpui::Context<Self>) {
+        self.reset_for_run(true, cx);
+        let file_name: SharedString = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string())
+            .into();
+        self.rdb_file = Some(file_name);
+        // Offline source has no policy / heat probe; force the rank
+        // dropdown back to Size-only.
+        self.policy = SharedString::default();
+        self.heat = HeatProbe::None;
+        if self.sort_mode != SortMode::Size {
+            self.sort_mode = SortMode::Size;
+        }
+        self.should_rebuild_sort_items = Some(true);
+
+        let prefix_table = self.prefix_table.clone();
+        let single_table = self.single_table.clone();
+        let key_separator = self.server_state.read(cx).key_separator().to_string();
+
+        // Entries parsed per UI round: large enough that a multi-GB dump
+        // isn't throttled by foreground updates, small enough that
+        // progress stays lively.
+        const RDB_CHUNK: usize = 20_000;
+
+        self.analysis_task = Some(cx.spawn(async move |handle, cx| {
+            let opened = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move {
+                        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+                        let file_len = file.metadata().map_err(|e| e.to_string())?.len();
+                        let parser = RdbParser::new(std::io::BufReader::new(file)).map_err(|e| e.to_string())?;
+                        Ok::<_, String>((parser, file_len))
+                    }
+                })
+                .await;
+            let (mut parser, file_len) = match opened {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(error = %e, "failed to open RDB file");
+                    let _ = handle.update(cx, |this, cx| {
+                        this.status = AnalysisStatus::Error;
+                        this.scan_error = Some(e.into());
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            let mut acc = AnalysisAccumulators::new();
+            let now_ms = unix_ts_millis();
+            let mut parse_error: Option<SharedString> = None;
+
+            loop {
+                // Parse one chunk on the background pool; the parser moves
+                // into the round and comes back with it so the foreground
+                // task keeps ownership between rounds.
+                let round = cx.background_spawn(async move {
+                    let mut entries = Vec::with_capacity(RDB_CHUNK);
+                    let mut done = false;
+                    loop {
+                        match parser.next_entry() {
+                            Ok(Some(entry)) => {
+                                entries.push(entry);
+                                if entries.len() >= RDB_CHUNK {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {
+                                done = true;
+                                break;
+                            }
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    }
+                    let offset = parser.bytes_read();
+                    Ok::<_, String>((parser, entries, offset, done))
+                });
+                let (returned_parser, entries, offset, done) = match round.await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(error = %e, "RDB parse failed");
+                        parse_error = Some(e.into());
+                        break;
+                    }
+                };
+                parser = returned_parser;
+
+                for entry in &entries {
+                    let ttl = match entry.expire_at_ms {
+                        // A dump can hold keys that expired after it was
+                        // written — clamp to 0 ("expiring now").
+                        Some(at) => ((at - now_ms) / 1000).max(0),
+                        None => -1,
+                    };
+                    acc.add(
+                        KeySample {
+                            key: &entry.key,
+                            memory_bytes: entry.serialized_bytes,
+                            ttl,
+                            key_type: entry.key_type,
+                            heat: HeatMetric::None,
+                        },
+                        HeatProbe::None,
+                        &key_separator,
+                    );
+                }
+
+                let pct = if file_len > 0 {
+                    ((offset as f64 / file_len as f64) * 100.0).min(99.0) as u32
+                } else {
+                    99
+                };
+                let progress_text: SharedString = format!("{}%", pct).into();
+                let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator);
+                let pc = prefix_rows.len();
+                let groups_snapshot = acc.single_groups.clone();
+                let ttl_snapshot = acc.ttl_histogram.clone();
+                let updated = handle.update(cx, |this, cx| {
+                    this.progress = progress_text;
+                    this.prefix_count = pc;
+                    this.single_groups = groups_snapshot;
+                    this.ttl_histogram = ttl_snapshot;
+                    let mode = this.sort_mode;
+                    let single_rows = this.single_groups.rows_for(mode);
+                    this.single_count = single_rows.len();
+                    prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
+                    single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
+                    cx.notify();
+                });
+                // View dropped (route change) — stop parsing.
+                if updated.is_err() || done {
+                    break;
+                }
+            }
+
+            let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator);
+            let pc = prefix_rows.len();
+            let final_groups = acc.single_groups;
+            let final_histogram = acc.ttl_histogram;
+            let _ = handle.update(cx, |this, cx| {
+                if let Some(err) = parse_error {
+                    // Keep whatever parsed before the corruption point.
+                    this.status = AnalysisStatus::Error;
+                    this.scan_error = Some(err);
+                    this.recommendations.clear();
+                } else {
+                    this.status = AnalysisStatus::Finished;
+                    this.progress = "100%".into();
+                    // Offline rules only: no policy, no fragmentation data.
+                    this.recommendations =
+                        build_recommendations("", &prefix_rows, &final_groups.by_size.items, &final_histogram, None);
                 }
                 this.prefix_count = pc;
                 this.single_groups = final_groups;

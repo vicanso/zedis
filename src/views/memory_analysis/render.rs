@@ -34,6 +34,7 @@ impl ZedisMemoryAnalysis {
                 .child(Label::new(value).text_sm().font_weight(gpui::FontWeight::MEDIUM))
         };
 
+        let offline = self.rdb_file.is_some();
         ZedisDivider::new()
             .gap_4()
             // Read-only data information display
@@ -41,12 +42,17 @@ impl ZedisMemoryAnalysis {
                 h_flex()
                     .gap_4() // Use moderate spacing inside the data group
                     .items_center()
+                    // Offline source: name the analyzed dump instead of the
+                    // live-connection chips, which don't describe the file.
+                    .when_some(self.rdb_file.clone(), |this, name| {
+                        this.child(stat_item(cx, "rdb_file", name))
+                    })
                     // DB Size
-                    .when_some(self.dbsize, |this, dbsize| {
+                    .when_some(self.dbsize.filter(|_| !offline), |this, dbsize| {
                         this.child(stat_item(cx, "dbsize", format_thousands(dbsize).into()))
                     })
                     // Estimated commands
-                    .when(self.est_commands > 0, |this| {
+                    .when(self.est_commands > 0 && !offline, |this| {
                         this.child(stat_item(
                             cx,
                             "est_commands",
@@ -145,6 +151,20 @@ impl ZedisMemoryAnalysis {
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.start_analysis(cx);
                             }))
+                    })
+                    // Offline source: pick a local RDB dump and analyze it
+                    // without touching the live server.
+                    .when(!is_running, |this| {
+                        this.child(
+                            Button::new("analyze-rdb")
+                                .outline()
+                                .small()
+                                .label(i18n_memory_analysis(cx, "analyze_rdb"))
+                                .tooltip(i18n_memory_analysis(cx, "analyze_rdb_tooltip"))
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.handle_pick_rdb(cx);
+                                })),
+                        )
                     }),
             )
     }
@@ -889,7 +909,11 @@ impl gpui::Render for ZedisMemoryAnalysis {
                 // by the status_bar heartbeat). Always attempted — even before
                 // the user clicks "Analyse" it shows the running
                 // mem_fragmentation_ratio, so it doubles as ambient diagnostic.
-                if let Some(chart) = self.render_fragmentation_chart(cx) {
+                // Hidden for offline RDB results: the chart describes the live
+                // connection, not the file being analyzed.
+                if self.rdb_file.is_none()
+                    && let Some(chart) = self.render_fragmentation_chart(cx)
+                {
                     body = body.child(chart);
                 }
 
