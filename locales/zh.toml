@@ -1201,6 +1201,7 @@ cmd_functions = "前往 Functions"
 cmd_lua_scripts = "前往 Lua 脚本"
 cmd_persistence = "前往持久化管理"
 cmd_keyspace_notifications = "前往 Keyspace 通知"
+cmd_server_info = "前往服务器信息（INFO）"
 cmd_settings = "打开设置"
 
 [persistence]
@@ -1485,6 +1486,18 @@ skipped = "目标已存在该 key，已跳过（勾选覆盖可替换）"
 key_gone = "Key 已不存在"
 failed = "复制失败"
 version_note = "提示：DUMP/RESTORE 要求目标 Redis 与源同主版本或更新——拷到更老的版本（如 v8 → v5）会失败。"
+
+[server_info]
+title = "服务器信息（INFO）"
+help = "**功能说明**\n以单个可过滤表格展示 `INFO everything` 的全部字段——结构化面板未覆盖的长尾字段（`errorstats`、`latencystats`、fork/COW 开销、`sync_full`、uptime 等）都在这里。\n\n**技巧**\n- 过滤同时匹配分段、字段名和值。\n- 集群模式下会列出所有主节点；分段列带节点地址，过滤某个字段即可跨节点对比。\n\n**说明**\n只读（仅执行 `INFO`）。旧版本服务器自动降级为 `INFO all` / 普通 `INFO`。"
+filter_placeholder = "过滤分段 / 字段 / 值"
+refresh = "刷新"
+section = "分段"
+field = "字段"
+value = "值"
+fields = "字段数"
+refreshed_at = "更新于"
+no_data = "暂无数据。点击刷新从服务器获取 INFO。"
 
 [server_load]
 title = "命令统计"

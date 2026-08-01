@@ -1202,6 +1202,7 @@ cmd_functions = "Zu Functions"
 cmd_lua_scripts = "Zu Lua-Skripten"
 cmd_persistence = "Zu Persistenz"
 cmd_keyspace_notifications = "Zu Keyspace-Benachrichtigungen"
+cmd_server_info = "Zu Serverinfo (INFO)"
 cmd_settings = "Einstellungen öffnen"
 
 [persistence]
@@ -1483,6 +1484,18 @@ skipped = "Schlüssel existiert am Ziel — übersprungen (Überschreiben aktivi
 key_gone = "Schlüssel existiert nicht mehr"
 failed = "Kopieren fehlgeschlagen"
 version_note = "Hinweis: DUMP/RESTORE erfordert ein Ziel-Redis mit derselben Hauptversion wie die Quelle oder neuer — das Kopieren auf eine ältere Version (z. B. v8 → v5) schlägt fehl."
+
+[server_info]
+title = "Serverinfo (INFO)"
+help = "**Was es tut**\nZeigt jedes Feld von `INFO everything` in einer filterbaren Tabelle — die Langschwanz-Felder, die die strukturierten Panels nicht abdecken (`errorstats`, `latencystats`, Fork-/COW-Kosten, `sync_full`, Uptime, …).\n\n**Tipps**\n- Der Filter durchsucht Abschnitt, Feld und Wert.\n- Im Cluster werden alle Master gelistet; die Abschnittsspalte trägt die Knotenadresse — ein Feldfilter vergleicht es über die Knoten hinweg.\n\n**Hinweise**\nNur lesend (nur `INFO`). Ältere Server fallen automatisch auf `INFO all` / einfaches `INFO` zurück."
+filter_placeholder = "Abschnitt / Feld / Wert filtern"
+refresh = "Aktualisieren"
+section = "Abschnitt"
+field = "Feld"
+value = "Wert"
+fields = "Felder"
+refreshed_at = "Aktualisiert"
+no_data = "Keine Daten. Aktualisieren, um INFO vom Server zu laden."
 
 [server_load]
 title = "Befehlsstatistik"

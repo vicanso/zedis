@@ -1202,6 +1202,7 @@ cmd_functions = "Ir a Functions"
 cmd_lua_scripts = "Ir a Scripts Lua"
 cmd_persistence = "Ir a Persistencia"
 cmd_keyspace_notifications = "Ir a Notificaciones de Keyspace"
+cmd_server_info = "Ir a Información del servidor (INFO)"
 cmd_settings = "Abrir Ajustes"
 
 [persistence]
@@ -1483,6 +1484,18 @@ skipped = "La clave ya existe en el destino — omitida (active Sobrescribir par
 key_gone = "La clave ya no existe"
 failed = "Error al copiar"
 version_note = "Nota: DUMP/RESTORE requiere que el Redis de destino tenga la misma versión principal que el origen o una más reciente; copiar a una versión anterior (p. ej. v8 → v5) fallará."
+
+[server_info]
+title = "Información del servidor (INFO)"
+help = "**Qué hace**\nMuestra todos los campos de `INFO everything` en una tabla filtrable — la larga cola que los paneles estructurados no cubren (`errorstats`, `latencystats`, costes de fork/COW, `sync_full`, uptime, …).\n\n**Consejos**\n- El filtro busca en sección, campo y valor.\n- En clústeres se listan todos los másteres; la columna de sección lleva la dirección del nodo, así que filtrar un campo lo compara entre nodos.\n\n**Notas**\nSolo lectura (solo `INFO`). Los servidores antiguos degradan automáticamente a `INFO all` / `INFO` simple."
+filter_placeholder = "Filtrar sección / campo / valor"
+refresh = "Actualizar"
+section = "Sección"
+field = "Campo"
+value = "Valor"
+fields = "Campos"
+refreshed_at = "Actualizado"
+no_data = "Sin datos. Actualice para obtener INFO del servidor."
 
 [server_load]
 title = "Estadísticas de comandos"

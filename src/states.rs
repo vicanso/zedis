@@ -51,6 +51,7 @@ pub use i18n::i18n_pubsub_editor;
 pub use i18n::i18n_recent_keys_palette;
 pub use i18n::i18n_script_editor;
 pub use i18n::i18n_search;
+pub use i18n::i18n_server_info;
 pub use i18n::i18n_server_load;
 pub use i18n::i18n_servers;
 pub use i18n::i18n_set_editor;

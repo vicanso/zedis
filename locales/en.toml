@@ -1202,6 +1202,7 @@ cmd_functions = "Go to Functions"
 cmd_lua_scripts = "Go to Lua Scripts"
 cmd_persistence = "Go to Persistence"
 cmd_keyspace_notifications = "Go to Keyspace Notifications"
+cmd_server_info = "Go to Server Info (INFO)"
 cmd_settings = "Open Settings"
 
 [persistence]
@@ -1487,6 +1488,18 @@ skipped = "Key exists at the destination — skipped (enable Overwrite to replac
 key_gone = "Key no longer exists"
 failed = "Copy failed"
 version_note = "Note: DUMP/RESTORE needs the target Redis to be the same major version as the source or newer — copying to an older version (e.g. v8 → v5) will fail."
+
+[server_info]
+title = "Server Info (INFO)"
+help = "**What it does**\nShows every field of `INFO everything` in one filterable table — the long tail the structured panels don't surface (`errorstats`, `latencystats`, fork/COW costs, `sync_full`, uptime, …).\n\n**Tips**\n- Filter matches section, field and value.\n- On clusters every master is listed; the section column carries the node address, so filtering one field compares it across nodes.\n\n**Notes**\nRead-only (`INFO` only). Older servers fall back to `INFO all` / plain `INFO` automatically."
+filter_placeholder = "Filter section / field / value"
+refresh = "Refresh"
+section = "Section"
+field = "Field"
+value = "Value"
+fields = "Fields"
+refreshed_at = "Updated"
+no_data = "No data. Refresh to fetch INFO from the server."
 
 [server_load]
 title = "Command Stats"

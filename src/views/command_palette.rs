@@ -270,7 +270,7 @@ impl ZedisCommandPalette {
                 let conn = current_route.server();
                 let view_route = |view: ServerView| conn.clone().map(|(id, db)| Route::Server { id, db, view });
                 // (i18n key, target) — order defines empty-query display order.
-                let commands: [(&str, Option<Route>); 15] = [
+                let commands: [(&str, Option<Route>); 16] = [
                     ("cmd_home", Some(Route::Home)),
                     ("cmd_editor", view_route(ServerView::Editor)),
                     ("cmd_metrics", view_route(ServerView::Metrics)),
@@ -283,6 +283,7 @@ impl ZedisCommandPalette {
                         "cmd_keyspace_notifications",
                         view_route(ServerView::KeyspaceNotifications),
                     ),
+                    ("cmd_server_info", view_route(ServerView::ServerInfo)),
                     ("cmd_config", view_route(ServerView::Config)),
                     ("cmd_acl", view_route(ServerView::Acl)),
                     ("cmd_search", view_route(ServerView::Search)),

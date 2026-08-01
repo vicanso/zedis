@@ -1390,6 +1390,7 @@ impl Render for Zedis {
                     ServerToolsAction::Topology => ServerView::Topology,
                     ServerToolsAction::ServerLoad => ServerView::ServerLoad,
                     ServerToolsAction::ValueSearch => ServerView::ValueSearch,
+                    ServerToolsAction::ServerInfo => ServerView::ServerInfo,
                     // A dialog, not a sub-route: keeps whatever view is
                     // active underneath.
                     ServerToolsAction::Trash => {

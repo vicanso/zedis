@@ -1203,6 +1203,7 @@ cmd_functions = "Aller à Functions"
 cmd_lua_scripts = "Aller aux Scripts Lua"
 cmd_persistence = "Aller à la Persistance"
 cmd_keyspace_notifications = "Aller aux Notifications Keyspace"
+cmd_server_info = "Aller aux Infos serveur (INFO)"
 cmd_settings = "Ouvrir les Paramètres"
 
 [persistence]
@@ -1484,6 +1485,18 @@ skipped = "La clé existe à la destination — ignorée (activez Écraser pour 
 key_gone = "La clé n'existe plus"
 failed = "Échec de la copie"
 version_note = "Remarque : DUMP/RESTORE exige un Redis cible de la même version majeure que la source ou plus récente — copier vers une version plus ancienne (p. ex. v8 → v5) échouera."
+
+[server_info]
+title = "Infos serveur (INFO)"
+help = "**Ce que ça fait**\nAffiche chaque champ de `INFO everything` dans une table filtrable — la longue traîne que les panneaux structurés ne couvrent pas (`errorstats`, `latencystats`, coûts fork/COW, `sync_full`, uptime, …).\n\n**Astuces**\n- Le filtre porte sur la section, le champ et la valeur.\n- En cluster, chaque master est listé ; la colonne section porte l'adresse du nœud — filtrer un champ le compare entre nœuds.\n\n**Notes**\nLecture seule (`INFO` uniquement). Les serveurs anciens retombent automatiquement sur `INFO all` / `INFO` simple."
+filter_placeholder = "Filtrer section / champ / valeur"
+refresh = "Actualiser"
+section = "Section"
+field = "Champ"
+value = "Valeur"
+fields = "Champs"
+refreshed_at = "Mis à jour"
+no_data = "Aucune donnée. Actualisez pour récupérer INFO du serveur."
 
 [server_load]
 title = "Statistiques des commandes"

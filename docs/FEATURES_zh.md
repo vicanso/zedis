@@ -112,6 +112,11 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 
 持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级），集群下逐节点显示状态行，并有 **Policy & 路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
 
+### 原始 INFO 浏览器
+**`INFO everything` 全部字段，单个可过滤表格。**
+
+结构化面板覆盖常用字段；这个页面负责长尾——`errorstats`、`latencystats` 延迟分位、fork/COW 开销、`sync_full` 计数、uptime——不用再开终端。过滤同时匹配分段、字段与值；集群模式下列出所有主节点，分段列带节点地址，过滤某个字段即可跨节点对比。只读，旧版本服务器自动降级为 `INFO all` / 普通 `INFO`。
+
 ### CONFIG 编辑器
 **带类型与内联参数文档的 `CONFIG GET/SET` 编辑器。**
 

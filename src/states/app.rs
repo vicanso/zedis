@@ -75,6 +75,9 @@ pub enum ServerView {
     Topology,
     ServerLoad,
     ValueSearch,
+    /// Raw `INFO everything` browser — every field, filterable, for the
+    /// long tail the structured panels don't surface.
+    ServerInfo,
 }
 
 impl Route {
@@ -139,6 +142,7 @@ impl ServerView {
             ServerView::Topology => "topology",
             ServerView::ServerLoad => "serverload",
             ServerView::ValueSearch => "valuesearch",
+            ServerView::ServerInfo => "serverinfo",
         }
     }
     /// Parse a connection-scoped view name (expects an already-lowercased str).
@@ -160,6 +164,7 @@ impl ServerView {
             "topology" => ServerView::Topology,
             "serverload" => ServerView::ServerLoad,
             "valuesearch" => ServerView::ValueSearch,
+            "serverinfo" => ServerView::ServerInfo,
             _ => return None,
         })
     }
@@ -243,6 +248,7 @@ pub enum ServerToolsAction {
     Topology,
     ServerLoad,
     ValueSearch,
+    ServerInfo,
     /// Opens the local recycle-bin dialog (soft-deleted keys) instead of a
     /// sub-route — handled specially in `main.rs`.
     Trash,

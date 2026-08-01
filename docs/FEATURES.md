@@ -112,6 +112,11 @@ Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per
 
 A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (PROD-escalated), per-node status rows on clusters, and a **Policy & paths** card showing the configured `save` rules and AOF settings from `CONFIG GET`. Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with one-click `notify-keyspace-events` presets, pause, and export.
 
+### Raw INFO Browser
+**Every `INFO everything` field in one filterable table.**
+
+The structured panels cover the common fields; this page covers the long tail — `errorstats`, `latencystats` percentiles, fork/COW costs, `sync_full` counters, uptime — without dropping to the terminal. Filter matches section, field, and value; on clusters every master is listed with its address in the section column, so filtering one field compares it across nodes. Read-only, and degrades to `INFO all` / plain `INFO` on older servers.
+
 ### CONFIG Editor
 **A typed `CONFIG GET/SET` editor with inline parameter docs.**
 

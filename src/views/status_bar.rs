@@ -20,8 +20,8 @@ use crate::{
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
-        i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash, i18n_value_search,
-        save_session_option,
+        i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash,
+        i18n_value_search, save_session_option,
     },
 };
 use gpui::{
@@ -627,6 +627,12 @@ impl ZedisStatusBar {
                 Icon::new(CustomIconName::AudioWaveform),
                 Box::new(ServerToolsAction::KeyspaceNotifications),
                 move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
+            )
+            // Raw INFO browser — plain `INFO` works on every Redis, no gate.
+            .menu_element_with_icon(
+                Icon::new(IconName::Info),
+                Box::new(ServerToolsAction::ServerInfo),
+                move |_window, cx| Label::new(i18n_server_info(cx, "title")),
             );
 
         // ── Query & Scripting ──
