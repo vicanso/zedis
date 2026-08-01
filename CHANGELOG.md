@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.6](https://github.com/vicanso/zedis/compare/v0.6.5..v0.6.6) - 2026-08-01
+
+### ⛰️  Features
+
+- *(net)* Route update checks and AI requests through the system proxy ([#122](https://github.com/orhun/git-cliff/issues/122)) - ([11ed780](https://github.com/vicanso/zedis/commit/11ed78096225f4dafbf8b77fef38df2bf93b1466))
+- *(ssh)* Support passphrase-protected SSH keys for tunnels ([#121](https://github.com/orhun/git-cliff/issues/121)) - ([bad574a](https://github.com/vicanso/zedis/commit/bad574a47bfcc9f2a513632126562ec96da19b9b))
+
+### 🐛 Bug Fixes
+
+- *(keys)* Let the code editor's ⌘F search win over the global filter hotkey - ([058c169](https://github.com/vicanso/zedis/commit/058c1698d1ee9ce313c41ee91f86fad79e0a6e24))
+- *(ui)* Repair form dialog scrollbar and pin action footer ([#123](https://github.com/orhun/git-cliff/issues/123)) - ([ce70e61](https://github.com/vicanso/zedis/commit/ce70e61a8fda69f3890d8c0644b3045b164b7459))
+
 ## [0.6.5](https://github.com/vicanso/zedis/compare/v0.6.4..v0.6.5) - 2026-07-29
 
 ### ⛰️  Features
