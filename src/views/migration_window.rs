@@ -29,9 +29,10 @@ use gpui::{
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Root,
+    ActiveTheme, Disableable, Root, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputEvent, InputState},
     label::Label,
     radio::RadioGroup,
     scroll::ScrollableElement,
@@ -73,6 +74,9 @@ pub struct ZedisMigrationWindow {
     conflict_mode: ConflictMode,
     /// Export only: binary DUMP bundle (re-importable) vs readable JSON/CSV.
     export_format: ExportFormat,
+    /// Export only: optional key-prefix filter narrowing the handed-in key
+    /// list before the job starts. Empty = export everything.
+    prefix_input_state: Entity<InputState>,
     /// Import only: last dry-run result (if any).
     preview: Option<ConflictPreview>,
     preview_running: bool,
@@ -86,10 +90,23 @@ impl ZedisMigrationWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let state = cx.new(|_| MigrationState::new());
+        let prefix_input_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_migration(cx, "prefix_filter_placeholder"))
+        });
         let mut subs = Vec::new();
         subs.push(cx.subscribe(&state, |_view, _state, _event: &MigrationEvent, cx| {
             cx.notify();
         }));
+        // Re-render on typing so the matched-count chip stays live.
+        subs.push(
+            cx.subscribe_in(&prefix_input_state, window, |_view, _state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            }),
+        );
         Self {
             focus_handle,
             mode,
@@ -97,6 +114,7 @@ impl ZedisMigrationWindow {
             chosen_path: None,
             conflict_mode: ConflictMode::Skip,
             export_format: ExportFormat::Binary,
+            prefix_input_state,
             preview: None,
             preview_running: false,
             preview_error: None,
@@ -154,6 +172,20 @@ impl ZedisMigrationWindow {
         }
     }
 
+    /// The export key list after the prefix filter (export mode only;
+    /// empty filter passes everything through).
+    fn filtered_export_keys(&self, cx: &App) -> Vec<SharedString> {
+        let MigrationWindowMode::Export { keys, .. } = &self.mode else {
+            return Vec::new();
+        };
+        let prefix = self.prefix_input_state.read(cx).value();
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return keys.clone();
+        }
+        keys.iter().filter(|k| k.starts_with(prefix)).cloned().collect()
+    }
+
     fn handle_pick_and_start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         match &self.mode {
             MigrationWindowMode::Export { .. } => {
@@ -199,12 +231,10 @@ impl ZedisMigrationWindow {
 
     fn start_with_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let job = match &self.mode {
-            MigrationWindowMode::Export {
-                server_id, db, keys, ..
-            } => MigrationJob::Export {
+            MigrationWindowMode::Export { server_id, db, .. } => MigrationJob::Export {
                 server_id: server_id.clone(),
                 db: *db,
-                keys: keys.clone(),
+                keys: self.filtered_export_keys(cx),
                 output_path: path,
                 format: self.export_format,
             },
@@ -381,6 +411,11 @@ impl Render for ZedisMigrationWindow {
         // Export: format choice — must be picked before the file dialog,
         // since choosing a file starts the job immediately. Locked while
         // running so the worker's format can't be pulled out from under it.
+        let filtered_count = self.filtered_export_keys(cx).len();
+        let total_count = match &self.mode {
+            MigrationWindowMode::Export { keys, .. } => keys.len(),
+            MigrationWindowMode::Import { .. } => 0,
+        };
         let format_section = (!is_import).then(|| {
             let labels = vec![
                 i18n_migration(cx, "format_binary").to_string(),
@@ -407,6 +442,26 @@ impl Render for ZedisMigrationWindow {
                             this.export_format = ExportFormat::from_index(*index);
                             cx.notify();
                         })),
+                )
+                // Optional prefix filter over the handed-in key list, with a
+                // live matched/total count so the effect is visible before
+                // the job starts.
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_migration(cx, "prefix_filter")).text_sm())
+                        .child(
+                            Input::new(&self.prefix_input_state)
+                                .small()
+                                .w(px(220.))
+                                .disabled(is_running),
+                        )
+                        .child(
+                            Label::new(SharedString::from(format!("{filtered_count}/{total_count}")))
+                                .text_xs()
+                                .text_color(muted),
+                        ),
                 )
         });
         let conflict_section = is_import.then(|| {
@@ -502,22 +557,27 @@ impl Render for ZedisMigrationWindow {
                 })
         });
 
-        let log_section = div()
+        // v_flex, not div: a Block container would kill the child's flex
+        // sizing (see the CLAUDE.md gotcha), and the list box grows with
+        // the window via flex_1 instead of a fixed height.
+        let log_section = gpui_component::v_flex()
             .px_6()
             .pt_4()
             .flex_1()
             .min_h_0()
             .child(Label::new(i18n_migration(cx, "log_label")).text_sm().text_color(muted))
             .child(
-                gpui_component::v_flex()
+                div()
                     .mt_1()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
                     .border_1()
                     .border_color(theme.border)
                     .rounded(px(4.))
-                    .h(px(220.))
-                    .overflow_y_scrollbar()
                     .px_2()
                     .py_1()
+                    .overflow_y_scrollbar()
                     .children(log_lines.iter().rev().take(200).rev().map(|line| {
                         let color = match line.status {
                             LogStatus::Ok => theme.foreground,
@@ -592,8 +652,8 @@ impl Render for ZedisMigrationWindow {
                     );
             } else {
                 let (idle_key, again_key, disabled) = match &self.mode {
-                    MigrationWindowMode::Export { keys, .. } => {
-                        ("save_and_export", "save_and_export_again", keys.is_empty())
+                    MigrationWindowMode::Export { .. } => {
+                        ("save_and_export", "save_and_export_again", filtered_count == 0)
                     }
                     MigrationWindowMode::Import { .. } => ("pick_file", "pick_file_again", false),
                 };

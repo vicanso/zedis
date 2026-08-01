@@ -512,13 +512,6 @@ impl ZedisKeyTree {
                         move |_, cx| Label::new(i18n_key_tree(cx, "collapse_keys")),
                     )
                 })
-                .when(Capability::ExportCsv.allowed(readonly), |this| {
-                    this.menu_element_with_icon(
-                        Icon::new(CustomIconName::Save),
-                        Box::new(KeyTreeAction::ExportCsv),
-                        move |_, cx| Label::new(i18n_common(cx, "export_csv")),
-                    )
-                })
                 // Multi-select is local UI (enables bulk export); allowed in RO.
                 .when(Capability::ToggleMultiSelect.allowed(readonly), |this| {
                     let icon = if enabled_multiple_selection {

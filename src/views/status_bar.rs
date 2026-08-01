@@ -724,6 +724,14 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::ImportKeys),
             readonly,
         );
+        // Export the loaded keys of the current db (binary / JSON / CSV) —
+        // the selection-free counterpart to the key tree's context-menu
+        // export. Read-only, so no readonly gate.
+        menu = menu.menu_element_with_icon(
+            Icon::new(CustomIconName::Download),
+            Box::new(ServerToolsAction::ExportKeys),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "export_keys_menu")),
+        );
         // ACL (Redis 6.0+). Version-gated; suffix points at the required
         // Redis version when unavailable.
         let acl_label: SharedString = if supports_acl {

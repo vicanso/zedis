@@ -867,11 +867,6 @@ impl ZedisServerState {
     pub fn key(&self) -> Option<SharedString> {
         self.key.clone()
     }
-    /// Get the map of all loaded keys and their types
-    pub fn key_ttls(&self) -> &AHashMap<SharedString, i64> {
-        self.key_ttls.as_ref()
-    }
-
     /// Shared handle to the TTL map for background snapshots (the key-tree
     /// build) — an Arc clone instead of copying the whole map.
     pub fn key_ttls_arc(&self) -> Arc<AHashMap<SharedString, i64>> {

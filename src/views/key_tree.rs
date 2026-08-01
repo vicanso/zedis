@@ -22,7 +22,7 @@ use crate::{
         get_search_history_manager, recent_keys_scope,
     },
     helpers::{
-        EditorAction, TtlFilter, build_csv, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
+        EditorAction, TtlFilter, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
         parse_duration, theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
@@ -30,9 +30,7 @@ use crate::{
         dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor, i18n_key_tag,
         i18n_key_tree, save_session_option,
     },
-    views::{
-        OnTagDialogDone, export_to_file, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window,
-    },
+    views::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -729,25 +727,6 @@ impl ZedisKeyTree {
     }
 
     /// Pick a file and write the prepared keys CSV to it, reporting via a
-    /// notification. Split from the `ExportCsv` handler so the confirm dialog's
-    /// OK can invoke it.
-    fn export_keys_csv_to_file(&mut self, csv: String, cx: &mut Context<Self>) {
-        let server_state = self.server_state.clone();
-        let success = i18n_common(cx, "csv_exported");
-        let error = i18n_common(cx, "csv_export_failed");
-        export_to_file(cx, server_state, csv.into_bytes(), "keys.csv", success, error);
-    }
-
-    /// Run a keyword filter. `force_new_query` marks a scan the user kicked
-    /// off from the search box (Enter / the search button / a history pick):
-    /// it is always treated as a brand-new query, so the tree fully collapses
-    /// and every lazy-load folder's expansion is dropped — even when the
-    /// keyword is unchanged. Only the refresh paths (⌘R / ⋯ "Refresh keys" /
-    /// auto-refresh) pass `false` to keep the expanded folders in place. This
-    /// is what stops an in-flight "Load more" from leaving `string:` expanded
-    /// but half-loaded after the user re-searches the same (e.g. empty) term:
-    /// a fresh global scan never restores a folder's per-prefix "Load more",
-    /// so the folder must reset to a clean, collapsed state instead.
     fn handle_filter(&mut self, force_new_query: bool, cx: &mut Context<Self>) {
         // Don't trigger filter while already scanning
         let server_state_clone = self.server_state.clone();

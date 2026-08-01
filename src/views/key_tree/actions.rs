@@ -33,8 +33,6 @@ pub(super) enum KeyTreeAction {
     PersistFolder(SharedString),
     RefreshFolder(SharedString),
     CollapseAllKeys,
-    /// Export the current key list (name / type / TTL) to a CSV file.
-    ExportCsv,
     ToggleMultiSelectMode,
     ChangeChannelMode,
     AutoRefresh(u32),
@@ -156,45 +154,6 @@ impl Render for ZedisKeyTree {
                     this.server_state.update(cx, |state, cx| {
                         state.collapse_all_keys(cx);
                     });
-                }
-                KeyTreeAction::ExportCsv => {
-                    if !this.server_state.read(cx).can(Capability::ExportCsv) {
-                        return;
-                    }
-                    let (count, csv) = {
-                        let state = this.server_state.read(cx);
-                        let keys = state.keys();
-                        if keys.is_empty() {
-                            return;
-                        }
-                        let ttls = state.key_ttls();
-                        let mut rows: Vec<Vec<String>> = keys
-                            .iter()
-                            .map(|(k, t)| {
-                                let ttl = ttls.get(k).copied().unwrap_or(-1);
-                                let ttl_str = if ttl >= 0 { ttl.to_string() } else { String::new() };
-                                vec![k.to_string(), t.as_str().to_string(), ttl_str]
-                            })
-                            .collect();
-                        rows.sort_by(|a, b| a[0].cmp(&b[0]));
-                        (rows.len(), build_csv(&["key", "type", "ttl_seconds"], &rows))
-                    };
-                    // The CSV only covers the keys currently loaded into the
-                    // tree (a SCAN-limited subset), so confirm with the count
-                    // first — it is not the whole keyspace.
-                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                    let message = t!("key_tree.export_csv_confirm", count = count, locale = locale).to_string();
-                    let weak = cx.entity().downgrade();
-                    ZedisDialog::new_alert(i18n_common(cx, "export_csv"), message)
-                        .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "export_csv")))
-                        .on_ok(move |_, _window, cx| {
-                            if let Some(tree) = weak.upgrade() {
-                                let csv = csv.clone();
-                                tree.update(cx, |this, cx| this.export_keys_csv_to_file(csv, cx));
-                            }
-                            true
-                        })
-                        .open(window, cx);
                 }
                 KeyTreeAction::ToggleMultiSelectMode => {
                     this.key_tree_list_state.update(cx, |state, cx| {

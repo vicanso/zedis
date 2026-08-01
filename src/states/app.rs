@@ -255,6 +255,9 @@ pub enum ServerToolsAction {
     /// Opens the key dump import window for the current server / db
     /// (RESTORE) — handled specially in `main.rs`, not a sub-route.
     ImportKeys,
+    /// Opens the export window for every key currently loaded in the
+    /// active connection's tree — the selection-free Tools-menu entry.
+    ExportKeys,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

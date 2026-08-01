@@ -16,8 +16,8 @@ use crate::states::{
 };
 use crate::views::{
     DialogCallback, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette, ZedisShortcutsOverlay,
-    ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, open_about_window, open_migration_import_window,
-    open_settings_window, open_trash_dialog,
+    ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, open_about_window, open_migration_export_window,
+    open_migration_import_window, open_settings_window, open_trash_dialog,
 };
 use gpui::{
     Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
@@ -1408,6 +1408,32 @@ impl Render for Zedis {
                             .map(|s| s.name.into())
                             .unwrap_or_else(|_| server_id.clone().into());
                         open_migration_import_window(server_id.into(), server_name, db, cx);
+                        return;
+                    }
+                    // Export every key loaded in the active tab's tree (a
+                    // SCAN-limited subset, same coverage as the tree itself).
+                    ServerToolsAction::ExportKeys => {
+                        let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                        else {
+                            return;
+                        };
+                        let server_name: gpui::SharedString = get_server(&server_id)
+                            .map(|s| s.name.into())
+                            .unwrap_or_else(|_| server_id.clone().into());
+                        let mut keys: Vec<gpui::SharedString> = _this
+                            .active_content()
+                            .read(cx)
+                            .server_state()
+                            .read(cx)
+                            .keys()
+                            .keys()
+                            .cloned()
+                            .collect();
+                        if keys.is_empty() {
+                            return;
+                        }
+                        keys.sort_unstable();
+                        open_migration_export_window(server_id.into(), server_name, db, keys, cx);
                         return;
                     }
                 };
