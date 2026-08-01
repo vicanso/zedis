@@ -28,8 +28,8 @@ use crate::connection::get_connection_manager;
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width, i18n_common,
-    i18n_server_info,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
+    i18n_common, i18n_server_info,
 };
 use chrono::Local;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Task, Window, div, prelude::*, px};
@@ -284,6 +284,16 @@ impl ZedisServerInfo {
                 }
             }),
         );
+        // Startup restore builds this view *before* the `ServerSelected`
+        // announce populates `server_state` (same trap as the memory
+        // analyzer's dbsize) — the construction-time refresh sees an empty
+        // server id and bails, so re-fetch when the selection lands. Also
+        // covers switching servers while staying on this route.
+        subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| {
+            if matches!(event, ServerEvent::ServerSelected(_)) {
+                this.refresh(cx);
+            }
+        }));
         let table_state = cx.new(|cx| TableState::new(InfoTableDelegate::new(window, cx), window, cx));
 
         info!("Creating new server info view");
@@ -316,13 +326,18 @@ impl ZedisServerInfo {
         if self.loading {
             return;
         }
-        self.loading = true;
-        self.error = None;
-        cx.notify();
-
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
+        // No selection yet (startup restore) — stay quiet instead of
+        // erroring on an empty id; the ServerSelected subscription will
+        // call back in once the connection is announced.
+        if server_id.is_empty() {
+            return;
+        }
+        self.loading = true;
+        self.error = None;
+        cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |handle, cx| {
             let result: Result<Vec<(String, String)>, Error> = cx
