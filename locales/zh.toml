@@ -841,6 +841,9 @@ group_others_desc = "未分类参数"
 editing = "编辑中"
 
 [migration]
+format_label = "格式"
+format_binary = "二进制（可再导入）"
+format_hint = "二进制是用于实例间迁移的帧格式；JSON / CSV 导出完整可读的值，供人查看或下游工具使用（不可再导入）。"
 export_title = "导出键"
 import_title = "导入键"
 source_summary = "来源：{server} / 库 {db} / {count} 个键"

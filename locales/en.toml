@@ -842,6 +842,9 @@ group_others_desc = "Uncategorized parameters"
 editing = "Editing"
 
 [migration]
+format_label = "Format"
+format_binary = "Binary (re-importable)"
+format_hint = "Binary is the framed dump for migrating between instances; JSON / CSV export full readable values for people and downstream tools (not re-importable)."
 export_title = "Export Keys"
 import_title = "Import Keys"
 source_summary = "Source: {server} / db {db} / {count} keys"

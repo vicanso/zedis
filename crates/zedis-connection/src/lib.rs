@@ -35,6 +35,7 @@ mod lua_script;
 mod manager;
 mod master_key;
 mod multi_search;
+mod readable_export;
 mod search;
 mod ssh_cluster_connection;
 mod ssh_stream;
@@ -70,6 +71,7 @@ pub use latency::{
 };
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
+pub use readable_export::{ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, read_readable_chunk};
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,

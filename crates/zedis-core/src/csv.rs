@@ -26,6 +26,14 @@ pub fn build_csv(headers: &[&str], rows: &[Vec<String>]) -> String {
     out
 }
 
+/// One CRLF-terminated CSV record with the same RFC 4180 quoting as
+/// [`build_csv`] — for streaming writers that emit rows chunk by chunk.
+pub fn build_csv_record(fields: &[&str]) -> String {
+    let mut out = String::new();
+    write_record(&mut out, fields.iter().copied());
+    out
+}
+
 fn write_record<'a>(out: &mut String, fields: impl Iterator<Item = &'a str>) {
     let mut first = true;
     for field in fields {

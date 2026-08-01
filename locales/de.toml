@@ -842,6 +842,9 @@ group_others_desc = "Nicht kategorisierte Parameter"
 editing = "Bearbeiten"
 
 [migration]
+format_label = "Format"
+format_binary = "Binär (re-importierbar)"
+format_hint = "Binär ist das Frame-Format für die Migration zwischen Instanzen; JSON / CSV exportieren vollständige, lesbare Werte für Menschen und nachgelagerte Tools (nicht re-importierbar)."
 export_title = "Keys exportieren"
 import_title = "Keys importieren"
 source_summary = "Quelle: {server} / db {db} / {count} Schlüssel"

@@ -843,6 +843,9 @@ group_others_desc = "Paramètres non catégorisés"
 editing = "Édition"
 
 [migration]
+format_label = "Format"
+format_binary = "Binaire (réimportable)"
+format_hint = "Binaire est le format à trames pour migrer entre instances ; JSON / CSV exportent les valeurs complètes lisibles pour les humains et les outils en aval (non réimportable)."
 export_title = "Exporter des clés"
 import_title = "Importer des clés"
 source_summary = "Source : {server} / db {db} / {count} clés"

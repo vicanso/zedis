@@ -842,6 +842,9 @@ group_others_desc = "未分類のパラメータ"
 editing = "編集中"
 
 [migration]
+format_label = "形式"
+format_binary = "バイナリ（再インポート可）"
+format_hint = "バイナリはインスタンス間移行用のフレーム形式です。JSON / CSV は人や下流ツール向けに完全な値を読みやすく書き出します（再インポート不可）。"
 export_title = "キーをエクスポート"
 import_title = "キーをインポート"
 source_summary = "移行元: {server} / db {db} / {count} キー"

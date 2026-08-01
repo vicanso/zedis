@@ -20,7 +20,8 @@
 use crate::connection::{ConflictMode, ConflictPreview, preview_dump_conflicts};
 use crate::helpers::{get_download_dir, get_home_dir, with_app_identity};
 use crate::states::{
-    LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_migration,
+    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore,
+    i18n_migration,
 };
 use chrono::Utc;
 use gpui::{
@@ -70,6 +71,8 @@ pub struct ZedisMigrationWindow {
     chosen_path: Option<PathBuf>,
     /// Import only: what to do when the destination already has the key.
     conflict_mode: ConflictMode,
+    /// Export only: binary DUMP bundle (re-importable) vs readable JSON/CSV.
+    export_format: ExportFormat,
     /// Import only: last dry-run result (if any).
     preview: Option<ConflictPreview>,
     preview_running: bool,
@@ -93,6 +96,7 @@ impl ZedisMigrationWindow {
             state,
             chosen_path: None,
             conflict_mode: ConflictMode::Skip,
+            export_format: ExportFormat::Binary,
             preview: None,
             preview_running: false,
             preview_error: None,
@@ -144,7 +148,7 @@ impl ZedisMigrationWindow {
                         }
                     })
                     .collect();
-                format!("zedis-{safe_name}-db{db}-{stamp}.zedis-dump")
+                format!("zedis-{safe_name}-db{db}-{stamp}.{}", self.export_format.extension())
             }
             MigrationWindowMode::Import { .. } => format!("zedis-{stamp}.zedis-dump"),
         }
@@ -202,6 +206,7 @@ impl ZedisMigrationWindow {
                 db: *db,
                 keys: keys.clone(),
                 output_path: path,
+                format: self.export_format,
             },
             MigrationWindowMode::Import { server_id, db, .. } => MigrationJob::Import {
                 server_id: server_id.clone(),
@@ -373,6 +378,37 @@ impl Render for ZedisMigrationWindow {
             );
 
         let is_import = matches!(self.mode, MigrationWindowMode::Import { .. });
+        // Export: format choice — must be picked before the file dialog,
+        // since choosing a file starts the job immediately. Locked while
+        // running so the worker's format can't be pulled out from under it.
+        let format_section = (!is_import).then(|| {
+            let labels = vec![
+                i18n_migration(cx, "format_binary").to_string(),
+                "JSON".to_string(),
+                "CSV".to_string(),
+            ];
+            v_flex()
+                .px_6()
+                .pt_3()
+                .gap_2()
+                .child(Label::new(i18n_migration(cx, "format_label")).text_sm())
+                .child(
+                    Label::new(i18n_migration(cx, "format_hint"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(
+                    RadioGroup::horizontal("migration-export-format")
+                        .mt(px(4.))
+                        .children(labels)
+                        .selected_index(Some(self.export_format.index()))
+                        .disabled(is_running)
+                        .on_click(cx.listener(|this, index, _window, cx| {
+                            this.export_format = ExportFormat::from_index(*index);
+                            cx.notify();
+                        })),
+                )
+        });
         let conflict_section = is_import.then(|| {
             let selected = self.conflict_mode.index();
             let labels = vec![
@@ -590,6 +626,7 @@ impl Render for ZedisMigrationWindow {
                     .size_full()
                     .child(header)
                     .child(status_section)
+                    .children(format_section)
                     .children(conflict_section)
                     .child(log_section)
                     .child(footer),

@@ -18,8 +18,9 @@
 //! posts incremental progress back to the foreground entity.
 
 use crate::connection::{
-    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RedisAsyncConn, RestoreStatus, dump_keys_chunk,
-    get_connection_manager, get_server, restore_keys_chunk,
+    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RedisAsyncConn, RestoreStatus, csv_header,
+    dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager, get_server, read_readable_chunk,
+    restore_keys_chunk,
 };
 use crate::error::Error;
 use chrono::Utc;
@@ -28,7 +29,7 @@ use gpui::prelude::*;
 use gpui::{EventEmitter, Task};
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,6 +85,43 @@ pub enum MigrationEvent {
     LogAppended,
 }
 
+/// Output format for export jobs. `Binary` is the framed DUMP/RESTORE
+/// bundle (machine migration, re-importable); `Json` / `Csv` are the
+/// human-readable value exports for eyes and downstream tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportFormat {
+    #[default]
+    Binary,
+    Json,
+    Csv,
+}
+
+impl ExportFormat {
+    /// Position in the format radio group.
+    pub fn index(self) -> usize {
+        match self {
+            ExportFormat::Binary => 0,
+            ExportFormat::Json => 1,
+            ExportFormat::Csv => 2,
+        }
+    }
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => ExportFormat::Json,
+            2 => ExportFormat::Csv,
+            _ => ExportFormat::Binary,
+        }
+    }
+    /// Suggested file extension.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Binary => "zedis-dump",
+            ExportFormat::Json => "json",
+            ExportFormat::Csv => "csv",
+        }
+    }
+}
+
 /// Job specification handed to `start`.
 #[derive(Debug, Clone)]
 pub enum MigrationJob {
@@ -92,6 +130,7 @@ pub enum MigrationJob {
         db: usize,
         keys: Vec<SharedString>,
         output_path: PathBuf,
+        format: ExportFormat,
     },
     Import {
         server_id: SharedString,
@@ -152,8 +191,16 @@ impl MigrationState {
                 db,
                 keys,
                 output_path,
+                format,
             } => {
-                run_export(handle, cx, server_id, db, keys, output_path, cancel).await;
+                let spec = ExportSpec {
+                    server_id,
+                    db,
+                    keys,
+                    output_path,
+                    format,
+                };
+                run_export(handle, cx, spec, cancel).await;
             }
             MigrationJob::Import {
                 server_id,
@@ -198,22 +245,35 @@ impl EventEmitter<MigrationEvent> for MigrationState {}
 // Worker bodies
 // ---------------------------------------------------------------------------
 
-async fn run_export(
-    handle: gpui::WeakEntity<MigrationState>,
-    cx: &mut gpui::AsyncApp,
+/// Export parameters, grouped so the worker signatures stay under
+/// clippy's argument limit.
+struct ExportSpec {
     server_id: SharedString,
     db: usize,
     keys: Vec<SharedString>,
     output_path: PathBuf,
+    format: ExportFormat,
+}
+
+async fn run_export(
+    handle: gpui::WeakEntity<MigrationState>,
+    cx: &mut gpui::AsyncApp,
+    spec: ExportSpec,
     cancel: Arc<AtomicBool>,
 ) {
-    let total = keys.len() as u64;
+    let total = spec.keys.len() as u64;
     let _ = handle.update(cx, |s, cx| {
         s.progress.keys_total = total;
         cx.notify();
     });
 
-    match export_worker(handle.clone(), cx, server_id, db, keys, output_path, cancel.clone()).await {
+    let result = match spec.format {
+        ExportFormat::Binary => export_worker(handle.clone(), cx, spec, cancel.clone()).await,
+        ExportFormat::Json | ExportFormat::Csv => {
+            readable_export_worker(handle.clone(), cx, spec, cancel.clone()).await
+        }
+    };
+    match result {
         Ok(()) => {
             let phase = if cancel.load(Ordering::Acquire) {
                 MigrationPhase::Cancelled
@@ -234,12 +294,16 @@ async fn run_export(
 async fn export_worker(
     handle: gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
-    server_id: SharedString,
-    db: usize,
-    keys: Vec<SharedString>,
-    output_path: PathBuf,
+    spec: ExportSpec,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
+    let ExportSpec {
+        server_id,
+        db,
+        keys,
+        output_path,
+        ..
+    } = spec;
     let server_name = get_server(server_id.as_str())
         .map(|s| s.name)
         .unwrap_or_else(|_| server_id.to_string());
@@ -328,6 +392,116 @@ async fn export_worker(
     smol::unblock(move || writer.finish().map(|_| ())).await?;
     debug!(path = %output_path.display(), "export finished");
     info!(server = %server_id, db, total = keys.len(), "export finished");
+    Ok(())
+}
+
+/// Human-readable export: full values as one JSON array (or CSV rows)
+/// instead of DUMP payloads — for eyes and downstream tools, not
+/// re-import. Values are lossy UTF-8 of the raw bytes; module-typed keys
+/// are recorded with a null value and logged as skipped.
+async fn readable_export_worker(
+    handle: gpui::WeakEntity<MigrationState>,
+    cx: &mut gpui::AsyncApp,
+    spec: ExportSpec,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let ExportSpec {
+        server_id,
+        db,
+        keys,
+        output_path,
+        format,
+    } = spec;
+    let client = get_connection_manager().get_client(server_id.as_str(), db).await?;
+    let mut conn = client.connection();
+
+    let path_for_open = output_path.clone();
+    let mut writer = smol::unblock(move || -> Result<BufWriter<File>> {
+        let mut writer = BufWriter::new(File::create(&path_for_open)?);
+        match format {
+            ExportFormat::Json => writer.write_all(b"[")?,
+            ExportFormat::Csv => writer.write_all(csv_header().as_bytes())?,
+            ExportFormat::Binary => unreachable!("binary goes through export_worker"),
+        }
+        Ok(writer)
+    })
+    .await?;
+
+    let mut first_entry = true;
+    for chunk in keys.chunks(DUMP_BATCH_SIZE) {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+        let entries = read_readable_chunk(&mut conn, &chunk).await?;
+
+        // Serialize on this side so log lines can carry the byte counts.
+        let mut payload = String::new();
+        let mut log_lines: Vec<LogLine> = Vec::with_capacity(chunk.len());
+        for entry in &entries {
+            let before = payload.len();
+            match format {
+                ExportFormat::Json => {
+                    payload.push_str(if first_entry { "\n" } else { ",\n" });
+                    first_entry = false;
+                    payload.push_str(&entry_to_json(entry).to_string());
+                }
+                ExportFormat::Csv => payload.push_str(&entry_to_csv(entry)),
+                ExportFormat::Binary => unreachable!(),
+            }
+            let (status, message) = if entry.value.is_some() {
+                (LogStatus::Ok, None)
+            } else {
+                // Module types have no generic readable form.
+                (LogStatus::Skipped, Some(SharedString::from(entry.key_type.clone())))
+            };
+            log_lines.push(LogLine {
+                key: entry.key.clone().into(),
+                bytes: (payload.len() - before) as u64,
+                status,
+                message,
+            });
+        }
+        // Keys that vanished between SCAN and the fetch.
+        let fetched: ahash::AHashSet<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+        for key in chunk.iter().filter(|k| !fetched.contains(k.as_str())) {
+            log_lines.push(LogLine {
+                key: key.clone().into(),
+                bytes: 0,
+                status: LogStatus::Skipped,
+                message: Some("missing".into()),
+            });
+        }
+
+        let done = entries.len();
+        let skipped = chunk.len() - done;
+        let bytes_in_chunk = payload.len() as u64;
+        writer = smol::unblock(move || -> Result<BufWriter<File>> {
+            writer.write_all(payload.as_bytes())?;
+            Ok(writer)
+        })
+        .await?;
+
+        handle
+            .update(cx, |s, cx| {
+                s.progress.keys_done += done as u64;
+                s.progress.keys_skipped += skipped as u64;
+                s.progress.bytes_done += bytes_in_chunk;
+                cx.emit(MigrationEvent::Progress);
+                s.extend_log(log_lines, cx);
+            })
+            .map_err(|e| Error::Invalid { message: e.to_string() })?;
+    }
+
+    smol::unblock(move || -> Result<()> {
+        if format == ExportFormat::Json {
+            writer.write_all(b"\n]\n")?;
+        }
+        writer.flush()?;
+        Ok(())
+    })
+    .await?;
+    info!(server = %server_id, db, total = keys.len(), format = ?format, "readable export finished");
     Ok(())
 }
 

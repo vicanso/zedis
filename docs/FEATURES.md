@@ -139,7 +139,7 @@ Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXP
 ### Bulk Key Operations
 **Multi-select delete, batch TTL, DUMP/RESTORE import/export, auto-refresh.**
 
-Multi-select to delete dozens of keys at once; set / remove TTL across a whole selection or prefix (cluster-safe, PROD-escalated); export any selection to a framed binary file (magic header + CRC32) and restore on another instance; and auto-refresh the tree for fast-changing instances.
+Multi-select to delete dozens of keys at once; set / remove TTL across a whole selection or prefix (cluster-safe, PROD-escalated); export any selection to a framed binary file (magic header + CRC32) and restore on another instance — or as **readable JSON / CSV** (full values, TTLs; for people and downstream tools rather than re-import); and auto-refresh the tree for fast-changing instances.
 
 ### Cross-Server Tools
 **Copy or diff a key, or diff full configs, between two servers.**

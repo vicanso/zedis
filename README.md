@@ -85,7 +85,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | 🧠 **Smart Data Viewer** | Auto-decompress (LZ4 / Snappy / GZIP / ZSTD) · JSON & RedisJSON + JSONPath · Protobuf · MessagePack · timestamps · images · hex · custom script viewer |
 | 🗂️ **Type & Module Viewers** | Bitmap · HyperLogLog · Vector Set (KNN) · Geo map · Bloom / Cuckoo / Count-Min / Top-K · Time Series · Streams (live-tail) · Pub/Sub (incl. sharded) · RediSearch · Functions |
 | 📊 **Observability** | Live metrics + 7-day history · memory analyzer (live scan or offline RDB file) + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health & slot reshard · persistence & keyspace events · typed CONFIG editor · raw INFO browser |
-| 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops · cross-server copy & diff |
+| 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops (incl. JSON/CSV export) · cross-server copy & diff |
 | 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · per-machine encrypted secrets · local-only, no telemetry |
 | ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘⇧F multi-database key search · ⌘/ shortcut reference · redis-cli with completion · AI command assistant (`?` in terminal) · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs |
 

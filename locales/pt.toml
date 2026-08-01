@@ -842,6 +842,9 @@ group_others_desc = "Parâmetros não categorizados"
 editing = "Editando"
 
 [migration]
+format_label = "Formato"
+format_binary = "Binário (reimportável)"
+format_hint = "Binário é o formato com frames para migrar entre instâncias; JSON / CSV exportam valores completos legíveis para pessoas e ferramentas downstream (não reimportável)."
 export_title = "Exportar chaves"
 import_title = "Importar chaves"
 source_summary = "Origem: {server} / db {db} / {count} chaves"
