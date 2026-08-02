@@ -503,7 +503,7 @@ impl Render for ZedisKeyTree {
                     let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    open_migration_export_window(server_id, server_name, db, keys, cx);
+                    open_migration_export_window(server_id, server_name, db, keys, ExportSource::Selection, cx);
                 }
                 KeyTreeAction::ExportFolder(folder) => {
                     let folder = folder.clone();
@@ -523,7 +523,7 @@ impl Render for ZedisKeyTree {
                     let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    open_migration_export_window(server_id, server_name, db, keys, cx);
+                    open_migration_export_window(server_id, server_name, db, keys, ExportSource::Loaded, cx);
                 }
                 KeyTreeAction::ExportKey(id) => {
                     let id = id.clone();
@@ -533,7 +533,7 @@ impl Render for ZedisKeyTree {
                     let server_name: SharedString = get_server(server_id.as_str())
                         .map(|s| s.name.into())
                         .unwrap_or_else(|_| server_id.clone());
-                    open_migration_export_window(server_id, server_name, db, vec![id], cx);
+                    open_migration_export_window(server_id, server_name, db, vec![id], ExportSource::Selection, cx);
                 }
             }))
             .on_action(cx.listener(|this, event: &EditorAction, window, cx| match event {

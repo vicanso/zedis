@@ -48,6 +48,19 @@ const WINDOW_WIDTH: f32 = 720.0;
 const WINDOW_HEIGHT: f32 = 620.0;
 const PREVIEW_SAMPLE_LIMIT: usize = 40;
 
+/// Where an export's key list came from. Only the caller knows whether the
+/// user hand-picked the keys or handed over "whatever the tree has loaded",
+/// and the difference decides whether the SCAN-subset caveat is useful
+/// information or pure noise.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ExportSource {
+    /// Keys the user explicitly selected — exactly what they asked for.
+    Selection,
+    /// Everything loaded under one folder prefix, or the whole tree: a
+    /// SCAN-paginated subset of the database.
+    Loaded,
+}
+
 /// What kind of job the window was opened for.
 #[derive(Clone)]
 pub enum MigrationWindowMode {
@@ -56,6 +69,7 @@ pub enum MigrationWindowMode {
         server_name: SharedString,
         db: usize,
         keys: Vec<SharedString>,
+        source: ExportSource,
     },
     Import {
         server_id: SharedString,
@@ -133,14 +147,24 @@ impl ZedisMigrationWindow {
     fn source_summary(&self, cx: &App) -> SharedString {
         match &self.mode {
             MigrationWindowMode::Export {
-                server_name, db, keys, ..
+                server_name,
+                db,
+                keys,
+                source,
+                ..
             } => {
                 let template = i18n_migration(cx, "source_summary");
-                template
+                let mut summary = template
                     .replace("{server}", server_name)
                     .replace("{db}", &db.to_string())
-                    .replace("{count}", &keys.len().to_string())
-                    .into()
+                    .replace("{count}", &keys.len().to_string());
+                // The key tree only holds what SCAN has paged in, so an
+                // "export what's loaded" run is not a whole-database dump.
+                if *source == ExportSource::Loaded {
+                    summary.push_str(" · ");
+                    summary.push_str(&i18n_migration(cx, "loaded_subset_note"));
+                }
+                summary.into()
             }
             MigrationWindowMode::Import { server_name, db, .. } => {
                 let template = i18n_migration(cx, "destination_summary");
@@ -719,6 +743,7 @@ pub fn open_migration_export_window(
     server_name: SharedString,
     db: usize,
     keys: Vec<SharedString>,
+    source: ExportSource,
     cx: &mut App,
 ) {
     let title = i18n_migration(cx, "export_title");
@@ -728,6 +753,7 @@ pub fn open_migration_export_window(
             server_name,
             db,
             keys,
+            source,
         },
         title,
         cx,

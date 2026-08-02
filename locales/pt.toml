@@ -851,6 +851,7 @@ format_hint = "Binário é o formato com frames para migrar entre instâncias; J
 export_title = "Exportar chaves"
 import_title = "Importar chaves"
 source_summary = "Origem: {server} / db {db} / {count} chaves"
+loaded_subset_note = "carregadas até agora (subconjunto do SCAN, não o banco inteiro)"
 destination_summary = "Destino: {server} / db {db}"
 status_label = "Status:"
 progress_label = "Progresso:"

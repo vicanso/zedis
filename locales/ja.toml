@@ -851,6 +851,7 @@ format_hint = "バイナリはインスタンス間移行用のフレーム形�
 export_title = "キーをエクスポート"
 import_title = "キーをインポート"
 source_summary = "移行元: {server} / db {db} / {count} キー"
+loaded_subset_note = "現在読み込み済みのキー（SCAN の一部であり、DB 全体ではありません）"
 destination_summary = "移行先: {server} / db {db}"
 status_label = "ステータス:"
 progress_label = "進捗:"

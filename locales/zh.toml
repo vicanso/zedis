@@ -850,6 +850,7 @@ format_hint = "二进制是用于实例间迁移的帧格式；JSON / CSV 导出
 export_title = "导出键"
 import_title = "导入键"
 source_summary = "来源：{server} / 库 {db} / {count} 个键"
+loaded_subset_note = "为当前已加载的键（SCAN 子集，并非整库）"
 destination_summary = "目标：{server} / 库 {db}"
 status_label = "状态："
 progress_label = "进度："

@@ -851,6 +851,7 @@ format_hint = "Двоичный — кадровый формат для миг�
 export_title = "Экспорт ключей"
 import_title = "Импорт ключей"
 source_summary = "Источник: {server} / БД {db} / {count} ключей"
+loaded_subset_note = "загружено на данный момент (подмножество SCAN, не вся база)"
 destination_summary = "Назначение: {server} / БД {db}"
 status_label = "Статус:"
 progress_label = "Прогресс:"

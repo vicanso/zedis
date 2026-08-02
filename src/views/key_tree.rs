@@ -30,7 +30,9 @@ use crate::{
         dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor, i18n_key_tag,
         i18n_key_tree, save_session_option,
     },
-    views::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window},
+    views::{
+        ExportSource, OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -125,6 +127,10 @@ struct KeyTreeState {
     suppressed_auto_expand: AHashSet<SharedString>,
     /// Index path to scroll to when the tree is updated
     scroll_to_index: Option<IndexPath>,
+    /// Key a jump (multi-database search, favourites, recent keys) asked to
+    /// reveal. Resolved to a row index once the tree finishes rebuilding —
+    /// at selection time the row does not exist yet.
+    pending_scroll_key: Option<SharedString>,
     /// Whether to clear the list selection on the next render (requires window)
     clear_selection: bool,
     /// Refresh interval in seconds
@@ -326,6 +332,10 @@ impl ZedisKeyTree {
                     this.handle_filter(false, cx);
                 }
                 ServerEvent::KeySelected(key) => {
+                    // Remember the target: the tree rebuilds asynchronously, so
+                    // its row index is only knowable once the new item list
+                    // lands (see the rebuild callback in `update_key_tree`).
+                    this.state.pending_scroll_key = Some(key.clone());
                     this.update_expand(key.clone(), cx);
                 }
                 ServerEvent::KeyScanReset if !this.state.preserve_expand_on_scan => {
@@ -699,6 +709,15 @@ impl ZedisKeyTree {
 
                 let result = task.await;
                 let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
+                    // Scroll a jumped-to key into view now that the rebuilt
+                    // rows exist. A key that is filtered out (or not scanned
+                    // yet) simply has no row — drop the request instead of
+                    // scrolling somewhere arbitrary.
+                    if let Some(key) = view.state.pending_scroll_key.take()
+                        && let Some(index) = result.iter().position(|item| item.id == key)
+                    {
+                        view.state.scroll_to_index = Some(IndexPath::new(index));
+                    }
                     // `reset_scan` clears keys then emits KeyTreeUpdated,
                     // so a refresh transiently rebuilds an empty tree.
                     // Don't collapse for that — only a real "no results"

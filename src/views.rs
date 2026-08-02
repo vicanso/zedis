@@ -106,7 +106,7 @@ pub use memory_analysis::ZedisMemoryAnalysis;
 pub use metrics::ZedisMetrics;
 pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 pub(crate) use migration_window::dirs_default_directory;
-pub use migration_window::{open_migration_export_window, open_migration_import_window};
+pub use migration_window::{ExportSource, open_migration_export_window, open_migration_import_window};
 pub use monitor::ZedisMonitor;
 pub use multi_search::ZedisMultiSearch;
 pub use persistence::ZedisPersistence;

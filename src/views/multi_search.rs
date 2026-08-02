@@ -30,17 +30,22 @@
 //! jumping to one hit the palette reopens on the same list so the user can
 //! pick a different result without re-searching.
 
+use crate::assets::CustomIconName;
 use crate::components::KeyTypeBadge;
 use crate::connection::{
     MultiSearchServerResult, get_server, get_server_groups, get_servers, multi_search_exact, multi_search_scan,
 };
-use crate::states::{KeyType, MultiSearchScope, ZedisGlobalStore, i18n_multi_search, update_app_state_and_save_quiet};
+use crate::helpers::build_csv;
+use crate::states::{
+    KeyType, MultiSearchScope, ZedisGlobalStore, i18n_common, i18n_multi_search, update_app_state_and_save_quiet,
+};
+use crate::views::export_to_file_global;
 use gpui::{
-    Context, Entity, FocusHandle, Hsla, KeyDownEvent, SharedString, Subscription, Task, Window, div, prelude::*, px,
-    uniform_list,
+    ClipboardItem, Context, Entity, FocusHandle, Hsla, KeyDownEvent, SharedString, Subscription, Task, Window, div,
+    prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable, StyledExt,
+    ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -396,6 +401,31 @@ impl ZedisMultiSearch {
     /// strip visibility. The already-active connection also
     /// reconnects in place: `connect_server` re-emits `ServerSelected`
     /// unconditionally, which is what consumes the pending key.
+    /// Export every listed hit to CSV. Columns lead with the target
+    /// (`server`, `db`) because "which instance was it on?" is the whole
+    /// point of a cross-database search.
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let rows: Vec<Vec<String>> = self
+            .rows
+            .iter()
+            .map(|r| {
+                vec![
+                    r.server_name.to_string(),
+                    r.db.to_string(),
+                    r.key.to_string(),
+                    r.key_type.to_string(),
+                ]
+            })
+            .collect();
+        let csv = build_csv(&["server", "db", "key", "type"], &rows);
+        let success = i18n_common(cx, "csv_exported");
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file_global(cx, csv.into_bytes(), "multi-search.csv", success, error);
+    }
+
     fn execute(&mut self, row: &HitRow, window: &mut Window, cx: &mut Context<Self>) {
         let server_id = row.server_id.to_string();
         let db = row.db;
@@ -600,6 +630,8 @@ impl ZedisMultiSearch {
                 let row_for_click = row.clone();
                 let target: SharedString = format!("{} · db {}", row.server_name, row.db).into();
                 let row_id: SharedString = format!("{row_prefix}-{ix}").into();
+                let copy_group: SharedString = format!("{row_prefix}-copy-{ix}").into();
+                let copy_key = row.key.clone();
                 // 2nd, 4th, … within this section (same leaf banding as key tree).
                 let is_stripe = ix % 2 == 1;
                 out.push(
@@ -612,6 +644,7 @@ impl ZedisMultiSearch {
                         .px_1()
                         .rounded_md()
                         .cursor_pointer()
+                        .group(copy_group.clone())
                         .when(is_stripe, |this| this.bg(stripe_bg))
                         .hover(move |s| s.bg(hover))
                         .on_click(move |_, window, cx| {
@@ -626,6 +659,32 @@ impl ZedisMultiSearch {
                                 .gap_0()
                                 .child(Label::new(row.key.clone()).text_sm().truncate())
                                 .child(Label::new(target).text_xs().text_color(muted).truncate()),
+                        )
+                        // Copy the key without jumping: the wrapper swallows
+                        // the click so the row's navigate handler stays put.
+                        .child(
+                            div()
+                                .id((copy_group.clone(), 0_usize))
+                                .invisible()
+                                .group_hover(copy_group.clone(), |style| style.visible())
+                                .flex_none()
+                                .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
+                                .child(
+                                    Button::new((copy_group, 1_usize))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Copy)
+                                        .on_click(move |_, window, cx: &mut gpui::App| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(copy_key.to_string()));
+                                            window.push_notification(
+                                                gpui_component::notification::Notification::info(i18n_common(
+                                                    cx,
+                                                    "copied_to_clipboard",
+                                                )),
+                                                cx,
+                                            );
+                                        }),
+                                ),
                         ),
                 );
             }
@@ -807,6 +866,16 @@ impl Render for ZedisMultiSearch {
                     )
                     .child(div().w(px(72.)).child(Input::new(&self.scan_count_input).small()))
                     .child(div().flex_1())
+                    .when(!self.rows.is_empty(), |this| {
+                        this.child(
+                            Button::new("multi-search-export-csv")
+                                .small()
+                                .ghost()
+                                .icon(CustomIconName::Download)
+                                .label(i18n_common(cx, "export_csv"))
+                                .on_click(cx.listener(|this, _, _w, cx| this.export_csv(cx))),
+                        )
+                    })
                     .when(show_scan_button, |this| {
                         this.child(
                             Button::new("multi-search-run-scan")

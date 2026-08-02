@@ -851,6 +851,7 @@ format_hint = "Binary is the framed dump for migrating between instances; JSON /
 export_title = "Export Keys"
 import_title = "Import Keys"
 source_summary = "Source: {server} / db {db} / {count} keys"
+loaded_subset_note = "loaded so far (SCAN subset, not the whole database)"
 destination_summary = "Destination: {server} / db {db}"
 status_label = "Status:"
 progress_label = "Progress:"

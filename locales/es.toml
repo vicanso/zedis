@@ -851,6 +851,7 @@ format_hint = "Binario es el formato con marcos para migrar entre instancias; JS
 export_title = "Exportar claves"
 import_title = "Importar claves"
 source_summary = "Origen: {server} / db {db} / {count} claves"
+loaded_subset_note = "cargadas hasta ahora (subconjunto del SCAN, no toda la base de datos)"
 destination_summary = "Destino: {server} / db {db}"
 status_label = "Estado:"
 progress_label = "Progreso:"

@@ -15,9 +15,9 @@ use crate::states::{
     i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
 };
 use crate::views::{
-    DialogCallback, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette, ZedisShortcutsOverlay,
-    ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, open_about_window, open_migration_export_window,
-    open_migration_import_window, open_settings_window, open_trash_dialog,
+    DialogCallback, ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette,
+    ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, open_about_window,
+    open_migration_export_window, open_migration_import_window, open_settings_window, open_trash_dialog,
 };
 use gpui::{
     Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
@@ -1444,7 +1444,7 @@ impl Render for Zedis {
                             return;
                         }
                         keys.sort_unstable();
-                        open_migration_export_window(server_id.into(), server_name, db, keys, cx);
+                        open_migration_export_window(server_id.into(), server_name, db, keys, ExportSource::Loaded, cx);
                         return;
                     }
                 };

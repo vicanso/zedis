@@ -851,6 +851,7 @@ format_hint = "Binär ist das Frame-Format für die Migration zwischen Instanzen
 export_title = "Keys exportieren"
 import_title = "Keys importieren"
 source_summary = "Quelle: {server} / db {db} / {count} Schlüssel"
+loaded_subset_note = "bisher geladen (SCAN-Teilmenge, nicht die ganze Datenbank)"
 destination_summary = "Ziel: {server} / db {db}"
 status_label = "Status:"
 progress_label = "Fortschritt:"

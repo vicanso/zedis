@@ -852,6 +852,7 @@ format_hint = "Binaire est le format à trames pour migrer entre instances ; JSO
 export_title = "Exporter des clés"
 import_title = "Importer des clés"
 source_summary = "Source : {server} / db {db} / {count} clés"
+loaded_subset_note = "chargées jusqu’ici (sous-ensemble du SCAN, pas toute la base)"
 destination_summary = "Destination : {server} / db {db}"
 status_label = "Statut :"
 progress_label = "Progression :"
