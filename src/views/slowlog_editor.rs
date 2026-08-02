@@ -27,12 +27,14 @@ use crate::error::Error;
 use crate::helpers::{SlowlogAction, build_csv, get_mono_font_family};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
-    dialog_button_props, i18n_common, i18n_slowlog_editor,
+    dialog_button_props, escalate_dangerous_body, i18n_common, i18n_slowlog_editor,
 };
 use crate::views::export_to_file;
 use ahash::AHashMap;
 use chrono::TimeZone;
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px};
+use gpui::{
+    ClipboardItem, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px, relative,
+};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
@@ -49,7 +51,7 @@ use gpui_component::{
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use zedis_ui::ZedisDivider;
+use zedis_ui::{ZedisDialog, ZedisDivider};
 
 /// Which sub-panel the performance view is showing. Slow Log is the
 /// default — historically this view was slow-log only, so keeping it
@@ -57,6 +59,7 @@ use zedis_ui::ZedisDivider;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PerformanceTab {
     SlowLog,
+    TopCommands,
     Latency,
 }
 
@@ -88,6 +91,10 @@ struct SlowLogRow {
     duration: SharedString,
     /// Raw duration in milliseconds for filtering and sorting.
     duration_ms: u64,
+    /// Raw duration in microseconds — SLOWLOG's native unit — kept for
+    /// the per-command aggregation so sub-millisecond entries don't all
+    /// collapse to zero.
+    duration_us: u64,
     /// The Redis command name (args[0]), e.g. "GET", "HSET".
     command: SharedString,
     /// The arguments following the command (args[1..]), space-joined.
@@ -120,6 +127,7 @@ impl SlowLogRow {
         let raw_timestamp = entry.timestamp;
 
         let duration_ms = entry.duration.as_millis() as u64;
+        let duration_us = entry.duration.as_micros() as u64;
         let duration = humantime::format_duration(Duration::from_millis(duration_ms)).to_string();
 
         // Check whether the first two tokens form a known two-word command
@@ -158,12 +166,62 @@ impl SlowLogRow {
             raw_timestamp,
             duration: duration.into(),
             duration_ms,
+            duration_us,
             command: command.into(),
             args: args.into(),
             client: client.into(),
             correlated_event: None,
         }
     }
+}
+
+/// One row of the per-command aggregation on the Top Commands tab.
+#[derive(Clone, Debug, PartialEq)]
+struct CommandAggRow {
+    command: SharedString,
+    count: usize,
+    total_us: u64,
+    max_us: u64,
+    /// This command's share of the summed duration across all commands,
+    /// in percent (0–100).
+    share_pct: f64,
+}
+
+/// Group slow-log rows by command and rank by total time consumed —
+/// "which command class is eating the slow log" rather than the raw
+/// entry list. Aggregates in microseconds (SLOWLOG's native unit).
+fn aggregate_commands(rows: &[SlowLogRow]) -> Vec<CommandAggRow> {
+    let mut map: AHashMap<SharedString, (usize, u64, u64)> = AHashMap::new();
+    for row in rows {
+        let entry = map.entry(row.command.clone()).or_insert((0, 0, 0));
+        entry.0 += 1;
+        entry.1 += row.duration_us;
+        entry.2 = entry.2.max(row.duration_us);
+    }
+    let grand_total: u64 = map.values().map(|(_, total, _)| *total).sum();
+    let mut out: Vec<CommandAggRow> = map
+        .into_iter()
+        .map(|(command, (count, total_us, max_us))| CommandAggRow {
+            command,
+            count,
+            total_us,
+            max_us,
+            share_pct: if grand_total == 0 {
+                0.0
+            } else {
+                total_us as f64 * 100.0 / grand_total as f64
+            },
+        })
+        .collect();
+    out.sort_by(|a, b| b.total_us.cmp(&a.total_us).then(a.command.cmp(&b.command)));
+    out
+}
+
+/// Format an aggregated microsecond figure as milliseconds with one
+/// decimal (e.g. "12.5 ms") — precise enough for sub-ms entries without
+/// switching units per row.
+fn format_us_as_ms(us: u64) -> String {
+    format!("{:.1} ms", us as f64 / 1000.0)
 }
 
 /// Time window used to associate a slow-log entry with a Latency event,
@@ -601,6 +659,7 @@ pub struct ZedisSlowlogEditor {
     event_histories: AHashMap<SharedString, Vec<LatencySample>>,
     _latency_task: Option<Task<()>>,
     _event_detail_task: Option<Task<()>>,
+    _slowlog_reset_task: Option<Task<()>>,
     /// 5-second auto-poll task for the Latency tab. Holds a Task whose
     /// drop cancels the loop, so switching tabs (or destroying the view)
     /// stops polling without explicit teardown.
@@ -724,6 +783,7 @@ impl ZedisSlowlogEditor {
             event_histories: AHashMap::new(),
             _latency_task: None,
             _event_detail_task: None,
+            _slowlog_reset_task: None,
             _latency_poll_task: None,
             window_filter: None,
             window_filter_label: None,
@@ -863,8 +923,17 @@ impl ZedisSlowlogEditor {
         self.current_tab = tab;
         match tab {
             PerformanceTab::Latency => self.start_latency_polling(cx),
-            PerformanceTab::SlowLog => self.stop_latency_polling(),
+            PerformanceTab::SlowLog | PerformanceTab::TopCommands => self.stop_latency_polling(),
         }
+    }
+
+    /// Narrow the SlowLog tab to a single command and jump there —
+    /// the drill-down from a Top Commands row to its raw entries.
+    fn filter_by_command(&mut self, command: SharedString, cx: &mut gpui::Context<Self>) {
+        self.selected_commands.clear();
+        self.selected_commands.insert(command);
+        self.set_tab(PerformanceTab::SlowLog, cx);
+        self.apply_filters(cx);
     }
 
     /// Kick a background loop that re-fetches LATENCY every 5 seconds
@@ -927,7 +996,7 @@ impl ZedisSlowlogEditor {
         let title = i18n_slowlog_editor(cx, "enable_tracking_confirm_title");
         let body = i18n_slowlog_editor(cx, "enable_tracking_confirm_body");
         let editor = cx.entity().downgrade();
-        zedis_ui::ZedisDialog::new_alert(title, body.to_string())
+        ZedisDialog::new_alert(title, body.to_string())
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
@@ -1074,6 +1143,62 @@ impl ZedisSlowlogEditor {
                 this.event_histories.clear();
                 this.expanded_event = None;
                 this.fetch_latency(cx);
+            });
+        }));
+    }
+
+    /// `SLOWLOG RESET` behind the standard destructive-op confirm dialog;
+    /// production-tagged servers get the escalated wording.
+    fn confirm_reset_slowlog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let body = escalate_dangerous_body(cx, &server_id, i18n_slowlog_editor(cx, "reset_confirm_body"));
+        let editor = cx.entity().downgrade();
+        ZedisDialog::new_alert(i18n_slowlog_editor(cx, "reset_confirm_title"), body)
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                if let Some(editor) = editor.upgrade() {
+                    editor.update(cx, |this, cx| this.run_reset_slowlog(cx));
+                }
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Run `SLOWLOG RESET` on every master, then clear the cached rows so
+    /// the table empties without waiting for the next heartbeat poll.
+    fn run_reset_slowlog(&mut self, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        let server_state = self.server_state.clone();
+        self._slowlog_reset_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                client.slowlog_reset().await
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |_this, cx| {
+                match result {
+                    Ok(()) => {
+                        let message = i18n_slowlog_editor(cx, "reset_done");
+                        server_state.update(cx, |state, cx| {
+                            state.clear_slow_logs(cx);
+                            state.emit_success_notification(message, "SLOWLOG RESET".into(), cx);
+                        });
+                    }
+                    Err(e) => {
+                        server_state.update(cx, |state, cx| {
+                            state.emit_error_notification(e.to_string().into(), cx);
+                        });
+                    }
+                }
+                cx.notify();
             });
         }));
     }
@@ -1299,6 +1424,17 @@ impl gpui::Render for ZedisSlowlogEditor {
                                         }))
                                     })
                                     .child({
+                                        let active = self.current_tab == PerformanceTab::TopCommands;
+                                        let mut btn = Button::new("perf-tab-top-commands")
+                                            .xsmall()
+                                            .label(i18n_slowlog_editor(cx, "tab_top_commands"));
+                                        btn = if active { btn.primary() } else { btn.outline() };
+                                        btn.on_click(cx.listener(|this, _, _w, cx| {
+                                            this.set_tab(PerformanceTab::TopCommands, cx);
+                                            cx.notify();
+                                        }))
+                                    })
+                                    .child({
                                         let active = self.current_tab == PerformanceTab::Latency;
                                         let mut btn = Button::new("perf-tab-latency")
                                             .xsmall()
@@ -1353,6 +1489,9 @@ impl gpui::Render for ZedisSlowlogEditor {
                                         .scrollbar_visible(true, true),
                                 )
                             })
+                    })
+                    .when(self.current_tab == PerformanceTab::TopCommands, |this| {
+                        this.child(self.render_top_commands_body(cx))
                     })
                     .when(self.current_tab == PerformanceTab::Latency, |this| {
                         this.child(self.render_latency_body(cx))
@@ -1463,6 +1602,12 @@ impl ZedisSlowlogEditor {
                             }),
                     )
                 })
+                .child(self.reset_slowlog_button(cx))
+                .into_any_element(),
+            PerformanceTab::TopCommands => h_flex()
+                .gap_2()
+                .items_center()
+                .child(self.reset_slowlog_button(cx))
                 .into_any_element(),
             PerformanceTab::Latency => h_flex()
                 .gap_2()
@@ -1486,6 +1631,159 @@ impl ZedisSlowlogEditor {
                 )
                 .into_any_element(),
         }
+    }
+
+    /// `SLOWLOG RESET` toolbar button — shared by the SlowLog and Top
+    /// Commands tabs (the aggregation view is where "these are stale,
+    /// start a fresh window" usually gets decided).
+    fn reset_slowlog_button(&self, cx: &mut gpui::Context<Self>) -> Button {
+        Button::new("slowlog-reset")
+            .outline()
+            .small()
+            .icon(IconName::CircleX)
+            .label(i18n_slowlog_editor(cx, "slowlog_reset"))
+            .tooltip(i18n_slowlog_editor(cx, "slowlog_reset_tooltip"))
+            .on_click(cx.listener(|this, _, window, cx| this.confirm_reset_slowlog(window, cx)))
+    }
+
+    /// The Top Commands tab body: slow-log entries grouped by command and
+    /// ranked by total time consumed. Complements the ServerLoad panel's
+    /// commandstats view — that one answers "which command is *frequent*",
+    /// this one answers "which command is *slow*".
+    fn render_top_commands_body(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let rows = aggregate_commands(&self.all_rows);
+        if rows.is_empty() {
+            return centered_message(i18n_slowlog_editor(cx, "no_slowlogs"), muted).into_any_element();
+        }
+
+        let header = h_flex()
+            .px_3()
+            .py_2()
+            .gap_4()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div().w(px(200.0)).child(
+                    Label::new(i18n_slowlog_editor(cx, "agg_command"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().w(px(80.0)).child(
+                    Label::new(i18n_slowlog_editor(cx, "agg_count"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().w(px(110.0)).child(
+                    Label::new(i18n_slowlog_editor(cx, "agg_total"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().w(px(110.0)).child(
+                    Label::new(i18n_slowlog_editor(cx, "agg_avg"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().w(px(110.0)).child(
+                    Label::new(i18n_slowlog_editor(cx, "agg_max"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().flex_1().child(
+                    Label::new(i18n_slowlog_editor(cx, "agg_share"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            );
+
+        let share_bar_color = cx.theme().chart_2;
+        let share_track_color = cx.theme().muted.opacity(0.4);
+        let view_label = i18n_slowlog_editor(cx, "agg_view_rows");
+        let body_rows: Vec<gpui::AnyElement> = rows
+            .iter()
+            .map(|agg| {
+                let avg_us = agg.total_us / agg.count.max(1) as u64;
+                let command = agg.command.clone();
+                let id_hash = djb2_hash(command.as_ref());
+                h_flex()
+                    .px_3()
+                    .py_2()
+                    .gap_4()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(div().w(px(200.0)).child(Label::new(agg.command.clone()).text_sm()))
+                    .child(div().w(px(80.0)).child(Label::new(agg.count.to_string()).text_sm()))
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .child(Label::new(format_us_as_ms(agg.total_us)).text_sm()),
+                    )
+                    .child(div().w(px(110.0)).child(Label::new(format_us_as_ms(avg_us)).text_sm()))
+                    .child(
+                        div().w(px(110.0)).child(
+                            Label::new(format_us_as_ms(agg.max_us))
+                                .text_sm()
+                                .text_color(severity_color((agg.max_us / 1000) as i64, cx)),
+                        ),
+                    )
+                    .child(
+                        // Share of total time: numeric label + a proportional
+                        // bar so the dominant command is visible at a glance.
+                        h_flex()
+                            .flex_1()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(px(56.0))
+                                    .child(Label::new(format!("{:.1}%", agg.share_pct)).text_xs().text_color(muted)),
+                            )
+                            .child(
+                                div().flex_1().h(px(6.)).rounded_full().bg(share_track_color).child(
+                                    div()
+                                        .w(relative((agg.share_pct / 100.0).clamp(0.0, 1.0) as f32))
+                                        .h_full()
+                                        .rounded_full()
+                                        .bg(share_bar_color),
+                                ),
+                            ),
+                    )
+                    .child(
+                        Button::new(("agg-view-rows", id_hash))
+                            .ghost()
+                            .xsmall()
+                            .label(view_label.clone())
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                this.filter_by_command(command.clone(), cx);
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        v_flex()
+            .size_full()
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(v_flex().children(body_rows)),
+            )
+            .into_any_element()
     }
 
     /// The Latency tab body. Shows threshold context, the LATEST
@@ -1828,4 +2126,55 @@ fn djb2_hash(s: &str) -> u32 {
         h = h.wrapping_mul(33).wrapping_add(b as u32);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SlowLogRow, aggregate_commands, format_us_as_ms};
+
+    fn row(command: &str, duration_us: u64) -> SlowLogRow {
+        SlowLogRow {
+            timestamp: "2026-08-02 10:00:00".into(),
+            raw_timestamp: 0,
+            duration: "--".into(),
+            duration_ms: duration_us / 1000,
+            duration_us,
+            command: command.to_string().into(),
+            args: "".into(),
+            client: "".into(),
+            correlated_event: None,
+        }
+    }
+
+    #[test]
+    fn aggregates_by_command_ranked_by_total_time() {
+        let rows = vec![
+            row("GET", 2_000),
+            row("HGETALL", 30_000),
+            row("GET", 4_000),
+            row("KEYS", 20_000),
+        ];
+        let aggs = aggregate_commands(&rows);
+        assert_eq!(aggs.len(), 3);
+        // Ranked by total time: HGETALL(30ms) > KEYS(20ms) > GET(6ms).
+        assert_eq!(aggs[0].command.as_ref(), "HGETALL");
+        assert_eq!(aggs[1].command.as_ref(), "KEYS");
+        assert_eq!(aggs[2].command.as_ref(), "GET");
+        assert_eq!(aggs[2].count, 2);
+        assert_eq!(aggs[2].total_us, 6_000);
+        assert_eq!(aggs[2].max_us, 4_000);
+        let share_sum: f64 = aggs.iter().map(|a| a.share_pct).sum();
+        assert!((share_sum - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empty_rows_yield_no_aggregates() {
+        assert!(aggregate_commands(&[]).is_empty());
+    }
+
+    #[test]
+    fn formats_microseconds_as_ms() {
+        assert_eq!(format_us_as_ms(12_500), "12.5 ms");
+        assert_eq!(format_us_as_ms(400), "0.4 ms");
+    }
 }

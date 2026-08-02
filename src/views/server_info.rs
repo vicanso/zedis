@@ -26,11 +26,12 @@
 
 use crate::connection::get_connection_manager;
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{KvDelta, build_csv, get_mono_font_family, kv_diff};
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
-    i18n_common, i18n_server_info,
+    InfoSnapshot, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip,
+    content_area_width, i18n_common, i18n_server_info,
 };
+use crate::views::export_to_file;
 use chrono::Local;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
@@ -253,6 +254,10 @@ impl TableDelegate for InfoTableDelegate {
 }
 
 /// Raw INFO browser view — see the module docs.
+///
+/// The comparison snapshot is NOT stored here: tool views are dropped on
+/// route change, so it lives on [`ZedisServerState`] ([`InfoSnapshot`])
+/// and survives navigating away and back within a connection session.
 pub struct ZedisServerInfo {
     server_state: Entity<ZedisServerState>,
     filter_input_state: Entity<InputState>,
@@ -260,8 +265,19 @@ pub struct ZedisServerInfo {
     /// All parsed rows, unfiltered — the filter narrows a copy into the
     /// table delegate so clearing it is instant.
     rows: Vec<InfoRow>,
+    /// When true the table shows the field-level diff between the
+    /// session snapshot and the current rows instead of the raw field
+    /// list. View-local: re-entering the panel lands on the raw list
+    /// with the snapshot banner offering Compare again.
+    diff_mode: bool,
+    /// `(changed, added, removed)` counts of the last computed diff, for
+    /// the snapshot banner.
+    diff_counts: (usize, usize, usize),
     /// Rows currently shown (after filter), for the count chip.
     visible_count: usize,
+    /// Unfiltered size of whatever the table is showing (raw rows or
+    /// diff rows), the denominator of the count chip.
+    display_total: usize,
     loading: bool,
     error: Option<SharedString>,
     refreshed_at: Option<SharedString>,
@@ -291,6 +307,10 @@ impl ZedisServerInfo {
         // covers switching servers while staying on this route.
         subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| {
             if matches!(event, ServerEvent::ServerSelected(_)) {
+                // The snapshot itself dies with the session
+                // (`ZedisServerState::reset` clears it on switch) — only
+                // the view-local compare toggle needs resetting here.
+                this.diff_mode = false;
                 this.refresh(cx);
             }
         }));
@@ -302,7 +322,10 @@ impl ZedisServerInfo {
             filter_input_state,
             table_state,
             rows: Vec::new(),
+            diff_mode: false,
+            diff_counts: (0, 0, 0),
             visible_count: 0,
+            display_total: 0,
             loading: false,
             error: None,
             refreshed_at: None,
@@ -313,13 +336,151 @@ impl ZedisServerInfo {
         this
     }
 
-    /// Re-filter the master row list into the table delegate.
+    /// Whether the session holds a comparison snapshot (kept on the
+    /// server state so it survives panel teardown).
+    fn has_snapshot(&self, cx: &Context<Self>) -> bool {
+        self.server_state.read(cx).info_snapshot().is_some()
+    }
+
+    /// Re-filter the current display source (raw rows, or the snapshot
+    /// diff when compare mode is on) into the table delegate.
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
+        let source: Vec<InfoRow> = if self.diff_mode && self.has_snapshot(cx) {
+            self.build_diff_rows(cx)
+        } else {
+            self.rows.clone()
+        };
+        self.display_total = source.len();
         let filter: SharedString = self.filter_input_state.read(cx).value();
-        let visible = filter_rows(&self.rows, filter.as_ref());
+        let visible = filter_rows(&source, filter.as_ref());
         self.visible_count = visible.len();
         self.table_state.update(cx, |s, _| s.delegate_mut().rows = visible);
         cx.notify();
+    }
+
+    /// Field-level diff between the snapshot and the current rows,
+    /// mapped onto the existing three-column table: section = change
+    /// tag, field = "section · field", value = old → new. Reusing the
+    /// table keeps the diff virtualized and filterable for free. Also
+    /// refreshes `diff_counts` for the banner.
+    fn build_diff_rows(&mut self, cx: &mut Context<Self>) -> Vec<InfoRow> {
+        let Some(snapshot) = self.server_state.read(cx).info_snapshot().cloned() else {
+            self.diff_counts = (0, 0, 0);
+            return Vec::new();
+        };
+        let key_of = |section: &SharedString, field: &SharedString| {
+            if section.is_empty() {
+                field.to_string()
+            } else {
+                format!("{section} · {field}")
+            }
+        };
+        let old: Vec<(String, String)> = snapshot
+            .rows
+            .iter()
+            .map(|(section, field, value)| (key_of(section, field), value.to_string()))
+            .collect();
+        let new: Vec<(String, String)> = self
+            .rows
+            .iter()
+            .map(|r| (key_of(&r.section, &r.field), r.value.to_string()))
+            .collect();
+
+        let added_tag = i18n_server_info(cx, "diff_added");
+        let removed_tag = i18n_server_info(cx, "diff_removed");
+        let changed_tag = i18n_server_info(cx, "diff_changed");
+
+        let mut counts = (0_usize, 0_usize, 0_usize);
+        let rows = kv_diff(&old, &new)
+            .into_iter()
+            .map(|entry| {
+                let (tag, value) = match entry.delta {
+                    KvDelta::Added => {
+                        counts.1 += 1;
+                        (added_tag.clone(), entry.new.unwrap_or_default())
+                    }
+                    KvDelta::Removed => {
+                        counts.2 += 1;
+                        (removed_tag.clone(), entry.old.unwrap_or_default())
+                    }
+                    KvDelta::Changed => {
+                        counts.0 += 1;
+                        (
+                            changed_tag.clone(),
+                            format!("{} → {}", entry.old.unwrap_or_default(), entry.new.unwrap_or_default()),
+                        )
+                    }
+                };
+                InfoRow {
+                    section: tag,
+                    field: entry.key.into(),
+                    value: value.into(),
+                }
+            })
+            .collect();
+        self.diff_counts = counts;
+        rows
+    }
+
+    /// Freeze the current rows as the "before" side of a comparison,
+    /// stored on the server state so it outlives this view. Retaking
+    /// replaces the previous snapshot.
+    fn take_snapshot(&mut self, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let snapshot = InfoSnapshot {
+            rows: self
+                .rows
+                .iter()
+                .map(|r| (r.section.clone(), r.field.clone(), r.value.clone()))
+                .collect(),
+            taken_at: Local::now().format("%H:%M:%S").to_string().into(),
+        };
+        self.server_state
+            .update(cx, |state, _| state.set_info_snapshot(Some(snapshot)));
+        self.apply_filter(cx);
+    }
+
+    fn toggle_compare(&mut self, cx: &mut Context<Self>) {
+        if !self.has_snapshot(cx) {
+            return;
+        }
+        self.diff_mode = !self.diff_mode;
+        self.apply_filter(cx);
+    }
+
+    fn clear_snapshot(&mut self, cx: &mut Context<Self>) {
+        if !self.has_snapshot(cx) {
+            return;
+        }
+        self.server_state.update(cx, |state, _| state.set_info_snapshot(None));
+        self.diff_mode = false;
+        self.apply_filter(cx);
+    }
+
+    /// Export whatever the table currently shows (filtered raw fields,
+    /// or the diff rows in compare mode) as CSV.
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let rows = self.table_state.read(cx).delegate().rows.clone();
+        if rows.is_empty() {
+            return;
+        }
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| vec![r.section.to_string(), r.field.to_string(), r.value.to_string()])
+            .collect();
+        let csv = build_csv(&["section", "field", "value"], &data);
+        let success = i18n_common(cx, "csv_exported");
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file(
+            cx,
+            self.server_state.clone(),
+            csv.into_bytes(),
+            "server-info.csv",
+            success,
+            error,
+        );
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -417,11 +578,11 @@ impl ZedisServerInfo {
                 h_flex()
                     .gap_4()
                     .items_center()
-                    .when(!self.rows.is_empty(), |this| {
+                    .when(self.display_total > 0, |this| {
                         this.child(stat_item(
                             cx,
                             "fields",
-                            format!("{}/{}", self.visible_count, self.rows.len()).into(),
+                            format!("{}/{}", self.visible_count, self.display_total).into(),
                         ))
                     })
                     .when_some(self.refreshed_at.clone(), |this, at| {
@@ -433,6 +594,28 @@ impl ZedisServerInfo {
                     .gap_3()
                     .items_center()
                     .child(Input::new(&self.filter_input_state).small().w(px(260.)))
+                    .child(
+                        Button::new("server-info-snapshot")
+                            .outline()
+                            .small()
+                            .label(i18n_server_info(cx, "snapshot"))
+                            .tooltip(i18n_server_info(cx, "snapshot_tooltip"))
+                            .disabled(self.rows.is_empty())
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.take_snapshot(cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("server-info-export")
+                            .outline()
+                            .small()
+                            .icon(Icon::new(CustomIconName::Download))
+                            .label(i18n_common(cx, "export"))
+                            .disabled(self.visible_count == 0)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.export_csv(cx);
+                            })),
+                    )
                     .child(
                         Button::new("server-info-refresh")
                             .outline()
@@ -462,17 +645,88 @@ impl ZedisServerInfo {
             .child(div().flex_1())
             .child(functions.flex_none())
     }
+
+    /// Pill shown while a snapshot is held: when it was taken, the diff
+    /// summary in compare mode, plus the Compare toggle and a discard
+    /// button. Lives under the toolbar so the state survives filtering.
+    fn render_snapshot_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let (taken_at, field_count) = {
+            let snapshot = self.server_state.read(cx).info_snapshot()?;
+            (snapshot.taken_at.clone(), snapshot.rows.len())
+        };
+        let theme = cx.theme();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let label: SharedString = rust_i18n::t!(
+            "server_info.snapshot_label",
+            time = taken_at.as_ref(),
+            count = field_count.to_string(),
+            locale = locale
+        )
+        .to_string()
+        .into();
+        let summary: Option<SharedString> = if self.diff_mode {
+            let (changed, added, removed) = self.diff_counts;
+            Some(
+                rust_i18n::t!(
+                    "server_info.diff_summary",
+                    changed = changed.to_string(),
+                    added = added.to_string(),
+                    removed = removed.to_string(),
+                    locale = locale
+                )
+                .to_string()
+                .into(),
+            )
+        } else {
+            None
+        };
+        Some(
+            h_flex()
+                .mx_4()
+                .my_1()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .items_center()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .child(Label::new(label).text_xs().text_color(theme.muted_foreground))
+                .when_some(summary, |this, s| {
+                    this.child(Label::new(s).text_xs().text_color(theme.foreground))
+                })
+                .child(div().flex_1())
+                .child({
+                    let mut btn = Button::new("server-info-compare")
+                        .xsmall()
+                        .label(i18n_server_info(cx, "compare"))
+                        .tooltip(i18n_server_info(cx, "compare_tooltip"));
+                    btn = if self.diff_mode { btn.primary() } else { btn.outline() };
+                    btn.on_click(cx.listener(|this, _, _w, cx| this.toggle_compare(cx)))
+                })
+                .child(
+                    Button::new("server-info-clear-snapshot")
+                        .ghost()
+                        .xsmall()
+                        .label(i18n_server_info(cx, "clear_snapshot"))
+                        .on_click(cx.listener(|this, _, _w, cx| this.clear_snapshot(cx))),
+                )
+                .into_any_element(),
+        )
+    }
 }
 
 impl Render for ZedisServerInfo {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_empty = self.visible_count == 0;
+        let snapshot_banner = self.render_snapshot_banner(cx);
 
         v_flex()
             .size_full()
             .overflow_hidden()
             .font_family(get_mono_font_family())
             .child(self.render_toolbar(cx))
+            .when_some(snapshot_banner, |this, banner| this.child(banner))
             .when_some(self.error.clone(), |this, message| {
                 this.child(
                     h_flex()
@@ -490,10 +744,20 @@ impl Render for ZedisServerInfo {
                     .w_full()
                     .min_h_0()
                     .when(is_empty, |this| {
+                        // In compare mode an empty table means "nothing
+                        // changed", not "no data" — say so.
+                        let message = if self.diff_mode && self.has_snapshot(cx) && self.display_total == 0 {
+                            i18n_server_info(cx, "diff_no_changes")
+                        } else {
+                            i18n_server_info(cx, "no_data")
+                        };
                         this.child(
-                            div().size_full().flex().items_center().justify_center().child(
-                                Label::new(i18n_server_info(cx, "no_data")).text_color(cx.theme().muted_foreground),
-                            ),
+                            div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(Label::new(message).text_color(cx.theme().muted_foreground)),
                         )
                     })
                     .when(!is_empty, |this| {

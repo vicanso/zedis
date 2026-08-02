@@ -26,16 +26,16 @@
 
 use crate::connection::{Capability, get_connection_manager, get_server};
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{build_csv, get_mono_font_family};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
-use crate::views::open_key_in_editor;
+use crate::views::{export_to_file, open_key_in_editor};
 use ahash::AHashSet;
 use chrono::Local;
 use futures::StreamExt;
-use gpui::{App, ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -850,6 +850,9 @@ impl ZedisKeyspaceNotifications {
         dbs
     }
 
+    /// Export the visible rows (filtered when a filter is active) as a
+    /// CSV file — same `build_csv` + `export_to_file` flow as the
+    /// slow-log panel, instead of the old clipboard-only copy.
     fn export_csv(&mut self, cx: &mut Context<Self>) {
         let d = self.table_state.read(cx).delegate();
         let rows: Vec<&NotificationRow> = if d.is_filtered {
@@ -860,21 +863,30 @@ impl ZedisKeyspaceNotifications {
         if rows.is_empty() {
             return;
         }
-        let mut out = String::from("time,db,key,event,source\n");
-        for r in rows {
-            let key = r.key.replace('"', "\"\"");
-            out.push_str(&format!(
-                "{},{},\"{}\",{},{}\n",
-                r.timestamp,
-                r.db,
-                key,
-                r.event,
-                r.source.as_str()
-            ));
-        }
-        cx.write_to_clipboard(ClipboardItem::new_string(out));
-        self.pending_notification = Some(Notification::info(i18n_keyspace_notifications(cx, "export_ok")));
-        cx.notify();
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                vec![
+                    r.timestamp.to_string(),
+                    r.db.to_string(),
+                    r.key.to_string(),
+                    r.event.to_string(),
+                    r.source.as_str().to_string(),
+                ]
+            })
+            .collect();
+        let csv = build_csv(&["time", "db", "key", "event", "source"], &data);
+        let server_state = self.server_state.clone();
+        let success = i18n_common(cx, "csv_exported");
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file(
+            cx,
+            server_state,
+            csv.into_bytes(),
+            "keyspace-events.csv",
+            success,
+            error,
+        );
     }
 
     // ── Render helpers ────────────────────────────────────────────────

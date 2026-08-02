@@ -548,6 +548,14 @@ impl RedisClient {
 
         Ok(logs)
     }
+    /// Runs `SLOWLOG RESET` on every master node, clearing the recorded
+    /// slow-log entries cluster-wide.
+    pub async fn slowlog_reset(&self) -> Result<()> {
+        let (_, _statuses): (_, Vec<String>) = self
+            .query_async_masters(vec![cmd("SLOWLOG").arg("RESET").clone()])
+            .await?;
+        Ok(())
+    }
     /// Executes commands on all master nodes concurrently.
     /// # Arguments
     /// * `cmds` - A vector of commands to execute.

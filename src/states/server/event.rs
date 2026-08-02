@@ -244,6 +244,9 @@ pub enum ServerEvent {
     /// Live-connection health (online / reconnecting / offline) changed,
     /// driven by the heartbeat PING outcome. Emitted only on a transition.
     ConnectionHealthChanged,
+    /// An in-flight cluster reshard advanced (or finished — read
+    /// `reshard_progress()` for the current state).
+    ClusterReshardProgress,
 
     /// Soft wrap changed
     SoftWrapToggled(bool),

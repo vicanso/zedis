@@ -40,7 +40,7 @@ use crate::connection::{
     plan_reshard_slots,
 };
 use crate::error::Error;
-use crate::states::{ServerTask, ZedisServerState};
+use crate::states::{ServerTask, ZedisServerState, i18n_common};
 use futures::future::try_join_all;
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
@@ -251,9 +251,38 @@ impl ZedisServerState {
             self.emit_warning_notification("No slots to move".into(), cx);
             return;
         }
+        // `spawn` refuses to run while manually disconnected (and warns) —
+        // bail before arming the progress state so it can't get stuck.
+        if self.manually_offline {
+            self.emit_warning_notification(i18n_common(cx, "reconnect_first"), cx);
+            return;
+        }
         let server_id = self.server_id.clone();
         let total = slots.len() as u32;
         let target_for_msg = target_addr.clone();
+
+        // Progress plumbing: the background loop reports (processed, total)
+        // after each slot; a foreground drainer mirrors it into
+        // `reshard_progress` so the Topology panel can render a live bar
+        // instead of a static "running…" line.
+        let (progress_tx, progress_rx) = smol::channel::unbounded::<(u32, u32)>();
+        self.set_reshard_progress(Some((0, total)), cx);
+        cx.spawn(async move |handle, cx| {
+            while let Ok(progress) = progress_rx.recv().await {
+                let updated = handle.update(cx, |this: &mut Self, cx| {
+                    // Only track while a reshard is actually in flight —
+                    // the completion handler below owns the final None.
+                    if this.reshard_progress.is_some() {
+                        this.set_reshard_progress(Some(progress), cx);
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         self.spawn(
             ServerTask::ClusterReshard,
             move || async move {
@@ -263,37 +292,41 @@ impl ZedisServerState {
                     target_id.as_ref(),
                     &slots,
                     &source_by_slot,
+                    progress_tx,
                 )
                 .await
             },
-            move |this, result, cx| match result {
-                Ok(r) => {
-                    if r.errors.is_empty() {
-                        this.emit_success_notification(
-                            format!(
-                                "Reshard complete: moved {}/{} slots → {target_for_msg}",
-                                r.moved, r.total
-                            )
-                            .into(),
-                            "RESHARD".into(),
-                            cx,
-                        );
-                    } else {
-                        let detail = r.errors.join("; ");
-                        this.emit_warning_notification(
-                            format!("Reshard partial: moved {}/{} slots. Errors: {detail}", r.moved, r.total).into(),
-                            cx,
-                        );
+            move |this, result, cx| {
+                this.set_reshard_progress(None, cx);
+                match result {
+                    Ok(r) => {
+                        if r.errors.is_empty() {
+                            this.emit_success_notification(
+                                format!(
+                                    "Reshard complete: moved {}/{} slots → {target_for_msg}",
+                                    r.moved, r.total
+                                )
+                                .into(),
+                                "RESHARD".into(),
+                                cx,
+                            );
+                        } else {
+                            let detail = r.errors.join("; ");
+                            this.emit_warning_notification(
+                                format!("Reshard partial: moved {}/{} slots. Errors: {detail}", r.moved, r.total)
+                                    .into(),
+                                cx,
+                            );
+                        }
+                        this.refresh_redis_info(cx);
                     }
-                    this.refresh_redis_info(cx);
-                }
-                Err(_) => {
-                    // spawn already records the error message.
+                    Err(_) => {
+                        // spawn already records the error message.
+                    }
                 }
             },
             cx,
         );
-        let _ = total; // used in async path via slots.len()
     }
 }
 
@@ -385,6 +418,7 @@ async fn reshard_slots(
     target_id: &str,
     slots: &[u16],
     source_by_slot: &[(u16, String, String)],
+    progress: smol::channel::Sender<(u32, u32)>,
 ) -> Result<ClusterReshardResult, Error> {
     let password = get_server(server_id).ok().and_then(|s| s.password);
     let (target_host, target_port) = target_addr.rsplit_once(':').ok_or_else(|| Error::Invalid {
@@ -409,18 +443,26 @@ async fn reshard_slots(
 
     let mut moved = 0u32;
     let mut errors = Vec::new();
+    let total = slots.len() as u32;
 
-    for &slot in slots {
+    for (index, &slot) in slots.iter().enumerate() {
+        // Best-effort progress tick — the channel is unbounded and the
+        // receiver may already be gone (view torn down), so ignore failures.
+        let report = |processed: u32| {
+            let _ = progress.try_send((processed, total));
+        };
         let (source_addr, source_id) = match source_lookup.remove(&slot) {
             Some(v) => v,
             None => {
                 errors.push(format!("slot {slot}: missing source mapping"));
+                report(index as u32 + 1);
                 continue;
             }
         };
         if source_id == target_id {
             // Already on target — skip.
             moved += 1;
+            report(index as u32 + 1);
             continue;
         }
 
@@ -440,9 +482,11 @@ async fn reshard_slots(
         {
             warn!(slot, error = %e, "reshard slot failed");
             errors.push(format!("slot {slot}: {e}"));
+            report(index as u32 + 1);
             continue;
         }
         moved += 1;
+        report(index as u32 + 1);
     }
 
     Ok(ClusterReshardResult {

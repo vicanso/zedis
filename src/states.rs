@@ -72,6 +72,7 @@ pub use i18n::i18n_zset_editor;
 pub use migration::{ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState};
 pub use server::ConnectionHealth;
 pub use server::ErrorMessage;
+pub use server::InfoSnapshot;
 pub use server::ZedisServerState;
 pub use server::cluster::{
     ClusterMasterRanges, ClusterNodeLoad, fetch_cluster_node_loads, plan_cluster_reshard, source_owners_for_slots,

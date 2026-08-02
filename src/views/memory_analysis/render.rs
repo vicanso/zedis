@@ -165,7 +165,30 @@ impl ZedisMemoryAnalysis {
                                     this.handle_pick_rdb(cx);
                                 })),
                         )
-                    }),
+                    })
+                    // Export the finished tables (prefix groups / top keys).
+                    .when(
+                        !is_running && (self.prefix_count > 0 || self.single_count > 0),
+                        |this| {
+                            this.child(
+                                Button::new("memory-analysis-export")
+                                    .outline()
+                                    .small()
+                                    .icon(Icon::new(CustomIconName::Download))
+                                    .label(i18n_common(cx, "export"))
+                                    .dropdown_menu(move |menu, _window, cx| {
+                                        menu.menu(
+                                            i18n_memory_analysis(cx, "export_prefixes"),
+                                            Box::new(MemoryAnalysisAction::ExportPrefixesCsv),
+                                        )
+                                        .menu(
+                                            i18n_memory_analysis(cx, "export_top_keys"),
+                                            Box::new(MemoryAnalysisAction::ExportKeysCsv),
+                                        )
+                                    }),
+                            )
+                        },
+                    ),
             )
     }
     /// Render the AI advice panel. Hidden until an AI request has been
@@ -853,6 +876,18 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .child(div().flex_1())
                     .child(functions.flex_none()),
             )
+            // Progress bar for a running scan / RDB parse — the toolbar's
+            // percentage chip stays for the exact figure; this strip makes
+            // long runs (large dumps, low-ratio scans) visibly alive.
+            .when(is_running, |this| {
+                this.child(
+                    div()
+                        .w_full()
+                        .flex_none()
+                        .px_4()
+                        .child(Progress::new("memory-analysis-progress").value(self.progress_value as f32)),
+                )
+            })
             // ── Body ──
             .child({
                 let mut body = v_flex()
@@ -963,6 +998,14 @@ impl gpui::Render for ZedisMemoryAnalysis {
 
                 body
             })
+            // The toolbar Export dropdown dispatches these; handle them
+            // here on the panel root (same pattern as the slow-log panel).
+            .on_action(
+                cx.listener(|this, event: &MemoryAnalysisAction, _window, cx| match event {
+                    MemoryAnalysisAction::ExportPrefixesCsv => this.export_prefixes_csv(cx),
+                    MemoryAnalysisAction::ExportKeysCsv => this.export_keys_csv(cx),
+                }),
+            )
             .into_any_element()
     }
 }

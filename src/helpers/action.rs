@@ -170,6 +170,27 @@ pub enum SlowlogAction {
     ClearCommands,
 }
 
+/// Live Monitor panel export actions, dispatched by the toolbar "Export"
+/// dropdown and handled by the panel's own `.on_action` (same pattern
+/// as [`SlowlogAction`]). They export the currently-visible rows.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum MonitorAction {
+    /// Export the visible monitor rows to a CSV file.
+    ExportCsv,
+    /// Export the visible monitor rows to a JSON file.
+    ExportJson,
+}
+
+/// Memory-analysis panel export actions, dispatched by the toolbar
+/// "Export" dropdown and handled by the panel's own `.on_action`.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum MemoryAnalysisAction {
+    /// Export the prefix-group table to a CSV file.
+    ExportPrefixesCsv,
+    /// Export the single-key Top-N table to a CSV file.
+    ExportKeysCsv,
+}
+
 pub fn humanize_keystroke(keystroke: &str) -> String {
     let parts = keystroke.split('-');
     let mut display_text = String::new();

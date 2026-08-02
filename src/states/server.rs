@@ -83,6 +83,19 @@ pub enum RedisServerStatus {
     Failed,
 }
 
+/// A frozen `(section, field, value)` capture of the Server Info panel's
+/// parsed `INFO` rows, kept for before/after comparison. Stored on the
+/// server state so it survives the panel being dropped on navigation;
+/// scoped to the connection session (cleared by [`ZedisServerState::reset`]).
+#[derive(Debug, Clone, Default)]
+pub struct InfoSnapshot {
+    /// `(section, field, value)` rows exactly as the panel displayed them
+    /// (section carries the node address on clusters).
+    pub rows: Vec<(SharedString, SharedString, SharedString)>,
+    /// Wall-clock `HH:MM:SS` the capture was taken, for the banner.
+    pub taken_at: SharedString,
+}
+
 /// Health of the live connection, derived purely from the status-bar
 /// heartbeat's `PING` outcome (see `note_ping_result`). Distinct from
 /// [`RedisServerStatus`], which only tracks the *initial* connect/load and
@@ -115,6 +128,17 @@ pub struct ZedisServerState {
     last_slow_logs_checked_at: i64,
     last_slow_log_count: usize,
     slow_logs: Vec<SlowLogEntry>,
+
+    /// `(processed, total)` slots of an in-flight cluster reshard;
+    /// `None` when no reshard is running. Drives the Topology progress
+    /// bar via [`ServerEvent::ClusterReshardProgress`].
+    reshard_progress: Option<(u32, u32)>,
+
+    /// Frozen `INFO` field set captured by the Server Info panel for
+    /// before/after comparison. Lives here (not on the view) so it
+    /// survives panel navigation — tool views are dropped on route
+    /// change — and dies with the session on server switch (`reset`).
+    info_snapshot: Option<InfoSnapshot>,
 
     /// Whether the terminal is open
     terminal: bool,
@@ -399,6 +423,12 @@ impl ZedisServerState {
         self.last_slow_logs_checked_at = 0;
         self.last_slow_log_count = 0;
         self.slow_logs.clear();
+        // A reshard task from the previous server can no longer report back
+        // (its completion callback is stale-guarded) — drop its progress.
+        self.reshard_progress = None;
+        // An INFO snapshot from the previous connection would only produce
+        // a meaningless all-changed diff on the next server.
+        self.info_snapshot = None;
     }
 
     /// Add new keys with their types to the key map (deduplicating automatically)
@@ -744,6 +774,36 @@ impl ZedisServerState {
     /// Get the slow logs
     pub fn slow_logs(&self) -> &Vec<SlowLogEntry> {
         &self.slow_logs
+    }
+    /// Drop the cached slow-log entries and notify listeners — called
+    /// after a `SLOWLOG RESET` so the panel empties immediately instead
+    /// of waiting for the next heartbeat refresh.
+    pub fn clear_slow_logs(&mut self, cx: &mut Context<Self>) {
+        self.slow_logs.clear();
+        self.last_slow_log_count = 0;
+        cx.emit(ServerEvent::ServerRedisInfoUpdated);
+    }
+
+    /// `(processed, total)` slots of the in-flight reshard, `None` when idle.
+    pub fn reshard_progress(&self) -> Option<(u32, u32)> {
+        self.reshard_progress
+    }
+
+    /// The Server Info panel's frozen `INFO` capture, if one was taken
+    /// this session.
+    pub fn info_snapshot(&self) -> Option<&InfoSnapshot> {
+        self.info_snapshot.as_ref()
+    }
+    /// Store or discard the Server Info panel's `INFO` capture. No event
+    /// is emitted — the panel is the only consumer and repaints itself.
+    pub fn set_info_snapshot(&mut self, snapshot: Option<InfoSnapshot>) {
+        self.info_snapshot = snapshot;
+    }
+    /// Update the in-flight reshard progress and broadcast it so the
+    /// Topology panel can re-render its progress bar.
+    pub fn set_reshard_progress(&mut self, progress: Option<(u32, u32)>, cx: &mut Context<Self>) {
+        self.reshard_progress = progress;
+        cx.emit(ServerEvent::ClusterReshardProgress);
     }
     /// Get the last slow log count
     pub fn last_slow_log_count(&self) -> usize {

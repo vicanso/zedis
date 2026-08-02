@@ -16,7 +16,8 @@ use crate::assets::CustomIconName;
 use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::{
-    AiEndpoint, analyze_report, format_duration, get_mono_font_family, group_thousands, unix_ts_millis,
+    AiEndpoint, MemoryAnalysisAction, analyze_report, build_csv, format_duration, get_mono_font_family,
+    group_thousands, unix_ts_millis,
 };
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
@@ -28,11 +29,13 @@ use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_
 /// Samples keys from the database, groups by prefix and displays two tables:
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
 /// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
-use crate::views::{open_key_in_editor, search_keys_in_tree};
+use crate::views::{export_to_file, open_key_in_editor, search_keys_in_tree};
 use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::DropdownMenu;
 use gpui_component::notification::Notification;
+use gpui_component::progress::Progress;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
@@ -309,6 +312,9 @@ pub struct ZedisMemoryAnalysis {
     prefix_count: usize,
     single_count: usize,
     progress: SharedString,
+    /// Numeric twin of `progress` (0–100) driving the progress bar under
+    /// the toolbar while a run is active.
+    progress_value: u32,
     /// Error message when `status == Error` (a sampling SCAN failed
     /// mid-run). `None` otherwise. Mirrors `ai_output` for the AI path.
     scan_error: Option<SharedString>,
@@ -483,6 +489,7 @@ impl ZedisMemoryAnalysis {
             prefix_count: 0,
             single_count: 0,
             progress: SharedString::default(),
+            progress_value: 0,
             scan_error: None,
             analysis_task: None,
             dbsize,
@@ -613,6 +620,7 @@ impl ZedisMemoryAnalysis {
         self.status = AnalysisStatus::Running;
         self.scan_error = None;
         self.progress = "0%".into();
+        self.progress_value = 0;
         self.prefix_count = 0;
         self.single_count = 0;
         self.single_groups = SingleKeyTopGroups::new(TOP_N);
@@ -759,6 +767,7 @@ impl ZedisMemoryAnalysis {
                 let ttl_snapshot = acc.ttl_histogram.clone();
                 let _ = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
+                    this.progress_value = pct;
                     this.prefix_count = pc;
                     this.single_groups = groups_snapshot;
                     this.ttl_histogram = ttl_snapshot;
@@ -793,6 +802,7 @@ impl ZedisMemoryAnalysis {
                 } else {
                     this.status = AnalysisStatus::Finished;
                     this.progress = "100%".into();
+                    this.progress_value = 100;
                     // Offline rule engine — free + instant, runs on the
                     // just-computed aggregates before they're moved into
                     // `this` below. Big-key detection uses `by_size` (the
@@ -975,6 +985,7 @@ impl ZedisMemoryAnalysis {
                 let ttl_snapshot = acc.ttl_histogram.clone();
                 let updated = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
+                    this.progress_value = pct;
                     this.prefix_count = pc;
                     this.single_groups = groups_snapshot;
                     this.ttl_histogram = ttl_snapshot;
@@ -1004,6 +1015,7 @@ impl ZedisMemoryAnalysis {
                 } else {
                     this.status = AnalysisStatus::Finished;
                     this.progress = "100%".into();
+                    this.progress_value = 100;
                     // Offline rules only: no policy, no fragmentation data.
                     this.recommendations =
                         build_recommendations("", &prefix_rows, &final_groups.by_size.items, &final_histogram, None);
@@ -1032,6 +1044,79 @@ impl ZedisMemoryAnalysis {
         self.single_count = rows.len();
         self.single_table.update(cx, |s, _| s.delegate_mut().rows = rows);
         cx.notify();
+    }
+
+    /// Export the prefix-group table as CSV. Raw byte / count figures are
+    /// included alongside the display strings so the file sorts and
+    /// aggregates cleanly in a spreadsheet.
+    pub(super) fn export_prefixes_csv(&mut self, cx: &mut gpui::Context<Self>) {
+        let rows = self.prefix_table.read(cx).delegate().rows.clone();
+        if rows.is_empty() {
+            return;
+        }
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                vec![
+                    r.prefix.to_string(),
+                    r.key_count.to_string(),
+                    r.memory_bytes.to_string(),
+                    r.memory.to_string(),
+                    r.types.to_string(),
+                    r.avg_ttl.to_string(),
+                    r.perm_count.to_string(),
+                ]
+            })
+            .collect();
+        let csv = build_csv(
+            &[
+                "prefix",
+                "key_count",
+                "memory_bytes",
+                "memory",
+                "types",
+                "avg_ttl",
+                "perm_keys",
+            ],
+            &data,
+        );
+        self.save_export(csv, "memory-prefixes.csv", cx);
+    }
+
+    /// Export the single-key Top-N table (in its current ranking) as CSV.
+    pub(super) fn export_keys_csv(&mut self, cx: &mut gpui::Context<Self>) {
+        let rows = self.single_table.read(cx).delegate().rows.clone();
+        if rows.is_empty() {
+            return;
+        }
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                vec![
+                    r.key.to_string(),
+                    r.key_type.to_string(),
+                    r.memory_bytes.to_string(),
+                    r.memory.to_string(),
+                    r.ttl.to_string(),
+                    r.heat_display.to_string(),
+                ]
+            })
+            .collect();
+        let csv = build_csv(&["key", "type", "memory_bytes", "memory", "ttl", "heat"], &data);
+        self.save_export(csv, "memory-top-keys.csv", cx);
+    }
+
+    fn save_export(&mut self, csv: String, suggested: &'static str, cx: &mut gpui::Context<Self>) {
+        let success = i18n_common(cx, "csv_exported");
+        let error = i18n_common(cx, "csv_export_failed");
+        export_to_file(
+            cx,
+            self.server_state.clone(),
+            csv.into_bytes(),
+            suggested,
+            success,
+            error,
+        );
     }
 }
 

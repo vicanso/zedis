@@ -15,7 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, RedisServer, get_connection_manager, get_server, open_monitor_connection};
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{MonitorAction, build_csv, get_mono_font_family};
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
     back_to_editor_tooltip, content_area_width, escalate_dangerous_body, i18n_common, i18n_monitor, i18n_status_bar,
@@ -26,7 +26,7 @@ use crate::states::{
 /// the `MONITOR` command, and streams the output in real time into a
 /// scrollable table.  Supports keyword and command-type filtering.
 /// The buffer is capped at `MAX_RECORDS` entries.
-use crate::views::open_key_in_editor;
+use crate::views::{export_to_file, open_key_in_editor};
 use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, ClipboardItem, Edges, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -39,10 +39,12 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    menu::DropdownMenu,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
 use std::collections::VecDeque;
+use std::time::Instant;
 use tracing::error;
 use zedis_ui::ZedisDialog;
 
@@ -51,6 +53,13 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// Maximum number of monitor records to keep in memory.
 const MAX_RECORDS: usize = 10_000;
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
+/// Sliding window for the events/sec badge.
+const RATE_WINDOW_SECS: f64 = 5.0;
+/// Sustained event rate (over the sliding window) above which MONITOR is
+/// stopped automatically. MONITOR's cost is paid on the server's command
+/// thread, so a runaway stream is disconnected outright — pausing the UI
+/// alone would keep the server formatting every command for us.
+const AUTO_STOP_EVENTS_PER_SEC: f64 = 5000.0;
 
 // ── Parsed MONITOR line ──────────────────────────────────────────────
 
@@ -441,6 +450,13 @@ pub struct ZedisMonitor {
     table_state: Entity<TableState<MonitorTableDelegate>>,
     keyword_state: Entity<InputState>,
     monitoring: bool,
+    /// Drop inbound batches while true (the MONITOR connections stay up).
+    paused: bool,
+    /// Set when the stream was cut by the rate guard; shown as a badge
+    /// until the next start.
+    auto_stopped: bool,
+    /// Timestamps of recent ingests for the events/sec badge.
+    rate_ticks: VecDeque<Instant>,
     row_count: usize,
     monitor_tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -461,6 +477,8 @@ impl ZedisMonitor {
                     state.delegate_mut().is_filtered = false;
                 });
                 this.row_count = 0;
+                this.auto_stopped = false;
+                this.rate_ticks.clear();
                 cx.notify();
             }
         }));
@@ -482,10 +500,39 @@ impl ZedisMonitor {
             table_state,
             keyword_state,
             monitoring: false,
+            paused: false,
+            auto_stopped: false,
+            rate_ticks: VecDeque::new(),
             row_count: 0,
             monitor_tasks: Vec::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    fn events_per_sec(&self) -> f64 {
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs_f64(RATE_WINDOW_SECS);
+        let n = self
+            .rate_ticks
+            .iter()
+            .filter(|t| now.duration_since(**t) <= window)
+            .count();
+        n as f64 / RATE_WINDOW_SECS
+    }
+
+    /// Record `n` freshly-ingested entries and answer whether the
+    /// sustained rate has crossed the auto-stop threshold. Ticks older
+    /// than twice the window are trimmed so the deque stays bounded.
+    fn record_rate(&mut self, n: usize) -> bool {
+        let now = Instant::now();
+        for _ in 0..n {
+            self.rate_ticks.push_back(now);
+        }
+        let window = std::time::Duration::from_secs_f64(RATE_WINDOW_SECS * 2.0);
+        while self.rate_ticks.front().is_some_and(|t| now.duration_since(*t) > window) {
+            self.rate_ticks.pop_front();
+        }
+        self.events_per_sec() > AUTO_STOP_EVENTS_PER_SEC
     }
 
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
@@ -545,6 +592,9 @@ impl ZedisMonitor {
         let db = self.server_state.read(cx).db();
 
         self.monitoring = true;
+        self.paused = false;
+        self.auto_stopped = false;
+        self.rate_ticks.clear();
         cx.notify();
 
         let table_state = self.table_state.clone();
@@ -638,6 +688,12 @@ impl ZedisMonitor {
                 }
 
                 let result = entity.update(cx, |this: &mut ZedisMonitor, cx| {
+                    // Paused: drain the channel but drop the batch, so the
+                    // background streams never back up an unbounded queue.
+                    if this.paused {
+                        return false;
+                    }
+                    let n = batch.len();
                     let keyword = keyword_state.read(cx).value().to_string();
                     table_state.update(cx, |state, _| {
                         let delegate = state.delegate_mut();
@@ -650,16 +706,27 @@ impl ZedisMonitor {
                         delegate.apply_filter(&keyword);
                     });
                     this.row_count = table_state.read(cx).delegate().visible_count();
+                    let auto_stop = this.record_rate(n);
+                    if auto_stop {
+                        this.auto_stopped = true;
+                        this.notify_auto_stopped(cx);
+                    }
                     cx.notify();
+                    auto_stop
                 });
-                if result.is_err() {
-                    break;
+                match result {
+                    // Rate guard tripped — fall through to the shared
+                    // cleanup below, which drops every MONITOR connection.
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
                 }
             }
 
-            // All streams ended or entity dropped
+            // All streams ended, rate guard tripped, or entity dropped
             let _ = entity.update(cx, |this: &mut ZedisMonitor, cx| {
                 this.monitoring = false;
+                this.paused = false;
                 cx.notify();
             });
 
@@ -672,6 +739,22 @@ impl ZedisMonitor {
     fn handle_stop(&mut self, cx: &mut Context<Self>) {
         self.monitor_tasks.clear();
         self.monitoring = false;
+        self.paused = false;
+        cx.notify();
+    }
+
+    /// Keep the MONITOR connections attached but drop inbound batches.
+    /// Note the server still pays the MONITOR cost while paused — the
+    /// toggle only freezes the table; Stop is the one that relieves the
+    /// server.
+    fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        if !self.monitoring {
+            return;
+        }
+        self.paused = !self.paused;
+        if self.paused {
+            self.rate_ticks.clear();
+        }
         cx.notify();
     }
 
@@ -684,6 +767,90 @@ impl ZedisMonitor {
         cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
             cx.emit(GlobalEvent::Notification(NotificationAction::new_error(msg)));
         });
+    }
+
+    /// Toast that the rate guard cut the stream, naming the threshold so
+    /// the sudden stop doesn't read as a crash.
+    fn notify_auto_stopped(&self, cx: &mut Context<Self>) {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let msg: SharedString = rust_i18n::t!(
+            "monitor.auto_stop_notice",
+            rate = format!("{AUTO_STOP_EVENTS_PER_SEC:.0}"),
+            locale = locale
+        )
+        .to_string()
+        .into();
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_warning(msg)));
+        });
+    }
+
+    /// Snapshot of the rows the table is currently showing (filtered rows
+    /// when a keyword filter is active, the whole ring buffer otherwise).
+    fn visible_rows_snapshot(&self, cx: &Context<Self>) -> Vec<MonitorEntry> {
+        let delegate = self.table_state.read(cx).delegate();
+        if delegate.is_filtered {
+            delegate.filtered_rows.clone()
+        } else {
+            delegate.all_rows.iter().cloned().collect()
+        }
+    }
+
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let rows = self.visible_rows_snapshot(cx);
+        if rows.is_empty() {
+            return;
+        }
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|e| {
+                vec![
+                    e.timestamp.to_string(),
+                    e.node.to_string(),
+                    e.db.to_string(),
+                    e.client.to_string(),
+                    e.command.to_string(),
+                    e.args.to_string(),
+                ]
+            })
+            .collect();
+        let csv = build_csv(&["timestamp", "node", "db", "client", "command", "args"], &data);
+        self.save_export(csv.into_bytes(), "monitor.csv", true, cx);
+    }
+
+    fn export_json(&mut self, cx: &mut Context<Self>) {
+        let rows = self.visible_rows_snapshot(cx);
+        if rows.is_empty() {
+            return;
+        }
+        let values: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "timestamp": e.timestamp.to_string(),
+                    "node": e.node.to_string(),
+                    "db": e.db.to_string(),
+                    "client": e.client.to_string(),
+                    "command": e.command.to_string(),
+                    "args": e.args.to_string(),
+                })
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
+        self.save_export(json.into_bytes(), "monitor.json", false, cx);
+    }
+
+    /// Shared save flow for the exports — mirrors the slow-log panel.
+    fn save_export(&mut self, bytes: Vec<u8>, suggested: &'static str, is_csv: bool, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+        let (success_key, error_key) = if is_csv {
+            ("csv_exported", "csv_export_failed")
+        } else {
+            ("json_exported", "json_export_failed")
+        };
+        let success = i18n_common(cx, success_key);
+        let error = i18n_common(cx, error_key);
+        export_to_file(cx, server_state, bytes, suggested, success, error);
     }
 
     fn handle_clear(&mut self, cx: &mut Context<Self>) {
@@ -705,6 +872,13 @@ impl Render for ZedisMonitor {
             format!("({})", total)
         } else {
             format!("({}/{})", self.row_count, total)
+        };
+        let paused = self.paused;
+        let rate = self.events_per_sec();
+        let rate_label: Option<SharedString> = if self.monitoring && !paused && rate > 0.05 {
+            Some(format!("{rate:.1}/s").into())
+        } else {
+            None
         };
 
         v_flex()
@@ -743,11 +917,36 @@ impl Render for ZedisMonitor {
                                     .text_color(cx.theme().muted_foreground)
                                     .text_sm(),
                             )
-                            .when(self.monitoring, |this| {
+                            .when(self.monitoring && !paused, |this| {
                                 this.child(
                                     Label::new(i18n_monitor(cx, "monitoring"))
                                         .text_color(cx.theme().green)
                                         .text_sm(),
+                                )
+                            })
+                            .when_some(rate_label, |this, r| {
+                                // Warn as the stream approaches the auto-stop
+                                // threshold so the cut-off isn't a surprise.
+                                this.child(Label::new(r).text_xs().text_color(
+                                    if rate > AUTO_STOP_EVENTS_PER_SEC * 0.5 {
+                                        cx.theme().warning
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    },
+                                ))
+                            })
+                            .when(paused, |this| {
+                                this.child(
+                                    Label::new(i18n_monitor(cx, "paused_badge"))
+                                        .text_xs()
+                                        .text_color(cx.theme().yellow),
+                                )
+                            })
+                            .when(self.auto_stopped && !self.monitoring, |this| {
+                                this.child(
+                                    Label::new(i18n_monitor(cx, "auto_stopped_badge"))
+                                        .text_xs()
+                                        .text_color(cx.theme().warning),
                                 )
                             }),
                     )
@@ -775,6 +974,20 @@ impl Render for ZedisMonitor {
                             })
                             .when(self.monitoring, |this| {
                                 this.child(
+                                    Button::new("pause-monitor")
+                                        .outline()
+                                        .small()
+                                        .label(if paused {
+                                            i18n_monitor(cx, "resume")
+                                        } else {
+                                            i18n_monitor(cx, "pause")
+                                        })
+                                        .tooltip(i18n_monitor(cx, "pause_tooltip"))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.toggle_pause(cx);
+                                        })),
+                                )
+                                .child(
                                     Button::new("stop-monitor")
                                         .outline()
                                         .small()
@@ -783,6 +996,22 @@ impl Render for ZedisMonitor {
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.handle_stop(cx);
                                         })),
+                                )
+                            })
+                            .when(total > 0, |this| {
+                                this.child(
+                                    Button::new("monitor-export")
+                                        .outline()
+                                        .small()
+                                        .icon(Icon::new(CustomIconName::Download))
+                                        .label(i18n_common(cx, "export"))
+                                        .dropdown_menu(move |menu, _window, cx| {
+                                            menu.menu(i18n_common(cx, "export_csv"), Box::new(MonitorAction::ExportCsv))
+                                                .menu(
+                                                    i18n_common(cx, "export_json"),
+                                                    Box::new(MonitorAction::ExportJson),
+                                                )
+                                        }),
                                 )
                             })
                             .child(
@@ -823,6 +1052,12 @@ impl Render for ZedisMonitor {
                         )
                     }),
             )
+            // The toolbar Export dropdown dispatches these; handle them
+            // here on the panel root (same pattern as the slow-log panel).
+            .on_action(cx.listener(|this, event: &MonitorAction, _window, cx| match event {
+                MonitorAction::ExportCsv => this.export_csv(cx),
+                MonitorAction::ExportJson => this.export_json(cx),
+            }))
             .into_any_element()
     }
 }

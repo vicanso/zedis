@@ -46,6 +46,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     label::Label,
+    progress::Progress,
     v_flex,
 };
 use std::time::Duration;
@@ -186,14 +187,21 @@ impl ZedisTopology {
         let reshard_count_input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 100"));
 
         let subscriptions = vec![cx.subscribe(&server_state, |this, _state, event, cx| {
+            // Live reshard ticks: mirror the server state's in-flight flag
+            // (Some → running, None → finished) and repaint the bar.
+            if matches!(event, ServerEvent::ClusterReshardProgress) {
+                this.reshard_running = this.server_state.read(cx).reshard_progress().is_some();
+                cx.notify();
+            }
             if matches!(
                 event,
                 ServerEvent::ServerRedisInfoUpdated | ServerEvent::ServerSelected(_)
             ) {
                 this.detect_mode(cx);
-                // Reshard completion refreshes INFO — drop the in-flight flag so
-                // Execute becomes available again after success or failure toast.
-                if this.reshard_running {
+                // Drop the in-flight flag once the reshard has actually
+                // reported completion (progress cleared) — not on every
+                // heartbeat INFO tick, which used to reset it mid-run.
+                if this.reshard_running && this.server_state.read(cx).reshard_progress().is_none() {
                     this.reshard_running = false;
                 }
                 if this.mode == TopologyMode::Cluster {
@@ -1293,9 +1301,32 @@ impl ZedisTopology {
             }));
 
         let preview: gpui::AnyElement = if self.reshard_running {
-            Label::new(i18n_topology(cx, "reshard_progress"))
-                .text_xs()
-                .text_color(muted)
+            // Live progress: "moving… N/M" plus a bar fed by the per-slot
+            // ticks the reshard task reports through the server state.
+            let progress = self.server_state.read(cx).reshard_progress();
+            let (processed, total) = progress.unwrap_or((0, 0));
+            let pct = if total > 0 {
+                processed as f32 * 100.0 / total as f32
+            } else {
+                0.0
+            };
+            v_flex()
+                .gap_1()
+                .w(px(320.))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            Label::new(i18n_topology(cx, "reshard_progress"))
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                        .when(total > 0, |this| {
+                            this.child(Label::new(format!("{processed}/{total}")).text_xs().text_color(muted))
+                        }),
+                )
+                .child(Progress::new("topology-reshard-progress").value(pct))
                 .into_any_element()
         } else if let Some(err) = &self.plan_error {
             Label::new(err.clone()).text_color(cx.theme().danger).into_any_element()

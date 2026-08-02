@@ -112,9 +112,85 @@ pub fn line_diff(left: &str, right: &str) -> Vec<DiffOp> {
     ops
 }
 
+/// How a key changed between two key→value snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvDelta {
+    /// Key exists only in the new snapshot.
+    Added,
+    /// Key exists only in the old snapshot.
+    Removed,
+    /// Key exists in both with different values.
+    Changed,
+}
+
+/// One differing entry of a key→value snapshot comparison.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KvDiffEntry {
+    pub key: String,
+    /// Value in the old snapshot (`None` for [`KvDelta::Added`]).
+    pub old: Option<String>,
+    /// Value in the new snapshot (`None` for [`KvDelta::Removed`]).
+    pub new: Option<String>,
+    pub delta: KvDelta,
+}
+
+/// Field-level comparison of two key→value snapshots (e.g. two `INFO`
+/// captures). Unlike [`line_diff`] this is order-insensitive: a key that
+/// merely moved produces no entry, so section reordering between
+/// captures doesn't drown the real changes in noise. Unchanged pairs are
+/// omitted. Entries follow the new snapshot's order, with removed keys
+/// appended in old-snapshot order. Duplicate keys keep the last value.
+pub fn kv_diff(old: &[(String, String)], new: &[(String, String)]) -> Vec<KvDiffEntry> {
+    use std::collections::{HashMap, HashSet};
+
+    let old_map: HashMap<&str, &str> = old.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let new_keys: HashSet<&str> = new.iter().map(|(k, _)| k.as_str()).collect();
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (key, value) in new {
+        // Only diff a duplicated key once, against its last value.
+        if !seen.insert(key.as_str()) {
+            continue;
+        }
+        let value = new
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or(value);
+        match old_map.get(key.as_str()) {
+            None => out.push(KvDiffEntry {
+                key: key.clone(),
+                old: None,
+                new: Some(value.to_string()),
+                delta: KvDelta::Added,
+            }),
+            Some(old_value) if *old_value != value => out.push(KvDiffEntry {
+                key: key.clone(),
+                old: Some((*old_value).to_string()),
+                new: Some(value.to_string()),
+                delta: KvDelta::Changed,
+            }),
+            Some(_) => {}
+        }
+    }
+    for (key, value) in old {
+        if !new_keys.contains(key.as_str()) && seen.insert(key.as_str()) {
+            out.push(KvDiffEntry {
+                key: key.clone(),
+                old: Some(value.clone()),
+                new: None,
+                delta: KvDelta::Removed,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DiffOp, line_diff};
+    use super::{DiffOp, KvDelta, kv_diff, line_diff};
 
     #[test]
     fn identical_inputs_yield_only_equal_ops() {
@@ -150,6 +226,43 @@ mod tests {
                 DiffOp::Equal(2, 2),
             ]
         );
+    }
+
+    fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn kv_diff_reports_added_removed_changed_only() {
+        let old = pairs(&[("uptime", "100"), ("version", "7.2"), ("gone", "x")]);
+        let new = pairs(&[("uptime", "160"), ("version", "7.2"), ("fresh", "y")]);
+        let entries = kv_diff(&old, &new);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].key, "uptime");
+        assert_eq!(entries[0].delta, KvDelta::Changed);
+        assert_eq!(entries[0].old.as_deref(), Some("100"));
+        assert_eq!(entries[0].new.as_deref(), Some("160"));
+        assert_eq!(entries[1].key, "fresh");
+        assert_eq!(entries[1].delta, KvDelta::Added);
+        assert_eq!(entries[2].key, "gone");
+        assert_eq!(entries[2].delta, KvDelta::Removed);
+    }
+
+    #[test]
+    fn kv_diff_ignores_reordering() {
+        let old = pairs(&[("a", "1"), ("b", "2")]);
+        let new = pairs(&[("b", "2"), ("a", "1")]);
+        assert!(kv_diff(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn kv_diff_duplicate_keys_use_last_value() {
+        let old = pairs(&[("k", "1")]);
+        let new = pairs(&[("k", "1"), ("k", "2")]);
+        let entries = kv_diff(&old, &new);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].delta, KvDelta::Changed);
+        assert_eq!(entries[0].new.as_deref(), Some("2"));
     }
 
     #[test]
