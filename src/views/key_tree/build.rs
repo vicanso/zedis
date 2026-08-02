@@ -100,14 +100,83 @@ pub(super) fn tag_color_index(color: TagColor) -> usize {
     TagColor::ALL.iter().position(|&c| c == color).unwrap_or(0)
 }
 
-/// Folder path prefixes for a key under the same `splitn` rules as
+/// Split a key into tree segments — the single source of truth every
+/// tree-building pass shares, so folder ids, expansion bookkeeping and tag
+/// aggregates can never disagree about where a key's levels are.
+///
+/// Behaves like `key.splitn(max_depth, separator)` except that separators
+/// **inside `{…}` or inside double quotes are not level boundaries**:
+///
+/// * `{…}` is Redis's cluster hash tag, so `user:{tenant:42}:profile` has
+///   three levels, not four.
+/// * Keys that carry a JSON-ish blob (`item:1/{"name": "x", "at": "12:13:05"}`)
+///   would otherwise shatter along the colons *inside* the payload, which is
+///   what made such keys look truncated in the tree (issue #119).
+///
+/// A key whose braces or quotes never close is treated as ordinary text and
+/// falls back to a plain `splitn`, so one malformed key can't collapse into a
+/// single unsplittable segment.
+pub(super) fn split_key_segments<'a>(key: &'a str, separator: &str, max_depth: usize) -> Vec<&'a str> {
+    let depth = max_depth.max(1);
+    if depth == 1 || separator.is_empty() {
+        return vec![key];
+    }
+    let bytes = key.as_bytes();
+    let sep = separator.as_bytes();
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_quote = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // `{`, `}`, `"` and any separator byte are ASCII-leading, so byte
+        // scanning never lands mid-codepoint (continuation bytes are 0x80-0xBF).
+        if b == b'"' && (i == 0 || bytes[i - 1] != b'\\') {
+            in_quote = !in_quote;
+            i += 1;
+            continue;
+        }
+        if !in_quote {
+            if b == b'{' {
+                brace_depth += 1;
+                i += 1;
+                continue;
+            }
+            if b == b'}' {
+                brace_depth = brace_depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
+        }
+        let splittable = brace_depth == 0 && !in_quote && segments.len() + 1 < depth;
+        if splittable && bytes[i..].starts_with(sep) {
+            segments.push(&key[start..i]);
+            i += sep.len();
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    // Unterminated brace / quote: the scan above suppressed separators that a
+    // reader would consider real, so fall back to the plain split.
+    if brace_depth != 0 || in_quote {
+        return key.splitn(depth, separator).collect();
+    }
+    segments.push(&key[start..]);
+    segments
+}
+
+/// Folder path prefixes for a key under the same rules as
 /// [`new_key_tree_items`] — every intermediate segment is a folder id,
 /// the final segment is the leaf (not returned).
 pub(super) fn folder_prefixes(key: &str, separator: &str, max_key_tree_depth: usize) -> Vec<String> {
-    let depth = max_key_tree_depth.max(1);
     let mut prefixes = Vec::new();
     let mut dir = String::new();
-    for (index, part) in key.splitn(depth, separator).enumerate() {
+    for (index, part) in split_key_segments(key, separator, max_key_tree_depth)
+        .into_iter()
+        .enumerate()
+    {
         if index > 0 {
             prefixes.push(dir.clone());
             dir.push_str(separator);
@@ -222,10 +291,12 @@ pub(super) fn single_child_expanded_set(
         if !keyword.is_empty() && !key.contains(keyword) {
             continue;
         }
-        if !key.contains(separator) {
+        let segs = split_key_segments(key, separator, max_depth);
+        // One segment = a plain leaf (no separator, or every separator sat
+        // inside a hash tag / quoted blob) — nothing to fold.
+        if segs.len() <= 1 {
             continue;
         }
-        let segs: Vec<&str> = key.splitn(max_depth, separator).collect();
         let mut dir = String::new();
         for (i, seg) in segs.iter().enumerate() {
             let parent = dir.clone();
@@ -332,7 +403,8 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
             Some(m) => (m.tag, SharedString::from(m.note.clone())),
             None => (None, SharedString::default()),
         };
-        if !key.contains(separator) {
+        let segments = split_key_segments(key.as_ref(), separator, max_key_tree_depth);
+        if segments.len() <= 1 {
             items.insert(
                 key.clone(),
                 KeyTreeItem {
@@ -355,7 +427,7 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
         // shape) allocated two throwaway strings per key per level. Strings
         // are now built only on first sight (the miss branch below).
         let mut pending: Option<(usize, usize, usize, bool)> = None;
-        for (index, k) in key.splitn(max_key_tree_depth, separator).enumerate() {
+        for (index, k) in segments.into_iter().enumerate() {
             let expanded = index == 0 || expanded_items_set.contains(dir.as_str());
             if let Some((id_len, label_len, depth, _)) = pending.take() {
                 // `dir` still ends exactly at the pending path — the current
@@ -606,6 +678,75 @@ pub(super) fn fill_parent_indices(items: &mut [KeyTreeItem]) {
         if items[i].is_folder {
             stack.push(i);
         }
+    }
+}
+
+#[cfg(test)]
+mod split_key_segments_tests {
+    use super::split_key_segments;
+
+    #[test]
+    fn plain_keys_split_like_splitn() {
+        assert_eq!(
+            split_key_segments("user:1:profile", ":", 5),
+            vec!["user", "1", "profile"]
+        );
+        // No separator at all — one segment, so callers treat it as a leaf.
+        assert_eq!(split_key_segments("plainkey", ":", 5), vec!["plainkey"]);
+        // The depth cap keeps the remainder in the last segment.
+        assert_eq!(split_key_segments("a:b:c:d", ":", 3), vec!["a", "b", "c:d"]);
+        // Multi-character separators work the same way.
+        assert_eq!(split_key_segments("a::b::c", "::", 5), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn hash_tags_stay_one_segment() {
+        // Redis cluster hash tag containing the separator (issue #119).
+        assert_eq!(
+            split_key_segments("user:{tenant:42}:profile", ":", 5),
+            vec!["user", "{tenant:42}", "profile"]
+        );
+    }
+
+    #[test]
+    fn json_blob_in_key_is_not_shattered() {
+        // The reported key shape: metadata JSON appended to the key name.
+        let key = r#"table:{j-groups}:item:007dc97e/{"name": "td-splunk", "at": "12:13:05"}"#;
+        assert_eq!(
+            split_key_segments(key, ":", 5),
+            vec![
+                "table",
+                "{j-groups}",
+                "item",
+                r#"007dc97e/{"name": "td-splunk", "at": "12:13:05"}"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn quoted_separator_outside_braces_is_ignored_too() {
+        assert_eq!(
+            split_key_segments(r#"log:"12:13:05":done"#, ":", 5),
+            vec!["log", r#""12:13:05""#, "done"]
+        );
+        // An escaped quote does not open a quoted run.
+        assert_eq!(split_key_segments(r#"a:\":b"#, ":", 5), vec!["a", r#"\""#, "b"]);
+    }
+
+    #[test]
+    fn unbalanced_braces_or_quotes_fall_back_to_plain_split() {
+        // Without the fallback these would collapse into a single segment.
+        assert_eq!(split_key_segments("a:{b:c", ":", 5), vec!["a", "{b", "c"]);
+        assert_eq!(split_key_segments(r#"a:"b:c"#, ":", 5), vec!["a", r#""b"#, "c"]);
+    }
+
+    #[test]
+    fn degenerate_inputs_are_safe() {
+        assert_eq!(split_key_segments("a:b", "", 5), vec!["a:b"]);
+        assert_eq!(split_key_segments("a:b", ":", 1), vec!["a:b"]);
+        assert_eq!(split_key_segments("a:b", ":", 0), vec!["a:b"]);
+        // Multi-byte content must not panic or split mid-codepoint.
+        assert_eq!(split_key_segments("用户:1:名字", ":", 5), vec!["用户", "1", "名字"]);
     }
 }
 
