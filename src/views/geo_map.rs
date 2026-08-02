@@ -35,8 +35,8 @@ use crate::{
 };
 use gpui::{
     BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, Window, bounds,
-    canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black, uniform_list,
+    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Subscription, Task, Window,
+    bounds, canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt,
@@ -44,6 +44,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    scroll::{Scrollbar, ScrollbarShow},
     v_flex,
 };
 use redis::{Value, cmd};
@@ -138,6 +139,9 @@ pub struct ZedisGeoMap {
     /// Canvas bounds captured during paint, so mouse handlers can convert
     /// window coordinates to canvas-local and hit-test points.
     viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Drives the invalid-members list's native scroll area and its
+    /// visible scrollbar.
+    invalid_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -185,6 +189,7 @@ impl ZedisGeoMap {
             dragging: false,
             drag_last: point(px(0.), px(0.)),
             viewport: Rc::new(Cell::new(None)),
+            invalid_scroll: ScrollHandle::default(),
             _subscriptions: subscriptions,
         };
         this.load(cx);
@@ -837,14 +842,27 @@ impl ZedisGeoMap {
                             .child(Label::new(member.clone()).text_xs().text_color(muted).truncate()),
                     );
                 }
-                col = col.child(
-                    div()
-                        .id("geo-invalid-list")
-                        .flex_none()
-                        .max_h(px(160.))
-                        .overflow_y_scroll()
-                        .child(invalid_list),
-                );
+                // Native scroll + a sibling `Scrollbar` (the help-popover
+                // pattern) so the capped list shows it is scrollable —
+                // bare `overflow_y_scroll` was wheel-only with no track.
+                col =
+                    col.child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .flex_none()
+                            .child(
+                                div()
+                                    .id("geo-invalid-list")
+                                    .max_h(px(160.))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.invalid_scroll)
+                                    .child(invalid_list),
+                            )
+                            .child(div().absolute().top_0().right_0().bottom_0().child(
+                                Scrollbar::vertical(&self.invalid_scroll).scrollbar_show(ScrollbarShow::Always),
+                            )),
+                    );
             }
         }
         col

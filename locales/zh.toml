@@ -367,6 +367,7 @@ export_folder_tooltip = "导出此文件夹"
 export_key_tooltip = "导出此键"
 
 [status_bar]
+db_tooltip = "切换数据库 —— 每行显示该库的 key 数（来自 INFO keyspace；多节点部署下为所有 master 的汇总）"
 conn_connected = "已连接"
 conn_reconnecting = "重连中…"
 conn_offline = "已断开"
@@ -1210,6 +1211,9 @@ no_connection = "请先连接服务器"
 no_matches = "无匹配项"
 
 [command_palette]
+cmd_server_load = "前往命令统计"
+cmd_value_search = "前往按值搜索"
+cmd_topology = "前往拓扑"
 keys_hint = "仅显示已加载的 key（非整库）"
 search_placeholder = "搜索服务器与 key"
 scope_commands = "命令"

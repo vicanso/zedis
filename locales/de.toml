@@ -368,6 +368,7 @@ export_key_tooltip = "Diesen Key exportieren"
 
 
 [status_bar]
+db_tooltip = "Datenbank wechseln — jede Zeile zeigt ihre Schlüsselanzahl (aus INFO keyspace; bei Multi-Node-Setups über alle Master summiert)"
 conn_connected = "Verbunden"
 conn_reconnecting = "Verbindung wird wiederhergestellt…"
 conn_offline = "Offline"
@@ -1211,6 +1212,9 @@ no_connection = "Zuerst mit einem Server verbinden"
 no_matches = "Keine Treffer"
 
 [command_palette]
+cmd_server_load = "Zur Befehlsstatistik"
+cmd_value_search = "Zur Wertsuche"
+cmd_topology = "Zur Topologie"
 keys_hint = "Nur geladene Keys — nicht der ganze Keyspace"
 search_placeholder = "Server und Keys suchen"
 scope_commands = "Befehle"

@@ -368,6 +368,7 @@ export_key_tooltip = "Экспортировать этот ключ"
 
 
 [status_bar]
+db_tooltip = "Смена базы — в каждой строке её число ключей (из INFO keyspace; в многоузловых установках — сумма по всем мастерам)"
 conn_connected = "Подключено"
 conn_reconnecting = "Переподключение…"
 conn_offline = "Не в сети"
@@ -1211,6 +1212,9 @@ no_connection = "Сначала подключитесь к серверу"
 no_matches = "Нет совпадений"
 
 [command_palette]
+cmd_server_load = "К статистике команд"
+cmd_value_search = "К поиску по значению"
+cmd_topology = "К топологии"
 keys_hint = "Только загруженные ключи, не весь keyspace"
 search_placeholder = "Поиск серверов и ключей"
 scope_commands = "Команды"

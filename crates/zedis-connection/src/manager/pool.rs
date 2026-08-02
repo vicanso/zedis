@@ -133,9 +133,12 @@ async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<(String, Version)>>
     }
     Ok(modules)
 }
-async fn get_databases(mut conn: RedisAsyncConn) -> Result<usize> {
+async fn get_databases(mut conn: RedisAsyncConn, is_cluster: bool) -> Result<usize> {
     // Step 1 — CONFIG GET databases: the exact count on self-hosted /
-    // unrestricted servers.
+    // unrestricted servers. Correct in cluster mode too: stock Redis
+    // forces `databases` to 1 at startup when cluster is enabled
+    // ("Changing databases number from 16 to 1 since we are in cluster
+    // mode"), while Valkey 9+ cluster reports its real multi-db count.
     let config_reply: redis::RedisResult<Vec<String>> =
         cmd("CONFIG").arg("GET").arg("databases").query_async(&mut conn).await;
     if let Ok(reply) = config_reply
@@ -148,7 +151,9 @@ async fn get_databases(mut conn: RedisAsyncConn) -> Result<usize> {
     // keyspace, which ACLs and managed clouds almost always allow. It lists
     // only *non-empty* DBs, so the highest `dbN:` line proves at least N+1
     // selectable DBs exist; clamp up to the conventional 16 so the switcher
-    // offers the usual range.
+    // offers the usual range. NOT in cluster mode: a stock cluster is
+    // db0-only, so rounding "saw db0" up to 16 would offer 15 databases
+    // that don't exist — stick to the proven count there.
     let info_reply: redis::RedisResult<String> = cmd("INFO").arg("keyspace").query_async(&mut conn).await;
     if let Ok(info) = info_reply {
         let mut max_db: Option<usize> = None;
@@ -160,7 +165,7 @@ async fn get_databases(mut conn: RedisAsyncConn) -> Result<usize> {
             }
         }
         if let Some(n) = max_db {
-            return Ok((n + 1).max(16));
+            return Ok(if is_cluster { n + 1 } else { (n + 1).max(16) });
         }
     }
 
@@ -347,6 +352,15 @@ impl ConnectionManager {
                 let mut builder = cluster::ClusterClientBuilder::new(addrs)
                     .connection_timeout(resolve_connection_timeout(&first_node.server))
                     .response_timeout(resolve_response_timeout(&first_node.server));
+                // Valkey 9+ supports multiple databases in cluster mode;
+                // clients are cached per `(server, db)`, so bake the db into
+                // the cluster client (the driver issues SELECT on connect and
+                // re-applies it after reconnects). Skipped for db 0 — the
+                // default — so stock Redis clusters (db0-only) never see a
+                // SELECT in the handshake.
+                if db != 0 {
+                    builder = builder.database_id(db as i64);
+                }
                 if let Some(certificates) = first_node.server.tls_certificates() {
                     builder = builder.certs(certificates);
                 }
@@ -384,7 +398,9 @@ impl ConnectionManager {
         // probe `CONFIG GET databases` when the server config leaves it unset.
         let databases = match config.databases {
             Some(n) => n,
-            None => get_databases(connection.clone()).await.unwrap_or(1),
+            None => get_databases(connection.clone(), server_type == ServerType::Cluster)
+                .await
+                .unwrap_or(1),
         };
         let mut client = RedisClient {
             db,

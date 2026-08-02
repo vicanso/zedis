@@ -368,6 +368,7 @@ export_key_tooltip = "このキーをエクスポート"
 
 
 [status_bar]
+db_tooltip = "データベースを切り替え — 各行にキー数を表示（INFO keyspace 由来。マルチノード構成では全マスターの合計）"
 conn_connected = "接続済み"
 conn_reconnecting = "再接続中…"
 conn_offline = "オフライン"
@@ -1211,6 +1212,9 @@ no_connection = "先にサーバーに接続してください"
 no_matches = "一致なし"
 
 [command_palette]
+cmd_server_load = "コマンド統計へ"
+cmd_value_search = "値検索へ"
+cmd_topology = "トポロジーへ"
 keys_hint = "読み込み済みのキーのみ（全体ではありません）"
 search_placeholder = "サーバーとキーを検索"
 scope_commands = "コマンド"

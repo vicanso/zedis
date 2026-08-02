@@ -368,6 +368,7 @@ export_key_tooltip = "Export this key"
 
 
 [status_bar]
+db_tooltip = "Switch database — each row shows its key count (from INFO keyspace; summed across all masters on a multi-node setup)"
 conn_connected = "Connected"
 conn_reconnecting = "Reconnecting…"
 conn_offline = "Offline"
@@ -1211,6 +1212,9 @@ no_connection = "Connect to a server first"
 no_matches = "No matches"
 
 [command_palette]
+cmd_server_load = "Go to Command Stats"
+cmd_value_search = "Go to Value Search"
+cmd_topology = "Go to Topology"
 keys_hint = "Loaded keys only — not the whole keyspace"
 search_placeholder = "Search servers and keys"
 scope_commands = "Commands"

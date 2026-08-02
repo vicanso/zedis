@@ -23,7 +23,7 @@
 use crate::connection::{RedisServer, get_servers};
 use crate::helpers::encrypt_share;
 use crate::states::{ZedisGlobalStore, i18n_servers};
-use gpui::{App, ClipboardItem, Entity, SharedString, Window, prelude::*, px};
+use gpui::{App, ClipboardItem, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Sizable, WindowExt,
     button::{Button, ButtonVariants},
@@ -32,6 +32,7 @@ use gpui_component::{
     input::{Input, InputState},
     label::Label,
     notification::Notification,
+    scroll::{Scrollbar, ScrollbarShow},
     v_flex,
 };
 use rust_i18n::t;
@@ -48,6 +49,10 @@ pub struct ZedisExportServersDialog {
     /// share token (`ZEDIS1.…`) instead of plain JSON; empty keeps the
     /// original plain-JSON export unchanged.
     passphrase_state: Entity<InputState>,
+    /// Drives the server list's native scroll area and its visible
+    /// scrollbar (the capped list scrolls on its own; the dialog body's
+    /// scroller stays dormant because the body always fits).
+    list_scroll: ScrollHandle,
 }
 
 impl ZedisExportServersDialog {
@@ -65,6 +70,7 @@ impl ZedisExportServersDialog {
             selected,
             include_secrets: false,
             passphrase_state,
+            list_scroll: ScrollHandle::default(),
         }
     }
 
@@ -130,12 +136,19 @@ impl Render for ZedisExportServersDialog {
         let selected_count = self.selected.len();
         let total = self.servers.len();
 
+        // Native scroll + a sibling `Scrollbar` (the help-popover pattern):
+        // `max_h` keeps the box adaptive, and the visible bar gives the
+        // affordance the bare `overflow_y_scroll` lacked. Deliberately NOT
+        // gpui-component's `overflow_y_scrollbar` — nesting it inside the
+        // dialog body's own scroller is the double-scroller shape form.rs
+        // warns against, and `Scrollable + max_h` clips instead of scrolling.
         let mut list = v_flex()
             .id("export-servers-list")
             .w_full()
             .gap_1()
             .max_h(px(280.))
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .track_scroll(&self.list_scroll);
         for server in &self.servers {
             let id = server.id.clone();
             let checked = self.selected.contains(&id);
@@ -190,7 +203,16 @@ impl Render for ZedisExportServersDialog {
                         .text_color(warning_color),
                 )
             })
-            .child(list)
+            .child(
+                div().relative().w_full().child(list).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .child(Scrollbar::vertical(&self.list_scroll).scrollbar_show(ScrollbarShow::Always)),
+                ),
+            )
             .child(
                 Label::new(SharedString::from(format!("{selected_count} / {total}")))
                     .text_xs()

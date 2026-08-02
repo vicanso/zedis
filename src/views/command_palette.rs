@@ -272,29 +272,50 @@ impl ZedisCommandPalette {
                 // `needs_server` gate.
                 let conn = current_route.server();
                 let view_route = |view: ServerView| conn.clone().map(|(id, db)| Route::Server { id, db, view });
-                // (i18n key, target) — order defines empty-query display order.
-                let commands: [(&str, Option<Route>); 16] = [
-                    ("cmd_home", Some(Route::Home)),
-                    ("cmd_editor", view_route(ServerView::Editor)),
-                    ("cmd_metrics", view_route(ServerView::Metrics)),
-                    ("cmd_performance", view_route(ServerView::Slowlog)),
-                    ("cmd_memory", view_route(ServerView::MemoryAnalysis)),
-                    ("cmd_clients", view_route(ServerView::Clients)),
-                    ("cmd_monitor", view_route(ServerView::Monitor)),
-                    ("cmd_persistence", view_route(ServerView::Persistence)),
+                // Same capability gates as the status-bar Tools menu — the
+                // menu shows those entries disabled with a reason; a palette
+                // row can't carry that affordance, so gated tools are hidden
+                // outright instead of failing after navigation.
+                let (supports_search, supports_acl, supports_functions, supports_topology) = {
+                    let state = self.server_state.read(cx);
+                    (
+                        state.supports_search(),
+                        state.supports_acl(),
+                        state.supports_functions(),
+                        state.supports_topology(),
+                    )
+                };
+                // (i18n key, target, available) — order defines empty-query
+                // display order.
+                let commands: [(&str, Option<Route>, bool); 19] = [
+                    ("cmd_home", Some(Route::Home), true),
+                    ("cmd_editor", view_route(ServerView::Editor), true),
+                    ("cmd_metrics", view_route(ServerView::Metrics), true),
+                    ("cmd_performance", view_route(ServerView::Slowlog), true),
+                    ("cmd_memory", view_route(ServerView::MemoryAnalysis), true),
+                    ("cmd_clients", view_route(ServerView::Clients), true),
+                    ("cmd_monitor", view_route(ServerView::Monitor), true),
+                    ("cmd_server_load", view_route(ServerView::ServerLoad), true),
+                    ("cmd_persistence", view_route(ServerView::Persistence), true),
                     (
                         "cmd_keyspace_notifications",
                         view_route(ServerView::KeyspaceNotifications),
+                        true,
                     ),
-                    ("cmd_server_info", view_route(ServerView::ServerInfo)),
-                    ("cmd_config", view_route(ServerView::Config)),
-                    ("cmd_acl", view_route(ServerView::Acl)),
-                    ("cmd_search", view_route(ServerView::Search)),
-                    ("cmd_functions", view_route(ServerView::Functions)),
-                    ("cmd_lua_scripts", view_route(ServerView::LuaScripts)),
-                    ("cmd_settings", Some(Route::Settings)),
+                    ("cmd_server_info", view_route(ServerView::ServerInfo), true),
+                    ("cmd_topology", view_route(ServerView::Topology), supports_topology),
+                    ("cmd_config", view_route(ServerView::Config), true),
+                    ("cmd_acl", view_route(ServerView::Acl), supports_acl),
+                    ("cmd_value_search", view_route(ServerView::ValueSearch), true),
+                    ("cmd_search", view_route(ServerView::Search), supports_search),
+                    ("cmd_functions", view_route(ServerView::Functions), supports_functions),
+                    ("cmd_lua_scripts", view_route(ServerView::LuaScripts), true),
+                    ("cmd_settings", Some(Route::Settings), true),
                 ];
-                for (key, route) in commands {
+                for (key, route, available) in commands {
+                    if !available {
+                        continue;
+                    }
                     let Some(route) = route else { continue };
                     // Don't offer to navigate to the page we're already on.
                     if route == current_route {

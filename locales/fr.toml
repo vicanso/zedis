@@ -368,6 +368,7 @@ export_key_tooltip = "Exporter cette clé"
 
 
 [status_bar]
+db_tooltip = "Changer de base — chaque ligne affiche son nombre de clés (via INFO keyspace ; somme sur tous les maîtres en multi-nœuds)"
 conn_connected = "Connecté"
 conn_reconnecting = "Reconnexion…"
 conn_offline = "Hors ligne"
@@ -1212,6 +1213,9 @@ no_connection = "Connectez-vous d’abord à un serveur"
 no_matches = "Aucune correspondance"
 
 [command_palette]
+cmd_server_load = "Aller aux statistiques de commandes"
+cmd_value_search = "Aller à la recherche par valeur"
+cmd_topology = "Aller à la topologie"
 keys_hint = "Seulement les clés chargées, pas tout le keyspace"
 search_placeholder = "Rechercher serveurs et clés"
 scope_commands = "Commandes"

@@ -848,11 +848,20 @@ impl ZedisStatusBar {
                         // `appearance(false)`: drop the bordered input chrome so it
                         // reads as plain "DB N ▾" text that inherits the muted
                         // status-bar color (matches the design), not a bright box.
+                        // The tooltip names what the per-row numbers are — the
+                        // dropdown shows bare counts with no unit, and on a
+                        // multi-master setup they are sums across nodes.
+                        let db_tooltip = i18n_status_bar(cx, "db_tooltip");
                         this.child(
-                            Select::new(&self.db_state)
-                                .small()
-                                .appearance(false)
-                                .menu_width(self.db_menu_width()),
+                            div()
+                                .id("zedis-status-bar-db-select")
+                                .tooltip(move |window, cx| Tooltip::new(db_tooltip.clone()).build(window, cx))
+                                .child(
+                                    Select::new(&self.db_state)
+                                        .small()
+                                        .appearance(false)
+                                        .menu_width(self.db_menu_width()),
+                                ),
                         )
                     })
                     .child(
