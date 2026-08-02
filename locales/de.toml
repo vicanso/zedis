@@ -368,6 +368,8 @@ export_key_tooltip = "Diesen Key exportieren"
 
 
 [status_bar]
+replica_badge = "Replikat"
+replica_badge_tooltip = "Mit einem Replikat verbunden (role: slave) — Schreibbefehle werden mit READONLY abgelehnt"
 db_tooltip = "Datenbank wechseln — jede Zeile zeigt ihre Schlüsselanzahl (aus INFO keyspace; bei Multi-Node-Setups über alle Master summiert)"
 conn_connected = "Verbunden"
 conn_reconnecting = "Verbindung wird wiederhergestellt…"

@@ -367,6 +367,8 @@ export_folder_tooltip = "导出此文件夹"
 export_key_tooltip = "导出此键"
 
 [status_bar]
+replica_badge = "副本"
+replica_badge_tooltip = "当前连接的是副本（role: slave）——写命令会被 READONLY 拒绝"
 db_tooltip = "切换数据库 —— 每行显示该库的 key 数（来自 INFO keyspace；多节点部署下为所有 master 的汇总）"
 conn_connected = "已连接"
 conn_reconnecting = "重连中…"

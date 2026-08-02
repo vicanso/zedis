@@ -368,6 +368,8 @@ export_key_tooltip = "Экспортировать этот ключ"
 
 
 [status_bar]
+replica_badge = "Реплика"
+replica_badge_tooltip = "Подключение к реплике (role: slave) — команды записи отклоняются с ошибкой READONLY"
 db_tooltip = "Смена базы — в каждой строке её число ключей (из INFO keyspace; в многоузловых установках — сумма по всем мастерам)"
 conn_connected = "Подключено"
 conn_reconnecting = "Переподключение…"

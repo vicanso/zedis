@@ -368,6 +368,8 @@ export_key_tooltip = "Export this key"
 
 
 [status_bar]
+replica_badge = "Replica"
+replica_badge_tooltip = "Connected to a replica (role: slave) — write commands are rejected with READONLY"
 db_tooltip = "Switch database — each row shows its key count (from INFO keyspace; summed across all masters on a multi-node setup)"
 conn_connected = "Connected"
 conn_reconnecting = "Reconnecting…"

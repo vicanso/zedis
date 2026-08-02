@@ -141,7 +141,29 @@ fn format_nodes_description(
     if description.topology.is_empty() {
         // Fallback for standalone or any client without grouped topology data.
         messages.push(format!("{master_nodes}: {}", description.master_nodes));
-        if !description.slave_nodes.is_empty() {
+        if !replicas.is_empty() {
+            // Plain (non-Sentinel) master-replica: node discovery only lists
+            // the configured node, but the heartbeat's `INFO replication`
+            // still reports the attached replicas — render them here with
+            // the same lag/state detail the topology branch shows, instead
+            // of silently dropping them.
+            let mut lines: Vec<String> = vec![format!("{slave_nodes}:")];
+            for lag in replicas {
+                let mut line = format!(
+                    "  ↳ {} replica  lag {} / {}s",
+                    lag.addr,
+                    format_lag_bytes(lag.lag_bytes),
+                    lag.lag_seconds
+                );
+                // Surface non-steady states (wait_bgsave / send_bulk / etc.).
+                if !lag.state.is_empty() && lag.state.as_ref() != "online" {
+                    line.push_str("  ");
+                    line.push_str(lag.state.as_ref());
+                }
+                lines.push(line);
+            }
+            messages.push(lines.join("\n"));
+        } else if !description.slave_nodes.is_empty() {
             messages.push(format!("{slave_nodes}: {}", description.slave_nodes));
         }
     } else {
@@ -228,6 +250,10 @@ struct StatusBarServerState {
     /// Mirrors `ZedisServerState::supports_topology()` — the Topology panel
     /// only has content for Cluster / Sentinel, so it's hidden on Standalone.
     supports_topology: bool,
+    /// True when `INFO` reports `role:slave` — the connection points at a
+    /// replica, so writes will bounce with `-READONLY`. Drives the quiet
+    /// "Replica" badge next to the environment tag.
+    is_replica: bool,
 }
 
 /// DB-dropdown row geometry, shared by the row renderer and the menu-width
@@ -536,7 +562,19 @@ impl ZedisStatusBar {
             last_connection_error: state.last_connection_error(),
             used_memory: used_memory.into(),
             clients: clients.into(),
-            nodes: format_nodes(state.nodes()),
+            nodes: {
+                // Node discovery only lists replicas for Cluster; on plain
+                // master-replica (and Sentinel) splice in the count the
+                // heartbeat's `INFO replication` reports, so the chip
+                // agrees with the tooltip's replica lines.
+                let (masters, discovered_replicas) = state.nodes();
+                let replica_count = if discovered_replicas == 0 {
+                    redis_info.replicas.len()
+                } else {
+                    discovered_replicas
+                };
+                format_nodes((masters, replica_count))
+            },
             scan_finished: state.scan_completed(),
             slow_log_tips,
             soft_wrap: state.soft_wrap(),
@@ -552,6 +590,7 @@ impl ZedisStatusBar {
             supports_acl,
             supports_functions,
             supports_topology,
+            is_replica: redis_info.meta.role == "slave",
         };
         // Per-db key counts for the DB dropdown (#116). Rebuild the select
         // items only on an actual change so the 2s heartbeat doesn't churn
@@ -811,6 +850,7 @@ impl ZedisStatusBar {
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
         let tag_text = server_state.tag.clone();
         let tag_chip = resolve_tag_chip(server_state.tag_color_key.as_deref(), cx.theme().is_dark());
+        let is_replica = server_state.is_replica;
         let supports_search = server_state.supports_search;
         let supports_acl = server_state.supports_acl;
         let supports_functions = server_state.supports_functions;
@@ -830,6 +870,26 @@ impl ZedisStatusBar {
                                 .rounded_sm()
                                 .bg(bg)
                                 .child(Label::new(tag_text).text_xs().text_color(fg)),
+                        )
+                    })
+                    // Quiet outline badge when the connection points at a
+                    // replica (`role:slave`) — without it the only signal is a
+                    // bare `-READONLY` error on the first write.
+                    .when(is_replica, |this| {
+                        let replica_tooltip = i18n_status_bar(cx, "replica_badge_tooltip");
+                        this.child(
+                            div()
+                                .id("zedis-status-bar-replica-badge")
+                                .px_1p5()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(cx.theme().warning)
+                                .tooltip(move |window, cx| Tooltip::new(replica_tooltip.clone()).build(window, cx))
+                                .child(
+                                    Label::new(i18n_status_bar(cx, "replica_badge"))
+                                        .text_xs()
+                                        .text_color(cx.theme().warning),
+                                ),
                         )
                     })
                     .child(

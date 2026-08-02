@@ -368,6 +368,8 @@ export_key_tooltip = "このキーをエクスポート"
 
 
 [status_bar]
+replica_badge = "レプリカ"
+replica_badge_tooltip = "レプリカに接続中（role: slave）— 書き込みコマンドは READONLY で拒否されます"
 db_tooltip = "データベースを切り替え — 各行にキー数を表示（INFO keyspace 由来。マルチノード構成では全マスターの合計）"
 conn_connected = "接続済み"
 conn_reconnecting = "再接続中…"
