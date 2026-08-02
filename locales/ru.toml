@@ -361,6 +361,7 @@ delete_folder_prompt = "Вы уверены, что хотите удалить 
 delete_keys_title = "Удалить ключи"
 delete_keys_prompt = "Вы уверены, что хотите удалить эти ключи: %{keys}?"
 pubsub_mode = "Режим Pubsub"
+more_tooltip = "Дополнительные действия"
 export_selected_tooltip = "Экспортировать %{count} выбранных ключей"
 export_folder_tooltip = "Экспортировать эту папку"
 export_key_tooltip = "Экспортировать этот ключ"
@@ -1208,6 +1209,7 @@ cmd_lua_scripts = "Перейти к Lua-скриптам"
 cmd_persistence = "Перейти к Persistence"
 cmd_keyspace_notifications = "Перейти к Keyspace Notifications"
 cmd_server_info = "Перейти к информации о сервере (INFO)"
+cmd_pubsub = "Открыть Pub/Sub"
 cmd_settings = "Открыть настройки"
 
 [persistence]

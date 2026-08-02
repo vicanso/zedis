@@ -62,6 +62,9 @@ enum PaletteCommand {
     /// to the global `ShortcutsAction` handler so the palette stays
     /// decoupled from the overlay entity.
     ShowShortcuts,
+    /// Switch the editor area into Pub/Sub (channel) mode on the active
+    /// connection — needs the ServerState entity, so handled like `Key`.
+    PubsubMode,
 }
 
 struct PaletteItem {
@@ -306,6 +309,17 @@ impl ZedisCommandPalette {
                         command: PaletteCommand::Route(route),
                     });
                 }
+                // Pub/Sub mode only makes sense against a connection.
+                if conn.is_some() {
+                    let label = i18n_command_palette(cx, "cmd_pubsub");
+                    items.push(PaletteItem {
+                        label: label.clone(),
+                        hint: gpui::SharedString::default(),
+                        search: label.to_string(),
+                        prescore: None,
+                        command: PaletteCommand::PubsubMode,
+                    });
+                }
                 let shortcuts_label = i18n_shortcuts(cx, "title");
                 items.push(PaletteItem {
                     label: shortcuts_label.clone(),
@@ -409,6 +423,15 @@ impl ZedisCommandPalette {
             self.close(cx);
             return;
         }
+        // Like `Key`: needs the per-connection ServerState entity.
+        if let PaletteCommand::PubsubMode = &command {
+            self.server_state.update(cx, |state, cx| state.change_channel_mode(cx));
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+            });
+            self.close(cx);
+            return;
+        }
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
                 PaletteCommand::Server(id) => {
@@ -429,6 +452,7 @@ impl ZedisCommandPalette {
                 // Handled above (early return); arms kept for exhaustiveness.
                 PaletteCommand::ShowShortcuts => {}
                 PaletteCommand::Key(_) => {}
+                PaletteCommand::PubsubMode => {}
             });
         });
         self.close(cx);

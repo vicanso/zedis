@@ -1410,6 +1410,17 @@ impl Render for Zedis {
                         open_migration_import_window(server_id.into(), server_name, db, cx);
                         return;
                     }
+                    // Pub/Sub lives inside the editor suite (channel mode),
+                    // not on a tool route — flip the mode, then land on the
+                    // editor view so the panel is visible.
+                    ServerToolsAction::PubsubMode => {
+                        let server_state = _this.active_content().read(cx).server_state();
+                        server_state.update(cx, |state, cx| state.change_channel_mode(cx));
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+                        });
+                        return;
+                    }
                     // Export every key loaded in the active tab's tree (a
                     // SCAN-limited subset, same coverage as the tree itself).
                     ServerToolsAction::ExportKeys => {

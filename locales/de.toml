@@ -361,6 +361,7 @@ delete_folder_prompt = "Möchten Sie diesen Ordner wirklich löschen: %{folder}?
 delete_keys_title = "Schlüssel löschen"
 delete_keys_prompt = "Möchten Sie diese Schlüssel wirklich löschen: %{keys}?"
 pubsub_mode = "Pubsub-Modus"
+more_tooltip = "Weitere Aktionen"
 export_selected_tooltip = "%{count} ausgewählte Keys exportieren"
 export_folder_tooltip = "Diesen Ordner exportieren"
 export_key_tooltip = "Diesen Key exportieren"
@@ -1208,6 +1209,7 @@ cmd_lua_scripts = "Zu Lua-Skripten"
 cmd_persistence = "Zu Persistenz"
 cmd_keyspace_notifications = "Zu Keyspace-Benachrichtigungen"
 cmd_server_info = "Zu Serverinfo (INFO)"
+cmd_pubsub = "Pub/Sub öffnen"
 cmd_settings = "Einstellungen öffnen"
 
 [persistence]

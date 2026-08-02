@@ -20,7 +20,7 @@ use crate::{
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
-        i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash,
+        i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash,
         i18n_value_search, save_session_option,
     },
 };
@@ -627,6 +627,14 @@ impl ZedisStatusBar {
                 Icon::new(CustomIconName::AudioWaveform),
                 Box::new(ServerToolsAction::KeyspaceNotifications),
                 move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
+            )
+            // Pub/Sub (channel mode in the editor suite) — mirrored here so
+            // the connection-level messaging tool is findable next to its
+            // observability siblings, not only in the key tree's menu.
+            .menu_element_with_icon(
+                Icon::new(CustomIconName::Rss),
+                Box::new(ServerToolsAction::PubsubMode),
+                move |_window, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
             )
             // Raw INFO browser — plain `INFO` works on every Redis, no gate.
             .menu_element_with_icon(

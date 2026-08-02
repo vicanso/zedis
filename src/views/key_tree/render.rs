@@ -490,6 +490,7 @@ impl ZedisKeyTree {
         let more_dropdown = Button::new("key-tree-more-dropdown")
             .outline()
             .icon(Icon::new(IconName::Ellipsis))
+            .tooltip(i18n_key_tree(cx, "more_tooltip"))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
                 menu.menu_element_with_icon(
                     Icon::new(CustomIconName::RotateCw),

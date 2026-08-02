@@ -361,6 +361,7 @@ delete_folder_prompt = "¿Está seguro de que desea eliminar esta carpeta: %{fol
 delete_keys_title = "Eliminar claves"
 delete_keys_prompt = "¿Está seguro de que desea eliminar estas claves: %{keys}?"
 pubsub_mode = "Modo Pubsub"
+more_tooltip = "Más acciones"
 export_selected_tooltip = "Exportar %{count} claves seleccionadas"
 export_folder_tooltip = "Exportar esta carpeta"
 export_key_tooltip = "Exportar esta clave"
@@ -1208,6 +1209,7 @@ cmd_lua_scripts = "Ir a Scripts Lua"
 cmd_persistence = "Ir a Persistencia"
 cmd_keyspace_notifications = "Ir a Notificaciones de Keyspace"
 cmd_server_info = "Ir a Información del servidor (INFO)"
+cmd_pubsub = "Abrir Pub/Sub"
 cmd_settings = "Abrir Ajustes"
 
 [persistence]
