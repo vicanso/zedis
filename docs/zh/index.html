@@ -6,12 +6,12 @@
     <title>Zedis — 高速原生 Redis 客户端 / Redis Insight 替代品</title>
     <meta
       name="description"
-      content="打得开百万级 key 的库而不卡死的原生 Redis 客户端。自动解码 JSON、Protobuf 与压缩值，支持集群，并能一次粘贴导入你的 Redis Insight 连接。"
+      content="打得开百万级 key 的库而不卡死的原生 Redis 客户端。自动解码 JSON、Protobuf 与压缩值；集群工具、离线 RDB 分析、原始 INFO、终端 AI 助手；支持从 Redis Insight / ARDM / Tiny RDM 一次导入连接。"
     />
     <meta property="og:title" content="Zedis — 高速原生 Redis 客户端" />
     <meta
       property="og:description"
-      content="打开百万级 key 的库不卡死。智能解码 value、集群友好、一次粘贴导入 Redis Insight 连接。原生 GPU 加速，无遥测。"
+      content="百万级 key 不卡死。智能解码、集群、离线 RDB、AI 命令助手；一次粘贴导入 Redis Insight / ARDM / Tiny RDM。原生 GPU 加速，无遥测。"
     />
     <meta property="og:type" content="website" />
     <meta
@@ -114,8 +114,8 @@
       <section class="migrate">
         <div class="wrap">
           <p class="migrate-banner">
-            <strong>🔄 已经在用 Redis Insight?</strong>
-            粘贴它导出的数据库配置，所有连接一次迁入 —— 不用一个个重填地址和密码。
+            <strong>🔄 已经在用 Redis Insight、ARDM 或 Tiny RDM？</strong>
+            粘贴数据库导出（或 Tiny RDM 的 <code>connections.yaml</code>），连接一次迁入 —— 地址、TLS、SSH、分组一并映射。密钥随后进入 Zedis 的按机器加密存储。
           </p>
         </div>
       </section>
@@ -141,7 +141,7 @@
             </div>
             <div class="why-card">
               <h3>为重度用户而生</h3>
-              <p>⌘K 命令面板、⌘P 最近键、带补全的 redis-cli、Batch 模式、跨服复制与对比。</p>
+              <p>⌘K 命令面板、⌘P 最近键、带补全的 redis-cli 与 <code>?</code> AI 命令助手、Batch 模式、跨服复制与对比。</p>
             </div>
           </div>
         </div>
@@ -165,22 +165,22 @@
             <article class="card">
               <div class="icon">🗂️</div>
               <h3>类型 &amp; 模块</h3>
-              <p>位图、HLL、向量集 (KNN)、地理、概率结构、时间序列、Stream 实时跟踪、Pub/Sub、RediSearch、Functions。</p>
+              <p>位图、HLL、向量集 (KNN)、地理、概率结构、时间序列、Stream 实时跟踪、Pub/Sub（含分片）、RediSearch、Functions。</p>
             </article>
             <article class="card">
               <div class="icon">📊</div>
               <h3>可观测</h3>
-              <p>实时指标 + 7 天历史、内存分析 + AI 建议、慢日志 ↔ Latency、MONITOR、按值搜索。</p>
+              <p>实时指标 + 7 天历史、内存分析（在线扫描或离线 RDB）+ AI 建议、慢日志 ↔ Latency、MONITOR、原始 INFO、按值搜索。</p>
             </article>
             <article class="card">
               <div class="icon">🔐</div>
               <h3>隐私优先</h3>
-              <p>标签与备注仅存本地。TLS/SSH、ACL、分阶段连接诊断。无账号、无遥测。</p>
+              <p>标签与备注仅存本地。TLS/SSH、ACL、分阶段诊断、按机器加密密钥。无账号、无遥测。</p>
             </article>
             <article class="card">
               <div class="icon">⌨️</div>
               <h3>键盘优先</h3>
-              <p>命令面板、最近打开的键、快捷键速查、Lua 脚本库、应用内更新检查。</p>
+              <p>⌘K 面板、⌘P 最近键、⌘⇧F 多库搜索、redis-cli + <code>?</code> AI 助手、Batch 模式、Lua 脚本库。</p>
             </article>
           </div>
         </div>
@@ -202,23 +202,23 @@
               </tr>
               <tr>
                 <th>🗂️ 类型 &amp; 模块</th>
-                <td>位图 · HLL · 向量 · 地理 · 概率型 · 时间序列 · Streams · Pub/Sub · Search · Functions</td>
+                <td>位图 · HLL · 向量 · 地理 · 概率型 · 时间序列 · Streams · Pub/Sub（分片）· Search · Functions</td>
               </tr>
               <tr>
                 <th>📊 可观测</th>
-                <td>指标历史 · 内存分析 · 慢日志 · MONITOR · 集群 · 持久化 · 键事件</td>
+                <td>指标历史 · 内存（在线 / 离线 RDB）· 慢日志 · MONITOR · 原始 INFO · 集群 · 持久化 · 键事件</td>
               </tr>
               <tr>
                 <th>🔑 Keys &amp; 数据</th>
-                <td>命名空间树 · 标签/备注 · 批量 · 回收站 · 导入导出 · 跨服复制与对比</td>
+                <td>命名空间树 · 标签/备注 · 批量导出（Tools、前缀过滤、二进制 / JSON / CSV）· 回收站 · 跨服复制与对比</td>
               </tr>
               <tr>
                 <th>🔐 安全</th>
-                <td>环境标签 · 只读 · ACL · TLS/SSH · 诊断 · 密钥加密</td>
+                <td>环境标签 · 只读 · ACL · TLS/SSH · 诊断 · 密钥加密 · 导入 Insight / ARDM / Tiny RDM</td>
               </tr>
               <tr>
                 <th>⌨️ 效率</th>
-                <td>⌘K · ⌘P · CLI · Batch · Lua 库 · 更新 · 日志</td>
+                <td>⌘K · ⌘P · ⌘⇧F · CLI + <code>?</code> AI · Batch · Lua 库 · 更新 · 日志</td>
               </tr>
             </tbody>
           </table>

@@ -72,7 +72,7 @@ Browse entries, **live-tail** new messages (`XREAD BLOCK`, ring-buffered), inspe
 ### Pub/Sub
 **Subscribe to channels and publish messages, with a live message log.**
 
-Pattern-based subscriptions (`PSUBSCRIBE`), a `PUBLISH` composer, and incoming messages streamed into a ring-buffered `(time, channel, message)` table — Redis's other messaging primitive alongside Streams. A **Sharded** toggle (Redis 7+) switches to `SSUBSCRIBE` / `SPUBLISH` — on clusters messages are routed by the channel's hash slot instead of broadcast to every node, over a dedicated RESP3 push connection that survives failovers.
+Open it from the status-bar **Tools** menu or the **⌘K** command palette (same entry as the other server tools). Pattern-based subscriptions (`PSUBSCRIBE`), a `PUBLISH` composer, and incoming messages streamed into a ring-buffered `(time, channel, message)` table — Redis's other messaging primitive alongside Streams. A **Sharded** toggle (Redis 7+) switches to `SSUBSCRIBE` / `SPUBLISH` — on clusters messages are routed by the channel's hash slot instead of broadcast to every node, over a dedicated RESP3 push connection that survives failovers.
 
 ---
 
@@ -139,7 +139,7 @@ Atomic **rename** (`RENAMENX`, overwrite-guarded), per-field **Hash TTL** (`HEXP
 ### Bulk Key Operations
 **Multi-select delete, batch TTL, DUMP/RESTORE import/export, auto-refresh.**
 
-Multi-select to delete dozens of keys at once; set / remove TTL across a whole selection or prefix (cluster-safe, PROD-escalated); export any selection to a framed binary file (magic header + CRC32) and restore on another instance — or as **readable JSON / CSV** (full values, TTLs; for people and downstream tools rather than re-import); and auto-refresh the tree for fast-changing instances.
+Multi-select to delete dozens of keys at once; set / remove TTL across a whole selection or prefix (cluster-safe, PROD-escalated). **Export** is available from the tree selection *or* the status-bar **Tools → Export loaded keys…** entry (current SCAN subset for this connection/db — not a keys-only name list). The export window picks **binary DUMP** (re-importable elsewhere) or **readable JSON / CSV** (full values + TTLs for people and downstream tools, not for re-import), and an optional **key-prefix filter** with a live matched/total count narrows the job before it starts. Imports restore from the framed binary bundle. Auto-refresh keeps the tree current on fast-changing instances.
 
 ### Cross-Server Tools
 **Copy or diff a key, or diff full configs, between two servers.**
@@ -158,7 +158,7 @@ Tags, notes, favorites and search history live in a **local redb file** — zero
 ### Connection Safety
 **Environment tags + confirm dialogs that escalate on production.**
 
-Tag each server with a preset environment — **Dev / UAT / Prod** — shown as a colored chip in the sidebar and status bar; the title bar also shows the active **db** and a quiet **Prod** badge when the connection is high-risk. Lock any connection **read-only**. Destructive actions (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`, key/server delete, `XGROUP DESTROY`, cluster ops...) are intercepted with a confirm dialog that escalates its wording on a **Prod** server.
+Tag each server with a preset environment — **Dev / UAT / Prod** — shown as a colored chip in the sidebar and status bar; the title bar also shows the active **db** and a quiet **Prod** badge when the connection is high-risk. The status-bar **DB dropdown** lists each database with its **key count** (from `INFO keyspace`) so you can pick a non-empty db at a glance. Lock any connection **read-only**. Destructive actions (`FLUSHALL`, `CONFIG SET`, `SHUTDOWN`, `KEYS *`, batch `DEL`, key/server delete, `XGROUP DESTROY`, cluster ops...) are intercepted with a confirm dialog that escalates its wording on a **Prod** server.
 
 ### ACL Management (Redis 6+)
 **GUI for the full ACL lifecycle.**

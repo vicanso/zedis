@@ -72,7 +72,7 @@ Zedis 自动检测（`ViewerMode::Auto`）并实时格式化你的数据。本�
 ### Pub/Sub
 **订阅频道、发布消息，带实时消息日志。**
 
-模式订阅（`PSUBSCRIBE`）、`PUBLISH` 消息编辑器，收到的消息流入环形缓冲的 `(time, channel, message)` 表格——Redis 中与 Streams 并列的另一种消息机制。**分片**开关（Redis 7+）切换为 `SSUBSCRIBE` / `SPUBLISH`——集群模式下消息按频道哈希槽路由而非广播到所有节点，走独立的 RESP3 推送连接，故障转移后自动重新订阅。
+从状态栏 **Tools 菜单** 或 **⌘K 命令面板** 打开（与其它服务器工具同一入口）。模式订阅（`PSUBSCRIBE`）、`PUBLISH` 消息编辑器，收到的消息流入环形缓冲的 `(time, channel, message)` 表格——Redis 中与 Streams 并列的另一种消息机制。**分片**开关（Redis 7+）切换为 `SSUBSCRIBE` / `SPUBLISH`——集群模式下消息按频道哈希槽路由而非广播到所有节点，走独立的 RESP3 推送连接，故障转移后自动重新订阅。
 
 ---
 
@@ -139,7 +139,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 批量 Key 操作
 **多选删除、批量 TTL、DUMP/RESTORE 导入导出、自动刷新。**
 
-多选一次删除大量键；对整批选择或前缀设置 / 移除 TTL（集群安全、PROD 升级）；把任意选择导出为带 magic header + CRC32 的 framed 二进制文件并在他处 restore——或导出为**可读的 JSON / CSV**（完整值 + TTL，供人查看与下游工具使用，不可再导入）；并为高频变更实例自动刷新树视图。
+多选一次删除大量键；对整批选择或前缀设置 / 移除 TTL（集群安全、PROD 升级）。**导出**可从键树多选进入，也可从状态栏 **Tools → 导出已加载 keys…** 进入（当前连接/db 的 SCAN 子集——不是「仅 key 名」的 CSV 列表）。导出窗口可选 **二进制 DUMP**（可在别处 restore）或**可读 JSON / CSV**（完整值 + TTL，给人与下游工具用，不可再导入），并支持可选的 **key 前缀过滤**，匹配数 / 总数实时显示。导入从 framed 二进制包 restore。高频变更实例可自动刷新树视图。
 
 ### 跨服务器工具
 **在两台服务器间复制 / 对比 key、或对比完整配置。**
@@ -158,7 +158,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 连接安全
 **环境标签 + 对生产升级措辞的确认对话框。**
 
-为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏；标题栏同时显示当前 **db**，高风险连接时附轻量 **Prod** 徽章。并可把任意连接锁为**只读**。破坏性操作（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。
+为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏；标题栏同时显示当前 **db**，高风险连接时附轻量 **Prod** 徽章。状态栏 **DB 下拉** 会列出各库及其 **key 数量**（来自 `INFO keyspace`），便于一眼选到非空库。并可把任意连接锁为**只读**。破坏性操作（`FLUSHALL`、`CONFIG SET`、`SHUTDOWN`、`KEYS *`、批量 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。
 
 ### ACL 用户管理（Redis 6+）
 **覆盖完整 ACL 生命周期的 GUI。**

@@ -6,12 +6,12 @@
     <title>Zedis — Fast native Redis GUI &amp; Redis Insight alternative</title>
     <meta
       name="description"
-      content="A native Redis GUI that opens million-key databases without freezing. Auto-decodes JSON, Protobuf and compressed values, handles clusters, and imports your Redis Insight connections in one paste."
+      content="A native Redis GUI that opens million-key databases without freezing. Auto-decodes JSON, Protobuf and compressed values; cluster tools, offline RDB analysis, raw INFO, AI CLI help; import from Redis Insight, ARDM, or Tiny RDM."
     />
     <meta property="og:title" content="Zedis — Fast native Redis GUI" />
     <meta
       property="og:description"
-      content="Opens million-key Redis databases without freezing. Smart value decoding, cluster-aware, and one-paste Redis Insight import. Native, GPU-accelerated, no telemetry."
+      content="Million-key Redis without freezes. Smart decoding, clusters, offline RDB, AI command help, and one-paste import from Redis Insight / ARDM / Tiny RDM. Native, GPU-accelerated, no telemetry."
     />
     <meta property="og:type" content="website" />
     <meta
@@ -129,8 +129,8 @@
       <section class="migrate">
         <div class="wrap">
           <p class="migrate-banner">
-            <strong>🔄 Already on Redis Insight?</strong>
-            Paste its database export and every connection migrates in at once — no re-entering hosts and passwords one by one.
+            <strong>🔄 Already on Redis Insight, ARDM, or Tiny RDM?</strong>
+            Paste a database export (or Tiny RDM’s <code>connections.yaml</code>) and every connection lands at once — hosts, TLS, SSH, and groups mapped over. Secrets then live in Zedis’s per-machine encrypted store.
           </p>
         </div>
       </section>
@@ -156,7 +156,7 @@
             </div>
             <div class="why-card">
               <h3>Built for power users</h3>
-              <p>⌘K palette, ⌘P recent keys, redis-cli with completion, batch mode, cross-server copy/diff.</p>
+              <p>⌘K palette, ⌘P recent keys, redis-cli with completion and <code>?</code> AI command help, batch mode, cross-server copy/diff.</p>
             </div>
           </div>
         </div>
@@ -180,22 +180,22 @@
             <article class="card">
               <div class="icon">🗂️</div>
               <h3>Types &amp; modules</h3>
-              <p>Bitmap, HLL, Vector Set (KNN), Geo, Bloom, Time Series, Streams live-tail, Pub/Sub, RediSearch, Functions.</p>
+              <p>Bitmap, HLL, Vector Set (KNN), Geo, Bloom, Time Series, Streams live-tail, Pub/Sub (incl. sharded), RediSearch, Functions.</p>
             </article>
             <article class="card">
               <div class="icon">📊</div>
               <h3>Observability</h3>
-              <p>Live metrics + 7-day history, memory analyzer + AI tips, Slow Log ↔ Latency, MONITOR, value search.</p>
+              <p>Live metrics + 7-day history, memory analyzer (live scan or offline RDB) + AI tips, Slow Log ↔ Latency, MONITOR, raw INFO, value search.</p>
             </article>
             <article class="card">
               <div class="icon">🔐</div>
               <h3>Privacy-first</h3>
-              <p>Tags and notes stay local. TLS/SSH, ACL editor, staged connection diagnostics. No accounts, no telemetry.</p>
+              <p>Tags and notes stay local. TLS/SSH, ACL, staged diagnostics, per-machine encrypted secrets. No accounts, no telemetry.</p>
             </article>
             <article class="card">
               <div class="icon">⌨️</div>
               <h3>Keyboard-first</h3>
-              <p>Command palette, recent keys (⌘P), shortcuts overlay, Lua script library, in-app update check.</p>
+              <p>⌘K palette, ⌘P recent keys, ⌘⇧F multi-db search, redis-cli + <code>?</code> AI assistant, batch mode, Lua library.</p>
             </article>
           </div>
         </div>
@@ -217,23 +217,23 @@
               </tr>
               <tr>
                 <th>🗂️ Types &amp; modules</th>
-                <td>Bitmap · HLL · Vector · Geo · probabilistic · Time Series · Streams · Pub/Sub · Search · Functions</td>
+                <td>Bitmap · HLL · Vector · Geo · probabilistic · Time Series · Streams · Pub/Sub (sharded) · Search · Functions</td>
               </tr>
               <tr>
                 <th>📊 Observability</th>
-                <td>Metrics history · memory analyzer · Slowlog · MONITOR · cluster · persistence · keyspace events</td>
+                <td>Metrics history · memory (live / offline RDB) · Slowlog · MONITOR · raw INFO · cluster · persistence · keyspace events</td>
               </tr>
               <tr>
                 <th>🔑 Keys &amp; data</th>
-                <td>Namespace tree · tags/notes · bulk ops · recycle bin · import/export · cross-server copy &amp; diff</td>
+                <td>Namespace tree · tags/notes · bulk export (Tools, prefix filter, binary / JSON / CSV) · recycle bin · cross-server copy &amp; diff</td>
               </tr>
               <tr>
                 <th>🔐 Security</th>
-                <td>Env tags · read-only · ACL · TLS/SSH · diagnostics · encrypted secrets</td>
+                <td>Env tags · read-only · ACL · TLS/SSH · diagnostics · encrypted secrets · import Insight / ARDM / Tiny RDM</td>
               </tr>
               <tr>
                 <th>⌨️ Productivity</th>
-                <td>⌘K · ⌘P · CLI · batch · Lua library · updates · logs</td>
+                <td>⌘K · ⌘P · ⌘⇧F · CLI + <code>?</code> AI · batch · Lua library · updates · logs</td>
               </tr>
             </tbody>
           </table>
