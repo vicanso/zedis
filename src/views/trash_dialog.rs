@@ -20,6 +20,7 @@
 //! TTL the key had when it was deleted; a key that meanwhile exists again
 //! on the server fails with a BUSYKEY-specific message.
 
+use crate::assets::CustomIconName;
 use crate::connection::get_connection_manager;
 use crate::db::{TRASH_RETENTION_MS, TrashMeta, get_trash_entry, list_trash_meta, purge_trash, remove_trash_entry};
 use crate::error::Error;
@@ -28,7 +29,7 @@ use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, i18n_comm
 use chrono::{Local, LocalResult, TimeZone};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable,
+    ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -338,6 +339,9 @@ impl Render for ZedisTrashDialog {
                             .xsmall()
                             .outline()
                             .label(i18n_trash(cx, "restore_all"))
+                            // Spinner replaces the icon — without one, loading
+                            // shows no feedback at all (see CLAUDE.md).
+                            .icon(Icon::new(CustomIconName::RotateCw))
                             .loading(self.restoring)
                             .disabled(self.restoring || entries.is_empty())
                             .on_click(cx.listener(|this, _, _window, cx| {

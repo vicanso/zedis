@@ -17,6 +17,7 @@
 /// Provides a UI for subscribing to Redis channels via pattern-based subscriptions
 /// and publishing messages. Received messages are displayed in a scrollable table
 /// with timestamp, channel, and message columns.
+use crate::assets::CustomIconName;
 use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
@@ -26,7 +27,7 @@ use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Windo
 use gpui_component::button::ButtonVariants;
 use gpui_component::notification::Notification;
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
     button::Button,
     checkbox::Checkbox,
     h_flex,
@@ -525,6 +526,8 @@ impl ZedisPubsubEditor {
         } else {
             Button::new("pubsub-subscribe-btn")
                 .outline()
+                // Spinner replaces the icon while loading (see CLAUDE.md).
+                .icon(Icon::new(CustomIconName::Rss))
                 .loading(self.subscribing)
                 .disabled(self.subscribing)
                 .label(i18n_pubsub_editor(cx, "subscribe"))

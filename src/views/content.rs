@@ -311,13 +311,27 @@ impl ZedisContent {
                     servers.focus_search(window, cx);
                 });
             }
-            _ if route.is_server() => {
-                if let Some(key_tree) = self.key_tree.clone() {
-                    key_tree.update(cx, |tree, cx| {
-                        tree.focus_search(window, cx);
-                    });
+            // Tool pages that own a search box get the action; the key tree
+            // only answers on the editor route, where it is actually on
+            // screen. Previously every server route fell through to the key
+            // tree, so ⌘F on a tool page focused a hidden input.
+            _ if route.is_server() => match route.server_view() {
+                Some(ServerView::ValueSearch) => {
+                    if let Some(view) = self.tool_views.get(&ServerView::ValueSearch).cloned()
+                        && let Ok(panel) = view.downcast::<ZedisValueSearch>()
+                    {
+                        panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+                    }
                 }
-            }
+                Some(ServerView::Editor) => {
+                    if let Some(key_tree) = self.key_tree.clone() {
+                        key_tree.update(cx, |tree, cx| {
+                            tree.focus_search(window, cx);
+                        });
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

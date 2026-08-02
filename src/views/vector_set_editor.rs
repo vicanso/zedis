@@ -33,7 +33,7 @@ use crate::{
 };
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -213,6 +213,9 @@ impl ZedisVectorSetEditor {
                     .label(i18n_vector_set(cx, "search"))
                     .small()
                     .primary()
+                    // `.loading()` renders its spinner in place of the icon, so a
+                    // label-only button would just grey out (see CLAUDE.md).
+                    .icon(Icon::new(IconName::Search))
                     .loading(self.searching)
                     .on_click(cx.listener(|this, _, _window, cx| {
                         let element = this.query_input.read(cx).value().to_string();

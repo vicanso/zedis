@@ -586,6 +586,7 @@ pub(super) fn append_load_more_rows(
     items: Vec<KeyTreeItem>,
     incomplete: &AHashSet<SharedString>,
     label: &SharedString,
+    separator: &str,
 ) -> Vec<KeyTreeItem> {
     if incomplete.is_empty() {
         return items;
@@ -598,7 +599,7 @@ pub(super) fn append_load_more_rows(
         if !(item.is_folder && item.expanded) {
             continue;
         }
-        let prefix = SharedString::from(format!("{}:", item.id));
+        let prefix = SharedString::from(format!("{}{separator}", item.id));
         if !incomplete.contains(&prefix) {
             continue;
         }
@@ -950,7 +951,7 @@ mod load_more_tests {
         let items = vec![folder("bench", "bench", 0), rank, leaf("bench:rank:1", 2)];
         let incomplete: AHashSet<SharedString> = ["bench:".into(), "bench:rank:".into()].into_iter().collect();
         let label = SharedString::from("Load more");
-        let out = append_load_more_rows(items, &incomplete, &label);
+        let out = append_load_more_rows(items, &incomplete, &label, ":");
         let rows: Vec<_> = out.iter().filter(|i| i.load_more_prefix.is_some()).collect();
         assert_eq!(rows.len(), 2, "one row per incomplete expanded folder");
         assert_eq!(rows[0].load_more_prefix.as_deref(), Some("bench:rank:"));

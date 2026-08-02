@@ -146,6 +146,15 @@ pub struct ZedisValueSearch {
 }
 
 impl ZedisValueSearch {
+    /// Focus this panel's primary search box (⌘F). The key tree — which
+    /// normally answers ⌘F on server routes — is not rendered on this
+    /// route, so without this the shortcut would target an off-screen
+    /// input and appear to do nothing.
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.query_input.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefix_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_value_search(cx, "prefix_placeholder")));

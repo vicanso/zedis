@@ -685,13 +685,13 @@ impl ZedisKeyTree {
                     if !scanning_prefixes.is_empty() {
                         for item in items.iter_mut() {
                             if item.is_folder
-                                && scanning_prefixes.contains(&SharedString::from(format!("{}:", item.id)))
+                                && scanning_prefixes.contains(&SharedString::from(format!("{}{separator}", item.id)))
                             {
                                 item.is_scanning = true;
                             }
                         }
                     }
-                    let mut items = append_load_more_rows(items, &incomplete_prefixes, &load_more_label);
+                    let mut items = append_load_more_rows(items, &incomplete_prefixes, &load_more_label, &separator);
                     fill_parent_indices(&mut items);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
                     items
@@ -789,10 +789,11 @@ impl ZedisKeyTree {
     }
 
     fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let separator = self.server_state.read(cx).key_separator().to_string();
         let prefix: Option<SharedString> = if let Some(key) = self.server_state.read(cx).key()
-            && let Some((prefix, _)) = key.rsplit_once(":")
+            && let Some((prefix, _)) = key.rsplit_once(&separator)
         {
-            Some(format!("{prefix}:").into())
+            Some(format!("{prefix}{separator}").into())
         } else {
             None
         };
@@ -1001,8 +1002,9 @@ impl ZedisKeyTree {
                 // Expand a collapsed folder: clear any suppression and load it.
                 self.state.expanded_items.insert(item_id.clone());
                 self.state.suppressed_auto_expand.remove(&item_id);
+                let separator = self.server_state.read(cx).key_separator().to_string();
                 self.server_state.update(cx, |state, cx| {
-                    state.scan_prefix(format!("{}:", item_id.as_str()).into(), cx);
+                    state.scan_prefix(format!("{}{separator}", item_id.as_str()).into(), cx);
                 });
             }
             self.update_key_tree(true, cx);
