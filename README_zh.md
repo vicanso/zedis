@@ -31,7 +31,7 @@
 - 🧠 **看得懂你的数据** —— 自动解压并解码 JSON/JSONPath、Protobuf、MessagePack、时间戳、图片与 Hex，并为每种 Redis 类型和模块提供专用查看器。
 - 📊 **实时可观测** —— 实时指标、带离线 + AI 建议的内存分析器、慢日志 ↔ Latency、`MONITOR`、按值搜索。
 - 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥用每机唯一密钥加密存储、破坏性操作对生产环境升级确认措辞。
-- 🌐 **连接一切** —— TLS/SSL、SSH 隧道（含带口令的加密密钥）、Cluster/Sentinel、Redis Insight 导入，以及 8 种界面语言。
+- 🌐 **连接一切** —— TLS/SSL、SSH 隧道（含带口令的加密密钥）、Cluster/Sentinel、从 Redis Insight / ARDM / Tiny RDM 导入，以及 8 种界面语言。
 - ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli + AI 命令助手、Batch 模式、跨服务器复制/对比。
 
 > ### 🔄 已经在用 Redis Insight?

@@ -1091,7 +1091,7 @@ impl Render for ImportServersBody {
             .w_full()
             // Drop a file onto the dialog to load it — dropping carries
             // the full path (unlike a copy-paste, which is often just
-            // the filename). Reuses the .json / size-cap read.
+            // the filename). Reuses the extension-allowlist / size-cap read.
             .on_drop::<ExternalPaths>(move |dropped, window, cx| {
                 let Some(path) = dropped.paths().first() else {
                     return;
@@ -1102,9 +1102,10 @@ impl Render for ImportServersBody {
                     Ok(content) if content != path_str => {
                         drop_state.update(cx, |s, cx| s.set_value(SharedString::from(content), window, cx));
                     }
-                    // Dropped a non-.json file — only JSON exports are read.
+                    // Dropped a file with an unsupported extension.
                     Ok(_) => {
-                        window.push_notification(Notification::warning(i18n_servers(cx, "import_drop_only_json")), cx);
+                        window
+                            .push_notification(Notification::warning(i18n_servers(cx, "import_drop_unsupported")), cx);
                     }
                     Err(e) => {
                         window.push_notification(
@@ -1149,18 +1150,25 @@ enum FileImportError {
 /// the size cap, read and return its contents; otherwise return `raw` unchanged
 /// so it is parsed as literal JSON / URI. Multi-line, empty, or non-`.json`
 /// input never touches the filesystem, so normal pasted JSON costs nothing.
+/// File extensions the import dialog will read from a dropped file or a
+/// pasted path — one per supported client export.
+const IMPORT_FILE_EXTENSIONS: [&str; 4] = ["json", "ano", "yaml", "yml"];
+
 fn resolve_import_input(raw: &str) -> Result<String, FileImportError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.contains('\n') {
         return Ok(raw.to_string());
     }
-    // Only a path ending in `.json` triggers a read — Redis Insight and Zedis
-    // exports are JSON, and this keeps any other single-line input (URIs,
-    // hand-typed JSON, an unrelated existing file) from being slurped.
-    let is_json_path = std::path::Path::new(trimmed)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
-    if !is_json_path {
+    // Only a path with a known export extension triggers a read: `.json`
+    // (Zedis / Redis Insight), `.ano` (Another Redis Desktop Manager) and
+    // `.yaml` / `.yml` (Tiny RDM's connections.yaml). Anything else —
+    // URIs, hand-typed JSON, an unrelated existing file — stays literal.
+    let is_import_path = std::path::Path::new(trimmed).extension().is_some_and(|ext| {
+        IMPORT_FILE_EXTENSIONS
+            .iter()
+            .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+    });
+    if !is_import_path {
         return Ok(raw.to_string());
     }
     // Reuse the shared resolver: expands `~`/`~/` via get_home_dir and

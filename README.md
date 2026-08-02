@@ -31,7 +31,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 🧠 **Understands your data** — auto-decompresses and decodes JSON/JSONPath, Protobuf, MessagePack, timestamps, images and hex, with purpose-built viewers for every Redis type and module.
 - 📊 **Real-time observability** — live metrics, a memory analyzer with offline + AI recommendations, Slow Log ↔ Latency, `MONITOR`, and value search.
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
-- 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, Redis Insight import, and 8 UI languages.
+- 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, import from Redis Insight / ARDM / Tiny RDM, and 8 UI languages.
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion + AI command assistant, batch mode, and cross-server copy/diff.
 
 > ### 🔄 Already using Redis Insight?

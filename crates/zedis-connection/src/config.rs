@@ -457,6 +457,12 @@ impl RedisServer {
     /// fresh `id` (so importing twice never clobbers an existing entry),
     /// dropping the sender's `updated_at` / `sort_order`. Shared by the single
     /// JSON path and the multi-server array path.
+    /// Crate-visible alias so the other-client importers
+    /// (`import_clients.rs`) share the same validation + fresh-id step.
+    pub(crate) fn finalize_import(server: RedisServer) -> Result<Self, ImportError> {
+        Self::finalize_imported(server)
+    }
+
     fn finalize_imported(mut server: RedisServer) -> Result<Self, ImportError> {
         if server.name.trim().is_empty() {
             return Err(ImportError::MissingName);
@@ -541,7 +547,9 @@ impl RedisServer {
     /// 1. a Redis connection URI (`redis://` / `rediss://`) → one server,
     /// 2. a **Redis Insight** database export (a JSON array — or a single
     ///    object — carrying a `connectionType` field) → one server per entry,
-    /// 3. a Zedis export produced by [`Self::to_export_json`] → one server.
+    /// 3. an **ARDM** (`connections.ano`) or **Tiny RDM**
+    ///    (`connections.yaml`) export → one server per entry,
+    /// 4. a Zedis export produced by [`Self::to_export_json`] → one server.
     ///
     /// Every returned server gets a fresh `id`, so importing twice never
     /// clobbers existing entries.
@@ -551,6 +559,16 @@ impl RedisServer {
         // `connectionType` marker); everything else — a Redis URI or a Zedis
         // export — is a single server handled by `from_import`.
         if let Some(servers) = Self::try_redis_insight_import(trimmed)? {
+            return Ok(servers);
+        }
+        // Other GUIs' exports: ARDM's base64 `connections.ano` and Tiny RDM's
+        // `connections.yaml`. Both are checked before the Zedis-JSON path —
+        // their markers (a `connections` array / a YAML sequence) are
+        // distinctive, so a Zedis export can't be mistaken for either.
+        if let Some(servers) = crate::import_clients::try_ardm_import(trimmed)? {
+            return Ok(servers);
+        }
+        if let Some(servers) = crate::import_clients::try_tinyrdm_import(trimmed)? {
             return Ok(servers);
         }
         // A Zedis export of multiple servers is a plain JSON array of server

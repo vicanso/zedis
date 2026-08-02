@@ -30,6 +30,7 @@ mod danger;
 mod diagnostics;
 mod dump_restore;
 mod functions;
+mod import_clients;
 mod latency;
 mod lua_script;
 mod manager;
