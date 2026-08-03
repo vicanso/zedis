@@ -305,3 +305,37 @@ LegalCopyright = "Copyright © 2026 Tree xie. All rights reserved."
 assets = ["assets/zedis.desktop", "assets/icon.png", "icons/zedis-icon.svg"]
 icon = "assets/icon.png"
 desktop_entry = "assets/zedis.desktop"
+
+# ── Linux native packages (built in publish.yml with `--no-build` right
+# after the release binary; cargo-deb 3.x / cargo-generate-rpm 0.21+) ──
+# Both install the same asset set as the AppImage: binary, desktop entry
+# (Icon=zedis must match the hicolor basenames below), PNG + scalable icon.
+[package.metadata.deb]
+name = "zedis"
+license-file = ["LICENSE", "0"]
+section = "database"
+priority = "optional"
+# Runtime deps resolved from the built binary via dpkg-shlibdeps.
+depends = "$auto"
+extended-description = """A native, GPU-accelerated Redis GUI client built in Rust with GPUI \
+(the Zed editor's UI framework). Browse millions of keys at 60+ FPS, with \
+typed value viewers, live observability panels, cluster tooling, TLS/SSH \
+connections, and eight interface languages."""
+assets = [
+    ["target/release/zedis", "usr/bin/", "755"],
+    ["assets/zedis.desktop", "usr/share/applications/zedis.desktop", "644"],
+    ["assets/icon.png", "usr/share/icons/hicolor/512x512/apps/zedis.png", "644"],
+    ["icons/zedis-icon.svg", "usr/share/icons/hicolor/scalable/apps/zedis.svg", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "zedis"
+# auto-req falls back to an ldd-based scan on the Ubuntu builders (no
+# /usr/lib/rpm/find-requires there), emitting soname requires that
+# Fedora/openSUSE resolve natively.
+assets = [
+    { source = "target/release/zedis", dest = "/usr/bin/zedis", mode = "755" },
+    { source = "assets/zedis.desktop", dest = "/usr/share/applications/zedis.desktop", mode = "644" },
+    { source = "assets/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/zedis.png", mode = "644" },
+    { source = "icons/zedis-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/zedis.svg", mode = "644" },
+]

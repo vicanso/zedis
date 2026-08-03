@@ -32,5 +32,31 @@ msrv:
 bloat:
 	cargo bloat --release --crates --bin zedis
 
+# Release version — read from Cargo.toml's [workspace.package], the single
+# source of truth every build derives from (crates, MSI, AppImage, deb/rpm).
+VERSION := $(shell sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+
+# Prepend the changelog for the upcoming tag and sync secondary release
+# metadata (flatpak metainfo <release> entry). Assumes Cargo.toml already
+# holds the release version — use version-{patch,minor,major} to bump and
+# sync in one step. The flatpak manifest's tag/commit pin +
+# cargo-sources.json are post-tag work — run scripts/submit-flathub.sh
+# after tagging.
 version:
-	git cliff --unreleased --tag v0.6.6 --prepend CHANGELOG.md
+	git cliff --unreleased --tag v$(VERSION) --prepend CHANGELOG.md
+	./scripts/sync-release-meta.sh v$(VERSION)
+
+# Bump Cargo.toml (+ Cargo.lock) then run `version` in a fresh make
+# invocation — VERSION is expanded at parse time, so the recursive $(MAKE)
+# is what picks up the just-bumped number.
+version-patch:
+	./scripts/bump-version.sh patch
+	$(MAKE) version
+
+version-minor:
+	./scripts/bump-version.sh minor
+	$(MAKE) version
+
+version-major:
+	./scripts/bump-version.sh major
+	$(MAKE) version

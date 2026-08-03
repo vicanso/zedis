@@ -36,10 +36,12 @@ echo "Pinned $MANIFEST to $TAG ($COMMIT)"
 # 2. Offline crate mirror from that tag's lockfile.
 ./scripts/gen-flatpak-sources.sh "$TAG"
 
-# 3. Assemble the submission files.
+# 3. Assemble the submission files. The metainfo travels with the manifest
+# (it is installed from a file source, not the tag's checkout) so release
+# entries can be bumped without a new upstream tag.
 OUT=target/flathub-submission
 rm -rf "$OUT" && mkdir -p "$OUT"
-cp "$MANIFEST" flatpak/cargo-sources.json "$OUT/"
+cp "$MANIFEST" flatpak/cargo-sources.json "flatpak/$APP_ID.metainfo.xml" "$OUT/"
 echo "Submission files ready in $OUT/"
 
 if [ "$SUBMIT" != "--submit" ]; then
@@ -64,7 +66,7 @@ git clone --quiet --depth=1 --branch new-pr https://github.com/flathub/flathub "
 cd "$WORK/flathub"
 git checkout -q -b "$BRANCH"
 cp "$REPO_ROOT/$OUT"/* .
-git add "$APP_ID.yml" cargo-sources.json
+git add "$APP_ID.yml" cargo-sources.json "$APP_ID.metainfo.xml"
 git commit -q -m "Add $APP_ID"
 git push -f "git@github.com:$LOGIN/flathub.git" "$BRANCH"
 gh pr create --repo flathub/flathub --base new-pr --head "$LOGIN:$BRANCH" \

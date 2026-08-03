@@ -40,14 +40,21 @@ modules:
       - install -Dm644 assets/icon.png /app/share/icons/hicolor/512x512/apps/io.github.vicanso.zedis.png
       # Scalable brand mark (Wayland compositors prefer SVG when available).
       - install -Dm644 icons/zedis-icon.svg /app/share/icons/hicolor/scalable/apps/io.github.vicanso.zedis.svg
-      - install -Dm644 flatpak/io.github.vicanso.zedis.metainfo.xml /app/share/metainfo/io.github.vicanso.zedis.metainfo.xml
+      # Installed from the file source below (NOT the tag's checkout): the
+      # metainfo — release entries included — is maintained alongside this
+      # manifest, so a release-notes bump doesn't need a new upstream tag.
+      - install -Dm644 io.github.vicanso.zedis.metainfo.xml /app/share/metainfo/io.github.vicanso.zedis.metainfo.xml
     sources:
       # Offline mirror of every crate in Cargo.lock (including git deps such
       # as GPUI) — regenerate with flatpak-cargo-generator, see README.md.
       - cargo-sources.json
-      # Pin to the first release tag that contains the flatpak/ files.
-      # Fill in the commit with: git rev-parse v0.4.7^{}
+      # AppStream metadata, shipped next to the manifest (see build-commands
+      # note). Path is manifest-relative, so it resolves both in this repo
+      # (flatpak/) and in the flathub repo (root).
+      - type: file
+        path: io.github.vicanso.zedis.metainfo.xml
+      # Pinned release tag (submit-flathub.sh fills both fields).
       - type: git
         url: https://github.com/vicanso/zedis.git
-        tag: v0.4.7
-        commit: TODO-fill-in-tag-commit-hash
+        tag: v0.6.6
+        commit: 6c0f626c190df5768742cccbdac03b963e51f5c9

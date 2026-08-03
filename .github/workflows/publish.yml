@@ -391,7 +391,9 @@ jobs:
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev
+          # dpkg-dev provides dpkg-shlibdeps, which cargo-deb's `$auto`
+          # dependency resolution shells out to.
+          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev dpkg-dev
       - name: install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -406,6 +408,10 @@ jobs:
           wget https://github.com/AppImage/appimagetool/releases/download/continuous/${{ matrix.appimagetool }} -O appimagetool
           chmod +x appimagetool
           sudo mv appimagetool /usr/local/bin/
+      - name: install packaging tools (deb / rpm)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
       - name: release
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
@@ -413,6 +419,12 @@ jobs:
           cargo install cargo-appimage
           cargo build --release --features mimalloc
           ls -lh target/release
+          # Native packages from the just-built binary — must run before the
+          # `mv` below empties target/release. Metadata (name, desktop entry,
+          # icons, dependency resolution) lives in [package.metadata.deb] /
+          # [package.metadata.generate-rpm] in Cargo.toml.
+          cargo deb -p zedis-gui --no-build -o ./zedis-linux-${{ matrix.suffix }}.deb
+          cargo generate-rpm -o ./zedis-linux-${{ matrix.suffix }}.rpm
           mv target/release/zedis ./zedis
           chmod +x zedis
           objdump -p ./zedis | grep GLIBC
@@ -446,7 +458,9 @@ jobs:
           : > "meta/linux-${{ matrix.suffix }}.txt"
           for entry in \
             "zedis-linux-${{ matrix.suffix }}.tar.gz tarball" \
-            "zedis-${{ matrix.suffix }}.AppImage.tar.gz appimage"; do
+            "zedis-${{ matrix.suffix }}.AppImage.tar.gz appimage" \
+            "zedis-linux-${{ matrix.suffix }}.deb deb" \
+            "zedis-linux-${{ matrix.suffix }}.rpm rpm"; do
             set -- $entry
             f="$1"; kind="$2"
             sha="$(sha256sum "$f" | awk '{print $1}')"
@@ -464,6 +478,8 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh "./zedis-linux-${{ matrix.suffix }}.tar.gz" "$GITHUB_TOKEN"
           ./.github/workflows/upload_asset.sh "./zedis-${{ matrix.suffix }}.AppImage.tar.gz" "$GITHUB_TOKEN"
+          ./.github/workflows/upload_asset.sh "./zedis-linux-${{ matrix.suffix }}.deb" "$GITHUB_TOKEN"
+          ./.github/workflows/upload_asset.sh "./zedis-linux-${{ matrix.suffix }}.rpm" "$GITHUB_TOKEN"
       - name: Release Nightly Assets
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
@@ -476,6 +492,8 @@ jobs:
           prerelease: true
           files: |
             ./*.tar.gz
+            ./*.deb
+            ./*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 

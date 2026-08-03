@@ -7,7 +7,9 @@ Files here are the source of truth for the Flathub submission
 - `io.github.vicanso.zedis.desktop` — desktop entry (Icon must equal the app-id;
   `assets/zedis.desktop` is the AppImage variant and stays untouched)
 - `io.github.vicanso.zedis.metainfo.xml` — AppStream metadata shown in software
-  centers; add a `<release>` entry per version
+  centers; add a `<release>` entry per version. Installed from a manifest
+  `file` source (not the pinned tag's checkout), so it ships with the
+  manifest and release notes can be bumped without a new upstream tag
 
 ## 1. Prepare a release (scripted)
 
@@ -42,14 +44,15 @@ flatpak run io.github.vicanso.zedis
 `./scripts/submit-flathub.sh <tag> --submit` automates the flow from
 https://docs.flathub.org/docs/for-app-authors/submission: fork
 `flathub/flathub`, branch off `new-pr`, add `io.github.vicanso.zedis.yml` +
-`cargo-sources.json`, open the PR against the `new-pr` branch. The
-`io.github.*` app-id is verified against the GitHub account automatically.
+`cargo-sources.json` + `io.github.vicanso.zedis.metainfo.xml`, open the PR
+against the `new-pr` branch. The `io.github.*` app-id is verified against
+the GitHub account automatically.
 
 macOS note: flatpak-builder cannot run on macOS, so skip step 2 and let the
 Flathub PR's CI do the build — iterate on the PR if it flags anything.
 
-After acceptance, new releases are shipped by updating the tag/commit (and
-`cargo-sources.json` + a metainfo `<release>` entry) in the
+After acceptance, new releases are shipped by updating the tag/commit,
+`cargo-sources.json`, and the metainfo's `<release>` entries in the
 `flathub/io.github.vicanso.zedis` repo — consider a small CI job for that.
 
 ## Note on SSH keys
