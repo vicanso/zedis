@@ -74,6 +74,14 @@ The app re-exports the sub-crates through thin shims, so call sites keep their o
 - Keep the dependency surface lean (e.g. fuzzy matching is hand-rolled, Lua highlighting registers tree-sitter manually) — prefer a small in-crate implementation over a new dependency for self-contained needs.
 - Imports: bring items into scope with `use` declarations at the top of the file and refer to them by their short name. Do **not** write fully-qualified paths inline (e.g. `crate::views::ZedisEditor::new(...)`, `crate::states::ZedisGlobalStore`); add `use crate::views::ZedisEditor;` and call `ZedisEditor::new(...)`. The only acceptable inline-path exceptions are disambiguating two same-named types or a single use inside a macro where a `use` would be awkward.
 
+## Rust dependencies: check the current version before planning
+
+- Whenever a plan or design involves introducing a crate, run `cargo info <crate>` (or `cargo search <crate>`) to find its current latest version on crates.io **before** designing concrete usage.
+- Never assume a version number from memory — remembered versions are very likely stale (e.g. assuming `rmcp` is 0.x when the actual latest may be 3.x).
+- Plan API usage, feature selection, and code style against the version you just looked up — major versions can differ drastically in API.
+- If the latest version differs substantially from the usage you're familiar with, consult that version's docs/examples before writing code — don't apply old-version idioms to a new major.
+- When actually adding the dependency, use `cargo add <crate>` so the version is written by cargo, not by hand.
+
 ## Agent skills
 
 ### Issue tracker

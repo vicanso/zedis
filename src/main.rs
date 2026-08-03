@@ -1041,6 +1041,16 @@ fn restore_default_themes(cx: &mut App) {
 /// Compact Markdown styling for release notes: the library defaults size
 /// headings up to ~28px, which dwarfs the dialog body; shrink them to a
 /// gentle hierarchy (mirrors the memory-analysis AI panel styling).
+/// Map the OS appearance to a theme mode when the user hasn't pinned one.
+/// `VibrantLight` is macOS's translucent *light* appearance — group it with
+/// `Light` so only genuinely dark appearances select the dark theme.
+fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
+    match appearance {
+        WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
+}
+
 fn release_notes_style() -> TextViewStyle {
     TextViewStyle::default()
         .paragraph_gap(rems(0.5))
@@ -1315,10 +1325,7 @@ impl Render for Zedis {
                 // Determine actual render mode (resolve System to Light/Dark)
                 let render_mode = match mode {
                     Some(m) => m,
-                    None => match cx.window_appearance() {
-                        WindowAppearance::Light => ThemeMode::Light,
-                        _ => ThemeMode::Dark,
-                    },
+                    None => theme_mode_for_appearance(cx.window_appearance()),
                 };
 
                 // A previously-applied named theme overwrote the Theme's
@@ -1700,10 +1707,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // window isn't a jarring light flash on a dark system.
             let mode = match saved_mode {
                 Some(m) => m,
-                None => match cx.window_appearance() {
-                    WindowAppearance::Light => ThemeMode::Light,
-                    _ => ThemeMode::Dark,
-                },
+                None => theme_mode_for_appearance(cx.window_appearance()),
             };
             Theme::change(mode, None, cx);
             apply_default_ui_font_size(cx);
@@ -1799,10 +1803,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // for a frame and flashes (e.g. white before a dark theme settles).
             let mode = match saved_mode {
                 Some(m) => m,
-                None => match cx.window_appearance() {
-                    WindowAppearance::Light => ThemeMode::Light,
-                    _ => ThemeMode::Dark,
-                },
+                None => theme_mode_for_appearance(cx.window_appearance()),
             };
             Theme::change(mode, None, cx);
         }

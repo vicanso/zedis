@@ -24,9 +24,11 @@ use crate::{
         i18n_shortcuts, i18n_sidebar, i18n_status_bar,
     },
 };
-use gpui::{Anchor, App, Context, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, rgb};
+use gpui::{
+    Anchor, App, Context, Decorations, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, px, rgb,
+};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, ThemeMode, ThemeRegistry, TitleBar,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, TITLE_BAR_HEIGHT, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -266,7 +268,7 @@ impl ZedisTitleBar {
 }
 
 impl Render for ZedisTitleBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // right actions container
         let right_actions = h_flex().flex_1().items_center().justify_end().px_2().gap_2().mr_2();
 
@@ -336,85 +338,115 @@ impl Render for ZedisTitleBar {
                         }),
                 );
 
-        TitleBar::new()
-            // left placeholder balances the right actions so `center` stays centered
-            .child(h_flex().flex_1())
-            .child(center)
-            // right actions container
+        // On Linux/FreeBSD the window keeps server-side decorations (the
+        // `titlebar:` option in main.rs is cfg'd off there — see issue #106),
+        // so the WM already draws minimize/maximize/close. gpui-component's
+        // `TitleBar` appends its own control icons unconditionally on Linux,
+        // which doubled them up — render a plain row with the same chrome
+        // instead (no controls, no drag/double-click-zoom: the WM owns
+        // those). When the compositor forces client-side decorations (e.g.
+        // GNOME on Wayland has no SSD), keep `TitleBar`: its controls are the
+        // only window controls the user gets there.
+        let server_decorated = cfg!(any(target_os = "linux", target_os = "freebsd"))
+            && matches!(window.window_decorations(), Decorations::Server);
+
+        let right_actions = right_actions
+            .when(update_version.is_some(), |this| {
+                let v = update_version.clone().unwrap_or_default();
+                let label = match download_progress {
+                    Some(pct) => format!("{pct}%"),
+                    None => format!("v{v}"),
+                };
+                let dismiss_hover_bg = cx.theme().foreground.alpha(0.12);
+                let dismiss_fg = cx.theme().muted_foreground;
+                let dismiss_tooltip = i18n_status_bar(cx, "update_dismiss");
+                this.child(
+                    Button::new("zedis-titlebar-update")
+                        .ghost()
+                        .small()
+                        .icon(CustomIconName::Download)
+                        .label(label)
+                        // Spinner while re-checking on click; disabled
+                        // during that and while a download is running.
+                        .loading(update_checking)
+                        .disabled(update_checking || download_progress.is_some())
+                        .tooltip(i18n_status_bar(cx, "update_available"))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);
+                        })
+                        // Inline session-only dismiss (tab-pill pattern:
+                        // Button renders children after the label).
+                        // Clears the chip until the next check — the
+                        // persistent "skip this version" stays in the
+                        // update dialog's ×. Hidden while downloading:
+                        // the chip is the only progress surface then.
+                        // `stop_propagation` on mouse-down keeps the ×
+                        // from also triggering the outer download click.
+                        .when(download_progress.is_none(), |this| {
+                            this.child(
+                                div()
+                                    .id("zedis-titlebar-update-dismiss")
+                                    .flex_none()
+                                    .ml_0p5()
+                                    .p_0p5()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(dismiss_hover_bg))
+                                    .tooltip(move |window, cx| Tooltip::new(dismiss_tooltip.clone()).build(window, cx))
+                                    .child(Icon::new(IconName::Close).xsmall().text_color(dismiss_fg))
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| state.set_available_update(None, cx));
+                                        });
+                                    }),
+                            )
+                        }),
+                )
+            })
             .child(
-                right_actions
-                    .when(update_version.is_some(), |this| {
-                        let v = update_version.clone().unwrap_or_default();
-                        let label = match download_progress {
-                            Some(pct) => format!("{pct}%"),
-                            None => format!("v{v}"),
-                        };
-                        let dismiss_hover_bg = cx.theme().foreground.alpha(0.12);
-                        let dismiss_fg = cx.theme().muted_foreground;
-                        let dismiss_tooltip = i18n_status_bar(cx, "update_dismiss");
-                        this.child(
-                            Button::new("zedis-titlebar-update")
-                                .ghost()
-                                .small()
-                                .icon(CustomIconName::Download)
-                                .label(label)
-                                // Spinner while re-checking on click; disabled
-                                // during that and while a download is running.
-                                .loading(update_checking)
-                                .disabled(update_checking || download_progress.is_some())
-                                .tooltip(i18n_status_bar(cx, "update_available"))
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);
-                                })
-                                // Inline session-only dismiss (tab-pill pattern:
-                                // Button renders children after the label).
-                                // Clears the chip until the next check — the
-                                // persistent "skip this version" stays in the
-                                // update dialog's ×. Hidden while downloading:
-                                // the chip is the only progress surface then.
-                                // `stop_propagation` on mouse-down keeps the ×
-                                // from also triggering the outer download click.
-                                .when(download_progress.is_none(), |this| {
-                                    this.child(
-                                        div()
-                                            .id("zedis-titlebar-update-dismiss")
-                                            .flex_none()
-                                            .ml_0p5()
-                                            .p_0p5()
-                                            .rounded_sm()
-                                            .cursor_pointer()
-                                            .hover(move |s| s.bg(dismiss_hover_bg))
-                                            .tooltip(move |window, cx| {
-                                                Tooltip::new(dismiss_tooltip.clone()).build(window, cx)
-                                            })
-                                            .child(Icon::new(IconName::Close).xsmall().text_color(dismiss_fg))
-                                            .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                                cx.stop_propagation();
-                                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                                    store.update(cx, |state, cx| state.set_available_update(None, cx));
-                                                });
-                                            }),
-                                    )
-                                }),
-                        )
-                    })
-                    .child(
-                        Button::new("settings")
-                            .tooltip(i18n_sidebar(cx, "settings_tooltip"))
-                            .icon(IconName::Settings2)
-                            .small()
-                            .ghost()
-                            .dropdown_menu(Self::render_settings_menu)
-                            .anchor(Anchor::TopRight),
-                    )
-                    .child(
-                        Button::new("github")
-                            .tooltip(i18n_sidebar(cx, "github_tooltip"))
-                            .icon(IconName::Github)
-                            .small()
-                            .ghost()
-                            .on_click(|_, _, cx| cx.open_url("https://github.com/vicanso/zedis")),
-                    ),
+                Button::new("settings")
+                    .tooltip(i18n_sidebar(cx, "settings_tooltip"))
+                    .icon(IconName::Settings2)
+                    .small()
+                    .ghost()
+                    .dropdown_menu(Self::render_settings_menu)
+                    .anchor(Anchor::TopRight),
             )
+            .child(
+                Button::new("github")
+                    .tooltip(i18n_sidebar(cx, "github_tooltip"))
+                    .icon(IconName::Github)
+                    .small()
+                    .ghost()
+                    .on_click(|_, _, cx| cx.open_url("https://github.com/vicanso/zedis")),
+            );
+
+        // The left placeholder balances the right actions so `center` stays
+        // centered in both containers below.
+        if server_decorated {
+            h_flex()
+                .flex_shrink_0()
+                .w_full()
+                .h(TITLE_BAR_HEIGHT)
+                // Non-macOS `TITLE_BAR_LEFT_PADDING` (private to the
+                // component) — keeps the row aligned with the TitleBar branch.
+                .pl(px(12.))
+                .items_center()
+                .justify_between()
+                .border_b_1()
+                .border_color(cx.theme().title_bar_border)
+                .bg(cx.theme().tokens.title_bar)
+                .child(h_flex().flex_1())
+                .child(center)
+                .child(right_actions)
+                .into_any_element()
+        } else {
+            TitleBar::new()
+                .child(h_flex().flex_1())
+                .child(center)
+                .child(right_actions)
+                .into_any_element()
+        }
     }
 }
