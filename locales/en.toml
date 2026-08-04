@@ -468,6 +468,9 @@ bulk_add_success = "Added %{count} rows"
 bulk_add_empty = "Nothing to add — paste at least one row."
 
 [settings]
+http_proxy = "HTTP proxy"
+http_proxy_desc = "For the app's own requests (update check, AI). Supports http:// and socks5:// URIs, optionally with user:pass@. Empty = follow the system proxy; none = always connect directly."
+http_proxy_placeholder = "http://127.0.0.1:7890"
 section_tabs = "Workspace Tabs"
 section_tabs_desc = "How clicking a server opens workspace tabs"
 sidebar_click_new_tab = "Open servers in a new tab"

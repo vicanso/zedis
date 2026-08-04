@@ -28,7 +28,7 @@
 //!
 //! Network + filesystem only; the dialog/toast orchestration lives in `main.rs`.
 
-use super::proxy::system_proxy;
+use super::proxy::app_proxy;
 use crate::error::Error;
 use semver::Version;
 use serde::Deserialize;
@@ -249,7 +249,7 @@ fn http_get_string(url: &str) -> Result<String> {
         // Env-var proxy plus the OS system proxy — a Dock-launched app has
         // no shell environment, so without this a proxied network (where
         // github.com is often unreachable directly) never gets updates.
-        .proxy(system_proxy())
+        .proxy(app_proxy())
         .build()
         .new_agent();
     let text = agent
@@ -290,7 +290,7 @@ pub fn download_and_verify(asset: &UpdateAsset, mut on_progress: impl FnMut(u64,
     info!(name = %asset.name, size = asset.size, "update: downloading installer");
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
-        .proxy(system_proxy())
+        .proxy(app_proxy())
         .build()
         .new_agent();
     let resp = agent

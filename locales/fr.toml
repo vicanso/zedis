@@ -468,6 +468,9 @@ bulk_add_success = "%{count} lignes ajoutées"
 bulk_add_empty = "Rien à ajouter — collez au moins une ligne."
 
 [settings]
+http_proxy = "Proxy HTTP"
+http_proxy_desc = "Pour les requêtes propres à l'application (vérification des mises à jour, IA). Prend en charge les URI http:// et socks5://, éventuellement avec user:pass@. Vide = suivre le proxy système ; none = toujours se connecter en direct."
+http_proxy_placeholder = "http://127.0.0.1:7890"
 section_tabs = "Onglets de l'espace de travail"
 section_tabs_desc = "Comment un clic sur un serveur utilise les onglets"
 sidebar_click_new_tab = "Ouvrir les serveurs dans un nouvel onglet"

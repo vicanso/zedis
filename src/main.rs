@@ -7,7 +7,7 @@ use crate::helpers::{
     UpdateAction, UpdateInfo, WorkspaceTabAction, apply_default_ui_font_size, apply_fonts, download_and_verify,
     fetch_latest_release, focus_installer_ui, get_or_create_config_dir, humanize_keystroke, init_logger,
     installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages,
-    unix_ts_millis, with_app_identity,
+    set_configured_proxy, unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
@@ -1819,6 +1819,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (store.ui_font_family(), store.mono_font_family())
             };
             apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
+        }
+        // Mirror the persisted proxy setting into helpers::proxy before the
+        // startup update check fires — its HTTP runs on background threads
+        // that can't read the store.
+        {
+            let proxy = cx.global::<ZedisGlobalStore>().read(cx).http_proxy();
+            set_configured_proxy(&proxy);
         }
         #[cfg(not(target_os = "linux"))]
         {

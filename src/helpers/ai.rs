@@ -19,7 +19,7 @@
 //! is blocking (`ureq`) and **must** run on a background task, never on
 //! the UI thread.
 
-use super::proxy::system_proxy;
+use super::proxy::app_proxy;
 use crate::error::Error;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -231,7 +231,7 @@ fn chat_completion(endpoint: &AiEndpoint, system_prompt: &str, user_content: &st
         .timeout_global(Some(REQUEST_TIMEOUT))
         // Env-var proxy plus the OS system proxy — AI endpoints are
         // frequently only reachable through one (see `helpers/proxy.rs`).
-        .proxy(system_proxy())
+        .proxy(app_proxy())
         // Read the body ourselves on non-2xx so we can surface the
         // endpoint's `error.message` instead of a bare status code.
         .http_status_as_error(false)

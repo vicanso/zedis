@@ -468,6 +468,9 @@ bulk_add_success = "%{count} Zeilen hinzugefügt"
 bulk_add_empty = "Nichts hinzuzufügen — bitte mindestens eine Zeile einfügen."
 
 [settings]
+http_proxy = "HTTP-Proxy"
+http_proxy_desc = "Für die eigenen Anfragen der App (Update-Prüfung, KI). Unterstützt http://- und socks5://-URIs, optional mit user:pass@. Leer = Systemproxy verwenden; none = immer direkt verbinden."
+http_proxy_placeholder = "http://127.0.0.1:7890"
 section_tabs = "Arbeitsbereich-Tabs"
 section_tabs_desc = "Wie ein Klick auf einen Server Arbeitsbereich-Tabs verwendet"
 sidebar_click_new_tab = "Server in neuem Tab öffnen"

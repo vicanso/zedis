@@ -31,6 +31,7 @@ pub use color::card_background;
 pub use common::*;
 pub use font::*;
 pub use logger::{init_logger, logs_dir};
+pub use proxy::{is_valid_proxy_setting, set_configured_proxy};
 pub use syntax::register_extra_languages;
 pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
 pub use updater::{

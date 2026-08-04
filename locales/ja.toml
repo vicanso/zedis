@@ -468,6 +468,9 @@ bulk_add_success = "%{count} 行を追加しました"
 bulk_add_empty = "追加するデータがありません — 少なくとも 1 行貼り付けてください。"
 
 [settings]
+http_proxy = "HTTP プロキシ"
+http_proxy_desc = "アプリ自身のリクエスト（更新チェック、AI）に使用します。http:// と socks5:// の URI に対応し、user:pass@ も指定可能。空 = システムプロキシに従う。none = 常に直接接続。"
+http_proxy_placeholder = "http://127.0.0.1:7890"
 section_tabs = "ワークスペースタブ"
 section_tabs_desc = "サーバーをクリックしたときのタブの扱い"
 sidebar_click_new_tab = "サーバーを新しいタブで開く"

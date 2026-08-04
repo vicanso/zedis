@@ -14,7 +14,7 @@
 
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
-    helpers::{DEFAULT_UI_FONT_SIZE, apply_fonts, get_or_create_config_dir, parse_duration},
+    helpers::{DEFAULT_UI_FONT_SIZE, apply_fonts, get_or_create_config_dir, is_valid_proxy_setting, parse_duration},
     states::{
         ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
         update_app_state_and_save_quiet,
@@ -103,6 +103,7 @@ pub struct ZedisSettingEditor {
     ai_base_url_state: Entity<InputState>,
     ai_api_key_state: Entity<InputState>,
     ai_model_state: Entity<InputState>,
+    http_proxy_state: Entity<InputState>,
     tray_enabled: bool,
     show_key_tree_ttl: bool,
     soft_delete: bool,
@@ -170,6 +171,7 @@ impl ZedisSettingEditor {
         let ai_base_url = store.ai_base_url();
         let ai_api_key = store.ai_api_key();
         let ai_model = store.ai_model();
+        let http_proxy = store.http_proxy();
 
         let max_key_tree_depth_state = Self::create_input_state(
             window,
@@ -222,6 +224,15 @@ impl ZedisSettingEditor {
                 .masked(true)
         });
         let ai_model_state = Self::create_input_state(window, cx, "ai_model_placeholder", ai_model, None);
+        // Empty = follow env/OS system proxy; "none" = always direct; else a
+        // proxy URI. Validated so junk never reaches zedis.toml.
+        let http_proxy_state = Self::create_input_state(
+            window,
+            cx,
+            "http_proxy_placeholder",
+            http_proxy,
+            Some(is_valid_proxy_setting),
+        );
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
 
@@ -359,6 +370,16 @@ impl ZedisSettingEditor {
                 state.set_ai_model(text);
             });
         }));
+        subscriptions.push(Self::bind_blur_save(cx, &http_proxy_state, window, |text, cx| {
+            // The input validates live, but blur still delivers whatever is
+            // in the box — never persist a value app_proxy can't act on.
+            if !is_valid_proxy_setting(&text) {
+                return;
+            }
+            update_app_state_and_save_quiet(cx, "save_http_proxy", move |state, _| {
+                state.set_http_proxy(text);
+            });
+        }));
 
         // Continuous font size (rem px) via a slider, 12–22px. The state
         // updates per change so reads stay live, but the disk write and the
@@ -468,6 +489,7 @@ impl ZedisSettingEditor {
             ai_base_url_state,
             ai_api_key_state,
             ai_model_state,
+            http_proxy_state,
             tray_enabled,
             show_key_tree_ttl,
             soft_delete,
@@ -680,6 +702,11 @@ impl Render for ZedisSettingEditor {
                 ))
                 // — System —
                 .child(Self::render_section_header(cx, "section_system", "section_system_desc"))
+                .child(Self::render_setting_row(
+                    cx,
+                    "http_proxy",
+                    Input::new(&self.http_proxy_state),
+                ))
                 .when(cfg!(not(target_os = "linux")), |this| {
                     this.child(Self::render_setting_row(
                         cx,

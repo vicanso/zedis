@@ -22,23 +22,92 @@
 //! registry values on Windows — both read via a short-lived command so no
 //! registry / SystemConfiguration dependency is pulled in.
 //!
-//! Deliberately out of scope: PAC files (need a full PAC engine) and
-//! SOCKS-only setups (this `ureq` build carries no `socks-proxy` feature);
-//! the HTTP port that proxy tools expose alongside SOCKS is what the
-//! resolved values name.
+//! SOCKS is supported (`socks-proxy` feature): configured URIs may use
+//! `socks4://` / `socks4a://` / `socks5://` / `socks5h://`, and the OS
+//! fallbacks honor a SOCKS-only system proxy (after HTTPS/HTTP, which
+//! tunnel via CONNECT and are preferred when both are on).
+//!
+//! Deliberately out of scope: PAC files (need a full PAC engine).
 
 #[cfg(any(target_os = "macos", test))]
 use std::collections::HashMap;
 #[cfg(not(target_os = "linux"))]
 use std::process::Command;
+use std::sync::RwLock;
 use tracing::debug;
 use ureq::Proxy;
 
-/// The proxy the app's HTTP clients should use, if any: explicit proxy
-/// environment variables first (ureq's own lookup, incl. `NO_PROXY`), then
-/// the OS's system proxy settings. Re-resolved per call — toggling the
-/// system proxy (Clash & co.) must not require an app restart.
-pub fn system_proxy() -> Option<Proxy> {
+/// User-configured proxy override, mirrored from the persisted app state
+/// (`ZedisAppState::http_proxy`) at startup and on every save. A process
+/// global because the HTTP callers (updater, AI) run on background threads
+/// with no `cx` to read the store through. Values:
+/// - `""` — follow the environment / OS system proxy (the default);
+/// - `"none"` — always connect directly, skipping every proxy source;
+/// - anything else — a proxy URI to use as-is.
+static CONFIGURED_PROXY: RwLock<String> = RwLock::new(String::new());
+
+/// Mirror the persisted proxy setting into this module. Called at startup
+/// and from the app-state setter, so a settings change applies to the next
+/// request without a restart.
+pub fn set_configured_proxy(value: &str) {
+    *CONFIGURED_PROXY.write().expect("proxy setting lock poisoned") = value.trim().to_string();
+}
+
+/// Accepts what [`app_proxy`] can act on: empty (system), `none` (direct),
+/// or a URI ureq's `Proxy` can parse. Drives the settings-input validator.
+pub fn is_valid_proxy_setting(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value.eq_ignore_ascii_case("none") || Proxy::new(value).is_ok()
+}
+
+/// How the configured value resolves — split from [`app_proxy`] so the
+/// precedence is testable without touching env vars or the OS.
+enum Resolution {
+    /// `"none"` — connect directly, skip every proxy source.
+    Direct,
+    /// A usable configured URI.
+    Explicit(Proxy),
+    /// Nothing configured (or an unusable URI) — fall through to
+    /// [`system_proxy`].
+    System,
+}
+
+fn resolve_configured(configured: &str) -> Resolution {
+    let configured = configured.trim();
+    if configured.eq_ignore_ascii_case("none") {
+        debug!("proxy: configured as direct — skipping env/OS proxies");
+        return Resolution::Direct;
+    }
+    if !configured.is_empty() {
+        match Proxy::new(configured) {
+            Ok(proxy) => return Resolution::Explicit(proxy),
+            Err(e) => {
+                // The settings input validates, but a hand-edited
+                // zedis.toml can still hold junk — degrade to the system
+                // behavior instead of silently going direct.
+                debug!(%configured, error = %e, "proxy: unusable configured URI, falling back to system");
+            }
+        }
+    }
+    Resolution::System
+}
+
+/// The proxy the app's HTTP clients should use, if any: the user-configured
+/// setting first, then explicit proxy environment variables (ureq's own
+/// lookup, incl. `NO_PROXY`), then the OS's system proxy settings.
+/// Re-resolved per call — toggling the setting or the system proxy
+/// (Clash & co.) must not require an app restart.
+pub fn app_proxy() -> Option<Proxy> {
+    let configured = CONFIGURED_PROXY.read().expect("proxy setting lock poisoned").clone();
+    match resolve_configured(&configured) {
+        Resolution::Direct => None,
+        Resolution::Explicit(proxy) => Some(proxy),
+        Resolution::System => system_proxy(),
+    }
+}
+
+/// Env-var / OS fallback — see [`app_proxy`], the entry point callers use.
+fn system_proxy() -> Option<Proxy> {
     if let Some(proxy) = Proxy::try_from_env() {
         return Some(proxy);
     }
@@ -88,7 +157,8 @@ fn os_proxy_uri() -> Option<String> {
 
 /// Parse `scutil --proxy` output (`Key : value` lines inside a
 /// `<dictionary>`). Prefers the HTTPS proxy — both the manifest fetch and
-/// the installer download are HTTPS, tunneled via CONNECT — then HTTP.
+/// the installer download are HTTPS, tunneled via CONNECT — then HTTP,
+/// then a SOCKS-only setup (macOS's SOCKS proxy is SOCKS5).
 #[cfg(any(target_os = "macos", test))]
 fn proxy_from_scutil(output: &str) -> Option<String> {
     let mut map = HashMap::new();
@@ -97,7 +167,7 @@ fn proxy_from_scutil(output: &str) -> Option<String> {
             map.insert(k.trim(), v.trim());
         }
     }
-    for scheme in ["HTTPS", "HTTP"] {
+    for (scheme, uri_scheme) in [("HTTPS", "http"), ("HTTP", "http"), ("SOCKS", "socks5")] {
         if map.get(format!("{scheme}Enable").as_str()) == Some(&"1")
             && let (Some(host), Some(port)) = (
                 map.get(format!("{scheme}Proxy").as_str()),
@@ -105,7 +175,7 @@ fn proxy_from_scutil(output: &str) -> Option<String> {
             )
             && !host.is_empty()
         {
-            return Some(format!("http://{host}:{port}"));
+            return Some(format!("{uri_scheme}://{host}:{port}"));
         }
     }
     None
@@ -113,7 +183,8 @@ fn proxy_from_scutil(output: &str) -> Option<String> {
 
 /// Parse `reg query …\Internet Settings` output. `ProxyServer` is either a
 /// bare `host:port` applying to every protocol, or a
-/// `scheme=host:port;…` list — prefer the `https` entry, then `http`.
+/// `scheme=host:port;…` list — prefer the `https` entry, then `http`,
+/// then a SOCKS-only `socks=` entry (WinINET's SOCKS is SOCKS5).
 #[cfg(any(target_os = "windows", test))]
 fn proxy_from_wininet_reg(output: &str) -> Option<String> {
     let mut enabled = false;
@@ -136,13 +207,13 @@ fn proxy_from_wininet_reg(output: &str) -> Option<String> {
     if !server.contains('=') {
         return Some(format!("http://{server}"));
     }
-    for want in ["https", "http"] {
+    for (want, uri_scheme) in [("https", "http"), ("http", "http"), ("socks", "socks5")] {
         for entry in server.split(';') {
             if let Some((scheme, host_port)) = entry.split_once('=')
                 && scheme.trim() == want
                 && !host_port.trim().is_empty()
             {
-                return Some(format!("http://{}", host_port.trim()));
+                return Some(format!("{uri_scheme}://{}", host_port.trim()));
             }
         }
     }
@@ -152,6 +223,35 @@ fn proxy_from_wininet_reg(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_value_resolution_precedence() {
+        // "" → fall through to env/OS.
+        assert!(matches!(resolve_configured(""), Resolution::System));
+        assert!(matches!(resolve_configured("   "), Resolution::System));
+        // "none" (any case) → direct, no proxies at all.
+        assert!(matches!(resolve_configured("none"), Resolution::Direct));
+        assert!(matches!(resolve_configured(" NONE "), Resolution::Direct));
+        // A usable URI wins outright — HTTP and SOCKS alike.
+        assert!(matches!(
+            resolve_configured("http://127.0.0.1:7890"),
+            Resolution::Explicit(_)
+        ));
+        assert!(matches!(
+            resolve_configured("socks5://127.0.0.1:1080"),
+            Resolution::Explicit(_)
+        ));
+        // Junk (hand-edited config) degrades to the system behavior.
+        assert!(matches!(resolve_configured("::garbage::"), Resolution::System));
+    }
+
+    #[test]
+    fn proxy_setting_validation() {
+        assert!(is_valid_proxy_setting(""));
+        assert!(is_valid_proxy_setting("none"));
+        assert!(is_valid_proxy_setting("http://127.0.0.1:7890"));
+        assert!(!is_valid_proxy_setting("::garbage::"));
+    }
 
     #[test]
     fn scutil_prefers_https_then_http() {
@@ -164,12 +264,15 @@ mod tests {
     }
 
     #[test]
-    fn scutil_disabled_or_socks_only_is_none() {
+    fn scutil_disabled_is_none_and_socks_only_resolves() {
         let disabled = "<dictionary> {\n  HTTPEnable : 0\n  HTTPSEnable : 0\n}\n";
         assert_eq!(proxy_from_scutil(disabled), None);
-        // SOCKS-only setups are skipped (no socks-proxy feature in ureq).
+        // SOCKS-only setups resolve now that ureq carries socks-proxy.
         let socks = "<dictionary> {\n  SOCKSEnable : 1\n  SOCKSPort : 1080\n  SOCKSProxy : 127.0.0.1\n}\n";
-        assert_eq!(proxy_from_scutil(socks), None);
+        assert_eq!(proxy_from_scutil(socks).as_deref(), Some("socks5://127.0.0.1:1080"));
+        // ...but HTTP/HTTPS still win when they are enabled alongside.
+        let mixed = "<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : 7890\n  HTTPProxy : 127.0.0.1\n  SOCKSEnable : 1\n  SOCKSPort : 1080\n  SOCKSProxy : 127.0.0.1\n}\n";
+        assert_eq!(proxy_from_scutil(mixed).as_deref(), Some("http://127.0.0.1:7890"));
     }
 
     #[test]
@@ -181,6 +284,13 @@ mod tests {
         assert_eq!(
             proxy_from_wininet_reg(per_scheme).as_deref(),
             Some("http://127.0.0.1:8889")
+        );
+
+        // SOCKS-only per-scheme list resolves as SOCKS5.
+        let socks_only = "    ProxyEnable    REG_DWORD    0x1\n    ProxyServer    REG_SZ    socks=127.0.0.1:1080\n";
+        assert_eq!(
+            proxy_from_wininet_reg(socks_only).as_deref(),
+            Some("socks5://127.0.0.1:1080")
         );
     }
 

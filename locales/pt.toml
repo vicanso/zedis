@@ -468,6 +468,9 @@ bulk_add_success = "%{count} linhas adicionadas"
 bulk_add_empty = "Nada para adicionar — cole pelo menos uma linha."
 
 [settings]
+http_proxy = "Proxy HTTP"
+http_proxy_desc = "Para as requisições do próprio app (verificação de atualização, IA). Aceita URIs http:// e socks5://, opcionalmente com user:pass@. Vazio = seguir o proxy do sistema; none = conectar sempre diretamente."
+http_proxy_placeholder = "http://127.0.0.1:7890"
 section_tabs = "Abas do espaço de trabalho"
 section_tabs_desc = "Como clicar em um servidor usa as abas"
 sidebar_click_new_tab = "Abrir servidores em uma nova aba"

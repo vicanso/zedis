@@ -18,7 +18,8 @@ use crate::connection::{
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
 use crate::helpers::{
-    DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir, unix_ts,
+    DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir,
+    set_configured_proxy, unix_ts,
 };
 use crate::states::i18n_common;
 use chrono::Local;
@@ -512,6 +513,11 @@ pub struct ZedisAppState {
     ai_api_key: Option<String>,
     /// Model name passed to the AI endpoint, e.g. `gpt-4o-mini`.
     ai_model: Option<String>,
+    /// Outbound HTTP proxy for the app's own requests (update check, AI).
+    /// `None`/empty follows the environment / OS system proxy; `"none"`
+    /// forces a direct connection; anything else is a proxy URI. Mirrored
+    /// into `helpers::proxy` (background HTTP callers have no `cx`).
+    http_proxy: Option<String>,
     /// When `true` (default), check GitHub for a newer release on startup,
     /// throttled to once per day. `false` disables the network check entirely.
     auto_update_check: Option<bool>,
@@ -970,6 +976,32 @@ impl ZedisAppState {
     /// Base URL of the OpenAI-compatible AI endpoint (without trailing
     /// slash normalization — that happens at request time). Empty when
     /// unset.
+    /// The persisted proxy setting (decrypted when stored encrypted), or
+    /// empty when following the system. Falls back to the stored value if
+    /// decryption fails (e.g. a hand-edited plaintext URI in `zedis.toml`).
+    pub fn http_proxy(&self) -> String {
+        self.http_proxy
+            .as_ref()
+            .map(|stored| decrypt(stored).unwrap_or_else(|_| stored.clone()))
+            .unwrap_or_default()
+    }
+    /// Persist the proxy setting and mirror the plaintext into
+    /// `helpers::proxy` so the next HTTP request (updater / AI, background
+    /// threads without `cx`) picks it up immediately. A URI carrying
+    /// credentials (`user:pass@` userinfo) is encrypted like `ai_api_key`;
+    /// a credential-free address stays readable in `zedis.toml`.
+    pub fn set_http_proxy(&mut self, value: String) {
+        let value = value.trim().to_string();
+        set_configured_proxy(&value);
+        self.http_proxy = if value.is_empty() {
+            None
+        } else if value.contains('@') {
+            Some(encrypt(&value).unwrap_or_else(|_| value.clone()))
+        } else {
+            Some(value)
+        };
+    }
+
     pub fn ai_base_url(&self) -> String {
         self.ai_base_url.clone().unwrap_or_default()
     }

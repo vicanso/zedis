@@ -467,6 +467,9 @@ bulk_add_success = "已添加 %{count} 行"
 bulk_add_empty = "没有要添加的内容 — 至少粘贴一行。"
 
 [settings]
+http_proxy = "HTTP 代理"
+http_proxy_desc = "用于应用自身的请求（更新检查、AI）。支持 http:// 与 socks5://，可带 user:pass@ 凭据。留空 = 跟随系统代理；填 none = 始终直连。"
+http_proxy_placeholder = "http://127.0.0.1:7890"
 section_tabs = "工作区标签页"
 section_tabs_desc = "点击服务器时如何使用工作区标签页"
 sidebar_click_new_tab = "点击服务器时打开新标签页"
