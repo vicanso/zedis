@@ -408,15 +408,17 @@ jobs:
           wget https://github.com/AppImage/appimagetool/releases/download/continuous/${{ matrix.appimagetool }} -O appimagetool
           chmod +x appimagetool
           sudo mv appimagetool /usr/local/bin/
-      - name: install packaging tools (deb / rpm)
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deb,cargo-generate-rpm
       - name: release
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
+          # Packaging tools are built from source: the prebuilt binaries
+          # (taiki-e/install-action) target the newest Ubuntu's glibc and
+          # fail on this deliberately-old runner (22.04 = glibc 2.35, kept
+          # as the shipped binary's compatibility baseline). rust-cache
+          # keeps ~/.cargo/bin, so only the first run pays the compile.
           cargo install cargo-appimage
+          cargo install --locked cargo-deb@3.7.0 cargo-generate-rpm@0.21.0
           cargo build --release --features mimalloc
           ls -lh target/release
           # Native packages from the just-built binary — must run before the
