@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.7.0](https://github.com/vicanso/zedis/compare/v0.6.6..v0.7.0) - 2026-08-05
+
+### ⛰️  Features
+
+- *(info)* Add a raw INFO browser panel with filtering and per-node view - ([1449133](https://github.com/vicanso/zedis/commit/1449133f16bd3f76100671c0f18b8af7099a00eb))
+- *(keys)* Add a Tools-menu export entry and prefix filter, drop the keys-only CSV export - ([9a99444](https://github.com/vicanso/zedis/commit/9a9944427a3cf79340bddb83201172fd4858b045))
+- *(keys)* Export selections as readable JSON/CSV alongside the binary dump - ([ff8953c](https://github.com/vicanso/zedis/commit/ff8953c7949a2c3974c3862cb6413d5830dfbbea))
+- *(memory)* Analyze local RDB dumps offline in the memory analyzer - ([c522dac](https://github.com/vicanso/zedis/commit/c522dace920803fbb91b3ee727d596ce83135471))
+- *(pubsub)* Surface Pub/Sub in the Tools menu and command palette - ([a891a38](https://github.com/vicanso/zedis/commit/a891a3851b5edf02c8f103ba729ffc46f497d5d3))
+- *(pubsub)* Support sharded Pub/Sub (SSUBSCRIBE/SPUBLISH, Redis 7+) - ([aeca4d3](https://github.com/vicanso/zedis/commit/aeca4d3fd753f5ded841243c374aadff8beb4881))
+- *(release)* Ship deb/rpm packages, finish Flathub prep, automate version bumps - ([d5528d6](https://github.com/vicanso/zedis/commit/d5528d6e0ec4d5a9075f9bc936410461e2e42894))
+- *(servers)* Import connections from ARDM and Tiny RDM exports - ([d339750](https://github.com/vicanso/zedis/commit/d33975077cde696f2b0fbe6fc0f9b8f65d37a3e9))
+- *(settings)* User-configurable HTTP/SOCKS proxy with encrypted credentials ([#122](https://github.com/orhun/git-cliff/issues/122)) - ([2a77da2](https://github.com/vicanso/zedis/commit/2a77da25bf883bdf875ea6185035a48fa9c112a5))
+- *(terminal)* Add an AI command assistant behind the "?" prefix - ([9e924ae](https://github.com/vicanso/zedis/commit/9e924ae3d71318587ccd0ce44cef3eac26d9d57a))
+- *(ui)* Surface replication state for plain master-replica setups - ([c28e29b](https://github.com/vicanso/zedis/commit/c28e29bc9b2ae8a9146d828047853683dd4f2288))
+- *(ui)* Monitor rate guard, slowlog Top Commands, INFO snapshot diff, live progress - ([53c18ab](https://github.com/vicanso/zedis/commit/53c18ab3c763ff22e2f4a290c9205749f3d3cf22))
+- *(ui)* Multi-search export/copy, scroll-to-key on jump, subset export note - ([b3c1282](https://github.com/vicanso/zedis/commit/b3c1282a88c48af2313e32b69405402fc12c6a9f))
+- *(ui)* Show per-db key counts in the DB dropdown ([#116](https://github.com/orhun/git-cliff/issues/116)) - ([4667c27](https://github.com/vicanso/zedis/commit/4667c2785b962bdc8bbd5fa53c66fc263d8eadb2))
+
+### 🐛 Bug Fixes
+
+- *(ci)* Build cargo-deb/cargo-generate-rpm from source on the 22.04 runner - ([48e2826](https://github.com/vicanso/zedis/commit/48e28261a5ceb43ec0783e548922a11022079099))
+- *(info)* Refresh the INFO panel once the restored connection is announced - ([6fc6ea1](https://github.com/vicanso/zedis/commit/6fc6ea1dcd8b97ac6a8f1e3b557c62074c6aa6ce))
+- *(ui)* Drop duplicate Linux window controls, correct VibrantLight mapping - ([e7e43cd](https://github.com/vicanso/zedis/commit/e7e43cd2acc2413c47d65017d3e36f668270e206))
+- *(ui)* Complete ⌘K tool coverage, dialog scrollbars, cluster multi-db support - ([7f578de](https://github.com/vicanso/zedis/commit/7f578dea461fe6b14e282df4cf30bebe9e7ba196))
+- *(ui)* Repair key-tree separator handling, ⌘F routing, and loading spinners - ([b048a52](https://github.com/vicanso/zedis/commit/b048a52140f453fd72908bc64b2a520a8e2b1dba))
+
+### 🚜 Refactor
+
+- *(keys)* Stop splitting the key tree inside hash tags and quoted blobs ([#119](https://github.com/orhun/git-cliff/issues/119)) - ([7e89c5a](https://github.com/vicanso/zedis/commit/7e89c5a93eb5544e287303a9400bcbd3daeacc85))
+
+### 📚 Documentation
+
+- Sync FEATURES and landing pages with recent product surface - ([de9caac](https://github.com/vicanso/zedis/commit/de9caac3ab01f92c31aaba226b7e138aa08ca492))
+
 ## [0.6.6](https://github.com/vicanso/zedis/compare/v0.6.5..v0.6.6) - 2026-08-01
 
 ### ⛰️  Features
