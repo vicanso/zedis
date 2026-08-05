@@ -49,9 +49,12 @@ Until DNS propagates, the site still works at `https://vicanso.github.io/zedis/`
 | `zh/index.html` | Chinese landing |
 | `styles.css` | Shared styles |
 | `images/*.png` | Screenshot assets (local; no user-attachments CDN) |
+| `robots.txt` / `sitemap.xml` | Crawl hints for `zedis.net` |
 | `FEATURES.md` / `FEATURES_zh.md` | Full feature docs (linked from the site) |
 
 Language preference is stored in `localStorage` key `zedis-lang` (`en` \| `zh`) when the user clicks the language switcher.
+
+When bumping a release, update the **vX.Y.Z** strings in both `index.html` and `zh/index.html` (nav pill, download CTAs, JSON-LD `softwareVersion`, footer).
 
 ## Hero video
 

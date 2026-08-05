@@ -28,6 +28,33 @@ html {
   scroll-behavior: smooth;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .shot:hover {
+    transform: none;
+  }
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0.5rem;
+  z-index: 100;
+  padding: 0.5rem 0.85rem;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.skip-link:focus {
+  left: 0.75rem;
+}
+
 body {
   margin: 0;
   font-family: var(--font);
@@ -105,6 +132,18 @@ code,
   width: 28px;
   height: 28px;
   border-radius: 6px;
+}
+
+.version-pill {
+  margin-left: 0.15rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .nav-links {
@@ -203,6 +242,15 @@ a.btn-ghost:focus-visible {
   text-align: center;
 }
 
+.hero-kicker {
+  margin: 0 0 0.75rem;
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .hero h1 {
   margin: 0 0 0.75rem;
   font-size: clamp(2rem, 5vw, 3rem);
@@ -213,9 +261,16 @@ a.btn-ghost:focus-visible {
 
 .hero .tagline {
   margin: 0 auto;
-  max-width: 36rem;
+  max-width: 38rem;
   color: var(--muted);
   font-size: 1.1rem;
+}
+
+.hero-caption {
+  margin: 0.85rem auto 0;
+  max-width: 32rem;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .badges {
@@ -269,6 +324,78 @@ a.btn-ghost:focus-visible {
 
 .hero-video.is-playing video {
   display: block;
+}
+
+.hero-video.is-static .hero-poster {
+  display: block;
+}
+
+.hero-video.is-static video {
+  display: none;
+}
+
+.hero-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(12, 15, 20, 0.82);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.65rem 1.25rem;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.hero-play:hover,
+.hero-play:focus-visible {
+  background: rgba(91, 143, 217, 0.9);
+  border-color: transparent;
+}
+
+/* —— One-minute story —— */
+
+.proof-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.proof-card {
+  padding: 1.25rem 1.3rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.proof-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  margin-bottom: 0.65rem;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.proof-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+
+.proof-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 /* —— Sections —— */
@@ -471,6 +598,17 @@ section.alt {
 .install-card h3 {
   margin: 0 0 0.75rem;
   font-size: 1rem;
+}
+
+.install-alt {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.install-alt a {
+  font-weight: 600;
 }
 
 .cmd-box {
