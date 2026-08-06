@@ -530,7 +530,7 @@ section_redis = "Redis 连接"
 section_redis_desc = "设置 Redis 连接和响应超时时间"
 section_system = "系统"
 section_system_desc = "系统托盘及其他系统级配置"
-auto_update_check = "检查更新"
+auto_update_check = "自动检查更新"
 auto_update_check_desc = "启动时自动检查新版本"
 
 [metrics]

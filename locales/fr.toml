@@ -531,7 +531,7 @@ section_redis = "Connexion Redis"
 section_redis_desc = "Définissez les délais de connexion et de réponse Redis"
 section_system = "Système"
 section_system_desc = "Barre système et autres paramètres système"
-auto_update_check = "Rechercher des mises à jour"
+auto_update_check = "Rechercher automatiquement les mises à jour"
 auto_update_check_desc = "Vérifier automatiquement les nouvelles versions au démarrage"
 
 

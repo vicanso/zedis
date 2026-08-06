@@ -531,7 +531,7 @@ section_redis = "Подключение Redis"
 section_redis_desc = "Установите тайм-ауты подключения и ответов Redis"
 section_system = "Система"
 section_system_desc = "Системный трей и другие настройки ОС"
-auto_update_check = "Проверять обновления"
+auto_update_check = "Автоматически проверять обновления"
 auto_update_check_desc = "Автоматически проверять новые версии при запуске"
 
 [metrics]

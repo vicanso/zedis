@@ -513,8 +513,8 @@ impl Zedis {
         if self.update_task.is_some() {
             return;
         }
-        // Reset the once-per-day throttle on every attempt so a transient
-        // failure doesn't immediately retry on the next launch.
+        // Reset the throttle on every attempt so a transient failure doesn't
+        // immediately retry on the next launch.
         update_app_state_and_save_quiet(cx, "mark_update_checked", |state, _| state.mark_update_checked());
         // Flag the check so the title-bar chip can show a loading spinner.
         cx.global::<ZedisGlobalStore>()
@@ -715,29 +715,32 @@ impl Zedis {
     ) {
         self.last_bounds = new_bounds;
         let store = cx.global::<ZedisGlobalStore>().clone();
-        let mut value = store.value(cx);
-        value.set_bounds(new_bounds);
         // Anchor the placement to the current display (origin relative to it) so
         // it survives monitor rearrangement; absolute `bounds` stays as fallback.
         let placement = display.map(|(display_uuid, screen_origin)| WindowPlacement {
             display_uuid,
             bounds: new_bounds - screen_origin,
         });
-        if let Some(p) = &placement {
-            value.upsert_window_placement(p.clone());
-        }
         let task = cx.spawn(async move |_, cx| {
             // wait 500ms
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(500))
                 .await;
 
-            store.update(cx, move |state, cx| {
+            // Snapshot *after* the quiet window, never before: `save_app_state`
+            // rewrites the whole TOML, so a clone taken up front would restore
+            // every field to its pre-wait value. The first render always lands
+            // here (`last_bounds` starts at zero), and its stale snapshot used
+            // to revert the startup update-check stamp ~500ms after it was
+            // written — freezing `last_update_check` and re-checking on every
+            // launch. Same reason `apply_and_save` clones after its own wait.
+            let value = store.update(cx, move |state, cx| {
                 state.set_bounds(new_bounds);
                 if let Some(p) = placement {
                     state.upsert_window_placement(p);
                 }
                 cx.notify();
+                state.clone()
             });
 
             cx.background_spawn(async move {
@@ -2051,9 +2054,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     });
-                    // Silent startup check: once per day at most, skippable
-                    // per-version, only if enabled. The update chip lives in the
-                    // always-visible title bar, so this can run on any route.
+                    // Silent startup check: at most one per `UPDATE_CHECK_INTERVAL`,
+                    // skippable per-version, only if enabled. The update chip lives
+                    // in the always-visible title bar, so this can run on any route.
                     let auto_due = {
                         let store = cx.global::<ZedisGlobalStore>().read(cx);
                         store.auto_update_check() && store.update_check_due()

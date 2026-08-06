@@ -267,6 +267,11 @@ pub enum ServerToolsAction {
 const LIGHT_THEME_MODE: &str = "light";
 const DARK_THEME_MODE: &str = "dark";
 
+/// Minimum gap between two silent startup update checks, in seconds. Releases
+/// are far rarer than launches, so a couple of days is plenty — a user who
+/// wants one sooner has the manual check in the title-bar chip.
+const UPDATE_CHECK_INTERVAL: i64 = 2 * 24 * 60 * 60;
+
 fn get_or_create_server_config() -> Result<PathBuf> {
     // Same file name in both environments — a development run is isolated by its
     // own config *directory* (`<config_dir>/dev`), not by a `-dev` file suffix.
@@ -519,10 +524,11 @@ pub struct ZedisAppState {
     /// into `helpers::proxy` (background HTTP callers have no `cx`).
     http_proxy: Option<String>,
     /// When `true` (default), check GitHub for a newer release on startup,
-    /// throttled to once per day. `false` disables the network check entirely.
+    /// throttled to [`UPDATE_CHECK_INTERVAL`]. `false` disables the network
+    /// check entirely.
     auto_update_check: Option<bool>,
     /// Unix seconds of the last update check, used to throttle the startup
-    /// check to once per day.
+    /// check to one per [`UPDATE_CHECK_INTERVAL`].
     last_update_check: Option<i64>,
     /// A version the user chose to skip (e.g. `"0.5.0"`). Suppresses the silent
     /// startup prompt for exactly that version; a manual check ignores it.
@@ -557,9 +563,6 @@ impl ZedisGlobalStore {
     }
     pub fn state(&self) -> Entity<ZedisAppState> {
         self.app_state.clone()
-    }
-    pub fn value(&self, cx: &App) -> ZedisAppState {
-        self.app_state.read(cx).clone()
     }
     pub fn update<R, C: AppContext>(
         &self,
@@ -1049,14 +1052,15 @@ impl ZedisAppState {
     pub fn set_auto_update_check(&mut self, enabled: bool) {
         self.auto_update_check = Some(enabled);
     }
-    /// Whether a startup update check is due: never run, or more than a day ago.
+    /// Whether a startup update check is due: never run, or longer than
+    /// [`UPDATE_CHECK_INTERVAL`] ago.
     pub fn update_check_due(&self) -> bool {
         match self.last_update_check {
-            Some(ts) => unix_ts().saturating_sub(ts) >= 24 * 60 * 60,
+            Some(ts) => unix_ts().saturating_sub(ts) >= UPDATE_CHECK_INTERVAL,
             None => true,
         }
     }
-    /// Record that an update check just ran, resetting the once-per-day throttle.
+    /// Record that an update check just ran, resetting the throttle.
     pub fn mark_update_checked(&mut self) {
         self.last_update_check = Some(unix_ts());
     }

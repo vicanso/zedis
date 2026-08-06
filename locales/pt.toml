@@ -531,7 +531,7 @@ section_redis = "Conexão Redis"
 section_redis_desc = "Defina tempos limite para conexão e respostas do Redis"
 section_system = "Sistema"
 section_system_desc = "Bandeja do sistema e outras configurações de SO"
-auto_update_check = "Verificar atualizações"
+auto_update_check = "Verificar atualizações automaticamente"
 auto_update_check_desc = "Verificar automaticamente novas versões ao iniciar"
 
 [metrics]

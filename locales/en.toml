@@ -531,7 +531,7 @@ section_redis = "Redis Connection"
 section_redis_desc = "Set timeouts for Redis connection and responses"
 section_system = "System"
 section_system_desc = "System tray and other OS-level settings"
-auto_update_check = "Check for Updates"
+auto_update_check = "Check for Updates Automatically"
 auto_update_check_desc = "Automatically check for new versions on startup"
 
 [metrics]

@@ -531,7 +531,7 @@ section_redis = "Redis 接続"
 section_redis_desc = "Redis 接続とレスポンスのタイムアウトを設定します"
 section_system = "システム"
 section_system_desc = "システムトレイとその他のシステム設定"
-auto_update_check = "アップデートを確認"
+auto_update_check = "アップデートを自動確認"
 auto_update_check_desc = "起動時に自動的に新しいバージョンを確認する"
 
 [metrics]

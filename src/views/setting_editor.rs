@@ -14,7 +14,10 @@
 
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
-    helpers::{DEFAULT_UI_FONT_SIZE, apply_fonts, get_or_create_config_dir, is_valid_proxy_setting, parse_duration},
+    helpers::{
+        DEFAULT_UI_FONT_SIZE, apply_fonts, get_or_create_config_dir, is_app_store_build, is_valid_proxy_setting,
+        parse_duration,
+    },
     states::{
         ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
         update_app_state_and_save_quiet,
@@ -722,19 +725,24 @@ impl Render for ZedisSettingEditor {
                             })),
                     ))
                 })
-                .child(Self::render_setting_row(
-                    cx,
-                    "auto_update_check",
-                    Switch::new("auto-update-check")
-                        .checked(self.auto_update_check)
-                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                            this.auto_update_check = *checked;
-                            let enabled = *checked;
-                            update_app_state_and_save(cx, "save_auto_update_check", move |state, _| {
-                                state.set_auto_update_check(enabled);
-                            });
-                        })),
-                ))
+                // App Store builds update via the App Store — the toggle would
+                // control a check that `check_for_updates` refuses to run, so
+                // hide it alongside the menu entries.
+                .when(!is_app_store_build(), |this| {
+                    this.child(Self::render_setting_row(
+                        cx,
+                        "auto_update_check",
+                        Switch::new("auto-update-check")
+                            .checked(self.auto_update_check)
+                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                this.auto_update_check = *checked;
+                                let enabled = *checked;
+                                update_app_state_and_save(cx, "save_auto_update_check", move |state, _| {
+                                    state.set_auto_update_check(enabled);
+                                });
+                            })),
+                    ))
+                })
                 .child(Self::render_setting_row(
                     cx,
                     "config_dir",

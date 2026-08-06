@@ -531,7 +531,7 @@ section_redis = "Redis-Verbindung"
 section_redis_desc = "Legen Sie Timeouts für Redis-Verbindung und -Antworten fest"
 section_system = "System"
 section_system_desc = "Systemtray und andere Betriebssystemeinstellungen"
-auto_update_check = "Nach Updates suchen"
+auto_update_check = "Automatisch nach Updates suchen"
 auto_update_check_desc = "Beim Start automatisch nach neuen Versionen suchen"
 
 [metrics]
