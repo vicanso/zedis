@@ -14,8 +14,8 @@
 
 use crate::{
     connection::{
-        DangerKind, classify_dangerous_line, get_command_description, get_connection_manager, get_server,
-        is_write_command, list_commands, requires_write_confirm,
+        DangerKind, classify_dangerous_line, command_doc_url, get_command_description, get_connection_manager,
+        get_server, is_write_command, list_commands, requires_write_confirm,
     },
     db::get_cmd_history_manager,
     error::Error,
@@ -27,7 +27,7 @@ use crate::{
 };
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable,
+    ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     highlighter::Language,
@@ -961,24 +961,41 @@ impl Render for ZedisTerminal {
                                             let is_selected = self.cmd_suggestion_index == Some(idx);
                                             let text = format!("{}: {cmd}", idx + 1);
                                             let (summary, syntax) = get_command_description(cmd).unwrap_or_default();
+                                            let doc_url = command_doc_url(cmd);
                                             let make_label = |text: SharedString| {
                                                 Label::new(text)
                                                     .font_family(font_family.clone())
                                                     .text_sm()
                                                     .text_color(cx.theme().muted_foreground)
                                             };
-                                            div()
+                                            h_flex()
                                                 .px_2()
                                                 .py_1()
                                                 .rounded_sm()
+                                                .items_start()
+                                                .justify_between()
+                                                .gap_2()
                                                 .when(is_selected, |this| this.bg(cx.theme().selection))
                                                 .child(
-                                                    Label::new(text)
-                                                        .font_family(font_family.clone())
-                                                        .text_color(cx.theme().foreground),
+                                                    div()
+                                                        .min_w_0()
+                                                        .child(
+                                                            Label::new(text)
+                                                                .font_family(font_family.clone())
+                                                                .text_color(cx.theme().foreground),
+                                                        )
+                                                        .child(make_label(syntax.into()))
+                                                        .child(make_label(summary.into())),
                                                 )
-                                                .child(make_label(syntax.into()))
-                                                .child(make_label(summary.into()))
+                                                .child(
+                                                    // Hardcoded English like the rest of this panel.
+                                                    Button::new(("term-cmd-doc", idx))
+                                                        .icon(Icon::new(IconName::ExternalLink))
+                                                        .ghost()
+                                                        .small()
+                                                        .tooltip(format!("{cmd} docs — {doc_url}"))
+                                                        .on_click(move |_, _window, cx| cx.open_url(&doc_url)),
+                                                )
                                         },
                                     ))),
                             )

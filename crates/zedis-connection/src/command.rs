@@ -45,6 +45,18 @@ pub fn get_command_description(name: &str) -> Option<(String, String)> {
     ))
 }
 
+/// Official documentation URL for a command name as it appears in
+/// `commands.json`, e.g. `"ACL SAVE"` →
+/// `https://redis.io/docs/latest/commands/acl-save/`. Container commands
+/// (`"ACL"`, `"XINFO"`, …) have their own pages under the same scheme, so
+/// every listed name resolves.
+pub fn command_doc_url(name: &str) -> String {
+    format!(
+        "https://redis.io/docs/latest/commands/{}/",
+        name.trim().to_lowercase().replace(' ', "-")
+    )
+}
+
 static COMMANDS_JSON: OnceLock<Vec<u8>> = OnceLock::new();
 
 /// Provide the embedded `commands.json` bytes. Called once at startup by the
@@ -234,5 +246,25 @@ impl<'de> Deserialize<'de> for Version {
     {
         let s: String = Deserialize::deserialize(deserializer)?;
         Ok(s.as_str().into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_doc_url;
+
+    #[test]
+    fn doc_url_from_command_name() {
+        assert_eq!(
+            command_doc_url("ACL SAVE"),
+            "https://redis.io/docs/latest/commands/acl-save/"
+        );
+        assert_eq!(command_doc_url("GET"), "https://redis.io/docs/latest/commands/get/");
+        // Container commands have their own pages too.
+        assert_eq!(command_doc_url("XINFO"), "https://redis.io/docs/latest/commands/xinfo/");
+        assert_eq!(
+            command_doc_url(" client kill "),
+            "https://redis.io/docs/latest/commands/client-kill/"
+        );
     }
 }
