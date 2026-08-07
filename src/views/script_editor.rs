@@ -25,7 +25,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
 use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
-use gpui_component::{IconName, h_flex};
+use gpui_component::{ActiveTheme, IconName, Sizable, h_flex};
 use gpui_component::{
     alert::Alert,
     form::{field, v_form},
@@ -166,6 +166,56 @@ impl TableDelegate for ScriptTableDelegate {
 enum ViewMode {
     Table,
     Edit,
+}
+
+/// `(label, command)` starter templates for the shell-command field, covering
+/// serialization formats that have no built-in decoder. Labels are tool names
+/// (not translated); commands assume the tool is on PATH — the row's i18n
+/// label says so. Invocations differ per platform where the stock tooling
+/// does (`python3` vs `python`, `xxd` vs PowerShell's `Format-Hex`).
+fn decode_templates() -> [(&'static str, &'static str); 9] {
+    let base64 = if cfg!(windows) {
+        "powershell -command \"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content -Raw '{RAW_FILE}')))\""
+    } else {
+        "base64 --decode {RAW_FILE}"
+    };
+    let pickle = if cfg!(windows) {
+        "python -c \"import pickle,pprint;pprint.pprint(pickle.load(open('{RAW_FILE}','rb')))\""
+    } else {
+        "python3 -c \"import pickle,pprint;pprint.pprint(pickle.load(open('{RAW_FILE}','rb')))\""
+    };
+    let hex_dump = if cfg!(windows) {
+        "powershell -command \"Format-Hex '{RAW_FILE}'\""
+    } else {
+        "xxd {RAW_FILE}"
+    };
+    // ZIP is an archive, not a stream — native decode can't know which entry
+    // to show, so it stays a viewer concern. `-p`/`-O` cat every entry to
+    // stdout; Windows 10+ ships bsdtar (`tar`), which reads zip natively.
+    let unzip = if cfg!(windows) {
+        "tar -xOf {RAW_FILE}"
+    } else {
+        "unzip -p {RAW_FILE}"
+    };
+    [
+        ("Base64", base64),
+        ("Python Pickle", pickle),
+        (
+            // Rails puts Marshal-dumped objects in Redis caches/sessions.
+            "Ruby Marshal",
+            "ruby -e \"require 'pp'; pp Marshal.load(File.binread('{RAW_FILE}'))\"",
+        ),
+        (
+            "PHP serialize",
+            "php -r \"print_r(unserialize(file_get_contents('{RAW_FILE}')));\"",
+        ),
+        ("Protobuf (decode_raw)", "protoc --decode_raw < {RAW_FILE}"),
+        ("ZIP", unzip),
+        // Brotli has no built-in decoder (unlike gzip/zstd/snappy/LZ4).
+        ("Brotli", "brotli -dc {RAW_FILE}"),
+        ("Hex dump", hex_dump),
+        ("Java serialized", "jdeserialize {RAW_FILE}"),
+    ]
 }
 
 pub struct ZedisScriptEditor {
@@ -518,10 +568,41 @@ impl ZedisScriptEditor {
                             .required(true)
                             .description(i18n_script_editor(cx, "shell_command_hint"))
                             .child(
-                                Input::new(&self.shell_command_state)
+                                v_flex()
                                     .w_full()
-                                    // Shell command text reads like code — mono.
-                                    .font_family(get_mono_font_family()),
+                                    .gap_2()
+                                    .child(
+                                        Input::new(&self.shell_command_state)
+                                            .w_full()
+                                            // Shell command text reads like code — mono.
+                                            .font_family(get_mono_font_family()),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .flex_wrap()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Label::new(i18n_script_editor(cx, "templates"))
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground),
+                                            )
+                                            .children(decode_templates().into_iter().enumerate().map(
+                                                |(ix, (label, command))| {
+                                                    Button::new(("script-template", ix))
+                                                        .outline()
+                                                        .xsmall()
+                                                        .label(label)
+                                                        // Show what will be inserted before clicking.
+                                                        .tooltip(command)
+                                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                                            this.shell_command_state
+                                                                .update(cx, |s, cx| s.set_value(command, window, cx));
+                                                        }))
+                                                },
+                                            )),
+                                    ),
                             ),
                     ),
             )
