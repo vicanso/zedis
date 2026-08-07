@@ -10,9 +10,9 @@ use crate::helpers::{
     set_configured_proxy, unix_ts_millis, with_app_identity,
 };
 use crate::states::{
-    GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
-    SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_sidebar,
-    i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
+    GlobalEvent, HINT_WELCOME, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction,
+    ServerView, SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_hints,
+    i18n_sidebar, i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
 };
 use crate::views::{
     DialogCallback, ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette,
@@ -145,6 +145,9 @@ pub struct Zedis {
     /// The installer is open and this platform needs Zedis gone to finish the
     /// install — prompt to quit. Consumed in `render` (which has the `Window`).
     pending_install_quit: bool,
+    /// First launch with nothing configured — show the one-time welcome card.
+    /// Consumed in `render` (which has the `Window` needed for the dialog).
+    pending_welcome: bool,
 }
 
 impl Zedis {
@@ -343,6 +346,7 @@ impl Zedis {
             update_task: None,
             download_task: None,
             pending_install_quit: false,
+            pending_welcome: false,
         }
     }
 
@@ -1065,6 +1069,28 @@ fn release_notes_style() -> TextViewStyle {
         })
 }
 
+/// First-launch onboarding: a one-shot card walking through the three steps to
+/// get productive. Only opened when no server is configured yet, and never
+/// twice — `HINT_WELCOME` is dismissed the moment startup decides to show it.
+fn open_welcome_dialog(window: &mut Window, cx: &mut App) {
+    let intro = i18n_hints(cx, "welcome_intro");
+    let steps: [SharedString; 3] = [
+        i18n_hints(cx, "welcome_step_connect"),
+        i18n_hints(cx, "welcome_step_browse"),
+        format!(
+            "{} ({})",
+            i18n_hints(cx, "welcome_step_palette"),
+            humanize_keystroke("secondary-k")
+        )
+        .into(),
+    ];
+    ZedisDialog::new(i18n_hints(cx, "welcome_title"))
+        .icon(IconName::Info)
+        .child(move || v_flex().gap_2().child(intro.clone()).children(steps.iter().cloned()))
+        .ok_text(i18n_hints(cx, "welcome_ok"))
+        .open(window, cx);
+}
+
 /// Offered once the installer is open on a platform that can't install over a
 /// running Zedis (macOS / Windows — see `installer_requires_quit`). Quitting is
 /// the user's call: an editor may hold unsaved changes, and they may simply want
@@ -1211,6 +1237,14 @@ impl Render for Zedis {
         // ask (the update dialog has already dismissed itself by now).
         if std::mem::take(&mut self.pending_install_quit) {
             open_install_quit_dialog(window, cx);
+        }
+        if std::mem::take(&mut self.pending_welcome) {
+            // Defer past this frame: opening the dialog focuses it, but the
+            // views built later in this same first frame steal that focus
+            // back (the servers page focuses itself in `new` so ⌘F works on
+            // arrival) — leaving Esc/Enter dispatched to the page behind the
+            // overlay. Deferring makes the dialog the last focus claimant.
+            window.defer(cx, open_welcome_dialog);
         }
         if let Some(info) = self.pending_update.take() {
             let weak = cx.entity().downgrade();
@@ -2063,6 +2097,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     if auto_due {
                         zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, false, cx));
+                    }
+                    // One-shot welcome card, and only for a truly fresh start
+                    // (no server configured — an upgrading user needs no tour).
+                    // Dismissed on this first evaluation either way, so it can
+                    // never pop up later (e.g. after deleting every server).
+                    if !cx.global::<ZedisGlobalStore>().read(cx).hint_dismissed(HINT_WELCOME) {
+                        update_app_state_and_save_quiet(cx, "dismiss_hint_welcome", |state, _| {
+                            state.dismiss_hint(HINT_WELCOME)
+                        });
+                        // An unreadable config counts as configured: don't greet
+                        // an existing user just because the file failed to parse.
+                        if get_servers().map(|servers| servers.is_empty()).unwrap_or(false) {
+                            zedis_view.update(cx, |zedis, _| zedis.pending_welcome = true);
+                        }
                     }
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },

@@ -1711,3 +1711,14 @@ section_scan = "スキャン一致"
 hint_idle = "キー名を入力して Enter。先に TYPE の完全一致、なければ SCAN。"
 hint_footer = "サーバーごとの SCAN 上限 · Enter で検索"
 
+
+[hints]
+welcome_title = "Zedis へようこそ"
+welcome_intro = "GPU で描画するネイティブ Redis GUI。3 ステップで使い始められます："
+welcome_step_connect = "1. 最初のサーバー接続を追加"
+welcome_step_browse = "2. キーツリーでキーを閲覧 — 値は自動的にデコードされます（JSON、Protobuf、画像、圧縮データ）"
+welcome_step_palette = "3. コマンドパレットを開く — すべてのツールはここから"
+welcome_ok = "はじめる"
+first_connect = "接続しました！%{palette} でコマンドパレット、%{search} でデータベース横断検索。"
+topology_banner = "初めての方へ：このパネルはデプロイのトポロジー（ノードの健全性、レプリケーション、スロットの割り当て）を表示します。ノードをクリックすると詳細を確認できます。"
+memory_banner = "初めての方へ：アナライザーは SCAN でキーをサンプリングし、キーパターンごとにメモリを集計して最適化案を提示します。"

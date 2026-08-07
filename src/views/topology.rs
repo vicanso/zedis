@@ -35,9 +35,9 @@ use crate::assets::CustomIconName;
 use crate::connection::{CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap};
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ClusterMasterRanges, ClusterNodeLoad, ReplicaInfo, ServerEvent, ZedisGlobalStore, ZedisServerState,
-    dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, i18n_topology, plan_cluster_reshard,
-    source_owners_for_slots,
+    ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, ReplicaInfo, ServerEvent, ZedisGlobalStore, ZedisServerState,
+    dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, i18n_hints, i18n_topology,
+    plan_cluster_reshard, source_owners_for_slots, update_app_state_and_save_quiet,
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
 use gpui_component::{
@@ -51,7 +51,7 @@ use gpui_component::{
 };
 use std::time::Duration;
 use tracing::info;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, hint_banner};
 
 /// Shorten a cluster node id for display (first 8 hex chars).
 fn short_node_id(id: &str) -> String {
@@ -166,6 +166,10 @@ pub struct ZedisTopology {
     load_error: Option<SharedString>,
     load_metric: LoadMetric,
     load_poll_task: Option<Task<()>>,
+    /// First visit ever (HINT_TOPOLOGY not yet dismissed) — show the one-time
+    /// intro banner. Local so closing it repaints without waiting for the
+    /// async state save.
+    show_first_visit_hint: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -229,6 +233,7 @@ impl ZedisTopology {
             load_error: None,
             load_metric: LoadMetric::Memory,
             load_poll_task: None,
+            show_first_visit_hint: !cx.global::<ZedisGlobalStore>().read(cx).hint_dismissed(HINT_TOPOLOGY),
             _subscriptions: subscriptions,
         };
         this.detect_mode(cx);
@@ -1919,12 +1924,25 @@ impl Render for ZedisTopology {
                 },
             );
 
+        let first_visit_hint = self.show_first_visit_hint.then(|| {
+            hint_banner("topology-first-visit", i18n_hints(cx, "topology_banner")).on_close(cx.listener(
+                |this, _, _window, cx| {
+                    this.show_first_visit_hint = false;
+                    update_app_state_and_save_quiet(cx, "dismiss_hint_topology", |state, _| {
+                        state.dismiss_hint(HINT_TOPOLOGY)
+                    });
+                    cx.notify();
+                },
+            ))
+        });
+
         v_flex()
             .size_full()
             .font_family(get_mono_font_family())
             .p_4()
             .gap_3()
             .child(header)
+            .children(first_visit_hint)
             .child(body)
     }
 }

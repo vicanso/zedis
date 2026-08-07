@@ -1714,3 +1714,14 @@ section_scan = "Scan matches"
 hint_idle = "Enter a key name and press Enter. Exact TYPE hits show first; SCAN runs if nothing matches."
 hint_footer = "Per-server SCAN cap · Enter to search"
 
+
+[hints]
+welcome_title = "Welcome to Zedis"
+welcome_intro = "A native, GPU-accelerated Redis GUI. Three steps to get productive:"
+welcome_step_connect = "1. Add your first server connection"
+welcome_step_browse = "2. Browse keys in the tree — values are decoded automatically (JSON, Protobuf, images, compressed data)"
+welcome_step_palette = "3. Open the command palette — every tool lives there"
+welcome_ok = "Get Started"
+first_connect = "Connected! %{palette} opens the command palette; %{search} searches across databases."
+topology_banner = "First time here: this panel maps your deployment's topology — node health, replication links and slot coverage. Click a node for details."
+memory_banner = "First time here: the analyzer samples keys with SCAN, aggregates memory by key pattern, and suggests optimizations."

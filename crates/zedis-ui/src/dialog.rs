@@ -14,7 +14,7 @@
 
 use gpui::{AnyElement, App, ClickEvent, IntoElement, ParentElement, Pixels, SharedString, Styled, Window};
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter};
+use gpui_component::dialog::{DialogButtonProps, DialogFooter};
 use gpui_component::{Icon, IconName, WindowExt, h_flex};
 use std::rc::Rc;
 
@@ -235,15 +235,44 @@ impl ZedisDialog {
                 if let Some(ref ff) = footer_child {
                     d = d.footer(ff());
                 } else if let Some((ok_label, cancel_label)) = non_alert_footer.clone() {
+                    // Wire the buttons' `on_click` directly instead of using the
+                    // stock `DialogAction`/`DialogClose` wrappers: those fire by
+                    // dispatching an action along the window's focus path, and a
+                    // dialog whose body holds no focusable element (labels only)
+                    // never receives it — the focus is still behind the overlay,
+                    // leaving the buttons dead (upstream FIXME in Dialog's
+                    // keyboard handling notes the same gap for Escape).
                     let mut footer = DialogFooter::new();
                     if let Some(cancel) = cancel_label {
+                        let close_cb = on_close.clone();
                         footer = footer.child(
-                            DialogClose::new().child(Button::new("zedis-dialog-cancel").label(cancel).outline()),
+                            Button::new("zedis-dialog-cancel")
+                                .label(cancel)
+                                .outline()
+                                .on_click(move |e, window, cx| {
+                                    window.close_dialog(cx);
+                                    if let Some(cb) = &close_cb {
+                                        cb(e, window, cx);
+                                    }
+                                }),
                         );
                     }
                     if let Some(ok) = ok_label {
-                        footer =
-                            footer.child(DialogAction::new().child(Button::new("zedis-dialog-ok").label(ok).primary()));
+                        let ok_cb = on_ok.clone();
+                        let close_cb = on_close.clone();
+                        footer = footer.child(Button::new("zedis-dialog-ok").label(ok).primary().on_click(
+                            move |e, window, cx| {
+                                // Mirror the ConfirmDialog contract: on_ok
+                                // returning false keeps the dialog open.
+                                let close = ok_cb.as_ref().map(|f| f(e, window, cx)).unwrap_or(true);
+                                if close {
+                                    window.close_dialog(cx);
+                                    if let Some(cb) = &close_cb {
+                                        cb(e, window, cx);
+                                    }
+                                }
+                            },
+                        ));
                     }
                     d = d.footer(footer);
                 }

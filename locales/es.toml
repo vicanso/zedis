@@ -1711,3 +1711,14 @@ section_scan = "Coincidencias de escaneo"
 hint_idle = "Escribe un nombre de clave y pulsa Enter. Primero coincidencias TYPE exactas; SCAN si no hay."
 hint_footer = "Límite SCAN por servidor · Enter para buscar"
 
+
+[hints]
+welcome_title = "Bienvenido a Zedis"
+welcome_intro = "Un cliente Redis nativo acelerado por GPU. Tres pasos para empezar:"
+welcome_step_connect = "1. Añade tu primera conexión de servidor"
+welcome_step_browse = "2. Explora las claves en el árbol: los valores se decodifican automáticamente (JSON, Protobuf, imágenes, datos comprimidos)"
+welcome_step_palette = "3. Abre la paleta de comandos: todas las herramientas están ahí"
+welcome_ok = "Comenzar"
+first_connect = "¡Conectado! %{palette} abre la paleta de comandos; %{search} busca en todas las bases de datos."
+topology_banner = "Primera visita: este panel muestra la topología del despliegue — salud de los nodos, enlaces de replicación y cobertura de slots. Haz clic en un nodo para ver detalles."
+memory_banner = "Primera visita: el analizador muestrea claves con SCAN, agrega la memoria por patrón de clave y sugiere optimizaciones."

@@ -20,8 +20,9 @@ use crate::helpers::{
     group_thousands, unix_ts_millis,
 };
 use crate::states::{
-    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
-    get_metrics_cache, i18n_common, i18n_memory_analysis,
+    HINT_MEMORY_ANALYSIS, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip,
+    content_area_width, get_metrics_cache, i18n_common, i18n_hints, i18n_memory_analysis,
+    update_app_state_and_save_quiet,
 };
 use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 /// Redis Memory Analysis viewer.
@@ -52,7 +53,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
 use zedis_core::rdb::RdbParser;
-use zedis_ui::{ZedisDivider, help_popover};
+use zedis_ui::{ZedisDivider, help_popover, hint_banner};
 
 mod render;
 /// Maximum rows kept per table.
@@ -369,6 +370,10 @@ pub struct ZedisMemoryAnalysis {
     /// the live server hide, sizes are serialized bytes, jump actions are
     /// suppressed). Cleared when an online scan starts.
     rdb_file: Option<SharedString>,
+    /// First visit ever (HINT_MEMORY_ANALYSIS not yet dismissed) — show the
+    /// one-time intro banner. Local so closing it repaints without waiting
+    /// for the async state save.
+    show_first_visit_hint: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -505,6 +510,10 @@ impl ZedisMemoryAnalysis {
             ai_output: None,
             ai_task: None,
             rdb_file: None,
+            show_first_visit_hint: !cx
+                .global::<ZedisGlobalStore>()
+                .read(cx)
+                .hint_dismissed(HINT_MEMORY_ANALYSIS),
             _subscriptions: subscriptions,
         };
         this.update_est_commands();

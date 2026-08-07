@@ -41,6 +41,24 @@ pub fn i18n_multi_search<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("multi_search.{key}"), locale = locale).into()
 }
 
+pub fn i18n_hints<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("hints.{key}"), locale = locale).into()
+}
+
+/// Toast body for the one-time first-connection hint, with the two global
+/// shortcuts resolved for the current platform (⌘ on macOS, Ctrl elsewhere).
+pub fn first_connect_hint(cx: &App) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(
+        "hints.first_connect",
+        palette = humanize_keystroke("secondary-k"),
+        search = humanize_keystroke("secondary-shift-f"),
+        locale = locale
+    )
+    .into()
+}
+
 pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("sidebar.{key}"), locale = locale).into()

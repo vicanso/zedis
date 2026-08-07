@@ -876,6 +876,19 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     .child(div().flex_1())
                     .child(functions.flex_none()),
             )
+            .children(self.show_first_visit_hint.then(|| {
+                div().w_full().flex_none().px_4().child(
+                    hint_banner("memory-analysis-first-visit", i18n_hints(cx, "memory_banner")).on_close(cx.listener(
+                        |this, _, _window, cx| {
+                            this.show_first_visit_hint = false;
+                            update_app_state_and_save_quiet(cx, "dismiss_hint_memory_analysis", |state, _| {
+                                state.dismiss_hint(HINT_MEMORY_ANALYSIS)
+                            });
+                            cx.notify();
+                        },
+                    )),
+                )
+            }))
             // Progress bar for a running scan / RDB parse — the toolbar's
             // percentage chip stays for the exact figure; this strip makes
             // long runs (large dumps, low-ratio scans) visibly alive.

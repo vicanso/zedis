@@ -1711,3 +1711,14 @@ section_scan = "Correspondências do scan"
 hint_idle = "Digite um nome de chave e Enter. Hits TYPE exatos primeiro; SCAN se vazio."
 hint_footer = "Limite SCAN por servidor · Enter para buscar"
 
+
+[hints]
+welcome_title = "Bem-vindo ao Zedis"
+welcome_intro = "Um cliente Redis nativo acelerado por GPU. Três passos para começar:"
+welcome_step_connect = "1. Adicione sua primeira conexão de servidor"
+welcome_step_browse = "2. Navegue pelas chaves na árvore — os valores são decodificados automaticamente (JSON, Protobuf, imagens, dados comprimidos)"
+welcome_step_palette = "3. Abra a paleta de comandos — todas as ferramentas estão lá"
+welcome_ok = "Começar"
+first_connect = "Conectado! %{palette} abre a paleta de comandos; %{search} pesquisa em todos os bancos."
+topology_banner = "Primeira visita: este painel mapeia a topologia da implantação — saúde dos nós, links de replicação e cobertura de slots. Clique em um nó para ver detalhes."
+memory_banner = "Primeira visita: o analisador amostra chaves via SCAN, agrega a memória por padrão de chave e sugere otimizações."

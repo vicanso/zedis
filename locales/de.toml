@@ -1711,3 +1711,14 @@ section_scan = "Scan-Treffer"
 hint_idle = "Schlüsselname eingeben und Enter. Exakte TYPE-Treffer zuerst; SCAN wenn nichts passt."
 hint_footer = "SCAN-Limit pro Server · Enter zum Suchen"
 
+
+[hints]
+welcome_title = "Willkommen bei Zedis"
+welcome_intro = "Ein natives, GPU-beschleunigtes Redis-GUI. In drei Schritten produktiv:"
+welcome_step_connect = "1. Erste Serververbindung hinzufügen"
+welcome_step_browse = "2. Schlüssel im Baum durchsuchen — Werte werden automatisch dekodiert (JSON, Protobuf, Bilder, komprimierte Daten)"
+welcome_step_palette = "3. Befehlspalette öffnen — dort findet sich jedes Werkzeug"
+welcome_ok = "Loslegen"
+first_connect = "Verbunden! %{palette} öffnet die Befehlspalette; %{search} durchsucht alle Datenbanken."
+topology_banner = "Zum ersten Mal hier: Dieses Panel zeigt die Topologie des Deployments — Knotenzustand, Replikationsverbindungen und Slot-Abdeckung. Für Details auf einen Knoten klicken."
+memory_banner = "Zum ersten Mal hier: Der Analyzer sampelt Schlüssel per SCAN, aggregiert Speicher nach Schlüsselmuster und schlägt Optimierungen vor."

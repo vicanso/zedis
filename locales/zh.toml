@@ -1713,3 +1713,14 @@ section_scan = "扫描匹配"
 hint_idle = "输入键名后按 Enter。优先 TYPE 精确命中；无结果时再自动 SCAN。"
 hint_footer = "每服务器 SCAN 上限 · Enter 搜索"
 
+
+[hints]
+welcome_title = "欢迎使用 Zedis"
+welcome_intro = "原生 GPU 加速的 Redis 图形客户端。三步上手："
+welcome_step_connect = "1. 添加第一个服务器连接"
+welcome_step_browse = "2. 在键树中浏览——值会自动解码（JSON、Protobuf、图片、压缩数据）"
+welcome_step_palette = "3. 打开命令面板，所有工具都在这里"
+welcome_ok = "开始使用"
+first_connect = "连接成功！%{palette} 打开命令面板，%{search} 跨库搜索。"
+topology_banner = "初次使用提示：此面板展示部署拓扑——节点健康、复制关系与槽位覆盖，点击节点可查看详情。"
+memory_banner = "初次使用提示：分析器通过 SCAN 采样键，按键模式聚合内存占用并给出优化建议。"

@@ -272,6 +272,13 @@ const DARK_THEME_MODE: &str = "dark";
 /// wants one sooner has the manual check in the title-bar chip.
 const UPDATE_CHECK_INTERVAL: i64 = 2 * 24 * 60 * 60;
 
+/// Keys for the one-time onboarding hints (`dismissed_hints`). Each hint
+/// shows at most once, ever; the key is persisted the first time it fires.
+pub const HINT_WELCOME: &str = "welcome";
+pub const HINT_FIRST_CONNECT: &str = "first_connect";
+pub const HINT_TOPOLOGY: &str = "topology";
+pub const HINT_MEMORY_ANALYSIS: &str = "memory_analysis";
+
 fn get_or_create_server_config() -> Result<PathBuf> {
     // Same file name in both environments — a development run is isolated by its
     // own config *directory* (`<config_dir>/dev`), not by a `-dev` file suffix.
@@ -533,6 +540,9 @@ pub struct ZedisAppState {
     /// A version the user chose to skip (e.g. `"0.5.0"`). Suppresses the silent
     /// startup prompt for exactly that version; a manual check ignores it.
     skipped_version: Option<String>,
+    /// One-time onboarding hints (welcome card, first-connect toast, panel
+    /// banners) the user has already seen — see the `HINT_*` constants.
+    dismissed_hints: Option<Vec<String>>,
     /// A newer release found by a check, awaiting the user's action. Runtime
     /// only (never persisted) — it's re-discovered on the next check. Drives
     /// the status-bar update chip; the chip's click opens the prompt for it.
@@ -1063,6 +1073,19 @@ impl ZedisAppState {
     /// Record that an update check just ran, resetting the throttle.
     pub fn mark_update_checked(&mut self) {
         self.last_update_check = Some(unix_ts());
+    }
+    /// Whether a one-time onboarding hint has already been shown.
+    pub fn hint_dismissed(&self, key: &str) -> bool {
+        self.dismissed_hints
+            .as_ref()
+            .is_some_and(|list| list.iter().any(|k| k == key))
+    }
+    /// Mark a one-time onboarding hint as seen so it never fires again.
+    pub fn dismiss_hint(&mut self, key: &str) {
+        let list = self.dismissed_hints.get_or_insert_default();
+        if !list.iter().any(|k| k == key) {
+            list.push(key.to_string());
+        }
     }
     /// Whether the user chose to skip this exact version.
     pub fn update_skipped(&self, version: &str) -> bool {

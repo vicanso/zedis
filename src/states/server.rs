@@ -21,7 +21,10 @@ use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{ValueHistoryEntry, push_history};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
-use crate::states::{QueryMode, ZedisGlobalStore, get_session_option, i18n_common};
+use crate::states::{
+    HINT_FIRST_CONNECT, QueryMode, ZedisGlobalStore, first_connect_hint, get_session_option, i18n_common,
+    update_app_state_and_save_quiet,
+};
 use ahash::AHashMap;
 use ahash::AHashSet;
 use bytes::Bytes;
@@ -1108,6 +1111,21 @@ impl ZedisServerState {
                                 this.scanning = false;
                             }
                             cx.notify();
+                            // One-time onboarding toast on the very first
+                            // successful connection: point at the two global
+                            // entry points (palette, cross-db search) a new
+                            // user won't discover from the key tree alone.
+                            if !cx
+                                .global::<ZedisGlobalStore>()
+                                .read(cx)
+                                .hint_dismissed(HINT_FIRST_CONNECT)
+                            {
+                                update_app_state_and_save_quiet(cx, "dismiss_hint_first_connect", |state, _| {
+                                    state.dismiss_hint(HINT_FIRST_CONNECT)
+                                });
+                                let message = first_connect_hint(cx);
+                                this.emit_info_notification(message, cx);
+                            }
                             // Auto-scan keys if not exact mode
                             if !is_exact_mode {
                                 this.scan_keys(server_id, SharedString::default(), cx);
