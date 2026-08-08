@@ -228,14 +228,11 @@ impl ZedisSettingEditor {
         });
         let ai_model_state = Self::create_input_state(window, cx, "ai_model_placeholder", ai_model, None);
         // Empty = follow env/OS system proxy; "none" = always direct; else a
-        // proxy URI. Validated so junk never reaches zedis.toml.
-        let http_proxy_state = Self::create_input_state(
-            window,
-            cx,
-            "http_proxy_placeholder",
-            http_proxy,
-            Some(is_valid_proxy_setting),
-        );
+        // proxy URI. No live validator: `InputState::validate` rejects any
+        // keystroke whose *resulting* text fails, and URI validity isn't
+        // prefix-closed — "http:/" is invalid, so the second slash of
+        // "http://" could never be typed. Validation happens on blur instead.
+        let http_proxy_state = Self::create_input_state(window, cx, "http_proxy_placeholder", http_proxy, None);
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
 
@@ -373,16 +370,24 @@ impl ZedisSettingEditor {
                 state.set_ai_model(text);
             });
         }));
-        subscriptions.push(Self::bind_blur_save(cx, &http_proxy_state, window, |text, cx| {
-            // The input validates live, but blur still delivers whatever is
-            // in the box — never persist a value app_proxy can't act on.
-            if !is_valid_proxy_setting(&text) {
-                return;
-            }
-            update_app_state_and_save_quiet(cx, "save_http_proxy", move |state, _| {
-                state.set_http_proxy(text);
-            });
-        }));
+        subscriptions.push(
+            cx.subscribe_in(&http_proxy_state, window, |_view, state, event, window, cx| {
+                if let InputEvent::Blur = event {
+                    let text = state.read(cx).value().trim().to_string();
+                    if is_valid_proxy_setting(&text) {
+                        update_app_state_and_save_quiet(cx, "save_http_proxy", move |state, _| {
+                            state.set_http_proxy(text);
+                        });
+                    } else {
+                        // Never persist a value `app_proxy` can't act on; put
+                        // the last saved value back so the box always shows
+                        // what is actually in effect.
+                        let saved = cx.global::<ZedisGlobalStore>().read(cx).http_proxy();
+                        state.update(cx, |input, cx| input.set_value(saved, window, cx));
+                    }
+                }
+            }),
+        );
 
         // Continuous font size (rem px) via a slider, 12–22px. The state
         // updates per change so reads stay live, but the disk write and the
