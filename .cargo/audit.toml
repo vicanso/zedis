@@ -42,5 +42,14 @@ ignore = [
     "RUSTSEC-2024-0436", # paste           (gpui-component, metal, ...)
     "RUSTSEC-2024-0370", # proc-macro-error (build-time-only proc-macro dep)
     "RUSTSEC-2025-0134", # rustls-pemfile  (rustls ecosystem)
-    "RUSTSEC-2026-0192", # ttf-parser      (gpui: fontdb <- cosmic-text/usvg)
+    "RUSTSEC-2026-0192", # ttf-parser      (gpui: fontdb <- usvg 0.46)
+    # rustybuzz unmaintained (RUSTSEC-2026-0206). Only path:
+    #   zedis → gpui (zed pin) → usvg 0.46 / resvg 0.46 → rustybuzz 0.20
+    # Official replacement is `harfrust` via usvg/resvg >= 0.48, but that is
+    # a 0.x semver-major bump for the SVG stack; our pinned gpui still requires
+    # usvg = "0.46.0" and cargo will not unify 0.46→0.48. Drop both this and
+    # RUSTSEC-2026-0192 once zed/gpui bumps resvg/usvg to >= 0.48 (which also
+    # replaces ttf-parser with skrifa). Tracked in
+    # https://github.com/vicanso/zedis/issues/115
+    "RUSTSEC-2026-0206", # rustybuzz       (gpui: usvg 0.46 → rustybuzz)
 ]
