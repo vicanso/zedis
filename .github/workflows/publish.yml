@@ -40,9 +40,26 @@ jobs:
             fi
           fi
           echo "should_build=$should_build" >> $GITHUB_OUTPUT
-      - name: Delete old nightly release and tag
+      - name: Delete old nightly releases and tag
+        # Sweep by id via the API, not `gh release delete nightly`: that
+        # removes only the published release, while GitHub allows any
+        # number of *drafts* to share a tag_name. action-gh-release@v2
+        # creates a draft and publishes it last, so a job that dies
+        # between the two leaves an orphan draft. Those strays fed the
+        # 2026-08-08 nightly failure: a platform job's duplicate-recovery
+        # picked a week-old draft, uploaded onto it, then couldn't
+        # publish it because the tag was already owned (`already_exists`
+        # on tag_name).
         if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
-        run: gh release delete nightly --cleanup-tag -y || true
+        run: |
+          ids="$(
+            gh api --paginate "repos/${{ github.repository }}/releases" \
+              -q '.[] | select(.tag_name == "nightly") | .id' 2>/dev/null || true
+          )"
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id" || true
+          done
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/nightly" 2>/dev/null || true
       - name: Pre-create nightly release
         # Same race as the tag drafts: six platform jobs each run
         # softprops/action-gh-release for the nightly, and two finishing
@@ -110,8 +127,12 @@ jobs:
         # build skips clippy/rustfmt/typos entirely. The cache restore above
         # runs first so `cargo install` no-ops (~10 min saved) when rust-cache
         # restored the same cargo-bundle version to ~/.cargo/bin.
+        #
+        # --locked + pinned version: an unlocked install resolves the tool's
+        # deps fresh, so a broken transitive release breaks the nightly —
+        # 2026-08-07 the (since-yanked) zune-core 0.5.2 did exactly that.
         run: |
-          cargo install cargo-bundle
+          cargo install --locked cargo-bundle@0.11.0
           brew install create-dmg
       - name: Import Code-Signing Certificates
         env:
@@ -274,7 +295,8 @@ jobs:
         env:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
-          cargo install cargo-wix
+          # --locked + pin: see the cargo-bundle note in the macos job.
+          cargo install --locked cargo-wix@0.3.9
           cargo build --release --target ${{ matrix.target }} --features mimalloc
           cp target/${{ matrix.target }}/release/zedis.exe ./zedis.exe
 
@@ -417,7 +439,8 @@ jobs:
           # fail on this deliberately-old runner (22.04 = glibc 2.35, kept
           # as the shipped binary's compatibility baseline). rust-cache
           # keeps ~/.cargo/bin, so only the first run pays the compile.
-          cargo install cargo-appimage
+          # --locked + pin: see the cargo-bundle note in the macos job.
+          cargo install --locked cargo-appimage@2.4.0
           cargo install --locked cargo-deb@3.7.0 cargo-generate-rpm@0.21.0
           cargo build --release --features mimalloc
           ls -lh target/release
