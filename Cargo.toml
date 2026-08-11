@@ -148,7 +148,13 @@ dashmap = "6.2.1"
 indexmap = "2.14.0"
 humantime = "2.3.0"
 serde = "1.0.228"
-serde_json = "1.0.150"
+# `preserve_order` keeps `json!` maps in insertion order, which the
+# readable export relies on to mirror its CSV column order (key, type,
+# ttl_ms, value) instead of emitting them alphabetically. The shipped
+# binary has always had it — but only because gpui/http_client enable it,
+# which left the sub-crates emitting a different key order when built on
+# their own. Declared here so the format is ours, not a side effect.
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
 serde_json_path = "0.7"
 aes-gcm = "0.11.0"
 arc-swap = "1.9.1"
@@ -201,7 +207,11 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = [
 toml = "1.1.2"
 tracing = "0.1.44"
 url = "2.5.8"
-uuid = "1.23.2"
+# `v7` must be declared here: both the app and zedis-connection call
+# `Uuid::now_v7`, and it only ever compiled because accesskit (via gpui)
+# happens to turn the feature on — so `cargo test -p zedis-connection`,
+# which drags in no GUI stack, failed to build on its own.
+uuid = { version = "1.23.2", features = ["v7"] }
 webpki-roots = "1.0.7"
 # Matched pair with gpui-component. Current component tip depends on zed
 # *without* a `rev=` — Cargo treats `git+…/zed?rev=X` and `git+…/zed` as

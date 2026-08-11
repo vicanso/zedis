@@ -456,7 +456,7 @@ impl ZedisCommandPalette {
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| match command {
                 PaletteCommand::Server(id) => {
-                    let db = state.last_db_for(&id);
+                    let db = state.open_db_for(&id);
                     state.connect_server(id, db, cx);
                 }
                 PaletteCommand::Route(route) => {

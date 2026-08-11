@@ -156,6 +156,17 @@ pub struct RedisServer {
     /// (which, unlike Redis cluster, allows multi-db) still get the db
     /// switcher by setting it explicitly.
     pub databases: Option<usize>,
+    /// Database this server opens on, pinned by the user. `None` (the
+    /// default) reopens whichever DB the server was last viewed on — DB 0
+    /// the first time. Set it when one DB of a multi-DB server is "the"
+    /// working set, so every connect lands there instead of needing a
+    /// manual switch.
+    ///
+    /// `u16` because the real ceiling is the server's own `databases`
+    /// count, which isn't known until connect: an out-of-range pin is
+    /// accepted here and surfaces as Redis's own "DB index is out of
+    /// range" on the first SELECT.
+    pub default_db: Option<u16>,
     /// Per-server connection-establishment timeout in **seconds**. When
     /// unset, falls back to the global setting — handy on a flaky link
     /// where the global default is too slow to fail.
@@ -301,6 +312,10 @@ impl RedisServer {
             databases: get_str("databases")
                 .and_then(|s| s.parse::<usize>().ok())
                 .filter(|&n| n > 0),
+            // No `> 0` filter here, unlike every other numeric override:
+            // DB 0 is a real (and the most common) pin, so clearing the
+            // field is the only way to unset it.
+            default_db: get_str("default_db").and_then(|s| s.parse::<u16>().ok()),
             connection_timeout: get_str("connection_timeout")
                 .and_then(|s| s.parse::<u64>().ok())
                 .filter(|&n| n > 0),
@@ -357,6 +372,12 @@ impl RedisServer {
     /// Key-tree separator for this server; defaults to `":"`.
     pub fn resolve_key_separator(&self) -> String {
         self.key_separator_override().unwrap_or(":").to_string()
+    }
+
+    /// DB to open this server on: the pinned `default_db` when set,
+    /// otherwise `remembered` — the DB the caller last saw it on.
+    pub fn resolve_default_db(&self, remembered: usize) -> usize {
+        self.default_db.map(usize::from).unwrap_or(remembered)
     }
 
     /// SCAN page size; `global` is the Settings default when unset.
@@ -498,8 +519,9 @@ impl RedisServer {
     /// where the `rediss` scheme enables TLS. Username and password are
     /// percent-decoded (so e.g. `%40` round-trips to `@`). The friendly
     /// `name` defaults to the host since a bare URI carries no label,
-    /// and the trailing `/db` segment is ignored — the database is
-    /// chosen per-session in the UI, not stored on the server entry.
+    /// and the trailing `/db` segment becomes the entry's pinned
+    /// `default_db` — it is the only place a pasted URI says which
+    /// database it means.
     ///
     /// A comma-separated multi-host list (`host1:p1,host2:p2,…` — a
     /// client-specific extension, not standard URI syntax) is reduced to
@@ -530,6 +552,11 @@ impl RedisServer {
         };
         let password = parsed.password().map(decode).filter(|p| !p.is_empty());
 
+        // A Redis URI's path is its database index (`redis://h:6379/3`) —
+        // the one place a pasted URI states which DB it means, so keep it
+        // as the pin instead of dropping it. Empty path ⇒ unpinned.
+        let default_db = parsed.path().trim_start_matches('/').parse::<u16>().ok();
+
         Ok(Self {
             id: Uuid::now_v7().to_string(),
             name: host.clone(),
@@ -537,6 +564,7 @@ impl RedisServer {
             port,
             username,
             password,
+            default_db,
             tls: (scheme == "rediss").then_some(true),
             ..Default::default()
         })
@@ -621,9 +649,9 @@ impl RedisServer {
     /// Convert a single Redis Insight database object into a `RedisServer`,
     /// mapping its field names and nested cert / SSH objects onto the flat
     /// Zedis shape. Best-effort: unknown or empty fields fall back to `None`.
-    /// The selected `db` index and Redis Insight `tags` / `modules` are
-    /// intentionally dropped — Zedis picks the database per session and ties
-    /// its tag to an environment preset, so there is nothing to map onto.
+    /// Its selected `db` index becomes the entry's pinned `default_db`.
+    /// Redis Insight `tags` / `modules` are intentionally dropped — Zedis
+    /// ties its tag to an environment preset, so there is nothing to map onto.
     fn from_redis_insight_object(obj: &serde_json::Value) -> Result<Self, ImportError> {
         let get_str = |k: &str| {
             obj.get(k)
@@ -683,6 +711,10 @@ impl RedisServer {
             username: get_str("username"),
             password: get_str("password"),
             server_type,
+            default_db: obj
+                .get("db")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|db| u16::try_from(db).ok()),
             // Sentinel master name, when Redis Insight recorded one.
             master_name: nested_str("sentinelMaster", "name"),
             tls,
@@ -1041,6 +1073,31 @@ mod tests {
     }
 
     #[test]
+    fn import_uri_pins_the_path_database() {
+        let pinned = RedisServer::from_import_uri("redis://h:6379/3").expect("uri");
+        assert_eq!(pinned.default_db, Some(3));
+        // DB 0 is a pin, not an absent one.
+        let zero = RedisServer::from_import_uri("redis://h:6379/0").expect("uri");
+        assert_eq!(zero.default_db, Some(0));
+        // No path (with or without the trailing slash) leaves it unpinned.
+        assert_eq!(
+            RedisServer::from_import_uri("redis://h:6379").expect("uri").default_db,
+            None
+        );
+        assert_eq!(
+            RedisServer::from_import_uri("redis://h:6379/").expect("uri").default_db,
+            None
+        );
+        // A query string is a client option, not part of the index.
+        assert_eq!(
+            RedisServer::from_import_uri("redis://h:6379/7?slow=1")
+                .expect("uri")
+                .default_db,
+            Some(7)
+        );
+    }
+
+    #[test]
     fn import_uri_rejects_bad_scheme_and_missing_host() {
         assert!(RedisServer::from_import_uri("http://example.com:6379").is_err());
         assert!(RedisServer::from_import_uri("not a uri").is_err());
@@ -1089,9 +1146,19 @@ mod tests {
         assert!(s.username.is_none() && s.password.is_none());
         assert!(s.tls.is_none() && s.insecure.is_none());
         assert!(s.ssh_tunnel.is_none() && s.ssh_addr.is_none());
+        assert_eq!(s.default_db, None); // "db": null ⇒ unpinned
         // A fresh id is allocated, not the Redis Insight UUID.
         assert!(!s.id.is_empty());
         assert_ne!(s.id, "e8ee0846-71df-4f60-95dc-9fb19285d7ab");
+    }
+
+    #[test]
+    fn import_redis_insight_pins_selected_db() {
+        let ri = r#"[
+          { "host": "h", "port": 6379, "name": "n", "db": 5, "connectionType": "STANDALONE" }
+        ]"#;
+        let servers = RedisServer::from_import_multi(ri).expect("ri import");
+        assert_eq!(servers[0].default_db, Some(5));
     }
 
     #[test]
@@ -1244,5 +1311,40 @@ mod tests {
         assert_eq!(s.resolve_auto_expand_threshold(100), 50);
         assert!(!s.resolve_show_key_tree_ttl(true));
         assert_eq!(s.show_key_tree_ttl_form_index(), 2);
+    }
+
+    #[test]
+    fn default_db_pin_beats_the_remembered_db() {
+        let mut s = sample_server();
+        assert_eq!(s.resolve_default_db(7), 7);
+        s.default_db = Some(3);
+        assert_eq!(s.resolve_default_db(7), 3);
+        // DB 0 is a pin like any other, not "unset".
+        s.default_db = Some(0);
+        assert_eq!(s.resolve_default_db(7), 0);
+    }
+
+    #[test]
+    fn form_data_parses_default_db() {
+        let form = |value: &str| {
+            let mut data = IndexMap::new();
+            data.insert("name".to_string(), "srv".to_string());
+            data.insert("host".to_string(), "127.0.0.1".to_string());
+            data.insert("default_db".to_string(), value.to_string());
+            RedisServer::from_form_data("id", &data).default_db
+        };
+        assert_eq!(form("4"), Some(4));
+        // The `> 0` filter the other numeric overrides use would wrongly
+        // drop this one — DB 0 is the most common pin of all.
+        assert_eq!(form("0"), Some(0));
+        assert_eq!(form("65535"), Some(65535));
+        // Clearing the field unpins.
+        assert_eq!(form(""), None);
+        assert_eq!(form("   "), None);
+        // Out of u16 range / not a number: rejected by the form's validator
+        // before it gets here, and ignored if it ever does.
+        assert_eq!(form("65536"), None);
+        assert_eq!(form("-1"), None);
+        assert_eq!(form("abc"), None);
     }
 }

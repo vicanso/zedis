@@ -254,7 +254,7 @@ impl ZedisMultiSearch {
                     .into_iter()
                     .filter(|s| s.group.as_deref().map(str::trim) == Some(group))
                     .map(|s| {
-                        let db = store.last_db_for(&s.id);
+                        let db = store.open_db_for(&s.id);
                         (s.id, db)
                     })
                     .collect()
@@ -265,7 +265,7 @@ impl ZedisMultiSearch {
                 .filter(|(id, _)| self.selected_servers.contains(id))
                 .map(|(id, _)| {
                     let id = id.to_string();
-                    let db = store.last_db_for(&id);
+                    let db = store.open_db_for(&id);
                     (id, db)
                 })
                 .collect(),

@@ -173,7 +173,18 @@ impl Zedis {
                 .open_tabs()
                 .iter()
                 .filter(|(id, _)| id.is_empty() || get_server(id).is_ok())
-                .cloned()
+                // Re-resolve each tab's DB so a pinned server restores onto
+                // its pin, matching the connection the composer below
+                // activates — otherwise the strip and the active connection
+                // would disagree about the same server.
+                .map(|(id, db)| {
+                    let db = if id.is_empty() {
+                        *db
+                    } else {
+                        store.open_db_from(id, *db)
+                    };
+                    (id.clone(), db)
+                })
                 .collect();
             (saved, store.selected_server().cloned())
         };
@@ -1990,12 +2001,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // remembered one, validated (it may have been
                             // deleted since the last run).
                             let target: Option<(String, usize)> = match &cli_server {
-                                Some(id) => Some((id.clone(), cli_db.unwrap_or_else(|| state.last_db_for(id)))),
+                                Some(id) => Some((id.clone(), cli_db.unwrap_or_else(|| state.open_db_for(id)))),
                                 None => state
                                     .selected_server()
                                     .cloned()
                                     .filter(|(id, _)| get_server(id).is_ok())
-                                    .map(|(id, db)| (id, cli_db.unwrap_or(db))),
+                                    // A pinned DB wins over the remembered one
+                                    // here too, so a restart lands where a
+                                    // sidebar click would; `--db` still wins
+                                    // over both.
+                                    .map(|(id, db)| {
+                                        let db = cli_db.unwrap_or_else(|| state.open_db_from(&id, db));
+                                        (id, db)
+                                    }),
                             };
                             // Target view: explicit --route wins; a bare
                             // --server implies the editor (a deep link should

@@ -200,7 +200,7 @@ impl ZedisServers {
         info!(server = %id, "opening the only server matching the filter");
         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
             store.update(cx, |state, cx| {
-                let db = state.last_db_for(&id);
+                let db = state.open_db_for(&id);
                 state.connect_server(id.clone(), db, cx);
             });
         });
@@ -248,6 +248,18 @@ impl ZedisServers {
                 return None;
             }
             Some(host_invalid_msg.clone())
+        };
+        let default_db_invalid_msg = i18n_servers(cx, "default_db_invalid");
+        // Empty unpins; anything else must be a u16. The upper bound can't be
+        // checked here — the server's real DB count is only known once
+        // connected — so an in-range-but-nonexistent DB is left to Redis to
+        // reject at SELECT.
+        let validate_default_db = move |s: &str| {
+            let s = s.trim();
+            if s.is_empty() || s.parse::<u16>().is_ok() {
+                return None;
+            }
+            Some(default_db_invalid_msg.clone())
         };
 
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
@@ -450,6 +462,11 @@ impl ZedisServers {
             ZedisFormField::new("databases", i18n_servers(cx, "databases"))
                 .default_value(redis_server.databases.map(|n| n.to_string()).unwrap_or_default())
                 .placeholder(i18n_servers(cx, "databases_placeholder"))
+                .tab_index(3),
+            ZedisFormField::new("default_db", i18n_servers(cx, "default_db"))
+                .default_value(redis_server.default_db.map(|n| n.to_string()).unwrap_or_default())
+                .placeholder(i18n_servers(cx, "default_db_placeholder"))
+                .validate(validate_default_db)
                 .tab_index(3),
             ZedisFormField::new("connection_timeout", i18n_servers(cx, "connection_timeout"))
                 .default_value(
@@ -1494,7 +1511,7 @@ impl Render for ZedisServers {
                             let select_server_id = select_server_id.clone();
                             cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                 store.update(cx, |state, cx| {
-                                    let db = state.last_db_for(&select_server_id);
+                                    let db = state.open_db_for(&select_server_id);
                                     state.connect_server(select_server_id.clone(), db, cx);
                                 });
                             });

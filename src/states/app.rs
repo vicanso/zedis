@@ -1157,10 +1157,25 @@ impl ZedisAppState {
     pub fn selected_server(&self) -> Option<&(String, usize)> {
         self.selected_server.as_ref()
     }
-    /// The DB this server was last viewed on (0 if never). Lets connecting to a
-    /// server reopen the database the user left it on instead of always DB 0.
-    pub fn last_db_for(&self, server_id: &str) -> usize {
-        self.last_db.get(server_id).copied().unwrap_or(0)
+    /// The DB to open this server on when the caller has no DB of its own:
+    /// the server's pinned `default_db` when configured, else the DB it was
+    /// last viewed on (0 if never).
+    ///
+    /// Every "connect to server X" entry point (sidebar, server card, tray,
+    /// palette, multi-search) resolves through here. A DB the user picked
+    /// *explicitly* — the status-bar switcher, `--db`, a workspace tab
+    /// already bound to one — bypasses it and stands.
+    pub fn open_db_for(&self, server_id: &str) -> usize {
+        self.open_db_from(server_id, self.last_db.get(server_id).copied().unwrap_or(0))
+    }
+    /// [`Self::open_db_for`] for a caller that already holds a remembered DB
+    /// (the restored session snapshot / a restored tab): the pin still wins,
+    /// since it means "always this DB", but an unpinned server keeps the DB
+    /// it was left on.
+    pub fn open_db_from(&self, server_id: &str, remembered: usize) -> usize {
+        get_server(server_id)
+            .map(|server| server.resolve_default_db(remembered))
+            .unwrap_or(remembered)
     }
     pub fn kv_edit_panel_width(&self) -> Option<Pixels> {
         self.kv_edit_panel_width
@@ -1662,7 +1677,7 @@ mod tests {
         assert_eq!(events.borrow().as_slice(), &[("srv-1".to_string(), 2)]);
         state.read_with(cx, |state, _| {
             assert_eq!(state.selected_server(), Some(&("srv-1".to_string(), 2)));
-            assert_eq!(state.last_db_for("srv-1"), 2);
+            assert_eq!(state.open_db_for("srv-1"), 2);
             assert!(matches!(
                 state.route(),
                 Route::Server {

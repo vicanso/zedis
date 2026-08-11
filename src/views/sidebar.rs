@@ -631,7 +631,7 @@ impl ZedisSidebar {
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| {
                                 let id = server_id.to_string();
-                                let db = state.last_db_for(&id);
+                                let db = state.open_db_for(&id);
                                 if force_new {
                                     state.open_server_in_new_tab(id, db, cx);
                                 } else if want_new_tab {

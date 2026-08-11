@@ -322,7 +322,7 @@ pub fn init_tray(cx: &mut App) {
                                                 store.update(
                                                     cx,
                                                     |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
-                                                        let db = state.last_db_for(&server_id);
+                                                        let db = state.open_db_for(&server_id);
                                                         state.connect_server(server_id, db, cx);
                                                     },
                                                 );
