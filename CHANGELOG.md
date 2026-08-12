@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.8.0](https://github.com/vicanso/zedis/compare/v0.7.0..v0.8.0) - 2026-08-12
+
+### ⛰️  Features
+
+- *(onboarding)* First-launch welcome card and one-time feature hints - ([256edbd](https://github.com/vicanso/zedis/commit/256edbd70e6cc6c4e5bd11e69ac68168b6ce5b50))
+- *(script-editor)* Starter template chips for the shell-command field - ([6426a57](https://github.com/vicanso/zedis/commit/6426a5723c5a4b226ccd0456f71fb60e48449d5c))
+- *(servers)* Pin the database a server connects to ([#126](https://github.com/orhun/git-cliff/issues/126)) - ([19ef372](https://github.com/vicanso/zedis/commit/19ef3729e41aeb1f5e08d0bcaffd967d3044adfe))
+- *(terminal)* Link each command suggestion to its redis.io docs page - ([d9f537e](https://github.com/vicanso/zedis/commit/d9f537e38c9b1f139228e103a260d660986ee14e))
+
+### 🐛 Bug Fixes
+
+- *(settings)* Let the proxy field type through intermediate URI states ([#122](https://github.com/orhun/git-cliff/issues/122)) - ([a8d32e0](https://github.com/vicanso/zedis/commit/a8d32e05dba302055382dfdf5678c78259c8ef9d))
+- *(update)* Stop the window-bounds save from reverting last_update_check - ([afaa4ce](https://github.com/vicanso/zedis/commit/afaa4ce141139b884c21a91650da21a93d2cfe06))
+
+### 📚 Documentation
+
+- *(site)* Refresh landing pages for conversion and SEO - ([f9042cc](https://github.com/vicanso/zedis/commit/f9042cca6c4471ad7ed45afb3ee44e6f434b8db4))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(publish)* Sweep stray nightly drafts and lock packaging-tool installs - ([f434f78](https://github.com/vicanso/zedis/commit/f434f780522c2f9ff2dc0853db2222abb2232908))
+- *(security)* Patch event-listener and document rustybuzz advisory - ([df2d7dd](https://github.com/vicanso/zedis/commit/df2d7ddb68ac7254b57b7c1df453dd4aaf1d52cf))
+
 ## [0.7.0](https://github.com/vicanso/zedis/compare/v0.6.6..v0.7.0) - 2026-08-05
 
 ### ⛰️  Features
