@@ -105,22 +105,44 @@ pub(super) fn tag_color_index(color: TagColor) -> usize {
 /// aggregates can never disagree about where a key's levels are.
 ///
 /// Behaves like `key.splitn(max_depth, separator)` except that separators
-/// **inside `{…}` or inside double quotes are not level boundaries**:
+/// **inside `{…}`, inside double quotes, or inside a timestamp are not level
+/// boundaries**:
 ///
 /// * `{…}` is Redis's cluster hash tag, so `user:{tenant:42}:profile` has
 ///   three levels, not four.
 /// * Keys that carry a JSON-ish blob (`item:1/{"name": "x", "at": "12:13:05"}`)
 ///   would otherwise shatter along the colons *inside* the payload, which is
 ///   what made such keys look truncated in the tree (issue #119).
+/// * A timestamp stamped into a key (`…/2022-05-11 11:55:44.487892+00:00/…`)
+///   brings its own colons; splitting there produced folders labelled `55`
+///   and `44.487892+00` — fragments that read like numbers Zedis had invented
+///   rather than parts of the key (issue #127). Only a full ISO-8601 date
+///   anchors this: a bare `12:30:45` stays three levels, because digits alone
+///   are an ordinary namespace (`shard:03:07`) far more often than a time.
 ///
-/// A key whose braces or quotes never close is treated as ordinary text and
-/// falls back to a plain `splitn`, so one malformed key can't collapse into a
-/// single unsplittable segment.
+/// A key whose braces or quotes never close is rescanned with both treated as
+/// ordinary text, so one malformed key can't collapse into a single
+/// unsplittable segment.
 pub(super) fn split_key_segments<'a>(key: &'a str, separator: &str, max_depth: usize) -> Vec<&'a str> {
     let depth = max_depth.max(1);
     if depth == 1 || separator.is_empty() {
         return vec![key];
     }
+    let (segments, balanced) = scan_key_segments(key, separator, depth, true);
+    if balanced {
+        return segments;
+    }
+    // Unterminated brace / quote: the scan above suppressed separators that a
+    // reader would consider real, so redo it with braces and quotes as plain
+    // text. Timestamps still hold — they don't depend on a closing delimiter.
+    scan_key_segments(key, separator, depth, false).0
+}
+
+/// One splitting pass. `honor_groups` off makes `{`, `}` and `"` ordinary
+/// bytes. The returned flag says whether every group opened in this pass also
+/// closed — always true when groups aren't honoured, since nothing was
+/// suppressed on their account.
+fn scan_key_segments<'a>(key: &'a str, separator: &str, depth: usize, honor_groups: bool) -> (Vec<&'a str>, bool) {
     let bytes = key.as_bytes();
     let sep = separator.as_bytes();
     let mut segments = Vec::new();
@@ -128,28 +150,40 @@ pub(super) fn split_key_segments<'a>(key: &'a str, separator: &str, max_depth: u
     let mut i = 0usize;
     let mut brace_depth = 0usize;
     let mut in_quote = false;
+    // End (exclusive) of the timestamp the scan is currently inside, 0 when it
+    // is not in one. Timestamps never nest, so a single cursor covers it.
+    let mut stamp_end = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
-        // `{`, `}`, `"` and any separator byte are ASCII-leading, so byte
-        // scanning never lands mid-codepoint (continuation bytes are 0x80-0xBF).
-        if b == b'"' && (i == 0 || bytes[i - 1] != b'\\') {
-            in_quote = !in_quote;
-            i += 1;
-            continue;
+        // `{`, `}`, `"`, ASCII digits and any separator byte are ASCII-leading,
+        // so byte scanning never lands mid-codepoint (continuation bytes are
+        // 0x80-0xBF).
+        if i >= stamp_end && b.is_ascii_digit() {
+            let len = iso_timestamp_len(bytes, i);
+            if len > 0 {
+                stamp_end = i + len;
+            }
         }
-        if !in_quote {
-            if b == b'{' {
-                brace_depth += 1;
+        if honor_groups {
+            if b == b'"' && (i == 0 || bytes[i - 1] != b'\\') {
+                in_quote = !in_quote;
                 i += 1;
                 continue;
             }
-            if b == b'}' {
-                brace_depth = brace_depth.saturating_sub(1);
-                i += 1;
-                continue;
+            if !in_quote {
+                if b == b'{' {
+                    brace_depth += 1;
+                    i += 1;
+                    continue;
+                }
+                if b == b'}' {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    i += 1;
+                    continue;
+                }
             }
         }
-        let splittable = brace_depth == 0 && !in_quote && segments.len() + 1 < depth;
+        let splittable = brace_depth == 0 && !in_quote && i >= stamp_end && segments.len() + 1 < depth;
         if splittable && bytes[i..].starts_with(sep) {
             segments.push(&key[start..i]);
             i += sep.len();
@@ -158,13 +192,62 @@ pub(super) fn split_key_segments<'a>(key: &'a str, separator: &str, max_depth: u
         }
         i += 1;
     }
-    // Unterminated brace / quote: the scan above suppressed separators that a
-    // reader would consider real, so fall back to the plain split.
-    if brace_depth != 0 || in_quote {
-        return key.splitn(depth, separator).collect();
-    }
     segments.push(&key[start..]);
-    segments
+    (segments, brace_depth == 0 && !in_quote)
+}
+
+/// Byte length of the ISO-8601 timestamp starting at `bytes[at]`, or 0 when
+/// there isn't one. Shape: `YYYY-MM-DD`, optionally followed by `T`/space +
+/// `HH:MM`, then an optional `:SS`, an optional `.`/`,` fraction, and an
+/// optional `Z` or `±HH:MM` / `±HHMM` offset.
+///
+/// The date is mandatory by design. It is the part that cannot be mistaken
+/// for a namespace, and it is what licenses swallowing the separators that
+/// follow it; a bare `12:30:45` is left to split normally.
+fn iso_timestamp_len(bytes: &[u8], at: usize) -> usize {
+    let two_digits = |i: usize| i + 1 < bytes.len() && bytes[i].is_ascii_digit() && bytes[i + 1].is_ascii_digit();
+    // YYYY-MM-DD
+    if at + 10 > bytes.len()
+        || !bytes[at..at + 4].iter().all(u8::is_ascii_digit)
+        || bytes[at + 4] != b'-'
+        || !two_digits(at + 5)
+        || bytes[at + 7] != b'-'
+        || !two_digits(at + 8)
+    {
+        return 0;
+    }
+    let mut i = at + 10;
+    // [T ]HH:MM — the whole time part is optional, so a plain date is a match.
+    if !(matches!(bytes.get(i), Some(b'T' | b't' | b' '))
+        && two_digits(i + 1)
+        && bytes.get(i + 3) == Some(&b':')
+        && two_digits(i + 4))
+    {
+        return i - at;
+    }
+    i += 6;
+    if bytes.get(i) == Some(&b':') && two_digits(i + 1) {
+        i += 3;
+    }
+    if matches!(bytes.get(i), Some(b'.' | b',')) && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+    }
+    match bytes.get(i) {
+        Some(b'Z' | b'z') => i += 1,
+        Some(b'+' | b'-') if two_digits(i + 1) => {
+            i += 3;
+            if bytes.get(i) == Some(&b':') && two_digits(i + 1) {
+                i += 3;
+            } else if two_digits(i) {
+                i += 2;
+            }
+        }
+        _ => {}
+    }
+    i - at
 }
 
 /// Folder path prefixes for a key under the same rules as
@@ -267,12 +350,10 @@ pub(super) fn stamp_folder_tag_aggregates(
 /// while an expanded folder's only child is itself a folder, that child is
 /// treated as expanded too. Lets a deep single-child namespace
 /// (`app:user` → `profile` → leaves) open in one click instead of one click
-/// per level — and, together with [`compact_single_child_chains`], lets that
-/// whole chain render as a single row. Returns the augmented set (owned, so
-/// the caller can borrow `&str` views into it). Recomputed every rebuild, so
-/// a streaming scan that later reveals a second child stops the auto-expand
-/// at that level on the next pass. No-op (skips the child-map pass) when
-/// nothing is expanded.
+/// per level. Returns the augmented set (owned, so the caller can borrow
+/// `&str` views into it). Recomputed every rebuild, so a streaming scan that
+/// later reveals a second child stops the auto-expand at that level on the
+/// next pass. No-op (skips the child-map pass) when nothing is expanded.
 pub(super) fn single_child_expanded_set(
     keys: &[(SharedString, KeyType)],
     expanded_items: &AHashSet<SharedString>,
@@ -579,101 +660,6 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
     result
 }
 
-/// Is this folder's lazy prefix scan in flight, or stopped at the page cap
-/// with more keys still on the server? Such a folder can still gain children,
-/// so what looks like a single child right now is only provisional.
-fn folder_scan_pending(
-    id: &str,
-    separator: &str,
-    scanning: &AHashSet<SharedString>,
-    incomplete: &AHashSet<SharedString>,
-) -> bool {
-    if scanning.is_empty() && incomplete.is_empty() {
-        return false;
-    }
-    let prefix = SharedString::from(format!("{id}{separator}"));
-    scanning.contains(&prefix) || incomplete.contains(&prefix)
-}
-
-/// Collapses chains of single-child folders into one row: `a` → `b` → `c`
-/// where each level holds exactly one thing renders as a single `a:b:c` row
-/// instead of three.
-///
-/// Keys routinely embed text that merely *looks* like a namespace — an ISO
-/// timestamp (`…:2022-05-11 11:55:44.487892+00:00/…`) splits on its own
-/// colons and shattered into a stack of folders labelled `55` and
-/// `44.487892+00`, which read like numbers Zedis invented rather than parts
-/// of the key (issue #127). A folder with exactly one child carries no
-/// grouping information, so folding it into that child loses nothing and
-/// keeps the key legible in one piece.
-///
-/// Runs on the flattened, depth-first rows *before* "Load more" rows and
-/// `parent_ix` are added. The surviving row keeps the **deepest** id, so
-/// prefix scans, expansion bookkeeping, selection and folder actions all
-/// address exactly the namespace they did before; only `label` (now the
-/// joined path) and `depth` (shifted up by the number of folds above it)
-/// change. Collapsed folders keep their own row — an unexpanded folder has
-/// no children in the list to fold into.
-pub(super) fn compact_single_child_chains(
-    mut items: Vec<KeyTreeItem>,
-    separator: &str,
-    scanning: &AHashSet<SharedString>,
-    incomplete: &AHashSet<SharedString>,
-) -> Vec<KeyTreeItem> {
-    if items.len() < 2 || separator.is_empty() {
-        return items;
-    }
-    // Direct child rows per folder, from the same depth stack
-    // `fill_parent_indices` walks. `children_count` can't answer this: it
-    // counts descendant *keys*, so a folder holding one child folder with 50
-    // leaves under it reads as 50 there.
-    let mut direct_children = vec![0usize; items.len()];
-    let mut stack: Vec<usize> = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        while stack.last().is_some_and(|&top| items[top].depth >= item.depth) {
-            stack.pop();
-        }
-        if let Some(&parent) = stack.last() {
-            direct_children[parent] += 1;
-        }
-        if item.is_folder {
-            stack.push(i);
-        }
-    }
-
-    let mut result: Vec<KeyTreeItem> = Vec::with_capacity(items.len());
-    // Original depths of the folders folded away on the path down to the
-    // current row; the stack's height is how far that row moves up.
-    let mut folded: Vec<usize> = Vec::new();
-    for i in 0..items.len() {
-        let depth = items[i].depth;
-        while folded.last().is_some_and(|&at| depth <= at) {
-            folded.pop();
-        }
-        let folds_into_child = items[i].is_folder
-            && items[i].expanded
-            && direct_children[i] == 1
-            && items.get(i + 1).is_some_and(|child| child.depth == depth + 1)
-            && !folder_scan_pending(&items[i].id, separator, scanning, incomplete);
-        if folds_into_child {
-            // Hand this folder's label down to the child, which inherits the
-            // row (and with it the id, type, count and expansion state).
-            let mut label = std::mem::take(&mut items[i].label).to_string();
-            label.push_str(separator);
-            label.push_str(&items[i + 1].label);
-            items[i + 1].label = label.into();
-            folded.push(depth);
-            continue;
-        }
-        let mut item = std::mem::take(&mut items[i]);
-        // Never underflows: every entry in `folded` sits at a strictly
-        // smaller depth than this row (deeper ones were just popped).
-        item.depth = depth - folded.len();
-        result.push(item);
-    }
-    result
-}
-
 /// Appends a synthetic "Load more" row after the visible children of any
 /// expanded folder whose prefix scan stopped at the page cap (tracked in
 /// `incomplete`). Clicking that row resumes the scan. No-op when nothing is
@@ -829,6 +815,48 @@ mod split_key_segments_tests {
         );
         // An escaped quote does not open a quoted run.
         assert_eq!(split_key_segments(r#"a:\":b"#, ":", 5), vec!["a", r#"\""#, "b"]);
+    }
+
+    /// Issue #127: the colons of a timestamp are not namespace levels.
+    #[test]
+    fn timestamps_keep_their_own_colons() {
+        // The reported key: an ISO timestamp with fraction and UTC offset,
+        // sitting in a keyspace that separates its levels with "/".
+        let key = "jtable#abc/user/2022-05-11 11:55:44.487892+00:00/x";
+        assert_eq!(split_key_segments(key, ":", 5), vec![key]);
+        // Colons around the timestamp still separate levels.
+        assert_eq!(
+            split_key_segments("evt:2022-05-11T11:55:44Z:done", ":", 5),
+            vec!["evt", "2022-05-11T11:55:44Z", "done"]
+        );
+        assert_eq!(
+            split_key_segments("a:2022-05-11 11:55:44.487892+00:00:b", ":", 5),
+            vec!["a", "2022-05-11 11:55:44.487892+00:00", "b"]
+        );
+        // A date holds together for a "-" separator the same way.
+        assert_eq!(
+            split_key_segments("log-2022-05-11-x", "-", 5),
+            vec!["log", "2022-05-11", "x"]
+        );
+    }
+
+    /// The date is what marks a timestamp: digits on their own are a normal
+    /// namespace far more often than a time, so they keep splitting.
+    #[test]
+    fn digits_without_a_date_still_split() {
+        assert_eq!(
+            split_key_segments("app:a02:svc06:prod:sh03:k005", ":", 10),
+            vec!["app", "a02", "svc06", "prod", "sh03", "k005"]
+        );
+        assert_eq!(
+            split_key_segments("job:12:30:45", ":", 10),
+            vec!["job", "12", "30", "45"]
+        );
+        // Year-like runs are not dates either.
+        assert_eq!(
+            split_key_segments("stats:2024:01:02", ":", 10),
+            vec!["stats", "2024", "01", "02"]
+        );
     }
 
     #[test]
@@ -1094,122 +1122,5 @@ mod load_more_tests {
         assert!(!subtree_ends_before(&items, 1, 0, 3));
         // Window running past the end of the list counts as "end visible".
         assert!(subtree_ends_before(&items, 4, 0, 10));
-    }
-}
-
-#[cfg(test)]
-mod compact_chain_tests {
-    use super::*;
-
-    fn folder(id: &str, label: &str, depth: usize) -> KeyTreeItem {
-        KeyTreeItem {
-            id: id.into(),
-            label: label.into(),
-            depth,
-            is_folder: true,
-            expanded: true,
-            ..Default::default()
-        }
-    }
-    fn leaf(id: &str, label: &str, depth: usize) -> KeyTreeItem {
-        KeyTreeItem {
-            id: id.into(),
-            label: label.into(),
-            depth,
-            ..Default::default()
-        }
-    }
-    /// (id, label, depth) of every surviving row — the three fields the fold
-    /// is allowed to touch (id never, label and depth by design).
-    fn rows(items: Vec<KeyTreeItem>) -> Vec<(String, String, usize)> {
-        compact_single_child_chains(items, ":", &AHashSet::new(), &AHashSet::new())
-            .into_iter()
-            .map(|i| (i.id.to_string(), i.label.to_string(), i.depth))
-            .collect()
-    }
-
-    #[test]
-    fn chain_of_single_children_becomes_one_row() {
-        let items = vec![folder("a", "a", 0), folder("a:b", "b", 1), leaf("a:b:c", "c", 2)];
-        assert_eq!(rows(items), vec![("a:b:c".into(), "a:b:c".into(), 0)]);
-    }
-
-    #[test]
-    fn a_fork_stops_the_fold_and_children_move_up_with_it() {
-        let items = vec![
-            folder("a", "a", 0),
-            folder("a:b", "b", 1),
-            leaf("a:b:1", "1", 2),
-            leaf("a:b:2", "2", 2),
-            folder("z", "z", 0),
-            leaf("z:1", "1", 1),
-            leaf("z:2", "2", 1),
-        ];
-        assert_eq!(
-            rows(items),
-            vec![
-                ("a:b".into(), "a:b".into(), 0),
-                ("a:b:1".into(), "1".into(), 1),
-                ("a:b:2".into(), "2".into(), 1),
-                // The sibling after the folded subtree keeps its own depth.
-                ("z".into(), "z".into(), 0),
-                ("z:1".into(), "1".into(), 1),
-                ("z:2".into(), "2".into(), 1),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_collapsed_child_folder_still_absorbs_its_parent() {
-        // `a:b` is shut, so it has no rows of its own to fold into — but `a`
-        // still holds nothing except `a:b`, so the pair reads as one row that
-        // opens the deeper prefix.
-        let mut shut = folder("a:b", "b", 1);
-        shut.expanded = false;
-        let out = compact_single_child_chains(vec![folder("a", "a", 0), shut], ":", &AHashSet::new(), &AHashSet::new());
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id.as_ref(), "a:b");
-        assert_eq!(out[0].label.as_ref(), "a:b");
-        assert!(out[0].is_folder && !out[0].expanded);
-    }
-
-    #[test]
-    fn a_folder_whose_scan_is_unfinished_keeps_its_row() {
-        let items = || vec![folder("a", "a", 0), leaf("a:1", "1", 1)];
-        let pending: AHashSet<SharedString> = ["a:".into()].into_iter().collect();
-        let empty = AHashSet::new();
-        // In flight: more children may still land under `a`.
-        let out = compact_single_child_chains(items(), ":", &pending, &empty);
-        assert_eq!(out.len(), 2, "spinner row must survive");
-        // Stopped at the page cap: `a` owns the "Load more" row.
-        let out = compact_single_child_chains(items(), ":", &empty, &pending);
-        assert_eq!(out.len(), 2, "load-more row must survive");
-    }
-
-    /// Issue #127: a key carrying an ISO timestamp splits on the timestamp's
-    /// own colons, and each fragment used to get a folder row of its own —
-    /// `55` and `44.487892+00` looked like numbers Zedis had invented. The
-    /// whole chain now collapses onto the key itself.
-    #[test]
-    fn timestamp_fragments_no_longer_get_folders_of_their_own() {
-        let key = "jtable#abc/user/2022-05-11 11:55:44.487892+00:00/x";
-        let expanded: AHashSet<SharedString> = ["jtable#abc/user/2022-05-11 11".into()].into_iter().collect();
-        let items = new_key_tree_items(KeyTreeBuildInput {
-            keys: vec![(SharedString::from(key), KeyType::Json)],
-            keyword: SharedString::default(),
-            expanded_items: expanded,
-            suppressed: AHashSet::new(),
-            separator: ":",
-            max_key_tree_depth: 5,
-            key_ttls: &AHashMap::new(),
-            metadata: &std::collections::HashMap::new(),
-        });
-        assert_eq!(items.len(), 4, "one folder per colon before the fold");
-        let out = compact_single_child_chains(items, ":", &AHashSet::new(), &AHashSet::new());
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id.as_ref(), key);
-        assert_eq!(out[0].label.as_ref(), key);
-        assert_eq!(out[0].depth, 0);
-        assert!(!out[0].is_folder);
     }
 }
