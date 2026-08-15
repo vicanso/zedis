@@ -679,7 +679,7 @@ impl ZedisKeyTree {
                         &key_ttls_snapshot,
                         &metadata_snapshot,
                     );
-                    let mut items = new_key_tree_items(KeyTreeBuildInput {
+                    let items = new_key_tree_items(KeyTreeBuildInput {
                         keys: keys_input,
                         keyword,
                         expanded_items,
@@ -689,6 +689,12 @@ impl ZedisKeyTree {
                         key_ttls: &key_ttls_snapshot,
                         metadata: &metadata_snapshot,
                     });
+                    // Fold single-child folder chains into one row before
+                    // anything else annotates the list — the surviving row
+                    // keeps the deepest id, which is what the spinner /
+                    // "Load more" prefixes key off.
+                    let mut items =
+                        compact_single_child_chains(items, &separator, &scanning_prefixes, &incomplete_prefixes);
                     // Stamp the inline-spinner flag on folders whose lazy
                     // prefix-scan is still running. Skipped entirely when
                     // nothing is scanning (the common case).

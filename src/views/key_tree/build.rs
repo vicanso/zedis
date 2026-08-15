@@ -267,10 +267,12 @@ pub(super) fn stamp_folder_tag_aggregates(
 /// while an expanded folder's only child is itself a folder, that child is
 /// treated as expanded too. Lets a deep single-child namespace
 /// (`app:user` → `profile` → leaves) open in one click instead of one click
-/// per level. Returns the augmented set (owned, so the caller can borrow
-/// `&str` views into it). Recomputed every rebuild, so a streaming scan that
-/// later reveals a second child stops the auto-expand at that level on the
-/// next pass. No-op (skips the child-map pass) when nothing is expanded.
+/// per level — and, together with [`compact_single_child_chains`], lets that
+/// whole chain render as a single row. Returns the augmented set (owned, so
+/// the caller can borrow `&str` views into it). Recomputed every rebuild, so
+/// a streaming scan that later reveals a second child stops the auto-expand
+/// at that level on the next pass. No-op (skips the child-map pass) when
+/// nothing is expanded.
 pub(super) fn single_child_expanded_set(
     keys: &[(SharedString, KeyType)],
     expanded_items: &AHashSet<SharedString>,
@@ -574,6 +576,101 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
 
     build_sorted_list("", &mut children_map, &mut result);
 
+    result
+}
+
+/// Is this folder's lazy prefix scan in flight, or stopped at the page cap
+/// with more keys still on the server? Such a folder can still gain children,
+/// so what looks like a single child right now is only provisional.
+fn folder_scan_pending(
+    id: &str,
+    separator: &str,
+    scanning: &AHashSet<SharedString>,
+    incomplete: &AHashSet<SharedString>,
+) -> bool {
+    if scanning.is_empty() && incomplete.is_empty() {
+        return false;
+    }
+    let prefix = SharedString::from(format!("{id}{separator}"));
+    scanning.contains(&prefix) || incomplete.contains(&prefix)
+}
+
+/// Collapses chains of single-child folders into one row: `a` → `b` → `c`
+/// where each level holds exactly one thing renders as a single `a:b:c` row
+/// instead of three.
+///
+/// Keys routinely embed text that merely *looks* like a namespace — an ISO
+/// timestamp (`…:2022-05-11 11:55:44.487892+00:00/…`) splits on its own
+/// colons and shattered into a stack of folders labelled `55` and
+/// `44.487892+00`, which read like numbers Zedis invented rather than parts
+/// of the key (issue #127). A folder with exactly one child carries no
+/// grouping information, so folding it into that child loses nothing and
+/// keeps the key legible in one piece.
+///
+/// Runs on the flattened, depth-first rows *before* "Load more" rows and
+/// `parent_ix` are added. The surviving row keeps the **deepest** id, so
+/// prefix scans, expansion bookkeeping, selection and folder actions all
+/// address exactly the namespace they did before; only `label` (now the
+/// joined path) and `depth` (shifted up by the number of folds above it)
+/// change. Collapsed folders keep their own row — an unexpanded folder has
+/// no children in the list to fold into.
+pub(super) fn compact_single_child_chains(
+    mut items: Vec<KeyTreeItem>,
+    separator: &str,
+    scanning: &AHashSet<SharedString>,
+    incomplete: &AHashSet<SharedString>,
+) -> Vec<KeyTreeItem> {
+    if items.len() < 2 || separator.is_empty() {
+        return items;
+    }
+    // Direct child rows per folder, from the same depth stack
+    // `fill_parent_indices` walks. `children_count` can't answer this: it
+    // counts descendant *keys*, so a folder holding one child folder with 50
+    // leaves under it reads as 50 there.
+    let mut direct_children = vec![0usize; items.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        while stack.last().is_some_and(|&top| items[top].depth >= item.depth) {
+            stack.pop();
+        }
+        if let Some(&parent) = stack.last() {
+            direct_children[parent] += 1;
+        }
+        if item.is_folder {
+            stack.push(i);
+        }
+    }
+
+    let mut result: Vec<KeyTreeItem> = Vec::with_capacity(items.len());
+    // Original depths of the folders folded away on the path down to the
+    // current row; the stack's height is how far that row moves up.
+    let mut folded: Vec<usize> = Vec::new();
+    for i in 0..items.len() {
+        let depth = items[i].depth;
+        while folded.last().is_some_and(|&at| depth <= at) {
+            folded.pop();
+        }
+        let folds_into_child = items[i].is_folder
+            && items[i].expanded
+            && direct_children[i] == 1
+            && items.get(i + 1).is_some_and(|child| child.depth == depth + 1)
+            && !folder_scan_pending(&items[i].id, separator, scanning, incomplete);
+        if folds_into_child {
+            // Hand this folder's label down to the child, which inherits the
+            // row (and with it the id, type, count and expansion state).
+            let mut label = std::mem::take(&mut items[i].label).to_string();
+            label.push_str(separator);
+            label.push_str(&items[i + 1].label);
+            items[i + 1].label = label.into();
+            folded.push(depth);
+            continue;
+        }
+        let mut item = std::mem::take(&mut items[i]);
+        // Never underflows: every entry in `folded` sits at a strictly
+        // smaller depth than this row (deeper ones were just popped).
+        item.depth = depth - folded.len();
+        result.push(item);
+    }
     result
 }
 
@@ -997,5 +1094,122 @@ mod load_more_tests {
         assert!(!subtree_ends_before(&items, 1, 0, 3));
         // Window running past the end of the list counts as "end visible".
         assert!(subtree_ends_before(&items, 4, 0, 10));
+    }
+}
+
+#[cfg(test)]
+mod compact_chain_tests {
+    use super::*;
+
+    fn folder(id: &str, label: &str, depth: usize) -> KeyTreeItem {
+        KeyTreeItem {
+            id: id.into(),
+            label: label.into(),
+            depth,
+            is_folder: true,
+            expanded: true,
+            ..Default::default()
+        }
+    }
+    fn leaf(id: &str, label: &str, depth: usize) -> KeyTreeItem {
+        KeyTreeItem {
+            id: id.into(),
+            label: label.into(),
+            depth,
+            ..Default::default()
+        }
+    }
+    /// (id, label, depth) of every surviving row — the three fields the fold
+    /// is allowed to touch (id never, label and depth by design).
+    fn rows(items: Vec<KeyTreeItem>) -> Vec<(String, String, usize)> {
+        compact_single_child_chains(items, ":", &AHashSet::new(), &AHashSet::new())
+            .into_iter()
+            .map(|i| (i.id.to_string(), i.label.to_string(), i.depth))
+            .collect()
+    }
+
+    #[test]
+    fn chain_of_single_children_becomes_one_row() {
+        let items = vec![folder("a", "a", 0), folder("a:b", "b", 1), leaf("a:b:c", "c", 2)];
+        assert_eq!(rows(items), vec![("a:b:c".into(), "a:b:c".into(), 0)]);
+    }
+
+    #[test]
+    fn a_fork_stops_the_fold_and_children_move_up_with_it() {
+        let items = vec![
+            folder("a", "a", 0),
+            folder("a:b", "b", 1),
+            leaf("a:b:1", "1", 2),
+            leaf("a:b:2", "2", 2),
+            folder("z", "z", 0),
+            leaf("z:1", "1", 1),
+            leaf("z:2", "2", 1),
+        ];
+        assert_eq!(
+            rows(items),
+            vec![
+                ("a:b".into(), "a:b".into(), 0),
+                ("a:b:1".into(), "1".into(), 1),
+                ("a:b:2".into(), "2".into(), 1),
+                // The sibling after the folded subtree keeps its own depth.
+                ("z".into(), "z".into(), 0),
+                ("z:1".into(), "1".into(), 1),
+                ("z:2".into(), "2".into(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_collapsed_child_folder_still_absorbs_its_parent() {
+        // `a:b` is shut, so it has no rows of its own to fold into — but `a`
+        // still holds nothing except `a:b`, so the pair reads as one row that
+        // opens the deeper prefix.
+        let mut shut = folder("a:b", "b", 1);
+        shut.expanded = false;
+        let out = compact_single_child_chains(vec![folder("a", "a", 0), shut], ":", &AHashSet::new(), &AHashSet::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id.as_ref(), "a:b");
+        assert_eq!(out[0].label.as_ref(), "a:b");
+        assert!(out[0].is_folder && !out[0].expanded);
+    }
+
+    #[test]
+    fn a_folder_whose_scan_is_unfinished_keeps_its_row() {
+        let items = || vec![folder("a", "a", 0), leaf("a:1", "1", 1)];
+        let pending: AHashSet<SharedString> = ["a:".into()].into_iter().collect();
+        let empty = AHashSet::new();
+        // In flight: more children may still land under `a`.
+        let out = compact_single_child_chains(items(), ":", &pending, &empty);
+        assert_eq!(out.len(), 2, "spinner row must survive");
+        // Stopped at the page cap: `a` owns the "Load more" row.
+        let out = compact_single_child_chains(items(), ":", &empty, &pending);
+        assert_eq!(out.len(), 2, "load-more row must survive");
+    }
+
+    /// Issue #127: a key carrying an ISO timestamp splits on the timestamp's
+    /// own colons, and each fragment used to get a folder row of its own —
+    /// `55` and `44.487892+00` looked like numbers Zedis had invented. The
+    /// whole chain now collapses onto the key itself.
+    #[test]
+    fn timestamp_fragments_no_longer_get_folders_of_their_own() {
+        let key = "jtable#abc/user/2022-05-11 11:55:44.487892+00:00/x";
+        let expanded: AHashSet<SharedString> = ["jtable#abc/user/2022-05-11 11".into()].into_iter().collect();
+        let items = new_key_tree_items(KeyTreeBuildInput {
+            keys: vec![(SharedString::from(key), KeyType::Json)],
+            keyword: SharedString::default(),
+            expanded_items: expanded,
+            suppressed: AHashSet::new(),
+            separator: ":",
+            max_key_tree_depth: 5,
+            key_ttls: &AHashMap::new(),
+            metadata: &std::collections::HashMap::new(),
+        });
+        assert_eq!(items.len(), 4, "one folder per colon before the fold");
+        let out = compact_single_child_chains(items, ":", &AHashSet::new(), &AHashSet::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id.as_ref(), key);
+        assert_eq!(out[0].label.as_ref(), key);
+        assert_eq!(out[0].depth, 0);
+        assert!(!out[0].is_folder);
     }
 }
