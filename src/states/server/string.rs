@@ -256,3 +256,28 @@ pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) 
         ..Default::default()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lz4_flex::block::compress_prepend_size;
+
+    /// The LZ4 sniff in `detect_and_decode`'s fallback arm: a value that does
+    /// not read as text but decompresses into some is shown as a decoded
+    /// preview. The four-byte size prefix carries NUL bytes for a payload this
+    /// size, which is what keeps the block off the plain-text path.
+    ///
+    /// This is the only coverage the LZ4 branch has, and the decoder behind it
+    /// is chosen by a feature flag (`safe-decode`), so the round trip is worth
+    /// pinning.
+    #[test]
+    fn lz4_block_decodes_into_a_preview() {
+        let plain = "zedis ".repeat(64);
+        let compressed = compress_prepend_size(plain.as_bytes());
+
+        let (format, text) = detect_and_decode(&compressed, 4096);
+
+        assert_eq!(format, DataFormat::Preview);
+        assert_eq!(text.as_ref(), plain);
+    }
+}

@@ -71,11 +71,24 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 humansize = "2.1.3"
 humantime = {workspace = true}
 infer = "0.22.0"
-# 0.14 moved the allocating block API behind an `alloc` feature that did not
-# exist in 0.13, so `decompress_size_prepended` needs it named explicitly.
-# `default-features = false` still keeps the `frame` codec (and its twox-hash
-# dependency) out — we only ever decode raw LZ4 blocks.
-lz4_flex = { version = "0.14.0", default-features = false, features = ["alloc"] }
+# `default-features = false` keeps the `frame` codec (and its twox-hash
+# dependency) out — we only ever decode raw LZ4 blocks — so the features we
+# do want are named one by one:
+#   alloc          — 0.14 moved the allocating block API behind it (0.13 had
+#                    no such feature), and `decompress_size_prepended` is it.
+#   safe-decode    — the `forbid(unsafe_code)` decoder. We hand this arbitrary
+#                    bytes read from Redis (`string.rs` tries LZ4 on anything
+#                    that is not valid UTF-8), so the unsafe decoder is the
+#                    wrong trade for a one-shot decode of a value about to be
+#                    displayed.
+#   checked-decode — upstream's default set still lists it; it gates nothing
+#                    in 0.14 (the bounds checks became unconditional in
+#                    0.11), kept so intent survives if it is ever rewired.
+lz4_flex = { version = "0.14.0", default-features = false, features = [
+    "alloc",
+    "safe-decode",
+    "checked-decode",
+] }
 mimalloc = { version = "0.1.52", optional = true }
 os_info = "3.15.0"
 parking_lot = "0.12.5"
