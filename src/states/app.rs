@@ -18,8 +18,8 @@ use crate::connection::{
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
 use crate::helpers::{
-    DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir,
-    set_configured_proxy, unix_ts,
+    ConfigRecovery, DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir,
+    load_config_with_recovery, set_configured_proxy, unix_ts, write_file_atomic_with_backup,
 };
 use crate::states::i18n_common;
 use chrono::Local;
@@ -593,22 +593,33 @@ impl ZedisGlobalStore {
 
 impl Global for ZedisGlobalStore {}
 
+/// Persists the app state crash-safely: atomic replace plus a rolling
+/// `zedis.toml.bak` of the previous version (see `write_file_atomic_with_backup`).
 pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
     let path = get_or_create_server_config()?;
     let value = toml::to_string(state)?;
-    std::fs::write(path, value)?;
+    write_file_atomic_with_backup(&path, value.as_bytes())?;
     Ok(())
 }
 
 impl ZedisAppState {
     pub fn try_new() -> Result<Self> {
         let path = get_or_create_server_config()?;
-        let value = std::fs::read_to_string(path)?;
-        let mut state = if value.is_empty() {
-            Self::default()
-        } else {
-            toml::from_str(&value)?
-        };
+        // A damaged file is quarantined and the `.bak` restored (or defaults
+        // used) — never parsed-as-empty, which the next save would then
+        // write over the user's preferences. The recovery is reported in the
+        // UI once the window is up (`take_config_recoveries`).
+        let loaded = load_config_with_recovery(&path, |text| toml::from_str::<Self>(text).map_err(|e| e.to_string()))?;
+        match &loaded.recovery {
+            Some(ConfigRecovery::RestoredFromBackup { corrupt_path, .. }) => {
+                warn!(corrupt = %corrupt_path.display(), "zedis.toml was unreadable; restored from backup")
+            }
+            Some(ConfigRecovery::Reset { corrupt_path, .. }) => {
+                error!(corrupt = %corrupt_path.display(), "zedis.toml was unreadable and no backup parsed; reset to defaults")
+            }
+            None => {}
+        }
+        let mut state = loaded.value.unwrap_or_default();
         if state.locale.clone().unwrap_or_default().is_empty() {
             if let Some(locale) = get_locale() {
                 // Try to extract the language code from the locale string

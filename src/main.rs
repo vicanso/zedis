@@ -1,18 +1,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use crate::connection::{DangerKind, clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
-use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
+use crate::db::{
+    DbOpenFailure, LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, open_failure_kind,
+    purge_all_trash, quarantine_database,
+};
 use crate::helpers::{
-    EditorAction, MemuAction, MultiSearchAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction,
-    UpdateAction, UpdateInfo, WorkspaceTabAction, apply_default_ui_font_size, apply_fonts, download_and_verify,
-    fetch_latest_release, focus_installer_ui, get_or_create_config_dir, humanize_keystroke, init_logger,
-    installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages,
-    set_configured_proxy, unix_ts_millis, with_app_identity,
+    ConfigRecovery, CrashContext, CrashReport, EditorAction, MemuAction, MultiSearchAction, NavAction, PaletteAction,
+    RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo, WorkspaceTabAction, apply_default_ui_font_size,
+    apply_fonts, download_and_verify, fetch_latest_release, focus_installer_ui, get_mono_font_family,
+    get_or_create_config_dir, humanize_keystroke, init_logger, install_panic_hook, installer_requires_quit,
+    is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages, set_configured_proxy,
+    take_config_recoveries, take_pending_crash, unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, HINT_WELCOME, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction,
-    ServerView, SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_hints,
-    i18n_sidebar, i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
+    ServerView, SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_crash,
+    i18n_hints, i18n_sidebar, i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
 };
 use crate::views::{
     DialogCallback, ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette,
@@ -35,6 +39,7 @@ use gpui_component::{
     text::{TextView, TextViewStyle},
     v_flex,
 };
+use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -149,6 +154,13 @@ pub struct Zedis {
     /// First launch with nothing configured — show the one-time welcome card.
     /// Consumed in `render` (which has the `Window` needed for the dialog).
     pending_welcome: bool,
+    /// Config files that were damaged and recovered (or reset) while loading
+    /// at startup — before any window existed to report it. Consumed in
+    /// `render`, one notification each.
+    pending_config_recoveries: Vec<ConfigRecovery>,
+    /// The crash report the previous run left behind, if it ended in a panic.
+    /// Consumed in `render` (which has the `Window` needed for the dialog).
+    pending_crash: Option<CrashReport>,
 }
 
 impl Zedis {
@@ -359,6 +371,8 @@ impl Zedis {
             download_task: None,
             pending_install_quit: false,
             pending_welcome: false,
+            pending_config_recoveries: Vec::new(),
+            pending_crash: None,
         }
     }
 
@@ -1084,6 +1098,65 @@ fn release_notes_style() -> TextViewStyle {
 /// First-launch onboarding: a one-shot card walking through the three steps to
 /// get productive. Only opened when no server is configured yet, and never
 /// twice — `HINT_WELCOME` is dismissed the moment startup decides to show it.
+/// Localized one-line account of a startup config recovery: which file, what
+/// happened, and where the damaged copy was kept (the full path, so the user
+/// can hand it over or inspect it).
+fn config_recovery_message(recovery: &ConfigRecovery, cx: &App) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    let file = recovery
+        .path()
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let corrupt = recovery.corrupt_path().display().to_string();
+    let key = match recovery {
+        ConfigRecovery::RestoredFromBackup { .. } => "common.config_restored_from_backup",
+        ConfigRecovery::Reset { .. } => "common.config_reset",
+    };
+    t!(key, file = file, corrupt = corrupt, locale = locale)
+        .to_string()
+        .into()
+}
+
+/// "Zedis closed unexpectedly last time": the panic message and where the full
+/// report (with backtrace) was written, plus a one-click way to the folder so it
+/// can be attached to an issue.
+fn open_crash_dialog(report: &CrashReport, window: &mut Window, cx: &mut App) {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+    let body = i18n_crash(cx, "body");
+    let summary: SharedString = report.summary.clone().into();
+    let saved: SharedString = t!(
+        "crash.report_saved",
+        path = report.path.display().to_string(),
+        locale = &locale
+    )
+    .to_string()
+    .into();
+    let muted = cx.theme().muted_foreground;
+    let mono = get_mono_font_family();
+    ZedisDialog::new(i18n_crash(cx, "title"))
+        .icon(IconName::TriangleAlert)
+        .child(move || {
+            v_flex()
+                .gap_2()
+                .child(body.clone())
+                .when(!summary.is_empty(), |this| {
+                    this.child(div().font_family(mono.clone()).text_sm().child(summary.clone()))
+                })
+                .child(div().text_xs().text_color(muted).child(saved.clone()))
+        })
+        .ok_text(i18n_crash(cx, "open_logs"))
+        .cancel_text(i18n_crash(cx, "dismiss"))
+        .on_ok(|_, _window, cx| {
+            match logs_dir() {
+                Some(logs) => cx.open_with_system(&logs),
+                None => error!("failed to resolve logs directory"),
+            }
+            true
+        })
+        .open(window, cx);
+}
+
 fn open_welcome_dialog(window: &mut Window, cx: &mut App) {
     let intro = i18n_hints(cx, "welcome_intro");
     let steps: [SharedString; 3] = [
@@ -1244,6 +1317,20 @@ impl Render for Zedis {
         }
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
+        }
+        for recovery in std::mem::take(&mut self.pending_config_recoveries) {
+            let message = config_recovery_message(&recovery, cx);
+            // Losing the server list (secrets included) is an error; a
+            // successful restore from `.bak` is only worth a warning.
+            let notification = match recovery {
+                ConfigRecovery::Reset { .. } => Notification::error(message),
+                ConfigRecovery::RestoredFromBackup { .. } => Notification::warning(message),
+            };
+            window.push_notification(notification, cx);
+        }
+        if let Some(report) = self.pending_crash.take() {
+            // Deferred for the same focus reason as the welcome card below.
+            window.defer(cx, move |window, cx| open_crash_dialog(&report, window, cx));
         }
         // The installer is up and this platform needs Zedis closed to finish —
         // ask (the update dialog has already dismissed itself by now).
@@ -1630,37 +1717,129 @@ fn moved_active_index(active: usize, from: usize, to: usize) -> usize {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 
-/// Minimal window shown when the local database can't be opened — most often
-/// because another Zedis instance is already running and holds the lock. We
-/// surface this and exit instead of silently starting a half-broken instance
-/// (tags / search history / proto / script / Lua features would all fail).
-struct DatabaseErrorView;
+/// Shown when the local database can't be opened. Three causes, three
+/// remedies: another instance holds the lock (quit it), the file was written by
+/// a newer Zedis (update, or rebuild), or the file is damaged (rebuild).
+/// "Back up & rebuild" moves the file aside as `zedis.redb.corrupt-<ts>` —
+/// nothing is deleted; tags, favorites, history and scripts live in it —
+/// creates a fresh one, and hands over to the normal startup (`launch`).
+struct DatabaseErrorView {
+    failure: DbOpenFailure,
+    app_state: ZedisAppState,
+    /// Why the last "Back up & rebuild" attempt failed, shown inline.
+    rebuild_error: Option<String>,
+}
+
+impl DatabaseErrorView {
+    fn new(failure: DbOpenFailure, app_state: ZedisAppState) -> Self {
+        Self {
+            failure,
+            app_state,
+            rebuild_error: None,
+        }
+    }
+
+    /// No `ZedisGlobalStore` exists yet on this path, so translate against
+    /// the locale straight from the loaded state.
+    fn text(&self, key: &str) -> SharedString {
+        t!(format!("database.{key}"), locale = self.app_state.locale())
+            .to_string()
+            .into()
+    }
+
+    fn rebuild(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let quarantined = match quarantine_database() {
+            Ok(path) => path,
+            Err(e) => {
+                error!(error = %e, "could not move the local database aside");
+                self.rebuild_error = Some(e.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        warn!(quarantined = %quarantined.display(), "local database moved aside; creating a fresh one");
+        if let Err(e) = init_database() {
+            error!(error = %e, "rebuilding the local database failed");
+            self.rebuild_error = Some(e.to_string());
+            cx.notify();
+            return;
+        }
+        init_caches();
+        let handle = window.window_handle();
+        launch(cx, self.app_state.clone());
+        cx.spawn(async move |_this, cx| {
+            // Queued behind `launch`'s own spawn, so the main window is open
+            // before this one goes: on Linux/Windows the default QuitMode
+            // ends the app when the last window closes. The guard keeps the
+            // recovery window around rather than quitting if that ever
+            // doesn't hold.
+            cx.update(|cx| {
+                if cx.windows().len() > 1 {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }
+            });
+        })
+        .detach();
+    }
+}
 
 impl Render for DatabaseErrorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (body_key, can_rebuild) = match &self.failure {
+            DbOpenFailure::Locked => ("locked_body", false),
+            DbOpenFailure::SchemaTooNew { .. } => ("schema_too_new_body", true),
+            DbOpenFailure::Damaged(_) => ("damaged_body", true),
+            DbOpenFailure::Inaccessible(_) => ("inaccessible_body", false),
+        };
+        let detail: Option<String> = match &self.failure {
+            DbOpenFailure::Locked => None,
+            DbOpenFailure::SchemaTooNew { found, supported } => Some(format!("schema v{found} > v{supported}")),
+            DbOpenFailure::Damaged(message) | DbOpenFailure::Inaccessible(message) => Some(message.clone()),
+        };
+        let rebuild_error = self
+            .rebuild_error
+            .as_ref()
+            .map(|e| format!("{}: {e}", self.text("rebuild_failed")));
+        let (title, body, quit, rebuild) = (
+            self.text("title"),
+            self.text(body_key),
+            self.text("quit"),
+            self.text("rebuild"),
+        );
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
         v_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .p_5()
             .gap_3()
-            .child(Label::new("Zedis can't open its database").font_semibold())
-            .child(
-                Label::new(
-                    "Another instance of Zedis may already be running and holding the database \
-                     lock, or the database file is inaccessible. Quit the other instance, then \
-                     reopen Zedis.",
-                )
-                .whitespace_normal(),
-            )
+            .child(Label::new(title).font_semibold())
+            .child(Label::new(body).whitespace_normal())
+            .when_some(detail, |this, detail| {
+                this.child(Label::new(detail).text_xs().text_color(muted).whitespace_normal())
+            })
+            .when_some(rebuild_error, |this, message| {
+                this.child(Label::new(message).text_color(danger).whitespace_normal())
+            })
             .child(div().flex_1())
             .child(
-                h_flex().justify_end().child(
-                    Button::new("quit-db-error")
-                        .label("Quit")
-                        .primary()
-                        .on_click(|_, _window, cx| cx.quit()),
-                ),
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("quit-db-error")
+                            .label(quit)
+                            .on_click(|_, _window, cx| cx.quit()),
+                    )
+                    .when(can_rebuild, |this| {
+                        this.child(
+                            Button::new("rebuild-db")
+                                .label(rebuild)
+                                .primary()
+                                .on_click(cx.listener(|this, _, window, cx| this.rebuild(window, cx))),
+                        )
+                    }),
             )
     }
 }
@@ -1744,6 +1923,32 @@ fn is_smoke_test() -> bool {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Held for the whole run so the non-blocking file logger keeps flushing.
     let _log_guard = init_logger()?;
+    // Crash context first, before anything that can panic: release builds
+    // abort on panic, so the report the hook writes is the only trace left.
+    let info = os_info::get();
+    let os = format!("{}-{}", info.os_type(), info.version());
+    let arch = info.architecture().unwrap_or_default().to_string();
+    install_panic_hook(CrashContext {
+        version: VERSION,
+        git_sha: GIT_SHA,
+        os: os.clone(),
+        arch: arch.clone(),
+    });
+    let config_dir = if let Ok(dir) = get_or_create_config_dir() {
+        dir.to_string_lossy().to_string()
+    } else {
+        "--".to_string()
+    };
+    info!(
+        version = VERSION,
+        git_sha = GIT_SHA,
+        os,
+        arch,
+        config_dir,
+        is_app_store_build = is_app_store_build(),
+        sys_locale = ?get_locale(),
+        "zedis launch"
+    );
     if is_smoke_test() {
         // Smoke watchdog: in the 0.4.5/0.4.6 Windows failure mode (hidden
         // window never receives WM_PAINT) no frame ever paints, so the
@@ -1765,31 +1970,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::connection::init_commands_json(file.data.to_vec());
     }
     let app = gpui_platform::application().with_assets(assets::Assets);
-    let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
+    let app_state = ZedisAppState::try_new().unwrap_or_else(|e| {
+        error!(error = %e, "zedis.toml could not be loaded; starting with defaults");
+        ZedisAppState::new()
+    });
     if let Err(e) = get_servers() {
         error!(error = %e, "get servers fail",);
     }
     if let Err(e) = init_database() {
-        error!(error = %e, "init database failed — another Zedis instance may hold the lock; showing error and exiting");
-        // Don't start a half-broken second instance (the DB is required for
-        // tags / history / proto / script / Lua). Show a clear window and quit.
-        let saved_mode = app_state.theme();
+        let failure = open_failure_kind(&e);
+        error!(error = %e, failure = ?failure, "init database failed; showing the recovery window");
+        // Don't start a half-broken instance (the DB is required for tags /
+        // history / proto / script / Lua). The window explains the cause and,
+        // for a damaged or too-new file, offers to move it aside and rebuild.
         app.run(move |cx| {
             gpui_component::init(cx);
             // Match the user's chosen mode, or the OS appearance, so the error
             // window isn't a jarring light flash on a dark system.
-            let mode = match saved_mode {
+            let mode = match app_state.theme() {
                 Some(m) => m,
                 None => theme_mode_for_appearance(cx.window_appearance()),
             };
             Theme::change(mode, None, cx);
             apply_default_ui_font_size(cx);
             cx.activate(true);
-            let bounds = Bounds::centered(None, size(px(460.), px(220.)), cx);
+            let bounds = Bounds::centered(None, size(px(540.), px(300.)), cx);
             let opened = cx.open_window(
                 with_app_identity(WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(380.), px(180.))),
+                    window_min_size: Some(size(px(440.), px(240.))),
                     ..Default::default()
                 }),
                 |window, cx| {
@@ -1797,7 +2006,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cx.quit();
                         true
                     });
-                    let view = cx.new(|_| DatabaseErrorView);
+                    let view = cx.new(|_| DatabaseErrorView::new(failure, app_state));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             );
@@ -1807,11 +2016,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         return Ok(());
     }
-    // Populate the in-memory proto / script / lua caches synchronously, before
-    // the window opens — they back the proto/script/lua editor tables. Loading
-    // them in a post-window background task (the old placement) raced: an editor
-    // restored as the startup route read an empty cache and showed no rows until
-    // the view was recreated (switching away and back).
+    init_caches();
+    app.run(move |cx| {
+        // This must be called before using any GPUI Component features.
+        gpui_component::init(cx);
+        launch(cx, app_state);
+    });
+    Ok(())
+}
+
+/// Fills the in-memory proto / script / Lua caches from the local database.
+/// Runs synchronously before the window opens — they back the proto/script/
+/// Lua editor tables, and loading them in a post-window background task (the
+/// old placement) raced: an editor restored as the startup route read an
+/// empty cache and showed no rows until the view was recreated.
+fn init_caches() {
     if let Err(e) = ProtoManager::init() {
         error!(error = %e, "init protos fail");
     }
@@ -1821,349 +2040,340 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = LuaScriptManager::init() {
         error!(error = %e, "init lua scripts fail");
     }
-    let config_dir = if let Ok(dir) = get_or_create_config_dir() {
-        dir.to_string_lossy().to_string()
-    } else {
-        "--".to_string()
+}
+
+/// The normal startup once the local database is usable: theme, fonts, global
+/// store, menus, hot keys, and the main window. Called from `main` directly,
+/// or from the database recovery window after a successful rebuild — so it
+/// must not assume anything about which windows already exist.
+fn launch(cx: &mut App, app_state: ZedisAppState) {
+    // Register the bundled JetBrains Mono faces (assets/fonts/*.ttf) so the
+    // monospace family (`get_mono_font_family()`) renders real Regular / Bold
+    // weights on every platform instead of leaning on whatever the OS ships
+    // — see the "Bold needs a concrete font family" gotcha in CLAUDE.md.
+    let fonts = ["fonts/JetBrainsMono-Regular.ttf", "fonts/JetBrainsMono-Bold.ttf"]
+        .into_iter()
+        .filter_map(|p| assets::Assets::get(p).map(|f| f.data))
+        .collect();
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        error!(error = %e, "failed to register bundled fonts");
+    }
+    // Register the embedded color themes so they appear in the theme menu.
+    assets::register_themes(cx);
+
+    cx.activate(true);
+    let window_bounds = resolve_window_bounds(&app_state, cx);
+    info!(bounds = ?window_bounds, "resolved window bounds");
+    let app_state = cx.new(|_| app_state);
+    let app_store = ZedisGlobalStore::new(app_state);
+    // A saved named theme wins; otherwise fall back to the Light/Dark/System
+    // mode (resolved against the OS appearance by the renderer).
+    let saved_theme_name = app_store.read(cx).theme_name();
+    let saved_mode = app_store.read(cx).theme();
+    let applied = match saved_theme_name {
+        Some(name) => apply_named_theme(&name, cx),
+        None => false,
     };
-    let info = os_info::get();
-    let os = format!("{}-{}", info.os_type(), info.version());
-    info!(
-        version = VERSION,
-        git_sha = GIT_SHA,
-        os,
-        arch = info.architecture().unwrap_or_default().to_string(),
-        config_dir,
-        is_app_store_build = is_app_store_build(),
-        sys_locale = ?get_locale(),
-        "zedis launch"
-    );
-
-    app.run(move |cx| {
-        // This must be called before using any GPUI Component features.
-        gpui_component::init(cx);
-        // Register the bundled JetBrains Mono faces (assets/fonts/*.ttf) so the
-        // monospace family (`get_mono_font_family()`) renders real Regular / Bold
-        // weights on every platform instead of leaning on whatever the OS ships
-        // — see the "Bold needs a concrete font family" gotcha in CLAUDE.md.
-        let fonts = ["fonts/JetBrainsMono-Regular.ttf", "fonts/JetBrainsMono-Bold.ttf"]
-            .into_iter()
-            .filter_map(|p| assets::Assets::get(p).map(|f| f.data))
-            .collect();
-        if let Err(e) = cx.text_system().add_fonts(fonts) {
-            error!(error = %e, "failed to register bundled fonts");
-        }
-        // Register the embedded color themes so they appear in the theme menu.
-        assets::register_themes(cx);
-
-        cx.activate(true);
-        let window_bounds = resolve_window_bounds(&app_state, cx);
-        info!(bounds = ?window_bounds, "resolved window bounds");
-        let app_state = cx.new(|_| app_state);
-        let app_store = ZedisGlobalStore::new(app_state);
-        // A saved named theme wins; otherwise fall back to the Light/Dark/System
-        // mode (resolved against the OS appearance by the renderer).
-        let saved_theme_name = app_store.read(cx).theme_name();
-        let saved_mode = app_store.read(cx).theme();
-        let applied = match saved_theme_name {
-            Some(name) => apply_named_theme(&name, cx),
-            None => false,
+    if !applied {
+        // Resolve System mode (no saved name/mode) against the OS appearance
+        // *before* the window opens, so the very first painted frame already
+        // uses the right light/dark theme. Otherwise the default theme shows
+        // for a frame and flashes (e.g. white before a dark theme settles).
+        let mode = match saved_mode {
+            Some(m) => m,
+            None => theme_mode_for_appearance(cx.window_appearance()),
         };
-        if !applied {
-            // Resolve System mode (no saved name/mode) against the OS appearance
-            // *before* the window opens, so the very first painted frame already
-            // uses the right light/dark theme. Otherwise the default theme shows
-            // for a frame and flashes (e.g. white before a dark theme settles).
-            let mode = match saved_mode {
-                Some(m) => m,
-                None => theme_mode_for_appearance(cx.window_appearance()),
-            };
-            Theme::change(mode, None, cx);
+        Theme::change(mode, None, cx);
+    }
+    // Theme::change / apply_named_theme reset font_size to stock 16; pin
+    // the app rem base before the first frame (Root reads theme.font_size).
+    apply_default_ui_font_size(cx);
+    cx.set_global(app_store);
+    // Apply the saved font preferences onto the (already-initialized)
+    // Theme before the first frame, so the initial paint uses them.
+    {
+        let (ui_font, mono_font) = {
+            let store = cx.global::<ZedisGlobalStore>().read(cx);
+            (store.ui_font_family(), store.mono_font_family())
+        };
+        apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
+    }
+    // Mirror the persisted proxy setting into helpers::proxy before the
+    // startup update check fires — its HTTP runs on background threads
+    // that can't read the store.
+    {
+        let proxy = cx.global::<ZedisGlobalStore>().read(cx).http_proxy();
+        set_configured_proxy(&proxy);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let tray_enabled = cx.global::<ZedisGlobalStore>().read(cx).tray_enabled();
+        if tray_enabled {
+            tray::init_tray(cx);
         }
-        // Theme::change / apply_named_theme reset font_size to stock 16; pin
-        // the app rem base before the first frame (Root reads theme.font_size).
-        apply_default_ui_font_size(cx);
-        cx.set_global(app_store);
-        // Apply the saved font preferences onto the (already-initialized)
-        // Theme before the first frame, so the initial paint uses them.
-        {
-            let (ui_font, mono_font) = {
-                let store = cx.global::<ZedisGlobalStore>().read(cx);
-                (store.ui_font_family(), store.mono_font_family())
-            };
-            apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
+    }
+    cx.bind_keys(new_hot_keys());
+    cx.on_action(|e: &MemuAction, cx: &mut App| match e {
+        MemuAction::Quit => {
+            cx.quit();
         }
-        // Mirror the persisted proxy setting into helpers::proxy before the
-        // startup update check fires — its HTTP runs on background threads
-        // that can't read the store.
-        {
-            let proxy = cx.global::<ZedisGlobalStore>().read(cx).http_proxy();
-            set_configured_proxy(&proxy);
+        MemuAction::About => {
+            open_about_window(cx);
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let tray_enabled = cx.global::<ZedisGlobalStore>().read(cx).tray_enabled();
-            if tray_enabled {
-                tray::init_tray(cx);
+        MemuAction::Close => {
+            // ⌘W / Ctrl+W mirrors the red close button: on macOS it hides
+            // the app (see on_window_should_close); elsewhere it closes the
+            // active window (which quits the app when it's the last one).
+            #[cfg(target_os = "macos")]
+            cx.hide();
+            #[cfg(not(target_os = "macos"))]
+            if let Some(window) = cx.active_window() {
+                let _ = window.update(cx, |_, window, _cx| window.remove_window());
             }
         }
-        cx.bind_keys(new_hot_keys());
-        cx.on_action(|e: &MemuAction, cx: &mut App| match e {
-            MemuAction::Quit => {
-                cx.quit();
-            }
-            MemuAction::About => {
-                open_about_window(cx);
-            }
-            MemuAction::Close => {
-                // ⌘W / Ctrl+W mirrors the red close button: on macOS it hides
-                // the app (see on_window_should_close); elsewhere it closes the
-                // active window (which quits the app when it's the last one).
-                #[cfg(target_os = "macos")]
-                cx.hide();
-                #[cfg(not(target_os = "macos"))]
-                if let Some(window) = cx.active_window() {
-                    let _ = window.update(cx, |_, window, _cx| window.remove_window());
-                }
-            }
-            MemuAction::OpenLogs => match logs_dir() {
-                // `logs_dir` creates the directory, so it exists even before any
-                // log line has been written.
-                Some(logs) => cx.open_with_system(&logs),
-                None => error!("failed to resolve logs directory"),
-            },
-        });
-        let mut menu_items = vec![MenuItem::action("About Zedis", MemuAction::About)];
-        // App Store builds update via the App Store — hide the manual check.
-        if !is_app_store_build() {
-            menu_items.push(MenuItem::action("Check for Updates", UpdateAction::Check));
-        }
-        menu_items.extend([
-            MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
-            MenuItem::action("Close Window", MemuAction::Close),
-            MenuItem::action("Quit", MemuAction::Quit),
-        ]);
-        cx.set_menus(vec![Menu {
-            name: "Zedis".into(),
-            items: menu_items,
-            disabled: false,
-        }]);
-
-        cx.spawn(async move |cx| {
-            cx.open_window(
-                with_app_identity(WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-                    // macOS / Windows: custom-drawn title bar (transparent OS chrome).
-                    // Linux: server-side decorations show the title from
-                    // `with_app_identity` ("Zedis") — see issue #106.
-                    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-                    titlebar: Some(TitlebarOptions {
-                        title: None,
-                        appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
-                    }),
-                    // macOS only: create the window hidden and reveal it after
-                    // the first themed frame (see on_next_frame below) so
-                    // there's no white flash before the theme paints. Windows
-                    // must be shown immediately — its frames are driven by
-                    // WM_PAINT, which hidden windows never receive, so the
-                    // "reveal on first frame" deadlocks and the window never
-                    // appears (the 0.4.5/0.4.6 auto-hide bug). Its backing is
-                    // a black brush, so there's no white flash to hide anyway.
-                    // Linux too — Wayland can't reliably reveal a window that
-                    // was never mapped.
-                    show: cfg!(not(target_os = "macos")),
-                    window_min_size: Some(size(px(600.), px(400.))),
-                    ..Default::default()
-                }),
-                |window, cx| {
-                    #[cfg(target_os = "macos")]
-                    window.on_window_should_close(cx, move |_window, cx| {
-                        cx.hide();
-                        false
-                    });
-                    // Reveal the (hidden) window only after the first frame has
-                    // painted, so the user never sees the default white backing
-                    // before the themed background. Pairs with `show: false`.
-                    // macOS only: it paints hidden windows; Windows/Linux never
-                    // deliver a frame to an unmapped window, so this callback
-                    // would never fire there (see the `show:` comment above).
-                    #[cfg(target_os = "macos")]
-                    window.on_next_frame(|window, _cx| window.activate_window());
-                    // CI smoke mode: a painted first frame is exactly the
-                    // signal the 0.4.5/0.4.6 Windows regression killed
-                    // (hidden windows never get WM_PAINT, so no frame ever
-                    // comes). Success → exit 0; the watchdog in `main`
-                    // turns "no frame" into exit 2.
-                    if is_smoke_test() {
-                        window.on_next_frame(|_window, _cx| {
-                            println!("ZEDIS_SMOKE_OK");
-                            std::process::exit(0);
-                        });
-                        // Note for CI: under Xvfb + llvmpipe this hook has
-                        // never fired — the frame-present signal doesn't
-                        // arrive in that environment even with redraws
-                        // forced every second (verified 2026-07-17), so the
-                        // Linux smoke step runs best-effort until that's
-                        // understood upstream. Real displays (macOS /
-                        // Windows runners, actual Linux desktops) fire it
-                        // normally.
-                    }
-                    let zedis_view = cx.new(|cx| Zedis::new(window, cx));
-                    // Activate the target connection + view now that the views
-                    // are subscribed. Deep-link launch args (`--server
-                    // <id|name>`, `--db <n>`, `--route <view>`) override the
-                    // remembered state piecewise; with no args this restores
-                    // the last session. The re-select makes the emitted
-                    // ServerSelected load the connection (content) and
-                    // highlight its sidebar row.
-                    {
-                        let store = cx.global::<ZedisGlobalStore>().clone();
-                        store.update(cx, |state, cx| {
-                            let cli_server = cli_server_override();
-                            let cli_db = cli_db_override();
-                            // Target connection: the CLI server wins; else the
-                            // remembered one, validated (it may have been
-                            // deleted since the last run).
-                            let target: Option<(String, usize)> = match &cli_server {
-                                Some(id) => Some((id.clone(), cli_db.unwrap_or_else(|| state.open_db_for(id)))),
-                                None => state
-                                    .selected_server()
-                                    .cloned()
-                                    .filter(|(id, _)| get_server(id).is_ok())
-                                    // A pinned DB wins over the remembered one
-                                    // here too, so a restart lands where a
-                                    // sidebar click would; `--db` still wins
-                                    // over both.
-                                    .map(|(id, db)| {
-                                        let db = cli_db.unwrap_or_else(|| state.open_db_from(&id, db));
-                                        (id, db)
-                                    }),
-                            };
-                            // Target view: explicit --route wins; a bare
-                            // --server implies the editor (a deep link should
-                            // land on that server, not whatever page was
-                            // persisted); otherwise the restored route's view.
-                            let view = match (cli_route_override(), cli_server.is_some()) {
-                                (Some(CliRoute::App(route)), _) => {
-                                    state.activate(route, cx);
-                                    return;
-                                }
-                                (Some(CliRoute::View(view)), _) => Some(view),
-                                (None, true) => Some(ServerView::Editor),
-                                (None, false) => state.route().server_view(),
-                            };
-                            let route = match (view, target) {
-                                (Some(view), Some((id, db))) => Route::Server {
-                                    id: id.into(),
-                                    db,
-                                    view,
-                                },
-                                (Some(_), None) => {
-                                    warn!("server view requested but no valid server available; opening Home");
-                                    Route::Home
-                                }
-                                // Restored app-level route (or Home).
-                                (None, _) => state.route(),
-                            };
-                            state.activate(route, cx);
-                        });
-                    }
-                    // Global (focus-independent) ⌘K handler — element
-                    // `.on_action` is focus-routed and dies when the
-                    // palette closes and orphans its focus handle.
-                    let weak_zedis = zedis_view.downgrade();
-                    cx.on_action(move |_: &PaletteAction, cx: &mut App| {
-                        if let Some(view) = weak_zedis.upgrade() {
-                            view.update(cx, |zedis, cx| zedis.toggle_command_palette(cx));
-                        }
-                    });
-                    // Global (focus-independent) ⌘P — recent keys Quick Open.
-                    let weak_zedis_recent = zedis_view.downgrade();
-                    cx.on_action(move |_: &RecentKeysAction, cx: &mut App| {
-                        if let Some(view) = weak_zedis_recent.upgrade() {
-                            view.update(cx, |zedis, cx| zedis.toggle_recent_keys_palette(cx));
-                        }
-                    });
-                    // Global (focus-independent) ⌘⇧F — multi-database search.
-                    let weak_zedis_multi_search = zedis_view.downgrade();
-                    cx.on_action(move |_: &MultiSearchAction, cx: &mut App| {
-                        if let Some(view) = weak_zedis_multi_search.upgrade() {
-                            view.update(cx, |zedis, cx| zedis.toggle_multi_search(cx));
-                        }
-                    });
-                    // Global (focus-independent) ⌘/ handler — same
-                    // rationale as the ⌘K handler above; also the target
-                    // of the command palette's "Keyboard Shortcuts" row.
-                    let weak_zedis_shortcuts = zedis_view.downgrade();
-                    cx.on_action(move |_: &ShortcutsAction, cx: &mut App| {
-                        if let Some(view) = weak_zedis_shortcuts.upgrade() {
-                            view.update(cx, |zedis, cx| zedis.toggle_shortcuts(cx));
-                        }
-                    });
-                    // Manual "Check for Updates" (app menu) — focus-independent
-                    // like the handlers above so it works regardless of focus.
-                    let weak_zedis_update = zedis_view.downgrade();
-                    cx.on_action(move |e: &UpdateAction, cx: &mut App| {
-                        let Some(view) = weak_zedis_update.upgrade() else {
-                            return;
-                        };
-                        match e {
-                            UpdateAction::Check => {
-                                view.update(cx, |zedis, cx| zedis.check_for_updates(true, false, cx));
-                            }
-                            // Title-bar chip click: open the prompt straight from
-                            // the store. The check that lit the chip already
-                            // fetched everything the dialog shows — version,
-                            // changelog, the per-arch asset — so re-fetching here
-                            // only made the chip spin for a beat before anything
-                            // appeared. The fallback fetch is for the (unreachable)
-                            // case of a chip with no cached update behind it.
-                            UpdateAction::OpenPrompt => {
-                                let cached = cx.global::<ZedisGlobalStore>().read(cx).available_update();
-                                view.update(cx, |zedis, cx| match cached {
-                                    Some(info) => {
-                                        zedis.pending_update = Some(info);
-                                        cx.notify();
-                                    }
-                                    None => zedis.check_for_updates(true, true, cx),
-                                });
-                            }
-                        }
-                    });
-                    // Silent startup check: at most one per `UPDATE_CHECK_INTERVAL`,
-                    // skippable per-version, only if enabled. The update chip lives
-                    // in the always-visible title bar, so this can run on any route.
-                    let auto_due = {
-                        let store = cx.global::<ZedisGlobalStore>().read(cx);
-                        store.auto_update_check() && store.update_check_due()
-                    };
-                    if auto_due {
-                        zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, false, cx));
-                    }
-                    // One-shot welcome card, and only for a truly fresh start
-                    // (no server configured — an upgrading user needs no tour).
-                    // Dismissed on this first evaluation either way, so it can
-                    // never pop up later (e.g. after deleting every server).
-                    if !cx.global::<ZedisGlobalStore>().read(cx).hint_dismissed(HINT_WELCOME) {
-                        update_app_state_and_save_quiet(cx, "dismiss_hint_welcome", |state, _| {
-                            state.dismiss_hint(HINT_WELCOME)
-                        });
-                        // An unreadable config counts as configured: don't greet
-                        // an existing user just because the file failed to parse.
-                        if get_servers().map(|servers| servers.is_empty()).unwrap_or(false) {
-                            zedis_view.update(cx, |zedis, _| zedis.pending_welcome = true);
-                        }
-                    }
-                    cx.new(|cx| Root::new(zedis_view, window, cx))
-                },
-            )?;
-
-            Ok::<_, anyhow::Error>(())
-        })
-        .detach();
+        MemuAction::OpenLogs => match logs_dir() {
+            // `logs_dir` creates the directory, so it exists even before any
+            // log line has been written.
+            Some(logs) => cx.open_with_system(&logs),
+            None => error!("failed to resolve logs directory"),
+        },
     });
-    Ok(())
+    let mut menu_items = vec![MenuItem::action("About Zedis", MemuAction::About)];
+    // App Store builds update via the App Store — hide the manual check.
+    if !is_app_store_build() {
+        menu_items.push(MenuItem::action("Check for Updates", UpdateAction::Check));
+    }
+    menu_items.extend([
+        MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
+        MenuItem::action("Close Window", MemuAction::Close),
+        MenuItem::action("Quit", MemuAction::Quit),
+    ]);
+    cx.set_menus(vec![Menu {
+        name: "Zedis".into(),
+        items: menu_items,
+        disabled: false,
+    }]);
+
+    cx.spawn(async move |cx| {
+        cx.open_window(
+            with_app_identity(WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+                // macOS / Windows: custom-drawn title bar (transparent OS chrome).
+                // Linux: server-side decorations show the title from
+                // `with_app_identity` ("Zedis") — see issue #106.
+                #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+                titlebar: Some(TitlebarOptions {
+                    title: None,
+                    appears_transparent: true,
+                    traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
+                }),
+                // macOS only: create the window hidden and reveal it after
+                // the first themed frame (see on_next_frame below) so
+                // there's no white flash before the theme paints. Windows
+                // must be shown immediately — its frames are driven by
+                // WM_PAINT, which hidden windows never receive, so the
+                // "reveal on first frame" deadlocks and the window never
+                // appears (the 0.4.5/0.4.6 auto-hide bug). Its backing is
+                // a black brush, so there's no white flash to hide anyway.
+                // Linux too — Wayland can't reliably reveal a window that
+                // was never mapped.
+                show: cfg!(not(target_os = "macos")),
+                window_min_size: Some(size(px(600.), px(400.))),
+                ..Default::default()
+            }),
+            |window, cx| {
+                #[cfg(target_os = "macos")]
+                window.on_window_should_close(cx, move |_window, cx| {
+                    cx.hide();
+                    false
+                });
+                // Reveal the (hidden) window only after the first frame has
+                // painted, so the user never sees the default white backing
+                // before the themed background. Pairs with `show: false`.
+                // macOS only: it paints hidden windows; Windows/Linux never
+                // deliver a frame to an unmapped window, so this callback
+                // would never fire there (see the `show:` comment above).
+                #[cfg(target_os = "macos")]
+                window.on_next_frame(|window, _cx| window.activate_window());
+                // CI smoke mode: a painted first frame is exactly the
+                // signal the 0.4.5/0.4.6 Windows regression killed
+                // (hidden windows never get WM_PAINT, so no frame ever
+                // comes). Success → exit 0; the watchdog in `main`
+                // turns "no frame" into exit 2.
+                if is_smoke_test() {
+                    window.on_next_frame(|_window, _cx| {
+                        println!("ZEDIS_SMOKE_OK");
+                        std::process::exit(0);
+                    });
+                    // Note for CI: under Xvfb + llvmpipe this hook has
+                    // never fired — the frame-present signal doesn't
+                    // arrive in that environment even with redraws
+                    // forced every second (verified 2026-07-17), so the
+                    // Linux smoke step runs best-effort until that's
+                    // understood upstream. Real displays (macOS /
+                    // Windows runners, actual Linux desktops) fire it
+                    // normally.
+                }
+                let zedis_view = cx.new(|cx| Zedis::new(window, cx));
+                // Activate the target connection + view now that the views
+                // are subscribed. Deep-link launch args (`--server
+                // <id|name>`, `--db <n>`, `--route <view>`) override the
+                // remembered state piecewise; with no args this restores
+                // the last session. The re-select makes the emitted
+                // ServerSelected load the connection (content) and
+                // highlight its sidebar row.
+                {
+                    let store = cx.global::<ZedisGlobalStore>().clone();
+                    store.update(cx, |state, cx| {
+                        let cli_server = cli_server_override();
+                        let cli_db = cli_db_override();
+                        // Target connection: the CLI server wins; else the
+                        // remembered one, validated (it may have been
+                        // deleted since the last run).
+                        let target: Option<(String, usize)> = match &cli_server {
+                            Some(id) => Some((id.clone(), cli_db.unwrap_or_else(|| state.open_db_for(id)))),
+                            None => state
+                                .selected_server()
+                                .cloned()
+                                .filter(|(id, _)| get_server(id).is_ok())
+                                // A pinned DB wins over the remembered one
+                                // here too, so a restart lands where a
+                                // sidebar click would; `--db` still wins
+                                // over both.
+                                .map(|(id, db)| {
+                                    let db = cli_db.unwrap_or_else(|| state.open_db_from(&id, db));
+                                    (id, db)
+                                }),
+                        };
+                        // Target view: explicit --route wins; a bare
+                        // --server implies the editor (a deep link should
+                        // land on that server, not whatever page was
+                        // persisted); otherwise the restored route's view.
+                        let view = match (cli_route_override(), cli_server.is_some()) {
+                            (Some(CliRoute::App(route)), _) => {
+                                state.activate(route, cx);
+                                return;
+                            }
+                            (Some(CliRoute::View(view)), _) => Some(view),
+                            (None, true) => Some(ServerView::Editor),
+                            (None, false) => state.route().server_view(),
+                        };
+                        let route = match (view, target) {
+                            (Some(view), Some((id, db))) => Route::Server {
+                                id: id.into(),
+                                db,
+                                view,
+                            },
+                            (Some(_), None) => {
+                                warn!("server view requested but no valid server available; opening Home");
+                                Route::Home
+                            }
+                            // Restored app-level route (or Home).
+                            (None, _) => state.route(),
+                        };
+                        state.activate(route, cx);
+                    });
+                }
+                // Global (focus-independent) ⌘K handler — element
+                // `.on_action` is focus-routed and dies when the
+                // palette closes and orphans its focus handle.
+                let weak_zedis = zedis_view.downgrade();
+                cx.on_action(move |_: &PaletteAction, cx: &mut App| {
+                    if let Some(view) = weak_zedis.upgrade() {
+                        view.update(cx, |zedis, cx| zedis.toggle_command_palette(cx));
+                    }
+                });
+                // Global (focus-independent) ⌘P — recent keys Quick Open.
+                let weak_zedis_recent = zedis_view.downgrade();
+                cx.on_action(move |_: &RecentKeysAction, cx: &mut App| {
+                    if let Some(view) = weak_zedis_recent.upgrade() {
+                        view.update(cx, |zedis, cx| zedis.toggle_recent_keys_palette(cx));
+                    }
+                });
+                // Global (focus-independent) ⌘⇧F — multi-database search.
+                let weak_zedis_multi_search = zedis_view.downgrade();
+                cx.on_action(move |_: &MultiSearchAction, cx: &mut App| {
+                    if let Some(view) = weak_zedis_multi_search.upgrade() {
+                        view.update(cx, |zedis, cx| zedis.toggle_multi_search(cx));
+                    }
+                });
+                // Global (focus-independent) ⌘/ handler — same
+                // rationale as the ⌘K handler above; also the target
+                // of the command palette's "Keyboard Shortcuts" row.
+                let weak_zedis_shortcuts = zedis_view.downgrade();
+                cx.on_action(move |_: &ShortcutsAction, cx: &mut App| {
+                    if let Some(view) = weak_zedis_shortcuts.upgrade() {
+                        view.update(cx, |zedis, cx| zedis.toggle_shortcuts(cx));
+                    }
+                });
+                // Manual "Check for Updates" (app menu) — focus-independent
+                // like the handlers above so it works regardless of focus.
+                let weak_zedis_update = zedis_view.downgrade();
+                cx.on_action(move |e: &UpdateAction, cx: &mut App| {
+                    let Some(view) = weak_zedis_update.upgrade() else {
+                        return;
+                    };
+                    match e {
+                        UpdateAction::Check => {
+                            view.update(cx, |zedis, cx| zedis.check_for_updates(true, false, cx));
+                        }
+                        // Title-bar chip click: open the prompt straight from
+                        // the store. The check that lit the chip already
+                        // fetched everything the dialog shows — version,
+                        // changelog, the per-arch asset — so re-fetching here
+                        // only made the chip spin for a beat before anything
+                        // appeared. The fallback fetch is for the (unreachable)
+                        // case of a chip with no cached update behind it.
+                        UpdateAction::OpenPrompt => {
+                            let cached = cx.global::<ZedisGlobalStore>().read(cx).available_update();
+                            view.update(cx, |zedis, cx| match cached {
+                                Some(info) => {
+                                    zedis.pending_update = Some(info);
+                                    cx.notify();
+                                }
+                                None => zedis.check_for_updates(true, true, cx),
+                            });
+                        }
+                    }
+                });
+                // Silent startup check: at most one per `UPDATE_CHECK_INTERVAL`,
+                // skippable per-version, only if enabled. The update chip lives
+                // in the always-visible title bar, so this can run on any route.
+                let auto_due = {
+                    let store = cx.global::<ZedisGlobalStore>().read(cx);
+                    store.auto_update_check() && store.update_check_due()
+                };
+                if auto_due {
+                    zedis_view.update(cx, |zedis, cx| zedis.check_for_updates(false, false, cx));
+                }
+                // Config files damaged at startup (`zedis.toml` /
+                // `redis-servers.toml`) were quarantined before the window
+                // existed; surface the outcome now that there is one.
+                zedis_view.update(cx, |zedis, _| {
+                    zedis.pending_config_recoveries = take_config_recoveries();
+                    zedis.pending_crash = take_pending_crash();
+                });
+                // One-shot welcome card, and only for a truly fresh start
+                // (no server configured — an upgrading user needs no tour).
+                // Dismissed on this first evaluation either way, so it can
+                // never pop up later (e.g. after deleting every server).
+                if !cx.global::<ZedisGlobalStore>().read(cx).hint_dismissed(HINT_WELCOME) {
+                    update_app_state_and_save_quiet(cx, "dismiss_hint_welcome", |state, _| {
+                        state.dismiss_hint(HINT_WELCOME)
+                    });
+                    // An unreadable config counts as configured: don't greet
+                    // an existing user just because the file failed to parse.
+                    if get_servers().map(|servers| servers.is_empty()).unwrap_or(false) {
+                        zedis_view.update(cx, |zedis, _| zedis.pending_welcome = true);
+                    }
+                }
+                cx.new(|cx| Root::new(zedis_view, window, cx))
+            },
+        )?;
+
+        Ok::<_, anyhow::Error>(())
+    })
+    .detach();
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+use super::crash::CRASH_REPORT_PREFIX;
 use super::{get_or_create_config_dir, is_development};
 
 /// `<config_dir>/logs/`, created if missing. `None` if the config dir can't be
@@ -43,11 +44,12 @@ fn prune_old_logs(dir: &Path) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // Only touch our own rolling log files (zedis.log.YYYY-MM-DD).
+        // Only touch our own files: rolling logs (zedis.log.YYYY-MM-DD) and
+        // crash reports (crash-<unix-secs>.log).
         let is_log = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("zedis.log"));
+            .is_some_and(|n| n.starts_with("zedis.log") || n.starts_with(CRASH_REPORT_PREFIX));
         if !is_log {
             continue;
         }

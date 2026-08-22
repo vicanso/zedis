@@ -82,6 +82,8 @@ remove_title = "Confirmar eliminación"
 remove_item_prompt = "¿Está seguro de que desea eliminar este elemento: %{value} (Fila %{row})?"
 update_tooltip = "Actualizar elemento"
 copied_to_clipboard = "Copiado al portapapeles"
+config_restored_from_backup = "No se pudo leer %{file} y se restauró desde su copia de seguridad. La copia dañada se conservó en %{corrupt}."
+config_reset = "No se pudo leer %{file} y no había copia de seguridad disponible, así que se restableció a los valores predeterminados. La copia dañada se conservó en %{corrupt}."
 
 [sidebar]
 open_in_new_tab_hint = "%{key}+clic para abrir o mostrar su pestaña"
@@ -1732,3 +1734,20 @@ welcome_ok = "Comenzar"
 first_connect = "¡Conectado! %{palette} abre la paleta de comandos; %{search} busca en todas las bases de datos."
 topology_banner = "Primera visita: este panel muestra la topología del despliegue — salud de los nodos, enlaces de replicación y cobertura de slots. Haz clic en un nodo para ver detalles."
 memory_banner = "Primera visita: el analizador muestrea claves con SCAN, agrega la memoria por patrón de clave y sugiere optimizaciones."
+
+[database]
+title = "Zedis no puede abrir su base de datos local"
+locked_body = "Otra instancia de Zedis ya se está ejecutando y mantiene el bloqueo de la base de datos. Cierra la otra instancia y vuelve a abrir Zedis."
+schema_too_new_body = "La base de datos local fue escrita por una versión más reciente de Zedis. Actualiza Zedis, o aparta el archivo actual y empieza con uno nuevo — tus conexiones no se ven afectadas, pero las etiquetas, favoritos, historial y scripts guardados empezarán vacíos."
+damaged_body = "El archivo de la base de datos local está dañado y no se pudo reparar. Apártalo y empieza con uno nuevo — tus conexiones no se ven afectadas, pero las etiquetas, favoritos, historial y scripts guardados empezarán vacíos. El archivo dañado se conserva al lado como zedis.redb.corrupt-<hora>."
+inaccessible_body = "No se pudo leer ni escribir el archivo de la base de datos local. Comprueba los permisos de la carpeta de configuración de Zedis y vuelve a abrir Zedis."
+rebuild = "Respaldar y reconstruir"
+rebuild_failed = "La reconstrucción falló"
+quit = "Salir"
+
+[crash]
+title = "Zedis se cerró inesperadamente la última vez"
+body = "La sesión anterior terminó con un fallo. Se guardó un informe con el error y la traza de la pila — adjúntalo al reportar el problema en GitHub."
+report_saved = "Informe: %{path}"
+open_logs = "Abrir carpeta de registros"
+dismiss = "Cerrar"

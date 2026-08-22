@@ -20,18 +20,20 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use smol::fs;
+use smol::unblock;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::{fs::read_to_string, path::PathBuf, sync::LazyLock};
-use tracing::{debug, info};
+use std::{path::PathBuf, sync::LazyLock};
+use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 use zedis_core::env::is_development;
-use zedis_core::fs::get_or_create_config_dir;
+use zedis_core::fs::{
+    ConfigRecovery, get_or_create_config_dir, load_config_with_recovery, write_file_atomic_with_backup,
+};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -836,11 +838,24 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         return Ok(servers);
     }
     let path = get_or_create_server_config()?;
-    let value = read_to_string(path)?;
-    if value.is_empty() {
-        return Ok(vec![]);
+    // A damaged file is quarantined and the `.bak` restored (or the list left
+    // empty) — never parsed-as-empty, which the next save would then write
+    // over the user's connections. The UI reports the recovery at startup.
+    let loaded = load_config_with_recovery(&path, |text| {
+        toml::from_str::<RedisServers>(text).map_err(|e| e.to_string())
+    })?;
+    match &loaded.recovery {
+        Some(ConfigRecovery::RestoredFromBackup { corrupt_path, .. }) => {
+            warn!(corrupt = %corrupt_path.display(), "redis-servers.toml was unreadable; restored from backup")
+        }
+        Some(ConfigRecovery::Reset { corrupt_path, .. }) => {
+            error!(corrupt = %corrupt_path.display(), "redis-servers.toml was unreadable and no backup parsed; starting with no servers")
+        }
+        None => {}
     }
-    let configs: RedisServers = toml::from_str(&value)?;
+    let Some(configs) = loaded.value else {
+        return Ok(vec![]);
+    };
     let mut servers = configs.servers;
     let mut configs = HashMap::new();
     for server in servers.iter_mut() {
@@ -927,7 +942,9 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     SERVER_CONFIG_MAP.store(Arc::new(configs));
     let path = get_or_create_server_config()?;
     let value = toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid { message: e.to_string() })?;
-    fs::write(&path, value).await?;
+    // Atomic replace plus a rolling `.bak` — the server list carries the
+    // encrypted secrets, so a half-written file here is unrecoverable.
+    unblock(move || write_file_atomic_with_backup(&path, value.as_bytes())).await?;
     Ok(())
 }
 

@@ -82,6 +82,8 @@ remove_title = "Confirm Delete"
 remove_item_prompt = "Are you sure you want to delete this item: %{value} (Row %{row})?"
 update_tooltip = "Update item"
 copied_to_clipboard = "Copied to clipboard"
+config_restored_from_backup = "%{file} could not be read and was restored from its backup. The damaged copy was kept at %{corrupt}."
+config_reset = "%{file} could not be read and no backup was available, so it was reset to defaults. The damaged copy was kept at %{corrupt}."
 
 [sidebar]
 open_in_new_tab_hint = "%{key}-click to open or reveal its tab"
@@ -1735,3 +1737,20 @@ welcome_ok = "Get Started"
 first_connect = "Connected! %{palette} opens the command palette; %{search} searches across databases."
 topology_banner = "First time here: this panel maps your deployment's topology — node health, replication links and slot coverage. Click a node for details."
 memory_banner = "First time here: the analyzer samples keys with SCAN, aggregates memory by key pattern, and suggests optimizations."
+
+[database]
+title = "Zedis can't open its local database"
+locked_body = "Another instance of Zedis is already running and holds the database lock. Quit the other instance, then reopen Zedis."
+schema_too_new_body = "The local database was written by a newer version of Zedis. Update Zedis, or move the current file aside and start with a fresh one — your connections are not affected, but tags, favorites, history and saved scripts will start empty."
+damaged_body = "The local database file is damaged and could not be repaired. Move it aside and start with a fresh one — your connections are not affected, but tags, favorites, history and saved scripts will start empty. The damaged file is kept beside it as zedis.redb.corrupt-<time>."
+inaccessible_body = "The local database file could not be read or written. Check the permissions of the Zedis config folder, then reopen Zedis."
+rebuild = "Back up & rebuild"
+rebuild_failed = "Rebuild failed"
+quit = "Quit"
+
+[crash]
+title = "Zedis closed unexpectedly last time"
+body = "The previous session ended with a crash. A report with the error and a stack trace was saved — please attach it when reporting the issue on GitHub."
+report_saved = "Report: %{path}"
+open_logs = "Open Logs Folder"
+dismiss = "Dismiss"

@@ -18,6 +18,8 @@
 //! - Directory copying operations
 //! - App Store build detection (for macOS sandboxing)
 //! - Configuration directory management with migration support
+//! - Crash-safe config file writes with a rolling backup, and loading that
+//!   recovers from a damaged file instead of silently resetting it
 
 use crate::env::is_development;
 use directories::{ProjectDirs, UserDirs};
@@ -25,8 +27,10 @@ use home::home_dir;
 use path_absolutize::Absolutize;
 use std::{
     env, fs,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Process-wide config-dir override, set at most once. Unit tests set it via
@@ -269,5 +273,337 @@ pub fn resolve_path(path: &str) -> String {
         p.to_string_lossy().to_string()
     } else {
         p
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Crash-safe config files
+// ---------------------------------------------------------------------------
+
+/// Serialises every config write in this process. The app-state saver runs on
+/// background tasks (debounced prefs, route persistence) that can overlap, and
+/// two writers racing on the same `.tmp` sibling would leave one rename
+/// failing. Config files are a few KB, so one lock costs nothing.
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Recoveries performed by [`load_config_with_recovery`] that the UI has not
+/// reported yet. Startup loads run before any window exists, so the outcome is
+/// parked here and drained by [`take_config_recoveries`] once the UI is up.
+static CONFIG_RECOVERIES: Mutex<Vec<ConfigRecovery>> = Mutex::new(Vec::new());
+
+/// Path of the rolling backup kept beside a config file
+/// (`zedis.toml` → `zedis.toml.bak`).
+pub fn backup_path(path: &Path) -> PathBuf {
+    sibling_with_suffix(path, ".bak")
+}
+
+fn sibling_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Writes `contents` to `path` so that a crash or power loss can never leave a
+/// half-written file behind: the bytes go to a `.tmp` sibling first, are
+/// flushed to disk, and the sibling is then renamed over `path` — an atomic
+/// replace on every supported platform.
+pub fn write_file_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    write_file_atomic_locked(path, contents)
+}
+
+/// [`write_file_atomic`] plus a rolling backup: the current on-disk content is
+/// first copied (atomically as well) to [`backup_path`], so after the write
+/// the `.bak` holds the last known-good version. An empty or missing `path`
+/// is not backed up — that would only clobber a useful backup with nothing.
+pub fn write_file_atomic_with_backup(path: &Path, contents: &[u8]) -> Result<()> {
+    let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    match fs::read(path) {
+        Ok(previous) if !previous.is_empty() => {
+            write_file_atomic_locked(&backup_path(path), &previous)?;
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    write_file_atomic_locked(path, contents)
+}
+
+/// The write itself; callers hold [`CONFIG_WRITE_LOCK`].
+fn write_file_atomic_locked(path: &Path, contents: &[u8]) -> Result<()> {
+    let tmp = sibling_with_suffix(path, ".tmp");
+    let result = write_tmp_then_rename(&tmp, path, contents);
+    if result.is_err() {
+        // Best effort: don't leave a stray `.tmp` behind a failed write.
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn write_tmp_then_rename(tmp: &Path, path: &Path, contents: &[u8]) -> Result<()> {
+    {
+        // Scoped so the handle is closed before the rename — Windows refuses
+        // to move a file that is still open.
+        let mut file = fs::File::create(tmp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+    fs::rename(tmp, path)
+}
+
+/// What [`load_config_with_recovery`] had to do to hand back a usable value.
+/// Both variants keep the damaged file beside the original (as
+/// `<name>.corrupt-<unix-secs>`) so nothing is thrown away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigRecovery {
+    /// `path` failed to parse; its `.bak` parsed and was restored over it.
+    RestoredFromBackup { path: PathBuf, corrupt_path: PathBuf },
+    /// `path` failed to parse and no usable backup existed; the caller starts
+    /// from defaults.
+    Reset { path: PathBuf, corrupt_path: PathBuf },
+}
+
+impl ConfigRecovery {
+    /// The config file that was damaged.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::RestoredFromBackup { path, .. } | Self::Reset { path, .. } => path,
+        }
+    }
+    /// Where the damaged copy was moved to.
+    pub fn corrupt_path(&self) -> &Path {
+        match self {
+            Self::RestoredFromBackup { corrupt_path, .. } | Self::Reset { corrupt_path, .. } => corrupt_path,
+        }
+    }
+}
+
+/// Result of [`load_config_with_recovery`].
+#[derive(Debug)]
+pub struct LoadedConfig<T> {
+    /// `None` when the file is missing or empty (first run) — use defaults.
+    pub value: Option<T>,
+    /// Set when the file was damaged; also recorded for
+    /// [`take_config_recoveries`] so the UI can report it.
+    pub recovery: Option<ConfigRecovery>,
+}
+
+/// Drains the recoveries recorded so far, in the order they happened.
+pub fn take_config_recoveries() -> Vec<ConfigRecovery> {
+    let mut list = CONFIG_RECOVERIES.lock().unwrap_or_else(|e| e.into_inner());
+    std::mem::take(&mut *list)
+}
+
+/// Reads and parses a config file, falling back to its `.bak` when the file
+/// itself is damaged. A parse failure is never silently turned into defaults
+/// (which the next save would then write over the user's data): the damaged
+/// file is moved aside as `<name>.corrupt-<unix-secs>`, the backup is
+/// restored over `path` when it parses, and the outcome is returned and
+/// recorded for the UI. I/O errors other than "not found" propagate.
+pub fn load_config_with_recovery<T>(
+    path: &Path,
+    parse: impl Fn(&str) -> std::result::Result<T, String>,
+) -> Result<LoadedConfig<T>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Ok(LoadedConfig {
+                value: None,
+                recovery: None,
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(LoadedConfig {
+            value: None,
+            recovery: None,
+        });
+    }
+    // Invalid UTF-8 is damage too, not an I/O failure.
+    let parsed = String::from_utf8(bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|text| parse(&text));
+    if let Ok(value) = parsed {
+        return Ok(LoadedConfig {
+            value: Some(value),
+            recovery: None,
+        });
+    }
+
+    let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let corrupt_path = sibling_with_suffix(path, &format!(".corrupt-{}", unix_secs()));
+    fs::rename(path, &corrupt_path)?;
+
+    let backup = fs::read(backup_path(path)).ok().filter(|b| !b.is_empty());
+    let restored = backup.and_then(|bytes| {
+        let value = String::from_utf8(bytes.clone())
+            .ok()
+            .and_then(|text| parse(&text).ok())?;
+        Some((bytes, value))
+    });
+    let (value, recovery) = match restored {
+        Some((bytes, value)) => {
+            write_file_atomic_locked(path, &bytes)?;
+            (
+                Some(value),
+                ConfigRecovery::RestoredFromBackup {
+                    path: path.to_path_buf(),
+                    corrupt_path,
+                },
+            )
+        }
+        None => (
+            None,
+            ConfigRecovery::Reset {
+                path: path.to_path_buf(),
+                corrupt_path,
+            },
+        ),
+    };
+    CONFIG_RECOVERIES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(recovery.clone());
+    Ok(LoadedConfig {
+        value,
+        recovery: Some(recovery),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh scratch directory per test (unique per process + test name),
+    /// removed on drop so a failing assertion doesn't leak files.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = env::temp_dir().join(format!("zedis-core-fs-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("create scratch dir");
+            Self(dir)
+        }
+        fn file(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+        fn entries(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(&self.0)
+                .expect("read scratch dir")
+                .map(|e| e.expect("dir entry").file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn parse_num(text: &str) -> std::result::Result<u32, String> {
+        text.trim().parse::<u32>().map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn atomic_write_replaces_content_and_leaves_no_tmp() {
+        let scratch = Scratch::new("atomic");
+        let path = scratch.file("a.toml");
+        write_file_atomic(&path, b"one").expect("first write");
+        write_file_atomic(&path, b"two").expect("second write");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "two");
+        assert_eq!(scratch.entries(), vec!["a.toml"]);
+    }
+
+    #[test]
+    fn backup_holds_previous_version_and_skips_empty_files() {
+        let scratch = Scratch::new("backup");
+        let path = scratch.file("a.toml");
+        // First write over nothing: no backup should appear.
+        write_file_atomic_with_backup(&path, b"v1").expect("write v1");
+        assert_eq!(scratch.entries(), vec!["a.toml"]);
+        // An empty file (what `get_or_create_*` leaves behind) is not
+        // worth backing up either.
+        fs::write(&path, b"").expect("truncate");
+        write_file_atomic_with_backup(&path, b"v2").expect("write v2");
+        assert_eq!(scratch.entries(), vec!["a.toml"]);
+        // From here on the backup trails by exactly one version.
+        write_file_atomic_with_backup(&path, b"v3").expect("write v3");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "v3");
+        assert_eq!(fs::read_to_string(backup_path(&path)).expect("read bak"), "v2");
+        assert_eq!(scratch.entries(), vec!["a.toml", "a.toml.bak"]);
+    }
+
+    #[test]
+    fn load_returns_none_for_missing_or_blank_file() {
+        let scratch = Scratch::new("blank");
+        let path = scratch.file("a.toml");
+        let loaded = load_config_with_recovery(&path, parse_num).expect("missing");
+        assert!(loaded.value.is_none() && loaded.recovery.is_none());
+        fs::write(&path, b"  \n").expect("write blank");
+        let loaded = load_config_with_recovery(&path, parse_num).expect("blank");
+        assert!(loaded.value.is_none() && loaded.recovery.is_none());
+        assert_eq!(scratch.entries(), vec!["a.toml"]);
+    }
+
+    #[test]
+    fn load_parses_valid_file_without_touching_disk() {
+        let scratch = Scratch::new("valid");
+        let path = scratch.file("a.toml");
+        fs::write(&path, b"42").expect("write");
+        let loaded = load_config_with_recovery(&path, parse_num).expect("load");
+        assert_eq!(loaded.value, Some(42));
+        assert!(loaded.recovery.is_none());
+        assert_eq!(scratch.entries(), vec!["a.toml"]);
+    }
+
+    /// The only test that produces recoveries: it also checks the
+    /// process-wide queue, which parallel tests could otherwise drain.
+    #[test]
+    fn damaged_file_is_quarantined_then_restored_or_reset() {
+        let scratch = Scratch::new("recover");
+        let path = scratch.file("a.toml");
+
+        // Damaged file + good backup → restored, file repaired on disk.
+        fs::write(&path, b"not a number").expect("write corrupt");
+        fs::write(backup_path(&path), b"7").expect("write bak");
+        let loaded = load_config_with_recovery(&path, parse_num).expect("load");
+        assert_eq!(loaded.value, Some(7));
+        let Some(ConfigRecovery::RestoredFromBackup { corrupt_path, .. }) = loaded.recovery.clone() else {
+            panic!("expected RestoredFromBackup, got {:?}", loaded.recovery);
+        };
+        assert_eq!(fs::read_to_string(&path).expect("repaired"), "7");
+        assert_eq!(fs::read_to_string(&corrupt_path).expect("quarantined"), "not a number");
+        assert!(
+            corrupt_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("a.toml.corrupt-"))
+        );
+        let restored = loaded.recovery.clone().expect("recovery");
+
+        // Damaged file + damaged backup → reset, both copies kept.
+        fs::write(&path, [0xff, 0xfe]).expect("write invalid utf8");
+        fs::write(backup_path(&path), b"also bad").expect("write bad bak");
+        let loaded = load_config_with_recovery(&path, parse_num).expect("load");
+        assert!(loaded.value.is_none());
+        assert!(matches!(loaded.recovery, Some(ConfigRecovery::Reset { .. })));
+        assert!(!path.exists(), "a reset must not leave a damaged file in place");
+        let reset = loaded.recovery.clone().expect("recovery");
+
+        let recorded = take_config_recoveries();
+        assert!(recorded.contains(&restored) && recorded.contains(&reset));
+        assert!(!take_config_recoveries().contains(&reset), "take drains the queue");
     }
 }

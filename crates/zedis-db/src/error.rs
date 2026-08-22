@@ -42,6 +42,11 @@ pub enum Error {
     ProstReflectDescriptor { source: prost_reflect::DescriptorError },
     #[snafu(display("Prost reflect decode error: {source}"))]
     ProstReflectDecode { source: prost_reflect::prost::DecodeError },
+    /// The file carries a schema version this build doesn't know — it was
+    /// written by a newer Zedis. Refusing is the safe move: a downgrade that
+    /// "migrated" forward would corrupt what the newer version wrote.
+    #[snafu(display("local database schema v{found} is newer than this Zedis supports (v{supported})"))]
+    SchemaTooNew { found: u32, supported: u32 },
 }
 
 macro_rules! direct {

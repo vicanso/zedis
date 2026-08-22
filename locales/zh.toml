@@ -81,6 +81,8 @@ remove_title = "确认删除"
 remove_item_prompt = "确定要删除此项: %{value} (行号 %{row}) 吗？"
 update_tooltip = "更新项"
 copied_to_clipboard = "已复制到剪贴板"
+config_restored_from_backup = "%{file} 无法读取，已从备份恢复。损坏的副本保留在 %{corrupt}。"
+config_reset = "%{file} 无法读取且没有可用备份，已重置为默认值。损坏的副本保留在 %{corrupt}。"
 
 [sidebar]
 open_in_new_tab_hint = "%{key}+点击 打开或跳转到它的标签页"
@@ -1734,3 +1736,20 @@ welcome_ok = "开始使用"
 first_connect = "连接成功！%{palette} 打开命令面板，%{search} 跨库搜索。"
 topology_banner = "初次使用提示：此面板展示部署拓扑——节点健康、复制关系与槽位覆盖，点击节点可查看详情。"
 memory_banner = "初次使用提示：分析器通过 SCAN 采样键，按键模式聚合内存占用并给出优化建议。"
+
+[database]
+title = "Zedis 无法打开本地数据库"
+locked_body = "另一个 Zedis 实例正在运行并持有数据库锁。请退出该实例后重新打开 Zedis。"
+schema_too_new_body = "本地数据库由更新版本的 Zedis 写入。请更新 Zedis，或将当前文件移开并使用全新的数据库——连接配置不受影响，但标签、收藏、历史和已保存的脚本将从空开始。"
+damaged_body = "本地数据库文件已损坏且无法修复。可将其移开并使用全新的数据库——连接配置不受影响，但标签、收藏、历史和已保存的脚本将从空开始。损坏的文件会以 zedis.redb.corrupt-<时间> 的名称保留在旁边。"
+inaccessible_body = "无法读写本地数据库文件。请检查 Zedis 配置目录的权限后重新打开 Zedis。"
+rebuild = "备份并重建"
+rebuild_failed = "重建失败"
+quit = "退出"
+
+[crash]
+title = "Zedis 上次异常退出"
+body = "上一次会话因崩溃而结束。包含错误信息和堆栈的报告已保存——在 GitHub 反馈问题时请附上该文件。"
+report_saved = "报告：%{path}"
+open_logs = "打开日志目录"
+dismiss = "关闭"

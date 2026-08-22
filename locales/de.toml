@@ -82,6 +82,8 @@ remove_title = "Löschen bestätigen"
 remove_item_prompt = "Möchten Sie dieses Element wirklich löschen: %{value} (Zeile %{row})?"
 update_tooltip = "Element aktualisieren"
 copied_to_clipboard = "In die Zwischenablage kopiert"
+config_restored_from_backup = "%{file} konnte nicht gelesen werden und wurde aus der Sicherung wiederhergestellt. Die beschädigte Kopie wurde unter %{corrupt} aufbewahrt."
+config_reset = "%{file} konnte nicht gelesen werden und es war keine Sicherung verfügbar, daher wurde die Datei auf die Standardwerte zurückgesetzt. Die beschädigte Kopie wurde unter %{corrupt} aufbewahrt."
 
 [sidebar]
 open_in_new_tab_hint = "%{key}+Klick, um den Tab zu öffnen oder anzuzeigen"
@@ -1732,3 +1734,20 @@ welcome_ok = "Loslegen"
 first_connect = "Verbunden! %{palette} öffnet die Befehlspalette; %{search} durchsucht alle Datenbanken."
 topology_banner = "Zum ersten Mal hier: Dieses Panel zeigt die Topologie des Deployments — Knotenzustand, Replikationsverbindungen und Slot-Abdeckung. Für Details auf einen Knoten klicken."
 memory_banner = "Zum ersten Mal hier: Der Analyzer sampelt Schlüssel per SCAN, aggregiert Speicher nach Schlüsselmuster und schlägt Optimierungen vor."
+
+[database]
+title = "Zedis kann seine lokale Datenbank nicht öffnen"
+locked_body = "Eine andere Zedis-Instanz läuft bereits und hält die Datenbanksperre. Beende die andere Instanz und öffne Zedis erneut."
+schema_too_new_body = "Die lokale Datenbank wurde von einer neueren Zedis-Version geschrieben. Aktualisiere Zedis oder lege die aktuelle Datei beiseite und beginne mit einer neuen — deine Verbindungen sind nicht betroffen, aber Tags, Favoriten, Verlauf und gespeicherte Skripte beginnen leer."
+damaged_body = "Die lokale Datenbankdatei ist beschädigt und konnte nicht repariert werden. Lege sie beiseite und beginne mit einer neuen — deine Verbindungen sind nicht betroffen, aber Tags, Favoriten, Verlauf und gespeicherte Skripte beginnen leer. Die beschädigte Datei bleibt daneben als zedis.redb.corrupt-<Zeit> erhalten."
+inaccessible_body = "Die lokale Datenbankdatei konnte weder gelesen noch geschrieben werden. Prüfe die Berechtigungen des Zedis-Konfigurationsordners und öffne Zedis erneut."
+rebuild = "Sichern & neu aufbauen"
+rebuild_failed = "Neuaufbau fehlgeschlagen"
+quit = "Beenden"
+
+[crash]
+title = "Zedis wurde beim letzten Mal unerwartet beendet"
+body = "Die letzte Sitzung endete mit einem Absturz. Ein Bericht mit dem Fehler und einem Stack-Trace wurde gespeichert — bitte hänge ihn an, wenn du das Problem auf GitHub meldest."
+report_saved = "Bericht: %{path}"
+open_logs = "Protokollordner öffnen"
+dismiss = "Schließen"

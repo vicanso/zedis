@@ -82,6 +82,8 @@ remove_title = "Confirmar exclusão"
 remove_item_prompt = "Tem certeza que deseja excluir este item: %{value} (Linha %{row})?"
 update_tooltip = "Atualizar item"
 copied_to_clipboard = "Copiado para a área de transferência"
+config_restored_from_backup = "Não foi possível ler %{file}; ele foi restaurado a partir do backup. A cópia danificada foi mantida em %{corrupt}."
+config_reset = "Não foi possível ler %{file} e não havia backup disponível, então ele foi redefinido para os padrões. A cópia danificada foi mantida em %{corrupt}."
 
 [sidebar]
 open_in_new_tab_hint = "%{key}+clique para abrir ou exibir a aba"
@@ -1732,3 +1734,20 @@ welcome_ok = "Começar"
 first_connect = "Conectado! %{palette} abre a paleta de comandos; %{search} pesquisa em todos os bancos."
 topology_banner = "Primeira visita: este painel mapeia a topologia da implantação — saúde dos nós, links de replicação e cobertura de slots. Clique em um nó para ver detalhes."
 memory_banner = "Primeira visita: o analisador amostra chaves via SCAN, agrega a memória por padrão de chave e sugere otimizações."
+
+[database]
+title = "O Zedis não consegue abrir seu banco de dados local"
+locked_body = "Outra instância do Zedis já está em execução e mantém o bloqueio do banco de dados. Feche a outra instância e reabra o Zedis."
+schema_too_new_body = "O banco de dados local foi gravado por uma versão mais recente do Zedis. Atualize o Zedis, ou afaste o arquivo atual e comece com um novo — suas conexões não são afetadas, mas tags, favoritos, histórico e scripts salvos começarão vazios."
+damaged_body = "O arquivo do banco de dados local está danificado e não pôde ser reparado. Afaste-o e comece com um novo — suas conexões não são afetadas, mas tags, favoritos, histórico e scripts salvos começarão vazios. O arquivo danificado é mantido ao lado como zedis.redb.corrupt-<hora>."
+inaccessible_body = "Não foi possível ler nem gravar o arquivo do banco de dados local. Verifique as permissões da pasta de configuração do Zedis e reabra o Zedis."
+rebuild = "Fazer backup e reconstruir"
+rebuild_failed = "Falha na reconstrução"
+quit = "Sair"
+
+[crash]
+title = "O Zedis fechou inesperadamente da última vez"
+body = "A sessão anterior terminou com uma falha. Um relatório com o erro e o stack trace foi salvo — anexe-o ao relatar o problema no GitHub."
+report_saved = "Relatório: %{path}"
+open_logs = "Abrir pasta de logs"
+dismiss = "Fechar"
