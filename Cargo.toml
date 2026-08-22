@@ -39,7 +39,7 @@ members = ["crates/*", "zedis-cmd-builder"]
 # while after the crates were split out). Inheriting here keeps every member —
 # and the name Redis sees — on the app's version, bumped in one place.
 [workspace.package]
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
 categories = ["database"]

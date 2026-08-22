@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.1](https://github.com/vicanso/zedis/compare/v0.8.0..v0.8.1) - 2026-08-22
+
+### ⛰️  Features
+
+- *(tools)* Flush the current or every database from the Tools menu ([#129](https://github.com/orhun/git-cliff/issues/129)) - ([2007f38](https://github.com/vicanso/zedis/commit/2007f383a471f9e87fa3ae2af270ac12da23d544))
+
+### 🐛 Bug Fixes
+
+- *(key-tree)* Keep timestamps whole instead of folding folder chains ([#127](https://github.com/orhun/git-cliff/issues/127)) - ([c7b8f0e](https://github.com/vicanso/zedis/commit/c7b8f0e5f9dc3eb5d90ddf669142104b252f82b4))
+- *(key-tree)* Fold single-child folder chains into one row ([#127](https://github.com/orhun/git-cliff/issues/127)) - ([28d12eb](https://github.com/vicanso/zedis/commit/28d12ebb2aaced5ee196168c87cf87c9abf3b811))
+- RUSTSEC-2026-0258: h2 unbounded empty DATA frames ([#128](https://github.com/orhun/git-cliff/issues/128)) - ([4185bda](https://github.com/vicanso/zedis/commit/4185bdaf2bebb09868b34765112e94c161f5376d))
+
+### ⚙️ Miscellaneous Tasks
+
+- Bump the pinned toolchain to Rust 1.98.0 - ([d3861bd](https://github.com/vicanso/zedis/commit/d3861bd29434e3d555b4e2048edca9789c25ca63))
+
 ## [0.8.0](https://github.com/vicanso/zedis/compare/v0.7.0..v0.8.0) - 2026-08-12
 
 ### ⛰️  Features
