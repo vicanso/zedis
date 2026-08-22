@@ -103,6 +103,11 @@ pub enum ServerTask {
     /// XGROUP DESTROY — drop a consumer group (and its PEL)
     DestroyStreamGroup,
 
+    /// `FLUSHDB` — wipe the current database (fanned out across masters).
+    FlushDb,
+    /// `FLUSHALL` — wipe every database on the instance.
+    FlushAll,
+
     /// Save edited value back to Redis
     SaveValue,
 
@@ -163,6 +168,8 @@ impl ServerTask {
             ServerTask::RemoveListValue => "remove_list_value",
             ServerTask::UpdateListValue => "update_list_value",
             ServerTask::LoadMoreValue => "load_more_value",
+            ServerTask::FlushDb => "flush_db",
+            ServerTask::FlushAll => "flush_all",
             ServerTask::SaveValue => "save_value",
             ServerTask::PushListValue => "push_list_value",
             ServerTask::AddSetValue => "add_set_value",

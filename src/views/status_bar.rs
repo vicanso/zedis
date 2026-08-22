@@ -803,6 +803,31 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::Persistence),
             move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_persistence_tooltip")),
         );
+        // FLUSHDB / FLUSHALL (#129). Both route through the same
+        // destructive-command confirm a typed `FLUSHALL` hits in the
+        // terminal, so the menu adds an entry point, not a second policy.
+        // Disabled — not hidden — on a read-only connection, like Import
+        // Keys above.
+        for (label_key, icon, action) in [
+            ("flush_db_menu", CustomIconName::Eraser, ServerToolsAction::FlushDb),
+            (
+                "flush_all_menu",
+                CustomIconName::DatabaseZap,
+                ServerToolsAction::FlushAll,
+            ),
+        ] {
+            let label: SharedString = if readonly {
+                format!(
+                    "{}  ·  {}",
+                    i18n_status_bar(cx, label_key),
+                    i18n_common(cx, "disable_in_readonly")
+                )
+                .into()
+            } else {
+                i18n_status_bar(cx, label_key)
+            };
+            menu = menu.menu_with_icon_and_disabled(label, Icon::new(icon), Box::new(action), readonly);
+        }
 
         // ── Cluster ── (multi-node only; on Standalone the Topology panel is
         // just a placeholder, so the whole group — separator and heading

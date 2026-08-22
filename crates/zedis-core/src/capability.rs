@@ -88,6 +88,9 @@ pub enum Capability {
     DeleteKeys,
     /// Delete every key under a folder prefix.
     DeleteFolder,
+    /// `FLUSHDB` / `FLUSHALL` — wipe the current database or the whole
+    /// instance. The bluntest write there is; never available read-only.
+    FlushDatabase,
     /// Set / update TTL (`EXPIRE` / `PEXPIRE` / …).
     SetTtl,
     /// Remove TTL (`PERSIST`).
@@ -151,6 +154,7 @@ impl Capability {
         Capability::DeleteKey,
         Capability::DeleteKeys,
         Capability::DeleteFolder,
+        Capability::FlushDatabase,
         Capability::SetTtl,
         Capability::PersistTtl,
         Capability::SaveValue,
@@ -181,6 +185,7 @@ impl Capability {
                 | Capability::DeleteKey
                 | Capability::DeleteKeys
                 | Capability::DeleteFolder
+                | Capability::FlushDatabase
                 | Capability::SetTtl
                 | Capability::PersistTtl
                 | Capability::SaveValue
@@ -245,6 +250,7 @@ mod tests {
         (Capability::DeleteKey, false),
         (Capability::DeleteKeys, false),
         (Capability::DeleteFolder, false),
+        (Capability::FlushDatabase, false),
         (Capability::SetTtl, false),
         (Capability::PersistTtl, false),
         (Capability::SaveValue, false),

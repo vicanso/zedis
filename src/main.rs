@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use crate::connection::{clear_expired_cache, get_server, get_servers};
+use crate::connection::{DangerKind, clear_expired_cache, get_server, get_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, purge_all_trash};
 use crate::helpers::{
@@ -16,8 +16,9 @@ use crate::states::{
 };
 use crate::views::{
     DialogCallback, ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette,
-    ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, open_about_window,
-    open_migration_export_window, open_migration_import_window, open_settings_window, open_trash_dialog,
+    ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, confirm_dangerous_command,
+    open_about_window, open_migration_export_window, open_migration_import_window, open_settings_window,
+    open_trash_dialog,
 };
 use gpui::{
     Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
@@ -1446,6 +1447,30 @@ impl Render for Zedis {
                     ServerToolsAction::ServerLoad => ServerView::ServerLoad,
                     ServerToolsAction::ValueSearch => ServerView::ValueSearch,
                     ServerToolsAction::ServerInfo => ServerView::ServerInfo,
+                    // FLUSHDB / FLUSHALL: a confirm dialog over whatever view
+                    // is active, never a route. The menu entry is already
+                    // disabled on a read-only connection and
+                    // `flush_database` re-checks the capability, so this arm
+                    // only has to raise the dialog.
+                    ServerToolsAction::FlushDb | ServerToolsAction::FlushAll => {
+                        let all = matches!(e, ServerToolsAction::FlushAll);
+                        let Some((server_id, _)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                        else {
+                            return;
+                        };
+                        let Ok(server) = get_server(&server_id) else {
+                            return;
+                        };
+                        let kind = if all { DangerKind::FlushAll } else { DangerKind::FlushDb };
+                        let line = if all { "FLUSHALL" } else { "FLUSHDB" };
+                        let server_state = _this.active_content().read(cx).server_state();
+                        confirm_dangerous_command(&server, &kind, Some(line), window, cx, move |_window, cx| {
+                            server_state.update(cx, |state, cx| {
+                                state.flush_database(all, cx);
+                            });
+                        });
+                        return;
+                    }
                     // A dialog, not a sub-route: keeps whatever view is
                     // active underneath.
                     ServerToolsAction::Trash => {

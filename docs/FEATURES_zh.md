@@ -110,7 +110,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 持久化与键事件
 **RDB/AOF 状态 + 一键保存，外加实时键事件排查。**
 
-持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级），集群下逐节点显示状态行，并有 **Policy & 路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
+持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级），集群下逐节点显示状态行，并有 **Policy & 路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。**FLUSHDB / FLUSHALL** 位于同一个 Tools → 管理分组，只读连接下置灰，执行前走破坏性命令确认弹窗（PROD 升级），清空开发库不必再切到命令行。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
 
 ### 原始 INFO 浏览器
 **`INFO everything` 全部字段，单个可过滤表格。**

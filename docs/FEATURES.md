@@ -110,7 +110,7 @@ Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per
 ### Persistence & Keyspace Events
 **RDB/AOF status with one-click saves, plus live key-event triage.**
 
-A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (PROD-escalated), per-node status rows on clusters, and a **Policy & paths** card showing the configured `save` rules and AOF settings from `CONFIG GET`. Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with one-click `notify-keyspace-events` presets, pause, and export.
+A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (PROD-escalated), per-node status rows on clusters, and a **Policy & paths** card showing the configured `save` rules and AOF settings from `CONFIG GET`. **FLUSHDB / FLUSHALL** sit in the same Tools → Administration group, disabled on a read-only connection and routed through the destructive-command confirm (PROD-escalated), so clearing a dev database no longer means dropping into the CLI. Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with one-click `notify-keyspace-events` presets, pause, and export.
 
 ### Raw INFO Browser
 **Every `INFO everything` field in one filterable table.**

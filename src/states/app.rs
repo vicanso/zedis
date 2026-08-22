@@ -262,6 +262,11 @@ pub enum ServerToolsAction {
     /// Switches the editor area into Pub/Sub (channel) mode — same as the
     /// key tree's "Pubsub Mode" menu item, surfaced in the Tools menu.
     PubsubMode,
+    /// `FLUSHDB` on the active connection — opens the destructive-command
+    /// confirm first, like every other flush path. Not a sub-route.
+    FlushDb,
+    /// `FLUSHALL` on the active connection — every database on the instance.
+    FlushAll,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

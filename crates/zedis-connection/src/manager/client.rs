@@ -556,6 +556,21 @@ impl RedisClient {
             .await?;
         Ok(())
     }
+    /// `FLUSHDB` — drop every key in the connection's current database.
+    ///
+    /// Fanned out to every master: on a cluster each master owns its own
+    /// slice of the keyspace, so a single-node FLUSHDB would leave the
+    /// other shards untouched.
+    pub async fn flush_db(&self) -> Result<()> {
+        let (_, _statuses): (_, Vec<String>) = self.query_async_masters(vec![cmd("FLUSHDB")]).await?;
+        Ok(())
+    }
+    /// `FLUSHALL` — drop every key in every database on the instance.
+    /// Fanned out across masters for the same reason as [`Self::flush_db`].
+    pub async fn flush_all(&self) -> Result<()> {
+        let (_, _statuses): (_, Vec<String>) = self.query_async_masters(vec![cmd("FLUSHALL")]).await?;
+        Ok(())
+    }
     /// Executes commands on all master nodes concurrently.
     /// # Arguments
     /// * `cmds` - A vector of commands to execute.

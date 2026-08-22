@@ -27,9 +27,9 @@ use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
     insert_trash_entry, purge_trash, recent_keys_scope,
 };
-use crate::states::{QueryMode, ZedisGlobalStore};
+use crate::states::{QueryMode, ZedisGlobalStore, i18n_status_bar};
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager},
+    connection::{Capability, RedisAsyncConn, get_connection_manager},
     error::Error,
     helpers::{parse_duration, unix_ts, unix_ts_millis},
 };
@@ -1009,6 +1009,62 @@ impl ZedisServerState {
                     this.value_history.retain(|key, _| !key.starts_with(prefix.as_str()));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
+                }
+                cx.emit(ServerEvent::KeyTreeUpdated);
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// `FLUSHDB` / `FLUSHALL` — wipe the current database, or every
+    /// database on the instance when `all` is set.
+    ///
+    /// The caller (status bar) already routed the click through
+    /// [`confirm_dangerous_command`](crate::views::confirm_dangerous_command);
+    /// the capability check here is the second layer of defence for the
+    /// keyboard / command-palette path, mirroring [`Self::bgsave`].
+    ///
+    /// Nothing is stashed into the local recycle bin: the trash frames one
+    /// `DUMP` per key, which is meaningless at whole-database scale — the
+    /// same call the folder delete makes.
+    pub fn flush_database(&mut self, all: bool, cx: &mut Context<Self>) {
+        if !self.can(Capability::FlushDatabase) {
+            self.emit_warning_notification(i18n_status_bar(cx, "flush_readonly_blocked"), cx);
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let task = if all { ServerTask::FlushAll } else { ServerTask::FlushDb };
+        self.spawn(
+            task,
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                if all {
+                    client.flush_all().await?;
+                } else {
+                    client.flush_db().await?;
+                }
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    this.keys.clear();
+                    this.value_history.clear();
+                    this.key = None;
+                    this.value = None;
+                    // Force refresh of the key tree view
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                    let message = if all {
+                        i18n_status_bar(cx, "flush_all_done_message")
+                    } else {
+                        i18n_status_bar(cx, "flush_db_done_message")
+                    };
+                    this.emit_success_notification(message, i18n_status_bar(cx, "flush_done_title"), cx);
+                    // DBSIZE / INFO keyspace drive the status bar counters and
+                    // the per-db key counts in the dropdown — both are stale
+                    // the moment the flush lands.
+                    this.refresh_redis_info(cx);
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
