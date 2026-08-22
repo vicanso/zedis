@@ -33,3 +33,7 @@ settings.local.json
 commands/*.json
 design-ref
 screenshots/
+
+# integration topology state (scripts/it/up.sh)
+scripts/it/.run/
+scripts/it/.env

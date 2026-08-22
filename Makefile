@@ -8,6 +8,18 @@ fmt:
 test:
 	cargo test --workspace
 
+# Live integration tests against real servers (crates/zedis-connection/tests/live.rs).
+# `make it-up` starts the topology (local redis-server, or REDIS_IMAGE=redis:7.2 for docker),
+# `make it` runs the ignored tests with its ZEDIS_IT_* env, `make it-down` stops it.
+it-up:
+	scripts/it/up.sh
+
+it:
+	set -a && . scripts/it/.env && set +a && cargo test -p zedis-connection --test live -- --ignored --test-threads=4
+
+it-down:
+	scripts/it/down.sh
+
 build-cmd:
 	cargo run --package zedis-cmd-builder
 

@@ -1,0 +1,92 @@
+name: "Integration"
+# Live tests for the connection layer against real servers
+# (crates/zedis-connection/tests/live.rs), one job per server flavour.
+# scripts/it/up.sh builds the same topology CI and a dev machine use:
+# standalone + TLS + sentinel + cluster from one image on the host network.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/zedis-connection/**"
+      - "crates/zedis-core/**"
+      - "scripts/it/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/integration.yml"
+  pull_request:
+    paths:
+      - "crates/zedis-connection/**"
+      - "crates/zedis-core/**"
+      - "scripts/it/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/integration.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.98.0
+
+jobs:
+  live:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest line still seen in the wild: no ACL DRYRUN, no FUNCTION,
+          # no subcommand ACL rules — the fallbacks get exercised here.
+          - name: redis-6.2
+            image: redis:6.2
+          - name: redis-7.2
+            image: redis:7.2
+          - name: redis-8.0
+            image: redis:8.0
+          - name: valkey-8
+            image: valkey/valkey:8
+            server_bin: valkey-server
+            cli_bin: valkey-cli
+            flavor: valkey
+          # Modules (ReJSON / RediSearch) — the stack image's own entrypoint,
+          # standalone only.
+          - name: redis-stack
+            image: redis/redis-stack-server:latest
+            stack: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: integration
+      - name: pull image
+        run: docker pull ${{ matrix.image }}
+      - name: start topology
+        env:
+          REDIS_IMAGE: ${{ matrix.image }}
+          SERVER_BIN: ${{ matrix.server_bin || 'redis-server' }}
+          CLI_BIN: ${{ matrix.cli_bin || 'redis-cli' }}
+          IT_STACK: ${{ matrix.stack || '0' }}
+        run: scripts/it/up.sh
+      - name: live tests
+        env:
+          ZEDIS_IT_FLAVOR: ${{ matrix.flavor || 'redis' }}
+          RUST_BACKTRACE: "1"
+        run: cargo test -p zedis-connection --test live -- --ignored --test-threads=4
+      - name: server logs on failure
+        if: failure()
+        run: |
+          for c in $(cat scripts/it/.run/containers 2>/dev/null); do
+            echo "===== $c"; docker logs "$c" 2>&1 | tail -50
+          done
+      - name: stop topology
+        if: always()
+        run: scripts/it/down.sh

@@ -94,6 +94,11 @@ async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
                 }
                 return true;
             }
+            // Redis < 7 has no ACL DRYRUN: fall back to the throwaway SET
+            // probe so a read-only ACL user is still detected there.
+            if e.to_string().to_ascii_lowercase().contains("unknown") {
+                return check_permission_by_probing(conn).await;
+            }
             false
         }
     }

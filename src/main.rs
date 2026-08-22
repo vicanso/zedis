@@ -1926,6 +1926,17 @@ fn is_smoke_test() -> bool {
     std::env::var("ZEDIS_SMOKE_TEST").is_ok_and(|v| v == "1")
 }
 
+/// `ZEDIS_SMOKE_GATE=window` relaxes the smoke success signal from "first
+/// frame painted" to "main window created and the process survived its
+/// first seconds". Headless Linux CI (Xvfb + llvmpipe) never delivers the
+/// frame-present signal, so the frame gate can't be a hard gate there —
+/// this one still catches the regressions that matter on that platform:
+/// missing system libraries, Vulkan / window-creation failures, startup
+/// panics (DB, config, theme, fonts).
+fn smoke_gate_is_window() -> bool {
+    std::env::var("ZEDIS_SMOKE_GATE").is_ok_and(|v| v == "window")
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Held for the whole run so the non-blocking file logger keeps flushing.
     let _log_guard = init_logger()?;
@@ -2207,6 +2218,20 @@ fn launch(cx: &mut App, app_state: ZedisAppState) {
                 // comes). Success → exit 0; the watchdog in `main`
                 // turns "no frame" into exit 2.
                 if is_smoke_test() {
+                    // Stage 1: the window exists. Printed on every platform
+                    // (useful in the log either way); with the `window` gate
+                    // it is also the success signal, after a grace period
+                    // long enough for a startup panic to surface.
+                    println!("ZEDIS_SMOKE_WINDOW");
+                    if smoke_gate_is_window() {
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                            println!("ZEDIS_SMOKE_OK (window gate)");
+                            std::process::exit(0);
+                        });
+                    }
+                    // Stage 2: a painted frame — the real signal wherever a
+                    // display exists.
                     window.on_next_frame(|_window, _cx| {
                         println!("ZEDIS_SMOKE_OK");
                         std::process::exit(0);

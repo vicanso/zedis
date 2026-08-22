@@ -39,6 +39,7 @@ A few project-specific rules:
 - **i18n parity** — UI strings live in `locales/*.toml`. All 8 locales must have the **exact same key set**, or `build.rs` fails the build. Adding or removing a UI string means editing all 8 files; translate natively where the surrounding section already is.
 - **README parity** — keep `README.md` / `README_zh.md` (and the `docs/FEATURES.md` / `docs/FEATURES_zh.md` pair) in sync when features change.
 - **Components** — prefer `gpui-component`'s built-in components first; fall back to the shared widgets in `crates/zedis-ui` only when none fit.
+- **Connection-layer changes** — anything that depends on a real server (ACL, versions, modules, cluster / sentinel / TLS) has live tests in `crates/zedis-connection/tests/live.rs`: `make it-up && make it && make it-down` (needs `redis-server` on PATH, or `REDIS_IMAGE=redis:7.2 make it-up` with docker). CI runs them against Redis 6.2 / 7.2 / 8.0, Valkey and redis-stack.
 
 ### Submitting a Pull Request
 1. Fork the repo and create a branch off `main`.
@@ -87,6 +88,7 @@ cargo test
 - **i18n 一致性** —— UI 文案位于 `locales/*.toml`。8 种语言必须拥有**完全相同的 key 集合**,否则 `build.rs` 会编译失败。新增/删除一条 UI 文案需同时改 8 个文件;所在区段已翻译的请原生翻译。
 - **README 一致性** —— 功能变动时,保持 `README.md` / `README_zh.md`(以及 `docs/FEATURES.md` / `docs/FEATURES_zh.md`)同步。
 - **组件选用** —— 优先使用 `gpui-component` 的内置组件;仅当没有合适组件时,才用 `crates/zedis-ui` 里的共享控件。
+- **连接层改动** —— 凡依赖真实服务端的行为(ACL、版本、模块、cluster / sentinel / TLS)都有实机测试 `crates/zedis-connection/tests/live.rs`:`make it-up && make it && make it-down`(需要 PATH 里有 `redis-server`,或用 docker:`REDIS_IMAGE=redis:7.2 make it-up`)。CI 会对 Redis 6.2 / 7.2 / 8.0、Valkey 和 redis-stack 各跑一遍。
 
 ### 提交 Pull Request
 1. Fork 仓库,从 `main` 切出分支。

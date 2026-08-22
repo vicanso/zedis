@@ -9,10 +9,15 @@ name: "Smoke"
 # - macos: the real first-frame gate (hard). macOS is the primary user
 #   platform and its runners have a WindowServer, so ZEDIS_SMOKE_TEST is
 #   a reliable signal there — the same check publish.yml hard-gates.
-# - linux: primarily a cross-platform *build* gate (x11/wayland features
-#   and cfg(target_os) branches only compile here); its smoke step stays
-#   best-effort because the first-frame signal never fires under Xvfb +
-#   llvmpipe (see publish.yml).
+# - linux: a cross-platform *build* gate (x11/wayland features and
+#   cfg(target_os) branches only compile here) plus a hard *window* gate
+#   (`ZEDIS_SMOKE_GATE=window`: the main window is created and the process
+#   survives its first seconds — catches missing libraries, Vulkan /
+#   window-creation failures and startup panics). The first-frame check
+#   stays best-effort because the frame-present signal never fires under
+#   Xvfb + llvmpipe (see publish.yml).
+# - windows: the same first-frame gate publish.yml runs, on x86_64 — the
+#   platform that shipped an invisible window in 0.4.5/0.4.6.
 #
 # No packaging, no uploads; caches are shared with publish.yml's jobs.
 on:
@@ -94,20 +99,62 @@ jobs:
           key: ${{ runner.os }}-x86_64-unknown-linux-gnu-build
       - name: build
         run: cargo build --release --features mimalloc
+      - name: smoke test (window must open, process must survive)
+        # Hard gate. Boots the real binary under Xvfb with the `window`
+        # gate: exit 0 once the main window exists and 5s pass without a
+        # panic, exit 2 if that never happens within 30s. This is what a
+        # Linux user hits first — a missing libxkbcommon / Vulkan driver,
+        # a startup panic — and it is reliable headless.
+        timeout-minutes: 5
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_SMOKE_GATE: window
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: xvfb-run -a ./target/release/zedis
       - name: smoke test (first frame must paint)
-        # Boots the real binary in ZEDIS_SMOKE_TEST mode: exit 0 once the
-        # first frame paints, exit 2 if none does within 30s — the failure
-        # mode of the "window never appears" regression class.
-        #
-        # Best-effort for now: the first-frame signal has never fired under
-        # Xvfb + llvmpipe (see the matching note in publish.yml) — this
-        # step exists to keep a per-push record and to flip green the
-        # moment the headless present path is fixed, at which point drop
-        # continue-on-error to make it the hard pre-tag gate it was
-        # designed to be.
+        # Best-effort: the first-frame signal has never fired under Xvfb +
+        # llvmpipe (see the matching note in publish.yml) — this step keeps
+        # a per-push record and flips green the moment the headless present
+        # path is fixed, at which point drop continue-on-error.
         continue-on-error: true
         timeout-minutes: 5
         env:
           ZEDIS_SMOKE_TEST: "1"
-          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config-frame
         run: xvfb-run -a ./target/release/zedis
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+      - name: rust cache
+        # Same key as publish.yml's windows x86_64 job so the nightly and this
+        # gate share one build cache.
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-x86_64-pc-windows-msvc-build
+      - name: build
+        run: cargo build --release --target x86_64-pc-windows-msvc --features mimalloc
+      - name: smoke test (first frame must paint)
+        # Hard gate, identical to publish.yml's: GUI-subsystem exes detach
+        # from the shell, so Start-Process -Wait is required to observe the
+        # exit code. A hidden window gets no WM_PAINT, no frame ever paints,
+        # and the binary exits 2 via its watchdog.
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          ZEDIS_SMOKE_TEST: "1"
+          ZEDIS_CONFIG_DIR: ${{ runner.temp }}/zedis-smoke-config
+        run: |
+          $p = Start-Process -FilePath .\target\x86_64-pc-windows-msvc\release\zedis.exe -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Write-Error "smoke test failed: exit code $($p.ExitCode)"
+            exit 1
+          }
+          Write-Host "smoke test passed"

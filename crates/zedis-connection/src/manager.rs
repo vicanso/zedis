@@ -41,11 +41,35 @@ type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Matches Redis errors that should fallback to standalone: NOPERM, unknown command, or command not available.
+/// Case-insensitive: redis-rs 1.x renders the error category as `NoPerm:` rather than echoing the raw
+/// `NOPERM` code, which used to let a read-only ACL user (no `+role`) fail the whole connect.
 static IGNORABLE_SERVER_ERROR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"NOPERM|unknown|not available").expect("failed to compile regex"));
+    LazyLock::new(|| Regex::new(r"(?i)noperm|unknown|not available").expect("failed to compile regex"));
 
 fn is_ignorable_server_error(msg: &str) -> bool {
     IGNORABLE_SERVER_ERROR.is_match(msg)
+}
+
+#[cfg(test)]
+mod ignorable_error_tests {
+    use super::is_ignorable_server_error;
+
+    #[test]
+    fn matches_the_driver_rendering_of_noperm_and_unknown_commands() {
+        // redis-rs 1.x: category word, then the server's detail.
+        assert!(is_ignorable_server_error(
+            "NoPerm: User ro has no permissions to run the 'role' command"
+        ));
+        // Older rendering / raw reply text.
+        assert!(is_ignorable_server_error(
+            "NOPERM this user has no permissions to run the 'role' command"
+        ));
+        assert!(is_ignorable_server_error(
+            "An error was signalled by the server - ResponseError: unknown command 'ROLE'"
+        ));
+        assert!(is_ignorable_server_error("ERR command not available"));
+        assert!(!is_ignorable_server_error("Connection refused (os error 61)"));
+    }
 }
 
 // Global singleton for ConnectionManager
