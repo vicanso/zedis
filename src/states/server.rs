@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::error::Error as ConnectionError;
 use crate::connection::{
-    AccessMode, Capability, RedisClientDescription, SlowLogEntry, get_connection_manager, get_server, get_servers,
+    AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerFeatures, SlowLogEntry,
+    get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
+    note_server_command_error, probe_server_features,
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
@@ -22,8 +25,8 @@ use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{ValueHistoryEntry, push_history};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
 use crate::states::{
-    HINT_FIRST_CONNECT, QueryMode, ZedisGlobalStore, first_connect_hint, get_session_option, i18n_common,
-    update_app_state_and_save_quiet,
+    HINT_FIRST_CONNECT, QueryMode, ServerView, ZedisGlobalStore, command_unavailable_message, first_connect_hint,
+    get_session_option, i18n_common, update_app_state_and_save_quiet,
 };
 use ahash::AHashMap;
 use ahash::AHashSet;
@@ -180,6 +183,12 @@ pub struct ZedisServerState {
     /// "Search" entry in the Tools dropdown so unrelated servers don't
     /// surface a useless menu item.
     supports_search: bool,
+
+    /// Which commands this server offers the connected user — probed in the
+    /// background after connect, cached per server (shared across dbs), and
+    /// refined by runtime `NOPERM` / `unknown command` replies. Drives panel
+    /// placeholders, disabled menu entries and per-section chips.
+    features: Arc<ServerFeatures>,
 
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
@@ -592,8 +601,15 @@ impl ZedisServerState {
                         "Task failed"
                     );
                     // Surface a toast only for the still-active target, and
-                    // never for background info refreshes.
-                    if !stale && name != ServerTask::RefreshRedisInfo {
+                    // never for background info refreshes or the feature
+                    // probe itself. A `NOPERM` / `unknown command` reply goes
+                    // to the feature matrix first: the first one becomes a
+                    // "not available on this server" notice and degrades the
+                    // UI; repeats stay quiet.
+                    if !stale
+                        && !matches!(name, ServerTask::RefreshRedisInfo | ServerTask::ProbeFeatures)
+                        && !this.note_command_error(e, cx)
+                    {
                         this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
                     }
                 }
@@ -674,13 +690,104 @@ impl ZedisServerState {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
     }
 
-    /// Whether `cap` is allowed under the current access mode.
+    /// Whether `cap` is allowed under the current access mode *and* every
+    /// server command it needs is usable here (see [`Capability`] and
+    /// [`ServerFeatures`]).
     ///
     /// Prefer this over raw `!self.readonly()` so pure reads (folder
     /// refresh, export, multi-select, local tags) stay available when
-    /// the connection is locked. See [`Capability`].
+    /// the connection is locked.
     pub fn can(&self, cap: Capability) -> bool {
-        cap.allowed(self.readonly())
+        cap.available(self.readonly(), &self.features)
+    }
+
+    /// Why `cap` is blocked on the server side, if it is — the command the
+    /// probe found missing or denied. `None` when only the access mode (or
+    /// nothing) stands in the way.
+    pub fn blocked_by(&self, cap: Capability) -> Option<(ServerCommand, CommandStatus)> {
+        cap.blocked_by(&self.features)
+    }
+
+    /// The probed feature matrix for this server (optimistic until probed).
+    pub fn features(&self) -> Arc<ServerFeatures> {
+        self.features.clone()
+    }
+
+    /// The first command `view` cannot function without that this server
+    /// lacks — `Some` means the route shows a placeholder, not the panel.
+    pub fn panel_block(&self, view: ServerView) -> Option<(ServerCommand, CommandStatus)> {
+        self.features.first_unusable(view.required_commands())
+    }
+
+    /// Why `command` is unusable here, if it is.
+    pub fn command_block(&self, command: ServerCommand) -> Option<CommandStatus> {
+        let status = self.features.status(command);
+        (!status.is_usable()).then_some(status)
+    }
+
+    /// Runs the command probe in the background. Skipped when a probed
+    /// matrix is already cached for this server (a db switch, a reconnect);
+    /// `force` discards the cache and probes again.
+    pub fn probe_features(&mut self, force: bool, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        if server_id.is_empty() {
+            return;
+        }
+        if force {
+            invalidate_server_features(server_id.as_str());
+            self.features = Arc::default();
+            cx.emit(ServerEvent::FeaturesProbed);
+        } else if self.features.probed {
+            return;
+        }
+        let db = self.db;
+        let id = server_id.clone();
+        self.spawn(
+            ServerTask::ProbeFeatures,
+            move || async move { Ok(probe_server_features(id.as_str(), db).await?) },
+            move |this, result, cx| {
+                if let Ok(features) = result {
+                    this.features = features;
+                    cx.emit(ServerEvent::FeaturesProbed);
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Discards the cached matrix and probes again — the "Re-probe" button.
+    pub fn reprobe_features(&mut self, cx: &mut Context<Self>) {
+        self.probe_features(true, cx);
+    }
+
+    /// Feeds a failed command's error into the feature matrix. Returns
+    /// `true` when it was an unsupported/denied reply the matrix now accounts
+    /// for — newly learned (a localized notice is shown and `FeaturesProbed`
+    /// fires so panels degrade) or already known (silent) — so the caller can
+    /// skip its own raw-error toast. Views that run their own tasks (monitor,
+    /// pub/sub) call this too.
+    pub fn note_command_error(&mut self, error: &Error, cx: &mut Context<Self>) -> bool {
+        let Error::Connection { source } = error else {
+            return false;
+        };
+        let (changed, features) = note_server_command_error(self.server_id.as_str(), source);
+        if changed.is_empty() {
+            return match source {
+                ConnectionError::Redis { source } => self
+                    .features
+                    .already_explains(source.code(), source.detail().unwrap_or_default()),
+                _ => false,
+            };
+        }
+        self.features = features;
+        for (command, status) in changed {
+            let message = command_unavailable_message(cx, command, status);
+            self.emit_warning_notification(message, cx);
+        }
+        cx.emit(ServerEvent::FeaturesProbed);
+        cx.notify();
+        true
     }
 
     pub fn toggle_readonly(&mut self, cx: &mut Context<Self>) {
@@ -999,6 +1106,9 @@ impl ZedisServerState {
             self.reset(cx);
             self.server_id = server_id.clone();
             self.db = db;
+            // Cached matrix from an earlier connect to this server (or the
+            // optimistic default); the background probe refines it below.
+            self.features = get_server_features(server_id.as_str());
             // Resolve key-tree / scan prefs: per-server override, else Settings.
             let global = cx.global::<ZedisGlobalStore>().read(cx);
             let g_scan = global.key_scan_count();
@@ -1102,6 +1212,7 @@ impl ZedisServerState {
                             this.access_mode = access_mode;
                             this.supports_rejson = supports_rejson;
                             this.supports_search = supports_search;
+                            this.probe_features(false, cx);
 
                             let server_id = this.server_id.clone();
                             this.server_status = RedisServerStatus::Idle;
@@ -1126,8 +1237,10 @@ impl ZedisServerState {
                                 let message = first_connect_hint(cx);
                                 this.emit_info_notification(message, cx);
                             }
-                            // Auto-scan keys if not exact mode
-                            if !is_exact_mode {
+                            // Auto-scan keys if not exact mode — and not on a
+                            // server already known to lack SCAN (the key tree
+                            // shows its open-by-name banner instead).
+                            if !is_exact_mode && this.command_block(ServerCommand::Scan).is_none() {
                                 this.scan_keys(server_id, SharedString::default(), cx);
                             }
                         }

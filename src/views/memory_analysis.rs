@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::connection::{CommandStatus, ServerCommand};
 use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::{
@@ -652,6 +653,15 @@ impl ZedisMemoryAnalysis {
             delegate.rows.clear();
             delegate.offline = offline;
         });
+    }
+
+    /// The live sampler's hard dependencies (`SCAN` + `MEMORY USAGE`) — the
+    /// first one this server lacks, if any. Offline RDB analysis doesn't care.
+    pub(crate) fn live_scan_block(&self, cx: &gpui::App) -> Option<(ServerCommand, CommandStatus)> {
+        self.server_state
+            .read(cx)
+            .features()
+            .first_unusable(&[ServerCommand::Scan, ServerCommand::MemoryUsage])
     }
 
     fn start_analysis(&mut self, cx: &mut gpui::Context<Self>) {

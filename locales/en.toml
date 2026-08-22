@@ -249,6 +249,7 @@ diag_hint_auth_rejected = "Authentication was rejected. Check the password and u
 diag_hint_redis = "The port accepted the connection but the Redis handshake failed — is this really a Redis port? The server may also still be loading."
 
 [editor]
+title = "Key Editor"
 value_too_large = "Value too large to auto-load"
 value_too_large_message = "This value is %{size}, above the %{limit} auto-load cap. Loading it may briefly freeze the UI."
 load_anyway = "Load anyway"
@@ -546,6 +547,7 @@ auto_update_check = "Check for Updates Automatically"
 auto_update_check_desc = "Automatically check for new versions on startup"
 
 [metrics]
+title = "Metrics"
 memory = "Memory"
 clients = "Clients"
 ops = "OPS"
@@ -588,6 +590,7 @@ field_errors_title = "Save Proto Failed"
 field_errors_message = "Please verify the following fields and try again:\n\n%{errors}"
 
 [slowlog_editor]
+title = "Performance (Slow Log + Latency)"
 tab_top_commands = "Top Commands"
 agg_command = "Command"
 agg_count = "Count"
@@ -1754,3 +1757,23 @@ body = "The previous session ended with a crash. A report with the error and a s
 report_saved = "Report: %{path}"
 open_logs = "Open Logs Folder"
 dismiss = "Dismiss"
+
+[features]
+dialog_title = "Server capabilities"
+dialog_intro = "Probed after connecting: which commands this server offers the current user. Panels and actions that depend on an unavailable command are disabled or reduced instead of failing."
+flavor = "Server"
+not_probed = "Not probed yet"
+reprobe = "Re-probe"
+status_available = "available"
+status_missing = "not supported by this server"
+status_denied = "denied for this user (NOPERM)"
+status_unknown = "not probed"
+panel_unavailable_title = "%{panel} is unavailable on this server"
+panel_unavailable_body = "It needs %{command}, which is %{reason}."
+hint_missing = "Proxies (Twemproxy / Codis / Envoy) and some Redis-compatible servers do not implement every command, and managed clouds rename or disable administrative ones."
+hint_denied = "The connected ACL user lacks permission. Ask an administrator to grant it, or connect as a different user."
+command_unavailable = "%{command} is unavailable on this server: %{reason}"
+section_unavailable = "%{command} unavailable — %{reason}"
+menu_suffix = "%{command} unavailable"
+key_tree_no_scan_title = "This server does not support SCAN"
+key_tree_no_scan_body = "The key tree cannot list keys here. Type a key's exact name in the search box above and press Enter to open it — recent keys (%{shortcut}) still work."

@@ -18,6 +18,7 @@
 //! `memory_analysis.rs` to keep the scan/analysis half readable.
 
 use super::*;
+use crate::views::unavailable_chip;
 
 impl ZedisMemoryAnalysis {
     pub(super) fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> ZedisDivider {
@@ -64,6 +65,13 @@ impl ZedisMemoryAnalysis {
                     .when(!self.policy.is_empty(), |this| {
                         this.child(stat_item(cx, "policy", self.policy.clone()))
                     })
+                    // Live sampling needs SCAN + MEMORY USAGE; without them only
+                    // the offline RDB analysis is on offer (the Analyze button
+                    // is disabled for the same reason).
+                    .when_some(
+                        self.live_scan_block(cx).filter(|_| !offline),
+                        |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                    )
                     // Progress
                     .when(!is_idle, |this| {
                         this.child(stat_item(cx, "progress", self.progress.clone()))
@@ -146,7 +154,7 @@ impl ZedisMemoryAnalysis {
                         Button::new("start-analysis")
                             .primary()
                             .small()
-                            .disabled(self.dbsize.is_none())
+                            .disabled(self.dbsize.is_none() || self.live_scan_block(cx).is_some())
                             .label(i18n_memory_analysis(cx, "start"))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.start_analysis(cx);

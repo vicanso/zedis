@@ -37,6 +37,8 @@
 
 #![allow(dead_code)]
 
+use crate::features::{CommandStatus, ServerCommand, ServerFeatures};
+
 /// UI / server operation that may be gated by connection access mode.
 ///
 /// Grouped into *always-allowed-when-readonly* (reads, local metadata,
@@ -211,6 +213,43 @@ impl Capability {
     pub const fn allowed(self, readonly: bool) -> bool {
         !readonly || !self.requires_write()
     }
+
+    /// The server commands this capability cannot work without — the second
+    /// axis of the matrix (the first is read/write). Empty for capabilities
+    /// built on commands every Redis-compatible server has (`GET`, `DEL`,
+    /// `EXPIRE`, …) and for local-only ones. Keep this to the commands the
+    /// probe actually checks (`ServerCommand`).
+    pub const fn required_commands(self) -> &'static [ServerCommand] {
+        match self {
+            Capability::RefreshKeys
+            | Capability::RefreshFolder
+            | Capability::AutoRefresh
+            | Capability::SearchFilter => &[ServerCommand::Scan],
+            Capability::ExportKeys | Capability::CopyKeyToServer => &[ServerCommand::Dump],
+            Capability::ImportKeys => &[ServerCommand::Restore],
+            Capability::FlushDatabase => &[ServerCommand::FlushDb],
+            Capability::KillClient => &[ServerCommand::ClientKill],
+            Capability::AclWrite => &[ServerCommand::AclSetUser],
+            Capability::ConfigWrite => &[ServerCommand::ConfigSet],
+            Capability::PersistenceWrite => &[ServerCommand::Bgsave],
+            Capability::PublishMessage => &[ServerCommand::Publish],
+            Capability::FunctionWrite => &[ServerCommand::FunctionLoad],
+            Capability::EvalScript => &[ServerCommand::Eval],
+            _ => &[],
+        }
+    }
+
+    /// The first required command the probe found unusable, with why —
+    /// `None` when the server side is fine (or not probed yet).
+    pub fn blocked_by(self, features: &ServerFeatures) -> Option<(ServerCommand, CommandStatus)> {
+        features.first_unusable(self.required_commands())
+    }
+
+    /// Both axes at once: allowed under the access mode *and* every command
+    /// it needs is usable on this server.
+    pub fn available(self, readonly: bool, features: &ServerFeatures) -> bool {
+        self.allowed(readonly) && self.blocked_by(features).is_none()
+    }
 }
 
 /// Convenience wrapper: is `cap` allowed when the connection is/isn't readonly?
@@ -312,6 +351,36 @@ mod tests {
                 "{cap:?}: requires_write must be the inverse of allowed_in_readonly"
             );
         }
+    }
+
+    #[test]
+    fn required_commands_only_name_probed_commands_and_gate_availability() {
+        // Every required command must be one the probe checks.
+        for cap in Capability::ALL {
+            for c in cap.required_commands() {
+                assert!(ServerCommand::ALL.contains(c), "{cap:?} requires unprobed {c:?}");
+            }
+        }
+        // Un-probed: nothing is blocked, the read/write axis alone decides.
+        let fresh = ServerFeatures::default();
+        for cap in Capability::ALL {
+            assert!(cap.available(false, &fresh), "{cap:?}");
+            assert_eq!(cap.available(true, &fresh), cap.allowed(true), "{cap:?}");
+        }
+        // A denied CONFIG SET blocks config writes and nothing else.
+        let mut features = ServerFeatures::probed_empty();
+        features.set(ServerCommand::ConfigSet, CommandStatus::Denied);
+        assert_eq!(
+            Capability::ConfigWrite.blocked_by(&features),
+            Some((ServerCommand::ConfigSet, CommandStatus::Denied))
+        );
+        assert!(!Capability::ConfigWrite.available(false, &features));
+        assert!(Capability::KillClient.available(false, &features));
+        // A missing SCAN takes the key-tree refreshes with it, even read-only.
+        features.set(ServerCommand::Scan, CommandStatus::Missing);
+        assert!(!Capability::RefreshKeys.available(true, &features));
+        assert!(!Capability::RefreshFolder.available(false, &features));
+        assert!(Capability::ReloadValue.available(true, &features));
     }
 
     #[test]

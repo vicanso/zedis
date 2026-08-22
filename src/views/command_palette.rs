@@ -20,7 +20,9 @@
 use crate::connection::get_servers;
 use crate::db::get_favorites_manager;
 use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, prepare_fuzzy_query};
-use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
+use crate::states::{
+    Route, ServerView, ZedisGlobalStore, ZedisServerState, command_status_label, i18n_command_palette, i18n_shortcuts,
+};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
@@ -321,10 +323,18 @@ impl ZedisCommandPalette {
                     if route == current_route {
                         continue;
                     }
+                    // A panel the probe found unusable on this server stays
+                    // listed (navigating lands on the explanatory placeholder)
+                    // but carries the reason as its hint.
+                    let hint = route
+                        .server_view()
+                        .and_then(|view| self.server_state.read(cx).panel_block(view))
+                        .map(|(command, status)| command_status_label(cx, command, status))
+                        .unwrap_or_default();
                     let label = i18n_command_palette(cx, key);
                     items.push(PaletteItem {
                         label: label.clone(),
-                        hint: gpui::SharedString::default(),
+                        hint,
                         search: label.to_string(),
                         prescore: None,
                         command: PaletteCommand::Route(route),

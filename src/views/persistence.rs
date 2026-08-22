@@ -31,6 +31,7 @@ use crate::states::{
     PersistenceNodeSnapshot, RedisMetrics, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
     back_to_editor_tooltip, dialog_button_props, escalate_dangerous_body, i18n_common, i18n_persistence,
 };
+use crate::views::unavailable_chip;
 use chrono::{Local, TimeZone};
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
@@ -1022,6 +1023,12 @@ impl Render for ZedisPersistence {
                 .px_4()
                 .gap_2()
                 .flex_wrap()
+                // BGSAVE denied / missing (managed clouds): the cards stay,
+                // greyed, and this says why.
+                .when_some(
+                    self.server_state.read(cx).blocked_by(Capability::PersistenceWrite),
+                    |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                )
                 .child(self.render_bgsave_card(&m, cx))
                 .when(m.aof_enabled, |this| this.child(self.render_bgrewriteaof_card(&m, cx))),
         );

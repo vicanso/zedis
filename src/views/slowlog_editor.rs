@@ -14,6 +14,7 @@
 
 use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 use crate::assets::CustomIconName;
+use crate::connection::ServerCommand;
 /// Redis Slow Log viewer.
 ///
 /// Displays a table of slow-query log entries fetched from the server's
@@ -803,6 +804,19 @@ impl ZedisSlowlogEditor {
             return;
         }
         let db = self.server_state.read(cx).db();
+        // The probe already knows LATENCY is missing / denied here: show the
+        // unsupported state without a round trip (and without a NOPERM toast).
+        if self
+            .server_state
+            .read(cx)
+            .command_block(ServerCommand::LatencyLatest)
+            .is_some()
+        {
+            self.latency_unsupported = true;
+            self.latency_loading = false;
+            cx.notify();
+            return;
+        }
         self.latency_loading = true;
         self._latency_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {

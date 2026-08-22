@@ -25,6 +25,7 @@ use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, escalate_dangerous_body, i18n_clients_manager, i18n_common,
 };
+use crate::views::unavailable_chip;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
 use gpui_component::notification::Notification;
@@ -633,7 +634,10 @@ pub struct ZedisClientsManager {
 impl ZedisClientsManager {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        let readonly = server_state.read(cx).readonly();
+        // The delegate's "readonly" is really "no CLIENT KILL": read-only
+        // mode or a server where KILL is missing / denied both hide the
+        // per-row button.
+        let readonly = !server_state.read(cx).can(Capability::KillClient);
         let delegate = ClientsTableDelegate::new(vec![], readonly, window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
@@ -723,7 +727,7 @@ impl ZedisClientsManager {
             return;
         }
         let db = self.server_state.read(cx).db();
-        let readonly = self.server_state.read(cx).readonly();
+        let readonly = !self.server_state.read(cx).can(Capability::KillClient);
         let server_id_for_delegate = server_id.clone();
 
         self._fetch_task = Some(cx.spawn(async move |handle, cx| {
@@ -1028,7 +1032,13 @@ impl gpui::Render for ZedisClientsManager {
                                         this.handle_filter(cx);
                                     })),
                             )
-                            .when(Capability::KillClient.allowed(readonly), |this| {
+                            // Explain a missing kill button when the server
+                            // (not the access mode) is what takes it away.
+                            .when_some(
+                                self.server_state.read(cx).blocked_by(Capability::KillClient),
+                                |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                            )
+                            .when(!readonly, |this| {
                                 this.child(
                                     Button::new("batch-kill-clients")
                                         .outline()

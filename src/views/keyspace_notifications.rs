@@ -31,6 +31,7 @@ use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
+use crate::views::unavailable_chip;
 use crate::views::{export_to_file, open_key_in_editor};
 use ahash::AHashSet;
 use chrono::Local;
@@ -1081,6 +1082,7 @@ impl ZedisKeyspaceNotifications {
             return None;
         }
         let can_write = self.server_state.read(cx).can(Capability::ConfigWrite);
+        let config_block = self.server_state.read(cx).blocked_by(Capability::ConfigWrite);
         Some(
             div()
                 .mx_4()
@@ -1138,12 +1140,14 @@ impl ZedisKeyspaceNotifications {
                                     })),
                             )
                         })
-                        .when(!can_write, |this| {
-                            this.child(
+                        .when(!can_write, |this| match config_block {
+                            // The server, not the access mode, forbids it.
+                            Some((command, status)) => this.child(unavailable_chip(cx, command, status)),
+                            None => this.child(
                                 Label::new(i18n_keyspace_notifications(cx, "enable_readonly"))
                                     .text_xs()
                                     .text_color(theme.muted_foreground),
-                            )
+                            ),
                         }),
                 )
                 .into_any_element(),

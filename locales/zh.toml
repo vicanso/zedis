@@ -249,6 +249,7 @@ diag_hint_auth_rejected = "认证被拒绝。请检查密码和用户名 (ACL)�
 diag_hint_redis = "端口已接受连接但 Redis 握手失败——该端口确定是 Redis 吗？服务器也可能仍在加载数据。"
 
 [editor]
+title = "键编辑器"
 value_too_large = "值过大，未自动加载"
 value_too_large_message = "该值大小为 %{size}，超过 %{limit} 的自动加载上限，加载后界面可能出现短暂卡顿。"
 load_anyway = "仍要加载"
@@ -545,6 +546,7 @@ auto_update_check = "自动检查更新"
 auto_update_check_desc = "启动时自动检查新版本"
 
 [metrics]
+title = "指标"
 memory = "内存"
 clients = "连接数"
 ops = "OPS"
@@ -587,6 +589,7 @@ field_errors_title = "保存 Proto 失败"
 field_errors_message = "请验证以下字段并重试:\n\n%{errors}"
 
 [slowlog_editor]
+title = "性能（慢日志 + 延迟）"
 tab_top_commands = "命令聚合"
 agg_command = "命令"
 agg_count = "次数"
@@ -1753,3 +1756,23 @@ body = "上一次会话因崩溃而结束。包含错误信息和堆栈的报告
 report_saved = "报告：%{path}"
 open_logs = "打开日志目录"
 dismiss = "关闭"
+
+[features]
+dialog_title = "服务端能力"
+dialog_intro = "连接后探测得到：此服务端对当前用户开放了哪些命令。依赖不可用命令的面板和操作会被禁用或降级，而不是报错。"
+flavor = "服务端"
+not_probed = "尚未探测"
+reprobe = "重新探测"
+status_available = "可用"
+status_missing = "此服务端不支持"
+status_denied = "当前用户无权限（NOPERM）"
+status_unknown = "未探测"
+panel_unavailable_title = "%{panel} 在此服务端不可用"
+panel_unavailable_body = "它依赖 %{command}，而该命令%{reason}。"
+hint_missing = "代理（Twemproxy / Codis / Envoy）和部分 Redis 兼容服务端没有实现全部命令，云托管服务通常会重命名或禁用管理类命令。"
+hint_denied = "当前连接的 ACL 用户缺少权限。请联系管理员授权，或改用其他用户连接。"
+command_unavailable = "%{command} 在此服务端不可用：%{reason}"
+section_unavailable = "%{command} 不可用——%{reason}"
+menu_suffix = "%{command} 不可用"
+key_tree_no_scan_title = "此服务端不支持 SCAN"
+key_tree_no_scan_body = "键树无法在这里列出键。在上方搜索框输入完整键名并回车即可打开——最近打开的键（%{shortcut}）仍然可用。"

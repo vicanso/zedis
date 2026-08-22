@@ -27,6 +27,7 @@ mod danger_confirm;
 mod editor;
 mod export;
 mod export_servers_dialog;
+mod features_dialog;
 mod function_editor;
 mod geo_map;
 mod hash_editor;
@@ -66,6 +67,7 @@ mod timeseries_editor;
 mod title_bar;
 mod topology;
 mod trash_dialog;
+mod unsupported_panel;
 mod update_dialog;
 mod value_diff;
 mod value_search;
@@ -103,6 +105,7 @@ pub use memory_analysis::ZedisMemoryAnalysis;
 // Chart helpers re-exported so other diagnostic panels (e.g.
 // memory_analysis) can reuse the metrics view's canvas primitives
 // without each one re-implementing axis / tick rendering.
+pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
 pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 pub(crate) use migration_window::dirs_default_directory;
@@ -131,14 +134,45 @@ pub use timeseries_editor::ZedisTimeSeriesEditor;
 pub use title_bar::ZedisTitleBar;
 pub use topology::ZedisTopology;
 pub use trash_dialog::open_trash_dialog;
+pub use unsupported_panel::ZedisUnsupportedPanel;
 pub use update_dialog::{DialogCallback, ZedisUpdateDialog};
 pub use value_diff::{DiffCloseCallback, ZedisValueDiff};
 pub use value_search::ZedisValueSearch;
 pub use vector_set_editor::ZedisVectorSetEditor;
 pub use zset_editor::ZedisZsetEditor;
 
-use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState};
-use gpui::{App, Entity, SharedString};
+use crate::connection::{CommandStatus, ServerCommand};
+use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_features};
+use gpui::{App, Entity, IntoElement, ParentElement, SharedString, Styled};
+use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
+use rust_i18n::t;
+
+/// The per-section "CONFIG SET unavailable — denied for this user (NOPERM)"
+/// chip panels show in place of a button or sub-view the server can't back,
+/// so a reduced panel explains itself instead of toasting.
+pub fn unavailable_chip(cx: &App, command: ServerCommand, status: CommandStatus) -> impl IntoElement {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+    let reason = i18n_features(cx, status.i18n_key());
+    let text: SharedString = t!(
+        "features.section_unavailable",
+        command = command.label(),
+        reason = reason,
+        locale = &locale
+    )
+    .to_string()
+    .into();
+    let warning = cx.theme().warning;
+    h_flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded_sm()
+        .border_1()
+        .border_color(warning)
+        .child(Icon::new(IconName::TriangleAlert).text_xs().text_color(warning))
+        .child(Label::new(text).text_xs().text_color(warning))
+}
 
 /// Shared "jump to key" used by observability views (Monitor, Keyspace
 /// notifications, Memory Analyzer, Value Search): select the key on the

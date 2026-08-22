@@ -36,6 +36,7 @@ mod lua_script;
 mod manager;
 mod master_key;
 mod multi_search;
+mod probe;
 mod readable_export;
 mod search;
 mod ssh_cluster_connection;
@@ -72,6 +73,7 @@ pub use latency::{
 };
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
+pub use probe::{get_server_features, invalidate_server_features, note_server_command_error, probe_server_features};
 pub use readable_export::{ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, read_readable_chunk};
 
 pub use manager::{
@@ -87,6 +89,7 @@ pub use search::{
 // The capability matrix is pure logic and lives in `zedis-core`; re-exported
 // here so call sites keep using `crate::connection::Capability` unchanged.
 pub use zedis_core::capability::Capability;
+pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
     if removed_count > 0 {

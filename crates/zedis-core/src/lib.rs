@@ -20,6 +20,7 @@ pub mod capability;
 pub mod csv;
 pub mod diff;
 pub mod env;
+pub mod features;
 pub mod fs;
 pub mod fuzzy;
 pub mod hex;

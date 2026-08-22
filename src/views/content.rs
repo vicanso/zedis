@@ -22,7 +22,8 @@ use crate::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
         ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
         ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerInfo, ZedisServerLoad,
-        ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology, ZedisValueSearch,
+        ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology, ZedisUnsupportedPanel,
+        ZedisValueSearch,
     },
 };
 use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
@@ -30,7 +31,7 @@ use gpui_component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
 use zedis_ui::ZedisSkeletonLoading;
 
@@ -66,6 +67,10 @@ pub struct ZedisContent {
     /// on first visit (`tool_view`), dropped uniformly by `clear_views` when
     /// the route moves elsewhere.
     tool_views: HashMap<ServerView, AnyView>,
+    /// Which `tool_views` entries are `ZedisUnsupportedPanel` placeholders
+    /// (the route's panel can't work on this server). Re-evaluated when the
+    /// feature matrix changes so a re-probe swaps them for the real panel.
+    placeholders: HashSet<ServerView>,
     status_bar: Entity<ZedisStatusBar>,
 
     /// Persisted width of the key tree panel (resizable by user)
@@ -117,6 +122,25 @@ impl ZedisContent {
         // same per-view policy as before, now uniform over the map.
         let current_tool = route.server_view();
         self.tool_views.retain(|view, _| Some(*view) == current_tool);
+        self.placeholders.retain(|view| Some(*view) == current_tool);
+    }
+
+    /// The feature matrix changed: drop every cached panel whose
+    /// placeholder-or-real status no longer matches, so the next render
+    /// builds the right one. Real panels that are still fine keep their state.
+    fn reconcile_tool_views(&mut self, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let stale: Vec<ServerView> = self
+            .tool_views
+            .keys()
+            .copied()
+            .filter(|view| self.placeholders.contains(view) != state.panel_block(*view).is_some())
+            .collect();
+        for view in stale {
+            self.tool_views.remove(&view);
+            self.placeholders.remove(&view);
+        }
+        cx.notify();
     }
     /// Create a new content view with route-aware view management
     ///
@@ -258,6 +282,7 @@ impl ZedisContent {
                 ServerEvent::ServerInfoUpdated | ServerEvent::ServerSelected(_) => {
                     cx.notify();
                 }
+                ServerEvent::FeaturesProbed => this.reconcile_tool_views(cx),
                 _ => {}
             }),
         );
@@ -276,6 +301,7 @@ impl ZedisContent {
             value_editor: None,
             terminal: None,
             tool_views: HashMap::new(),
+            placeholders: HashSet::new(),
             key_tree: None,
             key_tree_width,
             should_focus: false,
@@ -408,6 +434,21 @@ impl ZedisContent {
             return Some(existing.clone());
         }
         let state = self.server_state.clone();
+        // The panel's hard dependency is missing or denied on this server:
+        // show the placeholder (same cache slot, so navigation and
+        // `clear_views` treat it like any panel) instead of a view that can
+        // only fail.
+        if view != ServerView::Editor
+            && let Some((command, status)) = state.read(cx).panel_block(view)
+        {
+            debug!(view = ?view, ?command, ?status, "tool view unavailable on this server");
+            let placeholder: AnyView = cx
+                .new(|_| ZedisUnsupportedPanel::new(state, view, command, status))
+                .into();
+            self.tool_views.insert(view, placeholder.clone());
+            self.placeholders.insert(view);
+            return Some(placeholder);
+        }
         debug!(view = ?view, "creating tool view");
         let created: AnyView = match view {
             ServerView::Editor => return None,

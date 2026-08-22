@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::states::{command_status_label, i18n_features};
 use crate::{
     assets::CustomIconName,
-    connection::{RedisClientDescription, get_server},
+    connection::{RedisClientDescription, ServerFeatures, get_server},
     constants::STATUS_BAR_HEIGHT,
     helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
     states::{
@@ -36,6 +37,7 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenu},
     tooltip::Tooltip,
 };
+use rust_i18n::t;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
@@ -203,6 +205,18 @@ fn format_nodes_description(
 
 // --- Local State ---
 
+/// Everything that decides which Tools-menu entries are enabled: the
+/// module / version / server-type gates, the access mode (Import Keys and
+/// FLUSH need writes), and the probed command matrix.
+struct ToolsMenuGates {
+    supports_search: bool,
+    supports_acl: bool,
+    supports_functions: bool,
+    supports_topology: bool,
+    readonly: bool,
+    features: Arc<ServerFeatures>,
+}
+
 /// Inputs for a clickable status-bar metric chip (icon + value → tool page).
 struct MetricChip {
     id: &'static str,
@@ -212,6 +226,9 @@ struct MetricChip {
     icon_color: Hsla,
     tooltip: SharedString,
     view: ServerView,
+    /// Set when the destination panel can't work on this server: the chip is
+    /// disabled and this replaces the tooltip.
+    disabled_reason: Option<SharedString>,
 }
 
 #[derive(Default)]
@@ -254,6 +271,9 @@ struct StatusBarServerState {
     /// replica, so writes will bounce with `-READONLY`. Drives the quiet
     /// "Replica" badge next to the environment tag.
     is_replica: bool,
+    /// Mirrors `ZedisServerState::features()` — the probed command matrix.
+    /// Drives the "Limited" badge, disabled Tools entries and metric chips.
+    features: Arc<ServerFeatures>,
 }
 
 /// DB-dropdown row geometry, shared by the row renderer and the menu-width
@@ -578,12 +598,33 @@ impl ZedisStatusBar {
             scan_finished: state.scan_completed(),
             slow_log_tips,
             soft_wrap: state.soft_wrap(),
-            nodes_description: format_nodes_description(
-                state.nodes_description().clone(),
-                redis_info.replicas.as_slice(),
-                state.version(),
-                cx,
-            ),
+            nodes_description: {
+                // The server-status tooltip also names what the probe found
+                // unusable — the quiet place for it (the Tools menu has the
+                // full matrix).
+                let mut text = format_nodes_description(
+                    state.nodes_description().clone(),
+                    redis_info.replicas.as_slice(),
+                    state.version(),
+                    cx,
+                )
+                .to_string();
+                let unusable = state.features().unusable();
+                if !unusable.is_empty() {
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                    text.push_str("\n\n");
+                    text.push_str(&t!(
+                        "servers.diag_capabilities_limited",
+                        count = unusable.len(),
+                        locale = &locale
+                    ));
+                    for (command, status) in unusable {
+                        text.push('\n');
+                        text.push_str(&command_status_label(cx, command, status));
+                    }
+                }
+                text.into()
+            },
             tag,
             tag_color_key,
             supports_search,
@@ -591,6 +632,7 @@ impl ZedisStatusBar {
             supports_functions,
             supports_topology,
             is_replica: redis_info.meta.role == "slave",
+            features: state.features(),
         };
         // Per-db key counts for the DB dropdown (#116). Rebuild the select
         // items only on an actual change so the 2s heartbeat doesn't churn
@@ -629,16 +671,40 @@ impl ZedisStatusBar {
     /// discoverable and the user knows what to enable. `supports_topology`
     /// is the exception: a cluster topology isn't a feature you can turn
     /// on, so that group is still hidden on Standalone.
-    fn render_tools_menu(
-        this: PopupMenu,
-        supports_search: bool,
-        supports_acl: bool,
-        supports_functions: bool,
-        supports_topology: bool,
-        // When true, Import Keys is disabled (needs write / RESTORE).
-        readonly: bool,
-        cx: &gpui::App,
-    ) -> PopupMenu {
+    fn render_tools_menu(this: PopupMenu, gates: &ToolsMenuGates, cx: &gpui::App) -> PopupMenu {
+        let ToolsMenuGates {
+            supports_search,
+            supports_acl,
+            supports_functions,
+            supports_topology,
+            readonly,
+            features,
+        } = gates;
+        let (supports_search, supports_acl, supports_functions, supports_topology, readonly) = (
+            *supports_search,
+            *supports_acl,
+            *supports_functions,
+            *supports_topology,
+            *readonly,
+        );
+        let features: &ServerFeatures = features;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        // Label + disabled flag for a panel entry, folding in the feature
+        // matrix: an explicit `unavailable` (module / version gate, already
+        // worded by the caller) wins; otherwise the probe's verdict decides.
+        let gated =
+            |label: SharedString, view: ServerView, unavailable: Option<SharedString>| -> (SharedString, bool) {
+                if let Some(reason) = unavailable {
+                    return (format!("{label}  ·  {reason}").into(), true);
+                }
+                match features.first_unusable(view.required_commands()) {
+                    Some((command, _)) => {
+                        let suffix = t!("features.menu_suffix", command = command.label(), locale = &locale);
+                        (format!("{label}  ·  {suffix}").into(), true)
+                    }
+                    None => (label, false),
+                }
+            };
         // The tool list has grown, so it's split into titled,
         // separator-delimited sections. Each group is anchored by an
         // always-available item (Monitor / Lua / Config+Persistence /
@@ -647,25 +713,51 @@ impl ZedisStatusBar {
         // renders a dimmed, non-clickable section header.
 
         // ── Observability ──
+        let (monitor_label, monitor_off) =
+            gated(i18n_status_bar(cx, "toggle_monitor_tooltip"), ServerView::Monitor, None);
+        let (load_label, load_off) = gated(i18n_server_load(cx, "title"), ServerView::ServerLoad, None);
+        // Keyspace Notifications relies on `notify-keyspace-events`
+        // (since 2.8); an empty config surfaces a one-click Enable banner
+        // inside the panel. Its hard dependency is SUBSCRIBE.
+        let (keyspace_label, keyspace_off) = gated(
+            i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip"),
+            ServerView::KeyspaceNotifications,
+            None,
+        );
+        let (info_label, info_off) = gated(i18n_server_info(cx, "title"), ServerView::ServerInfo, None);
+        // The probed command matrix — a read-only look at the server, so it
+        // sits with INFO. Quiet by design: a count suffix here (and a line in
+        // the status tooltip) rather than a badge in the bar.
+        let unusable = features.unusable().len();
+        let capabilities_label: SharedString = if unusable == 0 {
+            i18n_features(cx, "dialog_title")
+        } else {
+            format!(
+                "{}  ·  {}",
+                i18n_features(cx, "dialog_title"),
+                t!("servers.diag_capabilities_limited", count = unusable, locale = &locale)
+            )
+            .into()
+        };
         let mut menu = this
             .label(i18n_status_bar(cx, "group_observability"))
-            .menu_element_with_icon(
+            .menu_with_icon_and_disabled(
+                monitor_label,
                 Icon::new(CustomIconName::Radar),
                 Box::new(ServerToolsAction::Monitor),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_monitor_tooltip")),
+                monitor_off,
             )
-            .menu_element_with_icon(
+            .menu_with_icon_and_disabled(
+                load_label,
                 Icon::new(CustomIconName::Zap),
                 Box::new(ServerToolsAction::ServerLoad),
-                move |_window, cx| Label::new(i18n_server_load(cx, "title")),
+                load_off,
             )
-            // Keyspace Notifications relies on `notify-keyspace-events`
-            // (since 2.8) — no capability gate; an empty config surfaces a
-            // one-click Enable banner inside the panel.
-            .menu_element_with_icon(
+            .menu_with_icon_and_disabled(
+                keyspace_label,
                 Icon::new(CustomIconName::AudioWaveform),
                 Box::new(ServerToolsAction::KeyspaceNotifications),
-                move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip")),
+                keyspace_off,
             )
             // Pub/Sub (channel mode in the editor suite) — mirrored here so
             // the connection-level messaging tool is findable next to its
@@ -675,61 +767,63 @@ impl ZedisStatusBar {
                 Box::new(ServerToolsAction::PubsubMode),
                 move |_window, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
             )
-            // Raw INFO browser — plain `INFO` works on every Redis, no gate.
-            .menu_element_with_icon(
+            // Raw INFO browser — plain `INFO` works on every Redis; only a
+            // proxy that blocks INFO altogether disables it.
+            .menu_with_icon_and_disabled(
+                info_label,
                 Icon::new(IconName::Info),
                 Box::new(ServerToolsAction::ServerInfo),
-                move |_window, cx| Label::new(i18n_server_info(cx, "title")),
+                info_off,
+            )
+            .menu_with_icon(
+                capabilities_label,
+                Icon::new(CustomIconName::ListCheck),
+                Box::new(ServerToolsAction::Capabilities),
             );
 
         // ── Query & Scripting ──
         menu = menu.separator().label(i18n_status_bar(cx, "group_scripting"));
         // Search keys by value content — works on any Redis (no module), so it
         // anchors this group.
-        menu = menu.menu_element_with_icon(
+        // Value search needs SCAN — a proxy without it gets the placeholder.
+        let (value_search_label, value_search_off) =
+            gated(i18n_value_search(cx, "title"), ServerView::ValueSearch, None);
+        menu = menu.menu_with_icon_and_disabled(
+            value_search_label,
             Icon::new(IconName::Search),
             Box::new(ServerToolsAction::ValueSearch),
-            move |_window, cx| Label::new(i18n_value_search(cx, "title")),
+            value_search_off,
         );
         // RediSearch (module `search`). Shown disabled with a "module not
         // loaded" suffix when the module is absent, so the feature stays
         // discoverable and the user knows what to enable.
-        let search_label: SharedString = if supports_search {
-            i18n_status_bar(cx, "toggle_search_tooltip")
-        } else {
-            format!(
-                "{}  ·  {}",
-                i18n_status_bar(cx, "toggle_search_tooltip"),
-                i18n_status_bar(cx, "module_not_loaded")
-            )
-            .into()
-        };
+        let (search_label, search_off) = gated(
+            i18n_status_bar(cx, "toggle_search_tooltip"),
+            ServerView::Search,
+            (!supports_search).then(|| i18n_status_bar(cx, "module_not_loaded")),
+        );
         menu = menu.menu_with_icon_and_disabled(
             search_label,
             Icon::new(IconName::Search),
             Box::new(ServerToolsAction::Search),
-            !supports_search,
+            search_off,
         );
         // Functions (`FUNCTION`, Redis 7.0+). Version-gated rather than a
-        // module, so the suffix points at the required Redis version.
-        let functions_label: SharedString = if supports_functions {
-            i18n_status_bar(cx, "toggle_functions_tooltip")
-        } else {
-            format!(
-                "{}  ·  {}",
-                i18n_status_bar(cx, "toggle_functions_tooltip"),
-                i18n_status_bar(cx, "requires_redis_7")
-            )
-            .into()
-        };
+        // module, so the suffix points at the required Redis version; on a
+        // 7+ server the probe's verdict on FUNCTION LIST applies.
+        let (functions_label, functions_off) = gated(
+            i18n_status_bar(cx, "toggle_functions_tooltip"),
+            ServerView::Functions,
+            (!supports_functions).then(|| i18n_status_bar(cx, "requires_redis_7")),
+        );
         menu = menu.menu_with_icon_and_disabled(
             functions_label,
             Icon::new(IconName::Asterisk),
             Box::new(ServerToolsAction::Functions),
-            !supports_functions,
+            functions_off,
         );
-        // Lua script library uses EVAL/EVALSHA (since 2.6) — always available,
-        // so it anchors this group.
+        // Lua script library: the saved scripts are local, so the panel
+        // opens everywhere; running needs EVAL and degrades inside.
         menu = menu.menu_element_with_icon(
             Icon::new(IconName::SquareTerminal),
             Box::new(ServerToolsAction::LuaScripts),
@@ -738,10 +832,13 @@ impl ZedisStatusBar {
 
         // ── Administration ──
         menu = menu.separator().label(i18n_status_bar(cx, "group_admin"));
-        menu = menu.menu_element_with_icon(
+        // CONFIG GET is the one managed clouds most often take away.
+        let (config_label, config_off) = gated(i18n_status_bar(cx, "toggle_config_tooltip"), ServerView::Config, None);
+        menu = menu.menu_with_icon_and_disabled(
+            config_label,
             Icon::new(IconName::Settings),
             Box::new(ServerToolsAction::Config),
-            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_config_tooltip")),
+            config_off,
         );
         // Local recycle bin (soft-deleted keys) — a dialog, not a sub-route,
         // and always available since the bin lives client-side. The menu
@@ -781,27 +878,29 @@ impl ZedisStatusBar {
         );
         // ACL (Redis 6.0+). Version-gated; suffix points at the required
         // Redis version when unavailable.
-        let acl_label: SharedString = if supports_acl {
-            i18n_status_bar(cx, "toggle_acl_tooltip")
-        } else {
-            format!(
-                "{}  ·  {}",
-                i18n_status_bar(cx, "toggle_acl_tooltip"),
-                i18n_status_bar(cx, "requires_redis_6")
-            )
-            .into()
-        };
+        let (acl_label, acl_off) = gated(
+            i18n_status_bar(cx, "toggle_acl_tooltip"),
+            ServerView::Acl,
+            (!supports_acl).then(|| i18n_status_bar(cx, "requires_redis_6")),
+        );
         menu = menu.menu_with_icon_and_disabled(
             acl_label,
             Icon::new(IconName::CircleUser),
             Box::new(ServerToolsAction::Acl),
-            !supports_acl,
+            acl_off,
         );
-        // Persistence (BGSAVE / BGREWRITEAOF) is pre-2.0 — always offered.
-        menu = menu.menu_element_with_icon(
+        // Persistence reads INFO persistence; BGSAVE / BGREWRITEAOF degrade
+        // inside the panel when denied.
+        let (persistence_label, persistence_off) = gated(
+            i18n_status_bar(cx, "toggle_persistence_tooltip"),
+            ServerView::Persistence,
+            None,
+        );
+        menu = menu.menu_with_icon_and_disabled(
+            persistence_label,
             Icon::new(CustomIconName::HardDrive),
             Box::new(ServerToolsAction::Persistence),
-            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_persistence_tooltip")),
+            persistence_off,
         );
         // FLUSHDB / FLUSHALL (#129). Both route through the same
         // destructive-command confirm a typed `FLUSHALL` hits in the
@@ -816,17 +915,26 @@ impl ZedisStatusBar {
                 ServerToolsAction::FlushAll,
             ),
         ] {
-            let label: SharedString = if readonly {
-                format!(
-                    "{}  ·  {}",
-                    i18n_status_bar(cx, label_key),
-                    i18n_common(cx, "disable_in_readonly")
+            // Read-only wins the wording; otherwise a FLUSHDB the ACL denies
+            // (the usual managed-cloud setup) is disabled with its reason.
+            let flush_block = features.first_unusable(&[crate::connection::ServerCommand::FlushDb]);
+            let (label, disabled): (SharedString, bool) = if readonly {
+                (
+                    format!(
+                        "{}  ·  {}",
+                        i18n_status_bar(cx, label_key),
+                        i18n_common(cx, "disable_in_readonly")
+                    )
+                    .into(),
+                    true,
                 )
-                .into()
+            } else if let Some((command, _)) = flush_block {
+                let suffix = t!("features.menu_suffix", command = command.label(), locale = &locale);
+                (format!("{}  ·  {suffix}", i18n_status_bar(cx, label_key)).into(), true)
             } else {
-                i18n_status_bar(cx, label_key)
+                (i18n_status_bar(cx, label_key), false)
             };
-            menu = menu.menu_with_icon_and_disabled(label, Icon::new(icon), Box::new(action), readonly);
+            menu = menu.menu_with_icon_and_disabled(label, Icon::new(icon), Box::new(action), disabled);
         }
 
         // ── Cluster ── (multi-node only; on Standalone the Topology panel is
@@ -881,6 +989,15 @@ impl ZedisStatusBar {
         let supports_functions = server_state.supports_functions;
         let supports_topology = server_state.supports_topology;
         let readonly = self.readonly;
+        let features = server_state.features.clone();
+        let gates = ToolsMenuGates {
+            supports_search,
+            supports_acl,
+            supports_functions,
+            supports_topology,
+            readonly,
+            features,
+        };
         let status_text = status_text_color(cx.theme().is_dark());
         ZedisDivider::new()
             .child(
@@ -975,15 +1092,7 @@ impl ZedisStatusBar {
                             // Status bar sits at the bottom, so open the menu
                             // upward (its bottom edge anchored to the button).
                             .dropdown_menu_with_anchor(Anchor::BottomLeft, move |this, _, cx| {
-                                Self::render_tools_menu(
-                                    this,
-                                    supports_search,
-                                    supports_acl,
-                                    supports_functions,
-                                    supports_topology,
-                                    readonly,
-                                    cx,
-                                )
+                                Self::render_tools_menu(this, &gates, cx)
                             }),
                     ),
             )
@@ -1078,6 +1187,26 @@ impl ZedisStatusBar {
         };
         // When the link is down the cached latency is stale and misleading
         // (a green "5ms" beside a red dot), so blank it to a muted "--".
+        // Chips whose panel can't work on this server are disabled with the
+        // reason as tooltip (computed up front: the closure borrows `cx`).
+        let features = server_state.features.clone();
+        let block = |view: ServerView| -> Option<SharedString> {
+            features
+                .first_unusable(view.required_commands())
+                .map(|(command, status)| command_status_label(cx, command, status))
+        };
+        let chip_blocks = [
+            (ServerView::Metrics, block(ServerView::Metrics)),
+            (ServerView::MemoryAnalysis, block(ServerView::MemoryAnalysis)),
+            (ServerView::Clients, block(ServerView::Clients)),
+            (ServerView::Slowlog, block(ServerView::Slowlog)),
+        ];
+        let chip_block = |view: ServerView| -> Option<SharedString> {
+            chip_blocks
+                .iter()
+                .find(|(v, _)| *v == view)
+                .and_then(|(_, reason)| reason.clone())
+        };
         let (latency_text, latency_color) = if server_state.health == ConnectionHealth::Offline {
             (SharedString::from("--"), cx.theme().muted_foreground)
         } else {
@@ -1128,6 +1257,7 @@ impl ZedisStatusBar {
                     // Whole chip is clickable (icon + value), with a tooltip that
                     // names both the metric and the destination page.
                     .child(Self::metric_chip(MetricChip {
+                        disabled_reason: chip_block(ServerView::Metrics),
                         id: "zedis-status-bar-server-metrics",
                         icon: CustomIconName::Activity,
                         label: latency_text,
@@ -1141,6 +1271,7 @@ impl ZedisStatusBar {
                         view: ServerView::Metrics,
                     }))
                     .child(Self::metric_chip(MetricChip {
+                        disabled_reason: chip_block(ServerView::MemoryAnalysis),
                         id: "zedis-status-bar-server-memory-analysis",
                         icon: CustomIconName::MemoryStick,
                         label: server_state.used_memory.clone(),
@@ -1154,6 +1285,7 @@ impl ZedisStatusBar {
                         view: ServerView::MemoryAnalysis,
                     }))
                     .child(Self::metric_chip(MetricChip {
+                        disabled_reason: chip_block(ServerView::Clients),
                         id: "zedis-status-bar-clients",
                         icon: CustomIconName::AudioWaveform,
                         label: server_state.clients.clone(),
@@ -1167,6 +1299,7 @@ impl ZedisStatusBar {
                         view: ServerView::Clients,
                     }))
                     .child(Self::metric_chip(MetricChip {
+                        disabled_reason: chip_block(ServerView::Slowlog),
                         id: "zedis-status-bar-server-slow-logs",
                         icon: CustomIconName::Snail,
                         label: server_state.slow_log_tips.clone(),
@@ -1197,7 +1330,12 @@ impl ZedisStatusBar {
             icon_color,
             tooltip,
             view,
+            disabled_reason,
         } = chip;
+        // A disabled `Button` still shows its tooltip, so the reason the
+        // panel is unavailable replaces the destination hint.
+        let disabled = disabled_reason.is_some();
+        let tooltip = disabled_reason.unwrap_or(tooltip);
         Button::new(id)
             .ghost()
             .small()
@@ -1207,6 +1345,7 @@ impl ZedisStatusBar {
             .icon(Icon::new(icon).mr_1().text_color(icon_color))
             .label(label)
             .text_color(label_color)
+            .disabled(disabled)
             .tooltip(tooltip)
             .on_click(move |_, _window, cx| {
                 cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {

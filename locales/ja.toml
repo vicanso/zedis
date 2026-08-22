@@ -249,6 +249,7 @@ diag_hint_auth_rejected = "認証が拒否されました。パスワードと�
 diag_hint_redis = "ポートは接続を受け入れましたが、Redis ハンドシェイクに失敗しました — 本当に Redis のポートですか？サーバーがまだロード中の可能性もあります。"
 
 [editor]
+title = "キーエディター"
 value_too_large = "値が大きすぎるため自動読み込みをスキップしました"
 value_too_large_message = "この値は %{size} で、自動読み込み上限の %{limit} を超えています。読み込むと UI が一時的に固まる可能性があります。"
 load_anyway = "それでも読み込む"
@@ -546,6 +547,7 @@ auto_update_check = "アップデートを自動確認"
 auto_update_check_desc = "起動時に自動的に新しいバージョンを確認する"
 
 [metrics]
+title = "メトリクス"
 memory = "メモリ"
 clients = "クライアント"
 ops = "OPS"
@@ -588,6 +590,7 @@ field_errors_title = "Proto の保存に失敗しました"
 field_errors_message = "以下のフィールドを確認して再試行してください:\n\n%{errors}"
 
 [slowlog_editor]
+title = "パフォーマンス（スローログ + レイテンシ）"
 tab_top_commands = "コマンド集計"
 agg_command = "コマンド"
 agg_count = "回数"
@@ -1751,3 +1754,23 @@ body = "前回のセッションはクラッシュで終了しました。エラ
 report_saved = "レポート: %{path}"
 open_logs = "ログフォルダーを開く"
 dismiss = "閉じる"
+
+[features]
+dialog_title = "サーバーの機能"
+dialog_intro = "接続後に検出: このサーバーが現在のユーザーに提供しているコマンド。利用できないコマンドに依存するパネルや操作は、失敗する代わりに無効化または縮小されます。"
+flavor = "サーバー"
+not_probed = "まだ検出していません"
+reprobe = "再検出"
+status_available = "利用可能"
+status_missing = "このサーバーでは未対応"
+status_denied = "このユーザーには権限がありません（NOPERM）"
+status_unknown = "未検出"
+panel_unavailable_title = "%{panel} はこのサーバーでは利用できません"
+panel_unavailable_body = "%{command} が必要ですが、このコマンドは%{reason}です。"
+hint_missing = "プロキシ（Twemproxy / Codis / Envoy）や一部の Redis 互換サーバーはすべてのコマンドを実装しておらず、マネージドクラウドは管理系コマンドをリネームまたは無効化しています。"
+hint_denied = "接続中の ACL ユーザーに権限がありません。管理者に付与を依頼するか、別のユーザーで接続してください。"
+command_unavailable = "%{command} はこのサーバーでは利用できません: %{reason}"
+section_unavailable = "%{command} は利用不可 — %{reason}"
+menu_suffix = "%{command} 利用不可"
+key_tree_no_scan_title = "このサーバーは SCAN に対応していません"
+key_tree_no_scan_body = "ここではキーツリーでキーを一覧できません。上の検索ボックスに正確なキー名を入力して Enter を押すと開けます — 最近開いたキー（%{shortcut}）は引き続き使えます。"

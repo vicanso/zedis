@@ -31,6 +31,10 @@ pub enum ServerTask {
     /// Connect to and load metadata from a server
     SelectServer,
 
+    /// Background probe of which commands the server offers this user
+    /// (`ServerFeatures`); runs once per server after connect.
+    ProbeFeatures,
+
     /// Fill in key types for unknown keys
     FillKeyTypes,
 
@@ -155,6 +159,7 @@ impl ServerTask {
             ServerTask::RefreshRedisInfo => "refresh_redis_info",
             ServerTask::AutoRefresh => "auto_refresh",
             ServerTask::SelectServer => "select_server",
+            ServerTask::ProbeFeatures => "probe_features",
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",
             ServerTask::DeleteKey => "delete_key",
@@ -246,6 +251,10 @@ pub enum ServerEvent {
     ServerSelected(SharedString),
     /// Server metadata (info/dbsize) has been refreshed.
     ServerInfoUpdated,
+    /// The per-command feature matrix changed — the background probe
+    /// finished, or a runtime `NOPERM` / `unknown command` reply taught us
+    /// something. Panels re-evaluate what they can offer.
+    FeaturesProbed,
     /// Periodic redis info updated.
     ServerRedisInfoUpdated,
     /// Live-connection health (online / reconnecting / offline) changed,

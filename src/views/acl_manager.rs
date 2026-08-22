@@ -18,6 +18,7 @@
 //! / commands / patterns, and lets the operator add/edit/delete them via a
 //! plain rules editor that round-trips as `ACL SETUSER`.
 
+use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
@@ -326,6 +327,10 @@ impl gpui::Render for ZedisAclManager {
                                 })),
                         )
                     })
+                    .when_some(
+                        self.server_state.read(cx).blocked_by(Capability::AclWrite),
+                        |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                    )
                     .child(
                         Button::new("acl-refresh")
                             .outline()

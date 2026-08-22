@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::views::config_doc::ConfigDocMap;
+use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{Capability, DangerKind, get_connection_manager, get_server, get_servers},
@@ -1027,6 +1028,12 @@ impl Render for ZedisConfigEditor {
                                 ),
                         )
                     })
+                    // CONFIG SET missing / denied on this server: say so up
+                    // front instead of silently hiding every pencil.
+                    .when_some(
+                        self.server_state.read(cx).blocked_by(Capability::ConfigWrite),
+                        |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                    )
                     .child(div().flex_1())
                     .child(
                         Button::new("config-reload")

@@ -21,8 +21,8 @@ use crate::states::{
 use crate::views::{
     DialogCallback, ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette,
     ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar, ZedisUpdateDialog, confirm_dangerous_command,
-    open_about_window, open_migration_export_window, open_migration_import_window, open_settings_window,
-    open_trash_dialog,
+    open_about_window, open_features_dialog, open_migration_export_window, open_migration_import_window,
+    open_settings_window, open_trash_dialog,
 };
 use gpui::{
     Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
@@ -1562,6 +1562,12 @@ impl Render for Zedis {
                     // active underneath.
                     ServerToolsAction::Trash => {
                         open_trash_dialog(window, cx);
+                        return;
+                    }
+                    // The probed command matrix of the active tab's connection.
+                    ServerToolsAction::Capabilities => {
+                        let server_state = _this.active_content().read(cx).server_state();
+                        open_features_dialog(server_state, window, cx);
                         return;
                     }
                     // Dump import into the active server / db (not a

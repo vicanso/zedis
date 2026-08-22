@@ -617,7 +617,9 @@ impl ZedisMonitor {
                     let kind = e.connection_kind();
                     let _ = entity.update(cx, |this: &mut ZedisMonitor, cx| {
                         this.monitoring = false;
-                        this.notify_monitor_failed(kind, cx);
+                        if !this.note_feature_error(&e, cx) {
+                            this.notify_monitor_failed(kind, cx);
+                        }
                         cx.notify();
                     });
                     return;
@@ -632,6 +634,7 @@ impl ZedisMonitor {
             // standalone that meant MONITOR appeared to do nothing at all.
             let mut bg_tasks = Vec::new();
             let mut fail_kind: Option<ConnectionErrorKind> = None;
+            let mut fail_error: Option<Error> = None;
             for server in servers {
                 let node_label = format!("{}:{}", server.host, server.port);
                 let monitor = match open_monitor_connection(&server).await {
@@ -639,6 +642,7 @@ impl ZedisMonitor {
                     Err(e) => {
                         error!(error = %e, node = %node_label, "failed to start MONITOR");
                         fail_kind.get_or_insert(e.connection_kind());
+                        fail_error.get_or_insert(Error::Connection { source: e });
                         continue;
                     }
                 };
@@ -662,7 +666,14 @@ impl ZedisMonitor {
             if let Some(kind) = fail_kind {
                 let any_started = !bg_tasks.is_empty();
                 let _ = entity.update(cx, |this: &mut ZedisMonitor, cx| {
-                    this.notify_monitor_failed(kind, cx);
+                    // MONITOR renamed away or ACL-denied: the feature matrix
+                    // takes it from here (one notice, then the placeholder).
+                    let explained = fail_error
+                        .as_ref()
+                        .is_some_and(|error| this.note_feature_error(error, cx));
+                    if !explained {
+                        this.notify_monitor_failed(kind, cx);
+                    }
                     if !any_started {
                         this.monitoring = false;
                     }
@@ -756,6 +767,14 @@ impl ZedisMonitor {
             self.rate_ticks.clear();
         }
         cx.notify();
+    }
+
+    /// Hands a start failure to the server's feature matrix; `true` when it
+    /// was a NOPERM / unknown-command reply the matrix now explains (so no
+    /// raw toast is needed).
+    fn note_feature_error(&self, error: &Error, cx: &mut Context<Self>) -> bool {
+        self.server_state
+            .update(cx, |state, cx| state.note_command_error(error, cx))
     }
 
     /// Toast that MONITOR couldn't start on one or more nodes, naming the

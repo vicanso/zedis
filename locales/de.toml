@@ -249,6 +249,7 @@ diag_hint_auth_rejected = "Authentifizierung abgelehnt. Prüfen Sie Passwort und
 diag_hint_redis = "Der Port hat die Verbindung akzeptiert, aber der Redis-Handshake schlug fehl — ist das wirklich ein Redis-Port? Der Server könnte auch noch laden."
 
 [editor]
+title = "Schlüssel-Editor"
 value_too_large = "Wert zu groß zum automatischen Laden"
 value_too_large_message = "Dieser Wert ist %{size} groß und überschreitet die Obergrenze von %{limit} für automatisches Laden. Das Laden kann die Oberfläche kurz einfrieren."
 load_anyway = "Trotzdem laden"
@@ -546,6 +547,7 @@ auto_update_check = "Automatisch nach Updates suchen"
 auto_update_check_desc = "Beim Start automatisch nach neuen Versionen suchen"
 
 [metrics]
+title = "Metriken"
 memory = "Speicher"
 clients = "Clients"
 ops = "OPS"
@@ -588,6 +590,7 @@ field_errors_title = "Proto speichern fehlgeschlagen"
 field_errors_message = "Bitte überprüfen Sie die folgenden Felder und versuchen Sie es erneut:\n\n%{errors}"
 
 [slowlog_editor]
+title = "Leistung (Slow Log + Latenz)"
 tab_top_commands = "Top-Befehle"
 agg_command = "Befehl"
 agg_count = "Anzahl"
@@ -1751,3 +1754,23 @@ body = "Die letzte Sitzung endete mit einem Absturz. Ein Bericht mit dem Fehler 
 report_saved = "Bericht: %{path}"
 open_logs = "Protokollordner öffnen"
 dismiss = "Schließen"
+
+[features]
+dialog_title = "Server-Fähigkeiten"
+dialog_intro = "Nach dem Verbinden ermittelt: welche Befehle dieser Server dem aktuellen Benutzer anbietet. Panels und Aktionen, die von einem nicht verfügbaren Befehl abhängen, werden deaktiviert oder reduziert statt fehlzuschlagen."
+flavor = "Server"
+not_probed = "Noch nicht ermittelt"
+reprobe = "Erneut ermitteln"
+status_available = "verfügbar"
+status_missing = "von diesem Server nicht unterstützt"
+status_denied = "für diesen Benutzer verweigert (NOPERM)"
+status_unknown = "nicht ermittelt"
+panel_unavailable_title = "%{panel} ist auf diesem Server nicht verfügbar"
+panel_unavailable_body = "Es benötigt %{command}, und dieser Befehl ist %{reason}."
+hint_missing = "Proxys (Twemproxy / Codis / Envoy) und manche Redis-kompatible Server implementieren nicht jeden Befehl; verwaltete Cloud-Dienste benennen administrative Befehle um oder deaktivieren sie."
+hint_denied = "Dem verbundenen ACL-Benutzer fehlt die Berechtigung. Bitte einen Administrator darum, sie zu erteilen, oder verbinde dich als anderer Benutzer."
+command_unavailable = "%{command} ist auf diesem Server nicht verfügbar: %{reason}"
+section_unavailable = "%{command} nicht verfügbar — %{reason}"
+menu_suffix = "%{command} nicht verfügbar"
+key_tree_no_scan_title = "Dieser Server unterstützt SCAN nicht"
+key_tree_no_scan_body = "Der Schlüsselbaum kann hier keine Schlüssel auflisten. Gib den genauen Schlüsselnamen oben im Suchfeld ein und drücke Enter, um ihn zu öffnen — zuletzt geöffnete Schlüssel (%{shortcut}) funktionieren weiterhin."

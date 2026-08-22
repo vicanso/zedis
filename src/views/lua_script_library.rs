@@ -21,6 +21,7 @@
 //! spot scripts that keep getting flushed out of Redis's cache.
 //! Server cache status is probed via `SCRIPT EXISTS` / `SCRIPT LOAD`.
 
+use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
@@ -903,6 +904,11 @@ impl ZedisLuaScriptLibrary {
                             }),
                     )
                     .child(Icon::new(IconName::SquareTerminal))
+                    // The library itself is local; only running needs EVAL.
+                    .when_some(
+                        self.server_state.read(cx).blocked_by(Capability::EvalScript),
+                        |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                    )
                     .child(Label::new(i18n_lua_scripts(cx, "title")).text_color(cx.theme().foreground))
                     .child(Label::new(count_label).text_color(muted).text_sm()),
             )

@@ -249,6 +249,7 @@ diag_hint_auth_rejected = "Autenticação rejeitada. Verifique a senha e o usuá
 diag_hint_redis = "A porta aceitou a conexão, mas o handshake do Redis falhou — é realmente uma porta Redis? O servidor também pode estar carregando dados."
 
 [editor]
+title = "Editor de chaves"
 value_too_large = "Valor grande demais para carregamento automático"
 value_too_large_message = "Este valor tem %{size}, acima do limite de carregamento automático de %{limit}. Carregá-lo pode travar a interface por instantes."
 load_anyway = "Carregar mesmo assim"
@@ -546,6 +547,7 @@ auto_update_check = "Verificar atualizações automaticamente"
 auto_update_check_desc = "Verificar automaticamente novas versões ao iniciar"
 
 [metrics]
+title = "Métricas"
 memory = "Memória"
 clients = "Clientes"
 ops = "OPS"
@@ -588,6 +590,7 @@ field_errors_title = "Falha ao salvar Proto"
 field_errors_message = "Verifique os seguintes campos e tente novamente:\n\n%{errors}"
 
 [slowlog_editor]
+title = "Desempenho (Slow Log + Latência)"
 tab_top_commands = "Comandos principais"
 agg_command = "Comando"
 agg_count = "Contagem"
@@ -1751,3 +1754,23 @@ body = "A sessão anterior terminou com uma falha. Um relatório com o erro e o 
 report_saved = "Relatório: %{path}"
 open_logs = "Abrir pasta de logs"
 dismiss = "Fechar"
+
+[features]
+dialog_title = "Capacidades do servidor"
+dialog_intro = "Sondado após conectar: quais comandos este servidor oferece ao usuário atual. Painéis e ações que dependem de um comando indisponível são desativados ou reduzidos em vez de falhar."
+flavor = "Servidor"
+not_probed = "Ainda não sondado"
+reprobe = "Sondar novamente"
+status_available = "disponível"
+status_missing = "não suportado por este servidor"
+status_denied = "negado para este usuário (NOPERM)"
+status_unknown = "não sondado"
+panel_unavailable_title = "%{panel} não está disponível neste servidor"
+panel_unavailable_body = "Ele precisa de %{command}, que está %{reason}."
+hint_missing = "Proxies (Twemproxy / Codis / Envoy) e alguns servidores compatíveis com Redis não implementam todos os comandos, e nuvens gerenciadas renomeiam ou desativam os administrativos."
+hint_denied = "O usuário ACL conectado não tem permissão. Peça a um administrador para concedê-la ou conecte-se com outro usuário."
+command_unavailable = "%{command} não está disponível neste servidor: %{reason}"
+section_unavailable = "%{command} indisponível — %{reason}"
+menu_suffix = "%{command} indisponível"
+key_tree_no_scan_title = "Este servidor não suporta SCAN"
+key_tree_no_scan_body = "A árvore de chaves não consegue listar chaves aqui. Digite o nome exato de uma chave na caixa de busca acima e pressione Enter para abri-la — as chaves recentes (%{shortcut}) continuam funcionando."

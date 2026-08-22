@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ZedisGlobalStore;
+use super::{ServerView, ZedisGlobalStore};
+use crate::connection::{CommandStatus, ServerCommand};
 use crate::helpers::humanize_keystroke;
 use gpui::App;
 use gpui::SharedString;
@@ -269,6 +270,57 @@ pub fn i18n_geo_map<'a>(cx: &'a App, key: &'a str) -> SharedString {
 pub fn i18n_lua_scripts<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("lua_scripts.{key}"), locale = locale).into()
+}
+
+pub fn i18n_features<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("features.{key}"), locale = locale).into()
+}
+
+/// Localized name of a server panel — every panel section carries a `title`
+/// key, so the placeholder page, the capability dialog and the status-bar
+/// chips can all name a panel the same way.
+pub fn server_view_title(cx: &App, view: ServerView) -> SharedString {
+    match view {
+        ServerView::Editor => i18n_editor(cx, "title"),
+        ServerView::Metrics => i18n_metrics(cx, "title"),
+        ServerView::Slowlog => i18n_slowlog_editor(cx, "title"),
+        ServerView::MemoryAnalysis => i18n_memory_analysis(cx, "title"),
+        ServerView::Clients => i18n_clients_manager(cx, "title"),
+        ServerView::Monitor => i18n_monitor(cx, "title"),
+        ServerView::Config => i18n_config_editor(cx, "title"),
+        ServerView::Acl => i18n_acl(cx, "title"),
+        ServerView::Search => i18n_search(cx, "title"),
+        ServerView::Functions => i18n_functions(cx, "title"),
+        ServerView::LuaScripts => i18n_lua_scripts(cx, "title"),
+        ServerView::Persistence => i18n_persistence(cx, "title"),
+        ServerView::KeyspaceNotifications => i18n_keyspace_notifications(cx, "title"),
+        ServerView::Topology => i18n_topology(cx, "title"),
+        ServerView::ServerLoad => i18n_server_load(cx, "title"),
+        ServerView::ValueSearch => i18n_value_search(cx, "title"),
+        ServerView::ServerInfo => i18n_server_info(cx, "title"),
+    }
+}
+
+/// Localized reason a command is unusable: "CONFIG GET — denied for this
+/// user (NOPERM)".
+pub fn command_status_label(cx: &App, command: ServerCommand, status: CommandStatus) -> SharedString {
+    format!("{} — {}", command.label(), i18n_features(cx, status.i18n_key())).into()
+}
+
+/// "CONFIG GET is unavailable on this server: denied for this user (NOPERM)"
+/// — the one-time notice when a command first fails as unsupported/denied.
+pub fn command_unavailable_message(cx: &App, command: ServerCommand, status: CommandStatus) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    let reason = t!(format!("features.{}", status.i18n_key()), locale = locale).to_string();
+    t!(
+        "features.command_unavailable",
+        command = command.label(),
+        reason = reason,
+        locale = locale
+    )
+    .to_string()
+    .into()
 }
 
 pub fn i18n_crash<'a>(cx: &'a App, key: &'a str) -> SharedString {

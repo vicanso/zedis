@@ -29,6 +29,7 @@ use crate::states::{
     ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_server_load,
 };
+use crate::views::unavailable_chip;
 use gpui::{App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -566,6 +567,12 @@ impl ZedisServerLoad {
                         .on_click(cx.listener(|this, _, w, cx| this.confirm_resetstat(w, cx))),
                 )
             })
+            // CONFIG RESETSTAT goes with CONFIG SET: when the server denies
+            // configuration writes, name the reason where the button was.
+            .when_some(
+                self.server_state.read(cx).blocked_by(Capability::ConfigWrite),
+                |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+            )
             .child(
                 Button::new("sl-refresh")
                     .outline()

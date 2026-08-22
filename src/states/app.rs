@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::ServerCommand;
 use crate::connection::{
     RedisServer, get_server, get_servers, save_servers, set_redis_connection_timeout, set_redis_response_timeout,
 };
@@ -146,6 +147,33 @@ impl ServerView {
             ServerView::ServerInfo => "serverinfo",
         }
     }
+    /// The probed commands this panel cannot function without — when one is
+    /// missing or denied on the server, the route renders a placeholder
+    /// instead of the panel. Panels that still have something to offer
+    /// without the server (the memory analyzer's offline RDB mode, the local
+    /// Lua library) or that are gated elsewhere (Search by module, Topology
+    /// by server type) list nothing here and degrade section by section.
+    pub const fn required_commands(self) -> &'static [ServerCommand] {
+        match self {
+            ServerView::Metrics | ServerView::Persistence | ServerView::ServerLoad | ServerView::ServerInfo => {
+                &[ServerCommand::Info]
+            }
+            ServerView::Slowlog => &[ServerCommand::SlowlogGet],
+            ServerView::Clients => &[ServerCommand::ClientList],
+            ServerView::Monitor => &[ServerCommand::Monitor],
+            ServerView::Config => &[ServerCommand::ConfigGet],
+            ServerView::Acl => &[ServerCommand::AclList],
+            ServerView::Functions => &[ServerCommand::FunctionList],
+            ServerView::KeyspaceNotifications => &[ServerCommand::Subscribe],
+            ServerView::ValueSearch => &[ServerCommand::Scan],
+            ServerView::Editor
+            | ServerView::MemoryAnalysis
+            | ServerView::Search
+            | ServerView::LuaScripts
+            | ServerView::Topology => &[],
+        }
+    }
+
     /// Parse a connection-scoped view name (expects an already-lowercased str).
     pub fn from_name(s: &str) -> Option<ServerView> {
         Some(match s {
@@ -267,6 +295,8 @@ pub enum ServerToolsAction {
     FlushDb,
     /// `FLUSHALL` on the active connection — every database on the instance.
     FlushAll,
+    /// The probed command matrix for the active connection (a dialog).
+    Capabilities,
 }
 
 const LIGHT_THEME_MODE: &str = "light";

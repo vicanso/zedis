@@ -19,6 +19,7 @@
 //! `FCALL_RO`. New library and Edit share the same Lua editor; the
 //! only difference is pre-fill and whether `REPLACE` defaults on.
 
+use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
@@ -771,6 +772,10 @@ impl ZedisFunctionEditor {
                 h_flex()
                     .items_center()
                     .gap_2()
+                    .when_some(
+                        self.server_state.read(cx).blocked_by(Capability::FunctionWrite),
+                        |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+                    )
                     .when(can_write && !self.unsupported, |this| {
                         this.child(
                             Button::new("functions-dump")

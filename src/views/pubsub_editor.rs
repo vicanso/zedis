@@ -18,10 +18,12 @@
 /// and publishing messages. Received messages are displayed in a scrollable table
 /// with timestamp, channel, and message columns.
 use crate::assets::CustomIconName;
+use crate::connection::ServerCommand;
 use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
+use crate::views::unavailable_chip;
 use chrono::Local;
 use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
@@ -281,6 +283,9 @@ pub struct ZedisPubsubEditor {
 
     /// Holds the long-running subscription loop; `None` when not subscribed.
     subscribe_task: Option<Task<()>>,
+    /// Why the last subscribe failed, shown under the bar — a server that
+    /// rejects SUBSCRIBE must not look like an idle, empty stream.
+    subscribe_error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -348,6 +353,7 @@ impl ZedisPubsubEditor {
             subscribing: false,
             sharded: false,
             subscribe_task: None,
+            subscribe_error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -475,6 +481,13 @@ impl ZedisPubsubEditor {
                     error!("Pubsub subscribe error: {:?}", e);
                     let _ = entity.update(cx, |this, cx| {
                         this.subscribing = false;
+                        // A NOPERM / unknown-command reply degrades the feature
+                        // matrix (and explains itself once); anything else is
+                        // shown inline instead of vanishing into the log.
+                        let explained = this
+                            .server_state
+                            .update(cx, |state, cx| state.note_command_error(&e, cx));
+                        this.subscribe_error = (!explained).then(|| SharedString::from(e.to_string()));
                         cx.notify();
                     });
                 }
@@ -615,6 +628,27 @@ impl Render for ZedisPubsubEditor {
             .font_family(get_mono_font_family())
             .overflow_hidden()
             .child(self.render_subscribe_bar(window, cx))
+            // SUBSCRIBE missing / denied on this server (proxies that don't
+            // forward subscriptions, restricted ACL users).
+            .when_some(
+                self.server_state.read(cx).command_block(ServerCommand::Subscribe),
+                |this, status| {
+                    this.child(
+                        h_flex()
+                            .px_3()
+                            .py_1()
+                            .child(unavailable_chip(cx, ServerCommand::Subscribe, status)),
+                    )
+                },
+            )
+            .when_some(self.subscribe_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .child(Label::new(error).text_xs().text_color(cx.theme().danger)),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -639,6 +673,13 @@ impl Render for ZedisPubsubEditor {
             .when(self.server_state.read(cx).can(Capability::PublishMessage), |this| {
                 this.child(self.render_publish_bar(cx))
             })
+            // PUBLISH the server forbids: name the reason where the bar was.
+            .when_some(
+                self.server_state.read(cx).blocked_by(Capability::PublishMessage),
+                |this, (command, status)| {
+                    this.child(h_flex().px_3().py_2().child(unavailable_chip(cx, command, status)))
+                },
+            )
             .into_any_element()
     }
 }
