@@ -24,7 +24,9 @@ use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, im
 use gpui::{div, hsla, prelude::*};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::highlighter::Language;
-use gpui_component::input::{CompletionProvider, Enter, Input, InputEvent, InputState, TabSize};
+use gpui_component::input::{
+    CompletionProvider, Editor, EditorMode, EditorState, Enter, InputEvent, InputModeKind, RopeExt, TabSize,
+};
 use gpui_component::label::Label;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{ActiveTheme, IconName, IndexPath, Sizable, h_flex, v_flex};
@@ -45,6 +47,12 @@ const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
 const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
 const VIEWPORT_WIDE: f32 = 1400.0; // Pixel width to switch hex display width
 const VIEWPORT_MEDIUM: f32 = 1000.0; // Pixel width to switch hex display width
+// JSONPath result box: rows to size it to before it starts scrolling.
+const JSONPATH_RESULT_MIN_ROWS: usize = 2;
+const JSONPATH_RESULT_MAX_ROWS: usize = 13;
+// Fallback row height used until the editor has laid out once and can report
+// its own: the theme's 13px mono font at the editor's 1.5 line height.
+const DEFAULT_EDITOR_ROW_HEIGHT: f32 = 20.0;
 
 /// String value editor component for Redis String data type
 ///
@@ -66,7 +74,7 @@ pub struct ZedisBytesEditor {
     hex_viewer_state: Option<Entity<ListState<HexViewerListDelegate>>>,
 
     /// Code editor state with input handling
-    editor: Entity<InputState>,
+    editor: Entity<EditorState>,
 
     /// Whether to soft wrap the editor
     soft_wrap: bool,
@@ -84,7 +92,7 @@ pub struct ZedisBytesEditor {
     data: ByteEditorData,
 
     /// JSONPath query input (only relevant when `is_json_value` is true).
-    jsonpath_input: Entity<InputState>,
+    jsonpath_input: Entity<EditorState>,
 
     /// Lazily-parsed JSON document shared with the JSONPath completion
     /// provider. Fed (raw text only) by `update_editor_data`; the DOM
@@ -103,7 +111,7 @@ pub struct ZedisBytesEditor {
     /// Read-only JSON viewer for the JSONPath result. Reused across queries
     /// so syntax highlighting / scroll position / search work like the main
     /// editor. Hidden until a query produces a non-trivial value.
-    jsonpath_result_editor: Entity<InputState>,
+    jsonpath_result_editor: Entity<EditorState>,
 
     /// True when the current value is detected as parseable JSON. Controls
     /// whether the JSONPath query bar is rendered above the editor.
@@ -317,8 +325,8 @@ impl ZedisBytesEditor {
         // Configure code editor with JSON syntax highlighting
         let default_language = Language::from_str(DEFAULT_LANGUAGE);
         let editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(default_language.name())
+            EditorState::new(window, cx)
+                .language(default_language.name())
                 .line_number(true)
                 .indent_guides(true)
                 .tab_size(TabSize {
@@ -354,17 +362,28 @@ impl ZedisBytesEditor {
         let readonly = server_state.read(cx).readonly();
         info!("Creating new string editor view");
 
-        // JSONPath query bar — single-line input that re-evaluates on Enter.
-        // We keep it as a separate InputState so it doesn't compete with the
-        // main editor's focus or undo stack.
+        // JSONPath query bar — a one-line field that re-evaluates on Enter.
+        // It is an `EditorState` rather than an `InputState` only because
+        // completion lives on the editor engine: gpui-component moved the LSP
+        // (and with it `CompletionProvider`) into the editor's extras, so a
+        // single-line `Input` can no longer offer suggestions. Everything
+        // below files the editor back down to a query bar — one row, no
+        // gutter, no find panel, Enter submits instead of inserting a newline.
+        // It stays a separate state from the main editor so it doesn't compete
+        // for focus or share an undo stack.
         let jsonpath_doc: Rc<RefCell<JsonDoc>> = Rc::new(RefCell::new(JsonDoc::default()));
         // `clean_on_escape`: when the completion menu is closed, Esc
-        // clears the query input. If the menu is open, `InputState`'s
+        // clears the query input. If the menu is open, the editor's own
         // escape handler closes the menu first and returns, so Esc
         // dismisses the menu before it ever clears the text.
         let jsonpath_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            EditorState::new(window, cx)
                 .placeholder(i18n_editor(cx, "jsonpath_placeholder"))
+                .line_number(false)
+                .indent_guides(false)
+                .searchable(false)
+                .soft_wrap(false)
+                .submit_on_enter(true)
                 .clean_on_escape()
         });
         {
@@ -372,7 +391,7 @@ impl ZedisBytesEditor {
             // lazily-parsed document with the editor via `jsonpath_doc`.
             let provider: Rc<dyn CompletionProvider> = Rc::new(JsonPathCompletionProvider::new(jsonpath_doc.clone()));
             jsonpath_input.update(cx, |state, _| {
-                state.lsp.completion_provider = Some(provider);
+                state.lsp_mut().completion_provider = Some(provider);
             });
         }
         subscriptions.push(cx.subscribe_in(&jsonpath_input, window, |this, _, event, window, cx| {
@@ -384,15 +403,15 @@ impl ZedisBytesEditor {
         // Read-only JSON editor for displaying query results. Lazily filled
         // by `run_jsonpath_query`. Same code-editor configuration as the main
         // editor so the result is syntax-highlighted, scrollable, and searchable.
-        // `auto_grow(2, 13)` lets the editor size to its content up to ~220px,
-        // then internal scrolling takes over — short results don't waste space.
+        // Sizing to the content up to ~220px, then scrolling internally, is
+        // measured in `render_jsonpath_result`: `auto_grow` belongs to the
+        // textarea engine and a code editor has no equivalent.
         let jsonpath_result_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(default_language.name())
+            EditorState::new(window, cx)
+                .language(default_language.name())
                 .line_number(true)
                 .searchable(true)
                 .soft_wrap(true)
-                .auto_grow(2, 13)
         });
 
         let mut this = Self {
@@ -612,7 +631,7 @@ impl Render for ZedisBytesEditor {
                         this.set_value(value, window, cx);
                     });
                 }
-                let editor = Input::new(&self.editor)
+                let editor = Editor::new(&self.editor)
                     .flex_1()
                     .bordered(false)
                     // Deliberately NOT `.disabled(self.readonly)`: disabled
@@ -622,8 +641,7 @@ impl Render for ZedisBytesEditor {
                     .appearance(false)
                     .p_0()
                     .w_full()
-                    .font_family(get_mono_font_family())
-                    .focus_bordered(false);
+                    .font_family(get_mono_font_family());
                 if !self.is_json_value {
                     return editor.h_full().into_any_element();
                 }
@@ -671,7 +689,10 @@ impl ZedisBytesEditor {
             .key_context("JsonPathBar")
             .on_action(cx.listener(|this, _: &JsonPathAction, window, cx| {
                 let accepted = this.jsonpath_input.update(cx, |state, cx| {
-                    state.handle_action_for_context_menu(
+                    // The engine's own handler is crate-private; the mode
+                    // trait is the public door to it.
+                    EditorMode::handle_context_menu_action(
+                        state,
                         Box::new(Enter {
                             secondary: false,
                             shift: false,
@@ -701,9 +722,12 @@ impl ZedisBytesEditor {
                     })),
             )
             .child(
-                Input::new(&self.jsonpath_input)
-                    .small()
+                // `Editor` isn't `Sizable`; the height and type scale that
+                // `small()` used to set are spelled out instead.
+                Editor::new(&self.jsonpath_input)
+                    .h(px(28.))
                     .flex_1()
+                    .text_sm()
                     .font_family(get_mono_font_family()),
             )
             .child(
@@ -755,17 +779,30 @@ impl ZedisBytesEditor {
             .border_color(cx.theme().border);
 
         match outcome {
-            JsonPathOutcome::Single(_) | JsonPathOutcome::Multiple(_) => container
-                .child(
-                    Input::new(&self.jsonpath_result_editor)
-                        .bordered(false)
-                        .appearance(false)
-                        .focus_bordered(false)
-                        .p_0()
-                        .w_full()
-                        .font_family(get_mono_font_family()),
-                )
-                .into_any_element(),
+            JsonPathOutcome::Single(_) | JsonPathOutcome::Multiple(_) => {
+                // What `auto_grow(2, 13)` used to do for this box: size to the
+                // result, floor at two rows so a one-line match still reads as
+                // a panel, cap at thirteen and let the editor scroll past it.
+                // The row height is the editor's own once it has laid out, so
+                // the box follows the theme's mono font size.
+                let state = self.jsonpath_result_editor.read(cx);
+                let rows = state
+                    .text()
+                    .lines_len()
+                    .clamp(JSONPATH_RESULT_MIN_ROWS, JSONPATH_RESULT_MAX_ROWS);
+                let row_height = state.line_height().unwrap_or(px(DEFAULT_EDITOR_ROW_HEIGHT));
+                container
+                    .child(
+                        Editor::new(&self.jsonpath_result_editor)
+                            .h(row_height * rows as f32)
+                            .bordered(false)
+                            .appearance(false)
+                            .p_0()
+                            .w_full()
+                            .font_family(get_mono_font_family()),
+                    )
+                    .into_any_element()
+            }
             other => {
                 let (text, color) = match other {
                     JsonPathOutcome::NotJson => (i18n_editor(cx, "jsonpath_not_json"), cx.theme().red),

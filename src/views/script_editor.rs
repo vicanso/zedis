@@ -29,7 +29,7 @@ use gpui_component::{ActiveTheme, IconName, Sizable, h_flex};
 use gpui_component::{
     alert::Alert,
     form::{field, v_form},
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectEvent, SelectItem, SelectState},
     text::TextView,
     v_flex,
@@ -221,7 +221,7 @@ fn decode_templates() -> [(&'static str, &'static str); 9] {
 pub struct ZedisScriptEditor {
     server_select_state: Entity<SelectState<Vec<KeyValueOption>>>,
     name_state: Entity<InputState>,
-    shell_command_state: Entity<InputState>,
+    shell_command_state: Entity<TextareaState>,
     match_pattern_state: Entity<InputState>,
     match_mode_select_state: Entity<usize>,
     field_errors: Entity<HashMap<String, SharedString>>,
@@ -283,7 +283,7 @@ impl ZedisScriptEditor {
                 .placeholder(i18n_script_editor(cx, "name_placeholder"))
         });
         let shell_command_state = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_script_editor(cx, "shell_command_placeholder"))
                 .auto_grow(2, 6)
@@ -316,22 +316,30 @@ impl ZedisScriptEditor {
             }
         }));
 
-        for item in [
-            name_state.clone(),
-            shell_command_state.clone(),
-            match_pattern_state.clone(),
-        ] {
-            subscriptions.push(cx.subscribe_in(&item, window, move |view, state, event, _window, cx| {
-                if let InputEvent::Blur = event {
-                    let id = state.entity_id().to_string();
-                    if view.field_errors.read(cx).get(&id).is_some() {
-                        view.field_errors.update(cx, |s, _| {
-                            s.remove(&id);
-                        });
-                    }
-                }
-            }));
+        // Clear a field's error once the user leaves it. The shell command is
+        // a `TextareaState` and the other two are `InputState`s — three
+        // different types since gpui-component split the input engines — so
+        // the shared body goes through a macro instead of a loop over an
+        // array.
+        macro_rules! clear_error_on_blur {
+            ($state:expr) => {
+                subscriptions.push(
+                    cx.subscribe_in(&$state, window, move |view, state, event, _window, cx| {
+                        if let InputEvent::Blur = event {
+                            let id = state.entity_id().to_string();
+                            if view.field_errors.read(cx).get(&id).is_some() {
+                                view.field_errors.update(cx, |s, _| {
+                                    s.remove(&id);
+                                });
+                            }
+                        }
+                    }),
+                );
+            };
         }
+        clear_error_on_blur!(name_state);
+        clear_error_on_blur!(shell_command_state);
+        clear_error_on_blur!(match_pattern_state);
 
         let items = Arc::new(items);
         let table_state = Self::create_table_state(items.clone(), servers_for_delegate.clone(), window, cx);
@@ -572,7 +580,7 @@ impl ZedisScriptEditor {
                                     .w_full()
                                     .gap_2()
                                     .child(
-                                        Input::new(&self.shell_command_state)
+                                        Textarea::new(&self.shell_command_state)
                                             .w_full()
                                             // Shell command text reads like code — mono.
                                             .font_family(get_mono_font_family()),

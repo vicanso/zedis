@@ -21,7 +21,10 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::form::{field, v_form};
 use gpui_component::highlighter::Language;
-use gpui_component::input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, Position, StepAction};
+use gpui_component::input::{
+    Editor, EditorState, Input, InputEvent, InputState, NumberInput, NumberInputEvent, Position, StepAction, Textarea,
+    TextareaState,
+};
 use gpui_component::label::Label;
 use gpui_component::radio::RadioGroup;
 use gpui_component::scroll::ScrollableElement;
@@ -111,10 +114,56 @@ pub struct ZedisFormField {
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
+///
+/// The three text kinds are separate types, not one `InputState` with a mode:
+/// gpui-component splits the single-line, multi-line and code-editing engines
+/// into `InputState` / `TextareaState` / `EditorState`, each rendered by its
+/// own element. The form treats all of them as "a field with a value", so the
+/// fan-out lives in [`ZedisFormFieldState::value`] and
+/// [`ZedisFormFieldState::set_value`] rather than at every call site.
 enum ZedisFormFieldState {
     Input(Entity<InputState>),
+    Textarea(Entity<TextareaState>),
+    Editor(Entity<EditorState>),
     RadioGroup(Entity<usize>),
     Checkbox(Entity<bool>),
+}
+
+impl ZedisFormFieldState {
+    /// The field's current value as a string, whatever widget backs it.
+    fn value(&self, cx: &App) -> SharedString {
+        match self {
+            Self::Input(state) => state.read(cx).value(),
+            Self::Textarea(state) => state.read(cx).value(),
+            Self::Editor(state) => state.read(cx).value(),
+            Self::RadioGroup(state) => state.read(cx).to_string().into(),
+            Self::Checkbox(state) => state.read(cx).to_string().into(),
+        }
+    }
+
+    /// Writes `value` back into the field, parsing it for the two non-text
+    /// widgets the way [`Self::value`] rendered it.
+    fn set_value(&self, value: &SharedString, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Input(state) => state.update(cx, |state, cx| state.set_value(value.clone(), window, cx)),
+            Self::Textarea(state) => state.update(cx, |state, cx| state.set_value(value.clone(), window, cx)),
+            Self::Editor(state) => state.update(cx, |state, cx| state.set_value(value.clone(), window, cx)),
+            Self::RadioGroup(state) => state.update(cx, |state, _| *state = value.parse::<usize>().unwrap_or(0)),
+            Self::Checkbox(state) => state.update(cx, |state, _| *state = value == "true"),
+        }
+    }
+
+    /// Moves the caret to the end of a text field, so the auto-focused field
+    /// opens ready to append rather than to overwrite. A no-op elsewhere.
+    fn focus_at_end(&self, window: &mut Window, cx: &mut App) {
+        let end = Position::new(0, u32::MAX);
+        match self {
+            Self::Input(state) => state.update(cx, |state, cx| state.set_cursor_position(end, window, cx)),
+            Self::Textarea(state) => state.update(cx, |state, cx| state.set_cursor_position(end, window, cx)),
+            Self::Editor(state) => state.update(cx, |state, cx| state.set_cursor_position(end, window, cx)),
+            Self::RadioGroup(_) | Self::Checkbox(_) => {}
+        }
+    }
 }
 
 impl ZedisFormField {
@@ -571,29 +620,11 @@ impl ZedisForm {
         for field in &fields {
             let name = field.name.clone();
             match field.field_type {
-                ZedisFormFieldType::Input
-                | ZedisFormFieldType::InputNumber
-                | ZedisFormFieldType::AutoGrow(_, _)
-                | ZedisFormFieldType::Editor => {
+                ZedisFormFieldType::Input | ZedisFormFieldType::InputNumber => {
                     let state = cx.new(|cx| {
-                        let mut state = InputState::new(window, cx)
+                        InputState::new(window, cx)
                             .placeholder(field.placeholder.clone())
-                            .masked(field.mask);
-                        match field.field_type {
-                            ZedisFormFieldType::Editor => {
-                                state = state
-                                    .code_editor(Language::from_str("json").name())
-                                    .line_number(true)
-                                    .indent_guides(true)
-                                    .searchable(true)
-                                    .soft_wrap(true)
-                            }
-                            ZedisFormFieldType::AutoGrow(min_rows, max_rows) => {
-                                state = state.auto_grow(min_rows, max_rows);
-                            }
-                            _ => {}
-                        }
-                        state
+                            .masked(field.mask)
                     });
                     if let Some(default_value) = &field.default_value {
                         state.update(cx, |state, cx| {
@@ -601,19 +632,16 @@ impl ZedisForm {
                         });
                     }
 
-                    // Clear validation errors when the user edits the field.
-                    // For single-line inputs, also submit the form on Enter.
+                    // Clear validation errors when the user edits the field,
+                    // and submit on Enter — a single-line affordance, which is
+                    // why the two multi-line kinds below only watch `Change`.
                     let name_clone = name.clone();
-                    let is_single_line = matches!(
-                        field.field_type,
-                        ZedisFormFieldType::Input | ZedisFormFieldType::InputNumber
-                    );
                     subscriptions.push(cx.subscribe_in(&state, window, move |this, _state, event, window, cx| {
                         match event {
                             InputEvent::Change => {
                                 this.on_value_change(name_clone.clone(), cx);
                             }
-                            InputEvent::PressEnter { .. } if is_single_line && !this.in_dialog => {
+                            InputEvent::PressEnter { .. } if !this.in_dialog => {
                                 this.submit(window, cx);
                             }
                             _ => {}
@@ -639,6 +667,54 @@ impl ZedisForm {
                     }
 
                     field_states.push((field.clone(), ZedisFormFieldState::Input(state)));
+                }
+                ZedisFormFieldType::AutoGrow(min_rows, max_rows) => {
+                    let state = cx.new(|cx| {
+                        TextareaState::new(window, cx)
+                            .placeholder(field.placeholder.clone())
+                            .auto_grow(min_rows, max_rows)
+                    });
+                    if let Some(default_value) = &field.default_value {
+                        state.update(cx, |state, cx| {
+                            state.set_value(default_value, window, cx);
+                        });
+                    }
+                    let name_clone = name.clone();
+                    subscriptions.push(
+                        cx.subscribe_in(&state, window, move |this, _state, event, _window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                this.on_value_change(name_clone.clone(), cx);
+                            }
+                        }),
+                    );
+
+                    field_states.push((field.clone(), ZedisFormFieldState::Textarea(state)));
+                }
+                ZedisFormFieldType::Editor => {
+                    let state = cx.new(|cx| {
+                        EditorState::new(window, cx)
+                            .language(Language::from_str("json").name())
+                            .placeholder(field.placeholder.clone())
+                            .line_number(true)
+                            .indent_guides(true)
+                            .searchable(true)
+                            .soft_wrap(true)
+                    });
+                    if let Some(default_value) = &field.default_value {
+                        state.update(cx, |state, cx| {
+                            state.set_value(default_value, window, cx);
+                        });
+                    }
+                    let name_clone = name.clone();
+                    subscriptions.push(
+                        cx.subscribe_in(&state, window, move |this, _state, event, _window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                this.on_value_change(name_clone.clone(), cx);
+                            }
+                        }),
+                    );
+
+                    field_states.push((field.clone(), ZedisFormFieldState::Editor(state)));
                 }
                 ZedisFormFieldType::Checkbox => {
                     let default_value = field.default_value.as_ref().map(|v| v == "true").unwrap_or(false);
@@ -721,18 +797,25 @@ impl ZedisForm {
         true
     }
 
-    /// Returns the live value of an Input-backed field by name (empty when
-    /// the name doesn't resolve to an input field).
+    /// Returns the live value of a text-backed field by name (empty when the
+    /// name doesn't resolve to one).
+    ///
+    /// `visible_on_filled` asks whether the user typed something, so the two
+    /// widgets that always carry a value — a checkbox reads `"false"`, a radio
+    /// group `"0"` — are deliberately not answered here.
     fn input_value(&self, name: &str, cx: &App) -> String {
         self.field_states
             .iter()
             .find_map(|(f, s)| {
-                if f.name.as_ref() == name
-                    && let ZedisFormFieldState::Input(state) = s
-                {
-                    return Some(state.read(cx).value().to_string());
+                if f.name.as_ref() != name {
+                    return None;
                 }
-                None
+                match s {
+                    ZedisFormFieldState::Input(_)
+                    | ZedisFormFieldState::Textarea(_)
+                    | ZedisFormFieldState::Editor(_) => Some(s.value(cx).to_string()),
+                    ZedisFormFieldState::RadioGroup(_) | ZedisFormFieldState::Checkbox(_) => None,
+                }
             })
             .unwrap_or_default()
     }
@@ -785,11 +868,7 @@ impl ZedisForm {
             if !self.should_collect_field_value(field, cx) {
                 continue;
             }
-            let value = match state {
-                ZedisFormFieldState::Input(state) => state.read(cx).value().to_string(),
-                ZedisFormFieldState::RadioGroup(state) => state.read(cx).to_string(),
-                ZedisFormFieldState::Checkbox(state) => state.read(cx).to_string(),
-            };
+            let value = state.value(cx).to_string();
             let value = value.trim().to_string();
 
             if field.required && value.is_empty() {
@@ -925,23 +1004,7 @@ impl ZedisForm {
     ) {
         for (field, state) in &self.field_states {
             if let Some(value) = values.get(&field.name) {
-                match state {
-                    ZedisFormFieldState::Input(state) => {
-                        state.update(cx, |state, cx| {
-                            state.set_value(value.clone(), window, cx);
-                        });
-                    }
-                    ZedisFormFieldState::RadioGroup(state) => {
-                        state.update(cx, |state, _cx| {
-                            *state = value.parse::<usize>().unwrap_or(0);
-                        });
-                    }
-                    ZedisFormFieldState::Checkbox(state) => {
-                        state.update(cx, |state, _cx| {
-                            *state = value == "true";
-                        });
-                    }
-                }
+                state.set_value(value, window, cx);
             }
         }
         self.should_focus = true;
@@ -955,11 +1018,7 @@ impl ZedisForm {
                 if f.name.as_ref() != name {
                     return None;
                 }
-                Some(match s {
-                    ZedisFormFieldState::Input(state) => state.read(cx).value(),
-                    ZedisFormFieldState::RadioGroup(state) => state.read(cx).to_string().into(),
-                    ZedisFormFieldState::Checkbox(state) => state.read(cx).to_string().into(),
-                })
+                Some(s.value(cx))
             })
             .unwrap_or_default()
     }
@@ -976,9 +1035,7 @@ impl Render for ZedisForm {
         for (name, value) in std::mem::take(&mut self.pending_field_updates) {
             for (field, state) in &self.field_states {
                 if field.name == name {
-                    if let ZedisFormFieldState::Input(state) = state {
-                        state.update(cx, |s, cx| s.set_value(value.clone(), window, cx));
-                    }
+                    state.set_value(&value, window, cx);
                     break;
                 }
             }
@@ -987,12 +1044,8 @@ impl Render for ZedisForm {
         // Auto-focus the designated field on the first render, then clear the flag.
         if take(&mut self.should_focus) {
             for (field, state) in &self.field_states {
-                if field.focus
-                    && let ZedisFormFieldState::Input(state) = state
-                {
-                    state.update(cx, |state, cx| {
-                        state.set_cursor_position(Position::new(0, u32::MAX), window, cx);
-                    });
+                if field.focus {
+                    state.focus_at_end(window, cx);
                     break;
                 }
             }
@@ -1064,6 +1117,20 @@ impl Render for ZedisForm {
                         }
                         form_container = form_container.child(new_field(field).child(input));
                     }
+                }
+                ZedisFormFieldState::Textarea(state) => {
+                    // `mask` and `suffix` are single-line adornments and have
+                    // no counterpart here — gpui-component keeps them on
+                    // `Input` alone.
+                    form_container = form_container.child(
+                        new_field(field)
+                            .child(Textarea::new(state).disabled(field_disabled).refine_style(&field.style)),
+                    );
+                }
+                ZedisFormFieldState::Editor(state) => {
+                    form_container = form_container.child(
+                        new_field(field).child(Editor::new(state).disabled(field_disabled).refine_style(&field.style)),
+                    );
                 }
                 ZedisFormFieldState::Checkbox(state) => {
                     let id = ElementId::NamedChild(parent_id.clone(), index.to_string().into());

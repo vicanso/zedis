@@ -50,8 +50,6 @@ pub enum KvTableColumnType {
 /// Configuration for a table column including name, width, and alignment.
 #[derive(Clone, Default, Debug)]
 pub struct KvTableColumn {
-    /// Whether the column is readonly
-    pub readonly: bool,
     /// Type of the field
     pub field_type: Option<ZedisFormFieldType>,
     /// Whether the column is flexible

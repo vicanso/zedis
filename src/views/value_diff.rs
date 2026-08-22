@@ -40,7 +40,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
-    scroll::{Scrollbar, ScrollbarShow},
+    scroll::{Scrollbar, ScrollbarMode},
     v_flex,
 };
 use serde_json::Value as JsonValue;
@@ -404,7 +404,7 @@ impl Render for ZedisValueDiff {
         // instead of the content overflowing the editor.
         //
         // The scrollbar is an explicit, absolutely-positioned sibling set to
-        // `ScrollbarShow::Always` (the theme default is `Scrolling`, which
+        // `ScrollbarMode::Always` (the theme default is `Scrolling`, which
         // only flashes the bar briefly after the offset changes — so the diff
         // appeared to have no scrollbar). Both the viewport and the bar share
         // `self.scroll_handle`.
@@ -441,7 +441,7 @@ impl Render for ZedisValueDiff {
                             .left_0()
                             .right_0()
                             .bottom_0()
-                            .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                            .child(Scrollbar::vertical(&self.scroll_handle).mode(ScrollbarMode::Always)),
                     ),
             )
             .into_any_element()

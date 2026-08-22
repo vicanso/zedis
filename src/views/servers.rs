@@ -29,7 +29,7 @@ use gpui::{
     Action, Anchor, App, ClipboardItem, Entity, ExternalPaths, FocusHandle, Focusable, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::DropdownMenu;
 use gpui_component::notification::Notification;
 use gpui_component::tooltip::Tooltip;
@@ -735,7 +735,11 @@ impl ZedisServers {
     fn export_server_dialog(&mut self, server: &RedisServer, window: &mut Window, cx: &mut Context<Self>) {
         let include_secrets = Rc::new(Cell::new(false));
         let initial_json = server.to_export_json(false).unwrap_or_default();
-        let json_state = cx.new(|cx| InputState::new(window, cx).auto_grow(6, 16).default_value(initial_json));
+        let json_state = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(6, 16)
+                .default_value(initial_json)
+        });
         let server_clone = server.clone();
 
         // Strings captured into the dialog body closure — i18n calls
@@ -809,7 +813,7 @@ impl ZedisServers {
                     .when(include_on, |this| {
                         this.child(Label::new(warning_label.clone()).text_xs().text_color(warning_color))
                     })
-                    .child(Input::new(&body_json).appearance(true))
+                    .child(Textarea::new(&body_json).appearance(true))
             })
             .on_ok(move |_, _window, cx| {
                 // Save the displayed JSON to a file (default ~/Downloads,
@@ -878,7 +882,7 @@ impl ZedisServers {
     /// overwrites an existing config.
     fn import_server_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let json_state = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .auto_grow(6, 16)
                 .placeholder(i18n_servers(cx, "import_placeholder"))
         });
@@ -1073,7 +1077,7 @@ impl ZedisServers {
 /// the pasted content is an encrypted share token; plain-JSON imports render
 /// exactly as before.
 struct ImportServersBody {
-    json_state: Entity<InputState>,
+    json_state: Entity<TextareaState>,
     pass_state: Entity<InputState>,
     /// One-shot flag: focus the paste box on the first render only, so the
     /// user can paste right away without clicking into the input.
@@ -1082,7 +1086,7 @@ struct ImportServersBody {
 }
 
 impl ImportServersBody {
-    fn new(json_state: Entity<InputState>, pass_state: Entity<InputState>, cx: &mut Context<Self>) -> Self {
+    fn new(json_state: Entity<TextareaState>, pass_state: Entity<InputState>, cx: &mut Context<Self>) -> Self {
         // Re-render whenever the pasted content changes so the passphrase row
         // appears the moment a share token lands in the box.
         let sub = cx.subscribe(&json_state, |_, _, _: &InputEvent, cx| cx.notify());
@@ -1137,7 +1141,7 @@ impl Render for ImportServersBody {
                 }
             })
             .child(Label::new(i18n_servers(cx, "import_hint")).text_xs())
-            .child(Input::new(&self.json_state).appearance(true))
+            .child(Textarea::new(&self.json_state).appearance(true))
             .when(needs_pass, |this| {
                 this.child(
                     Label::new(i18n_servers(cx, "import_passphrase_hint"))

@@ -22,7 +22,7 @@ use crate::db::get_favorites_manager;
 use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, prepare_fuzzy_query};
 use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_command_palette, i18n_shortcuts};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
 use std::mem::take;
 
@@ -687,7 +687,7 @@ impl Render for ZedisCommandPalette {
                         // and stays a sibling of the scroller so it
                         // doesn't scroll with the content.
                         div().relative().child(list).child(
-                            // `ScrollbarShow::Always`: the theme
+                            // `ScrollbarMode::Always`: the theme
                             // default is `Scrolling`, which only
                             // shows the bar for a brief fade after
                             // the offset *changes* — and keyboard
@@ -704,7 +704,7 @@ impl Render for ZedisCommandPalette {
                                 .left_0()
                                 .right_0()
                                 .bottom_0()
-                                .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                                .child(Scrollbar::vertical(&self.scroll_handle).mode(ScrollbarMode::Always)),
                         ),
                     )
                     .when(scope == Scope::General, |this| {

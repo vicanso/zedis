@@ -149,6 +149,10 @@ impl ZedisDialog {
     }
 
     /// Sets whether clicking the overlay closes the dialog.
+    ///
+    /// Ignored by an alert dialog: gpui-component deprecated backdrop
+    /// dismissal there by design, so a confirm can only be answered by its
+    /// buttons.
     pub fn overlay_closable(mut self, overlay_closable: bool) -> Self {
         self.overlay_closable = Some(overlay_closable);
         self
@@ -208,9 +212,6 @@ impl ZedisDialog {
                     d = d.title(title.clone());
                 }
 
-                if let Some(oc) = overlay_closable {
-                    d = d.overlay_closable(oc);
-                }
                 if let Some(w) = width {
                     d = d.w(w);
                 }
@@ -281,12 +282,18 @@ impl ZedisDialog {
         }
 
         if self.alert {
-            window.open_alert_dialog(cx, move |dialog, _, _| {
-                let d = apply_config!(dialog);
-                d.overlay_closable(overlay_closable.unwrap_or(true)).close_button(true)
-            });
+            // No `overlay_closable` here: gpui-component disabled backdrop
+            // dismissal for alert dialogs, so the setter is deprecated and
+            // does nothing.
+            window.open_alert_dialog(cx, move |dialog, _, _| apply_config!(dialog).close_button(true));
         } else {
-            window.open_dialog(cx, move |dialog, _, _| apply_config!(dialog));
+            window.open_dialog(cx, move |dialog, _, _| {
+                let mut d = apply_config!(dialog);
+                if let Some(oc) = overlay_closable {
+                    d = d.overlay_closable(oc);
+                }
+                d
+            });
         }
     }
 }

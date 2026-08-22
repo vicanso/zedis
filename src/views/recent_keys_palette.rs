@@ -21,7 +21,7 @@ use crate::db::{get_recent_keys_manager, recent_keys_scope};
 use crate::helpers::fuzzy_score;
 use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_recent_keys_palette};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
 use std::mem::take;
 
@@ -319,7 +319,7 @@ impl Render for ZedisRecentKeysPalette {
                                 .left_0()
                                 .right_0()
                                 .bottom_0()
-                                .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                                .child(Scrollbar::vertical(&self.scroll_handle).mode(ScrollbarMode::Always)),
                         ),
                     ),
             )

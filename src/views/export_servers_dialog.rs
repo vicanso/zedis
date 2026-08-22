@@ -32,7 +32,7 @@ use gpui_component::{
     input::{Input, InputState},
     label::Label,
     notification::Notification,
-    scroll::{Scrollbar, ScrollbarShow},
+    scroll::{Scrollbar, ScrollbarMode},
     v_flex,
 };
 use rust_i18n::t;
@@ -210,7 +210,7 @@ impl Render for ZedisExportServersDialog {
                         .top_0()
                         .right_0()
                         .bottom_0()
-                        .child(Scrollbar::vertical(&self.list_scroll).scrollbar_show(ScrollbarShow::Always)),
+                        .child(Scrollbar::vertical(&self.list_scroll).mode(ScrollbarMode::Always)),
                 ),
             )
             .child(

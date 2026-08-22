@@ -31,7 +31,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     highlighter::Language,
-    input::{Input, InputEvent, InputState, MoveDown, MoveUp, Position},
+    input::{Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp, Position, Textarea, TextareaState},
     label::Label,
     v_flex,
 };
@@ -143,14 +143,14 @@ struct ReverseSearchState {
 
 pub struct ZedisTerminal {
     server_state: Entity<ZedisServerState>,
-    cmd_output_state: Entity<InputState>,
+    cmd_output_state: Entity<EditorState>,
     cmd_output_text: String,
     cmd_output_dirty: bool,
-    cmd_input_state: Entity<InputState>,
+    cmd_input_state: Entity<TextareaState>,
     /// Multi-line "Workbench" editor: one command per line, run as a
     /// batch with Cmd/Ctrl+Enter. Reuses the same execute path as the
     /// single-line REPL (which already iterates `command.lines()`).
-    batch_input_state: Entity<InputState>,
+    batch_input_state: Entity<EditorState>,
     batch_mode: bool,
     /// Query field for the `Ctrl+R` reverse history search.
     search_input_state: Entity<InputState>,
@@ -176,16 +176,16 @@ impl ZedisTerminal {
         let mut subscriptions = Vec::new();
 
         let cmd_output_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(Language::from_str("bash").name())
+            EditorState::new(window, cx)
+                .language(Language::from_str("bash").name())
                 .line_number(true)
                 .searchable(true)
                 .soft_wrap(true)
         });
-        let cmd_input_state = cx.new(|cx| InputState::new(window, cx).auto_grow(1, 3));
+        let cmd_input_state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 3));
         let batch_input_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(Language::from_str("bash").name())
+            EditorState::new(window, cx)
+                .language(Language::from_str("bash").name())
                 .line_number(true)
                 .soft_wrap(true)
         });
@@ -818,14 +818,13 @@ impl Render for ZedisTerminal {
             .child(
                 div().flex_1().w_full().relative().child(
                     div().absolute().inset_0().size_full().overflow_hidden().child(
-                        Input::new(&self.cmd_output_state)
+                        Editor::new(&self.cmd_output_state)
                             .w_full()
                             .h_full()
                             .font_family(font_family.clone())
                             .disabled(true)
                             .appearance(false)
-                            .bordered(false)
-                            .focus_bordered(false),
+                            .bordered(false),
                     ),
                 ),
             )
@@ -881,12 +880,22 @@ impl Render for ZedisTerminal {
                         .gap_1()
                         .pr_1()
                         .child(
-                            div().flex_1().child(
-                                Input::new(&self.cmd_input_state)
-                                    .font_family(font_family.clone())
-                                    .prefix(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
-                                    .appearance(false),
-                            ),
+                            // `prefix` is an `Input` adornment and a
+                            // `Textarea` has none, so the `>` marker sits
+                            // beside the box instead of inside its frame —
+                            // identical on screen, since the box draws no
+                            // frame here anyway.
+                            h_flex()
+                                .flex_1()
+                                .items_center()
+                                .gap_1()
+                                .child(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                                .child(
+                                    Textarea::new(&self.cmd_input_state)
+                                        .flex_1()
+                                        .font_family(font_family.clone())
+                                        .appearance(false),
+                                ),
                         )
                         .child(
                             Button::new("term-mode-batch")
@@ -911,7 +920,7 @@ impl Render for ZedisTerminal {
                     .when(batch_mode, |this| {
                         this.child(
                             div().w_full().h(px(180.)).border_t_1().border_color(border).child(
-                                Input::new(&self.batch_input_state)
+                                Editor::new(&self.batch_input_state)
                                     .w_full()
                                     .h_full()
                                     .font_family(font_family.clone())

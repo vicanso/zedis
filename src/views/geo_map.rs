@@ -44,7 +44,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
-    scroll::{Scrollbar, ScrollbarShow},
+    scroll::{Scrollbar, ScrollbarMode},
     v_flex,
 };
 use redis::{Value, cmd};
@@ -845,24 +845,28 @@ impl ZedisGeoMap {
                 // Native scroll + a sibling `Scrollbar` (the help-popover
                 // pattern) so the capped list shows it is scrollable —
                 // bare `overflow_y_scroll` was wheel-only with no track.
-                col =
-                    col.child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .flex_none()
-                            .child(
-                                div()
-                                    .id("geo-invalid-list")
-                                    .max_h(px(160.))
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.invalid_scroll)
-                                    .child(invalid_list),
-                            )
-                            .child(div().absolute().top_0().right_0().bottom_0().child(
-                                Scrollbar::vertical(&self.invalid_scroll).scrollbar_show(ScrollbarShow::Always),
-                            )),
-                    );
+                col = col.child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .flex_none()
+                        .child(
+                            div()
+                                .id("geo-invalid-list")
+                                .max_h(px(160.))
+                                .overflow_y_scroll()
+                                .track_scroll(&self.invalid_scroll)
+                                .child(invalid_list),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .bottom_0()
+                                .child(Scrollbar::vertical(&self.invalid_scroll).mode(ScrollbarMode::Always)),
+                        ),
+                );
             }
         }
         col

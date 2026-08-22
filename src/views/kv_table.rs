@@ -27,13 +27,12 @@ use crate::{
 };
 use gpui::{App, Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
 use gpui_component::TITLE_BAR_HEIGHT;
-use gpui_component::highlighter::Language;
 use gpui_component::notification::Notification;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Escape, Input, InputEvent, InputState},
+    input::{Escape, Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
     table::{DataTable, TableEvent, TableState},
@@ -365,27 +364,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             _ => {}
         }));
 
+        // Nothing renders these — `reset_edit_state` clears them and focuses
+        // the first, and the visible cell editor is the `ZedisForm` built in
+        // `render_edit_form`. They stay plain `InputState`s for that reason;
+        // the code-editor options they used to carry never reached a frame.
         let value_states = columns
             .iter()
             .enumerate()
-            .flat_map(|(index, column)| {
-                if column.column_type != KvTableColumnType::Value {
-                    return None;
-                }
-                let state = cx.new(|cx| {
-                    if column.readonly {
-                        InputState::new(window, cx)
-                    } else {
-                        InputState::new(window, cx)
-                            .code_editor(Language::from_str("json").name())
-                            .line_number(true)
-                            .indent_guides(true)
-                            .searchable(true)
-                            .soft_wrap(true)
-                    }
-                });
-                Some((index, state))
-            })
+            .filter(|(_, column)| column.column_type == KvTableColumnType::Value)
+            .map(|(index, _)| (index, cx.new(|cx| InputState::new(window, cx))))
             .collect::<Vec<_>>();
         info!("Creating new key value table view with mode: {:?}", mode);
 
@@ -584,7 +571,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let empty_label = i18n_kv_table(cx, "bulk_add_empty");
 
         let textarea = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .auto_grow(8, 20)
                 .placeholder(placeholder.clone())
         });
@@ -601,7 +588,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     .gap_2()
                     .w_full()
                     .child(Label::new(hint.clone()).text_xs())
-                    .child(Input::new(&body_state).appearance(true))
+                    .child(Textarea::new(&body_state).appearance(true))
             })
             .on_ok(move |_, window, cx| {
                 let text = submit_state.read(cx).value().to_string();
@@ -917,24 +904,8 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                 .columns
                 .iter()
                 .enumerate()
-                .flat_map(|(index, column)| {
-                    if column.column_type != KvTableColumnType::Value {
-                        return None;
-                    }
-                    let state = cx.new(|cx| {
-                        if column.readonly {
-                            InputState::new(window, cx)
-                        } else {
-                            InputState::new(window, cx)
-                                .code_editor(Language::from_str("json").name())
-                                .line_number(true)
-                                .indent_guides(true)
-                                .searchable(true)
-                                .soft_wrap(true)
-                        }
-                    });
-                    Some((index, state))
-                })
+                .filter(|(_, column)| column.column_type == KvTableColumnType::Value)
+                .map(|(index, _)| (index, cx.new(|cx| InputState::new(window, cx))))
                 .collect();
             self.table_state.update(cx, |state, cx| {
                 state.delegate_mut().set_columns(new_delegate_columns);

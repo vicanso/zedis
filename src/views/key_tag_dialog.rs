@@ -41,7 +41,7 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Textarea, TextareaState},
     label::Label,
     tooltip::Tooltip,
     v_flex,
@@ -56,7 +56,7 @@ pub struct ZedisKeyTagDialog {
     /// Initially `None` = "no tag". Mutated by swatch clicks; persisted
     /// on Save. Cancel discards it.
     selected_tag: Option<TagColor>,
-    note_input_state: Entity<InputState>,
+    note_input_state: Entity<TextareaState>,
 }
 
 impl ZedisKeyTagDialog {
@@ -71,7 +71,7 @@ impl ZedisKeyTagDialog {
 
         let initial_note = existing.note.clone();
         let note_input_state = cx.new(|cx| {
-            let mut input = InputState::new(window, cx)
+            let mut input = TextareaState::new(window, cx)
                 .auto_grow(2, 6)
                 .placeholder(i18n_key_tag(cx, "note_placeholder"));
             if !initial_note.is_empty() {
@@ -188,7 +188,7 @@ impl ZedisKeyTagDialog {
                     .text_xs()
                     .text_color(muted_fg),
             )
-            .child(Input::new(&self.note_input_state).w_full())
+            .child(Textarea::new(&self.note_input_state).w_full())
     }
 }
 

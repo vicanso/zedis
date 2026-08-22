@@ -30,7 +30,7 @@ use gpui_component::{
     IndexPath,
     alert::Alert,
     form::{field, v_form},
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectEvent, SelectItem, SelectState},
     text::TextView,
     v_flex,
@@ -176,7 +176,7 @@ pub struct ZedisProtoEditor {
     match_pattern_state: Entity<InputState>,
     match_mode_select_state: Entity<usize>,
     includes_state: Entity<InputState>,
-    content_state: Entity<InputState>,
+    content_state: Entity<TextareaState>,
     target_message_state: Entity<SelectState<Vec<String>>>,
     field_errors: Entity<HashMap<String, SharedString>>,
 
@@ -252,7 +252,7 @@ impl ZedisProtoEditor {
                 .placeholder(i18n_proto_editor(cx, "includes_placeholder"))
         });
         let content_state = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_proto_editor(cx, "content_placeholder"))
                 .auto_grow(2, 10)
@@ -632,7 +632,7 @@ impl ZedisProtoEditor {
                             .label(i18n_proto_editor(cx, "content"))
                             .required(true)
                             .child(
-                                Input::new(&self.content_state)
+                                Textarea::new(&self.content_state)
                                     .w_full()
                                     .font_family(get_mono_font_family()),
                             ),

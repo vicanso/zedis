@@ -23,7 +23,7 @@ use gpui_component::{
     Icon, Sizable,
     button::{Button, ButtonVariants},
     popover::Popover,
-    scroll::{Scrollbar, ScrollbarShow},
+    scroll::{Scrollbar, ScrollbarMode},
     text::{TextView, TextViewStyle},
 };
 
@@ -101,7 +101,7 @@ pub fn help_popover(id: impl Into<SharedString>, body: impl Into<SharedString>) 
                         .top_0()
                         .right_0()
                         .bottom_0()
-                        .child(Scrollbar::vertical(&scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                        .child(Scrollbar::vertical(&scroll_handle).mode(ScrollbarMode::Always)),
                 )
         })
 }

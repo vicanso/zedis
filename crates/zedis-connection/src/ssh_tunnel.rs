@@ -22,7 +22,7 @@ use russh::client::AuthResult;
 use russh::client::{Handle, Handler};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::{HashAlg, PublicKey};
-use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, load_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, decode_secret_key, load_secret_key};
 use rustls::pki_types::ServerName;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
@@ -108,7 +108,7 @@ impl Handler for ClientHandler {
     ///
     /// # Arguments
     ///
-    /// * `_server_public_key` - The server's public key to validate
+    /// * `server_key` - The server's host key, or the certificate carrying it
     ///
     /// # Returns
     ///
@@ -127,8 +127,17 @@ impl Handler for ClientHandler {
     ///   known_hosts only (the system file is never modified).
     ///
     /// Both lookups resolve hashed hostnames and the `[host]:port` form.
-    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
+    ///
+    /// russh 0.63 can negotiate host *certificates*, so the callback hands
+    /// over either shape. We do not validate a certificate against a CA —
+    /// `@cert-authority` lines are skipped when reading known_hosts — so both
+    /// go through the same check on the host key the certificate carries.
+    /// That is the key this handler already saw before certificates were
+    /// negotiable, so the trust model is unchanged: an impostor still has to
+    /// present the recorded key.
+    async fn check_server_key(&mut self, server_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         debug!(host = self.host, port = self.port, "check server key");
+        let server_public_key = server_key.public_key();
 
         let host_port = if self.port == 22 {
             self.host.clone()
@@ -164,7 +173,7 @@ impl Handler for ClientHandler {
                     }
                 }
             }
-            if keys.iter().any(|key| key == server_public_key) {
+            if keys.contains(&server_public_key) {
                 return Ok(true);
             }
         }
@@ -182,7 +191,7 @@ impl Handler for ClientHandler {
         // First time we see this host: trust it and remember the key in
         // Zedis's own known_hosts so future connections are verified.
         if let Some(app_path) = app_path {
-            match russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, server_public_key, &app_path)
+            match russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, &server_public_key, &app_path)
             {
                 Ok(()) => debug!(
                     host = self.host,

@@ -41,7 +41,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState, TabSize},
+    input::{Editor, EditorState, Input, InputState, TabSize, Textarea, TextareaState},
     label::Label,
     notification::Notification,
     scroll::ScrollableElement,
@@ -105,15 +105,15 @@ const TEMPLATES: &[CodeTemplate] = &[
 struct EditForm {
     target_id: Option<String>,
     name: Entity<InputState>,
-    code: Entity<InputState>,
-    default_keys: Entity<InputState>,
-    default_args: Entity<InputState>,
+    code: Entity<EditorState>,
+    default_keys: Entity<TextareaState>,
+    default_args: Entity<TextareaState>,
 }
 
 /// State for the inline Run panel that hangs off each card.
 struct RunForm {
-    keys: Entity<InputState>,
-    args: Entity<InputState>,
+    keys: Entity<TextareaState>,
+    args: Entity<TextareaState>,
     last: Option<RunResult>,
 }
 
@@ -130,7 +130,7 @@ pub struct ZedisLuaScriptLibrary {
     run_forms: AHashMap<String, RunForm>,
     run_expanded: AHashMap<String, bool>,
     code_expanded: AHashMap<String, bool>,
-    code_viewers: AHashMap<String, Entity<InputState>>,
+    code_viewers: AHashMap<String, Entity<EditorState>>,
     /// Server-side SCRIPT EXISTS cache, keyed by script id.
     /// `None` = not probed yet; `Some(true/false)` = last probe.
     cache_status: AHashMap<String, bool>,
@@ -215,13 +215,13 @@ impl ZedisLuaScriptLibrary {
             let keys_default = script.default_keys.join("\n");
             let args_default = script.default_args.join("\n");
             let keys = cx.new(|cx| {
-                InputState::new(window, cx)
+                TextareaState::new(window, cx)
                     .auto_grow(2, 6)
                     .placeholder(i18n_lua_scripts(cx, "keys_placeholder"))
                     .default_value(keys_default)
             });
             let args = cx.new(|cx| {
-                InputState::new(window, cx)
+                TextareaState::new(window, cx)
                     .auto_grow(2, 6)
                     .placeholder(i18n_lua_scripts(cx, "args_placeholder"))
                     .default_value(args_default)
@@ -254,8 +254,8 @@ impl ZedisLuaScriptLibrary {
                 .default_value(name_val)
         });
         let code = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor("lua")
+            EditorState::new(window, cx)
+                .language("lua")
                 .line_number(true)
                 .indent_guides(true)
                 .tab_size(TabSize {
@@ -267,13 +267,13 @@ impl ZedisLuaScriptLibrary {
                 .default_value(code_val)
         });
         let default_keys = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .auto_grow(2, 6)
                 .placeholder(i18n_lua_scripts(cx, "default_keys_placeholder"))
                 .default_value(keys_val)
         });
         let default_args = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .auto_grow(2, 6)
                 .placeholder(i18n_lua_scripts(cx, "default_args_placeholder"))
                 .default_value(args_val)
@@ -1010,8 +1010,8 @@ impl ZedisLuaScriptLibrary {
         if code_expanded && !self.code_viewers.contains_key(&id) {
             let value = SharedString::from(script.code.clone());
             let viewer = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .code_editor("lua")
+                EditorState::new(window, cx)
+                    .language("lua")
                     .line_number(true)
                     .indent_guides(true)
                     .soft_wrap(false)
@@ -1040,10 +1040,9 @@ impl ZedisLuaScriptLibrary {
                     .h(px(220.0))
                     .w_full()
                     .child(
-                        Input::new(viewer)
+                        Editor::new(viewer)
                             .appearance(false)
                             .bordered(false)
-                            .focus_bordered(false)
                             .disabled(true)
                             .h_full()
                             .w_full()
@@ -1115,7 +1114,10 @@ impl ZedisLuaScriptLibrary {
                                             .text_xs()
                                             .text_color(muted),
                                     )
-                                    .child(Input::new(&form.keys).appearance(true).small()),
+                                    // `Textarea` isn't `Sizable` — `text_sm`
+                                    // keeps the compact type scale `small()`
+                                    // used to bring.
+                                    .child(Textarea::new(&form.keys).appearance(true).text_sm()),
                             )
                             .child(
                                 v_flex()
@@ -1126,7 +1128,7 @@ impl ZedisLuaScriptLibrary {
                                             .text_xs()
                                             .text_color(muted),
                                     )
-                                    .child(Input::new(&form.args).appearance(true).small()),
+                                    .child(Textarea::new(&form.args).appearance(true).text_sm()),
                             )
                             .child(
                                 v_flex()
@@ -1426,10 +1428,9 @@ impl ZedisLuaScriptLibrary {
                                     .border_color(cx.theme().border)
                                     .rounded_sm()
                                     .child(
-                                        Input::new(&form.code)
+                                        Editor::new(&form.code)
                                             .appearance(false)
                                             .bordered(false)
-                                            .focus_bordered(false)
                                             .h_full()
                                             .font_family(get_mono_font_family()),
                                     ),
@@ -1448,7 +1449,7 @@ impl ZedisLuaScriptLibrary {
                                             .text_xs()
                                             .text_color(muted),
                                     )
-                                    .child(Input::new(&form.default_keys).appearance(true)),
+                                    .child(Textarea::new(&form.default_keys).appearance(true)),
                             )
                             .child(
                                 v_flex()
@@ -1459,7 +1460,7 @@ impl ZedisLuaScriptLibrary {
                                             .text_xs()
                                             .text_color(muted),
                                     )
-                                    .child(Input::new(&form.default_args).appearance(true)),
+                                    .child(Textarea::new(&form.default_args).appearance(true)),
                             ),
                     ),
             )

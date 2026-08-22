@@ -40,7 +40,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState, TabSize},
+    input::{Editor, EditorState, Input, InputState, TabSize},
     label::Label,
     notification::Notification,
     scroll::ScrollableElement,
@@ -89,7 +89,7 @@ const TEMPLATES: &[CodeTemplate] = &[
 /// LOAD succeeds, plus REPLACE defaults to true.
 struct EditForm {
     target_name: Option<SharedString>,
-    code: Entity<InputState>,
+    code: Entity<EditorState>,
     replace: bool,
 }
 
@@ -118,7 +118,7 @@ pub struct ZedisFunctionEditor {
     run_expanded: AHashSet<SharedString>,
     run_forms: AHashMap<SharedString, RunForm>,
     /// Lazily-created read-only Lua editors for inline code previews.
-    code_editors: AHashMap<SharedString, Entity<InputState>>,
+    code_editors: AHashMap<SharedString, Entity<EditorState>>,
     filter: Entity<InputState>,
     /// `true` when `FUNCTION LIST` reported unknown command.
     unsupported: bool,
@@ -272,8 +272,8 @@ impl ZedisFunctionEditor {
         let code = cx.new(|cx| {
             // Pass "lua" literally — Lua is registered manually via
             // `register_extra_languages()` at app startup.
-            InputState::new(window, cx)
-                .code_editor("lua")
+            EditorState::new(window, cx)
+                .language("lua")
                 .line_number(true)
                 .indent_guides(true)
                 .tab_size(TabSize {
@@ -904,8 +904,8 @@ impl ZedisFunctionEditor {
         {
             let value = code.clone();
             let editor = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .code_editor("lua")
+                EditorState::new(window, cx)
+                    .language("lua")
                     .line_number(true)
                     .indent_guides(true)
                     .soft_wrap(false)
@@ -923,10 +923,9 @@ impl ZedisFunctionEditor {
                         .h(px(CODE_PREVIEW_MAX_HEIGHT))
                         .w_full()
                         .child(
-                            Input::new(editor)
+                            Editor::new(editor)
                                 .appearance(false)
                                 .bordered(false)
-                                .focus_bordered(false)
                                 .disabled(true)
                                 .h_full()
                                 .w_full()
@@ -1332,10 +1331,9 @@ impl ZedisFunctionEditor {
                             .border_color(cx.theme().border)
                             .rounded_sm()
                             .child(
-                                Input::new(&code_input)
+                                Editor::new(&code_input)
                                     .appearance(false)
                                     .bordered(false)
-                                    .focus_bordered(false)
                                     .h_full()
                                     .font_family(get_mono_font_family()),
                             ),

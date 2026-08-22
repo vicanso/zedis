@@ -24,8 +24,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::Result;
-use gpui::{Context, SharedString, Task, Window};
-use gpui_component::input::{CompletionProvider, InputState, Rope, RopeExt};
+use gpui::{App, SharedString, Task, Window};
+use gpui_component::input::{CompletionProvider, Rope, RopeExt};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, InsertReplaceEdit,
     Range as LspRange,
@@ -94,7 +94,7 @@ impl CompletionProvider for JsonPathCompletionProvider {
         offset: usize,
         _trigger: CompletionContext,
         _window: &mut Window,
-        _cx: &mut Context<InputState>,
+        _cx: &mut App,
     ) -> Task<Result<CompletionResponse>> {
         let empty = || Task::ready(Ok(CompletionResponse::Array(vec![])));
 
@@ -134,7 +134,7 @@ impl CompletionProvider for JsonPathCompletionProvider {
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
 
-    fn is_completion_trigger(&self, _offset: usize, _new_text: &str, _cx: &mut Context<InputState>) -> bool {
+    fn is_completion_trigger(&self, _offset: usize, _new_text: &str, _cx: &mut App) -> bool {
         // Re-query on every edit; `completions` returns an empty set
         // (which hides the menu) whenever the cursor isn't on a
         // navigable JSONPath prefix, so this stays correct and cheap

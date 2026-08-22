@@ -37,7 +37,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea, TextareaState},
     label::Label,
     v_flex,
 };
@@ -537,7 +537,7 @@ impl ZedisAclManager {
 /// unable to render their text or hold a click.
 struct ZedisAclEditor {
     username_state: Entity<InputState>,
-    rules_state: Entity<InputState>,
+    rules_state: Entity<TextareaState>,
     /// Username is the identity of an ACL user, so it is only editable while
     /// creating one.
     is_new: bool,
@@ -551,7 +551,7 @@ impl ZedisAclEditor {
                 .default_value(target.username.clone())
         });
         let rules_state = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .auto_grow(3, 10)
                 .placeholder(i18n_acl(cx, "rules_placeholder"))
                 .default_value(target.to_rules_text())
@@ -647,7 +647,7 @@ impl gpui::Render for ZedisAclEditor {
                 self.chip("acl-chip-resetchans", "resetchannels"),
             ]))
             .child(Label::new(i18n_acl(cx, "rules_help")))
-            .child(Input::new(&self.rules_state).appearance(true))
+            .child(Textarea::new(&self.rules_state).appearance(true))
     }
 }
 

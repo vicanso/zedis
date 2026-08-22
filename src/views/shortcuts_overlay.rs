@@ -21,7 +21,7 @@
 use crate::helpers::{humanize_keystroke, shortcut_reference};
 use crate::states::i18n_shortcuts;
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{ActiveTheme, StyledExt, h_flex, label::Label, v_flex};
 
 pub struct ZedisShortcutsOverlay {
@@ -199,7 +199,7 @@ impl Render for ZedisShortcutsOverlay {
                                 .left_0()
                                 .right_0()
                                 .bottom_0()
-                                .child(Scrollbar::vertical(&self.scroll_handle).scrollbar_show(ScrollbarShow::Always)),
+                                .child(Scrollbar::vertical(&self.scroll_handle).mode(ScrollbarMode::Always)),
                         ),
                     ),
             )
