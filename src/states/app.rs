@@ -449,7 +449,13 @@ pub enum MultiSearchScope {
     Servers(Vec<String>),
 }
 
+/// Persisted to `zedis.toml`. `#[serde(default)]` is the upgrade contract: a
+/// file written by any earlier version — or a `.bak` restored by the config
+/// recovery — must parse with whatever fields it has, so every new field
+/// needs a `Default`, never a required value. `states/fixtures/` holds real
+/// old files and `upgrade_fixtures` keeps this honest.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ZedisAppState {
     // Runtime route — the single source of truth for "where am I", including
     // the `(id, db)` of connection-scoped views. Reassembled by `try_new` from
@@ -1038,6 +1044,16 @@ impl ZedisAppState {
     /// The persisted proxy setting (decrypted when stored encrypted), or
     /// empty when following the system. Falls back to the stored value if
     /// decryption fails (e.g. a hand-edited plaintext URI in `zedis.toml`).
+    /// `zedis.toml` as it would be saved, with the two secrets — the AI API
+    /// key and any proxy credentials — replaced, for the diagnostics bundle.
+    pub fn redacted_toml(&self) -> Result<String> {
+        let mut copy = self.clone();
+        copy.ai_api_key = copy.ai_api_key.as_ref().map(|_| "<redacted>".to_string());
+        // Stored encrypted, but a `user:pass@` proxy is still a secret.
+        copy.http_proxy = copy.http_proxy.as_ref().map(|_| "<redacted>".to_string());
+        Ok(toml::to_string(&copy)?)
+    }
+
     pub fn http_proxy(&self) -> String {
         self.http_proxy
             .as_ref()
@@ -1676,6 +1692,92 @@ pub fn escalate_dangerous_body(cx: &App, server_id: &str, body: impl Into<Shared
 /// platform. These lock in the event contracts that broke in past releases:
 /// the tray "Quick Connect does nothing" and "New Connection dialog doesn't
 /// open" regressions were both silent logic bugs in this file.
+/// Real `zedis.toml` files from earlier releases. Every one must keep
+/// parsing — an upgrade that resets a user's preferences is a regression —
+/// and values that still exist must survive. Add a fixture whenever a
+/// release changes the persisted shape.
+#[cfg(test)]
+mod upgrade_fixtures {
+    use super::*;
+    use gpui::px;
+
+    const V0_4_0: &str = include_str!("fixtures/zedis-v0.4.0.toml");
+    const V0_6_0: &str = include_str!("fixtures/zedis-v0.6.0.toml");
+
+    fn load(fixture: &str) -> ZedisAppState {
+        toml::from_str(fixture).expect("an old zedis.toml must keep parsing")
+    }
+
+    #[test]
+    fn an_empty_file_parses_to_defaults() {
+        // The contract behind `#[serde(default)]`: no field may ever be
+        // required, or a `.bak` from before that field was added breaks.
+        let state: ZedisAppState = toml::from_str("").expect("empty file");
+        assert_eq!(state.locale, None);
+        assert_eq!(state.key_tree_width, Pixels::ZERO);
+    }
+
+    #[test]
+    fn v0_4_0_preferences_survive() {
+        let state = load(V0_4_0);
+        // 0.4 stored the `Route` enum; its unit variant is the token the
+        // current loader resolves through `ServerView::from_name`.
+        assert_eq!(state.route_token, "Editor");
+        assert_eq!(state.locale.as_deref(), Some("zh"));
+        assert_eq!(state.theme.as_deref(), Some("dark"));
+        assert_eq!(state.font_size, Some(FontSize::Large));
+        assert_eq!(state.key_tree_width, px(280.));
+        assert_eq!(state.max_key_tree_depth, Some(6));
+        assert_eq!(state.key_scan_count, Some(500));
+        assert_eq!(state.selected_server, Some(("srv-1".to_string(), 2)));
+        assert_eq!(state.redis_connection_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(state.tray_enabled, Some(true));
+        assert_eq!(
+            state.collapsed_server_groups.as_deref(),
+            Some(&["Team A".to_string()][..])
+        );
+        let bounds = state.bounds.expect("bounds");
+        assert_eq!(bounds.size.width, px(1200.));
+        // Fields 0.4 didn't have fall back cleanly.
+        assert!(state.window_placements.is_empty());
+        assert!(state.last_db.is_empty());
+        assert_eq!(state.multi_search_scope, MultiSearchScope::default());
+    }
+
+    #[test]
+    fn v0_6_0_preferences_survive() {
+        let state = load(V0_6_0);
+        assert_eq!(state.route_token, "metrics");
+        assert_eq!(state.theme_name.as_deref(), Some("Catppuccin Latte"));
+        assert_eq!(state.font_rem_px, Some(15.0));
+        assert_eq!(state.ui_font_family.as_deref(), Some("Inter"));
+        assert_eq!(state.kv_edit_panel_width, Some(px(420.)));
+        assert_eq!(
+            state.open_tabs,
+            vec![("srv-2".to_string(), 0), ("srv-3".to_string(), 1)]
+        );
+        assert_eq!(state.last_db.get("srv-3"), Some(&1));
+        assert_eq!(state.window_placements.len(), 1);
+        assert_eq!(state.soft_delete, Some(true));
+        assert_eq!(state.sidebar_collapsed, Some(false));
+    }
+
+    #[test]
+    fn old_files_round_trip_through_the_current_writer() {
+        // What the current version writes back must itself load — the
+        // `.bak` a later recovery restores is exactly this output.
+        for fixture in [V0_4_0, V0_6_0] {
+            let state = load(fixture);
+            let written = toml::to_string(&state).expect("serialize");
+            let again: ZedisAppState = toml::from_str(&written).expect("re-parse");
+            assert_eq!(again.locale, state.locale);
+            assert_eq!(again.selected_server, state.selected_server);
+            assert_eq!(again.key_tree_width, state.key_tree_width);
+            assert_eq!(again.route_token, state.route_token);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,9 +26,11 @@ use redis::cmd;
 use std::collections::HashSet;
 use std::env;
 use std::sync::Once;
+use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::{
     CommandStatus, ConflictMode, RedisAsyncConn, RedisServer, RestoreStatus, ServerCommand, ServerFlavor,
-    dump_keys_chunk, get_connection_manager, get_servers, probe_server_features, restore_keys_chunk, save_servers,
+    dump_keys_chunk, get_connection_manager, get_servers, open_single_connection, probe_server_features,
+    restore_keys_chunk, save_servers,
 };
 
 /// `host:port` from an env var, or `None` when that scenario wasn't started.
@@ -439,6 +441,51 @@ fn standalone_acl_users_are_classified() {
     });
 }
 
+#[test]
+#[ignore]
+fn standalone_recovers_after_the_server_drops_the_link() {
+    smol::block_on(async {
+        // Its own server id, so the pooled client it kills is not the one
+        // the other (parallel) standalone tests share.
+        let id = register(server("it-standalone-linkloss", standalone())).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        client.ping().await.expect("ping before");
+        let mut pooled = conn(&id, 0).await;
+        let victim: i64 = cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut pooled)
+            .await
+            .expect("client id");
+
+        // Kill exactly that link from a throwaway connection — the pooled
+        // multiplexed connection dies the way it does on laptop wake / VPN
+        // flip / server restart.
+        let mut killer = open_single_connection(&server("it-killer", standalone()), 0, false)
+            .await
+            .expect("killer connection");
+        let killed: i64 = cmd("CLIENT")
+            .arg("KILL")
+            .arg("ID")
+            .arg(victim)
+            .query_async(&mut killer)
+            .await
+            .expect("client kill");
+        assert_eq!(killed, 1);
+
+        let err = client.ping().await.expect_err("the cached link must be dead now");
+        assert_eq!(err.connection_kind(), ConnectionErrorKind::Network, "{err}");
+
+        // What the app does on that error (note_link_error / heartbeat):
+        // drop the cached client and let the next call rebuild it.
+        get_connection_manager().remove_client(&id, 0);
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("rebuilt client");
+        client.ping().await.expect("ping after rebuild");
+    });
+}
+
 // ── tls ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -476,26 +523,39 @@ fn tls_connects_with_the_root_cert_and_in_insecure_mode() {
 
 // ── sentinel ─────────────────────────────────────────────────────────────
 
+/// `SENTINEL GET-MASTER-ADDR-BY-NAME` straight from the sentinel.
+async fn sentinel_master_port(sentinel: &mut redis::aio::MultiplexedConnection, master_name: &str) -> u16 {
+    let (_, port): (String, String) = cmd("SENTINEL")
+        .arg("GET-MASTER-ADDR-BY-NAME")
+        .arg(master_name)
+        .query_async(sentinel)
+        .await
+        .expect("get-master-addr-by-name");
+    port.parse().expect("master port")
+}
+
 #[test]
 #[ignore]
-fn sentinel_resolves_the_master_and_writes_through_it() {
+fn sentinel_resolves_the_master_and_follows_a_failover() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_SENTINEL");
         let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
-        let master_port: u16 = env::var("ZEDIS_IT_SENTINEL_MASTER_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .expect("ZEDIS_IT_SENTINEL_MASTER_PORT");
+        let mut sentinel = open_single_connection(&server("it-sentinel-raw", addr.clone()), 0, false)
+            .await
+            .expect("sentinel connection");
+        let before = sentinel_master_port(&mut sentinel, &master_name).await;
+
         let mut s = server("it-sentinel", addr);
-        s.master_name = Some(master_name);
+        s.master_name = Some(master_name.clone());
         let id = register(s).await;
+        get_connection_manager().remove_client(&id, 0);
         let client = get_connection_manager()
             .get_client(&id, 0)
             .await
             .expect("sentinel client");
         let masters = client.master_servers();
         assert_eq!(masters.len(), 1, "one monitored master");
-        assert_eq!(masters[0].port, master_port, "the master the sentinel announces");
+        assert_eq!(masters[0].port, before, "the master the sentinel announces");
         assert_eq!(client.nodes_description().server_type, "Sentinel");
 
         let key = unique("sentinel");
@@ -508,6 +568,84 @@ fn sentinel_resolves_the_master_and_writes_through_it() {
             .expect("set on master");
         let value: String = cmd("GET").arg(&key).query_async(&mut c).await.expect("get");
         assert_eq!(value, "via-sentinel");
+
+        // Force a failover and wait for the sentinel to promote the replica.
+        // Right after the topology starts the sentinel may not have rated
+        // the replica yet (`NOGOODSLAVE`): retry for a while.
+        let mut started = false;
+        for _ in 0..60 {
+            let reply: Result<String, redis::RedisError> = cmd("SENTINEL")
+                .arg("FAILOVER")
+                .arg(&master_name)
+                .query_async(&mut sentinel)
+                .await;
+            match reply {
+                Ok(_) => {
+                    started = true;
+                    break;
+                }
+                Err(e) if e.to_string().contains("NOGOODSLAVE") => {
+                    smol::Timer::after(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("sentinel failover: {e}"),
+            }
+        }
+        assert!(started, "sentinel never accepted the failover");
+        let mut after = before;
+        for _ in 0..60 {
+            smol::Timer::after(std::time::Duration::from_millis(500)).await;
+            after = sentinel_master_port(&mut sentinel, &master_name).await;
+            if after != before {
+                break;
+            }
+        }
+        assert_ne!(after, before, "sentinel never promoted the replica");
+        // The sentinel announces the new master before it has reconfigured
+        // the old one; wait until the demoted node itself reports `slave`
+        // (replica-read-only is the default, so writes bounce from then on).
+        // Sentinel kills the demoted node's clients as part of the
+        // reconfiguration, so poll on a fresh connection each time.
+        let demoted_server = server("it-demoted", ("127.0.0.1".into(), before));
+        let mut is_replica = false;
+        for _ in 0..60 {
+            if let Ok(mut demoted) = open_single_connection(&demoted_server, 0, false).await
+                && let Ok(info) = cmd("INFO").arg("replication").query_async::<String>(&mut demoted).await
+                && info.contains("role:slave")
+            {
+                is_replica = true;
+                break;
+            }
+            smol::Timer::after(std::time::Duration::from_millis(500)).await;
+        }
+        assert!(is_replica, "the old master was never reconfigured as a replica");
+
+        // The cached client still talks to the demoted node: a write now
+        // bounces with READONLY — the signal `note_link_error` acts on.
+        let write: Result<(), redis::RedisError> = cmd("SET").arg(&key).arg("after-failover").exec_async(&mut c).await;
+        match write {
+            Ok(()) => panic!("write on the demoted master should have been refused"),
+            Err(e) => {
+                let kind = zedis_connection::error::Error::from(e).connection_kind();
+                assert!(
+                    matches!(kind, ConnectionErrorKind::ReadOnly | ConnectionErrorKind::Network),
+                    "{kind:?}"
+                );
+            }
+        }
+        // …which is to drop the client; discovery then lands on the new master.
+        get_connection_manager().remove_client(&id, 0);
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("re-resolved client");
+        assert_eq!(client.master_servers()[0].port, after, "resolved the promoted master");
+        let mut c = conn(&id, 0).await;
+        cmd("SET")
+            .arg(&key)
+            .arg("after-failover")
+            .exec_async(&mut c)
+            .await
+            .expect("write on the new master");
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });
 }

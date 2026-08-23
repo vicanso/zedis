@@ -368,9 +368,13 @@ pub(crate) async fn new_ssh_session(
     password: &str,
     key_passphrase: &str,
 ) -> Result<SshHandle> {
-    // Configure SSH client with keepalive to maintain connection
+    // Keepalive every 30s: bastions and NAT gateways commonly drop idle TCP
+    // sessions after 60–120s, and a dead session is only noticed (and
+    // rebuilt by `get_or_init_ssh_session`) on the next use — the old
+    // 5-minute interval meant the first click after a pause always failed.
     let config = russh::client::Config {
-        keepalive_interval: Some(Duration::from_secs(5 * 60)),
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
         ..Default::default()
     };
     let config = Arc::new(config);

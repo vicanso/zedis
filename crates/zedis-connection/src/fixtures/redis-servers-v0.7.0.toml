@@ -1,0 +1,32 @@
+# redis-servers.toml as written by Zedis 0.7.0: per-server key-tree / scan
+# overrides, timeouts, database count and the SSH key passphrase exist;
+# `default_db` (0.8) does not yet.
+[[servers]]
+id = "srv-1"
+name = "sentinel-prod"
+host = "sentinel.internal"
+port = 26379
+username = "app"
+password = "pw"
+server_type = 2
+databases = 16
+connection_timeout = 5
+response_timeout = 15
+key_separator = "/"
+key_scan_count = 2000
+max_key_tree_depth = 4
+auto_expand_threshold = 10
+show_key_tree_ttl = true
+master_name = "mymaster"
+description = "via sentinel"
+updated_at = "2026-07-01T10:00:00"
+tls = false
+ssh_tunnel = true
+ssh_addr = "bastion:22"
+ssh_username = "ops"
+ssh_key = "-----BEGIN OPENSSH PRIVATE KEY-----"
+ssh_key_passphrase = "pass"
+tag = "STAGING"
+tag_color = "cyan"
+group = "Team B"
+sort_order = 3

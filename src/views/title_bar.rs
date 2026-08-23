@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::helpers::{
-    MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family,
-    is_app_store_build,
+    DiagnosticsAction, MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, UpdateAction,
+    get_mono_font_family, is_app_store_build,
 };
 use crate::{
     assets::CustomIconName,
@@ -252,6 +252,11 @@ impl ZedisTitleBar {
                 i18n_sidebar(cx, "open_logs"),
                 Icon::new(CustomIconName::HardDrive),
                 Box::new(MemuAction::OpenLogs),
+            )
+            .menu_with_icon(
+                i18n_sidebar(cx, "export_diagnostics"),
+                Icon::new(CustomIconName::Download),
+                Box::new(DiagnosticsAction::Export),
             )
             .menu_with_icon(
                 i18n_sidebar(cx, "about"),

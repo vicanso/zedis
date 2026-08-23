@@ -143,7 +143,12 @@ fn keep_first_host(uri: &str) -> Cow<'_, str> {
     }
 }
 
+/// One saved connection (`redis-servers.toml`). `#[serde(default)]` is the
+/// upgrade contract: an entry written by any earlier version must parse, so
+/// a new field is always optional or defaulted — see `upgrade_fixtures` in
+/// the tests, which loads real old files.
 #[derive(Debug, Default, Deserialize, Clone, Serialize, Hash, Eq, PartialEq)]
+#[serde(default)]
 pub struct RedisServer {
     pub id: String,
     pub name: String,
@@ -948,6 +953,30 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     Ok(())
 }
 
+/// The saved server list with every secret (passwords, SSH key and
+/// passphrase, client key) replaced by `<redacted>` — what the diagnostics
+/// bundle ships instead of `redis-servers.toml` itself.
+pub fn servers_toml_redacted() -> Result<String> {
+    redact_servers(get_servers()?)
+}
+
+fn redact_servers(mut servers: Vec<RedisServer>) -> Result<String> {
+    for server in servers.iter_mut() {
+        for secret in [
+            &mut server.password,
+            &mut server.ssh_password,
+            &mut server.ssh_key,
+            &mut server.ssh_key_passphrase,
+            &mut server.client_key,
+        ] {
+            if secret.is_some() {
+                *secret = Some("<redacted>".to_string());
+            }
+        }
+    }
+    toml::to_string(&RedisServers { servers }).map_err(|e| Error::Invalid { message: e.to_string() })
+}
+
 /// Retrieves a single server configuration by name.
 pub fn get_server(id: &str) -> Result<RedisServer> {
     if let Some(server) = SERVER_CONFIG_MAP.load().get(id) {
@@ -958,6 +987,89 @@ pub fn get_server(id: &str) -> Result<RedisServer> {
         message: format!("Redis config not found: {id}"),
     })?;
     Ok(config.clone())
+}
+
+/// Real `redis-servers.toml` files from earlier releases: every entry must
+/// keep parsing (an upgrade that loses connections is the worst regression
+/// this file can have) and every field that still exists must survive.
+#[cfg(test)]
+mod upgrade_fixtures {
+    use super::*;
+
+    const V0_4_0: &str = include_str!("fixtures/redis-servers-v0.4.0.toml");
+    const V0_7_0: &str = include_str!("fixtures/redis-servers-v0.7.0.toml");
+
+    fn load(fixture: &str) -> Vec<RedisServer> {
+        toml::from_str::<RedisServers>(fixture)
+            .expect("an old redis-servers.toml must keep parsing")
+            .servers
+    }
+
+    #[test]
+    fn a_minimal_entry_parses() {
+        // The contract behind `#[serde(default)]`: only id / name / host /
+        // port have ever been written unconditionally.
+        let servers = load("[[servers]]\nid = \"a\"\nname = \"a\"\nhost = \"h\"\nport = 1\n");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].port, 1);
+        assert!(servers[0].password.is_none());
+    }
+
+    #[test]
+    fn v0_4_0_entries_survive() {
+        let servers = load(V0_4_0);
+        assert_eq!(servers.len(), 2);
+        let prod = &servers[0];
+        assert_eq!(prod.name, "prod-cache");
+        assert_eq!(prod.username.as_deref(), Some("admin"));
+        assert_eq!(prod.password.as_deref(), Some("supersecret"));
+        assert_eq!(prod.tls, Some(true));
+        assert!(
+            prod.root_cert
+                .as_deref()
+                .is_some_and(|c| c.starts_with("-----BEGIN CERTIFICATE-----"))
+        );
+        assert_eq!(prod.ssh_tunnel, Some(true));
+        assert_eq!(prod.ssh_addr.as_deref(), Some("bastion.example.com:22"));
+        assert_eq!(prod.readonly, Some(true));
+        assert_eq!(prod.tag.as_deref(), Some("PROD"));
+        assert_eq!(prod.group.as_deref(), Some("Team A"));
+        assert_eq!(prod.sort_order, Some(1));
+        // Fields added after 0.4 default cleanly.
+        assert!(prod.ssh_key_passphrase.is_none());
+        assert!(prod.default_db.is_none());
+        assert!(prod.databases.is_none());
+        assert_eq!(servers[1].id, "srv-2");
+        assert!(servers[1].tls.is_none());
+    }
+
+    #[test]
+    fn v0_7_0_entries_survive() {
+        let servers = load(V0_7_0);
+        assert_eq!(servers.len(), 1);
+        let s = &servers[0];
+        assert_eq!(s.server_type, Some(2));
+        assert_eq!(s.master_name.as_deref(), Some("mymaster"));
+        assert_eq!(s.databases, Some(16));
+        assert_eq!(s.connection_timeout, Some(5));
+        assert_eq!(s.key_separator.as_deref(), Some("/"));
+        assert_eq!(s.key_scan_count, Some(2000));
+        assert_eq!(s.ssh_key_passphrase.as_deref(), Some("pass"));
+        assert!(s.default_db.is_none());
+    }
+
+    #[test]
+    fn old_files_round_trip_through_the_current_writer() {
+        for fixture in [V0_4_0, V0_7_0] {
+            let servers = load(fixture);
+            let written = toml::to_string(&RedisServers {
+                servers: servers.clone(),
+            })
+            .expect("serialize");
+            let again = load(&written);
+            assert_eq!(again, servers);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -981,6 +1093,23 @@ mod tests {
             tag_color: Some("magenta".into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn redacted_toml_keeps_identity_and_hides_every_secret() {
+        let mut server = sample_server();
+        server.ssh_password = Some("ssh-pw-9f1".into());
+        server.ssh_key_passphrase = Some("unlock-7c2".into());
+        server.client_key = Some("-----BEGIN PRIVATE KEY-----".into());
+        let redacted = redact_servers(vec![server]).expect("redact");
+        assert!(redacted.contains("prod-cache") && redacted.contains("10.0.0.5") && redacted.contains("bastion:22"));
+        // Values, not field names: `ssh_key_passphrase` itself must stay.
+        for secret in ["supersecret", "ssh-pw-9f1", "unlock-7c2", "PRIVATE KEY"] {
+            assert!(!redacted.contains(secret), "{secret} leaked");
+        }
+        assert_eq!(redacted.matches("<redacted>").count(), 5);
+        // The certificate (public) is not a secret and stays readable.
+        assert!(redacted.contains("ssh_key_passphrase = \"<redacted>\""));
     }
 
     #[test]

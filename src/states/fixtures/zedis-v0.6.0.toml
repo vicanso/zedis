@@ -1,0 +1,37 @@
+# zedis.toml as written by Zedis 0.6.0: `route` became a lowercase token,
+# window placements / named themes / fonts / per-server last db arrived,
+# multi-database search and AI settings had not yet.
+route = "metrics"
+locale = "en"
+key_tree_width = 320.0
+kv_edit_panel_width = 420.0
+theme = "light"
+theme_name = "Catppuccin Latte"
+font_size = "Medium"
+font_rem_px = 15.0
+ui_font_family = "Inter"
+mono_font_family = "JetBrains Mono"
+max_key_tree_depth = 8
+auto_expand_threshold = 30
+key_scan_count = 1000
+max_truncate_length = 2000
+selected_server = ["srv-2", 0]
+open_tabs = [["srv-2", 0], ["srv-3", 1]]
+tray_enabled = false
+soft_delete = true
+show_key_tree_ttl = true
+sidebar_click_new_tab = false
+collapsed_server_groups = []
+sidebar_collapsed = false
+
+[bounds]
+origin = { x = 0.0, y = 0.0 }
+size = { width = 1440.0, height = 900.0 }
+
+[[window_placements]]
+display_uuid = "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+bounds = { origin = { x = 0.0, y = 0.0 }, size = { width = 1440.0, height = 900.0 } }
+
+[last_db]
+srv-2 = 0
+srv-3 = 1

@@ -15,7 +15,9 @@
 use crate::connection::{get_connection_manager, get_server};
 use crate::db::{insert_metrics_sample, list_metrics_samples, prune_metrics_history};
 use crate::helpers::{unix_ts, unix_ts_millis};
-use crate::states::{ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState};
+use crate::states::{
+    ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState, i18n_status_bar,
+};
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
@@ -24,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 use std::time::Instant;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Default, Clone)]
 pub struct RedisKeySpaceStats {
@@ -597,6 +599,10 @@ impl ZedisServerState {
     /// `ConnectionHealthChanged` only on an actual transition, so a steady
     /// state costs no extra re-render.
     fn note_ping_result(&mut self, ok: bool, cx: &mut Context<Self>) {
+        let was_down = matches!(
+            self.connection_health,
+            ConnectionHealth::Reconnecting | ConnectionHealth::Offline
+        );
         let next = if ok {
             self.ping_failures = 0;
             self.last_connection_error = ConnectionErrorKind::Unknown;
@@ -612,6 +618,23 @@ impl ZedisServerState {
         if self.connection_health != next {
             self.connection_health = next;
             cx.emit(ServerEvent::ConnectionHealthChanged);
+            if ok && was_down {
+                self.on_link_restored(cx);
+            }
+        }
+    }
+
+    /// The heartbeat came back after a Reconnecting / Offline stretch: say
+    /// so, and refresh what the user is looking at — the value on screen
+    /// may be from before the outage (a failover can even have rolled it
+    /// back).
+    fn on_link_restored(&mut self, cx: &mut Context<Self>) {
+        info!(server_id = self.server_id.as_str(), "connection restored");
+        self.emit_success_notification(i18n_status_bar(cx, "conn_restored"), SharedString::default(), cx);
+        if let Some(key) = self.key.clone()
+            && !key.is_empty()
+        {
+            self.reload_value(key, cx);
         }
     }
 
@@ -714,6 +737,23 @@ impl ZedisServerState {
             },
             move |this, result, cx| match result {
                 Ok((info, slow_logs)) => {
+                    // Sentinel: the node we resolved as master now reports
+                    // itself a replica — a failover happened underneath us.
+                    // Drop the client so the next call re-asks the sentinel
+                    // (and tell the user once; the cached value is reloaded
+                    // when the link settles).
+                    if info.meta.role == "slave" && this.nodes_description().server_type == "Sentinel" {
+                        warn!(
+                            server_id = server_id_clone.as_str(),
+                            "sentinel master demoted; re-resolving"
+                        );
+                        get_connection_manager().remove_client(&server_id_clone, db);
+                        let now = unix_ts();
+                        if now.saturating_sub(this.last_link_notice) >= 10 {
+                            this.last_link_notice = now;
+                            this.emit_warning_notification(i18n_status_bar(cx, "conn_master_changed"), cx);
+                        }
+                    }
                     METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
                     maybe_persist_metrics(&server_id_clone, info.metrics, cx);
                     this.redis_info = Some(info);

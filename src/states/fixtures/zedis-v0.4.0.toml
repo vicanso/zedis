@@ -1,0 +1,29 @@
+# zedis.toml as written by Zedis 0.4.0: `route` was the Route enum (a unit
+# variant → bare string), `key_separator` was still an app-wide setting, and
+# the timeouts are serde's default `Duration` tables.
+route = "Editor"
+locale = "zh"
+key_tree_width = 280.0
+theme = "dark"
+font_size = "Large"
+max_key_tree_depth = 6
+key_separator = ":"
+auto_expand_threshold = 20
+key_scan_count = 500
+max_truncate_length = 1000
+selected_server = ["srv-1", 2]
+tray_enabled = true
+show_key_tree_ttl = false
+collapsed_server_groups = ["Team A"]
+
+[bounds]
+origin = { x = 10.0, y = 20.0 }
+size = { width = 1200.0, height = 800.0 }
+
+[redis_connection_timeout]
+secs = 10
+nanos = 0
+
+[redis_response_timeout]
+secs = 20
+nanos = 0

@@ -80,6 +80,15 @@ pub enum ShortcutsAction {
     Toggle,
 }
 
+/// Export the diagnostics bundle (logs + redacted config + connection
+/// state) as one zip in Downloads — the title-bar menu entry next to
+/// "Open Logs Folder". Handled on the `Zedis` root, which knows the active
+/// tab's connection.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum DiagnosticsAction {
+    Export,
+}
+
 /// In-app update check. `Check` queries GitHub for a newer release; handled by
 /// a global, focus-independent handler in `main.rs`, dispatched from the app
 /// menu "Check for Updates". No keybinding — menu-only.

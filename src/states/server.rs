@@ -26,7 +26,7 @@ use crate::states::server::history::{ValueHistoryEntry, push_history};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
 use crate::states::{
     HINT_FIRST_CONNECT, QueryMode, ServerView, ZedisGlobalStore, command_unavailable_message, first_connect_hint,
-    get_session_option, i18n_common, update_app_state_and_save_quiet,
+    get_session_option, i18n_common, i18n_status_bar, update_app_state_and_save_quiet,
 };
 use ahash::AHashMap;
 use ahash::AHashSet;
@@ -225,6 +225,9 @@ pub struct ZedisServerState {
     /// `manually_offline`. Throttles it so a background refresh loop can't spam
     /// the notification each tick.
     last_offline_notice: i64,
+    /// Unix seconds of the last link-level notice (`note_link_error`), so a
+    /// burst of failed calls during a reconnect yields one toast, not ten.
+    last_link_notice: i64,
 
     /// This state belongs to an inactive workspace tab: its status-bar
     /// heartbeat keeps ticking, but `refresh_redis_info` throttles itself to a
@@ -609,6 +612,7 @@ impl ZedisServerState {
                     if !stale
                         && !matches!(name, ServerTask::RefreshRedisInfo | ServerTask::ProbeFeatures)
                         && !this.note_command_error(e, cx)
+                        && !this.note_link_error(e, cx)
                     {
                         this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
                     }
@@ -759,6 +763,48 @@ impl ZedisServerState {
     /// Discards the cached matrix and probes again — the "Re-probe" button.
     pub fn reprobe_features(&mut self, cx: &mut Context<Self>) {
         self.probe_features(true, cx);
+    }
+
+    /// Handles the errors that mean "the link, not the command": a dropped
+    /// connection (laptop woke up, VPN flipped, server restarted), a server
+    /// that is loading / busy / cluster-down, or a topology change (`READONLY`
+    /// / `MASTERDOWN` after a Sentinel or Cluster failover, where the cached
+    /// client still points at the demoted master). Drops the stale client so
+    /// the next call — or the 2s heartbeat — rebuilds it, and replaces the
+    /// raw error with one throttled, localized notice. Returns `true` when
+    /// the error was taken care of here.
+    pub fn note_link_error(&mut self, error: &Error, cx: &mut Context<Self>) -> bool {
+        use ConnectionErrorKind as K;
+        let kind = error.connection_kind();
+        let message = match kind {
+            K::ReadOnly | K::MasterDown => {
+                // A standalone replica really is read-only — that's not a
+                // failover, let the raw error through.
+                let server_type = self.nodes_description().server_type.clone();
+                if server_type != "Sentinel" && server_type != "Cluster" {
+                    return false;
+                }
+                get_connection_manager().remove_client(&self.server_id, self.db);
+                i18n_status_bar(cx, "conn_master_changed")
+            }
+            K::Network => {
+                get_connection_manager().remove_client(&self.server_id, self.db);
+                // The status bar already shows "reconnecting" — no toast per
+                // failed click on top of it.
+                if self.connection_health != ConnectionHealth::Connected {
+                    return true;
+                }
+                i18n_status_bar(cx, "conn_lost")
+            }
+            K::Timeout | K::Loading | K::Busy | K::ClusterDown => i18n_status_bar(cx, kind.reason_key()),
+            _ => return false,
+        };
+        let now = unix_ts();
+        if now.saturating_sub(self.last_link_notice) >= 10 {
+            self.last_link_notice = now;
+            self.emit_warning_notification(message, cx);
+        }
+        true
     }
 
     /// Feeds a failed command's error into the feature matrix. Returns

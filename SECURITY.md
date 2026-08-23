@@ -7,8 +7,8 @@ Security fixes are applied to the latest release line only.
 
 | Version | Supported |
 | --- | --- |
-| 0.4.x (latest) | ✅ |
-| < 0.4 | ❌ |
+| 0.8.x (latest) | ✅ |
+| < 0.8 | ❌ |
 
 ### Reporting a vulnerability
 **Please do not report security vulnerabilities through public GitHub issues.**
@@ -38,8 +38,8 @@ Zedis is a **local desktop client** — it stores connection secrets encrypted a
 
 | 版本 | 是否支持 |
 | --- | --- |
-| 0.4.x(最新) | ✅ |
-| < 0.4 | ❌ |
+| 0.8.x(最新) | ✅ |
+| < 0.8 | ❌ |
 
 ### 报告漏洞
 **请勿通过公开的 GitHub issue 报告安全漏洞。**

@@ -1,0 +1,31 @@
+# redis-servers.toml as written by Zedis 0.4.0 (secrets shown in clear — the
+# encrypted form is an opaque string in the same fields).
+[[servers]]
+id = "srv-1"
+name = "prod-cache"
+host = "10.0.0.5"
+port = 6379
+username = "admin"
+password = "supersecret"
+server_type = 0
+description = "primary cache"
+updated_at = "2026-01-10T08:00:00"
+tls = true
+insecure = false
+root_cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+ssh_tunnel = true
+readonly = true
+ssh_addr = "bastion.example.com:22"
+ssh_username = "ops"
+ssh_key = "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+tag = "PROD"
+tag_color = "magenta"
+require_confirm_writes = true
+group = "Team A"
+sort_order = 1
+
+[[servers]]
+id = "srv-2"
+name = "local"
+host = "127.0.0.1"
+port = 6379

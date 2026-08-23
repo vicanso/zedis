@@ -57,6 +57,18 @@ pub enum ConnectionErrorKind {
     Tls,
     /// The SSH tunnel itself failed to establish.
     Tunnel,
+    /// `-LOADING`: the server is (re)starting and still loading its dataset.
+    Loading,
+    /// `-BUSY`: a long-running script / function blocks every other command.
+    Busy,
+    /// `-MASTERDOWN`: the replica's master is down and it refuses reads.
+    MasterDown,
+    /// `-READONLY`: a write hit a replica — typically the old master after
+    /// a Sentinel / Cluster failover, still cached as "the master".
+    ReadOnly,
+    /// `-CLUSTERDOWN`: the cluster can't serve (slots uncovered / majority
+    /// of masters down).
+    ClusterDown,
 }
 
 impl ConnectionErrorKind {
@@ -72,8 +84,34 @@ impl ConnectionErrorKind {
             ConnectionErrorKind::Network => "conn_reason_network",
             ConnectionErrorKind::Tls => "conn_reason_tls",
             ConnectionErrorKind::Tunnel => "conn_reason_tunnel",
+            ConnectionErrorKind::Loading => "conn_reason_loading",
+            ConnectionErrorKind::Busy => "conn_reason_busy",
+            ConnectionErrorKind::MasterDown => "conn_reason_masterdown",
+            ConnectionErrorKind::ReadOnly => "conn_reason_readonly",
+            ConnectionErrorKind::ClusterDown => "conn_reason_clusterdown",
             ConnectionErrorKind::Unknown => "conn_offline",
         }
+    }
+
+    /// A condition that clears by itself (restart finishing, script ending,
+    /// failover completing, network coming back) — worth a retry later,
+    /// unlike a bad password or a missing permission.
+    pub const fn is_transient(self) -> bool {
+        matches!(
+            self,
+            ConnectionErrorKind::Timeout
+                | ConnectionErrorKind::Network
+                | ConnectionErrorKind::Loading
+                | ConnectionErrorKind::Busy
+                | ConnectionErrorKind::MasterDown
+                | ConnectionErrorKind::ClusterDown
+        )
+    }
+
+    /// The cached topology is stale: the node we call "master" no longer is
+    /// (or is gone). The client must be rebuilt so discovery runs again.
+    pub const fn is_topology_change(self) -> bool {
+        matches!(self, ConnectionErrorKind::ReadOnly | ConnectionErrorKind::MasterDown)
     }
 }
 
@@ -95,6 +133,11 @@ impl Error {
                 match source.code() {
                     Some("NOAUTH" | "WRONGPASS") => return K::Auth,
                     Some("NOPERM") => return K::Permission,
+                    Some("LOADING") => return K::Loading,
+                    Some("BUSY") => return K::Busy,
+                    Some("MASTERDOWN") => return K::MasterDown,
+                    Some("READONLY") => return K::ReadOnly,
+                    Some("CLUSTERDOWN") => return K::ClusterDown,
                     _ => {}
                 }
                 if source.is_connection_refusal() || source.is_connection_dropped() || source.is_io_error() {
@@ -201,5 +244,37 @@ mod tests {
         // the UI falls back to a generic message rather than mislabeling it.
         let other = Error::Invalid { message: "x".into() };
         assert_eq!(other.connection_kind(), ConnectionErrorKind::Unknown);
+    }
+
+    #[test]
+    fn classifies_server_state_replies() {
+        use redis::ServerErrorKind as S;
+        let kind = |server: S| {
+            Error::Redis {
+                source: redis::RedisError::from((ErrorKind::Server(server), "server state")),
+            }
+            .connection_kind()
+        };
+        assert_eq!(kind(S::BusyLoading), ConnectionErrorKind::Loading);
+        assert_eq!(kind(S::MasterDown), ConnectionErrorKind::MasterDown);
+        assert_eq!(kind(S::ReadOnly), ConnectionErrorKind::ReadOnly);
+        assert_eq!(kind(S::ClusterDown), ConnectionErrorKind::ClusterDown);
+        assert_eq!(kind(S::NoPerm), ConnectionErrorKind::Permission);
+        // Transient vs. topology-change vs. the rest drive the recovery path.
+        assert!(ConnectionErrorKind::Loading.is_transient());
+        assert!(ConnectionErrorKind::Network.is_transient());
+        assert!(!ConnectionErrorKind::Auth.is_transient());
+        assert!(ConnectionErrorKind::ReadOnly.is_topology_change());
+        assert!(!ConnectionErrorKind::Loading.is_topology_change());
+        // Every kind names a reason key.
+        for k in [
+            ConnectionErrorKind::Loading,
+            ConnectionErrorKind::Busy,
+            ConnectionErrorKind::MasterDown,
+            ConnectionErrorKind::ReadOnly,
+            ConnectionErrorKind::ClusterDown,
+        ] {
+            assert!(k.reason_key().starts_with("conn_reason_"), "{k:?}");
+        }
     }
 }

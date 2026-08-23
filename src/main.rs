@@ -1,17 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use crate::connection::{DangerKind, clear_expired_cache, get_server, get_servers};
+use crate::connection::{DangerKind, clear_expired_cache, get_server, get_servers, servers_toml_redacted};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{
     DbOpenFailure, LuaScriptManager, ProtoManager, ScriptManager, TRASH_RETENTION_MS, init_database, open_failure_kind,
     purge_all_trash, quarantine_database,
 };
 use crate::helpers::{
-    ConfigRecovery, CrashContext, CrashReport, EditorAction, MemuAction, MultiSearchAction, NavAction, PaletteAction,
-    RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo, WorkspaceTabAction, apply_default_ui_font_size,
-    apply_fonts, download_and_verify, fetch_latest_release, focus_installer_ui, get_mono_font_family,
-    get_or_create_config_dir, humanize_keystroke, init_logger, install_panic_hook, installer_requires_quit,
-    is_app_store_build, logs_dir, new_hot_keys, open_installer, register_extra_languages, set_configured_proxy,
-    take_config_recoveries, take_pending_crash, unix_ts_millis, with_app_identity,
+    ConfigRecovery, CrashContext, CrashReport, DiagnosticsAction, DiagnosticsInput, EditorAction, MemuAction,
+    MultiSearchAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
+    WorkspaceTabAction, apply_default_ui_font_size, apply_fonts, download_and_verify, export_diagnostics,
+    fetch_latest_release, focus_installer_ui, get_mono_font_family, get_or_create_config_dir, humanize_keystroke,
+    init_logger, install_panic_hook, installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys,
+    open_installer, register_extra_languages, set_configured_proxy, take_config_recoveries, take_pending_crash,
+    unix_ts_millis, with_app_identity,
 };
 use crate::states::{
     GlobalEvent, HINT_WELCOME, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction,
@@ -380,6 +381,79 @@ impl Zedis {
     /// status bar is shown).
     fn active_content(&self) -> Entity<ZedisContent> {
         self.tabs[self.active_tab].content.clone()
+    }
+
+    /// Writes the diagnostics bundle (see `helpers::diagnostics`) and reveals
+    /// it. The summary is assembled here because only the root knows the
+    /// active tab's connection.
+    fn export_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let info = os_info::get();
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
+        let mut summary = format!(
+            "Zedis diagnostics\nversion: {VERSION} ({GIT_SHA})\nos: {}-{}\narch: {}\nconfig_dir: {}\nlocale: {}\ntheme: {:?} / {:?}\napp_store_build: {}\ntime: {}\n",
+            info.os_type(),
+            info.version(),
+            info.architecture().unwrap_or_default(),
+            get_or_create_config_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default(),
+            store.locale(),
+            store.theme(),
+            store.theme_name(),
+            is_app_store_build(),
+            chrono::Local::now().to_rfc3339(),
+        );
+        let app_config = store.redacted_toml().unwrap_or_else(|e| format!("<unavailable: {e}>"));
+        let locale = store.locale().to_string();
+        let state = self.active_content().read(cx).server_state();
+        let state = state.read(cx);
+        if !state.server_id().is_empty() {
+            let features = state.features();
+            let unusable: Vec<String> = features
+                .unusable()
+                .iter()
+                .map(|(c, s)| format!("{} ({s:?})", c.label()))
+                .collect();
+            summary.push_str(&format!(
+                "\n[active connection]\nserver_id: {}\nredis_version: {}\nserver_type: {}\nflavor: {}\nreadonly: {}\nhealth: {:?}\nlast_error: {:?}\nfeatures_probed: {}\nunusable_commands: {}\n",
+                state.server_id(),
+                state.version(),
+                state.nodes_description().server_type,
+                features.flavor.label(),
+                state.readonly(),
+                state.connection_health(),
+                state.last_connection_error(),
+                features.probed,
+                if unusable.is_empty() {
+                    "none".to_string()
+                } else {
+                    unusable.join(", ")
+                },
+            ));
+        }
+        let servers_config = servers_toml_redacted().unwrap_or_else(|e| format!("<unavailable: {e}>"));
+        let input = DiagnosticsInput {
+            summary,
+            app_config,
+            servers_config,
+        };
+        match export_diagnostics(&input) {
+            Ok(path) => {
+                info!(path = %path.display(), "diagnostics bundle written");
+                let message = t!(
+                    "sidebar.diagnostics_saved",
+                    path = path.display().to_string(),
+                    locale = &locale
+                );
+                window.push_notification(Notification::success(message.to_string()), cx);
+                cx.reveal_path(&path);
+            }
+            Err(e) => {
+                error!(error = %e, "diagnostics bundle failed");
+                let message = t!("sidebar.diagnostics_failed", error = e.to_string(), locale = &locale);
+                window.push_notification(Notification::error(message.to_string()), cx);
+            }
+        }
     }
 
     /// Switch the active tab: the outgoing tab stops reacting to global
@@ -1520,6 +1594,9 @@ impl Render for Zedis {
                     });
                 }
             }))
+            .on_action(cx.listener(|this, _: &DiagnosticsAction, window, cx| {
+                this.export_diagnostics(window, cx);
+            }))
             .on_action(cx.listener(move |_this, e: &ServerToolsAction, window, cx| {
                 let target = match e {
                     ServerToolsAction::Monitor => ServerView::Monitor,
@@ -2162,6 +2239,7 @@ fn launch(cx: &mut App, app_state: ZedisAppState) {
     }
     menu_items.extend([
         MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
+        MenuItem::action("Export Diagnostics…", DiagnosticsAction::Export),
         MenuItem::action("Close Window", MemuAction::Close),
         MenuItem::action("Quit", MemuAction::Quit),
     ]);
