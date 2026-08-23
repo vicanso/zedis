@@ -43,7 +43,10 @@ pub const TRASH_MAX_PAYLOAD: usize = 1024 * 1024;
 /// check after DUMP.
 pub const TRASH_MAX_VALUE_MEMORY: i64 = 4 * 1024 * 1024;
 
-#[derive(Debug, Serialize, Deserialize)]
+/// `#[serde(default)]` for the same reason as [`crate::ProtoConfig`], even
+/// though these rows expire after 24h.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 struct TrashMetaDoc {
     v: u8,
     key: String,

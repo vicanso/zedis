@@ -23,15 +23,16 @@ use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
 use tempfile::TempDir;
-use tracing::info;
+use tracing::{info, warn};
 use zedis_core::fs::resolve_path;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 static PROTO_META_CACHE: LazyLock<DashMap<String, ProtoConfig>> = LazyLock::new(DashMap::new);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum MatchMode {
+    #[default]
     Prefix,
     Suffix,
     Regex,
@@ -59,7 +60,15 @@ impl From<MatchMode> for usize {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One saved proto viewer.
+///
+/// `#[serde(default)]` is the upgrade contract every value this crate stores in
+/// redb follows: a row written by an earlier build must still deserialize after
+/// a field is added, because the loaders below skip what they cannot read — and
+/// a decoder definition the user typed is not something a version bump gets to
+/// drop. New fields are therefore always optional or defaulted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProtoConfig {
     pub server_id: String,
     pub name: String,
@@ -133,10 +142,27 @@ impl ProtoManager {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PROTO_TABLE)?;
 
+        let mut skipped = 0usize;
         for item in table.iter()? {
             let (key, value) = item?;
             let id = key.value();
-            let mut config: ProtoConfig = serde_json::from_slice(value.value())?;
+            // A row this build cannot read is skipped and left on disk, never
+            // deleted — it holds a definition the user wrote, and a later build
+            // may well read it again. Skipping per row also stops one bad entry
+            // from hiding every entry after it, which propagating here did.
+            let mut config: ProtoConfig = match serde_json::from_slice(value.value()) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(id, error = %e, "unreadable proto entry, skipped");
+                    skipped += 1;
+                    continue;
+                }
+            };
+            if config.name.is_empty() {
+                warn!(id, "incomplete proto entry, skipped");
+                skipped += 1;
+                continue;
+            }
             info!(
                 id,
                 name = config.name,
@@ -147,7 +173,7 @@ impl ProtoManager {
             config.content = None;
             PROTO_META_CACHE.insert(id.to_string(), config);
         }
-        info!(count = PROTO_META_CACHE.len(), "load protos success");
+        info!(count = PROTO_META_CACHE.len(), skipped, "load protos success");
 
         Ok(())
     }
@@ -255,5 +281,133 @@ impl ProtoManager {
             });
         }
         proto_to_json(&pool, &target_message, data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::init_database_for_tests;
+    use zedis_core::fs::override_config_dir;
+
+    fn setup() {
+        override_config_dir(std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())));
+        init_database_for_tests();
+    }
+
+    fn config(server_id: &str, pattern: &str, mode: MatchMode) -> ProtoConfig {
+        ProtoConfig {
+            server_id: server_id.to_string(),
+            name: "orders".to_string(),
+            match_pattern: pattern.to_string(),
+            mode,
+            includes: None,
+            content: Some("syntax = \"proto3\";".to_string()),
+            target_message: Some("Order".to_string()),
+        }
+    }
+
+    fn write_raw(id: &str, json: &[u8]) {
+        let db = get_database().expect("database");
+        let txn = db.begin_write().expect("begin write");
+        {
+            let mut table = txn.open_table(PROTO_TABLE).expect("open");
+            table.insert(id, json).expect("insert");
+        }
+        txn.commit().expect("commit");
+    }
+
+    fn raw_exists(id: &str) -> bool {
+        let db = get_database().expect("database");
+        let txn = db.begin_read().expect("begin read");
+        let table = txn.open_table(PROTO_TABLE).expect("open");
+        table.get(id).expect("get").is_some()
+    }
+
+    #[test]
+    fn a_proto_saved_by_an_older_build_still_loads() {
+        let legacy = br#"{"server_id":"s1","name":"orders","match_pattern":"order:"}"#;
+        let parsed: ProtoConfig = serde_json::from_slice(legacy).expect("legacy row parses");
+        assert_eq!(parsed.match_pattern, "order:");
+        assert_eq!(parsed.mode, MatchMode::Prefix);
+        assert!(parsed.content.is_none());
+    }
+
+    #[test]
+    fn the_schema_text_stays_on_disk_and_out_of_the_cache() {
+        setup();
+        ProtoManager::upsert_proto("pr-rt", config("pr-rt-srv", "order:", MatchMode::Prefix)).expect("upsert");
+
+        // The cache is a metadata index — a .proto body can be large and is only
+        // needed when something is actually decoded.
+        let cached = ProtoManager::list_protos_with_id()
+            .into_iter()
+            .find(|(id, _)| id == "pr-rt")
+            .expect("cached");
+        assert!(cached.1.content.is_none());
+
+        let stored = ProtoManager::get_proto("pr-rt").expect("get");
+        assert_eq!(stored.content.as_deref(), Some("syntax = \"proto3\";"));
+        assert_eq!(stored.target_message.as_deref(), Some("Order"));
+
+        ProtoManager::delete_proto("pr-rt").expect("delete");
+        assert!(ProtoManager::get_proto("pr-rt").is_err());
+        assert!(!raw_exists("pr-rt"));
+        assert!(ProtoManager::match_key_to_name("pr-rt-srv", "order:1").is_none());
+    }
+
+    #[test]
+    fn matches_a_key_by_every_mode_and_only_for_its_own_server() {
+        setup();
+        ProtoManager::upsert_proto("pr-pre", config("pr-m-srv", "order:", MatchMode::Prefix)).expect("upsert");
+        ProtoManager::upsert_proto("pr-suf", config("pr-m-srv", ":pb", MatchMode::Suffix)).expect("upsert");
+        ProtoManager::upsert_proto("pr-exa", config("pr-m-srv", "exactly", MatchMode::Exact)).expect("upsert");
+        ProtoManager::upsert_proto("pr-re", config("pr-m-srv", "^ev[0-9]+$", MatchMode::Regex)).expect("upsert");
+
+        assert_eq!(
+            ProtoManager::match_key_to_name("pr-m-srv", "order:1").as_deref(),
+            Some("pr-pre")
+        );
+        assert_eq!(
+            ProtoManager::match_key_to_name("pr-m-srv", "blob:pb").as_deref(),
+            Some("pr-suf")
+        );
+        assert_eq!(
+            ProtoManager::match_key_to_name("pr-m-srv", "exactly").as_deref(),
+            Some("pr-exa")
+        );
+        assert_eq!(
+            ProtoManager::match_key_to_name("pr-m-srv", "ev7").as_deref(),
+            Some("pr-re")
+        );
+        assert!(ProtoManager::match_key_to_name("pr-m-srv", "nothing").is_none());
+        assert!(ProtoManager::match_key_to_name("pr-other-srv", "order:1").is_none());
+    }
+
+    #[test]
+    fn refuses_an_unnamed_proto() {
+        setup();
+        let mut unnamed = config("pr-bad-srv", "k", MatchMode::Prefix);
+        unnamed.name = String::new();
+        assert!(ProtoManager::upsert_proto("pr-bad", unnamed).is_err());
+        assert!(!raw_exists("pr-bad"));
+    }
+
+    #[test]
+    fn one_unreadable_row_no_longer_hides_every_row_after_it() {
+        setup();
+        // `init` used to propagate the first parse error, so whichever entries
+        // sorted after the bad one silently disappeared from the picker. The
+        // ids here bracket the broken one in key order on purpose.
+        write_raw("pr-init-1-broken", b"} not json {");
+        ProtoManager::upsert_proto("pr-init-2-good", config("pr-init-srv", "after:", MatchMode::Prefix))
+            .expect("upsert");
+        PROTO_META_CACHE.remove("pr-init-2-good");
+
+        ProtoManager::init().expect("init");
+
+        assert!(PROTO_META_CACHE.contains_key("pr-init-2-good"), "later rows still load");
+        assert!(!PROTO_META_CACHE.contains_key("pr-init-1-broken"));
+        assert!(raw_exists("pr-init-1-broken"), "an unreadable row is never deleted");
     }
 }

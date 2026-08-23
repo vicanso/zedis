@@ -142,6 +142,7 @@ fn ensure_schema(db: &Database) -> Result<()> {
         write_txn.open_table(SEARCH_HISTORY_TABLE)?;
         write_txn.open_table(PROTO_TABLE)?;
         write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
+        write_txn.open_table(CMD_HISTORY_TABLE)?;
         write_txn.open_table(FAVORITY_TABLE)?;
         write_txn.open_table(RECENT_KEYS_TABLE)?;
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
@@ -257,6 +258,7 @@ fn add_normalize_history(history: &mut Vec<String>, keyword: String, max: usize)
 #[cfg(test)]
 mod schema_tests {
     use super::*;
+    use redb::TableHandle;
 
     /// A scratch database file per test, removed on drop.
     struct ScratchDb(PathBuf);
@@ -301,6 +303,68 @@ mod schema_tests {
         let db = Database::open(&scratch.0).expect("reopen");
         ensure_schema(&db).expect("ensure schema again");
         assert_eq!(stored_version(&db), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn every_table_this_crate_defines_exists_after_an_open() {
+        // The read paths open tables in a *read* transaction, which cannot
+        // create one — so a table missing here fails every read until the first
+        // write happens to create it. `cmd_history` was missing exactly this
+        // way. A new `TableDefinition` belongs in `ensure_schema` and here.
+        let scratch = ScratchDb::new("tables");
+        let db = Database::create(&scratch.0).expect("create");
+        ensure_schema(&db).expect("ensure schema");
+
+        let txn = db.begin_read().expect("begin read");
+        let mut found: Vec<String> = txn
+            .list_tables()
+            .expect("list tables")
+            .map(|t| t.name().to_string())
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "cmd_history",
+                "favority",
+                "key_metadata",
+                "key_trash",
+                "lua_script",
+                "meta",
+                "metrics_history",
+                "proto",
+                "recent_keys",
+                "script_viewer",
+                "search_history",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_older_file_with_no_migration_step_fails_the_open_rather_than_being_stamped() {
+        // The whole point of the version stamp: reaching a layout this build has
+        // no step for must abort, not quietly claim the file is current and let
+        // the managers write a mix of both shapes into it.
+        let scratch = ScratchDb::new("older");
+        let db = Database::create(&scratch.0).expect("create");
+        {
+            let txn = db.begin_write().expect("begin write");
+            txn.open_table(META_TABLE)
+                .expect("open meta")
+                .insert(SCHEMA_VERSION_KEY, 0u32)
+                .expect("insert");
+            txn.commit().expect("commit");
+        }
+
+        let err = ensure_schema(&db).expect_err("must refuse");
+        assert!(err.to_string().contains("no migration"), "{err}");
+        // Aborted transaction: the stamp is untouched and no table was created.
+        assert_eq!(stored_version(&db), Some(0));
+        let txn = db.begin_read().expect("begin read");
+        assert!(matches!(
+            txn.open_table(FAVORITY_TABLE),
+            Err(redb::TableError::TableDoesNotExist(_))
+        ));
     }
 
     #[test]
@@ -373,5 +437,23 @@ mod schema_tests {
         let _first = Database::create(&scratch.0).expect("create");
         let err: Error = Database::create(&scratch.0).expect_err("second open must fail").into();
         assert_eq!(open_failure_kind(&err), DbOpenFailure::Locked);
+    }
+}
+
+#[cfg(test)]
+mod history_normalize_tests {
+    use super::add_normalize_history;
+
+    #[test]
+    fn moves_a_repeat_to_the_front_and_enforces_the_cap() {
+        let mut history = vec!["b".to_string(), "a".to_string()];
+        add_normalize_history(&mut history, "a".to_string(), 5);
+        assert_eq!(history, vec!["a", "b"], "a repeat moves up instead of duplicating");
+
+        let mut history: Vec<String> = Vec::new();
+        for keyword in ["1", "2", "3", "4"] {
+            add_normalize_history(&mut history, keyword.to_string(), 3);
+        }
+        assert_eq!(history, vec!["4", "3", "2"], "the oldest entry falls off the end");
     }
 }

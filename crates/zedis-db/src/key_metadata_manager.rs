@@ -351,4 +351,86 @@ mod tests {
         assert!(!json.contains("\"tag\""));
         assert!(!json.contains("\"note\""));
     }
+
+    /// The stored side: tags and notes exist only in this file, so a write that
+    /// does not reach disk is a permanent loss, not a refresh away.
+    mod stored {
+        use super::*;
+        use crate::{KeyMetadataManager, get_key_metadata_manager, init_database_for_tests};
+        use zedis_core::fs::override_config_dir;
+
+        fn manager() -> &'static KeyMetadataManager {
+            override_config_dir(std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())));
+            init_database_for_tests();
+            get_key_metadata_manager()
+        }
+
+        fn tagged(tag: TagColor, note: &str) -> KeyMetadata {
+            KeyMetadata {
+                tag: Some(tag),
+                note: note.to_string(),
+            }
+        }
+
+        #[test]
+        fn set_get_and_clear_round_trip() {
+            let m = manager();
+            assert!(!m.has_any_records("km-rt"));
+
+            m.set("km-rt", "user:1", tagged(TagColor::Red, "hot key")).expect("set");
+            assert_eq!(
+                m.get("km-rt", "user:1").expect("get"),
+                Some(tagged(TagColor::Red, "hot key"))
+            );
+            assert!(m.has_any_records("km-rt"));
+            assert_eq!(m.records("km-rt").expect("records").len(), 1);
+
+            m.clear("km-rt", "user:1").expect("clear");
+            assert_eq!(m.get("km-rt", "user:1").expect("get"), None);
+            assert!(m.records("km-rt").expect("records").is_empty());
+        }
+
+        #[test]
+        fn an_empty_annotation_is_stored_as_no_record_at_all() {
+            let m = manager();
+            m.set("km-empty", "user:1", tagged(TagColor::Blue, "note"))
+                .expect("set");
+            // Clearing both fields in the editor is a delete, not an empty row.
+            m.set("km-empty", "user:1", KeyMetadata::default()).expect("set empty");
+            assert_eq!(m.get("km-empty", "user:1").expect("get"), None);
+            assert!(!m.has_any_records("km-empty"));
+        }
+
+        #[test]
+        fn a_bulk_tag_write_lands_for_every_key() {
+            let m = manager();
+            let keys = ["a", "b", "c"];
+            m.set_tags_many("km-bulk", keys.iter().copied(), Some(TagColor::Green))
+                .expect("set tags");
+            let records = m.records("km-bulk").expect("records");
+            assert_eq!(records.len(), 3);
+            assert!(records.values().all(|v| v.tag == Some(TagColor::Green)));
+
+            // Untagging the same set empties it again.
+            m.set_tags_many("km-bulk", keys.iter().copied(), None).expect("untag");
+            assert!(m.records("km-bulk").expect("records").is_empty());
+        }
+
+        #[test]
+        fn one_servers_annotations_never_leak_into_another() {
+            let m = manager();
+            m.set("km-iso-a", "shared:key", tagged(TagColor::Red, "a"))
+                .expect("set");
+            m.set("km-iso-b", "shared:key", tagged(TagColor::Blue, "b"))
+                .expect("set");
+            assert_eq!(
+                m.get("km-iso-a", "shared:key").expect("get"),
+                Some(tagged(TagColor::Red, "a"))
+            );
+            assert_eq!(
+                m.get("km-iso-b", "shared:key").expect("get"),
+                Some(tagged(TagColor::Blue, "b"))
+            );
+        }
+    }
 }

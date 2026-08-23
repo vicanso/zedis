@@ -36,7 +36,10 @@ static LUA_SCRIPT_CACHE: LazyLock<DashMap<String, LuaScript>> = LazyLock::new(Da
 
 /// One saved Lua script. `id` is the redb key, kept out of the value
 /// body so it doesn't get serialized twice.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `#[serde(default)]` is the upgrade contract (see [`crate::ProtoConfig`]): a
+/// script saved by an earlier build must still load after a field is added.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LuaScript {
     pub name: String,
     pub code: String,
@@ -74,35 +77,31 @@ impl LuaScriptManager {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(LUA_SCRIPT_TABLE)?;
 
-        let mut invalid: Vec<String> = Vec::new();
+        let mut skipped = 0usize;
         for item in table.iter()? {
             let (key, value) = item?;
             let id = key.value();
+            // Skipped, not deleted — the library is the user's own work and
+            // exists nowhere else. See `ProtoConfig` for the contract that
+            // keeps a version bump from landing here in the first place.
             let script: LuaScript = match serde_json::from_slice(value.value()) {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(id, error = %e, "invalid lua script entry, will be removed");
-                    invalid.push(id.to_string());
+                    warn!(id, error = %e, "unreadable lua script entry, skipped");
+                    skipped += 1;
                     continue;
                 }
             };
+            if script.name.trim().is_empty() || script.code.trim().is_empty() {
+                warn!(id, "incomplete lua script entry, skipped");
+                skipped += 1;
+                continue;
+            }
             LUA_SCRIPT_CACHE.insert(id.to_string(), script);
         }
         drop(read_txn);
 
-        if !invalid.is_empty() {
-            let write_txn = db.begin_write()?;
-            {
-                let mut table = write_txn.open_table(LUA_SCRIPT_TABLE)?;
-                for id in &invalid {
-                    table.remove(id.as_str())?;
-                }
-            }
-            write_txn.commit()?;
-            info!(count = invalid.len(), "removed invalid lua script entries");
-        }
-
-        info!(count = LUA_SCRIPT_CACHE.len(), "load lua scripts success");
+        info!(count = LUA_SCRIPT_CACHE.len(), skipped, "load lua scripts success");
         Ok(())
     }
 
@@ -229,4 +228,169 @@ pub struct LuaScriptExport {
     pub default_keys: Vec<String>,
     #[serde(default)]
     pub default_args: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{init_database_for_tests, lua_scripts::LUA_SCRIPT_TABLE};
+    use zedis_core::fs::override_config_dir;
+
+    fn setup() {
+        override_config_dir(std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())));
+        init_database_for_tests();
+    }
+
+    fn script(name: &str, code: &str) -> LuaScript {
+        LuaScript {
+            name: name.to_string(),
+            code: code.to_string(),
+            sha: "deadbeef".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Writes a raw row, bypassing `upsert` — the shape an older build, or a
+    /// half-written file, leaves behind.
+    fn write_raw(id: &str, json: &[u8]) {
+        let db = get_database().expect("database");
+        let txn = db.begin_write().expect("begin write");
+        {
+            let mut table = txn.open_table(LUA_SCRIPT_TABLE).expect("open");
+            table.insert(id, json).expect("insert");
+        }
+        txn.commit().expect("commit");
+    }
+
+    fn raw_exists(id: &str) -> bool {
+        let db = get_database().expect("database");
+        let txn = db.begin_read().expect("begin read");
+        let table = txn.open_table(LUA_SCRIPT_TABLE).expect("open");
+        table.get(id).expect("get").is_some()
+    }
+
+    #[test]
+    fn a_script_saved_by_an_older_build_still_loads() {
+        // Everything except the source itself was added after the first
+        // release; the contract is that the shape below keeps working.
+        let legacy = br#"{"name":"incr","code":"return 1","sha":"abc"}"#;
+        let parsed: LuaScript = serde_json::from_slice(legacy).expect("legacy row parses");
+        assert_eq!(parsed.name, "incr");
+        assert_eq!(parsed.calls, 0);
+        assert!(parsed.default_keys.is_empty());
+
+        // And the same holds for a field this build itself does not know yet.
+        let future = br#"{"name":"incr","code":"return 1","sha":"abc","invented_later":true}"#;
+        assert_eq!(
+            serde_json::from_slice::<LuaScript>(future)
+                .expect("unknown field ignored")
+                .name,
+            "incr"
+        );
+    }
+
+    #[test]
+    fn upsert_get_and_delete_round_trip() {
+        setup();
+        LuaScriptManager::upsert("lua-rt", script("round", "return redis.call('PING')")).expect("upsert");
+
+        let got = LuaScriptManager::get("lua-rt").expect("get");
+        assert_eq!(got.name, "round");
+        assert_eq!(got.code, "return redis.call('PING')");
+
+        LuaScriptManager::delete("lua-rt").expect("delete");
+        assert!(LuaScriptManager::get("lua-rt").is_err());
+        assert!(!raw_exists("lua-rt"));
+    }
+
+    #[test]
+    fn refuses_an_entry_with_nothing_in_it() {
+        setup();
+        assert!(LuaScriptManager::upsert("lua-bad", script("  ", "return 1")).is_err());
+        assert!(LuaScriptManager::upsert("lua-bad", script("named", "   ")).is_err());
+        assert!(!raw_exists("lua-bad"), "a rejected script must not reach the file");
+    }
+
+    #[test]
+    fn record_call_counts_runs_without_reordering_the_library() {
+        setup();
+        let mut s = script("counted", "return 1");
+        s.updated_at = 42;
+        LuaScriptManager::upsert("lua-calls", s).expect("upsert");
+
+        LuaScriptManager::record_call("lua-calls", true).expect("hit");
+        LuaScriptManager::record_call("lua-calls", false).expect("miss");
+
+        let got = LuaScriptManager::get("lua-calls").expect("get");
+        assert_eq!((got.calls, got.evalsha_hits), (2, 1));
+        // Running a script must not shuffle it to the top of the list.
+        assert_eq!(got.updated_at, 42);
+    }
+
+    #[test]
+    fn name_taken_ignores_the_entry_being_edited() {
+        setup();
+        LuaScriptManager::upsert("lua-nt-1", script("shared-name", "return 1")).expect("upsert");
+        assert!(LuaScriptManager::name_taken("shared-name", None));
+        assert!(LuaScriptManager::name_taken(" shared-name ", None), "compared trimmed");
+        assert!(!LuaScriptManager::name_taken("shared-name", Some("lua-nt-1")));
+        assert!(
+            !LuaScriptManager::name_taken("   ", None),
+            "a blank name is never taken"
+        );
+    }
+
+    #[test]
+    fn export_drops_the_runtime_stats() {
+        setup();
+        let mut s = script("exported-zz", "return 1");
+        s.calls = 9;
+        s.evalsha_hits = 4;
+        s.default_keys = vec!["k".to_string()];
+        LuaScriptManager::upsert("lua-export", s).expect("upsert");
+
+        let exported = LuaScriptManager::export_all();
+        let mine = exported.iter().find(|e| e.name == "exported-zz").expect("present");
+        assert_eq!(mine.code, "return 1");
+        assert_eq!(mine.default_keys, vec!["k".to_string()]);
+        // Sorted by name so a dump is stable across machines.
+        let mut sorted = exported.clone();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        let names: Vec<&str> = exported.iter().map(|e| e.name.as_str()).collect();
+        let sorted_names: Vec<&str> = sorted.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, sorted_names);
+    }
+
+    #[test]
+    fn init_skips_a_row_it_cannot_read_and_leaves_it_on_disk() {
+        setup();
+        write_raw("lua-init-broken", b"{ this is not json");
+        LuaScriptManager::upsert("lua-init-good", script("survivor", "return 1")).expect("upsert");
+        LUA_SCRIPT_CACHE.remove("lua-init-good");
+
+        LuaScriptManager::init().expect("init");
+
+        assert!(
+            LUA_SCRIPT_CACHE.contains_key("lua-init-good"),
+            "a valid row still loads"
+        );
+        assert!(
+            !LUA_SCRIPT_CACHE.contains_key("lua-init-broken"),
+            "an unreadable row is skipped"
+        );
+        // The row survives: it is the user's own work, and a later build may
+        // read it again. Deleting it here is how a schema change turns into
+        // silent data loss.
+        assert!(raw_exists("lua-init-broken"));
+    }
+
+    #[test]
+    fn init_skips_a_row_with_no_source_in_it() {
+        setup();
+        // Reachable now that `#[serde(default)]` makes a truncated row parse.
+        write_raw("lua-init-empty", br#"{"name":"ghost"}"#);
+        LuaScriptManager::init().expect("init");
+        assert!(!LUA_SCRIPT_CACHE.contains_key("lua-init-empty"));
+        assert!(raw_exists("lua-init-empty"));
+    }
 }

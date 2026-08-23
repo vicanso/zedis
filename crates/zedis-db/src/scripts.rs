@@ -108,7 +108,15 @@ const VALUE_ENV: &str = "ZEDIS_VALUE";
 
 static SCRIPT_CACHE: LazyLock<DashMap<String, ScriptConfig>> = LazyLock::new(DashMap::new);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One saved script viewer.
+///
+/// `#[serde(default)]` is the upgrade contract (see [`crate::ProtoConfig`]): a
+/// row written before a field existed must still load, because [`init`] skips
+/// what it cannot read.
+///
+/// [`init`]: ScriptManager::init
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ScriptConfig {
     pub server_id: String,
     pub name: String,
@@ -130,36 +138,36 @@ impl ScriptManager {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SCRIPT_VIEWER_TABLE)?;
 
-        let mut invalid_ids: Vec<String> = Vec::new();
+        let mut skipped = 0usize;
         for item in table.iter()? {
             let (key, value) = item?;
             let id = key.value();
+            // Skipped, not deleted: a row this build cannot read is still the
+            // user's viewer definition. Removing it used to make a field added
+            // in a later release silently wipe every saved viewer on first run.
             let config: ScriptConfig = match serde_json::from_slice(value.value()) {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(id, error = %e, "invalid script entry, will be removed");
-                    invalid_ids.push(id.to_string());
+                    warn!(id, error = %e, "unreadable script entry, skipped");
+                    skipped += 1;
                     continue;
                 }
             };
+            // With `#[serde(default)]` a truncated row parses into empty
+            // strings rather than failing, so hold it to the bar `upsert`
+            // enforces — an empty command is not a viewer, and it would run
+            // against every key a default (prefix) pattern matches.
+            if config.name.is_empty() || config.shell_command.is_empty() {
+                warn!(id, "incomplete script entry, skipped");
+                skipped += 1;
+                continue;
+            }
             info!(id, name = config.name, server_id = config.server_id, "load script");
             SCRIPT_CACHE.insert(id.to_string(), config);
         }
         drop(read_txn);
 
-        if !invalid_ids.is_empty() {
-            let write_txn = db.begin_write()?;
-            {
-                let mut table = write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
-                for id in &invalid_ids {
-                    table.remove(id.as_str())?;
-                }
-            }
-            write_txn.commit()?;
-            info!(count = invalid_ids.len(), "removed invalid script entries");
-        }
-
-        info!(count = SCRIPT_CACHE.len(), "load scripts success");
+        info!(count = SCRIPT_CACHE.len(), skipped, "load scripts success");
         Ok(())
     }
 
@@ -663,6 +671,148 @@ mod tests {
         fn a_failing_script_reports_its_stderr() {
             let err = run("echo boom >&2; exit 3", "k", b"").expect_err("non-zero exit is an error");
             assert!(err.to_string().contains("boom"), "{err}");
+        }
+    }
+
+    /// The stored side of the viewer: what redb keeps, and what survives a
+    /// release that changes the record.
+    mod manager {
+        use super::*;
+        use crate::init_database_for_tests;
+        use zedis_core::fs::override_config_dir;
+
+        fn setup() {
+            override_config_dir(std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())));
+            init_database_for_tests();
+        }
+
+        fn config(server_id: &str, pattern: &str, mode: MatchMode) -> ScriptConfig {
+            ScriptConfig {
+                server_id: server_id.to_string(),
+                name: "viewer".to_string(),
+                shell_command: "cat {RAW_FILE}".to_string(),
+                match_pattern: pattern.to_string(),
+                mode,
+            }
+        }
+
+        fn write_raw(id: &str, json: &[u8]) {
+            let db = get_database().expect("database");
+            let txn = db.begin_write().expect("begin write");
+            {
+                let mut table = txn.open_table(SCRIPT_VIEWER_TABLE).expect("open");
+                table.insert(id, json).expect("insert");
+            }
+            txn.commit().expect("commit");
+        }
+
+        fn raw_exists(id: &str) -> bool {
+            let db = get_database().expect("database");
+            let txn = db.begin_read().expect("begin read");
+            let table = txn.open_table(SCRIPT_VIEWER_TABLE).expect("open");
+            table.get(id).expect("get").is_some()
+        }
+
+        #[test]
+        fn a_viewer_saved_by_an_older_build_still_loads() {
+            // The shape before `mode` existed. Without the upgrade contract this
+            // failed to parse — and the loader used to answer that by deleting
+            // the row, i.e. every saved viewer vanished on first launch after a
+            // release that touched this struct.
+            let legacy =
+                br#"{"server_id":"s1","name":"json","shell_command":"jq . {RAW_FILE}","match_pattern":"user:"}"#;
+            let parsed: ScriptConfig = serde_json::from_slice(legacy).expect("legacy row parses");
+            assert_eq!(parsed.match_pattern, "user:");
+            assert_eq!(parsed.mode, MatchMode::Prefix, "a missing mode falls back to prefix");
+        }
+
+        #[test]
+        fn upsert_get_and_delete_round_trip() {
+            setup();
+            ScriptManager::upsert("sc-rt", config("sc-rt-srv", "user:", MatchMode::Prefix)).expect("upsert");
+
+            let got = ScriptManager::get("sc-rt").expect("get");
+            assert_eq!(got.shell_command, "cat {RAW_FILE}");
+            assert!(ScriptManager::list_with_id().iter().any(|(id, _)| id == "sc-rt"));
+
+            ScriptManager::delete("sc-rt").expect("delete");
+            assert!(ScriptManager::get("sc-rt").is_err());
+            assert!(!raw_exists("sc-rt"));
+            assert!(ScriptManager::match_key_to_id("sc-rt-srv", "user:1").is_none());
+        }
+
+        #[test]
+        fn refuses_a_viewer_with_no_command() {
+            setup();
+            let mut empty_cmd = config("sc-bad-srv", "k", MatchMode::Prefix);
+            empty_cmd.shell_command = String::new();
+            assert!(ScriptManager::upsert("sc-bad", empty_cmd).is_err());
+
+            let mut empty_name = config("sc-bad-srv", "k", MatchMode::Prefix);
+            empty_name.name = String::new();
+            assert!(ScriptManager::upsert("sc-bad", empty_name).is_err());
+            assert!(!raw_exists("sc-bad"));
+        }
+
+        #[test]
+        fn matches_a_key_by_every_mode_and_only_for_its_own_server() {
+            setup();
+            ScriptManager::upsert("sc-pre", config("sc-m-srv", "user:", MatchMode::Prefix)).expect("upsert");
+            ScriptManager::upsert("sc-suf", config("sc-m-srv", ":raw", MatchMode::Suffix)).expect("upsert");
+            ScriptManager::upsert("sc-exa", config("sc-m-srv", "exactly", MatchMode::Exact)).expect("upsert");
+            ScriptManager::upsert("sc-re", config("sc-m-srv", "^ev[0-9]+$", MatchMode::Regex)).expect("upsert");
+
+            assert_eq!(
+                ScriptManager::match_key_to_id("sc-m-srv", "user:1").as_deref(),
+                Some("sc-pre")
+            );
+            assert_eq!(
+                ScriptManager::match_key_to_id("sc-m-srv", "blob:raw").as_deref(),
+                Some("sc-suf")
+            );
+            assert_eq!(
+                ScriptManager::match_key_to_id("sc-m-srv", "exactly").as_deref(),
+                Some("sc-exa")
+            );
+            assert_eq!(
+                ScriptManager::match_key_to_id("sc-m-srv", "ev42").as_deref(),
+                Some("sc-re")
+            );
+            assert!(ScriptManager::match_key_to_id("sc-m-srv", "nothing").is_none());
+            // A viewer belongs to the server it was configured on.
+            assert!(ScriptManager::match_key_to_id("sc-other-srv", "user:1").is_none());
+        }
+
+        #[test]
+        fn an_invalid_regex_matches_nothing_instead_of_failing() {
+            setup();
+            ScriptManager::upsert("sc-badre", config("sc-badre-srv", "[unclosed", MatchMode::Regex)).expect("upsert");
+            assert!(ScriptManager::match_key_to_id("sc-badre-srv", "anything").is_none());
+        }
+
+        #[test]
+        fn init_skips_what_it_cannot_read_and_keeps_it_on_disk() {
+            setup();
+            write_raw("sc-init-broken", b"not json at all");
+            ScriptManager::upsert("sc-init-good", config("sc-init-srv", "keep:", MatchMode::Prefix)).expect("upsert");
+            SCRIPT_CACHE.remove("sc-init-good");
+
+            ScriptManager::init().expect("init");
+
+            assert!(SCRIPT_CACHE.contains_key("sc-init-good"));
+            assert!(!SCRIPT_CACHE.contains_key("sc-init-broken"));
+            assert!(raw_exists("sc-init-broken"), "an unreadable row is never deleted");
+        }
+
+        #[test]
+        fn init_skips_a_row_that_would_run_an_empty_command_on_every_key() {
+            setup();
+            // `#[serde(default)]` makes this parse now: no command, and an empty
+            // prefix pattern that `match_key_to_id` would answer for any key.
+            write_raw("sc-init-empty", br#"{"server_id":"sc-empty-srv","name":"ghost"}"#);
+            ScriptManager::init().expect("init");
+            assert!(!SCRIPT_CACHE.contains_key("sc-init-empty"));
+            assert!(ScriptManager::match_key_to_id("sc-empty-srv", "any:key").is_none());
         }
     }
 }
