@@ -25,6 +25,7 @@ use redis::cmd;
 use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
+use tracing::warn;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -167,7 +168,7 @@ impl RedisBytesValue {
         {
             Some((DataFormat::Protobuf, SharedString::from(decoded)))
         } else if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
-            && let Ok(output) = ScriptManager::execute(&id, key, data)
+            && let Some(output) = run_script_viewer(&id, key, data)
         {
             Some((DataFormat::Script, SharedString::from(output)))
         } else {
@@ -255,6 +256,22 @@ pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) 
         bytes: Bytes::from(value_bytes),
         ..Default::default()
     })
+}
+
+/// Runs the script viewer configured for this key, or `None` if it failed.
+///
+/// A failure (missing interpreter, non-zero exit, timeout, output cap) falls
+/// back to native format handling, which is the right behaviour but is
+/// otherwise indistinguishable from "no viewer matched this key" — so it is
+/// logged rather than dropped.
+fn run_script_viewer(id: &str, key: &str, data: &[u8]) -> Option<String> {
+    match ScriptManager::execute(id, key, data) {
+        Ok(output) => Some(output),
+        Err(e) => {
+            warn!(id, key, error = %e, "script viewer failed, falling back to native formatting");
+            None
+        }
+    }
 }
 
 #[cfg(test)]

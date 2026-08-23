@@ -29,6 +29,15 @@ Zedis is a **local desktop client** — it stores connection secrets encrypted a
 - the custom script viewer (which runs local shell commands),
 - the optional AI analysis (what leaves your machine, and where).
 
+### Threat model
+A Redis server you connect to is treated as **untrusted input**. Key names and
+values are chosen by whoever can write to that server, so Zedis never lets them
+become executable syntax: the custom script viewer passes `{KEY}` and `{VALUE}`
+to the shell through environment variables that expand after the command line is
+parsed, and every script run is bounded by a timeout and an output cap. A report
+showing that data from a server can influence what runs on the client machine is
+exactly the kind we want.
+
 ---
 
 ## 🇨🇳 中文
@@ -59,3 +68,9 @@ Zedis 是**本地桌面客户端** —— 连接密钥加密存储,元数据(标
 - TLS/SSL 与 SSH 隧道的处理;
 - 自定义脚本查看器(会执行本地 Shell 命令);
 - 可选的 AI 分析(哪些数据离开本机、发往何处)。
+
+### 威胁模型
+所连接的 Redis 服务端被视为**不可信输入**。键名与值由任何对该服务端有写权限的人决定,
+因此 Zedis 不会让它们变成可执行的语法:自定义脚本查看器通过环境变量把 `{KEY}` 与
+`{VALUE}` 传给 Shell,变量在命令行解析完成之后才展开;每次脚本执行都有超时与输出上限。
+如果你能证明来自服务端的数据可以影响客户端上执行的内容,正是我们最希望收到的报告。
