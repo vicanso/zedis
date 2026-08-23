@@ -1554,6 +1554,38 @@ pub fn content_area_width(window: &Window, cx: &App) -> Pixels {
 /// Debounce window for high-frequency config saves (panel drags, sliders).
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Write the current app state to disk while the app is shutting down.
+///
+/// Every `update_app_state_and_save*` helper persists asynchronously — the
+/// debounced ones only after [`SAVE_DEBOUNCE`] of quiet — and `cx.quit()` waits
+/// for none of it. Resizing the key tree, switching a tab or toggling a
+/// preference and immediately quitting therefore lost the change. gpui blocks
+/// shutdown on the future returned here (up to its own shutdown timeout), so
+/// the write runs inline instead of on the background executor.
+///
+/// One registration covers every way out — the Quit action, ⌘Q, the last window
+/// closing, and the quit that hands over to an installer — so no exit path has
+/// to remember to flush. Register it once, after the store is installed as a
+/// global.
+pub fn flush_app_state_on_quit(cx: &App) {
+    cx.on_app_quit(|cx| {
+        // `try_global`: the recovery window that runs when the local database
+        // can't be opened never installs the store, and quitting from there
+        // must not panic.
+        let state = cx.try_global::<ZedisGlobalStore>().map(|store| store.read(cx).clone());
+        async move {
+            let Some(state) = state else {
+                return;
+            };
+            match save_app_state(&state) {
+                Ok(()) => info!("flushed app state before quitting"),
+                Err(e) => error!(error = %e, "failed to flush app state before quitting"),
+            }
+        }
+    })
+    .detach();
+}
+
 /// Generation counter behind [`update_app_state_and_save_debounced`]: each
 /// debounced call bumps it, sleeps, and only the call still holding the
 /// latest generation performs the write — coalescing a drag's event stream
@@ -1918,5 +1950,61 @@ mod tests {
             );
         });
         assert_eq!(events.borrow().as_slice(), &[("srv-1".to_string(), 1)]);
+    }
+
+    /// The state is written asynchronously, so quitting used to be a race the
+    /// user could lose. These drive the real shutdown path: `TestAppContext::quit`
+    /// runs gpui's quit observers and blocks on their futures, same as a ⌘Q.
+    mod quit_flush {
+        use super::*;
+
+        fn config_file() -> std::path::PathBuf {
+            get_or_create_server_config().expect("config path")
+        }
+
+        fn file_text() -> String {
+            std::fs::read_to_string(config_file()).unwrap_or_default()
+        }
+
+        #[gpui::test]
+        fn quitting_writes_a_save_that_is_still_waiting_out_its_debounce(cx: &mut TestAppContext) {
+            isolate_config();
+            let probe = "quit-flush-probe";
+            let state = cx.new(|_| ZedisAppState::default());
+
+            cx.update(|cx| {
+                cx.set_global(ZedisGlobalStore::new(state.clone()));
+                flush_app_state_on_quit(cx);
+                update_app_state_and_save_debounced(cx, "test", move |state, _| {
+                    state.set_theme_name(Some(probe.to_string()));
+                });
+            });
+
+            // The mutation lands immediately; the write is parked on the
+            // debounce timer, which the test clock never advances.
+            cx.run_until_parked();
+            assert_eq!(
+                state.read_with(cx, |s, _| s.theme_name()),
+                Some(probe.to_string()),
+                "the mutation itself is not debounced"
+            );
+            assert!(!file_text().contains(probe), "the write really is still pending");
+
+            cx.quit();
+            assert!(
+                file_text().contains(probe),
+                "quitting must flush the pending state, got: {}",
+                file_text()
+            );
+        }
+
+        #[gpui::test]
+        fn quitting_without_a_store_is_not_a_panic(cx: &mut TestAppContext) {
+            // The database-recovery window never installs the global store, and
+            // quitting from there must still work.
+            isolate_config();
+            cx.update(|cx| flush_app_state_on_quit(cx));
+            cx.quit();
+        }
     }
 }

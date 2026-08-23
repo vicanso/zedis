@@ -16,8 +16,9 @@ use crate::helpers::{
 };
 use crate::states::{
     GlobalEvent, HINT_WELCOME, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction,
-    ServerView, SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, i18n_common, i18n_crash,
-    i18n_hints, i18n_sidebar, i18n_update, save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
+    ServerView, SettingsAction, ThemeAction, WindowPlacement, ZedisAppState, ZedisGlobalStore, flush_app_state_on_quit,
+    i18n_common, i18n_crash, i18n_hints, i18n_sidebar, i18n_update, save_app_state, update_app_state_and_save,
+    update_app_state_and_save_quiet,
 };
 use crate::views::{
     DialogCallback, ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette,
@@ -1261,14 +1262,9 @@ fn open_install_quit_dialog(window: &mut Window, cx: &mut App) {
         .ok_text(i18n_update(cx, "quit_to_install_now"))
         .cancel_text(i18n_update(cx, "quit_to_install_later"))
         .on_ok(|_, _window, cx| {
-            // App state is normally persisted by an async task (`cx.spawn` →
-            // background write), which `cx.quit()` does not wait for. Flush the
-            // current state synchronously first so a just-made change (window
-            // bounds, open tabs) can't be lost on the way out.
-            let state = cx.global::<ZedisGlobalStore>().read(cx).clone();
-            if let Err(e) = save_app_state(&state) {
-                error!(error = %e, "update: failed to flush state before quitting");
-            }
+            // The app state is flushed by `flush_app_state_on_quit`, which gpui
+            // waits on during shutdown — nothing to do for it here.
+            //
             // Quitting hands focus to whatever ran before Zedis, not to the
             // installer — pull its window forward first, or it ends up buried.
             focus_installer_ui();
@@ -2183,6 +2179,9 @@ fn launch(cx: &mut App, app_state: ZedisAppState) {
     // the app rem base before the first frame (Root reads theme.font_size).
     apply_default_ui_font_size(cx);
     cx.set_global(app_store);
+    // From here on every exit path flushes the state on the way out; nothing
+    // else needs to remember to.
+    flush_app_state_on_quit(cx);
     // Apply the saved font preferences onto the (already-initialized)
     // Theme before the first frame, so the initial paint uses them.
     {
