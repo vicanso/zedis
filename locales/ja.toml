@@ -250,6 +250,7 @@ diag_hint_tls = "TLS ハンドシェイクに失敗しました。このポー�
 diag_hint_auth_required = "サーバーはパスワードを要求していますが、設定されていません。"
 diag_hint_auth_rejected = "認証が拒否されました。パスワードとユーザー名 (ACL) を確認してください。サーバーにパスワードがない場合は両方とも空にしてください。"
 diag_hint_redis = "ポートは接続を受け入れましたが、Redis ハンドシェイクに失敗しました — 本当に Redis のポートですか？サーバーがまだロード中の可能性もあります。"
+diag_capabilities_limited = "%{count} 個のコマンドが制限あり"
 
 [editor]
 title = "キーエディター"

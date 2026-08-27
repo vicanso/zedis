@@ -250,6 +250,7 @@ diag_hint_tls = "TLS handshake failed. Confirm the server really serves TLS on t
 diag_hint_auth_required = "The server requires a password, but none is configured."
 diag_hint_auth_rejected = "Authentication was rejected. Check the password and username (ACL); if the server has no password, leave both fields empty."
 diag_hint_redis = "The port accepted the connection but the Redis handshake failed — is this really a Redis port? The server may also still be loading."
+diag_capabilities_limited = "%{count} commands limited"
 
 [editor]
 title = "Key Editor"

@@ -81,15 +81,14 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 
 | Area | What's inside |
 | --- | --- |
-| 🚀 **Native & Fast** | GPU rendering · virtual-scrolled `SCAN`, 60+ FPS on millions of keys · macOS / Windows / Linux · Light / Dark / System |
+| 🚀 **Native & Fast** | GPU rendering · virtual-scrolled `SCAN`, 60+ FPS on millions of keys · macOS / Windows / Linux · Light / Dark / System + 6 bundled themes · configurable UI & monospace fonts |
 | 🧠 **Smart Data Viewer** | Auto-decompress (LZ4 / Snappy / GZIP / ZSTD) · JSON & RedisJSON + JSONPath · Protobuf · MessagePack · timestamps · images · hex · custom script viewer |
 | 🗂️ **Type & Module Viewers** | Bitmap · HyperLogLog · Vector Set (KNN) · Geo map · Bloom / Cuckoo / Count-Min / Top-K · Time Series · Streams (live-tail) · Pub/Sub (incl. sharded) · RediSearch · Functions |
 | 📊 **Observability** | Live metrics + 7-day history · memory analyzer (live scan or offline RDB file) + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health & slot reshard · persistence & keyspace events · typed CONFIG editor · raw INFO browser |
-| 🔑 **Keys & Data** | Namespace tree with TTL chips · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops (Tools export, prefix filter, binary / JSON / CSV) · cross-server copy & diff |
-| 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · per-machine encrypted secrets · local-only, no telemetry |
+| 🔑 **Keys & Data** | Namespace tree with TTL chips · paginated Hash / List / Set / ZSet editors (`HSCAN`/`SSCAN`/`ZSCAN`) · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops (Tools export, prefix filter, binary / JSON / CSV) · cross-server copy & diff |
+| 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor · TLS/SSL & SSH · staged connection diagnostics · self-healing link with Sentinel/Cluster failover · per-machine encrypted secrets · local-only, no telemetry |
 | 🧭 **Limited servers** | Capability probe after connect: proxies (Twemproxy / Codis / Envoy), managed clouds (ElastiCache / Azure / Tair) and Redis-compatible servers (Valkey / Dragonfly / KeyDB / Kvrocks) get panels and buttons greyed out *with the reason* (`CONFIG GET` missing, `SLOWLOG` denied) instead of failing · key editor keeps working without `SCAN` · the full command matrix lives under Tools → Server capabilities |
-| 🧭 **Works with limited servers** | Capability probe after connect: proxies (Twemproxy / Codis / Envoy), managed clouds (ElastiCache / Azure / Tair) and Redis-compatible servers (Valkey / Dragonfly / KeyDB / Kvrocks) get panels and buttons greyed out with the reason — `CONFIG GET missing`, `SLOWLOG denied` — instead of failing · key editor keeps working without `SCAN` |
-| ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘⇧F multi-database key search · ⌘/ shortcut reference · redis-cli with completion · AI command assistant (`?` in terminal) · multi-line batch mode · Lua script library · opt-out update check with download progress · rotating file logs · Export Diagnostics (one zip: logs, crash reports, redacted config, connection state) |
+| ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘P recent keys · ⌘⇧F multi-database key search · ⌘/ shortcut reference · redis-cli with per-server history, completion & `Ctrl+R` search · AI command assistant (`?` in terminal) · multi-line batch mode · Lua script library · opt-out update check with checksum-verified download · optional system tray (macOS / Windows) · HTTP / SOCKS5 proxy for the app's own requests · rotating file logs · Export Diagnostics (one zip: logs, crash reports, redacted config, connection state) |
 
 > 🔐 **Where connection secrets live:** passwords and SSH keys are encrypted with a random **per-machine** key — kept in the **macOS Keychain** or **Windows Credential Manager**, and in a `0600`-permission key file under the config dir on **Linux** (no Secret Service / D-Bus dependency, so it works headless too). The key never leaves the machine, so a copied config won't decrypt elsewhere — use the passphrase-protected export to move connections between machines.
 
@@ -115,11 +114,15 @@ scoop bucket add extras
 scoop install zedis
 ```
 
-### Linux (Arch)
+### Linux
+
+Arch Linux (AUR):
 
 ```bash
 yay -S zedis-bin
 ```
+
+Other distributions: `.deb`, `.rpm`, an AppImage and a plain tarball (x86_64 and aarch64) are attached to every [release](https://github.com/vicanso/zedis/releases/latest).
 
 ### Cargo (Cross-Platform via Source)
 

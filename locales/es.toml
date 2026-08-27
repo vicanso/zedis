@@ -250,6 +250,7 @@ diag_hint_tls = "Falló la negociación TLS. Confirme que el servidor realmente 
 diag_hint_auth_required = "El servidor requiere una contraseña, pero no hay ninguna configurada."
 diag_hint_auth_rejected = "Autenticación rechazada. Revise la contraseña y el usuario (ACL); si el servidor no tiene contraseña, deje ambos campos vacíos."
 diag_hint_redis = "El puerto aceptó la conexión pero falló el protocolo de Redis — ¿es realmente un puerto de Redis? El servidor también podría estar cargando datos."
+diag_capabilities_limited = "%{count} comandos limitados"
 
 [editor]
 title = "Editor de claves"

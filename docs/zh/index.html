@@ -40,7 +40,7 @@
         "name": "Zedis",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS, Windows, Linux",
-        "softwareVersion": "0.7.0",
+        "softwareVersion": "0.8.1",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://zedis.net/zh/",
         "downloadUrl": "https://github.com/vicanso/zedis/releases/latest",
@@ -65,7 +65,7 @@
             alt=""
           />
           ZEDIS
-          <span class="version-pill" title="最新发布">v0.7.0</span>
+          <span class="version-pill" title="最新发布">v0.8.1</span>
         </a>
         <nav class="nav-links" aria-label="主导航">
           <a class="hide-sm" href="#proof">为什么</a>
@@ -99,7 +99,7 @@
           </p>
           <div class="badges">
             <span class="badge">macOS · Windows · Linux</span>
-            <span class="badge">v0.7.0</span>
+            <span class="badge">v0.8.1</span>
             <span class="badge">8 种界面语言</span>
             <span class="badge">无遥测</span>
           </div>
@@ -109,7 +109,7 @@
               href="https://github.com/vicanso/zedis/releases/latest"
               target="_blank"
               rel="noopener"
-              >下载 v0.7.0</a
+              >下载 v0.8.1</a
             >
             <a class="btn btn-ghost" href="#install">安装方式</a>
             <a
@@ -196,7 +196,7 @@
             <article class="card">
               <div class="icon">🦀</div>
               <h3>原生 &amp; 快</h3>
-              <p>虚拟滚动 SCAN、百万键树、浅色 / 深色 / 跟随系统——macOS、Windows、Linux。</p>
+              <p>虚拟滚动 SCAN、百万键树、浅色 / 深色 / 跟随系统及 6 套内置主题——macOS、Windows、Linux。</p>
             </article>
             <article class="card">
               <div class="icon">🧠</div>
@@ -218,7 +218,23 @@
             <article class="card">
               <div class="icon">🔐</div>
               <h3>隐私优先</h3>
-              <p>按机器加密密钥、TLS/SSH、ACL、分阶段连接诊断。无账号。</p>
+              <p>按机器加密的连接密钥、ACL 编辑、标签与历史只存本地文件。无账号、无遥测。</p>
+            </article>
+            <article class="card">
+              <div class="icon">🧭</div>
+              <h3>受限服务端也能用</h3>
+              <p>
+                连接后自动探测能力：代理、ElastiCache / Azure / Tair、Valkey / Dragonfly / KeyDB
+                上跑不了的功能会灰显<em>并说明原因</em>，而不是报错。
+              </p>
+            </article>
+            <article class="card">
+              <div class="icon">🔌</div>
+              <h3>连接一切</h3>
+              <p>
+                TLS/SSL、SSH 隧道、Cluster 与 Sentinel。分阶段的 DNS &rarr; TCP &rarr; TLS &rarr; AUTH
+                诊断，链路还能在故障转移后自行重连。
+              </p>
             </article>
             <article class="card">
               <div class="icon">⌨️</div>
@@ -285,7 +301,7 @@
         <div class="wrap">
           <h2 class="section-title">安装</h2>
           <p class="section-sub">
-            最新版本 <strong>v0.7.0</strong>——包管理器，或从 GitHub Releases 下载二进制。
+            最新版本 <strong>v0.8.1</strong>——包管理器，或从 GitHub Releases 下载二进制。
           </p>
           <div class="install-grid">
             <div class="install-card">
@@ -322,8 +338,8 @@
               <p class="install-alt">
                 或从 Releases 使用
                 <a href="https://github.com/vicanso/zedis/releases/latest" target="_blank" rel="noopener"
-                  >AppImage / tarball</a
-                >。
+                  >.deb / .rpm / AppImage / tarball</a
+                >（x86_64 与 aarch64）。
               </p>
             </div>
             <div class="install-card">
@@ -343,7 +359,7 @@
               href="https://github.com/vicanso/zedis/releases/latest"
               target="_blank"
               rel="noopener"
-              >查看 v0.7.0 全部资源</a
+              >查看 v0.8.1 全部资源</a
             >
           </div>
         </div>
@@ -373,7 +389,7 @@
 
     <footer class="footer">
       <div class="wrap footer-inner">
-        <span>© Zedis · v0.7.0 · Apache-2.0 · Hosted on GitHub Pages</span>
+        <span>© Zedis · v0.8.1 · Apache-2.0 · Hosted on GitHub Pages</span>
         <span>
           <a href="../" onclick="try{localStorage.setItem('zedis-lang','en')}catch(e){}">English</a>
           ·

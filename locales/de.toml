@@ -250,6 +250,7 @@ diag_hint_tls = "TLS-Handshake fehlgeschlagen. Prüfen Sie, ob der Server auf di
 diag_hint_auth_required = "Der Server verlangt ein Passwort, es ist aber keines konfiguriert."
 diag_hint_auth_rejected = "Authentifizierung abgelehnt. Prüfen Sie Passwort und Benutzername (ACL); hat der Server kein Passwort, lassen Sie beide Felder leer."
 diag_hint_redis = "Der Port hat die Verbindung akzeptiert, aber der Redis-Handshake schlug fehl — ist das wirklich ein Redis-Port? Der Server könnte auch noch laden."
+diag_capabilities_limited = "%{count} Befehle eingeschränkt"
 
 [editor]
 title = "Schlüssel-Editor"

@@ -250,6 +250,7 @@ diag_hint_tls = "Falha no handshake TLS. Confirme que o servidor realmente usa T
 diag_hint_auth_required = "O servidor exige uma senha, mas nenhuma está configurada."
 diag_hint_auth_rejected = "Autenticação rejeitada. Verifique a senha e o usuário (ACL); se o servidor não tiver senha, deixe os dois campos vazios."
 diag_hint_redis = "A porta aceitou a conexão, mas o handshake do Redis falhou — é realmente uma porta Redis? O servidor também pode estar carregando dados."
+diag_capabilities_limited = "%{count} comandos limitados"
 
 [editor]
 title = "Editor de chaves"

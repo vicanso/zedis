@@ -250,6 +250,7 @@ diag_hint_tls = "TLS 握手失败。请确认服务器在该端口确实启用�
 diag_hint_auth_required = "服务器要求密码，但当前未配置。"
 diag_hint_auth_rejected = "认证被拒绝。请检查密码和用户名 (ACL)；若服务器未设密码，请将两个字段留空。"
 diag_hint_redis = "端口已接受连接但 Redis 握手失败——该端口确定是 Redis 吗？服务器也可能仍在加载数据。"
+diag_capabilities_limited = "%{count} 个命令受限"
 
 [editor]
 title = "键编辑器"

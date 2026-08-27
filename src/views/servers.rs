@@ -456,7 +456,6 @@ impl ZedisServers {
                         .map(|s| s.to_string().into())
                         .collect::<Vec<SharedString>>(),
                 )
-                .placeholder(i18n_servers(cx, "server_type_placeholder"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::RadioGroup),
             ZedisFormField::new("databases", i18n_servers(cx, "databases"))
