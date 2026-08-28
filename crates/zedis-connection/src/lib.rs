@@ -75,7 +75,9 @@ pub use latency::{
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
 pub use probe::{get_server_features, invalidate_server_features, note_server_command_error, probe_server_features};
-pub use readable_export::{ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, read_readable_chunk};
+pub use readable_export::{
+    ReadLimits, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, read_readable_chunk,
+};
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,

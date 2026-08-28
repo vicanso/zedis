@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
-    connection::{Capability, get_server},
+    connection::{Capability, ServerCommand, get_server},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::{
         KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_recent_keys_manager,
@@ -27,8 +27,8 @@ use crate::{
     },
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, QueryMode, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-        dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor, i18n_key_tag,
-        i18n_key_tree, save_session_option,
+        dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor, i18n_features,
+        i18n_key_tag, i18n_key_tree, key_tree_no_scan_body, save_session_option,
     },
     views::{
         ExportSource, OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window,
@@ -309,6 +309,12 @@ impl ZedisKeyTree {
                 ServerEvent::KeyCollapseAll => {
                     this.state.expanded_items.clear();
                     this.state.suppressed_auto_expand.clear();
+                }
+                ServerEvent::FeaturesProbed => {
+                    // The no-SCAN banner (`get_tree_status_view`) reads the
+                    // probed matrix, which lands after the initial render —
+                    // repaint so the banner appears (or clears on re-probe).
+                    cx.notify();
                 }
                 ServerEvent::ServerSelected(_) => {
                     this.reset(cx);

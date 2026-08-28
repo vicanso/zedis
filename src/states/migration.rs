@@ -18,7 +18,7 @@
 //! posts incremental progress back to the foreground entity.
 
 use crate::connection::{
-    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, RedisAsyncConn, RestoreStatus, csv_header,
+    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ReadLimits, RedisAsyncConn, RestoreStatus, csv_header,
     dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager, get_server, read_readable_chunk,
     restore_keys_chunk,
 };
@@ -433,7 +433,7 @@ async fn readable_export_worker(
             break;
         }
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let entries = read_readable_chunk(&mut conn, &chunk).await?;
+        let entries = read_readable_chunk(&mut conn, &chunk, ReadLimits::default()).await?;
 
         // Serialize on this side so log lines can carry the byte counts.
         let mut payload = String::new();
@@ -450,7 +450,10 @@ async fn readable_export_worker(
                 ExportFormat::Binary => unreachable!(),
             }
             let (status, message) = if entry.value.is_some() {
-                (LogStatus::Ok, None)
+                // A capped collection still exports (marked in the file
+                // itself too) — surface the cut in the job log.
+                let message = entry.truncated.then(|| SharedString::from("truncated"));
+                (LogStatus::Ok, message)
             } else {
                 // Module types have no generic readable form.
                 (LogStatus::Skipped, Some(SharedString::from(entry.key_type.clone())))

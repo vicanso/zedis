@@ -24,7 +24,7 @@ Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.ex
 
 ## Build-time locale parity gate (bites immediately)
 
-`build.rs` enforces that **every** `locales/<lang>.toml` has the exact same key set as `locales/en.toml`. The 8 locales are `en, zh, de, es, fr, ja, pt, ru`. Adding or removing any UI string means editing **all 8 files** or `cargo check` panics. `build.rs` only re-runs when `locales/` changes — `touch locales/en.toml` to force the check. Translate natively where a section is already translated in that locale (most are); English fallback only where the surrounding section is itself untranslated.
+`build.rs` enforces that **every** `locales/<lang>.toml` has the exact same key set as `locales/en.toml`. The 8 locales are `en, zh, de, es, fr, ja, pt, ru`. Adding or removing any UI string means editing **all 8 files** or `cargo check` panics. Run `make check-locales` (`tests/locale_keys.rs`, also part of `make test`) to verify directly — it re-checks parity even when build.rs's `rerun-if-changed` misses an in-place edit (the old workaround was `touch locales/en.toml`), **and** flags orphan keys: every en key must be reachable from source (quoted full key, quoted last segment, or a quoted base + a known dynamic suffix `_title`/`_body`/`_desc` — a new composed-key family must be taught to that test). Translate natively where a section is already translated in that locale (most are); English fallback only where the surrounding section is itself untranslated.
 
 ## Workspace layout
 

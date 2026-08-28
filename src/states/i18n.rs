@@ -60,6 +60,19 @@ pub fn first_connect_hint(cx: &App) -> SharedString {
     .into()
 }
 
+/// Body of the key tree's no-SCAN banner, with the recent-keys shortcut
+/// resolved for the current platform (matches `RecentKeysAction::Toggle`'s
+/// `secondary-p` binding).
+pub fn key_tree_no_scan_body(cx: &App) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(
+        "features.key_tree_no_scan_body",
+        shortcut = humanize_keystroke("secondary-p"),
+        locale = locale
+    )
+    .into()
+}
+
 pub fn i18n_sidebar<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("sidebar.{key}"), locale = locale).into()

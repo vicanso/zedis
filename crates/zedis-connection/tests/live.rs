@@ -28,9 +28,9 @@ use std::env;
 use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::{
-    CommandStatus, ConflictMode, RedisAsyncConn, RedisServer, RestoreStatus, ServerCommand, ServerFlavor,
-    dump_keys_chunk, get_connection_manager, get_servers, open_single_connection, probe_server_features,
-    restore_keys_chunk, save_servers,
+    CommandStatus, ConflictMode, ReadLimits, ReadableValue, RedisAsyncConn, RedisServer, RestoreStatus, ServerCommand,
+    ServerFlavor, dump_keys_chunk, get_connection_manager, get_servers, open_single_connection, probe_server_features,
+    read_readable_chunk, restore_keys_chunk, save_servers,
 };
 
 /// `host:port` from an env var, or `None` when that scenario wasn't started.
@@ -300,6 +300,183 @@ fn standalone_dump_restore_round_trips_a_key() {
         let b: String = cmd("HGET").arg(&key).arg("b").query_async(&mut c).await.expect("hget");
         assert_eq!(b, "2");
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// The readable (JSON/CSV) export must page oversized collections and cut
+/// them at `max_elems` with the entry marked truncated — never one
+/// unbounded `LRANGE 0 -1` / `SMEMBERS` / `HGETALL` / `XRANGE - +`.
+#[test]
+#[ignore]
+fn standalone_readable_export_pages_and_caps_collections() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+
+        let small_list = unique("rd-small");
+        let big_list = unique("rd-list");
+        let big_set = unique("rd-set");
+        let big_hash = unique("rd-hash");
+        let big_zset = unique("rd-zset");
+        let stream = unique("rd-stream");
+
+        let mut rpush = cmd("RPUSH");
+        rpush.arg(&small_list);
+        for i in 0..3 {
+            rpush.arg(format!("s{i}"));
+        }
+        rpush.exec_async(&mut c).await.expect("rpush small");
+
+        let mut rpush = cmd("RPUSH");
+        rpush.arg(&big_list);
+        for i in 0..25 {
+            rpush.arg(format!("v{i}"));
+        }
+        rpush.exec_async(&mut c).await.expect("rpush big");
+
+        // Members/values past *-max-listpack-value (64 bytes, a default
+        // stable across server versions — the entry-count threshold is
+        // not: Redis 8.6 raised hash-max-listpack-entries to 512), so the
+        // set/hash are hashtable-encoded and SSCAN/HSCAN honor COUNT
+        // instead of returning the whole listpack in one page.
+        let pad = "x".repeat(80);
+        let mut sadd = cmd("SADD");
+        sadd.arg(&big_set);
+        for i in 0..200 {
+            sadd.arg(format!("m{i}:{pad}"));
+        }
+        sadd.exec_async(&mut c).await.expect("sadd");
+
+        let mut hset = cmd("HSET");
+        hset.arg(&big_hash);
+        for i in 0..200 {
+            hset.arg(format!("f{i}")).arg(format!("w{i}:{pad}"));
+        }
+        hset.exec_async(&mut c).await.expect("hset");
+
+        let mut zadd = cmd("ZADD");
+        zadd.arg(&big_zset);
+        for i in 0..25 {
+            zadd.arg(i).arg(format!("m{i}"));
+        }
+        zadd.exec_async(&mut c).await.expect("zadd");
+
+        for i in 0..25 {
+            cmd("XADD")
+                .arg(&stream)
+                .arg("*")
+                .arg("n")
+                .arg(i)
+                .exec_async(&mut c)
+                .await
+                .expect("xadd");
+        }
+
+        let keys: Vec<String> = vec![
+            small_list.clone(),
+            big_list.clone(),
+            big_set.clone(),
+            big_hash.clone(),
+            big_zset.clone(),
+            stream.clone(),
+        ];
+        let limits = ReadLimits {
+            page: 10,
+            max_elems: 20,
+        };
+        let entries = read_readable_chunk(&mut c, &keys, limits).await.expect("read chunk");
+        assert_eq!(entries.len(), keys.len());
+        let entry = |key: &str| entries.iter().find(|e| e.key == key).expect("entry for key");
+
+        // Under one page: the exact single-command path, complete.
+        let small = entry(&small_list);
+        assert!(!small.truncated);
+        match small.value.as_ref().expect("small list value") {
+            ReadableValue::List(items) => assert_eq!(items.as_slice(), ["s0", "s1", "s2"]),
+            _ => panic!("expected a list value"),
+        }
+
+        // Index paging keeps list order; the cut lands exactly at the cap.
+        let list = entry(&big_list);
+        assert!(list.truncated);
+        match list.value.as_ref().expect("list value") {
+            ReadableValue::List(items) => {
+                assert_eq!(items.len(), 20);
+                assert_eq!(items.first().map(String::as_str), Some("v0"));
+                assert_eq!(items.last().map(String::as_str), Some("v19"));
+            }
+            _ => panic!("expected a list value"),
+        }
+
+        // SSCAN paging: capped, and (no concurrent rehash here) unique.
+        let set = entry(&big_set);
+        assert!(set.truncated);
+        match set.value.as_ref().expect("set value") {
+            ReadableValue::Set(items) => {
+                assert_eq!(items.len(), 20);
+                let distinct: HashSet<&str> = items.iter().map(String::as_str).collect();
+                assert_eq!(distinct.len(), 20);
+                assert!(items.iter().all(|m| m.starts_with('m')));
+            }
+            _ => panic!("expected a set value"),
+        }
+
+        // HSCAN paging: capped, field/value pairing intact.
+        let hash = entry(&big_hash);
+        assert!(hash.truncated);
+        match hash.value.as_ref().expect("hash value") {
+            ReadableValue::Hash(pairs) => {
+                assert_eq!(pairs.len(), 20);
+                for (field, value) in pairs {
+                    let index = field.strip_prefix('f').expect("field name");
+                    assert_eq!(value.as_str(), format!("w{index}:{pad}"));
+                }
+            }
+            _ => panic!("expected a hash value"),
+        }
+
+        // ZRANGE index paging keeps ascending score order exactly.
+        let zset = entry(&big_zset);
+        assert!(zset.truncated);
+        match zset.value.as_ref().expect("zset value") {
+            ReadableValue::Zset(pairs) => {
+                assert_eq!(pairs.len(), 20);
+                assert_eq!(pairs.first().map(|(m, s)| (m.as_str(), *s)), Some(("m0", 0.0)));
+                assert_eq!(pairs.last().map(|(m, s)| (m.as_str(), *s)), Some(("m19", 19.0)));
+            }
+            _ => panic!("expected a zset value"),
+        }
+
+        // XRANGE id paging: capped, ids stay strictly ascending.
+        let stream_entry = entry(&stream);
+        assert!(stream_entry.truncated);
+        match stream_entry.value.as_ref().expect("stream value") {
+            ReadableValue::Stream(items) => {
+                assert_eq!(items.len(), 20);
+                // Compare ids numerically: within one millisecond,
+                // "…-9" < "…-10" is false as a string.
+                let id_parts = |id: &str| -> (u64, u64) {
+                    let (ms, seq) = id.split_once('-').expect("ms-seq id");
+                    (ms.parse().expect("ms"), seq.parse().expect("seq"))
+                };
+                assert!(items.windows(2).all(|w| id_parts(&w[0].0) < id_parts(&w[1].0)));
+                assert_eq!(
+                    items.first().and_then(|(_, f)| f.first().cloned()),
+                    Some(("n".into(), "0".into()))
+                );
+                assert_eq!(
+                    items.last().and_then(|(_, f)| f.first().cloned()),
+                    Some(("n".into(), "19".into()))
+                );
+            }
+            _ => panic!("expected a stream value"),
+        }
+
+        let mut del = cmd("DEL");
+        for key in &keys {
+            del.arg(key);
+        }
+        del.exec_async(&mut c).await.expect("del");
     });
 }
 

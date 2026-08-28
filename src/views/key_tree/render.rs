@@ -33,6 +33,41 @@ impl ZedisKeyTree {
             }
             return None;
         }
+        // A server without SCAN can never list keys: the auto-scan after
+        // connect is skipped (see `ZedisServerState::select`), so an empty
+        // tree here is permanent, not "no keys found". Show the open-by-name
+        // banner instead — it clears as soon as an exact lookup lands a row.
+        if self.key_tree_list_state.read(cx).delegate().items.is_empty()
+            && server_state.command_block(ServerCommand::Scan).is_some()
+        {
+            let muted = cx.theme().muted_foreground;
+            return Some(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .pt_5()
+                    .px_3()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Icon::new(IconName::Info).text_sm())
+                            .child(
+                                Label::new(i18n_features(cx, "key_tree_no_scan_title"))
+                                    .text_sm()
+                                    .font_semibold()
+                                    .whitespace_normal(),
+                            ),
+                    )
+                    .child(
+                        Label::new(key_tree_no_scan_body(cx))
+                            .text_sm()
+                            .text_color(muted)
+                            .whitespace_normal(),
+                    )
+                    .into_any_element(),
+            );
+        }
         if !self.state.is_empty && self.state.error.is_none() {
             return None;
         }

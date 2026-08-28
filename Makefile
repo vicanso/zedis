@@ -8,6 +8,13 @@ fmt:
 test:
 	cargo test --workspace
 
+# Locale hygiene on demand (tests/locale_keys.rs, also part of `make test`):
+# key parity across the 8 locales — reliable even when build.rs's
+# rerun-if-changed misses an in-place edit — plus the orphan-key scan
+# (keys translated everywhere but referenced nowhere in the source).
+check-locales:
+	cargo test --test locale_keys
+
 # Live integration tests against real servers (crates/zedis-connection/tests/live.rs).
 # `make it-up` starts the topology (local redis-server, or REDIS_IMAGE=redis:7.2 for docker),
 # `make it` runs the ignored tests with its ZEDIS_IT_* env, `make it-down` stops it.
