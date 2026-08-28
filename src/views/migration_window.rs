@@ -17,7 +17,7 @@
 //! Import supports conflict strategy selection (Skip / Overwrite / Abort)
 //! and an optional dry-run preview (`EXISTS` on destination) before restore.
 
-use crate::connection::{ConflictMode, ConflictPreview, preview_dump_conflicts};
+use crate::connection::{ConflictMode, ConflictPreview, preview_import_conflicts};
 use crate::helpers::{get_download_dir, get_home_dir, with_app_identity};
 use crate::states::{
     ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore,
@@ -304,7 +304,7 @@ impl ZedisMigrationWindow {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    preview_dump_conflicts(&server_id, db, path, PREVIEW_SAMPLE_LIMIT, &cancel).await
+                    preview_import_conflicts(&server_id, db, path, PREVIEW_SAMPLE_LIMIT, &cancel).await
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {

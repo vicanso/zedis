@@ -54,6 +54,7 @@ impl Default for ReadLimits {
 }
 
 /// A fully-fetched value in display form.
+#[derive(Debug)]
 pub enum ReadableValue {
     Text(String),
     List(Vec<String>),
@@ -68,6 +69,7 @@ pub enum ReadableValue {
 
 /// One exported key. `value` is `None` for types this exporter cannot
 /// render (module types) — the entry still records key/type/TTL.
+#[derive(Debug)]
 pub struct ReadableEntry {
     pub key: String,
     pub key_type: String,
@@ -78,6 +80,24 @@ pub struct ReadableEntry {
     /// Surfaces as `"truncated": true` in JSON and a `truncated` CSV
     /// column, so a partial export can never pass for a complete one.
     pub truncated: bool,
+}
+
+impl ReadableEntry {
+    /// Rough value payload size — for progress/log display, not accounting.
+    pub fn approx_bytes(&self) -> u64 {
+        let value_bytes = match &self.value {
+            None => 0,
+            Some(ReadableValue::Text(s)) => s.len(),
+            Some(ReadableValue::List(items)) | Some(ReadableValue::Set(items)) => items.iter().map(String::len).sum(),
+            Some(ReadableValue::Hash(pairs)) => pairs.iter().map(|(f, v)| f.len() + v.len()).sum(),
+            Some(ReadableValue::Zset(pairs)) => pairs.iter().map(|(m, _)| m.len() + 8).sum(),
+            Some(ReadableValue::Stream(entries)) => entries
+                .iter()
+                .map(|(id, fields)| id.len() + fields.iter().map(|(f, v)| f.len() + v.len()).sum::<usize>())
+                .sum(),
+        };
+        value_bytes as u64
+    }
 }
 
 fn lossy(bytes: Vec<u8>) -> String {

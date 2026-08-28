@@ -28,9 +28,10 @@ use std::env;
 use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::{
-    CommandStatus, ConflictMode, ReadLimits, ReadableValue, RedisAsyncConn, RedisServer, RestoreStatus, ServerCommand,
-    ServerFlavor, dump_keys_chunk, get_connection_manager, get_servers, open_single_connection, probe_server_features,
-    read_readable_chunk, restore_keys_chunk, save_servers,
+    CommandStatus, ConflictMode, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn,
+    RedisServer, RestoreStatus, ServerCommand, ServerFlavor, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
+    get_connection_manager, get_servers, open_single_connection, parse_readable_entries, probe_server_features,
+    read_readable_chunk, restore_keys_chunk, save_servers, sniff_import_format, write_readable_chunk,
 };
 
 /// `host:port` from an env var, or `None` when that scenario wasn't started.
@@ -471,6 +472,224 @@ fn standalone_readable_export_pages_and_caps_collections() {
             }
             _ => panic!("expected a stream value"),
         }
+
+        let mut del = cmd("DEL");
+        for key in &keys {
+            del.arg(key);
+        }
+        del.exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// A readable JSON/CSV export must import back: same values, order, TTL —
+/// with Skip leaving existing keys alone (no list double-append) and
+/// Overwrite replacing instead of appending.
+#[test]
+#[ignore]
+fn standalone_readable_export_imports_back() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+
+        let s_key = unique("ri-s");
+        let l_key = unique("ri-l");
+        let set_key = unique("ri-set");
+        let h_key = unique("ri-h");
+        let z_key = unique("ri-z");
+        let x_key = unique("ri-x");
+        let keys: Vec<String> = vec![
+            s_key.clone(),
+            l_key.clone(),
+            set_key.clone(),
+            h_key.clone(),
+            z_key.clone(),
+            x_key.clone(),
+        ];
+
+        cmd("SET")
+            .arg(&s_key)
+            .arg("hello \"world\",\nline2")
+            .arg("PX")
+            .arg(300_000)
+            .exec_async(&mut c)
+            .await
+            .expect("set");
+        cmd("RPUSH")
+            .arg(&l_key)
+            .arg("a")
+            .arg("b")
+            .arg("c")
+            .exec_async(&mut c)
+            .await
+            .expect("rpush");
+        cmd("SADD")
+            .arg(&set_key)
+            .arg("m1")
+            .arg("m2")
+            .exec_async(&mut c)
+            .await
+            .expect("sadd");
+        cmd("HSET")
+            .arg(&h_key)
+            .arg("f1")
+            .arg("v1")
+            .arg("f2")
+            .arg("v2")
+            .exec_async(&mut c)
+            .await
+            .expect("hset");
+        cmd("ZADD")
+            .arg(&z_key)
+            .arg(1.5)
+            .arg("m1")
+            .arg(2.5)
+            .arg("m2")
+            .exec_async(&mut c)
+            .await
+            .expect("zadd");
+        for i in 0..3 {
+            cmd("XADD")
+                .arg(&x_key)
+                .arg("*")
+                .arg("n")
+                .arg(i)
+                .exec_async(&mut c)
+                .await
+                .expect("xadd");
+        }
+
+        let exported = read_readable_chunk(&mut c, &keys, ReadLimits::default())
+            .await
+            .expect("export");
+        assert_eq!(exported.len(), keys.len());
+        let original_stream_ids: Vec<String> = match &exported[5].value {
+            Some(ReadableValue::Stream(items)) => items.iter().map(|(id, _)| id.clone()).collect(),
+            other => panic!("expected stream, got {other:?}"),
+        };
+
+        let json_doc = serde_json::Value::Array(exported.iter().map(entry_to_json).collect()).to_string();
+        let mut csv_doc = csv_header();
+        for entry in &exported {
+            csv_doc.push_str(&entry_to_csv(entry));
+        }
+
+        let mut del = cmd("DEL");
+        for key in &keys {
+            del.arg(key);
+        }
+        del.exec_async(&mut c).await.expect("del");
+
+        // JSON import onto a clean db slice.
+        assert_eq!(
+            sniff_import_format(json_doc.as_bytes()).expect("sniff"),
+            ImportFormat::Json
+        );
+        let entries = parse_readable_entries(&json_doc, ImportFormat::Json).expect("parse json");
+        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Skip)
+            .await
+            .expect("write");
+        assert!(
+            statuses.iter().all(|s| *s == ReadableWriteStatus::Written),
+            "{statuses:?}"
+        );
+
+        let s: String = cmd("GET").arg(&s_key).query_async(&mut c).await.expect("get");
+        assert_eq!(s, "hello \"world\",\nline2");
+        let ttl: i64 = cmd("TTL").arg(&s_key).query_async(&mut c).await.expect("ttl");
+        assert!((1..=300).contains(&ttl), "import must restore the TTL, got {ttl}");
+        let l: Vec<String> = cmd("LRANGE")
+            .arg(&l_key)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("lrange");
+        assert_eq!(l, ["a", "b", "c"]);
+        let members: HashSet<String> = cmd("SMEMBERS")
+            .arg(&set_key)
+            .query_async(&mut c)
+            .await
+            .expect("smembers");
+        assert_eq!(members.len(), 2);
+        let v2: String = cmd("HGET")
+            .arg(&h_key)
+            .arg("f2")
+            .query_async(&mut c)
+            .await
+            .expect("hget");
+        assert_eq!(v2, "v2");
+        let score: f64 = cmd("ZSCORE")
+            .arg(&z_key)
+            .arg("m2")
+            .query_async(&mut c)
+            .await
+            .expect("zscore");
+        assert_eq!(score, 2.5);
+        let stream: Vec<(String, Vec<(String, String)>)> = cmd("XRANGE")
+            .arg(&x_key)
+            .arg("-")
+            .arg("+")
+            .query_async(&mut c)
+            .await
+            .expect("xrange");
+        let imported_ids: Vec<String> = stream.iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(imported_ids, original_stream_ids, "XADD must preserve original ids");
+
+        // Skip must leave existing keys alone — especially no RPUSH append.
+        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Skip)
+            .await
+            .expect("write again");
+        assert!(
+            statuses.iter().all(|s| *s == ReadableWriteStatus::SkippedExists),
+            "{statuses:?}"
+        );
+        let llen: i64 = cmd("LLEN").arg(&l_key).query_async(&mut c).await.expect("llen");
+        assert_eq!(llen, 3, "Skip must not append to the existing list");
+
+        // Overwrite replaces (DEL first), it must not append either.
+        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Overwrite)
+            .await
+            .expect("overwrite");
+        assert!(
+            statuses.iter().all(|s| *s == ReadableWriteStatus::Written),
+            "{statuses:?}"
+        );
+        let llen: i64 = cmd("LLEN").arg(&l_key).query_async(&mut c).await.expect("llen");
+        assert_eq!(llen, 3, "Overwrite must replace, not append");
+
+        // CSV round-trip onto a clean slice again.
+        let mut del = cmd("DEL");
+        for key in &keys {
+            del.arg(key);
+        }
+        del.exec_async(&mut c).await.expect("del");
+        assert_eq!(
+            sniff_import_format(csv_doc.as_bytes()).expect("sniff"),
+            ImportFormat::Csv
+        );
+        let entries = parse_readable_entries(&csv_doc, ImportFormat::Csv).expect("parse csv");
+        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Skip)
+            .await
+            .expect("write csv");
+        assert!(
+            statuses.iter().all(|s| *s == ReadableWriteStatus::Written),
+            "{statuses:?}"
+        );
+        let l: Vec<String> = cmd("LRANGE")
+            .arg(&l_key)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("lrange");
+        assert_eq!(l, ["a", "b", "c"]);
+        let v1: String = cmd("HGET")
+            .arg(&h_key)
+            .arg("f1")
+            .query_async(&mut c)
+            .await
+            .expect("hget");
+        assert_eq!(v1, "v1");
 
         let mut del = cmd("DEL");
         for key in &keys {

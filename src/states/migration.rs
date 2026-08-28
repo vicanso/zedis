@@ -18,9 +18,10 @@
 //! posts incremental progress back to the foreground entity.
 
 use crate::connection::{
-    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ReadLimits, RedisAsyncConn, RestoreStatus, csv_header,
-    dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager, get_server, read_readable_chunk,
-    restore_keys_chunk,
+    ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ImportFormat, ReadLimits, ReadableEntry,
+    ReadableWriteStatus, RedisAsyncConn, RestoreStatus, csv_header, detect_import_format, dump_keys_chunk,
+    entry_to_csv, entry_to_json, get_connection_manager, get_server, parse_readable_entries, read_readable_chunk,
+    restore_keys_chunk, write_readable_chunk,
 };
 use crate::error::Error;
 use chrono::Utc;
@@ -28,7 +29,7 @@ use gpui::SharedString;
 use gpui::prelude::*;
 use gpui::{EventEmitter, Task};
 use std::collections::VecDeque;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -535,7 +536,47 @@ async fn run_import(
     }
 }
 
+/// Dispatch on the sniffed file format: the framed binary bundle streams
+/// through `DumpReader` + `RESTORE`; the readable JSON/CSV exports are
+/// parsed up front (fail-fast on a hand-edit typo, before any write) and
+/// written back with type-native commands.
 async fn import_worker(
+    handle: gpui::WeakEntity<MigrationState>,
+    cx: &mut gpui::AsyncApp,
+    server_id: SharedString,
+    db: usize,
+    input_path: PathBuf,
+    conflict: ConflictMode,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let path_for_sniff = input_path.clone();
+    let format = smol::unblock(move || detect_import_format(&path_for_sniff)).await?;
+    match format {
+        ImportFormat::Binary => import_binary_worker(handle, cx, server_id, db, input_path, conflict, cancel).await,
+        ImportFormat::Json | ImportFormat::Csv => {
+            let spec = ReadableImportSpec {
+                server_id,
+                db,
+                input_path,
+                format,
+                conflict,
+            };
+            import_readable_worker(handle, cx, spec, cancel).await
+        }
+    }
+}
+
+/// Readable-import parameters, grouped like [`ExportSpec`] so the worker
+/// signature stays under clippy's argument limit.
+struct ReadableImportSpec {
+    server_id: SharedString,
+    db: usize,
+    input_path: PathBuf,
+    format: ImportFormat,
+    conflict: ConflictMode,
+}
+
+async fn import_binary_worker(
     handle: gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
     server_id: SharedString,
@@ -589,6 +630,97 @@ async fn import_worker(
         if eof {
             break;
         }
+    }
+    Ok(())
+}
+
+/// Import a readable JSON/CSV export: parse the whole file first (they
+/// exist for hand-edited, human-scale data — a typo fails here, before
+/// anything is written), then write in chunks with type-native commands.
+async fn import_readable_worker(
+    handle: gpui::WeakEntity<MigrationState>,
+    cx: &mut gpui::AsyncApp,
+    spec: ReadableImportSpec,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let ReadableImportSpec {
+        server_id,
+        db,
+        input_path,
+        format,
+        conflict,
+    } = spec;
+    let entries = smol::unblock(move || -> Result<Vec<ReadableEntry>> {
+        let text = fs::read_to_string(&input_path)?;
+        Ok(parse_readable_entries(&text, format)?)
+    })
+    .await?;
+
+    let total = entries.len() as u64;
+    let _ = handle.update(cx, |s, cx| {
+        s.progress.keys_total = total;
+        cx.notify();
+    });
+
+    let client = get_connection_manager().get_client(server_id.as_str(), db).await?;
+    let mut conn = client.connection();
+
+    for chunk in entries.chunks(RESTORE_BATCH_SIZE) {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let statuses = write_readable_chunk(&mut conn, chunk, conflict).await?;
+        let mut written = 0u64;
+        let mut skipped = 0u64;
+        let mut failed = 0u64;
+        let mut bytes = 0u64;
+        let mut log_lines: Vec<LogLine> = Vec::with_capacity(chunk.len());
+        for (entry, status) in chunk.iter().zip(statuses) {
+            let size = entry.approx_bytes();
+            let (log_status, message) = match status {
+                ReadableWriteStatus::Written => {
+                    written += 1;
+                    bytes += size;
+                    (LogStatus::Ok, None)
+                }
+                ReadableWriteStatus::SkippedExists => {
+                    skipped += 1;
+                    (LogStatus::Skipped, Some(SharedString::from("already exists")))
+                }
+                ReadableWriteStatus::SkippedTruncated => {
+                    skipped += 1;
+                    (LogStatus::Skipped, Some(SharedString::from("truncated in the export")))
+                }
+                ReadableWriteStatus::SkippedUnsupported => {
+                    skipped += 1;
+                    (LogStatus::Skipped, Some(SharedString::from(entry.key_type.clone())))
+                }
+                ReadableWriteStatus::SkippedEmpty => {
+                    skipped += 1;
+                    (LogStatus::Skipped, Some(SharedString::from("empty")))
+                }
+                ReadableWriteStatus::Failed(msg) => {
+                    failed += 1;
+                    (LogStatus::Failed, Some(SharedString::from(msg)))
+                }
+            };
+            log_lines.push(LogLine {
+                key: entry.key.clone().into(),
+                bytes: size,
+                status: log_status,
+                message,
+            });
+        }
+        handle
+            .update(cx, |s, cx| {
+                s.progress.keys_done += written;
+                s.progress.keys_skipped += skipped;
+                s.progress.keys_failed += failed;
+                s.progress.bytes_done += bytes;
+                cx.emit(MigrationEvent::Progress);
+                s.extend_log(log_lines, cx);
+            })
+            .map_err(|e| Error::Invalid { message: e.to_string() })?;
     }
     Ok(())
 }

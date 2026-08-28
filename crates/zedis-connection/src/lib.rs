@@ -38,6 +38,7 @@ mod master_key;
 mod multi_search;
 mod probe;
 mod readable_export;
+mod readable_import;
 mod search;
 mod ssh_cluster_connection;
 mod ssh_stream;
@@ -77,6 +78,10 @@ pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exa
 pub use probe::{get_server_features, invalidate_server_features, note_server_command_error, probe_server_features};
 pub use readable_export::{
     ReadLimits, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, read_readable_chunk,
+};
+pub use readable_import::{
+    ImportFormat, ReadableWriteStatus, detect_import_format, parse_readable_entries, preview_import_conflicts,
+    sniff_import_format, write_readable_chunk,
 };
 
 pub use manager::{

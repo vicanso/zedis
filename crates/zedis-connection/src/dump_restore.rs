@@ -46,7 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-const MAGIC_HEADER: &[u8; 4] = b"ZDIS";
+pub(crate) const MAGIC_HEADER: &[u8; 4] = b"ZDIS";
 const MAGIC_FOOTER: &[u8; 4] = b"ZEND";
 const FORMAT_VERSION: u16 = 1;
 const MAX_HEADER_LEN: u32 = 64 * 1024;
