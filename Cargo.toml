@@ -47,7 +47,10 @@ license = "Apache-2.0"
 homepage = "https://github.com/vicanso/zedis"
 repository = "https://github.com/vicanso/zedis"
 documentation = "https://github.com/vicanso/zedis"
-rust-version = "1.88.0"
+# The published MSRV — what `cargo install zedis-gui` users are promised.
+# Compile-checked by the `msrv` job in lint.yml; the floor currently comes
+# from the locked vergen 10.x family (requires rustc 1.96).
+rust-version = "1.96.0"
 
 [dependencies]
 ahash = "0.8.12"

@@ -1,0 +1,13 @@
+# Pins the toolchain for everyone entering this directory — rustup reads
+# this file and auto-installs the exact compiler, so a local `cargo build`
+# / `make lint` runs on the same rustc+clippy+rustfmt as CI instead of
+# whatever `rustup default` happens to be (clippy's --deny=warnings gate
+# is version-sensitive: every release adds lints).
+#
+# Bumping the version: update `channel` here AND the `RUST_TOOLCHAIN` env
+# in .github/workflows/{lint,integration,publish,smoke}.yml (the lint
+# workflow fails with a pointer here if they drift) + the Toolchain line
+# in CLAUDE.md.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

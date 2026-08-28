@@ -16,7 +16,7 @@ Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](ht
 - Smoke mode: `ZEDIS_SMOKE_TEST=1` exits 0 on the first painted frame (macOS / Windows gates); `ZEDIS_SMOKE_GATE=window` accepts "window created + 5s alive" instead — the hard Linux gate in `smoke.yml`, because Xvfb + llvmpipe never delivers the frame signal.
 - Run dev: `make dev` (`bacon run`); with logs: `make debug` (`RUST_LOG=DEBUG`).
 - Release: `make release` (`cargo build --release --features mimalloc`).
-- Toolchain: Rust **1.98.0**, edition 2024.
+- Toolchain: Rust **1.98.0**, edition 2024 — pinned in `rust-toolchain.toml` (rustup applies it to every local build; the workflows' `RUST_TOOLCHAIN` env mirrors it and lint CI fails on drift, so bump them together). The published MSRV is separate: `rust-version` in `Cargo.toml` (what `cargo install` users are promised), compile-checked by the `msrv` job in `lint.yml`.
 
 Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.expect("…")` or proper matching in test code, never `.unwrap()`.
 

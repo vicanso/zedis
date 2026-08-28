@@ -12,6 +12,53 @@ env:
   APP_NAME: Zedis
 
 jobs:
+  # rust-toolchain.toml is what actually compiles the code (rustup gives
+  # it precedence over any installed default, locally and on runners) —
+  # the RUST_TOOLCHAIN env in the workflows only pre-installs. Fail fast
+  # if someone bumps one without the other.
+  toolchain-pin:
+    name: toolchain pin in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: rust-toolchain.toml matches every workflow pin
+        run: |
+          pinned="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$pinned"
+          bad=0
+          for f in $(grep -l "RUST_TOOLCHAIN:" .github/workflows/*.yml); do
+            if ! grep -q "RUST_TOOLCHAIN: $pinned\$" "$f"; then
+              echo "::error::$f pins a different RUST_TOOLCHAIN than rust-toolchain.toml ($pinned) — bump them together (see rust-toolchain.toml header)."
+              bad=1
+            fi
+          done
+          exit $bad
+
+  # `rust-version` in Cargo.toml is the promise `cargo install zedis-gui`
+  # users build against — but nothing else compiles with that toolchain,
+  # so a code or dependency bump can silently break it (it did: the
+  # vergen 10.x family raised the real floor to 1.96 while the manifest
+  # still said 1.88). This job builds with exactly the promised compiler.
+  msrv:
+    name: msrv
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: read published MSRV
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-msrv
+      - name: check with the published MSRV
+        # `+<msrv>` overrides the rust-toolchain.toml pin; `--locked`
+        # matches how the README tells users to install.
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --locked
+
   macos:
     name: macos-${{ matrix.target }}
     runs-on: ${{ matrix.os }}

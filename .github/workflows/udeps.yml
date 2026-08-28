@@ -1,0 +1,39 @@
+name: Unused dependencies
+
+# Weekly `cargo udeps` sweep: dependencies declared in a Cargo.toml but
+# used by nothing. Without it the dependency list only ever grows — slower
+# full builds, and audit.yml raising RUSTSEC advisories for crates the app
+# doesn't even call. Weekly (not per-PR) because udeps needs nightly and
+# has the occasional false positive; `make udeps` runs the same check
+# locally.
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  udeps:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: install cargo-udeps
+        # Prebuilt binary — `cargo install cargo-udeps` would compile for
+        # minutes on every weekly run.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-udeps
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-udeps
+      - name: cargo udeps
+        # `+nightly` (matching `make udeps`) — required by udeps itself,
+        # and it also overrides the rust-toolchain.toml pin.
+        run: cargo +nightly udeps --workspace
