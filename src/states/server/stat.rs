@@ -160,6 +160,10 @@ pub fn get_metrics_cache() -> &'static MetricsCache {
     &METRICS_CACHE
 }
 
+/// Refill `dbsize` from the heartbeat's INFO keyspace at most this often
+/// (seconds) — the key total needn't be real-time.
+const DBSIZE_REFRESH_INTERVAL: i64 = 60;
+
 /// Persist at most one sample per minute per server — the in-memory cache
 /// keeps the 2s-resolution live window, disk only needs trend resolution.
 const METRICS_PERSIST_INTERVAL_MS: i64 = 60_000;
@@ -756,6 +760,25 @@ impl ZedisServerState {
                     }
                     METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
                     maybe_persist_metrics(&server_id_clone, info.metrics, cx);
+                    // The same INFO carries the keyspace section, and
+                    // `db{n}: keys=` is DBSIZE by another name (already
+                    // summed across masters by the aggregation) — refill
+                    // the status bar's key total from it, at most once a
+                    // minute: the number needn't track every tick, and a
+                    // steady denominator reads calmer than a live one.
+                    // A fully absent keyspace (restricted proxies, or a
+                    // server with every db empty) leaves the last known
+                    // value alone rather than guessing zero.
+                    let now = unix_ts();
+                    if !info.keyspace.is_empty() && now - this.last_dbsize_refreshed_at >= DBSIZE_REFRESH_INTERVAL {
+                        this.last_dbsize_refreshed_at = now;
+                        let keys = info
+                            .keyspace
+                            .get(&format!("db{db}"))
+                            .map(|stats| stats.keys)
+                            .unwrap_or(0);
+                        this.dbsize = Some(keys);
+                    }
                     this.redis_info = Some(info);
                     if let Some(slow_logs) = slow_logs {
                         this.last_slow_log_count = slow_logs

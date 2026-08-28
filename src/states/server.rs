@@ -131,6 +131,9 @@ pub enum ConnectionHealth {
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
     redis_info: Option<RedisInfo>,
+    /// Last time the heartbeat refilled `dbsize` from INFO keyspace —
+    /// throttled to once a minute; the total needn't track every tick.
+    last_dbsize_refreshed_at: i64,
     last_slow_logs_checked_at: i64,
     last_slow_log_count: usize,
     slow_logs: Vec<SlowLogEntry>,
@@ -435,6 +438,7 @@ impl ZedisServerState {
         self.type_filter = None;
         self.reset_scan(cx);
         self.terminal = false;
+        self.last_dbsize_refreshed_at = 0;
         self.last_slow_logs_checked_at = 0;
         self.last_slow_log_count = 0;
         self.slow_logs.clear();
