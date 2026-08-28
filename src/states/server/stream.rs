@@ -16,22 +16,28 @@ use super::{
     KeyType, RedisValueData, ServerEvent, ServerTask, ZedisServerState,
     value::{
         RedisStreamEntry, RedisStreamValue, RedisValue, RedisValueStatus, StreamConsumerDetail, StreamGroupDetail,
-        StreamInfoData, StreamPendingEntry, StreamSummary,
+        StreamInfoData, StreamPendingEntry, StreamSummary, StreamTrim,
     },
 };
+use crate::states::ZedisGlobalStore;
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager},
+    connection::{RedisAsyncConn, get_connection_manager, next_stream_id},
     error::Error,
 };
 use gpui::{SharedString, prelude::*};
 use redis::aio::MultiplexedConnection;
 use redis::cmd;
+use rust_i18n::t;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 type RawStreamData = Vec<(String, Vec<String>)>;
+
+/// XPENDING page size — both the initial per-group load and every
+/// "load more" click fetch this many entries.
+const PENDING_PAGE: usize = 100;
 
 // ── XINFO / XPENDING parsing helpers ─────────────────────────────────────────
 
@@ -167,34 +173,13 @@ async fn load_stream_info_data(conn: &mut RedisAsyncConn, key: &str) -> Result<S
             list
         };
 
-        // XPENDING key group - + 100
-        let pending_entries = {
-            let raw: redis::Value = cmd("XPENDING")
-                .arg(key)
-                .arg(name.as_ref())
-                .arg("-")
-                .arg("+")
-                .arg(100usize)
-                .query_async(conn)
-                .await
-                .unwrap_or(redis::Value::Array(vec![]));
-            let mut list = Vec::new();
-            if let redis::Value::Array(entries) = raw {
-                for entry in entries {
-                    if let redis::Value::Array(f) = entry
-                        && f.len() >= 4
-                    {
-                        list.push(StreamPendingEntry {
-                            id: redis_to_string(&f[0]),
-                            consumer: redis_to_string(&f[1]),
-                            idle_ms: redis_to_i64(&f[2]),
-                            delivery_count: redis_to_i64(&f[3]),
-                        });
-                    }
-                }
-            }
-            list
-        };
+        // First XPENDING page. Tolerant (`unwrap_or`) on purpose: a NOPERM
+        // on XPENDING must not blank the whole info view — the per-entry
+        // actions surface real errors when actually used.
+        let pending_entries = fetch_pending_page(conn, key, name.as_ref(), "-")
+            .await
+            .unwrap_or_default();
+        let pending_done = pending_entries.len() < PENDING_PAGE;
 
         groups.push(StreamGroupDetail {
             name,
@@ -204,10 +189,44 @@ async fn load_stream_info_data(conn: &mut RedisAsyncConn, key: &str) -> Result<S
             lag,
             consumers,
             pending_entries,
+            pending_done,
         });
     }
 
     Ok(StreamInfoData { summary, groups })
+}
+
+/// One `XPENDING key group start + PENDING_PAGE` page, oldest first.
+async fn fetch_pending_page(
+    conn: &mut RedisAsyncConn,
+    key: &str,
+    group: &str,
+    start: &str,
+) -> Result<Vec<StreamPendingEntry>> {
+    let raw: redis::Value = cmd("XPENDING")
+        .arg(key)
+        .arg(group)
+        .arg(start)
+        .arg("+")
+        .arg(PENDING_PAGE)
+        .query_async(conn)
+        .await?;
+    let mut list = Vec::new();
+    if let redis::Value::Array(entries) = raw {
+        for entry in entries {
+            if let redis::Value::Array(f) = entry
+                && f.len() >= 4
+            {
+                list.push(StreamPendingEntry {
+                    id: redis_to_string(&f[0]),
+                    consumer: redis_to_string(&f[1]),
+                    idle_ms: redis_to_i64(&f[2]),
+                    delivery_count: redis_to_i64(&f[3]),
+                });
+            }
+        }
+    }
+    Ok(list)
 }
 
 /// Fetches a page of stream entries using XRANGE (ascending) or XREVRANGE (descending).
@@ -734,6 +753,177 @@ impl ZedisServerState {
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// XACK key group id — acknowledge one pending entry. The refreshed
+    /// XINFO is the feedback: the row leaves the pending table.
+    pub fn ack_stream_entry(&mut self, group: SharedString, entry_id: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::AckStreamEntry,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let _: i64 = cmd("XACK")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(entry_id.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// XCLAIM key group consumer 0 id JUSTID — force-reassign one
+    /// pending entry (min-idle-time 0, so it always claims; JUSTID keeps
+    /// the delivery counter untouched).
+    pub fn claim_stream_entry(
+        &mut self,
+        group: SharedString,
+        consumer: SharedString,
+        entry_id: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.exec_stream_op(
+            ServerTask::ClaimStreamEntry,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let _: redis::Value = cmd("XCLAIM")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(consumer.as_str())
+                    .arg(0)
+                    .arg(entry_id.as_str())
+                    .arg("JUSTID")
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// XAUTOCLAIM key group consumer min-idle 0-0 COUNT n JUSTID —
+    /// batch-claim up to `count` entries idle for at least `min_idle_ms`.
+    /// Notifies with how many were claimed (Redis ≥ 6.2; older servers
+    /// surface the unknown-command error like any other op).
+    pub fn autoclaim_stream_entries(
+        &mut self,
+        group: SharedString,
+        consumer: SharedString,
+        min_idle_ms: u64,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.exec_stream_op(
+            ServerTask::AutoclaimStreamEntries,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let raw: redis::Value = cmd("XAUTOCLAIM")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(consumer.as_str())
+                    .arg(min_idle_ms)
+                    .arg("0-0")
+                    .arg("COUNT")
+                    .arg(count)
+                    .arg("JUSTID")
+                    .query_async(&mut conn)
+                    .await?;
+                // Reply: [next-cursor, [claimed ids…], [deleted ids…]].
+                let claimed = match &raw {
+                    redis::Value::Array(parts) => match parts.get(1) {
+                        Some(redis::Value::Array(ids)) => ids.len(),
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                Ok(claimed)
+            },
+            |this, claimed, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                let message: SharedString = t!("stream_editor.autoclaim_done", count = claimed, locale = locale)
+                    .to_string()
+                    .into();
+                let title: SharedString = t!("stream_editor.autoclaim_title", locale = locale).to_string().into();
+                this.emit_success_notification(message, title, cx);
+                this.fetch_stream_info(cx);
+            },
+        );
+    }
+
+    /// XTRIM key MAXLEN n / MINID id — cut the stream. Destructive; the
+    /// caller confirms first. Reloads entries + info on success (loaded
+    /// rows may have been trimmed away).
+    pub fn trim_stream(&mut self, trim: StreamTrim, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::TrimStream,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let mut command = cmd("XTRIM");
+                command.arg(&key);
+                match &trim {
+                    StreamTrim::MaxLen(n) => command.arg("MAXLEN").arg(*n),
+                    StreamTrim::MinId(id) => command.arg("MINID").arg(id.as_str()),
+                };
+                let removed: i64 = command.query_async(&mut conn).await?;
+                Ok(removed)
+            },
+            |this, removed, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                let message: SharedString = t!("stream_editor.trim_done", count = removed, locale = locale)
+                    .to_string()
+                    .into();
+                let title: SharedString = t!("stream_editor.trim_title", locale = locale).to_string().into();
+                this.emit_success_notification(message, title, cx);
+                let reverse = this
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.stream_value())
+                    .map(|s| s.reverse)
+                    .unwrap_or_default();
+                this.reload_stream_value(reverse, cx);
+                this.fetch_stream_info(cx);
+            },
+        );
+    }
+
+    /// Next XPENDING page for `group`, appended after the last loaded
+    /// entry (portable ms-seq stepping — no exclusive ranges needed).
+    pub fn load_more_stream_pending(&mut self, group: SharedString, cx: &mut Context<Self>) {
+        let start = self
+            .value
+            .as_ref()
+            .and_then(|v| v.stream_value())
+            .and_then(|s| s.info.as_ref())
+            .and_then(|info| info.groups.iter().find(|g| g.name == group))
+            .and_then(|g| g.pending_entries.last())
+            .and_then(|entry| next_stream_id(entry.id.as_ref()))
+            .unwrap_or_else(|| "-".to_string());
+        let group_for_merge = group.clone();
+        self.exec_stream_op(
+            ServerTask::LoadStreamPending,
+            cx,
+            |_| {},
+            move |key, mut conn| async move { fetch_pending_page(&mut conn, &key, group.as_ref(), &start).await },
+            move |this, entries: Vec<StreamPendingEntry>, cx| {
+                if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
+                    let stream = Arc::make_mut(stream_data);
+                    if let Some(info) = stream.info.as_mut() {
+                        let info = Arc::make_mut(info);
+                        if let Some(g) = info.groups.iter_mut().find(|g| g.name == group_for_merge) {
+                            g.pending_done = entries.len() < PENDING_PAGE;
+                            g.pending_entries.extend(entries);
+                        }
+                    }
+                }
+                cx.emit(ServerEvent::ValueUpdated);
+            },
         );
     }
 }

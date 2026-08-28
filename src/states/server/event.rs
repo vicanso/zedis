@@ -106,6 +106,16 @@ pub enum ServerTask {
     SetStreamGroupId,
     /// XGROUP DESTROY — drop a consumer group (and its PEL)
     DestroyStreamGroup,
+    /// XACK — acknowledge one pending entry
+    AckStreamEntry,
+    /// XCLAIM — reassign one pending entry to a consumer
+    ClaimStreamEntry,
+    /// XAUTOCLAIM — batch-claim idle pending entries to a consumer
+    AutoclaimStreamEntries,
+    /// XTRIM — cut the stream by MAXLEN or MINID
+    TrimStream,
+    /// Next XPENDING page for one group
+    LoadStreamPending,
 
     /// `FLUSHDB` — wipe the current database (fanned out across masters).
     FlushDb,
@@ -191,6 +201,11 @@ impl ServerTask {
             ServerTask::CreateStreamGroup => "create_stream_group",
             ServerTask::SetStreamGroupId => "set_stream_group_id",
             ServerTask::DestroyStreamGroup => "destroy_stream_group",
+            ServerTask::AckStreamEntry => "ack_stream_entry",
+            ServerTask::ClaimStreamEntry => "claim_stream_entry",
+            ServerTask::AutoclaimStreamEntries => "autoclaim_stream_entries",
+            ServerTask::TrimStream => "trim_stream",
+            ServerTask::LoadStreamPending => "load_stream_pending",
             ServerTask::PublishMessage => "publish_message",
             ServerTask::Bgsave => "bgsave",
             ServerTask::Bgrewriteaof => "bgrewriteaof",

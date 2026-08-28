@@ -222,8 +222,9 @@ async fn read_zset(conn: &mut RedisAsyncConn, key: &str, limits: ReadLimits) -> 
 
 /// The id right after `id` in `XRANGE` order (same millisecond, next
 /// sequence). Paging with it works on every server — exclusive-start
-/// ranges (`(id`) need Redis ≥ 6.2.
-fn next_stream_id(id: &str) -> Option<String> {
+/// ranges (`(id`) need Redis ≥ 6.2. Also used by the stream editor's
+/// XPENDING pagination.
+pub fn next_stream_id(id: &str) -> Option<String> {
     let (ms, seq) = id.split_once('-')?;
     let seq: u64 = seq.parse().ok()?;
     Some(format!("{ms}-{}", seq.checked_add(1)?))

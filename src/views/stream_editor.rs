@@ -13,20 +13,21 @@
 // limitations under the License.
 
 use crate::{
+    assets::CustomIconName,
     components::ZedisKvFetcher,
     components::{KvTableColumn, KvTableMode},
     connection::{get_server, open_single_connection},
     helpers::{fast_contains_ignore_case, format_duration},
     states::{
         ConnectionErrorKind, GlobalEvent, KeyType, NotificationAction, RedisStreamEntry, RedisValue, ServerEvent,
-        StreamInfoData, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_common,
-        i18n_kv_table, i18n_status_bar, i18n_stream_editor, tail_read,
+        StreamInfoData, StreamTrim, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
+        i18n_common, i18n_kv_table, i18n_status_bar, i18n_stream_editor, tail_read,
     },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
 use gpui::{App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, WindowExt,
+    ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -359,8 +360,6 @@ pub struct ZedisStreamEditor {
     is_info_view: bool,
     /// Merged groups+consumers table (Group | Last-ID | Lag | Consumer | Pending | Idle )
     groups_consumers_table: Option<Entity<TableState<SimpleTableDelegate>>>,
-    /// Pending-entries table (Group | Entry ID | Consumer | Idle | Deliveries)
-    pending_table: Option<Entity<TableState<SimpleTableDelegate>>>,
     /// Whether live tail (XREAD BLOCK loop) is running.
     tailing: bool,
     /// The cancellable tail loop. Dropping it (stop, key/server
@@ -486,7 +485,6 @@ impl ZedisStreamEditor {
                 ServerEvent::KeySelected(_) => {
                     this.is_info_view = false;
                     this.groups_consumers_table = None;
-                    this.pending_table = None;
                     // Stop tailing — the loop targets the previous key;
                     // dropping the task cancels it and its connection.
                     this.tail_task = None;
@@ -502,7 +500,6 @@ impl ZedisStreamEditor {
             server_state,
             is_info_view: false,
             groups_consumers_table: None,
-            pending_table: None,
             tailing: false,
             tail_task: None,
             _subscriptions: vec![sub],
@@ -659,33 +656,6 @@ impl ZedisStreamEditor {
             .collect();
         self.groups_consumers_table =
             Some(cx.new(|cx| TableState::new(SimpleTableDelegate::new(gc_columns, gc_rows), window, cx)));
-
-        // All pending entries, flattened across groups
-        // Columns: Group | Entry ID | Consumer | Idle(ms) | Deliveries
-        let pending_columns = vec![
-            (i18n_stream_editor(cx, "col_group"), Some(140.)),
-            (i18n_stream_editor(cx, "col_entry_id"), Some(160.)),
-            (i18n_stream_editor(cx, "col_consumer"), Some(140.)),
-            (i18n_stream_editor(cx, "col_idle_ms"), Some(100.)),
-            (i18n_stream_editor(cx, "col_deliveries"), None),
-        ];
-        let pending_rows: Vec<Vec<SharedString>> = info
-            .groups
-            .iter()
-            .flat_map(|g| {
-                g.pending_entries.iter().map(|p| {
-                    vec![
-                        g.name.clone(),
-                        p.id.clone(),
-                        p.consumer.clone(),
-                        format_duration(Duration::from_millis(p.idle_ms as u64)).into(),
-                        p.delivery_count.to_string().into(),
-                    ]
-                })
-            })
-            .collect();
-        self.pending_table =
-            Some(cx.new(|cx| TableState::new(SimpleTableDelegate::new(pending_columns, pending_rows), window, cx)));
     }
 
     /// Renders a single labelled metric: small muted label above a bold value.
@@ -810,6 +780,183 @@ impl ZedisStreamEditor {
         .open(window, cx);
     }
 
+    /// XCLAIM dialog for one pending entry: target consumer name.
+    fn claim_entry_dialog(
+        &mut self,
+        group: SharedString,
+        entry_id: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let consumer_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "claim_consumer_placeholder")));
+        let hint = i18n_stream_editor(cx, "claim_hint");
+        let body_consumer = consumer_state.clone();
+        let submit_consumer = consumer_state.clone();
+        let server_state = self.server_state.clone();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "claim_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Input::new(&body_consumer))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let consumer = submit_consumer.read(cx).value().to_string();
+                if consumer.trim().is_empty() {
+                    return false;
+                }
+                let group = group.clone();
+                let entry_id = entry_id.clone();
+                server_state.update(cx, |state, cx| {
+                    state.claim_stream_entry(group, consumer.trim().to_string().into(), entry_id, cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// XAUTOCLAIM dialog for one group: target consumer, minimum idle
+    /// time and how many entries to claim at most.
+    fn autoclaim_dialog(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let consumer_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "claim_consumer_placeholder")));
+        let min_idle_state = cx.new(|cx| InputState::new(window, cx).default_value("60000"));
+        let count_state = cx.new(|cx| InputState::new(window, cx).default_value("100"));
+        let min_idle_label = i18n_stream_editor(cx, "autoclaim_min_idle");
+        let count_label = i18n_stream_editor(cx, "autoclaim_count");
+        let hint = i18n_stream_editor(cx, "autoclaim_hint");
+        let body_consumer = consumer_state.clone();
+        let body_min_idle = min_idle_state.clone();
+        let body_count = count_state.clone();
+        let submit_consumer = consumer_state.clone();
+        let submit_min_idle = min_idle_state.clone();
+        let submit_count = count_state.clone();
+        let server_state = self.server_state.clone();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "autoclaim_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Input::new(&body_consumer))
+                    .child(Label::new(min_idle_label.clone()).text_xs())
+                    .child(Input::new(&body_min_idle))
+                    .child(Label::new(count_label.clone()).text_xs())
+                    .child(Input::new(&body_count))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let consumer = submit_consumer.read(cx).value().to_string();
+                if consumer.trim().is_empty() {
+                    return false;
+                }
+                let Ok(min_idle_ms) = submit_min_idle.read(cx).value().trim().parse::<u64>() else {
+                    return false;
+                };
+                let Ok(count) = submit_count.read(cx).value().trim().parse::<usize>() else {
+                    return false;
+                };
+                if count == 0 {
+                    return false;
+                }
+                let group = group.clone();
+                server_state.update(cx, |state, cx| {
+                    state.autoclaim_stream_entries(
+                        group,
+                        consumer.trim().to_string().into(),
+                        min_idle_ms,
+                        count.min(1000),
+                        cx,
+                    );
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// XTRIM dialog: one input — a plain number trims by MAXLEN (keep
+    /// the newest n), an `ms-seq` id trims by MINID (drop older) — then
+    /// the standard destructive confirm with the exact command spelled
+    /// out (PROD-escalated).
+    fn trim_stream_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let threshold_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "trim_placeholder")));
+        let hint = i18n_stream_editor(cx, "trim_hint");
+        let body_threshold = threshold_state.clone();
+        let submit_threshold = threshold_state.clone();
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "trim_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Input::new(&body_threshold))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, window, cx| {
+                let raw = submit_threshold.read(cx).value().trim().to_string();
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                let (trim, message) = if raw.contains('-') {
+                    let message = t!("stream_editor.trim_confirm_minid", id = raw.as_str(), locale = locale);
+                    (StreamTrim::MinId(raw.clone().into()), message.to_string())
+                } else if let Ok(n) = raw.parse::<u64>() {
+                    let message = t!("stream_editor.trim_confirm_maxlen", n = n, locale = locale);
+                    (StreamTrim::MaxLen(n), message.to_string())
+                } else {
+                    // Neither a count nor an id — keep the dialog open.
+                    return false;
+                };
+                // Close the form ourselves before stacking the confirm on
+                // top — returning true would auto-close the *topmost*
+                // dialog, i.e. the alert we are about to open.
+                window.close_dialog(cx);
+                let server_state = server_state.clone();
+                ZedisDialog::new_alert(
+                    i18n_stream_editor(cx, "trim_title"),
+                    escalate_dangerous_body(cx, &server_id, message),
+                )
+                .button_props(dialog_button_props(cx))
+                .on_ok(move |_, window, cx| {
+                    let trim = trim.clone();
+                    server_state.update(cx, |state, cx| state.trim_stream(trim, cx));
+                    window.close_dialog(cx);
+                    true
+                })
+                .open(window, cx);
+                false
+            })
+            .open(window, cx);
+    }
+
     fn render_metric(&self, label: SharedString, value: SharedString, muted: gpui::Hsla) -> impl gpui::IntoElement {
         v_flex()
             .gap_0p5()
@@ -908,18 +1055,33 @@ impl ZedisStreamEditor {
                         .text_color(muted),
                 )
                 .child(
-                    Button::new("stream-create-group")
-                        .small()
-                        .icon(IconName::Plus)
-                        .label(i18n_stream_editor(cx, "create_group"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.create_group_dialog(window, cx);
-                        })),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("stream-trim")
+                                .small()
+                                .icon(Icon::new(CustomIconName::ListX))
+                                .label(i18n_stream_editor(cx, "trim"))
+                                .tooltip(i18n_stream_editor(cx, "trim_tooltip"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.trim_stream_dialog(window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("stream-create-group")
+                                .small()
+                                .icon(IconName::Plus)
+                                .label(i18n_stream_editor(cx, "create_group"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.create_group_dialog(window, cx);
+                                })),
+                        ),
                 ),
         );
 
         for (idx, g) in info.groups.iter().enumerate() {
             let setid_group = g.name.clone();
+            let autoclaim_group = g.name.clone();
             let destroy_group = g.name.clone();
             result = result.child(
                 h_flex()
@@ -942,6 +1104,16 @@ impl ZedisStreamEditor {
                             .tooltip(i18n_stream_editor(cx, "setid_tooltip"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.setid_group_dialog(setid_group.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("stream-autoclaim", idx))
+                            .small()
+                            .ghost()
+                            .icon(Icon::new(CustomIconName::ListCheck))
+                            .tooltip(i18n_stream_editor(cx, "autoclaim_tooltip"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.autoclaim_dialog(autoclaim_group.clone(), window, cx);
                             })),
                     )
                     .child(
@@ -986,26 +1158,173 @@ impl ZedisStreamEditor {
                 );
         }
 
-        if let Some(ref t) = self.pending_table {
-            result = result
-                .child(
-                    Label::new(i18n_stream_editor(cx, "pending_entries_title"))
-                        .text_xs()
-                        .text_color(muted),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(160.))
-                        .border_1()
-                        .border_color(border)
-                        .rounded_lg()
-                        .overflow_hidden()
-                        .child(DataTable::new(t).stripe(true).bordered(false)),
-                );
-        }
+        result = result
+            .child(
+                Label::new(i18n_stream_editor(cx, "pending_entries_title"))
+                    .text_xs()
+                    .text_color(muted),
+            )
+            .child(self.render_pending_entries(&info, muted, border, cx));
 
         result.into_any_element()
+    }
+
+    /// Pending entries across every group, as interactive rows: per-row
+    /// XACK / XCLAIM, plus a per-group "load more" while XPENDING pages
+    /// remain. Hand-rolled instead of a `DataTable` because the table
+    /// component has no per-row action slot (same reason as the
+    /// workspace tab strip).
+    fn render_pending_entries(
+        &self,
+        info: &Arc<StreamInfoData>,
+        muted: gpui::Hsla,
+        border: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement + use<> {
+        let total_pending: usize = info.groups.iter().map(|g| g.pending_entries.len()).sum();
+
+        // Header row mirroring the old table columns; the trailing gap
+        // roughly reserves the per-row action-button width.
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(border)
+            .child(
+                Label::new(i18n_stream_editor(cx, "col_group"))
+                    .text_xs()
+                    .text_color(muted)
+                    .w(px(120.)),
+            )
+            .child(
+                Label::new(i18n_stream_editor(cx, "col_entry_id"))
+                    .text_xs()
+                    .text_color(muted)
+                    .w(px(150.)),
+            )
+            .child(
+                Label::new(i18n_stream_editor(cx, "col_consumer"))
+                    .text_xs()
+                    .text_color(muted)
+                    .w(px(120.)),
+            )
+            .child(
+                Label::new(i18n_stream_editor(cx, "col_idle_ms"))
+                    .text_xs()
+                    .text_color(muted)
+                    .w(px(80.)),
+            )
+            .child(
+                Label::new(i18n_stream_editor(cx, "col_deliveries"))
+                    .text_xs()
+                    .text_color(muted),
+            );
+
+        let mut list = v_flex().w_full();
+        if total_pending == 0 {
+            list = list.child(
+                div().p_2().child(
+                    Label::new(i18n_stream_editor(cx, "no_pending_entries"))
+                        .text_sm()
+                        .text_color(muted),
+                ),
+            );
+        }
+        let mut row_ix = 0usize;
+        for g in info.groups.iter() {
+            for p in g.pending_entries.iter() {
+                let ack_group = g.name.clone();
+                let ack_id = p.id.clone();
+                let claim_group = g.name.clone();
+                let claim_id = p.id.clone();
+                list = list.child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_0p5()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            Label::new(g.name.clone())
+                                .text_xs()
+                                .text_color(muted)
+                                .w(px(120.))
+                                .text_ellipsis(),
+                        )
+                        .child(Label::new(p.id.clone()).text_xs().w(px(150.)).text_ellipsis())
+                        .child(Label::new(p.consumer.clone()).text_xs().w(px(120.)).text_ellipsis())
+                        .child(
+                            Label::new(SharedString::from(format_duration(Duration::from_millis(
+                                p.idle_ms as u64,
+                            ))))
+                            .text_xs()
+                            .text_color(muted)
+                            .w(px(80.)),
+                        )
+                        .child(Label::new(p.delivery_count.to_string()).text_xs().text_color(muted))
+                        .child(div().flex_1())
+                        .child(
+                            Button::new(("stream-ack", row_ix))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Check)
+                                .tooltip(i18n_stream_editor(cx, "ack_tooltip"))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.server_state.update(cx, |state, cx| {
+                                        state.ack_stream_entry(ack_group.clone(), ack_id.clone(), cx);
+                                    });
+                                })),
+                        )
+                        .child(
+                            Button::new(("stream-claim", row_ix))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::CircleUser)
+                                .tooltip(i18n_stream_editor(cx, "claim_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.claim_entry_dialog(claim_group.clone(), claim_id.clone(), window, cx);
+                                })),
+                        ),
+                );
+                row_ix += 1;
+            }
+            if !g.pending_done {
+                let more_group = g.name.clone();
+                let label: SharedString =
+                    format!("{} · {}", i18n_stream_editor(cx, "pending_load_more"), g.name).into();
+                list = list.child(
+                    div().p_1().child(
+                        Button::new(("stream-pending-more", row_ix))
+                            .xsmall()
+                            .ghost()
+                            .icon(Icon::new(CustomIconName::ChevronsDown))
+                            .label(label)
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.server_state.update(cx, |state, cx| {
+                                    state.load_more_stream_pending(more_group.clone(), cx);
+                                });
+                            })),
+                    ),
+                );
+                row_ix += 1;
+            }
+        }
+
+        // Fixed height on purpose: `max_h` + a scroll wrapper silently
+        // clips instead of scrolling (see the CLAUDE.md gotcha).
+        v_flex()
+            .w_full()
+            .h(px(220.))
+            .border_1()
+            .border_color(border)
+            .rounded_lg()
+            .child(header)
+            .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(list))
     }
 }
 

@@ -281,6 +281,18 @@ pub struct StreamGroupDetail {
     pub lag: i64,
     pub consumers: Vec<StreamConsumerDetail>,
     pub pending_entries: Vec<StreamPendingEntry>,
+    /// Whether `pending_entries` already holds the whole PEL — false when
+    /// the last XPENDING page came back full, so more can be loaded.
+    pub pending_done: bool,
+}
+
+/// XTRIM strategy chosen in the stream editor's trim dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamTrim {
+    /// Keep only the newest `n` entries (`XTRIM MAXLEN n`).
+    MaxLen(u64),
+    /// Drop every entry with an id lower than `id` (`XTRIM MINID id`).
+    MinId(SharedString),
 }
 
 /// Macro-level stream metrics from XINFO STREAM.
