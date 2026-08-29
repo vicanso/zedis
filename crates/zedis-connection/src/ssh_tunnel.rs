@@ -17,11 +17,17 @@ use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
-use russh::AgentAuthError;
 use russh::client::AuthResult;
 use russh::client::{Handle, Handler};
+use russh::keys::ssh_key::PublicKey;
+// Agent auth is unix-only (see the `#[cfg(unix)]` auth path below) — so
+// are its imports.
+#[cfg(unix)]
+use russh::AgentAuthError;
+#[cfg(unix)]
 use russh::keys::agent::client::AgentClient;
-use russh::keys::ssh_key::{HashAlg, PublicKey};
+#[cfg(unix)]
+use russh::keys::ssh_key::HashAlg;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, decode_secret_key, load_secret_key};
 use rustls::pki_types::ServerName;
 use rustls_pki_types::pem::PemObject;
@@ -479,7 +485,9 @@ fn try_parse_public_key(key: &str) -> Option<PublicKey> {
 
 /// The error for a session whose event loop died mid-authentication (the
 /// server closed the connection). Points the user at the `.pub` escape hatch
-/// since "too many keys in the agent" is the usual trigger.
+/// since "too many keys in the agent" is the usual trigger. Agent-auth
+/// only, which is unix-only.
+#[cfg(unix)]
 fn dead_session_error() -> Error {
     Error::Invalid {
         message: "Ssh server closed the connection during agent authentication (usually MaxAuthTries \
