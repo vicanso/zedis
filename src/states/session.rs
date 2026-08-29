@@ -68,8 +68,13 @@ impl FromStr for QueryMode {
     }
 }
 
-/// Key-tree filter by Redis native type, dispatched from the key-tree menu.
-/// `All` clears the filter; the others map 1:1 to `KeyType` in the handler.
+/// Key-tree filter by key type, dispatched from the key-tree menu.
+/// `All` clears the filter; the others map to `KeyType` in the handler.
+/// Native types also narrow server-side via `SCAN … TYPE`; the module
+/// types (JSON / TimeSeries / Vector Set / Probabilistic) have no SCAN
+/// filter, so they rely purely on the client-side post-filter over the
+/// types `fill_key_types` resolves. One `Probabilistic` entry covers all
+/// five sketch kinds (BF / CF / CMS / TOPK / TDIGEST).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
 pub enum KeyTypeFilter {
     #[default]
@@ -80,6 +85,10 @@ pub enum KeyTypeFilter {
     Zset,
     Hash,
     Stream,
+    Json,
+    TimeSeries,
+    Vectorset,
+    Probabilistic,
 }
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]

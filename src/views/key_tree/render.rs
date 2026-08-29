@@ -433,6 +433,29 @@ impl ZedisKeyTree {
                                 Box::new(KeyTypeFilter::Stream),
                                 |_, _| Label::new("Stream"),
                             )
+                            // Module types: no `SCAN … TYPE` narrowing exists
+                            // for these — the client-side post-filter over the
+                            // resolved types does the work alone.
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::Json),
+                                Box::new(KeyTypeFilter::Json),
+                                |_, _| Label::new("JSON"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::TimeSeries),
+                                Box::new(KeyTypeFilter::TimeSeries),
+                                |_, _| Label::new("Time Series"),
+                            )
+                            .menu_element_with_check(
+                                type_filter == Some(KeyType::Vectorset),
+                                Box::new(KeyTypeFilter::Vectorset),
+                                |_, _| Label::new("Vector Set"),
+                            )
+                            .menu_element_with_check(
+                                matches!(type_filter, Some(KeyType::Probabilistic(_))),
+                                Box::new(KeyTypeFilter::Probabilistic),
+                                |_, _| Label::new("Probabilistic"),
+                            )
                     },
                 )
                 // Tag colour filter (local metadata AND). Always visible so

@@ -124,6 +124,12 @@ impl Render for ZedisKeyTree {
                     KeyTypeFilter::Zset => Some(KeyType::Zset),
                     KeyTypeFilter::Hash => Some(KeyType::Hash),
                     KeyTypeFilter::Stream => Some(KeyType::Stream),
+                    KeyTypeFilter::Json => Some(KeyType::Json),
+                    KeyTypeFilter::TimeSeries => Some(KeyType::TimeSeries),
+                    KeyTypeFilter::Vectorset => Some(KeyType::Vectorset),
+                    // Representative kind — `matches_filter` treats any
+                    // probabilistic filter as matching every sketch kind.
+                    KeyTypeFilter::Probabilistic => Some(KeyType::Probabilistic(ProbKind::Bloom)),
                 };
                 this.server_state
                     .update(cx, |state, cx| state.set_type_filter(filter, cx));

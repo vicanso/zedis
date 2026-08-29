@@ -57,7 +57,8 @@ pub(super) fn build_tagged_keys_list(
 /// type may still have been narrowed server-side via `SCAN TYPE`.
 ///
 /// Dimensions (any `None` / `All` is a no-op for that axis):
-/// - `type_filter`: exact `KeyType` match; `Unknown` never matches
+/// - `type_filter`: exact `KeyType` match (one probabilistic filter
+///   matches every sketch kind); `Unknown` never matches
 /// - `tag_filter`: exact local metadata tag colour
 /// - `ttl_filter`: cached TTL range (missing / `-2` never match)
 pub(super) fn apply_local_key_filters(
@@ -74,7 +75,7 @@ pub(super) fn apply_local_key_filters(
     keys.into_iter()
         .filter(|(key, key_type)| {
             if let Some(want) = type_filter
-                && *key_type != want
+                && !key_type.matches_filter(want)
             {
                 return false;
             }
@@ -974,6 +975,29 @@ mod local_filter_tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0.as_ref(), "a");
+    }
+
+    #[test]
+    fn one_probabilistic_filter_matches_every_sketch_kind() {
+        use crate::states::ProbKind;
+        let input = keys(&[
+            ("bf", KeyType::Probabilistic(ProbKind::Bloom)),
+            ("topk", KeyType::Probabilistic(ProbKind::TopK)),
+            ("json", KeyType::Json),
+            ("str", KeyType::String),
+        ]);
+        let out = apply_local_key_filters(
+            input,
+            // The menu's single "Probabilistic" entry dispatches Bloom as
+            // the representative kind.
+            Some(KeyType::Probabilistic(ProbKind::Bloom)),
+            None,
+            TtlFilter::All,
+            &AHashMap::new(),
+            &std::collections::HashMap::new(),
+        );
+        let names: Vec<&str> = out.iter().map(|(k, _)| k.as_ref()).collect();
+        assert_eq!(names, ["bf", "topk"]);
     }
 
     #[test]

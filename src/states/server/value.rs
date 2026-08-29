@@ -533,6 +533,13 @@ impl KeyType {
         }
     }
 
+    /// Whether this key type satisfies a type-filter selection of `want`.
+    /// Exact match, except a probabilistic filter matches every sketch
+    /// kind — the menu offers one "Probabilistic" entry, not five.
+    pub fn matches_filter(self, want: KeyType) -> bool {
+        matches!((self, want), (KeyType::Probabilistic(_), KeyType::Probabilistic(_))) || self == want
+    }
+
     /// The lowercase Redis `TYPE` name for native types, used with
     /// `SCAN ... TYPE`. `None` for module/derived types (JSON, TimeSeries,
     /// Vector, Probabilistic, Channel) that have no native-type SCAN filter.
