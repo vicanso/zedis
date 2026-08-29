@@ -1118,17 +1118,44 @@ fn world_to_lat(wy: f64) -> f64 {
     n.sinh().atan().to_degrees()
 }
 
-/// `ZCARD` + `ZRANGE 0..cap` + `GEOPOS` → projected points + invalid members.
+/// `ZCARD` + member sample + `GEOPOS` → projected points + invalid members.
 async fn fetch_geo(server_id: String, db: usize, key: String) -> Result<GeoData> {
     let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
     let total: i64 = cmd("ZCARD").arg(&key).query_async(&mut conn).await.unwrap_or(0);
-    let members: Vec<String> = cmd("ZRANGE")
-        .arg(&key)
-        .arg(0)
-        .arg(GEO_CAP as i64 - 1)
-        .query_async(&mut conn)
-        .await?;
+    // At or under the cap the range is the whole set — nothing to sample.
+    // Over it, ZRANDMEMBER draws an unbiased sample: `ZRANGE 0..cap`
+    // would take the *lowest geohash scores*, which sort geographically —
+    // one corner of the world — so the map would claim the data lives
+    // only there.
+    let members: Vec<String> = if total <= GEO_CAP as i64 {
+        cmd("ZRANGE")
+            .arg(&key)
+            .arg(0)
+            .arg(GEO_CAP as i64 - 1)
+            .query_async(&mut conn)
+            .await?
+    } else {
+        // A positive count returns distinct members, at most GEO_CAP.
+        match cmd("ZRANDMEMBER")
+            .arg(&key)
+            .arg(GEO_CAP as i64)
+            .query_async(&mut conn)
+            .await
+        {
+            Ok(members) => members,
+            // Pre-6.2 servers / proxies without ZRANDMEMBER: the biased
+            // low-score corner beats showing nothing.
+            Err(_) => {
+                cmd("ZRANGE")
+                    .arg(&key)
+                    .arg(0)
+                    .arg(GEO_CAP as i64 - 1)
+                    .query_async(&mut conn)
+                    .await?
+            }
+        }
+    };
 
     let mut geopos = cmd("GEOPOS");
     geopos.arg(&key);
