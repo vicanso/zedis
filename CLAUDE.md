@@ -21,7 +21,7 @@ Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](ht
 
 Clippy `unwrap_used = "deny"` is set crate-wide **including tests** — use `.expect("…")` or proper matching in test code, never `.unwrap()`.
 
-**Avoid `#[allow(clippy::…)]`.** Prefer fixing the underlying smell so the lint is clean: e.g. `too_many_arguments` → group parameters into a struct (as with status-bar `MetricChip`); dead code → delete or use it; needless `mut` → drop it. Reach for `allow` only as a last resort when the lint is a genuine false positive or an unavoidable external-API constraint, and keep the attribute as narrow as possible with a one-line comment explaining why.
+**Avoid `#[allow(clippy::…)]` and `#[allow(dead_code)]`.** Prefer fixing the underlying smell so the lint is clean: e.g. `too_many_arguments` → group parameters into a struct (as with status-bar `MetricChip` and migration's `ExportSpec`); needless `mut` → drop it. Dead code in particular: **delete it or wire it up — never park it behind `#[allow(dead_code)]`** "for future callers" (that speculation rotted three times in `search.rs`: an unused `as_str`, an unused `IndexInfo.name`, and an aggregate `total` that pagination needed but nobody remembered was there). Reach for `allow` only as a last resort when the lint is a genuine false positive or an unavoidable external-API constraint, and keep the attribute as narrow as possible with a one-line comment explaining why.
 
 ## Build-time locale parity gate (bites immediately)
 

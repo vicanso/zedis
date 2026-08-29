@@ -46,20 +46,6 @@ pub enum FieldKind {
 }
 
 impl FieldKind {
-    /// String label used for chip rendering; kept public so future
-    /// callers (e.g. a debug printer) don't have to re-derive it.
-    #[allow(dead_code)]
-    pub fn as_str(&self) -> &str {
-        match self {
-            FieldKind::Text => "TEXT",
-            FieldKind::Numeric => "NUMERIC",
-            FieldKind::Tag => "TAG",
-            FieldKind::Geo => "GEO",
-            FieldKind::Vector => "VECTOR",
-            FieldKind::GeoShape => "GEOSHAPE",
-            FieldKind::Unknown(s) => s.as_ref(),
-        }
-    }
     fn from_str(s: &str) -> Self {
         match s.to_ascii_uppercase().as_str() {
             "TEXT" => FieldKind::Text,
@@ -95,11 +81,6 @@ impl FieldSchema {
 /// are kept; everything else is dropped during parse.
 #[derive(Debug, Clone, Default)]
 pub struct IndexInfo {
-    /// Index name (echoed from the FT.INFO argument). Carried for
-    /// callers that route stat blocks by name even though the current
-    /// view tracks the selected index separately.
-    #[allow(dead_code)]
-    pub name: String,
     pub num_docs: u64,
     pub max_doc_id: u64,
     pub num_terms: u64,
@@ -329,11 +310,11 @@ pub struct ReducerSpec {
 
 #[derive(Debug, Clone, Default)]
 pub struct AggregateResult {
-    /// First element of the reply — for RediSearch <2.6 always 1 (legacy),
-    /// later versions report the actual row count. The UI currently
-    /// shows `rows.len()` instead, but the raw field is kept so future
-    /// pagination work can use it.
-    #[allow(dead_code)]
+    /// First element of the reply. Not trustworthy across module
+    /// versions: RediSearch <2.6 always reports 1, and some pipelines
+    /// report the page size rather than the match total — treat it as a
+    /// total only when it exceeds `rows.len()` (the view's header does
+    /// exactly that; paging uses the full-page heuristic instead).
     pub total: u64,
     /// Each row is a list of `(field, value)` pairs.
     pub rows: Vec<Vec<(String, String)>>,
@@ -367,9 +348,48 @@ pub async fn ft_list(conn: &mut RedisAsyncConn) -> Result<IndexListing> {
 
 pub async fn ft_info(conn: &mut RedisAsyncConn, index: &str) -> Result<IndexInfo> {
     let value: Value = cmd("FT.INFO").arg(index).query_async(conn).await?;
-    parse_info(index, &value).ok_or_else(|| Error::Invalid {
+    parse_info(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.INFO {index} returned unexpected shape"),
     })
+}
+
+/// `FT.EXPLAIN index query [DIALECT n]` — the query's execution plan as
+/// the server's own indented tree, one bulk string with embedded
+/// newlines. Also valid for the query half of an aggregation (the plan
+/// covers the filter expression, not the pipeline).
+pub async fn ft_explain(conn: &mut RedisAsyncConn, index: &str, query: &str, dialect: Option<u32>) -> Result<String> {
+    let mut c = cmd("FT.EXPLAIN");
+    c.arg(index).arg(query);
+    if let Some(d) = dialect {
+        c.arg("DIALECT").arg(d);
+    }
+    let value: Value = c.query_async(conn).await?;
+    parse_simple_string(&value).ok_or_else(|| Error::Invalid {
+        message: format!("FT.EXPLAIN {index} returned unexpected shape"),
+    })
+}
+
+/// `FT.PROFILE index SEARCH|AGGREGATE QUERY query` — run the query and
+/// return the profile section (parsing/iterator timings) rendered as
+/// indented text. The reply nests differently per module version and
+/// RESP transport, so instead of committing to a schema the raw tree is
+/// pretty-printed — robust the same way the other parsers here are.
+pub async fn ft_profile(conn: &mut RedisAsyncConn, index: &str, aggregate: bool, query: &str) -> Result<String> {
+    let mut c = cmd("FT.PROFILE");
+    c.arg(index)
+        .arg(if aggregate { "AGGREGATE" } else { "SEARCH" })
+        .arg("QUERY")
+        .arg(query);
+    let value: Value = c.query_async(conn).await?;
+    let profile = profile_section(&value);
+    let mut out = String::new();
+    pretty_value(profile, 0, &mut out);
+    if out.trim().is_empty() {
+        return Err(Error::Invalid {
+            message: format!("FT.PROFILE {index} returned unexpected shape"),
+        });
+    }
+    Ok(out)
 }
 
 /// Build and dispatch an `FT.SEARCH` invocation. Options that are
@@ -645,12 +665,9 @@ fn parse_field_definition_from_pairs(entries: Vec<(String, Value)>) -> Option<Fi
     Some(field)
 }
 
-fn parse_info(name: &str, value: &Value) -> Option<IndexInfo> {
+fn parse_info(value: &Value) -> Option<IndexInfo> {
     let entries = extract_pairs(value)?;
-    let mut info = IndexInfo {
-        name: name.to_string(),
-        ..Default::default()
-    };
+    let mut info = IndexInfo::default();
     for (k, val) in entries {
         let key = k.to_ascii_lowercase();
         match key.as_str() {
@@ -764,6 +781,79 @@ fn parse_search_map(value: &Value) -> Option<SearchResult> {
     Some(result)
 }
 
+/// Locate the profile half of an `FT.PROFILE` reply: RESP3 maps carry a
+/// "profile"-named entry, RESP2 replies are `[results, profile]`.
+/// Anything else falls back to the whole value so at least the raw tree
+/// is shown.
+fn profile_section(value: &Value) -> &Value {
+    match value {
+        Value::Map(items) => items
+            .iter()
+            .find(|(k, _)| {
+                parse_simple_string(k)
+                    .map(|s| s.to_ascii_lowercase().contains("profile"))
+                    .unwrap_or(false)
+            })
+            .map(|(_, v)| v)
+            .unwrap_or(value),
+        Value::Array(items) if items.len() == 2 => &items[1],
+        _ => value,
+    }
+}
+
+/// Render any reply value as an indented tree. Arrays that look like
+/// flat key/value pair lists become `key: value` lines; nested arrays
+/// indent one level per depth.
+fn pretty_value(value: &Value, depth: usize, out: &mut String) {
+    let indent = "  ".repeat(depth);
+    match value {
+        Value::Array(items) | Value::Set(items) => {
+            // `[label, scalar]` and alternating pair lists read best as lines.
+            if let Some(pairs) = extract_scalar_pairs(items) {
+                for (k, v) in pairs {
+                    out.push_str(&format!("{indent}{k}: {v}\n"));
+                }
+                return;
+            }
+            for item in items {
+                match parse_simple_string(item) {
+                    Some(s) => out.push_str(&format!("{indent}{s}\n")),
+                    None => pretty_value(item, depth + 1, out),
+                }
+            }
+        }
+        Value::Map(items) => {
+            for (k, v) in items {
+                let key = parse_simple_string(k).unwrap_or_default();
+                match parse_simple_string(v) {
+                    Some(s) => out.push_str(&format!("{indent}{key}: {s}\n")),
+                    None => {
+                        out.push_str(&format!("{indent}{key}:\n"));
+                        pretty_value(v, depth + 1, out);
+                    }
+                }
+            }
+        }
+        other => {
+            if let Some(s) = parse_simple_string(other) {
+                out.push_str(&format!("{indent}{s}\n"));
+            }
+        }
+    }
+}
+
+/// `[k, v, k, v, …]` with every element a scalar — the flat pair shape
+/// profile entries use. `None` when anything nests or the arity is odd.
+fn extract_scalar_pairs(items: &[Value]) -> Option<Vec<(String, String)>> {
+    if items.is_empty() || !items.len().is_multiple_of(2) {
+        return None;
+    }
+    items
+        .chunks(2)
+        .map(|pair| Some((parse_simple_string(&pair[0])?, parse_simple_string(&pair[1])?)))
+        .collect()
+}
+
 fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
     let items = match value {
         Value::Array(items) => items,
@@ -833,7 +923,7 @@ mod tests {
                 Value::Array(vec![bs("post:")]),
             ]),
         ]);
-        let info = parse_info("idx:posts", &raw).expect("parse failed");
+        let info = parse_info(&raw).expect("parse failed");
         assert_eq!(info.num_docs, 42);
         assert_eq!(info.fields.len(), 2);
         let title = &info.fields[0];
@@ -862,7 +952,7 @@ mod tests {
                 bs("1"),
             ])]),
         ]);
-        let info = parse_info("legacy", &raw).expect("parse failed");
+        let info = parse_info(&raw).expect("parse failed");
         assert_eq!(info.fields.len(), 1);
         assert_eq!(info.fields[0].name.as_str(), "title");
         assert_eq!(info.fields[0].kind(), FieldKind::Text);
@@ -907,6 +997,35 @@ mod tests {
         assert_eq!(ReducerFn::Sum.arity(), 1);
         assert_eq!(ReducerFn::Quantile.arity(), 2);
         assert_eq!(ReducerFn::FirstValue.arity(), 1);
+    }
+
+    #[test]
+    fn profile_section_and_pretty_printer() {
+        // RESP2 shape: [results, profile]. The profile mixes flat pair
+        // lists with nested iterator arrays.
+        let raw = Value::Array(vec![
+            Value::Array(vec![Value::Int(0)]),
+            Value::Array(vec![
+                Value::Array(vec![bs("Total profile time"), bs("0.5")]),
+                Value::Array(vec![
+                    bs("Iterators profile"),
+                    Value::Array(vec![bs("Type"), bs("UNION"), bs("Time"), bs("0.2")]),
+                ]),
+            ]),
+        ]);
+        let mut out = String::new();
+        pretty_value(profile_section(&raw), 0, &mut out);
+        assert!(out.contains("Total profile time: 0.5"), "{out}");
+        assert!(out.contains("Type: UNION"), "{out}");
+
+        // RESP3 shape: a map with a Profile entry.
+        let raw = Value::Map(vec![
+            (bs("Results"), Value::Array(vec![Value::Int(0)])),
+            (bs("Profile"), Value::Map(vec![(bs("Total profile time"), bs("1.25"))])),
+        ]);
+        let mut out = String::new();
+        pretty_value(profile_section(&raw), 0, &mut out);
+        assert!(out.contains("Total profile time: 1.25"), "{out}");
     }
 
     #[test]

@@ -273,14 +273,6 @@ impl KeyMetadataManager {
         write_txn.commit()?;
         Ok(())
     }
-
-    /// `true` when the server has at least one metadata record.
-    /// Useful for empty-state hints; the key-tree tag filter is always
-    /// shown in the search menu (not gated on this).
-    #[allow(dead_code)]
-    pub fn has_any_records(&self, server_id: &str) -> bool {
-        self.records(server_id).map(|m| !m.is_empty()).unwrap_or(false)
-    }
 }
 
 #[cfg(test)]
@@ -375,14 +367,13 @@ mod tests {
         #[test]
         fn set_get_and_clear_round_trip() {
             let m = manager();
-            assert!(!m.has_any_records("km-rt"));
+            assert!(m.records("km-rt").expect("records").is_empty());
 
             m.set("km-rt", "user:1", tagged(TagColor::Red, "hot key")).expect("set");
             assert_eq!(
                 m.get("km-rt", "user:1").expect("get"),
                 Some(tagged(TagColor::Red, "hot key"))
             );
-            assert!(m.has_any_records("km-rt"));
             assert_eq!(m.records("km-rt").expect("records").len(), 1);
 
             m.clear("km-rt", "user:1").expect("clear");
@@ -398,7 +389,7 @@ mod tests {
             // Clearing both fields in the editor is a delete, not an empty row.
             m.set("km-empty", "user:1", KeyMetadata::default()).expect("set empty");
             assert_eq!(m.get("km-empty", "user:1").expect("get"), None);
-            assert!(!m.has_any_records("km-empty"));
+            assert!(m.records("km-empty").expect("records").is_empty());
         }
 
         #[test]

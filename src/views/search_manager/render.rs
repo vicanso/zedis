@@ -112,6 +112,26 @@ impl ZedisSearchManager {
                             .on_click(cx.listener(|this, _, _w, cx| this.refresh_indexes(cx))),
                     )
                     .child(
+                        // FT.EXPLAIN — the plan is valid in both modes (an
+                        // aggregation's query half is still a search query).
+                        Button::new("search-explain")
+                            .outline()
+                            .small()
+                            .label(i18n_search(cx, "explain_btn"))
+                            .tooltip(i18n_search(cx, "explain_tooltip"))
+                            .disabled(self.running_query || self.selected_index.is_none())
+                            .on_click(cx.listener(|this, _, _w, cx| this.run_plan(false, cx))),
+                    )
+                    .child(
+                        Button::new("search-profile")
+                            .outline()
+                            .small()
+                            .label(i18n_search(cx, "profile_btn"))
+                            .tooltip(i18n_search(cx, "profile_tooltip"))
+                            .disabled(self.running_query || self.selected_index.is_none())
+                            .on_click(cx.listener(|this, _, _w, cx| this.run_plan(true, cx))),
+                    )
+                    .child(
                         Button::new("search-run")
                             .small()
                             .primary()
@@ -946,6 +966,53 @@ impl ZedisSearchManager {
             .child(div().w(px(0.0)).child(Label::new("").text_color(muted))) // spacer
     }
 
+    /// Inline FT.EXPLAIN / FT.PROFILE panel — `None` while no plan is
+    /// held. Long output scrolls inside a fixed height (`max_h` would
+    /// silently clip, see the CLAUDE.md gotcha).
+    pub(super) fn render_plan_panel(&self, cx: &mut gpui::Context<Self>) -> Option<impl IntoElement + use<>> {
+        let plan = self.plan.as_ref()?;
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let title = if plan.profile {
+            i18n_search(cx, "plan_profile_title")
+        } else {
+            i18n_search(cx, "plan_explain_title")
+        };
+        let long = plan.text.lines().count() > 8;
+        let body = div()
+            .px_3()
+            .py_2()
+            .child(Label::new(plan.text.clone()).text_xs().whitespace_normal());
+        let body = if long {
+            div().h(px(180.)).overflow_y_scrollbar().child(body).into_any_element()
+        } else {
+            body.into_any_element()
+        };
+        Some(
+            v_flex()
+                .w_full()
+                .border_b_1()
+                .border_color(border)
+                .child(
+                    h_flex()
+                        .px_3()
+                        .py_1()
+                        .items_center()
+                        .bg(cx.theme().muted.opacity(0.4))
+                        .child(Label::new(title).text_xs().text_color(muted))
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("search-plan-close")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(|this, _, _w, cx| this.close_plan(cx))),
+                        ),
+                )
+                .child(body),
+        )
+    }
+
     pub(super) fn render_results(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         if let Some(err) = &self.error {
@@ -1107,6 +1174,18 @@ impl ZedisSearchManager {
 
     pub(super) fn render_aggregate_result(&self, r: AggregateResult, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let offset = parse_u32(&self.limit_offset_input.read(cx).value()).unwrap_or(0);
+        let count = parse_u32(&self.limit_count_input.read(cx).value())
+            .unwrap_or(DEFAULT_LIMIT_COUNT)
+            .max(1);
+        let can_prev = offset > 0;
+        // The reply's first element is not a trustworthy total (see
+        // `AggregateResult::total`), so page on the full-page heuristic:
+        // a full page may have more behind it, a short page is the end.
+        let can_next = r.rows.len() as u32 >= count;
+        // Show the server-reported total only when it is credible —
+        // i.e. it exceeds what this page already proves exists.
+        let server_total = (r.total > r.rows.len() as u64).then_some(r.total);
         let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(r.rows.len());
         for row in &r.rows {
             let mut cells: Vec<gpui::AnyElement> = Vec::with_capacity(row.len());
@@ -1133,11 +1212,41 @@ impl ZedisSearchManager {
         v_flex()
             .w_full()
             .child(
-                h_flex().gap_2().px_3().py_1().bg(cx.theme().muted.opacity(0.4)).child(
-                    Label::new(format!("{} {}", i18n_search(cx, "rows_label"), r.rows.len()))
-                        .text_xs()
-                        .text_color(muted),
-                ),
+                h_flex()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .items_center()
+                    .bg(cx.theme().muted.opacity(0.4))
+                    .child(
+                        Label::new(format!("{} {}", i18n_search(cx, "rows_label"), r.rows.len()))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .when_some(server_total, |this, total| {
+                        this.child(
+                            Label::new(format!("{} {}", i18n_search(cx, "total_label"), total))
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("aggregate-page-prev")
+                            .outline()
+                            .xsmall()
+                            .label(i18n_search(cx, "page_prev"))
+                            .disabled(!can_prev || self.running_query)
+                            .on_click(cx.listener(|this, _, window, cx| this.page_by(-1, window, cx))),
+                    )
+                    .child(
+                        Button::new("aggregate-page-next")
+                            .outline()
+                            .xsmall()
+                            .label(i18n_search(cx, "page_next"))
+                            .disabled(!can_next || self.running_query)
+                            .on_click(cx.listener(|this, _, window, cx| this.page_by(1, window, cx))),
+                    ),
             )
             .children(rows)
     }

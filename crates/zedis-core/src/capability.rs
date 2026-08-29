@@ -32,10 +32,8 @@
 //! 3. Extend `Capability::ALL` and the explicit matrix test.
 //!
 //! Not every variant is wired into a call site yet — the matrix is the
-//! audit surface. Clippy would otherwise flag progressive-adoption
-//! variants as dead; allow it for this module only.
-
-#![allow(dead_code)]
+//! audit surface. That's fine lint-wise: this is a library crate, so the
+//! pub matrix is public API and `dead_code` never fires on it.
 
 use crate::features::{CommandStatus, ServerCommand, ServerFeatures};
 

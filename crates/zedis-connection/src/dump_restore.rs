@@ -378,7 +378,6 @@ impl<R: Read> DumpReader<R> {
     }
 
     /// True after `read_entry` returned `None` (footer consumed and verified).
-    #[allow(dead_code)]
     pub fn is_finished(&self) -> bool {
         self.finished
     }

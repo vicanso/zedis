@@ -272,7 +272,8 @@ impl ZedisKeyTree {
         let show_key_tree_ttl = self.server_state.read(cx).show_key_tree_ttl();
         let ttl_filter = self.state.selected_ttl_filter;
         // Always offer the tag filter next to Type/TTL (not buried in ⋯ and
-        // not gated on has_any_records — empty servers still show "All keys").
+        // not gated on whether any tag records exist — empty servers still
+        // show "All keys").
         let tag_filter_active = self.state.selected_tag_filter;
 
         // Select icon based on query mode

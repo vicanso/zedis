@@ -31,7 +31,7 @@ use crate::{
     connection::{
         AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
         ReducerFn, ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex,
-        ft_info, ft_list, ft_search, get_connection_manager,
+        ft_explain, ft_info, ft_list, ft_profile, ft_search, get_connection_manager,
     },
     error::Error,
     helpers::get_mono_font_family,
@@ -73,6 +73,14 @@ enum SearchMode {
 enum LastResult {
     Search(SearchResult),
     Aggregate(AggregateResult),
+}
+
+/// Content of the inline plan panel above the results — FT.EXPLAIN's
+/// execution plan or FT.PROFILE's timing tree.
+struct PlanOutput {
+    /// `true` for FT.PROFILE (drives the panel title).
+    profile: bool,
+    text: SharedString,
 }
 
 const DEFAULT_LIMIT_COUNT: u32 = 10;
@@ -162,6 +170,8 @@ pub struct ZedisSearchManager {
     /// Collapse the schema inspector to free space for results.
     schema_collapsed: bool,
     last_result: Option<LastResult>,
+    /// Inline FT.EXPLAIN / FT.PROFILE output; `None` hides the panel.
+    plan: Option<PlanOutput>,
     error: Option<SharedString>,
     loading_indexes: bool,
     loading_info: bool,
@@ -180,6 +190,7 @@ pub struct ZedisSearchManager {
     _fetch_task: Option<Task<()>>,
     _info_task: Option<Task<()>>,
     _query_task: Option<Task<()>>,
+    _plan_task: Option<Task<()>>,
     _create_task: Option<Task<()>>,
     _alter_task: Option<Task<()>>,
     _drop_task: Option<Task<()>>,
@@ -251,6 +262,7 @@ impl ZedisSearchManager {
             sort_desc: false,
             schema_collapsed: false,
             last_result: None,
+            plan: None,
             error: None,
             loading_indexes: false,
             loading_info: false,
@@ -263,6 +275,7 @@ impl ZedisSearchManager {
             _fetch_task: None,
             _info_task: None,
             _query_task: None,
+            _plan_task: None,
             _create_task: None,
             _alter_task: None,
             _drop_task: None,
@@ -320,6 +333,7 @@ impl ZedisSearchManager {
         self.selected_index = Some(name.clone());
         self.index_info = None;
         self.last_result = None;
+        self.plan = None;
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         if server_id.is_empty() {
@@ -826,6 +840,69 @@ impl ZedisSearchManager {
         cx.notify();
     }
 
+    /// FT.EXPLAIN (execution plan) or FT.PROFILE (run + timing tree) for
+    /// the current query — the query builder's companion diagnostics.
+    /// Output lands in the inline plan panel above the results.
+    fn run_plan(&mut self, profile: bool, cx: &mut gpui::Context<Self>) {
+        if self.running_query {
+            return;
+        }
+        let Some(index) = self.selected_index.clone() else {
+            self.error = Some(i18n_search(cx, "no_index_selected"));
+            cx.notify();
+            return;
+        };
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        let raw_query = self.query_input.read(cx).value().to_string();
+        let query = if raw_query.trim().is_empty() {
+            "*".to_string()
+        } else {
+            raw_query.trim().to_string()
+        };
+        let dialect = parse_u32(&self.dialect_input.read(cx).value());
+        let aggregate = self.mode == SearchMode::Aggregate;
+
+        self.running_query = true;
+        self.error = None;
+        self._plan_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                if profile {
+                    ft_profile(&mut conn, index.as_ref(), aggregate, &query).await
+                } else {
+                    ft_explain(&mut conn, index.as_ref(), &query, dialect).await
+                }
+            });
+            let result: Result<String> = task.await.map_err(Into::into);
+            let _ = handle.update(cx, |this, cx| {
+                this.running_query = false;
+                match result {
+                    Ok(text) => {
+                        this.plan = Some(PlanOutput {
+                            profile,
+                            text: text.into(),
+                        });
+                        this.error = None;
+                    }
+                    Err(e) => {
+                        this.error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn close_plan(&mut self, cx: &mut gpui::Context<Self>) {
+        self.plan = None;
+        cx.notify();
+    }
+
     /// Insert a type-aware query fragment for `field` into the query bar
     /// (e.g. `@price:[  ]` for NUMERIC, `@brand:{}` for TAG).
     fn insert_field_query(&mut self, field: &FieldSchema, window: &mut Window, cx: &mut gpui::Context<Self>) {
@@ -1020,12 +1097,14 @@ impl gpui::Render for ZedisSearchManager {
             let schema = self.render_schema_panel(cx).into_any_element();
             let query = self.render_query_bar(window, cx).into_any_element();
             let options = self.render_options_bar(cx).into_any_element();
+            let plan = self.render_plan_panel(cx).map(|p| p.into_any_element());
             let results = self.render_results(cx).into_any_element();
             v_flex()
                 .size_full()
                 .child(schema)
                 .child(query)
                 .child(options)
+                .children(plan)
                 .child(div().flex_1().w_full().min_h_0().overflow_y_scrollbar().child(results))
                 .into_any_element()
         };
