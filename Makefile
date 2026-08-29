@@ -8,6 +8,13 @@ fmt:
 test:
 	cargo test --workspace
 
+# Criterion benches for the pure hot paths (crates/zedis-core/benches):
+# fuzzy scan, RDB parse, JSONPath. No CI baseline — run before and after
+# touching those paths and compare the reports; `make lint` keeps the
+# bench targets compiling via clippy --all-targets.
+bench:
+	cargo bench -p zedis-core
+
 # Locale hygiene on demand (tests/locale_keys.rs, also part of `make test`):
 # key parity across the 8 locales — reliable even when build.rs's
 # rerun-if-changed misses an in-place edit — plus the orphan-key scan

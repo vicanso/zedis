@@ -93,3 +93,54 @@ jobs:
           make lint
       - name: test
         run: make test
+
+  # clippy + tests on the other two shipping platforms. macOS alone never
+  # compiles the platform forks — the SSH-agent path, the Linux key-file /
+  # Windows Credential Manager secret stores, the tray — so a warning or a
+  # broken test there used to surface only in smoke.yml's release build
+  # (which runs neither clippy nor tests). typos is skipped here: it is
+  # platform-independent and the macos job already gates it.
+  linux:
+    name: linux-x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux Dependencies
+        # Same list as smoke.yml's build (gpui's x11/wayland build deps).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-unknown-linux-gnu
+          components: clippy
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-lint-x86_64
+      - name: clippy
+        run: cargo clippy --all-targets --all -- --deny=warnings
+      - name: test
+        run: cargo test --workspace
+
+  windows:
+    name: windows-x86_64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-lint-x86_64
+      - name: clippy
+        run: cargo clippy --all-targets --all -- --deny=warnings
+      - name: test
+        run: cargo test --workspace

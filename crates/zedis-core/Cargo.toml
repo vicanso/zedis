@@ -24,6 +24,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_json_path = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "hot_paths"
+harness = false
+
 [lints.clippy]
 # Match the root crate: no unwrap anywhere, tests included.
 unwrap_used = "deny"

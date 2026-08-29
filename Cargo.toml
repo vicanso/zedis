@@ -164,6 +164,8 @@ tray-icon = "0.24.1"
 gpui = { workspace = true, features = ["test-support"] }
 
 [workspace.dependencies]
+# Dev-only: the hot-path benches in crates/zedis-core/benches (`make bench`).
+criterion = "0.8.2"
 dashmap = "6.2.1"
 indexmap = "2.14.0"
 humantime = "2.4.0"
