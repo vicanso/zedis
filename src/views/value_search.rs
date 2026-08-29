@@ -21,9 +21,10 @@
 //!
 //! - **Mandatory key prefix** — the scan is pinned to a namespace
 //!   (`prefix*`), never the whole keyspace by accident.
-//! - **Scan + time caps** — stops after [`SCAN_CAP`] keys or
-//!   [`TIME_BUDGET_SECS`], whichever first; cancellable via the Stop button
-//!   (dropping the task ends the loop at its next await).
+//! - **Scan + time caps** — stops after the configured key cap or time
+//!   budget (Settings → Key Behavior, defaults 10k keys / 10s), whichever
+//!   first; cancellable via the Stop button (dropping the task ends the
+//!   loop at its next await).
 //! - **Per-value size gate** — values larger than [`MAX_VALUE_BYTES`] are
 //!   skipped (not pulled down just to grep), and counted.
 //! - **Sampling semantics** — the summary states what was scanned / matched /
@@ -55,10 +56,11 @@ use gpui_component::{
 };
 use std::{mem::take, sync::Arc, time::Instant};
 
-/// Hard cap on keys examined per search.
-const SCAN_CAP: usize = 10_000;
-/// Wall-clock budget per search.
-const TIME_BUDGET_SECS: u64 = 10;
+// The scan cap, time budget and match cap are user-tunable (Settings →
+// Key Behavior; `ZedisAppState::value_search_*`, clamped there). The
+// constants below stay fixed: they bound what one round asks the server
+// for, not how deep a search may go.
+
 /// Values larger than this (bytes) are skipped, not read.
 const MAX_VALUE_BYTES: u64 = 1024 * 1024;
 /// Containers (hash/list/set/zset) with more than this many elements are
@@ -67,8 +69,6 @@ const MAX_CONTAINER_ELEMS: u64 = 10_000;
 /// `SCAN COUNT` per master per round — kept modest so cancellation / the time
 /// check stay responsive between rounds.
 const PAGE_COUNT: u64 = 128;
-/// Cap on matches kept (a search shouldn't flood the UI with thousands).
-const MAX_MATCHES: usize = 500;
 /// Bytes of a value rendered in the preview pane before truncating.
 const PREVIEW_MAX_BYTES: usize = 64 * 1024;
 
@@ -119,7 +119,7 @@ pub struct ZedisValueSearch {
     matches: Vec<ValueMatch>,
     scanned: usize,
     skipped: usize,
-    /// Matches hit [`MAX_MATCHES`] and further hits were dropped.
+    /// Matches hit the configured match cap and further hits were dropped.
     truncated: bool,
     stop_reason: Option<StopReason>,
     error: Option<SharedString>,
@@ -250,6 +250,16 @@ impl ZedisValueSearch {
         // ("Redis config not found"). By search time the connection is ready.
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
+        // Snapshot the tunable guardrails at search start — a mid-search
+        // settings change applies to the next search, not this one.
+        let (scan_cap, time_budget_secs, max_matches) = {
+            let store = cx.global::<ZedisGlobalStore>().read(cx);
+            (
+                store.value_search_scan_cap(),
+                store.value_search_time_budget_secs(),
+                store.value_search_max_matches(),
+            )
+        };
         self.task = Some(cx.spawn(async move |this, cx| {
             let client = match get_connection_manager().get_client(&server_id, db).await {
                 Ok(c) => c,
@@ -289,7 +299,7 @@ impl ZedisValueSearch {
                     this.scanned += scanned;
                     this.skipped += skipped_oversized;
                     for m in matches {
-                        if this.matches.len() >= MAX_MATCHES {
+                        if this.matches.len() >= max_matches {
                             this.truncated = true;
                             break;
                         }
@@ -299,9 +309,9 @@ impl ZedisValueSearch {
                     cx.notify();
                     if done {
                         Some(StopReason::Done)
-                    } else if this.scanned >= SCAN_CAP || this.truncated {
+                    } else if this.scanned >= scan_cap || this.truncated {
                         Some(StopReason::Capped)
-                    } else if start.elapsed().as_secs() >= TIME_BUDGET_SECS {
+                    } else if start.elapsed().as_secs() >= time_budget_secs {
                         Some(StopReason::Timeout)
                     } else {
                         None
@@ -542,10 +552,11 @@ impl ZedisValueSearch {
         }
         // Cap reminder while running.
         if self.running {
+            let store = cx.global::<ZedisGlobalStore>().read(cx);
             let budget: SharedString = rust_i18n::t!(
                 "value_search.budget_running",
-                cap = SCAN_CAP,
-                secs = TIME_BUDGET_SECS,
+                cap = store.value_search_scan_cap(),
+                secs = store.value_search_time_budget_secs(),
                 locale = locale
             )
             .to_string()

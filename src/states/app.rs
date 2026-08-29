@@ -512,6 +512,15 @@ pub struct ZedisAppState {
     multi_search_scope: MultiSearchScope,
     /// Multi-database search palette: per-server SCAN result cap.
     multi_search_scan_count: Option<usize>,
+    /// Value search: keys examined per search before stopping (`None` ⇒
+    /// the 10k default). The panel's other guardrails (value-size and
+    /// container-element skip thresholds) stay fixed — they protect the
+    /// server, not the search depth.
+    value_search_scan_cap: Option<usize>,
+    /// Value search: wall-clock budget in seconds (`None` ⇒ 10s).
+    value_search_time_budget_secs: Option<u64>,
+    /// Value search: matches kept before truncating (`None` ⇒ 500).
+    value_search_max_matches: Option<usize>,
     /// One-shot handoff from the multi-database search palette: once the
     /// clicked hit's `(server, db)` connects, the editor selects this key.
     /// Runtime only.
@@ -986,6 +995,30 @@ impl ZedisAppState {
             }
             _ => None,
         }
+    }
+    pub fn value_search_scan_cap(&self) -> usize {
+        self.value_search_scan_cap.unwrap_or(10_000)
+    }
+    pub fn set_value_search_scan_cap(&mut self, cap: usize) {
+        // 0 = "reset to default" (cleared input); clamped so a typo can't
+        // turn one search into an unbounded keyspace walk.
+        self.value_search_scan_cap = if cap == 0 {
+            None
+        } else {
+            Some(cap.clamp(1_000, 1_000_000))
+        };
+    }
+    pub fn value_search_time_budget_secs(&self) -> u64 {
+        self.value_search_time_budget_secs.unwrap_or(10)
+    }
+    pub fn set_value_search_time_budget_secs(&mut self, secs: u64) {
+        self.value_search_time_budget_secs = if secs == 0 { None } else { Some(secs.clamp(3, 300)) };
+    }
+    pub fn value_search_max_matches(&self) -> usize {
+        self.value_search_max_matches.unwrap_or(500)
+    }
+    pub fn set_value_search_max_matches(&mut self, max: usize) {
+        self.value_search_max_matches = if max == 0 { None } else { Some(max.clamp(50, 10_000)) };
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
         // 0 means "reset to default" (cleared input) — store None so the
@@ -1747,6 +1780,30 @@ mod upgrade_fixtures {
         let state: ZedisAppState = toml::from_str("").expect("empty file");
         assert_eq!(state.locale, None);
         assert_eq!(state.key_tree_width, Pixels::ZERO);
+    }
+
+    #[test]
+    fn value_search_guardrails_clamp_and_reset() {
+        let mut state: ZedisAppState = toml::from_str("").expect("empty file");
+        assert_eq!(state.value_search_scan_cap(), 10_000);
+        assert_eq!(state.value_search_time_budget_secs(), 10);
+        assert_eq!(state.value_search_max_matches(), 500);
+
+        // A typo can't turn a search into an unbounded walk — clamped.
+        state.set_value_search_scan_cap(5);
+        assert_eq!(state.value_search_scan_cap(), 1_000);
+        state.set_value_search_time_budget_secs(9_999);
+        assert_eq!(state.value_search_time_budget_secs(), 300);
+        state.set_value_search_max_matches(2_000);
+        assert_eq!(state.value_search_max_matches(), 2_000);
+
+        // 0 (cleared input) resets to the defaults.
+        state.set_value_search_scan_cap(0);
+        state.set_value_search_time_budget_secs(0);
+        state.set_value_search_max_matches(0);
+        assert_eq!(state.value_search_scan_cap(), 10_000);
+        assert_eq!(state.value_search_time_budget_secs(), 10);
+        assert_eq!(state.value_search_max_matches(), 500);
     }
 
     #[test]

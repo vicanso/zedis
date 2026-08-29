@@ -100,6 +100,9 @@ pub struct ZedisSettingEditor {
     max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
     key_scan_count_state: Entity<InputState>,
+    value_search_scan_cap_state: Entity<InputState>,
+    value_search_time_budget_state: Entity<InputState>,
+    value_search_max_matches_state: Entity<InputState>,
     auto_expand_threshold_state: Entity<InputState>,
     redis_connection_timeout_state: Entity<InputState>,
     redis_response_timeout_state: Entity<InputState>,
@@ -162,6 +165,9 @@ impl ZedisSettingEditor {
         let redis_connection_timeout = store.redis_connection_timeout();
         let redis_response_timeout = store.redis_response_timeout();
         let key_scan_count = store.key_scan_count();
+        let value_search_scan_cap = store.value_search_scan_cap();
+        let value_search_time_budget = store.value_search_time_budget_secs();
+        let value_search_max_matches = store.value_search_max_matches();
         let tray_enabled = store.tray_enabled();
         let show_key_tree_ttl = store.show_key_tree_ttl();
         let soft_delete = store.soft_delete();
@@ -188,6 +194,27 @@ impl ZedisSettingEditor {
             cx,
             "key_scan_count_placeholder",
             key_scan_count.to_string(),
+            Some(|s| s.parse::<usize>().is_ok()),
+        );
+        let value_search_scan_cap_state = Self::create_input_state(
+            window,
+            cx,
+            "value_search_scan_cap_placeholder",
+            value_search_scan_cap.to_string(),
+            Some(|s| s.parse::<usize>().is_ok()),
+        );
+        let value_search_time_budget_state = Self::create_input_state(
+            window,
+            cx,
+            "value_search_time_budget_placeholder",
+            value_search_time_budget.to_string(),
+            Some(|s| s.parse::<u64>().is_ok()),
+        );
+        let value_search_max_matches_state = Self::create_input_state(
+            window,
+            cx,
+            "value_search_max_matches_placeholder",
+            value_search_max_matches.to_string(),
             Some(|s| s.parse::<usize>().is_ok()),
         );
         let auto_expand_threshold_state = Self::create_input_state(
@@ -307,6 +334,43 @@ impl ZedisSettingEditor {
                 });
             }
         }));
+
+        // Value-search guardrails. Cleared input → 0 → the setter stores
+        // None and the default applies; range clamping lives in the
+        // setters so every write path shares it.
+        subscriptions.push(Self::bind_blur_save(
+            cx,
+            &value_search_scan_cap_state,
+            window,
+            |text, cx| {
+                let value = text.trim().parse::<usize>().unwrap_or_default();
+                update_app_state_and_save(cx, "save_value_search_scan_cap", move |state, _| {
+                    state.set_value_search_scan_cap(value);
+                });
+            },
+        ));
+        subscriptions.push(Self::bind_blur_save(
+            cx,
+            &value_search_time_budget_state,
+            window,
+            |text, cx| {
+                let value = text.trim().parse::<u64>().unwrap_or_default();
+                update_app_state_and_save(cx, "save_value_search_time_budget", move |state, _| {
+                    state.set_value_search_time_budget_secs(value);
+                });
+            },
+        ));
+        subscriptions.push(Self::bind_blur_save(
+            cx,
+            &value_search_max_matches_state,
+            window,
+            |text, cx| {
+                let value = text.trim().parse::<usize>().unwrap_or_default();
+                update_app_state_and_save(cx, "save_value_search_max_matches", move |state, _| {
+                    state.set_value_search_max_matches(value);
+                });
+            },
+        ));
 
         subscriptions.push(Self::bind_blur_save(
             cx,
@@ -488,6 +552,9 @@ impl ZedisSettingEditor {
             ui_font,
             mono_font,
             key_scan_count_state,
+            value_search_scan_cap_state,
+            value_search_time_budget_state,
+            value_search_max_matches_state,
             config_dir_state,
             auto_expand_threshold_state,
             max_truncate_length_state,
@@ -663,6 +730,21 @@ impl Render for ZedisSettingEditor {
                     cx,
                     "max_truncate_length",
                     Input::new(&self.max_truncate_length_state),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "value_search_scan_cap",
+                    Input::new(&self.value_search_scan_cap_state),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "value_search_time_budget",
+                    Input::new(&self.value_search_time_budget_state),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "value_search_max_matches",
+                    Input::new(&self.value_search_max_matches_state),
                 ))
                 // — Workspace Tabs —
                 .child(Self::render_section_header(cx, "section_tabs", "section_tabs_desc"))
