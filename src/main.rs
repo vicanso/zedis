@@ -27,9 +27,13 @@ use crate::views::{
     open_settings_window, open_trash_dialog,
 };
 use gpui::{
-    Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, TitlebarOptions,
-    WeakEntity, Window, WindowAppearance, WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
+    Action, App, Bounds, Entity, Menu, MenuItem, MouseButton, Pixels, Point, SharedString, Task, WeakEntity, Window,
+    WindowAppearance, WindowBounds, WindowOptions, div, prelude::*, px, rems, size,
 };
+// Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
+// server-side decorations — see the cfg at the open_window call).
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+use gpui::TitlebarOptions;
 use gpui_component::{
     ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, ThemeMode, ThemeRegistry, WindowExt,
     button::{Button, ButtonVariants},

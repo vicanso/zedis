@@ -230,6 +230,8 @@ pub fn i18n_monitor<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("monitor.{key}"), locale = locale).into()
 }
 
+// Tray-only: the tray module is compiled out on Linux.
+#[cfg(not(target_os = "linux"))]
 pub fn i18n_tray(cx: &App, key: &str) -> String {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("tray.{key}"), locale = locale).to_string()

@@ -789,6 +789,9 @@ impl ZedisAppState {
     pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         self.go_to_with_query(route, None, cx);
     }
+    // Tray-only caller (quick-connect menu) — compiled out on Linux
+    // with the tray module.
+    #[cfg(not(target_os = "linux"))]
     pub fn go_with_query(&mut self, route: Route, query: HashMap<String, String>, cx: &mut Context<Self>) {
         self.go_to_with_query(route, Some(query), cx);
     }
