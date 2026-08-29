@@ -140,10 +140,28 @@ pub fn resolve_response_timeout(config: &RedisServer) -> Duration {
         .unwrap_or_else(get_redis_response_timeout)
 }
 
-pub(crate) async fn set_client_name(conn: &mut impl ConnectionLike) {
-    // ignore error
+/// Post-connect client setup, all best-effort.
+///
+/// - `SETNAME` identifies the connection in `CLIENT LIST` / the slow log.
+///   Failure is logged at error level — SETNAME exists everywhere, so an
+///   error here is real signal.
+/// - `NO-EVICT ON` (Redis ≥ 7.0): an admin GUI should stay connected
+///   exactly when the server is under memory pressure and evicting
+///   clients — the moment the operator needs it most.
+/// - `NO-TOUCH ON` (Redis ≥ 7.2): browsing a key must not distort the
+///   LRU/LFU accounting the memory analyzer's `OBJECT IDLETIME`/`FREQ`
+///   heat column reports — observation shouldn't perturb the observed.
+///
+/// The two flags are silently skipped where unsupported (older servers,
+/// proxies, NOPERM-restricted users) — debug log only.
+pub(crate) async fn configure_client_connection(conn: &mut impl ConnectionLike) {
     if let Err(err) = cmd("CLIENT").arg("SETNAME").arg(CLIENT_NAME).exec_async(conn).await {
         error!(error = %err, "set client name failed");
+    }
+    for flag in ["NO-EVICT", "NO-TOUCH"] {
+        if let Err(err) = cmd("CLIENT").arg(flag).arg("ON").exec_async(conn).await {
+            debug!(error = %err, flag, "client flag not applied");
+        }
     }
 }
 
@@ -188,7 +206,7 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
         client.get_multiplexed_async_connection_with_config(&cfg).await?
     };
 
-    set_client_name(&mut conn).await;
+    configure_client_connection(&mut conn).await;
     // Select the specified database if not the default (db 0)
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;

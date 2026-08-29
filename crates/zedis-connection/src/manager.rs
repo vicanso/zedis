@@ -20,7 +20,7 @@ use super::{
     config::{RedisServer, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
-use crate::{async_connection::set_client_name, error::Error};
+use crate::{async_connection::configure_client_connection, error::Error};
 use futures::future::try_join_all;
 use rand::RngExt;
 use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
@@ -407,13 +407,13 @@ async fn get_async_connection(client: &RClient, db: usize, use_cache: bool) -> R
             // Per-server timeouts are baked into the cluster builder at
             // build time, so the no-config getter uses them.
             let mut conn = client.get_async_connection().await?;
-            set_client_name(&mut conn).await;
+            configure_client_connection(&mut conn).await;
             Ok(RedisAsyncConn::Cluster(conn))
         }
         RClient::SshCluster(client) => {
             let mut conn: redis::cluster_async::ClusterConnection<SshMultiplexedConnection> =
                 client.get_async_generic_connection().await?;
-            set_client_name(&mut conn).await;
+            configure_client_connection(&mut conn).await;
             Ok(RedisAsyncConn::SshCluster(conn))
         }
     }

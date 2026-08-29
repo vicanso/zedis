@@ -624,6 +624,7 @@ pub struct ZedisClientsManager {
     error: Option<SharedString>,
     _fetch_task: Option<Task<()>>,
     _kill_task: Option<Task<()>>,
+    _unpause_task: Option<Task<()>>,
     /// One-shot batch kill over the current filtered rows; aggregates the
     /// outcome into a single notification + refresh (unlike the per-row
     /// channel, which notifies and refetches per kill).
@@ -696,6 +697,7 @@ impl ZedisClientsManager {
             error: None,
             _fetch_task: None,
             _kill_task: None,
+            _unpause_task: None,
             _batch_kill_task: None,
             _subscriptions: subscriptions,
         };
@@ -822,6 +824,48 @@ impl ZedisClientsManager {
                     }
                 });
             }
+        }));
+    }
+
+    /// `CLIENT UNPAUSE` on every master — lifts a `CLIENT PAUSE` left
+    /// behind by a failover script or a stray terminal command, the state
+    /// where the whole server appears hung. Idempotent and harmless when
+    /// nothing is paused, so no confirm dialog.
+    fn handle_unpause(&mut self, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let db = self.server_state.read(cx).db();
+        let server_state = self.server_state.clone();
+        self._unpause_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let (_, replies): (_, Vec<String>) = client
+                    .query_async_masters(vec![cmd("CLIENT").arg("UNPAUSE").clone()])
+                    .await?;
+                let _ = replies;
+                Ok::<(), Error>(())
+            });
+            let result = task.await;
+            let _ = handle.update(cx, move |_this, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                match result {
+                    Ok(()) => {
+                        let msg = t!("clients_manager.unpause_success", locale = locale);
+                        server_state.update(cx, |state, cx| {
+                            state.emit_success_notification(msg.to_string().into(), "CLIENT UNPAUSE".into(), cx);
+                        });
+                    }
+                    Err(e) => {
+                        let msg = t!("clients_manager.unpause_failed", error = e.to_string(), locale = locale);
+                        server_state.update(cx, |state, cx| {
+                            state.emit_error_notification(msg.to_string().into(), cx);
+                        });
+                    }
+                }
+                cx.notify();
+            });
         }));
     }
 
@@ -1048,6 +1092,16 @@ impl gpui::Render for ZedisClientsManager {
                                         .disabled(killable == 0)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.handle_batch_kill(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("unpause-clients")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::Play)
+                                        .tooltip(i18n_clients_manager(cx, "unpause_tooltip"))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.handle_unpause(cx);
                                         })),
                                 )
                             })
