@@ -1967,6 +1967,9 @@ mod tests {
         );
     }
 
+    // Tray flow — `go_with_query` (like the tray itself) is compiled out
+    // on Linux, so this regression test only exists where the tray does.
+    #[cfg(not(target_os = "linux"))]
     #[gpui::test]
     fn new_connection_query_survives_clear(cx: &mut TestAppContext) {
         let (state, events, _sub) = state_with_recorder(cx);
