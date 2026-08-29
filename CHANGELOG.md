@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.8.2](https://github.com/vicanso/zedis/compare/v0.8.1..v0.8.2) - 2026-08-29
+
+### ⛰️  Features
+
+- *(clients)* CLIENT UNPAUSE, NO-EVICT / NO-TOUCH on Zedis's own connections - ([abb3e61](https://github.com/vicanso/zedis/commit/abb3e615f9ddc3246e5b46639bb00ef134459c18))
+- *(key-tree)* The type filter now covers module types - ([c7cfa33](https://github.com/vicanso/zedis/commit/c7cfa33a03f76e17d0fe2ac2cfa0b9f80db61f50))
+- *(migration)* Import readable JSON/CSV exports - ([93da0b4](https://github.com/vicanso/zedis/commit/93da0b44394a526e9ddc6bff3a8fbdb91659fd53))
+- *(search)* FT.EXPLAIN / FT.PROFILE plans and aggregate result paging - ([72ad0a9](https://github.com/vicanso/zedis/commit/72ad0a9a2be60651cb93c16366b7716834d6822a))
+- *(storage)* Survive damaged config/DB files and record crashes - ([42a1a91](https://github.com/vicanso/zedis/commit/42a1a9187dcef06bfe35644b7081759e3d046320))
+- *(storage)* Survive damaged config/DB files and record crashes - ([6766182](https://github.com/vicanso/zedis/commit/67661827c7b88735b3906050161a505720e5260a))
+- *(stream)* XACK / XCLAIM / XAUTOCLAIM / XTRIM and paged XPENDING - ([13dec13](https://github.com/vicanso/zedis/commit/13dec13b708c46e4e293f1786140406b526d91be))
+- *(value-search)* Scan cap, time budget and match cap become settings - ([302c358](https://github.com/vicanso/zedis/commit/302c358cbbc9f3162855e716d4502eac93001d82))
+- No-SCAN key-tree banner, capped readable export, locale hygiene gate - ([926e63e](https://github.com/vicanso/zedis/commit/926e63ea6a4aab775458f4abf191eb03f591c8af))
+- Config upgrade fixtures, link/failover resilience, diagnostics bundle - ([3de4f90](https://github.com/vicanso/zedis/commit/3de4f901959fbf22d527295ab8c7e35b19128138))
+
+### 🐛 Bug Fixes
+
+- *(deps)* Decode LZ4 values with the safe decoder - ([1aa487a](https://github.com/vicanso/zedis/commit/1aa487a2f231646afc1cd350419dcd0a1228efc1))
+- *(geo-map)* Sample large sets with ZRANDMEMBER, not the lowest-geohash corner - ([3ddf734](https://github.com/vicanso/zedis/commit/3ddf73499c36787735e0b28a9a65d7d30ca1c1dd))
+- *(lint)* Cfg-gate the tray- and ssh-agent-only items platform clippy flagged - ([d122dda](https://github.com/vicanso/zedis/commit/d122ddacf5ad18d1b92a873f0fa60ca759aeab06))
+- *(lint)* Cfg-gate the tray-only helpers Linux clippy flagged as dead - ([aab9668](https://github.com/vicanso/zedis/commit/aab9668f5701e3ba4512ba265197d6de59d6ef31))
+- *(lint)* Cfg-gate the tray-only helpers Linux clippy flagged as dead - ([c780785](https://github.com/vicanso/zedis/commit/c78078516646209ee154d1f835aaf2d0e6e77653))
+- *(security)* A key name can no longer become a shell command - ([1769c60](https://github.com/vicanso/zedis/commit/1769c60273b55438984a84e23eea13d1fbb070df))
+- *(state)* Quitting no longer drops a preference change - ([ec8e327](https://github.com/vicanso/zedis/commit/ec8e327f307b5e76c80ce4d234d175140d6228b0))
+- *(status-bar)* The key total no longer freezes at the connect-time snapshot - ([7971a61](https://github.com/vicanso/zedis/commit/7971a61f990a62700f11347958a6d9bfeca3b1ac))
+- *(storage)* A version bump can no longer delete the local library - ([6c584cf](https://github.com/vicanso/zedis/commit/6c584cf262d9017e41f90c23152d4b03c418743a))
+
+### 📚 Documentation
+
+- Reconcile README, FEATURES and the site with the source - ([519e1ca](https://github.com/vicanso/zedis/commit/519e1ca54a91dde4d35bee88e2bcb8abac831c3f))
+
+### 🧪 Testing
+
+- Criterion hot-path benches, clippy + tests on Linux/Windows CI - ([e4354ef](https://github.com/vicanso/zedis/commit/e4354ef79e99c6abac228df0c878a991a4aa46a9))
+- Live Redis integration suite and hard smoke gates on Linux/Windows - ([681153d](https://github.com/vicanso/zedis/commit/681153d0aecdd4755cf04f21d4002135f937369a))
+
+### ⚙️ Miscellaneous Tasks
+
+- Pin the toolchain, gate the published MSRV (now 1.96), weekly udeps - ([eec36a1](https://github.com/vicanso/zedis/commit/eec36a1d45c6efc45a25b51012613184a7adcf7c))
+
 ## [0.8.1](https://github.com/vicanso/zedis/compare/v0.8.0..v0.8.1) - 2026-08-22
 
 ### ⛰️  Features
