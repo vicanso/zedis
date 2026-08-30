@@ -106,7 +106,10 @@ struct KeyTreeState {
     /// Cached key tree ID — tracks which key_tree_id the cached_keys and
     /// cached_key_ttls correspond to.
     cached_key_tree_id: SharedString,
-    /// Cached sorted keys snapshot to avoid re-cloning from server state on every rebuild
+    /// Cached keys snapshot, **pre-sorted** (once per key-set change) so
+    /// expand/collapse and filter rebuilds skip the O(N log N) sort —
+    /// `new_key_tree_items` requires sorted input, and
+    /// `apply_local_key_filters` preserves relative order.
     cached_keys: Arc<Vec<(SharedString, KeyType)>>,
     /// Snapshot of `ZedisServerState::key_ttls`, refreshed in lockstep with
     /// `cached_keys`. Used to color leaf rows in the tree.
@@ -614,8 +617,14 @@ impl ZedisKeyTree {
         // Only re-clone keys from server state when key_tree_id actually changed
         // (keys added/removed/type changed). For expand/collapse, reuse cached snapshot.
         if self.state.cached_key_tree_id != key_tree_id {
-            let keys_snapshot: Vec<(SharedString, KeyType)> =
+            let mut keys_snapshot: Vec<(SharedString, KeyType)> =
                 server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
+            // Sort once here, not per rebuild: expand/collapse and filter
+            // changes reuse this snapshot, so they no longer pay the
+            // O(N log N) that used to run inside every tree build.
+            // (Borrow-compare — `sort_unstable_by_key` would clone the
+            // SharedString on every comparison.)
+            keys_snapshot.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
             self.state.cached_keys = Arc::new(keys_snapshot);
             // Arc share, not a structural copy — the server side mutates
             // its map through `Arc::make_mut`, so this snapshot stays

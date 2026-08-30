@@ -42,14 +42,19 @@ pub(super) fn build_tagged_keys_list(
     // wasteful even if the snapshot is small.
     let type_by_key: std::collections::HashMap<&str, KeyType> =
         snapshot_keys.iter().map(|(k, t)| (k.as_ref(), *t)).collect();
-    metadata
+    let mut tagged: Vec<(SharedString, KeyType)> = metadata
         .iter()
         .filter(|(_, m)| m.tag == Some(color))
         .map(|(key, _)| {
             let key_type = type_by_key.get(key.as_str()).copied().unwrap_or(KeyType::Unknown);
             (SharedString::from(key.clone()), key_type)
         })
-        .collect()
+        .collect();
+    // `new_key_tree_items` requires sorted input (the snapshot path is
+    // pre-sorted at cache time); HashMap iteration order is not. Cheap:
+    // only this colour's tagged keys, dozens-to-hundreds.
+    tagged.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    tagged
 }
 
 /// Local AND over the candidate key list (already obtained from SCAN
@@ -425,6 +430,7 @@ pub(super) fn single_child_expanded_set(
 /// Inputs for [`new_key_tree_items`] — keeps the builder signature under
 /// clippy's argument limit without losing the per-concern docs.
 pub(super) struct KeyTreeBuildInput<'a> {
+    /// **Must be sorted by key** (see [`new_key_tree_items`]'s contract).
     pub keys: Vec<(SharedString, KeyType)>,
     pub keyword: SharedString,
     pub expanded_items: AHashSet<SharedString>,
@@ -441,9 +447,14 @@ pub(super) struct KeyTreeBuildInput<'a> {
     pub metadata: &'a std::collections::HashMap<String, KeyMetadata>,
 }
 
+/// Build the tree rows. **`input.keys` must be sorted by key** — both
+/// producers guarantee it (the snapshot is sorted once per key-set change
+/// in `update_key_tree`, the tag union sorts its own output), so the
+/// per-rebuild O(N log N) sort that used to live here is gone: an
+/// expand/collapse or filter change now only pays the linear passes.
 pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeItem> {
     let KeyTreeBuildInput {
-        mut keys,
+        keys,
         keyword,
         expanded_items,
         suppressed,
@@ -452,9 +463,10 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
         key_ttls,
         metadata,
     } = input;
-    // `sort_unstable_by_key` would clone the `SharedString` on *every*
-    // comparison (~n·log n Arc bumps); compare by borrow instead.
-    keys.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    debug_assert!(
+        keys.is_sorted_by(|(a, _), (b, _)| a <= b),
+        "new_key_tree_items requires key-sorted input"
+    );
     // Effective expansion = the user-expanded folders plus any single-child
     // folder chains hanging off them, so drilling into a deep single-child
     // namespace (`app:user` → `profile` → leaves) opens straight through in
