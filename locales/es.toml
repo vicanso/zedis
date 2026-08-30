@@ -1719,6 +1719,7 @@ elements = "Elementos"
 search_placeholder = "Elemento para buscar vecinos"
 search = "Buscar"
 neighbours = "Vecinos más cercanos"
+load_more = "Cargar más"
 sample = "Elementos de muestra"
 loading = "Cargando…"
 

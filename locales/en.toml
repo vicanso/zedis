@@ -1722,6 +1722,7 @@ elements = "Elements"
 search_placeholder = "Element to find neighbors"
 search = "Search"
 neighbours = "Nearest Neighbors"
+load_more = "Load more"
 sample = "Sample Elements"
 loading = "Loading…"
 

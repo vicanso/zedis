@@ -1719,6 +1719,7 @@ elements = "Элементы"
 search_placeholder = "Элемент для поиска соседей"
 search = "Поиск"
 neighbours = "Ближайшие соседи"
+load_more = "Загрузить ещё"
 sample = "Примеры элементов"
 loading = "Загрузка…"
 

@@ -33,7 +33,7 @@ use crate::{
 };
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -45,10 +45,13 @@ use tracing::info;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// How many neighbours `VSIM` returns, and how many elements the
-/// `VRANDMEMBER` sample shows.
-const KNN_COUNT: i64 = 10;
-const SAMPLE_CAP: i64 = 50;
+/// Starting sizes for the `VSIM` neighbour list and the `VRANDMEMBER`
+/// sample. Both grow by doubling via their "load more" buttons, up to
+/// [`GROW_MAX`] — neither command pages, so "more" means re-asking with
+/// a larger COUNT.
+const DEFAULT_KNN_COUNT: i64 = 10;
+const DEFAULT_SAMPLE_CAP: i64 = 50;
+const GROW_MAX: i64 = 1_000;
 
 #[derive(Clone, Default)]
 struct VectorSetData {
@@ -72,6 +75,10 @@ pub struct ZedisVectorSetEditor {
     search_error: Option<SharedString>,
     loading: bool,
     searching: bool,
+    /// Current `VSIM COUNT` — doubled by the neighbour list's "load more".
+    knn_count: i64,
+    /// Current `VRANDMEMBER` count — doubled by the sample's "load more".
+    sample_cap: i64,
     load_task: Option<Task<()>>,
     search_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -107,6 +114,8 @@ impl ZedisVectorSetEditor {
             search_error: None,
             loading: false,
             searching: false,
+            knn_count: DEFAULT_KNN_COUNT,
+            sample_cap: DEFAULT_SAMPLE_CAP,
             load_task: None,
             search_task: None,
             _subscriptions: subscriptions,
@@ -123,11 +132,13 @@ impl ZedisVectorSetEditor {
         if key.is_empty() {
             return;
         }
+        let sample_cap = self.sample_cap;
+        let knn_count = self.knn_count;
         self.loading = true;
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_vector_set(server_id, db, key).await;
+            let result = fetch_vector_set(server_id, db, key, sample_cap, knn_count).await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -158,8 +169,9 @@ impl ZedisVectorSetEditor {
         }
         cx.notify();
         let element_str = element.to_string();
+        let knn_count = self.knn_count;
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_neighbours(server_id, db, key, element_str).await;
+            let result = fetch_neighbours(server_id, db, key, element_str, knn_count).await;
             let _ = this.update(cx, |this, cx| {
                 this.searching = false;
                 match result {
@@ -207,7 +219,13 @@ impl ZedisVectorSetEditor {
             .w_full()
             .gap_2()
             .items_center()
-            .child(div().flex_1().child(Input::new(&self.query_input).appearance(true)))
+            // `.small()` matches the button beside it — the sizing pair
+            // every other search bar uses (value-search, the probe row).
+            .child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&self.query_input).appearance(true).small()),
+            )
             .child(
                 Button::new("vector-set-search")
                     .label(i18n_vector_set(cx, "search"))
@@ -266,6 +284,25 @@ impl ZedisVectorSetEditor {
                     .on_click(cx.listener(move |this, _, window, cx| this.search_element(el.clone(), window, cx))),
             );
         }
+        // A full page suggests more neighbours exist — VSIM doesn't page,
+        // so "more" re-runs the query with a doubled COUNT.
+        let maybe_more =
+            data.queried.is_some() && data.neighbours.len() as i64 >= self.knn_count && self.knn_count < GROW_MAX;
+        if maybe_more {
+            col = col.child(
+                Button::new("vector-set-more-neighbours")
+                    .xsmall()
+                    .ghost()
+                    .label(i18n_vector_set(cx, "load_more"))
+                    .disabled(self.searching)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.knn_count = (this.knn_count * 2).min(GROW_MAX);
+                        if let Some(queried) = this.data.as_ref().and_then(|d| d.queried.clone()) {
+                            this.run_search(queried, cx);
+                        }
+                    })),
+            );
+        }
         col
     }
 
@@ -290,6 +327,21 @@ impl ZedisVectorSetEditor {
                     .hover(|s| s.bg(cx.theme().list_active))
                     .child(Label::new(element.clone()).text_xs().text_color(muted))
                     .on_click(cx.listener(move |this, _, window, cx| this.search_element(el.clone(), window, cx))),
+            );
+        }
+        // More elements exist than the random sample shows — re-sample
+        // with a doubled count (VRANDMEMBER has no paging either).
+        if (data.sample.len() as i64) < data.card && self.sample_cap < GROW_MAX {
+            wrap = wrap.child(
+                Button::new("vector-set-more-sample")
+                    .xsmall()
+                    .ghost()
+                    .label(i18n_vector_set(cx, "load_more"))
+                    .disabled(self.loading)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.sample_cap = (this.sample_cap * 2).min(GROW_MAX);
+                        this.load(cx);
+                    })),
             );
         }
         wrap
@@ -347,7 +399,13 @@ impl Render for ZedisVectorSetEditor {
 
 /// Initial load: `VINFO` + `VCARD` + `VDIM` + a `VRANDMEMBER` sample,
 /// seeding the neighbour panel with the first sample element.
-async fn fetch_vector_set(server_id: String, db: usize, key: String) -> Result<VectorSetData> {
+async fn fetch_vector_set(
+    server_id: String,
+    db: usize,
+    key: String,
+    sample_cap: i64,
+    knn_count: i64,
+) -> Result<VectorSetData> {
     let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
     let info_raw: Value = cmd("VINFO").arg(&key).query_async(&mut conn).await?;
@@ -356,7 +414,7 @@ async fn fetch_vector_set(server_id: String, db: usize, key: String) -> Result<V
     let dim: i64 = cmd("VDIM").arg(&key).query_async(&mut conn).await.unwrap_or(0);
     let sample: Vec<String> = cmd("VRANDMEMBER")
         .arg(&key)
-        .arg(SAMPLE_CAP)
+        .arg(sample_cap)
         .query_async(&mut conn)
         .await
         .unwrap_or_default();
@@ -376,7 +434,7 @@ async fn fetch_vector_set(server_id: String, db: usize, key: String) -> Result<V
             .arg(first.as_ref())
             .arg("WITHSCORES")
             .arg("COUNT")
-            .arg(KNN_COUNT)
+            .arg(knn_count)
             .query_async::<Value>(&mut conn)
             .await
     {
@@ -392,6 +450,7 @@ async fn fetch_neighbours(
     db: usize,
     key: String,
     element: String,
+    count: i64,
 ) -> Result<Vec<(SharedString, f64)>> {
     let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
     let raw: Value = cmd("VSIM")
@@ -400,7 +459,7 @@ async fn fetch_neighbours(
         .arg(&element)
         .arg("WITHSCORES")
         .arg("COUNT")
-        .arg(KNN_COUNT)
+        .arg(count)
         .query_async(&mut conn)
         .await?;
     Ok(parse_scored(&raw))

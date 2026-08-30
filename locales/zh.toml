@@ -1721,6 +1721,7 @@ elements = "元素数"
 search_placeholder = "输入元素名查找近邻"
 search = "搜索"
 neighbours = "最近邻"
+load_more = "加载更多"
 sample = "元素样本"
 loading = "加载中…"
 

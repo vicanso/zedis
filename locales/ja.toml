@@ -1719,6 +1719,7 @@ elements = "要素数"
 search_placeholder = "近傍を探す要素名"
 search = "検索"
 neighbours = "最近傍"
+load_more = "さらに読み込む"
 sample = "要素サンプル"
 loading = "読み込み中…"
 
