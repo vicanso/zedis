@@ -23,25 +23,30 @@
 //! `VSIM key ELE <element> WITHSCORES` and renders the ranked nearest
 //! neighbours with their similarity scores; clicking any sampled
 //! element (or a neighbour) re-runs the search on it, so the HNSW graph
-//! can be explored hop by hop. Read-only — no `VADD` / `VREM`.
+//! can be explored hop by hop. The queried element also shows its
+//! `VGETATTR` attributes and offers `VSETATTR` (edit) and `VREM`
+//! (remove) — `VADD` stays out: pasting a whole float vector by hand is
+//! the terminal's job.
 
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::get_connection_manager,
+    assets::CustomIconName,
+    connection::{Capability, RedisAsyncConn, get_connection_manager},
     error::Error,
-    states::{ZedisServerState, i18n_vector_set},
+    states::{ZedisServerState, dialog_button_props, i18n_common, i18n_vector_set},
 };
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
     v_flex,
 };
 use redis::{Value, cmd};
 use tracing::info;
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -64,6 +69,10 @@ struct VectorSetData {
     /// on load, then driven by the search box / clicks.
     queried: Option<SharedString>,
     neighbours: Vec<(SharedString, f64)>,
+    /// `VGETATTR` of the queried element — `None` when it carries no
+    /// attributes. Shown under the neighbours header and edited via
+    /// `VSETATTR`.
+    queried_attrs: Option<SharedString>,
 }
 
 pub struct ZedisVectorSetEditor {
@@ -175,12 +184,129 @@ impl ZedisVectorSetEditor {
             let _ = this.update(cx, |this, cx| {
                 this.searching = false;
                 match result {
-                    Ok(neighbours) => {
+                    Ok((neighbours, attrs)) => {
                         if let Some(data) = this.data.as_mut() {
                             data.neighbours = neighbours;
+                            data.queried_attrs = attrs.map(SharedString::from);
                         }
                         this.search_error = None;
                     }
+                    Err(e) => this.search_error = Some(SharedString::from(e.to_string())),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// `VREM` the currently queried element, then reload — the sample,
+    /// cardinality and neighbours all change. Element-level removal is
+    /// direct (no confirm), matching hash-field / stream-entry deletes.
+    fn remove_queried(&mut self, cx: &mut Context<Self>) {
+        let Some(element) = self.data.as_ref().and_then(|d| d.queried.clone()) else {
+            return;
+        };
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        let key = self.key.to_string();
+        self.searching = true;
+        cx.notify();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let result: Result<()> = async {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let _: i64 = cmd("VREM")
+                    .arg(&key)
+                    .arg(element.as_ref())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                this.searching = false;
+                match result {
+                    Ok(()) => this.load(cx),
+                    Err(e) => this.search_error = Some(SharedString::from(e.to_string())),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Edit the queried element's attributes: a JSON textarea seeded with
+    /// the current `VGETATTR` value. Empty clears them (`VSETATTR ""`).
+    /// The server accepts any string, but a non-JSON attribute silently
+    /// breaks `FILTER` queries later — so invalid JSON keeps the dialog
+    /// open instead of being written.
+    fn open_attrs_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(element) = self.data.as_ref().and_then(|d| d.queried.clone()) else {
+            return;
+        };
+        let current = self
+            .data
+            .as_ref()
+            .and_then(|d| d.queried_attrs.clone())
+            .unwrap_or_default();
+        let attrs_state = cx.new(|cx| TextareaState::new(window, cx).default_value(current).rows(6));
+        let hint = i18n_vector_set(cx, "attrs_hint");
+        let body_attrs = attrs_state.clone();
+        let submit_attrs = attrs_state.clone();
+        let view = cx.entity().downgrade();
+
+        ZedisDialog::new(i18n_vector_set(cx, "attrs_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Textarea::new(&body_attrs))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let raw = submit_attrs.read(cx).value().trim().to_string();
+                if !raw.is_empty() && serde_json::from_str::<serde_json::Value>(&raw).is_err() {
+                    // Invalid JSON — keep the dialog open (the hint says why).
+                    return false;
+                }
+                let element = element.clone();
+                let _ = view.update(cx, |view, cx| view.apply_attrs(element, raw, cx));
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `VSETATTR` then re-run the search so the attrs line refreshes.
+    fn apply_attrs(&mut self, element: SharedString, json: String, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        let key = self.key.to_string();
+        self.searching = true;
+        cx.notify();
+        let element_for_refresh = element.clone();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let result: Result<()> = async {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let _: i64 = cmd("VSETATTR")
+                    .arg(&key)
+                    .arg(element.as_ref())
+                    .arg(&json)
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                this.searching = false;
+                match result {
+                    Ok(()) => this.run_search(element_for_refresh, cx),
                     Err(e) => this.search_error = Some(SharedString::from(e.to_string())),
                 }
                 cx.notify();
@@ -252,7 +378,50 @@ impl ZedisVectorSetEditor {
         if let Some(queried) = data.queried.as_ref() {
             header = header.child(Label::new(queried.clone()).text_xs().text_color(muted));
         }
+        header = header.child(div().flex_1());
+        // Element actions for the queried element: edit its attributes,
+        // remove it. Hidden in read-only mode alongside every other write.
+        if data.queried.is_some() && self.server_state.read(cx).can(Capability::MutateContainer) {
+            header = header
+                .child(
+                    Button::new("vector-set-edit-attrs")
+                        .xsmall()
+                        .ghost()
+                        .icon(Icon::new(CustomIconName::FilePenLine))
+                        .tooltip(i18n_vector_set(cx, "attrs_edit_tooltip"))
+                        .disabled(self.searching)
+                        .on_click(cx.listener(|this, _, window, cx| this.open_attrs_dialog(window, cx))),
+                )
+                .child(
+                    Button::new("vector-set-remove")
+                        .xsmall()
+                        .danger()
+                        .icon(IconName::Close)
+                        .tooltip(i18n_vector_set(cx, "remove_tooltip"))
+                        .disabled(self.searching)
+                        .on_click(cx.listener(|this, _, _window, cx| this.remove_queried(cx))),
+                );
+        }
         col = col.child(header);
+        // The queried element's attributes (VGETATTR) — the metadata that
+        // FILTER expressions match against.
+        if data.queried.is_some() {
+            let attrs = data
+                .queried_attrs
+                .clone()
+                .unwrap_or_else(|| i18n_vector_set(cx, "attrs_none"));
+            col = col.child(
+                h_flex()
+                    .gap_1()
+                    .items_baseline()
+                    .child(
+                        Label::new(i18n_vector_set(cx, "attrs_label"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(Label::new(attrs).text_xs().text_color(muted).whitespace_normal()),
+            );
+        }
 
         if let Some(err) = self.search_error.clone() {
             return col.child(Label::new(err).text_xs().text_color(cx.theme().danger));
@@ -438,10 +607,24 @@ async fn fetch_vector_set(
             .query_async::<Value>(&mut conn)
             .await
     {
+        data.queried_attrs = fetch_attrs(&mut conn, &key, first.as_ref()).await.map(Into::into);
         data.queried = Some(first);
         data.neighbours = parse_scored(&raw);
     }
     Ok(data)
+}
+
+/// `VGETATTR key element` — `None` for no attributes (nil reply) or any
+/// error (attrs are decoration; a failed read must not fail the search).
+async fn fetch_attrs(conn: &mut RedisAsyncConn, key: &str, element: &str) -> Option<String> {
+    cmd("VGETATTR")
+        .arg(key)
+        .arg(element)
+        .query_async::<Option<String>>(conn)
+        .await
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
 }
 
 /// `VSIM key ELE <element> WITHSCORES COUNT n` → ranked neighbours.
@@ -451,7 +634,7 @@ async fn fetch_neighbours(
     key: String,
     element: String,
     count: i64,
-) -> Result<Vec<(SharedString, f64)>> {
+) -> Result<(Vec<(SharedString, f64)>, Option<String>)> {
     let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
     let raw: Value = cmd("VSIM")
         .arg(&key)
@@ -462,7 +645,8 @@ async fn fetch_neighbours(
         .arg(count)
         .query_async(&mut conn)
         .await?;
-    Ok(parse_scored(&raw))
+    let attrs = fetch_attrs(&mut conn, &key, &element).await;
+    Ok((parse_scored(&raw), attrs))
 }
 
 /// Parse a `WITHSCORES` reply (RESP3 map or RESP2 flat `[member, score, …]`).
