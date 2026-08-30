@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.3](https://github.com/vicanso/zedis/compare/v0.8.2..v0.8.3) - 2026-08-30
+
+### ⛰️  Features
+
+- *(probabilistic)* A probe box — query membership / counts / CDF, add items - ([5511109](https://github.com/vicanso/zedis/commit/55111097d05b2fe6d0bef57808ddb6373b8183a4))
+- *(update)* MacOS installs in place — one click restarts into the new version - ([f52ba5b](https://github.com/vicanso/zedis/commit/f52ba5bbe6cb5f16f49e2c661f6dcadfefac82d3))
+- *(vector-set)* Attributes shown and editable, elements removable, lists grow on demand - ([3885b75](https://github.com/vicanso/zedis/commit/3885b75680a780dbcf4134a03096741c48b83096))
+- *(vector-set)* The KNN list and the sample grow on demand - ([eb31a3b](https://github.com/vicanso/zedis/commit/eb31a3bf209eaea6778b5b52ca2584a56799848c))
+
+### 🐛 Bug Fixes
+
+- *(key-tree)* The TTL chip climbs to weeks and years instead of lying at 99d - ([4c9e397](https://github.com/vicanso/zedis/commit/4c9e39750b5977aa9df5a8f3837aed73e4132d53))
+- *(lint)* Delivery::Replaced is macOS-only — compile it out elsewhere - ([7b3bca7](https://github.com/vicanso/zedis/commit/7b3bca711a57d921829d6d7f53d8be24302ffe5d))
+
+### ⚡ Performance
+
+- *(key-tree)* Sort the snapshot once per key-set change, not per rebuild - ([5d5313d](https://github.com/vicanso/zedis/commit/5d5313d736efdab05c5936ef285dd8c2245693f6))
+
 ## [0.8.2](https://github.com/vicanso/zedis/compare/v0.8.1..v0.8.2) - 2026-08-29
 
 ### ⛰️  Features
