@@ -39,8 +39,11 @@ pub use logger::{init_logger, logs_dir};
 pub use proxy::{is_valid_proxy_setting, set_configured_proxy};
 pub use syntax::register_extra_languages;
 pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
+#[cfg(target_os = "macos")]
+pub use updater::relaunch;
 pub use updater::{
-    UpdateInfo, download_and_verify, fetch_latest_release, focus_installer_ui, installer_requires_quit, open_installer,
+    Delivery, UpdateInfo, download_and_verify, fetch_latest_release, focus_installer_ui, install_update,
+    installer_requires_quit,
 };
 // Pure logic lives in `zedis-core`, fs/crypto/time in `zedis-connection`;
 // re-exported here so call sites keep using `crate::helpers::*` unchanged.

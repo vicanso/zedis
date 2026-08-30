@@ -17,10 +17,18 @@
 //! Flow: read the `latest.json` manifest the release workflow publishes, compare
 //! its version against the running build, and — when newer — pick the asset for
 //! this `os`/`arch`, download it, verify its SHA-256 against the manifest, and
-//! hand the file to the OS to open (`.dmg` → Finder drag window, `.msi` → the
-//! installer, AppImage/tarball → the desktop handler). The user finishes the
-//! install themselves, so we never replace a running binary, touch
-//! `/Applications`, or deal with code signing / quarantine.
+//! install it. On macOS [`install_update`] completes the install in place when
+//! it can: mount the DMG silently, verify the bundle identifier, copy the
+//! bundle over the running one (the old bundle is renamed aside into temp,
+//! never deleted while the process running from it is alive), detach — then
+//! [`relaunch`] restarts into the new copy. Anything that blocks that path — a
+//! bare `cargo run` with no bundle, an unwritable `/Applications`, a foreign
+//! bundle on the image — degrades to handing the file to the OS (`.dmg` →
+//! Finder drag window, `.msi` → the installer, AppImage/tarball → the desktop
+//! handler), the flow that shipped before and works from anywhere. The
+//! manifest checksum is the integrity story: ureq writes no quarantine xattr,
+//! so Gatekeeper never re-inspects the copy — what the SHA-256 vouched for is
+//! what runs.
 //!
 //! If the manifest is missing (e.g. a release predating it), we fall back to the
 //! GitHub Releases API to at least detect a new version; the UI then opens the
@@ -443,6 +451,220 @@ pub fn open_installer(path: &Path) -> Result<()> {
     Ok(())
 }
 
+// ---- in-place install (macOS) ------------------------------------------
+
+/// What [`install_update`] did with the verified installer.
+pub enum Delivery {
+    /// macOS only: the fresh bundle was copied over the running one — a
+    /// relaunch ([`relaunch`]) completes the update.
+    Replaced,
+    /// The installer was handed to the OS (Finder drag window / msiexec /
+    /// desktop handler) — the user finishes the install.
+    HandedToOs,
+}
+
+/// Install the verified file. macOS installs in place when possible (see
+/// the module docs); every other outcome and platform degrades to
+/// [`open_installer`]. Blocking (hdiutil and ditto take seconds) — run on
+/// a background task.
+pub fn install_update(installer: &Path) -> Result<Delivery> {
+    #[cfg(target_os = "macos")]
+    {
+        match running_bundle() {
+            Some(target) => match install_over(&target, installer) {
+                Ok(()) => return Ok(Delivery::Replaced),
+                Err(e) => {
+                    tracing::warn!(error = %e, "update: in-place install fell back to the drag window");
+                }
+            },
+            None => info!("update: no running bundle (bare binary); opening the image to install"),
+        }
+    }
+    open_installer(installer)?;
+    Ok(Delivery::HandedToOs)
+}
+
+/// Quit-and-restart after a [`Delivery::Replaced`] install. The restart is
+/// handed to a detached `sh` that waits for this pid to exit and then
+/// `open`s the bundle — the path rides in `$0`, so no quoting happens
+/// inside the script. The caller quits right after; the shell outlives us
+/// as launchd's orphan, so it is never a zombie of ours.
+#[cfg(target_os = "macos")]
+pub fn relaunch() {
+    let Some(bundle) = running_bundle() else {
+        return;
+    };
+    let script = format!(
+        "while /bin/kill -0 {pid} 2>/dev/null; do /bin/sleep 0.1; done; /usr/bin/open \"$0\"",
+        pid = std::process::id()
+    );
+    match Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .arg(bundle.as_os_str())
+        .spawn()
+    {
+        Ok(_) => info!(bundle = %bundle.display(), "update: restart requested to finish the update"),
+        Err(e) => tracing::warn!(error = %e, "update: could not spawn the relauncher"),
+    }
+}
+
+/// The identity gate for the in-place swap — must match
+/// `[package.metadata.bundle] identifier` in Cargo.toml (a test guards
+/// the pair).
+#[cfg(target_os = "macos")]
+const BUNDLE_ID: &str = "com.bigtree.zedis";
+
+/// The bundle's name, on the DMG and on disk.
+#[cfg(target_os = "macos")]
+const BUNDLE_NAME: &str = "Zedis.app";
+
+/// The bundle this process runs from — `…/Zedis.app` for the installed
+/// app, `None` under bare `cargo run`. `current_exe` reports the path
+/// recorded at exec time, so after an in-place install it names the *new*
+/// copy at the same location — exactly what a relaunch wants, and why
+/// `replace_bundle` may move the file it points at.
+#[cfg(target_os = "macos")]
+fn running_bundle() -> Option<PathBuf> {
+    bundle_root_of(&std::env::current_exe().ok()?)
+}
+
+/// `…/Foo.app/Contents/MacOS/foo` → `…/Foo.app`.
+#[cfg(target_os = "macos")]
+fn bundle_root_of(exe: &Path) -> Option<PathBuf> {
+    let root = exe.parent()?.parent()?.parent()?;
+    (root.extension().is_some_and(|ext| ext == "app")).then(|| root.to_path_buf())
+}
+
+/// Mount, replace `target`, detach. The volume is detached on every exit —
+/// a failed copy must not leave the image mounted on top of the failure it
+/// just reported.
+#[cfg(target_os = "macos")]
+fn install_over(target: &Path, dmg: &Path) -> Result<()> {
+    let volume = attach(dmg)?;
+    let result = replace_bundle(target, &volume);
+    detach(&volume);
+    result
+}
+
+/// Swap `target` for the bundle on the mounted volume. The old bundle is
+/// renamed aside into the temp directory, never deleted: the running
+/// process keeps every file it might still fault in, and the OS prunes
+/// temp on its own schedule. The rename doubles as the permission gate —
+/// an unwritable `/Applications` fails it before anything has moved. A
+/// failed copy renames the old bundle straight back.
+#[cfg(target_os = "macos")]
+fn replace_bundle(target: &Path, volume: &Path) -> Result<()> {
+    let fresh = volume.join(BUNDLE_NAME);
+    if bundle_plist_value(&fresh, "CFBundleIdentifier").as_deref() != Some(BUNDLE_ID) {
+        return Err(Error::Invalid {
+            message: "the mounted image does not carry our bundle".to_string(),
+        });
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let aside = std::env::temp_dir().join(format!("zedis-previous-{}-{stamp}.app", std::process::id()));
+    std::fs::rename(target, &aside).map_err(|e| Error::Invalid {
+        message: format!("could not move the old bundle aside: {e}"),
+    })?;
+    let copied = Command::new("/usr/bin/ditto")
+        .arg(fresh.as_os_str())
+        .arg(target.as_os_str())
+        .output();
+    let failure = match &copied {
+        Ok(out) if out.status.success() => {
+            info!(target = %target.display(), "update: installed in place");
+            return Ok(());
+        }
+        Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        Err(e) => e.to_string(),
+    };
+    if let Err(e) = std::fs::rename(&aside, target) {
+        error!(aside = %aside.display(), error = %e, "update: could not restore the old bundle");
+    }
+    Err(Error::Invalid {
+        message: format!("ditto failed: {failure}"),
+    })
+}
+
+/// Mount the image without a Finder window and return its mount point,
+/// parsed from hdiutil's own plist output. `-noverify` because the
+/// image's bytes were already vouched for: `download_and_verify` hashed
+/// the whole file against the manifest, and hdiutil's default pass
+/// re-reads the entire image to answer the same question.
+#[cfg(target_os = "macos")]
+fn attach(dmg: &Path) -> Result<PathBuf> {
+    let out = Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-noverify", "-plist"])
+        .arg(dmg.as_os_str())
+        .output()
+        .map_err(|e| Error::Invalid { message: e.to_string() })?;
+    if !out.status.success() {
+        return Err(Error::Invalid {
+            message: format!("hdiutil attach: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        });
+    }
+    mount_point_from_plist(&String::from_utf8_lossy(&out.stdout)).ok_or_else(|| Error::Invalid {
+        message: "no mount point in hdiutil's output".to_string(),
+    })
+}
+
+/// The `mount-point` string out of `hdiutil attach -plist` — the one
+/// value needed, scanned without a plist parser. The volume name is ours
+/// and ASCII ("Zedis Installer"), so XML entity escapes cannot occur in
+/// the value.
+#[cfg(target_os = "macos")]
+fn mount_point_from_plist(xml: &str) -> Option<PathBuf> {
+    let after = xml.split("<key>mount-point</key>").nth(1)?;
+    let start = after.find("<string>")? + "<string>".len();
+    let end = start + after[start..].find("</string>")?;
+    Some(PathBuf::from(&after[start..end]))
+}
+
+/// Detach the installer volume, with one retry after a beat — hdiutil
+/// answers "resource busy" while Spotlight is still indexing the fresh
+/// mount. A volume that stays stuck is left with a warning; the user can
+/// eject it from Finder.
+#[cfg(target_os = "macos")]
+fn detach(volume: &Path) {
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let detached = Command::new("hdiutil")
+            .arg("detach")
+            .arg(volume.as_os_str())
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if detached {
+            return;
+        }
+    }
+    tracing::warn!(volume = %volume.display(), "update: installer image left mounted");
+}
+
+/// One string key out of a bundle's Info.plist, via `defaults read`
+/// (which handles both XML and binary plists). `None` for a missing
+/// bundle, key, or a failed spawn — every caller treats those alike.
+#[cfg(target_os = "macos")]
+fn bundle_plist_value(app: &Path, key: &str) -> Option<String> {
+    let out = Command::new("defaults")
+        .arg("read")
+        // Sans extension — `defaults` appends ".plist" itself.
+        .arg(app.join("Contents/Info").as_os_str())
+        .arg(key)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(out.stdout).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +711,168 @@ mod tests {
         // picks an asset for a different os/arch.
         let chosen = pick_asset(&assets).expect("an asset for this platform");
         assert_eq!(chosen.name, "other");
+    }
+
+    /// The in-place swap ejects/replaces on the strength of this
+    /// identifier — if the bundle id ever moves in Cargo.toml, the const
+    /// must move with it or the swap goes blind (a mismatch only makes it
+    /// fall back to the drag window, never install the wrong bundle).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_install_identifier_matches_the_manifest() {
+        let manifest = include_str!("../../Cargo.toml");
+        assert!(manifest.contains(&format!("identifier = \"{BUNDLE_ID}\"")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mount_point_comes_out_of_hdiutil_plist_output() {
+        // Trimmed real output: the disk entity has no mount-point key,
+        // the filesystem entity carries it.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>system-entities</key><array>
+  <dict>
+    <key>content-hint</key><string>GUID_partition_scheme</string>
+    <key>dev-entry</key><string>/dev/disk5</string>
+  </dict>
+  <dict>
+    <key>content-hint</key><string>Apple_HFS</string>
+    <key>dev-entry</key><string>/dev/disk5s1</string>
+    <key>mount-point</key>
+    <string>/Volumes/Zedis Installer</string>
+  </dict>
+</array></dict></plist>"#;
+        assert_eq!(
+            mount_point_from_plist(xml),
+            Some(PathBuf::from("/Volumes/Zedis Installer"))
+        );
+        assert_eq!(mount_point_from_plist("<plist></plist>"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_root_is_the_app_directory_or_nothing() {
+        assert_eq!(
+            bundle_root_of(Path::new("/Applications/Zedis.app/Contents/MacOS/Zedis")),
+            Some(PathBuf::from("/Applications/Zedis.app"))
+        );
+        // Bare `cargo run` has no bundle to replace.
+        assert_eq!(bundle_root_of(Path::new("/Users/x/proj/target/debug/zedis")), None);
+    }
+
+    /// Build a DMG whose payload is `Zedis.app` carrying `id` as its
+    /// bundle identifier, under `dir`. Real hdiutil, ~a second.
+    #[cfg(target_os = "macos")]
+    fn fixture_dmg(dir: &Path, id: &str, marker: &[u8], volname: &str) -> PathBuf {
+        let contents = dir.join("payload").join(BUNDLE_NAME).join("Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).expect("mkdir");
+        std::fs::write(contents.join("MacOS/Zedis"), marker).expect("write binary");
+        std::fs::write(
+            contents.join("Info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>{id}</string>
+</dict></plist>
+"#
+            ),
+        )
+        .expect("write plist");
+        let dmg = dir.join("update.dmg");
+        let created = Command::new("hdiutil")
+            .args(["create", "-srcfolder"])
+            .arg(dir.join("payload").as_os_str())
+            .args(["-volname", volname, "-format", "UDZO", "-quiet"])
+            .arg(dmg.as_os_str())
+            .output()
+            .expect("hdiutil create runs");
+        assert!(created.status.success(), "hdiutil create failed");
+        dmg
+    }
+
+    /// An old bundle standing where the install will land.
+    #[cfg(target_os = "macos")]
+    fn fixture_target(dir: &Path) -> PathBuf {
+        let target = dir.join("Applications").join(BUNDLE_NAME);
+        std::fs::create_dir_all(target.join("Contents/MacOS")).expect("mkdir target");
+        std::fs::write(target.join("Contents/MacOS/Zedis"), b"old build").expect("write old");
+        target
+    }
+
+    /// The whole in-place path against a real image: mount, verify the
+    /// bundle id, rename the old bundle aside (kept, not deleted), copy
+    /// the new one in, detach the volume.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn in_place_install_swaps_the_bundle_and_detaches() {
+        let dir = std::env::temp_dir().join(format!("zedis-inplace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let volname = "zedis-inplace-test";
+        let dmg = fixture_dmg(&dir, BUNDLE_ID, b"new build", volname);
+        let target = fixture_target(&dir);
+
+        install_over(&target, &dmg).expect("in-place install");
+
+        assert_eq!(
+            std::fs::read(target.join("Contents/MacOS/Zedis")).expect("read new"),
+            b"new build"
+        );
+        assert!(
+            !Path::new("/Volumes").join(volname).exists(),
+            "the volume must be detached"
+        );
+        // The old bundle was parked in temp, not destroyed — the running
+        // process may still fault pages in from it.
+        let prefix = format!("zedis-previous-{}-", std::process::id());
+        let parked: Vec<PathBuf> = std::fs::read_dir(std::env::temp_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(&prefix))
+            })
+            .collect();
+        assert!(
+            parked
+                .iter()
+                .any(|p| std::fs::read(p.join("Contents/MacOS/Zedis")).is_ok_and(|bytes| bytes == b"old build")),
+            "the old bundle must survive in temp"
+        );
+        for p in parked {
+            let _ = std::fs::remove_dir_all(p);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The identity gate fires before anything moves — and the volume
+    /// still gets detached on the failure exit.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_foreign_bundle_is_refused_before_anything_moves() {
+        let dir = std::env::temp_dir().join(format!("zedis-foreign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let volname = "zedis-foreign-test";
+        let dmg = fixture_dmg(&dir, "com.example.stranger", b"impostor", volname);
+        let target = fixture_target(&dir);
+
+        let refused = install_over(&target, &dmg);
+
+        assert!(refused.is_err(), "a foreign identifier must be refused");
+        assert_eq!(
+            std::fs::read(target.join("Contents/MacOS/Zedis")).expect("read old"),
+            b"old build",
+            "the standing install must be untouched"
+        );
+        assert!(
+            !Path::new("/Volumes").join(volname).exists(),
+            "the volume must be detached even on refusal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

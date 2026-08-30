@@ -6,12 +6,12 @@ use crate::db::{
     purge_all_trash, quarantine_database,
 };
 use crate::helpers::{
-    ConfigRecovery, CrashContext, CrashReport, DiagnosticsAction, DiagnosticsInput, EditorAction, MemuAction,
+    ConfigRecovery, CrashContext, CrashReport, Delivery, DiagnosticsAction, DiagnosticsInput, EditorAction, MemuAction,
     MultiSearchAction, NavAction, PaletteAction, RecentKeysAction, ShortcutsAction, UpdateAction, UpdateInfo,
     WorkspaceTabAction, apply_default_ui_font_size, apply_fonts, download_and_verify, export_diagnostics,
     fetch_latest_release, focus_installer_ui, get_mono_font_family, get_or_create_config_dir, humanize_keystroke,
-    init_logger, install_panic_hook, installer_requires_quit, is_app_store_build, logs_dir, new_hot_keys,
-    open_installer, register_extra_languages, set_configured_proxy, take_config_recoveries, take_pending_crash,
+    init_logger, install_panic_hook, install_update, installer_requires_quit, is_app_store_build, logs_dir,
+    new_hot_keys, register_extra_languages, set_configured_proxy, take_config_recoveries, take_pending_crash,
     unix_ts_millis, with_app_identity,
 };
 use crate::states::{
@@ -726,6 +726,8 @@ impl Zedis {
         // swaps both to the progress state on the click itself.
         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
             state.set_download_progress(Some((0, asset.size)), cx);
+            // A fresh download voids any earlier "installed, restart?" state.
+            state.set_update_installed(false, cx);
         });
         cx.notify();
 
@@ -782,7 +784,7 @@ impl Zedis {
                         }
                         let _ = tx.try_send((done, total));
                     })
-                    .and_then(|path| open_installer(&path));
+                    .and_then(|path| install_update(&path));
                     // Drop the sender so the drainer task ends.
                     drop(tx);
                     outcome
@@ -794,12 +796,25 @@ impl Zedis {
                 // every queued tick (see above) — clearing it here too would
                 // race it and could leave the chip stuck at a stale percent.
                 match result {
-                    Ok(()) => {
+                    // macOS in-place install landed: the bundle on disk is
+                    // already the new version. Flag it on the store — the
+                    // update dialog (still open, showing the progress bar)
+                    // swaps itself to the Restart / Later row instead of
+                    // closing. A separate restart dialog is NOT opened
+                    // here: the update dialog's deferred self-close targets
+                    // the topmost dialog and would eat it.
+                    Ok(Delivery::Replaced) => {
+                        info!(version = %version, "update: installed in place, restart offered");
+                        this.pending_notification = Some(Notification::success(i18n_update(cx, "installed_done")));
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                            state.set_update_installed(true, cx);
+                        });
+                    }
+                    Ok(Delivery::HandedToOs) => {
                         info!(version = %version, "update: download finished, installer handed to the OS");
                         this.pending_notification = Some(Notification::success(i18n_update(cx, "download_done")));
                         // macOS / Windows: the installer can't replace a running
-                        // Zedis, so offer to quit (the dialog needs a `Window`,
-                        // which only `render` has — hence the flag).
+                        // Zedis, so offer to quit.
                         if installer_requires_quit() {
                             this.pending_install_quit = true;
                         }

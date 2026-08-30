@@ -604,6 +604,9 @@ pub struct ZedisAppState {
     /// renders just the percentage (see `download_percent`).
     #[serde(skip)]
     download_progress: Option<(u64, u64)>,
+    /// See [`Self::update_installed`]. Runtime only, never persisted.
+    #[serde(skip)]
+    update_installed: bool,
     /// True while an update check (network fetch) is in flight. Runtime only —
     /// drives the title-bar update chip's loading spinner.
     #[serde(skip)]
@@ -1225,6 +1228,19 @@ impl ZedisAppState {
     /// update dialog's progress bar and the title-bar chip both refresh.
     pub fn set_download_progress(&mut self, progress: Option<(u64, u64)>, cx: &mut Context<Self>) {
         self.download_progress = progress;
+        cx.emit(GlobalEvent::UpdateDownloadProgress);
+    }
+    /// macOS: the downloaded update was installed in place — the update
+    /// dialog swaps its progress bar for the Restart / Later row instead
+    /// of closing (closing targets the *topmost* dialog, so opening a
+    /// separate restart dialog raced the self-close and lost). Runtime
+    /// only.
+    pub fn update_installed(&self) -> bool {
+        self.update_installed
+    }
+    pub fn set_update_installed(&mut self, installed: bool, cx: &mut Context<Self>) {
+        self.update_installed = installed;
+        // Same event the dialog already subscribes to for progress ticks.
         cx.emit(GlobalEvent::UpdateDownloadProgress);
     }
     /// Whether an update check (network fetch) is currently running.
