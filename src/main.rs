@@ -803,6 +803,7 @@ impl Zedis {
                     // closing. A separate restart dialog is NOT opened
                     // here: the update dialog's deferred self-close targets
                     // the topmost dialog and would eat it.
+                    #[cfg(target_os = "macos")]
                     Ok(Delivery::Replaced) => {
                         info!(version = %version, "update: installed in place, restart offered");
                         this.pending_notification = Some(Notification::success(i18n_update(cx, "installed_done")));

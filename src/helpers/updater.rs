@@ -455,8 +455,11 @@ pub fn open_installer(path: &Path) -> Result<()> {
 
 /// What [`install_update`] did with the verified installer.
 pub enum Delivery {
-    /// macOS only: the fresh bundle was copied over the running one — a
-    /// relaunch ([`relaunch`]) completes the update.
+    /// The fresh bundle was copied over the running one — a relaunch
+    /// ([`relaunch`]) completes the update. Only the macOS in-place path
+    /// constructs this, so the variant (like its match arm) is compiled
+    /// out elsewhere.
+    #[cfg(target_os = "macos")]
     Replaced,
     /// The installer was handed to the OS (Finder drag window / msiexec /
     /// desktop handler) — the user finishes the install.
