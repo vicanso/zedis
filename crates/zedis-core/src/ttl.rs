@@ -127,9 +127,8 @@ pub fn ttl_chip_kind(ttl_secs: i64) -> Option<TtlChipKind> {
 }
 
 /// Compact TTL chip label used in the Key Tree. Two-digit cap on the
-/// number, then a unit letter — `12s`, `4m`, `23h`, `7d`. `∞` is used
-/// for perm keys. Anything longer than 99 days is clipped to `99d` so
-/// the chip width stays uniform.
+/// number, then a unit letter — `12s`, `4m`, `23h`, `7d`, `52w`, `3y`.
+/// `∞` is used for perm keys.
 ///
 /// Returns `None` only for `-2` (missing key — no chip rendered).
 pub fn format_ttl_chip(ttl_secs: i64) -> Option<String> {
@@ -139,15 +138,23 @@ pub fn format_ttl_chip(ttl_secs: i64) -> Option<String> {
     if ttl_secs == -1 {
         return Some("∞".into());
     }
+    // Every tier stays within three characters (two digits + unit) so the
+    // fixed-width tree chip fits — precision degrades with magnitude, but
+    // the chip never lies: ≥100 days climbs to weeks, then years, instead
+    // of the old clamp that showed a year-long TTL as "99d".
     let s = if ttl_secs < 60 {
         format!("{ttl_secs}s")
     } else if ttl_secs < 3600 {
         format!("{}m", ttl_secs / 60)
     } else if ttl_secs < 86400 {
         format!("{}h", ttl_secs / 3600)
+    } else if ttl_secs < 100 * 86400 {
+        format!("{}d", ttl_secs / 86400)
+    } else if ttl_secs < 700 * 86400 {
+        // 100–699 days: 14w–99w, still two digits.
+        format!("{}w", ttl_secs / (7 * 86400))
     } else {
-        let days = ttl_secs / 86400;
-        if days < 100 { format!("{days}d") } else { "99d".into() }
+        format!("{}y", ttl_secs / (365 * 86400))
     };
     Some(s)
 }
@@ -235,10 +242,16 @@ mod tests {
     }
 
     #[test]
-    fn chip_clipped_at_99_days() {
-        // 100 days → still shows 99d so the chip width stays 2-digit-bound.
-        assert_eq!(chip(format_ttl_chip(100 * 86400)).as_deref(), Some("99d"));
-        assert_eq!(chip(format_ttl_chip(365 * 86400)).as_deref(), Some("99d"));
+    fn chip_climbs_to_weeks_then_years_past_99_days() {
+        // Boundary: 99 days is the last day-denominated chip.
+        assert_eq!(chip(format_ttl_chip(99 * 86400)).as_deref(), Some("99d"));
+        // 100–699 days read in weeks (14w–99w) — never the old "99d" lie.
+        assert_eq!(chip(format_ttl_chip(100 * 86400)).as_deref(), Some("14w"));
+        assert_eq!(chip(format_ttl_chip(365 * 86400)).as_deref(), Some("52w"));
+        assert_eq!(chip(format_ttl_chip(699 * 86400)).as_deref(), Some("99w"));
+        // From 700 days on, years — still at most two digits + unit.
+        assert_eq!(chip(format_ttl_chip(700 * 86400)).as_deref(), Some("1y"));
+        assert_eq!(chip(format_ttl_chip(3 * 365 * 86400)).as_deref(), Some("3y"));
     }
 
     #[test]
