@@ -20,7 +20,7 @@ use crate::states::{
     DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
 };
 use bytes::Bytes;
-use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px};
+use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px, relative};
 use gpui::{div, hsla, prelude::*};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::highlighter::Language;
@@ -381,6 +381,11 @@ impl ZedisBytesEditor {
                 .placeholder(i18n_editor(cx, "jsonpath_placeholder"))
                 .line_number(false)
                 .indent_guides(false)
+                // `folding` defaults to true and reserves the fold-icon
+                // hitbox on the left even with line numbers off — the
+                // cursor and placeholder floated ~a gutter's width from
+                // the field's edge until this was switched off.
+                .folding(false)
                 .searchable(false)
                 .soft_wrap(false)
                 .submit_on_enter(true)
@@ -724,10 +729,23 @@ impl ZedisBytesEditor {
             .child(
                 // `Editor` isn't `Sizable`; the height and type scale that
                 // `small()` used to set are spelled out instead.
+                //
+                // The geometry fits the code-editor engine instead of
+                // fighting it: the engine pins Medium editor paddings
+                // (8px top/bottom) every render and top-anchors the line,
+                // so a 1.5-leading line (21px) can never center in a
+                // short bar. Overriding the leading to 1.0 makes the
+                // content exactly 8 + 14 + 8 = 30px, and 32px outer
+                // (+2px border) centers it by the engine's own math.
+                // The ~10px extra *left* inset (LINE_NUMBER_RIGHT_MARGIN
+                // is reserved whenever `is_code_editor`, a compile-time
+                // constant) has no public knob — an upstream fix is the
+                // only way to remove it.
                 Editor::new(&self.jsonpath_input)
-                    .h(px(28.))
+                    .h(px(32.))
                     .flex_1()
                     .text_sm()
+                    .line_height(relative(1.))
                     .font_family(get_mono_font_family()),
             )
             .child(
