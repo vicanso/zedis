@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
-use reqwest::blocking::get;
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,11 +19,40 @@ pub struct RedisCommand {
 }
 pub type RedisCommands = BTreeMap<String, RedisCommand>;
 
-fn main() -> Result<()> {
-    println!("🚀 get redis source code from GitHub...");
+/// The tag of the latest redis/redis release (e.g. `8.6.1`). GitHub's API
+/// rejects requests without a User-Agent, hence the shared client.
+fn latest_release_tag(client: &Client) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+    }
+    let body = client
+        .get("https://api.github.com/repos/redis/redis/releases/latest")
+        .send()
+        .context("查询最新 release 失败，请检查网络连接")?
+        .error_for_status()
+        .context("GitHub API 返回错误")?
+        .text()
+        .context("读取 release 响应失败")?;
+    let release: Release = serde_json::from_str(&body).context("解析 release 信息失败")?;
+    Ok(release.tag_name)
+}
 
-    let url = "https://github.com/redis/redis/archive/refs/tags/8.6.1.tar.gz";
-    let response = get(url).context("网络请求失败，请检查网络连接")?;
+fn main() -> Result<()> {
+    let client = Client::builder()
+        .user_agent(concat!("zedis-cmd-builder/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    // Default: the latest release. An explicit tag as the first argument
+    // (`cargo run -p zedis-cmd-builder -- 8.6.1`) pins a reproducible build.
+    let tag = match std::env::args().nth(1) {
+        Some(tag) => tag,
+        None => latest_release_tag(&client)?,
+    };
+    println!("🚀 get redis source code from GitHub (tag {tag})...");
+
+    let url = format!("https://github.com/redis/redis/archive/refs/tags/{tag}.tar.gz");
+    let response = client.get(&url).send().context("网络请求失败，请检查网络连接")?;
 
     if !response.status().is_success() {
         anyhow::bail!("下载失败，HTTP 状态码: {}", response.status());

@@ -437,7 +437,6 @@ toggle_keyspace_notifications_tooltip = "Keyspace-Benachrichtigungen (Live-Schl�
 tools_tooltip = "Server-Tools"
 import_keys_menu = "Keys importieren…"
 export_keys_menu = "Geladene Keys exportieren…"
-redis_version = "Redis-Version"
 metric_latency_hint = "Round-Trip-Latenz"
 metric_memory_hint = "Belegter Speicher"
 clients_stat_tooltip = "Blockierte / verbundene Clients"

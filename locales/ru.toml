@@ -437,7 +437,6 @@ toggle_keyspace_notifications_tooltip = "Уведомления Keyspace (жив
 tools_tooltip = "Инструменты сервера"
 import_keys_menu = "Импорт ключей…"
 export_keys_menu = "Экспорт загруженных ключей…"
-redis_version = "Версия Redis"
 metric_latency_hint = "Задержка round-trip"
 metric_memory_hint = "Используемая память"
 clients_stat_tooltip = "Заблокированные / подключённые клиенты"

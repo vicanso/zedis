@@ -130,14 +130,18 @@ fn format_nodes_description(
     let slave_nodes = i18n_sidebar(cx, "slave_nodes");
     let modules_label = i18n_sidebar(cx, "modules");
     let topology_label = i18n_sidebar(cx, "topology");
-    let version_label = i18n_status_bar(cx, "redis_version");
     let mut messages = Vec::with_capacity(6);
 
-    if description.is_valkey {
-        messages.push(format!("Valkey: {}", i18n_sidebar(cx, "yes")));
-    }
+    // One product line: `Valkey 9.0.3` / `Redis 8.6.1`. The version was
+    // read from `valkey_version` when the server is Valkey, so the old
+    // "Valkey: Yes" + "Redis version: 9.0.3" pair labeled a Valkey version
+    // as Redis; the product name needs no translation and says both facts
+    // at once.
     if !version.is_empty() {
-        messages.push(format!("{version_label}: {version}"));
+        let flavor = if description.is_valkey { "Valkey" } else { "Redis" };
+        messages.push(format!("{flavor} {version}"));
+    } else if description.is_valkey {
+        messages.push("Valkey".to_string());
     }
     messages.push(format!("{t}: {}", description.server_type.as_str()));
     if description.topology.is_empty() {

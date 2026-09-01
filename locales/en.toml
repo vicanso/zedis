@@ -439,7 +439,6 @@ toggle_keyspace_notifications_tooltip = "Keyspace Notifications (live key-event 
 tools_tooltip = "Server tools"
 import_keys_menu = "Import Keys…"
 export_keys_menu = "Export Loaded Keys…"
-redis_version = "Redis version"
 metric_latency_hint = "Round-trip latency"
 metric_memory_hint = "Used memory"
 clients_stat_tooltip = "Blocked / connected clients"

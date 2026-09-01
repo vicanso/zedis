@@ -437,7 +437,6 @@ toggle_keyspace_notifications_tooltip = "キースペース通知 (リアルタ�
 tools_tooltip = "サーバーツール"
 import_keys_menu = "キーをインポート…"
 export_keys_menu = "読み込み済みキーをエクスポート…"
-redis_version = "Redis バージョン"
 metric_latency_hint = "往復レイテンシ"
 metric_memory_hint = "使用メモリ"
 clients_stat_tooltip = "ブロック中 / 接続中のクライアント"
