@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ServerEvent, ServerTask, ZedisServerState};
+use super::{Result, ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::get_connection_manager;
 use bytes::Bytes;
 use chrono::Local;
@@ -787,12 +787,27 @@ pub(crate) fn json_merge_diff(old: &JsonValue, new: &JsonValue) -> Option<JsonVa
     }
 }
 
+/// Background result of a string save: written (with the fresh
+/// `MEMORY USAGE` when available), or refused by the CAS guard.
+enum StringSaveOutcome {
+    Saved(Option<u64>),
+    /// `SET … IFEQ` answered nil — the server-side value no longer matches
+    /// the bytes this client loaded, so nothing was written.
+    Conflict,
+}
+
 impl ZedisServerState {
     /// Updates a new value for a Redis string key
     ///
     /// This method updates the UI immediately with the new value and then
     /// asynchronously persists it to Redis. If the save fails, the original
     /// value is restored.
+    ///
+    /// On servers with `SET … IFEQ` (Redis 8.4+ / Valkey 8.1+) the write is
+    /// a compare-and-set against the bytes that were loaded: a concurrent
+    /// writer's change is never silently clobbered. A refused save reloads
+    /// the winner's value and emits [`ServerEvent::ValueSaveConflict`] so
+    /// the editor can offer an explicit overwrite.
     pub fn update_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -840,6 +855,9 @@ impl ZedisServerState {
         })));
 
         cx.notify();
+        let cas_baseline = original_bytes_value.bytes.clone();
+        let draft = Bytes::from(new_value.to_string().into_bytes());
+        let key_done = key.clone();
         self.spawn_with_arg(
             ServerTask::SaveValue,
             key.clone(),
@@ -881,7 +899,17 @@ impl ZedisServerState {
                     } else {
                         new_cmd
                     };
-                    let _: () = new_cmd.query_async(&mut conn).await?;
+                    // Compare-and-set against the loaded bytes where the
+                    // server offers it, so a concurrent writer's change is
+                    // refused (nil) instead of silently clobbered.
+                    let cas = client.supports_set_ifeq();
+                    if cas {
+                        new_cmd = new_cmd.arg("IFEQ").arg(cas_baseline.as_ref());
+                    }
+                    let reply: redis::Value = new_cmd.query_async(&mut conn).await?;
+                    if cas && matches!(reply, redis::Value::Nil) {
+                        return Ok(StringSaveOutcome::Conflict);
+                    }
                 }
 
                 let mut size = None;
@@ -894,33 +922,63 @@ impl ZedisServerState {
                     size = Some(memory_usage);
                 }
 
-                Ok(size)
+                Ok(StringSaveOutcome::Saved(size))
             },
             move |this, result, cx| {
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                    if let Ok(result_size) = result {
-                        if let Some(size) = result_size {
-                            value.size = size;
-                        }
-                    } else {
-                        // Recover original value if save failed
-                        value.size = original_size;
-                        value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
-                    }
-                    cx.emit(ServerEvent::ValueUpdated);
-                }
-                cx.notify();
+                this.finish_string_save(result, key_done, draft, original_size, original_bytes_value, cx);
             },
             cx,
         );
+    }
+
+    /// Shared save epilogue for [`Self::update_value`] /
+    /// [`Self::update_value_bytes`]: apply the fresh size, roll the display
+    /// back on failure, and turn a CAS refusal into a reload plus
+    /// [`ServerEvent::ValueSaveConflict`].
+    fn finish_string_save(
+        &mut self,
+        result: Result<StringSaveOutcome>,
+        key: SharedString,
+        draft: Bytes,
+        original_size: u64,
+        original_bytes_value: Arc<RedisBytesValue>,
+        cx: &mut Context<Self>,
+    ) {
+        let conflict = matches!(result, Ok(StringSaveOutcome::Conflict));
+        if let Some(value) = self.value.as_mut() {
+            value.status = RedisValueStatus::Idle;
+            match result {
+                Ok(StringSaveOutcome::Saved(result_size)) => {
+                    if let Some(size) = result_size {
+                        value.size = size;
+                    }
+                }
+                // Refused or failed: the optimistic display is wrong either
+                // way — recover what was loaded.
+                Ok(StringSaveOutcome::Conflict) | Err(_) => {
+                    value.size = original_size;
+                    value.data = Some(RedisValueData::Bytes(original_bytes_value));
+                }
+            }
+            cx.emit(ServerEvent::ValueUpdated);
+        }
+        if conflict {
+            // Truth first: pull the winner's value onto the screen, then
+            // let the editor offer an explicit overwrite with the draft.
+            self.reload_value(key.clone(), cx);
+            cx.emit(ServerEvent::ValueSaveConflict { key, draft });
+        }
+        cx.notify();
     }
 
     /// Save arbitrary bytes back to a string key. Unlike `update_value`, this
     /// path doesn't try the JSON merge-patch optimization — it always
     /// performs a full `SET` with the raw byte payload. Used by the bytes
     /// editor's hex write mode where the value isn't guaranteed UTF-8.
-    pub fn update_value_bytes(&mut self, key: SharedString, new_bytes: Vec<u8>, cx: &mut Context<Self>) {
+    ///
+    /// `force` skips the `SET … IFEQ` compare-and-set guard — the
+    /// save-conflict dialog's explicit "overwrite anyway" re-dispatch.
+    pub fn update_value_bytes(&mut self, key: SharedString, new_bytes: Vec<u8>, force: bool, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
 
@@ -950,6 +1008,9 @@ impl ZedisServerState {
         })));
 
         cx.notify();
+        let cas_baseline = original_bytes_value.bytes.clone();
+        let draft = new_bytes_arc.clone();
+        let key_done = key.clone();
         self.spawn_with_arg(
             ServerTask::SaveValue,
             key.clone(),
@@ -965,7 +1026,15 @@ impl ZedisServerState {
                 } else {
                     new_cmd
                 };
-                let _: () = new_cmd.query_async(&mut conn).await?;
+                // See update_value: refuse-instead-of-clobber where offered.
+                let cas = !force && client.supports_set_ifeq();
+                if cas {
+                    new_cmd = new_cmd.arg("IFEQ").arg(cas_baseline.as_ref());
+                }
+                let reply: redis::Value = new_cmd.query_async(&mut conn).await?;
+                if cas && matches!(reply, redis::Value::Nil) {
+                    return Ok(StringSaveOutcome::Conflict);
+                }
 
                 let mut size = None;
                 if let Ok(memory_usage) = cmd("MEMORY")
@@ -976,22 +1045,10 @@ impl ZedisServerState {
                 {
                     size = Some(memory_usage);
                 }
-                Ok(size)
+                Ok(StringSaveOutcome::Saved(size))
             },
             move |this, result, cx| {
-                if let Some(value) = this.value.as_mut() {
-                    value.status = RedisValueStatus::Idle;
-                    if let Ok(result_size) = result {
-                        if let Some(size) = result_size {
-                            value.size = size;
-                        }
-                    } else {
-                        value.size = original_size;
-                        value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
-                    }
-                    cx.emit(ServerEvent::ValueUpdated);
-                }
-                cx.notify();
+                this.finish_string_save(result, key_done, draft, original_size, original_bytes_value, cx);
             },
             cx,
         );

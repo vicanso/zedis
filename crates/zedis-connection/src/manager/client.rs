@@ -327,6 +327,15 @@ impl RedisClient {
     pub fn is_at_least_version(&self, version: &str) -> bool {
         self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
     }
+    /// `SET … IFEQ` (compare-and-set): Redis 8.4.0; Valkey adopted the
+    /// same option earlier, in 8.1.0 (valkey-io/valkey#1324).
+    pub fn supports_set_ifeq(&self) -> bool {
+        if self.is_valkey {
+            self.is_at_least_version("8.1.0")
+        } else {
+            self.is_at_least_version("8.4.0")
+        }
+    }
     pub fn supports_rejson(&self) -> bool {
         self.modules.iter().any(|(name, _)| name == "ReJSON")
     }

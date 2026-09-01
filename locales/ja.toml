@@ -313,6 +313,9 @@ diff_current_label = "現在(エディタのスナップショット)"
 diff_identical = "両方のバージョンは同一です。"
 diff_patch_label = "RFC 7396 マージパッチ(JSON.MERGE と同等のペイロード)"
 diff_patch_empty = "{}  // 変更なし"
+save_conflict_title = "サーバー上の値が変更されました"
+save_conflict_body = "%{key} は読み込み後に別のクライアントによって変更されたため、保存は拒否され、最新の値を再読み込みしました。それでも編集内容で上書きしますか？"
+save_conflict_overwrite = "上書き"
 
 [key_tree]
 copy_key_tooltip = "キー名をコピー"

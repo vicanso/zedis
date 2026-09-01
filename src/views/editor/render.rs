@@ -587,6 +587,9 @@ impl Render for ZedisEditor {
         if let Some((old, new)) = self.pending_overwrite_confirm.take() {
             self.open_overwrite_confirm(old, new, window, cx);
         }
+        if let Some((key, draft)) = self.pending_save_conflict.take() {
+            self.open_save_conflict_dialog(key, draft, window, cx);
+        }
 
         v_flex()
             .w_full()

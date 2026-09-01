@@ -87,6 +87,38 @@ impl ZedisEditor {
             .open(window, cx);
     }
 
+    /// Confirm dialog for a refused compare-and-set save (`SET … IFEQ`
+    /// answered nil): another writer changed the value after it was loaded,
+    /// and the reload has already put the winner's value on screen.
+    /// Proceeding force-writes the carried draft — the exact bytes the
+    /// refused save tried — via the non-CAS path.
+    pub(super) fn open_save_conflict_dialog(
+        &mut self,
+        key: SharedString,
+        draft: Bytes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server_state = self.server_state.clone();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message = t!("editor.save_conflict_body", key = key.as_ref(), locale = locale).to_string();
+        ZedisDialog::new_alert(i18n_editor(cx, "save_conflict_title"), message)
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_editor(cx, "save_conflict_overwrite"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .on_ok(move |_, window, cx| {
+                let (key, draft) = (key.clone(), draft.clone());
+                server_state.update(cx, move |state, cx| {
+                    state.update_value_bytes(key, draft.to_vec(), true, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
     /// Open the cross-server "copy to…" dialog for the selected key. On OK
     /// the chosen target server / db (and overwrite flag) drive `run_copy`.
     pub(super) fn open_copy_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -313,6 +313,9 @@ diff_current_label = "Atual (instantâneo do editor)"
 diff_identical = "Ambas as versões são idênticas."
 diff_patch_label = "Patch RFC 7396 (carga equivalente de JSON.MERGE)"
 diff_patch_empty = "{}  // sem alteração"
+save_conflict_title = "O valor mudou no servidor"
+save_conflict_body = "%{key} foi modificado por outro cliente depois de carregado; o salvamento foi recusado e o valor mais recente foi recarregado. Sobrescrever com sua edição mesmo assim?"
+save_conflict_overwrite = "Sobrescrever"
 
 [key_tree]
 copy_key_tooltip = "Copiar nome da chave"

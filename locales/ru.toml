@@ -313,6 +313,9 @@ diff_current_label = "Текущая (снимок редактора)"
 diff_identical = "Обе версии идентичны."
 diff_patch_label = "RFC 7396 merge patch (эквивалент JSON.MERGE payload)"
 diff_patch_empty = "{}  // без изменений"
+save_conflict_title = "Значение изменилось на сервере"
+save_conflict_body = "%{key} был изменён другим клиентом после загрузки; сохранение отклонено, актуальное значение перезагружено. Всё равно перезаписать вашей правкой?"
+save_conflict_overwrite = "Перезаписать"
 
 [key_tree]
 copy_key_tooltip = "Скопировать имя ключа"

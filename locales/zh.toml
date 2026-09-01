@@ -313,6 +313,9 @@ diff_current_label = "当前(编辑器快照)"
 diff_identical = "两个版本完全相同。"
 diff_patch_label = "RFC 7396 merge patch(等价的 JSON.MERGE 内容)"
 diff_patch_empty = "{}  // 无变化"
+save_conflict_title = "服务器上的值已变化"
+save_conflict_body = "%{key} 在你加载后被其他客户端修改，保存已被拒绝，最新值已重新加载。仍要用你的编辑覆盖吗？"
+save_conflict_overwrite = "覆盖"
 
 [key_tree]
 copy_key_tooltip = "复制 key 名称"

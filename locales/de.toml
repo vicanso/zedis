@@ -313,6 +313,9 @@ diff_current_label = "Aktuell (Editor-Schnappschuss)"
 diff_identical = "Beide Versionen sind identisch."
 diff_patch_label = "RFC 7396 Merge-Patch (äquivalente JSON.MERGE-Payload)"
 diff_patch_empty = "{}  // keine Änderung"
+save_conflict_title = "Wert auf dem Server geändert"
+save_conflict_body = "%{key} wurde nach dem Laden von einem anderen Client geändert; das Speichern wurde abgelehnt und der neueste Wert neu geladen. Trotzdem mit deiner Änderung überschreiben?"
+save_conflict_overwrite = "Überschreiben"
 
 [key_tree]
 copy_key_tooltip = "Key-Namen kopieren"

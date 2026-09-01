@@ -34,6 +34,7 @@ use crate::{
         ZedisZsetEditor, bitmap_eligible, export_to_file, looks_like_bitmap, looks_like_hll, zset_looks_geo,
     },
 };
+use bytes::Bytes;
 use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -144,6 +145,10 @@ pub struct ZedisEditor {
     /// found the destination occupied. Consumed on the next render (which
     /// has a `Window`) to open the confirm dialog.
     pending_overwrite_confirm: Option<(SharedString, SharedString)>,
+    /// Pending CAS save conflict: `Some((key, draft))` after a `SET … IFEQ`
+    /// was refused. Consumed on the next render to open the overwrite
+    /// dialog; `draft` is the exact byte payload the refused save carried.
+    pending_save_conflict: Option<(SharedString, Bytes)>,
     /// Set by the key tree's right-click "Rename" (the event subscription has
     /// no `Window`); the next render opens the rename dialog and clears it.
     pending_rename_dialog: bool,
@@ -326,6 +331,13 @@ impl ZedisEditor {
                     this.pending_overwrite_confirm = Some((old.clone(), new.clone()));
                     cx.notify();
                 }
+                ServerEvent::ValueSaveConflict { key, draft } => {
+                    // The CAS save was refused — same stash-then-render
+                    // dance as the rename overwrite; the dialog re-sends
+                    // the carried draft, not the (reloaded) editor text.
+                    this.pending_save_conflict = Some((key.clone(), draft.clone()));
+                    cx.notify();
+                }
                 ServerEvent::ServerInfoUpdated => {
                     // Read-only toggled — refresh the flag and re-render so the
                     // toolbar (Save / TTL disabled state, the size lock glyph)
@@ -399,6 +411,7 @@ impl ZedisEditor {
             probabilistic_editor: None,
             vector_set_editor: None,
             readonly,
+            pending_save_conflict: None,
             ttl_edit_mode: false,
             ttl_input_state,
             rename_input_state,
@@ -624,7 +637,7 @@ impl ZedisEditor {
             match state.value_bytes_for_save(cx) {
                 Some(Ok(bytes)) => {
                     self.server_state.update(cx, move |state, cx| {
-                        state.update_value_bytes(key, bytes, cx);
+                        state.update_value_bytes(key, bytes, false, cx);
                     });
                 }
                 Some(Err(msg)) => {
@@ -714,8 +727,10 @@ impl ZedisEditor {
                     let Some(key) = this.server_state.read(cx).key() else {
                         return;
                     };
+                    // Import-from-file is still a save of this loaded value —
+                    // the CAS guard applies the same way as a typed edit.
                     this.server_state
-                        .update(cx, |state, cx| state.update_value_bytes(key, bytes, cx));
+                        .update(cx, |state, cx| state.update_value_bytes(key, bytes, false, cx));
                 }
                 Err(e) => {
                     this.server_state.update(cx, |state, cx| {

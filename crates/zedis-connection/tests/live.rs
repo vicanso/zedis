@@ -1153,6 +1153,49 @@ fn standalone_hotkeys_collects_a_report() {
     });
 }
 
+/// `SET … IFEQ` (Redis 8.4+ / Valkey 8.1+): the version gate reports
+/// support, and the guard's wire semantics hold — a matching baseline
+/// writes, a stale one answers nil and leaves the value alone. This is
+/// what makes the string editor's save a compare-and-set.
+#[test]
+#[ignore]
+fn standalone_set_ifeq_guards_concurrent_writes() {
+    smol::block_on(async {
+        let id = register(server("it-cas", standalone())).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        if !client.supports_set_ifeq() {
+            eprintln!("skipped: server predates SET IFEQ");
+            return;
+        }
+        let key = unique("cas");
+        let mut c = conn(&id, 0).await;
+        cmd("SET").arg(&key).arg("v1").exec_async(&mut c).await.expect("seed");
+        let hit: redis::Value = cmd("SET")
+            .arg(&key)
+            .arg("v2")
+            .arg("KEEPTTL")
+            .arg("IFEQ")
+            .arg("v1")
+            .query_async(&mut c)
+            .await
+            .expect("cas hit");
+        assert!(!matches!(hit, redis::Value::Nil), "matching baseline writes");
+        let refused: redis::Value = cmd("SET")
+            .arg(&key)
+            .arg("v3")
+            .arg("KEEPTTL")
+            .arg("IFEQ")
+            .arg("v1")
+            .query_async(&mut c)
+            .await
+            .expect("cas miss");
+        assert!(matches!(refused, redis::Value::Nil), "stale baseline must be refused");
+        let now: String = cmd("GET").arg(&key).query_async(&mut c).await.expect("get");
+        assert_eq!(now, "v2", "the refused write left the value alone");
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
 /// `INFO keysizes` (8+): written keys land in per-type bucket histograms —
 /// strings bucketed by value bytes, containers by element count.
 #[test]

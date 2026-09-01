@@ -14,6 +14,7 @@
 
 use crate::helpers::EditorAction;
 use crate::states::{ErrorMessage, GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
+use bytes::Bytes;
 use gpui::prelude::*;
 use gpui::{EventEmitter, SharedString};
 
@@ -253,6 +254,13 @@ pub enum ServerEvent {
     ValueLoaded,
     /// A key's value has been updated
     ValueUpdated,
+    /// A string save was refused by the `SET … IFEQ` guard: the value on
+    /// the server no longer matches what this client loaded (another
+    /// writer got there first). The latest value is being reloaded; the
+    /// editor offers an explicit overwrite with the carried draft — the
+    /// exact bytes the refused save tried to write, so the retry doesn't
+    /// depend on an input field that the reload may have re-synced.
+    ValueSaveConflict { key: SharedString, draft: Bytes },
     /// A key's value view mode has been updated
     ValueModeViewUpdated,
     /// Load more value

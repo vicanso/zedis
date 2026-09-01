@@ -313,6 +313,9 @@ diff_current_label = "Current (editor snapshot)"
 diff_identical = "Both versions are identical."
 diff_patch_label = "RFC 7396 merge patch (equivalent JSON.MERGE payload)"
 diff_patch_empty = "{}  // no change"
+save_conflict_title = "Value changed on the server"
+save_conflict_body = "%{key} was modified by another client after you loaded it, so your save was refused and the latest value has been reloaded. Overwrite it with your edit anyway?"
+save_conflict_overwrite = "Overwrite"
 
 [key_tree]
 copy_key_tooltip = "Copy key name"
