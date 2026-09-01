@@ -993,6 +993,18 @@ impl ZedisServerState {
             .unwrap_or(false)
     }
 
+    /// `XACKDEL` / `XDELEX` and the `XTRIM`/`XADD` reference-policy words
+    /// (KEEPREF / DELREF / ACKED) — Redis 8.2+. Valkey doesn't ship them,
+    /// and its own version number (9.x) would sail past a bare floor
+    /// check, so the flavor matters as much as the version.
+    pub fn supports_stream_ref_policies(&self) -> bool {
+        use semver::Version;
+        !self.nodes_description().is_valkey
+            && Version::parse(self.version.as_ref())
+                .map(|v| v >= Version::new(8, 2, 0))
+                .unwrap_or(false)
+    }
+
     /// Returns true when the server is at least Redis 6.0, where ACL
     /// (the `ACL USERS / GETUSER / SETUSER / WHOAMI` family) was
     /// introduced. Drives Tools-menu visibility so users on older

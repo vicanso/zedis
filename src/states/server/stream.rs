@@ -16,7 +16,7 @@ use super::{
     KeyType, RedisValueData, ServerEvent, ServerTask, ZedisServerState,
     value::{
         RedisStreamEntry, RedisStreamValue, RedisValue, RedisValueStatus, StreamConsumerDetail, StreamGroupDetail,
-        StreamInfoData, StreamPendingEntry, StreamSummary, StreamTrim,
+        StreamIdmpInfo, StreamInfoData, StreamPendingEntry, StreamRefPolicy, StreamSummary, StreamTrim,
     },
 };
 use crate::states::ZedisGlobalStore;
@@ -115,12 +115,21 @@ async fn load_stream_info_data(conn: &mut RedisAsyncConn, key: &str) -> Result<S
 
     let summary = if let redis::Value::Array(arr) = stream_raw {
         let map = xinfo_flat_to_map(&arr);
+        // Idempotent-producer counters (8.6+) — presence-gated, so no
+        // version check: older servers simply don't report the fields.
+        let idmp = map.contains_key("pids-tracked").then(|| StreamIdmpInfo {
+            pids_tracked: map_get_usize(&map, "pids-tracked"),
+            iids_tracked: map_get_usize(&map, "iids-tracked"),
+            iids_added: map_get_usize(&map, "iids-added"),
+            iids_duplicates: map_get_usize(&map, "iids-duplicates"),
+        });
         Some(StreamSummary {
             groups_count: map_get_usize(&map, "groups"),
             first_entry_id: map.get("first-entry").map(|v| extract_entry_id(v)).unwrap_or_default(),
             last_entry_id: map.get("last-entry").map(|v| extract_entry_id(v)).unwrap_or_default(),
             radix_tree_keys: map_get_usize(&map, "radix-tree-keys"),
             radix_tree_nodes: map_get_usize(&map, "radix-tree-nodes"),
+            idmp,
         })
     } else {
         None
@@ -776,6 +785,43 @@ impl ZedisServerState {
         );
     }
 
+    /// XACKDEL key group KEEPREF IDS 1 id — acknowledge one pending entry
+    /// *and* delete it from the stream in one atomic step (Redis 8.2+).
+    /// KEEPREF matches classic XDEL semantics: other groups' PEL
+    /// references stay. Entries are gone from the value view too, so the
+    /// success path reloads it alongside the info refresh.
+    pub fn ackdel_stream_entry(&mut self, group: SharedString, entry_id: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::AckDelStreamEntry,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                // Per-id status codes: 1 deleted, -1 not found, 2 refused
+                // (dangling references under ACKED) — KEEPREF never yields 2.
+                let _: redis::Value = cmd("XACKDEL")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg("KEEPREF")
+                    .arg("IDS")
+                    .arg(1)
+                    .arg(entry_id.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| {
+                let reverse = this
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.stream_value())
+                    .map(|s| s.reverse)
+                    .unwrap_or_default();
+                this.reload_stream_value(reverse, cx);
+                this.fetch_stream_info(cx);
+            },
+        );
+    }
+
     /// XCLAIM key group consumer 0 id JUSTID — force-reassign one
     /// pending entry (min-idle-time 0, so it always claims; JUSTID keeps
     /// the delivery counter untouched).
@@ -859,7 +905,11 @@ impl ZedisServerState {
     /// XTRIM key MAXLEN n / MINID id — cut the stream. Destructive; the
     /// caller confirms first. Reloads entries + info on success (loaded
     /// rows may have been trimmed away).
-    pub fn trim_stream(&mut self, trim: StreamTrim, cx: &mut Context<Self>) {
+    ///
+    /// `policy` (Redis 8.2+) controls what happens to consumer-group PEL
+    /// references of trimmed entries; the caller passes `None` on servers
+    /// without the option words.
+    pub fn trim_stream(&mut self, trim: StreamTrim, policy: Option<StreamRefPolicy>, cx: &mut Context<Self>) {
         self.exec_stream_op(
             ServerTask::TrimStream,
             cx,
@@ -871,6 +921,9 @@ impl ZedisServerState {
                     StreamTrim::MaxLen(n) => command.arg("MAXLEN").arg(*n),
                     StreamTrim::MinId(id) => command.arg("MINID").arg(id.as_str()),
                 };
+                if let Some(policy) = policy {
+                    command.arg(policy.word());
+                }
                 let removed: i64 = command.query_async(&mut conn).await?;
                 Ok(removed)
             },

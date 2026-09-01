@@ -109,6 +109,8 @@ pub enum ServerTask {
     DestroyStreamGroup,
     /// XACK — acknowledge one pending entry
     AckStreamEntry,
+    /// XACKDEL — acknowledge one pending entry and delete it (Redis 8.2+)
+    AckDelStreamEntry,
     /// XCLAIM — reassign one pending entry to a consumer
     ClaimStreamEntry,
     /// XAUTOCLAIM — batch-claim idle pending entries to a consumer
@@ -203,6 +205,7 @@ impl ServerTask {
             ServerTask::SetStreamGroupId => "set_stream_group_id",
             ServerTask::DestroyStreamGroup => "destroy_stream_group",
             ServerTask::AckStreamEntry => "ack_stream_entry",
+            ServerTask::AckDelStreamEntry => "ackdel_stream_entry",
             ServerTask::ClaimStreamEntry => "claim_stream_entry",
             ServerTask::AutoclaimStreamEntries => "autoclaim_stream_entries",
             ServerTask::TrimStream => "trim_stream",

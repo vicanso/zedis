@@ -72,7 +72,7 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### Redis Streams
 **浏览、实时跟踪、管理消费者组，全程不离开 GUI。**
 
-浏览流条目、**实时跟踪**新消息（`XREAD BLOCK`，环形缓冲）、经 `XINFO` 查看消费者组与待处理消息，并管理消费者组（`XGROUP CREATE` / `SETID` / `DESTROY`，销毁带确认）。
+浏览流条目、**实时跟踪**新消息（`XREAD BLOCK`，环形缓冲）、经 `XINFO` 查看消费者组与待处理消息，并管理消费者组（`XGROUP CREATE` / `SETID` / `DESTROY`，销毁带确认）。Redis 8.2+ 上，pending 行还提供一步到位的**确认并删除**（原子 `XACKDEL`），裁剪对话框新增**引用策略**（KEEPREF / DELREF / ACKED——被裁剪条目在各消费组 pending 列表中的引用如何处置）；8.6+ 的信息视图展示**幂等生产者（IDMP）**计数——跟踪的生产者数、写入数、被抑制的重复数。
 
 ### Pub/Sub
 **订阅频道、发布消息，带实时消息日志。**

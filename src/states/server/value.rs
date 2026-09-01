@@ -295,6 +295,46 @@ pub enum StreamTrim {
     MinId(SharedString),
 }
 
+/// Reference policy for stream removals (`XTRIM` / `XDELEX` / `XACKDEL`,
+/// Redis 8.2+): what happens to consumer groups' PEL references of the
+/// removed entries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StreamRefPolicy {
+    /// Server default — references stay behind (classic XDEL/XTRIM).
+    #[default]
+    KeepRef,
+    /// Also remove the references from every group's PEL.
+    DelRef,
+    /// Only remove entries every group has acknowledged.
+    Acked,
+}
+
+impl StreamRefPolicy {
+    /// The option word as sent on the wire.
+    pub fn word(self) -> &'static str {
+        match self {
+            StreamRefPolicy::KeepRef => "KEEPREF",
+            StreamRefPolicy::DelRef => "DELREF",
+            StreamRefPolicy::Acked => "ACKED",
+        }
+    }
+}
+
+/// Idempotent-producer counters (`XINFO STREAM`, Redis 8.6+ with IDMP in
+/// use or configured). Absent from older servers' replies.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamIdmpInfo {
+    /// Producers currently tracked (`pids-tracked`).
+    pub pids_tracked: usize,
+    /// Idempotency ids currently tracked (`iids-tracked`).
+    pub iids_tracked: usize,
+    /// Entries added through IDMP (`iids-added`).
+    pub iids_added: usize,
+    /// Duplicate publishes suppressed (`iids-duplicates`) — the number
+    /// that proves the at-most-once guarantee is doing work.
+    pub iids_duplicates: usize,
+}
+
 /// Macro-level stream metrics from XINFO STREAM.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StreamSummary {
@@ -308,6 +348,9 @@ pub struct StreamSummary {
     pub radix_tree_keys: usize,
     /// Number of radix-tree nodes — proxy for memory footprint.
     pub radix_tree_nodes: usize,
+    /// Idempotent-producer counters — `None` when the server's XINFO
+    /// doesn't report them (pre-8.6).
+    pub idmp: Option<StreamIdmpInfo>,
 }
 
 /// Aggregated stream statistics fetched on demand (XINFO + XPENDING).

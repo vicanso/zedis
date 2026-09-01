@@ -20,8 +20,8 @@ use crate::{
     helpers::{fast_contains_ignore_case, format_duration},
     states::{
         ConnectionErrorKind, GlobalEvent, KeyType, NotificationAction, RedisStreamEntry, RedisValue, ServerEvent,
-        StreamInfoData, StreamTrim, ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body,
-        i18n_common, i18n_kv_table, i18n_status_bar, i18n_stream_editor, tail_read,
+        StreamInfoData, StreamRefPolicy, StreamTrim, ZedisGlobalStore, ZedisServerState, dialog_button_props,
+        escalate_dangerous_body, i18n_common, i18n_kv_table, i18n_status_bar, i18n_stream_editor, tail_read,
     },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
@@ -894,15 +894,14 @@ impl ZedisStreamEditor {
     }
 
     /// XTRIM dialog: one input — a plain number trims by MAXLEN (keep
-    /// the newest n), an `ms-seq` id trims by MINID (drop older) — then
-    /// the standard destructive confirm with the exact command spelled
-    /// out (PROD-escalated).
+    /// the newest n), an `ms-seq` id trims by MINID (drop older) — plus,
+    /// on Redis 8.2+, the reference-policy toggle (KEEPREF / DELREF /
+    /// ACKED) — then the standard destructive confirm with the exact
+    /// command spelled out (PROD-escalated).
     fn trim_stream_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let threshold_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "trim_placeholder")));
-        let hint = i18n_stream_editor(cx, "trim_hint");
-        let body_threshold = threshold_state.clone();
-        let submit_threshold = threshold_state.clone();
+        let show_policy = self.server_state.read(cx).supports_stream_ref_policies();
+        let form = cx.new(|cx| StreamTrimForm::new(show_policy, window, cx));
+        let body = form.clone();
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
 
@@ -915,17 +914,17 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Input::new(&body_threshold))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, window, cx| {
-                let raw = submit_threshold.read(cx).value().trim().to_string();
+                let (raw, policy) = {
+                    let form = form.read(cx);
+                    (
+                        form.threshold.read(cx).value().trim().to_string(),
+                        form.policy_to_send(),
+                    )
+                };
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-                let (trim, message) = if raw.contains('-') {
+                let (trim, mut message) = if raw.contains('-') {
                     let message = t!("stream_editor.trim_confirm_minid", id = raw.as_str(), locale = locale);
                     (StreamTrim::MinId(raw.clone().into()), message.to_string())
                 } else if let Ok(n) = raw.parse::<u64>() {
@@ -935,6 +934,12 @@ impl ZedisStreamEditor {
                     // Neither a count nor an id — keep the dialog open.
                     return false;
                 };
+                // A non-default reference policy changes what the trim does
+                // to consumer groups — spell it in the confirm (the option
+                // word is the command syntax, deliberately untranslated).
+                if let Some(policy) = policy.filter(|p| *p != StreamRefPolicy::KeepRef) {
+                    message = format!("{message} · {}", policy.word());
+                }
                 // Close the form ourselves before stacking the confirm on
                 // top — returning true would auto-close the *topmost*
                 // dialog, i.e. the alert we are about to open.
@@ -947,7 +952,7 @@ impl ZedisStreamEditor {
                 .button_props(dialog_button_props(cx))
                 .on_ok(move |_, window, cx| {
                     let trim = trim.clone();
-                    server_state.update(cx, |state, cx| state.trim_stream(trim, cx));
+                    server_state.update(cx, |state, cx| state.trim_stream(trim, policy, cx));
                     window.close_dialog(cx);
                     true
                 })
@@ -1042,6 +1047,51 @@ impl ZedisStreamEditor {
             );
 
         let mut result = base.child(summary_card);
+
+        // ── Idempotent producer (IDMP, Redis 8.6+) ───────────────────────────
+        // Presence-gated on the XINFO reply — shown only when the server
+        // reports the counters, so no version check is needed.
+        if let Some(idmp) = summary.as_ref().and_then(|s| s.idmp.clone()) {
+            result = result.child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .child(
+                        Label::new(i18n_stream_editor(cx, "idmp_title"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_6()
+                            .flex_wrap()
+                            .child(self.render_metric(
+                                i18n_stream_editor(cx, "idmp_pids"),
+                                idmp.pids_tracked.to_string().into(),
+                                muted,
+                            ))
+                            .child(self.render_metric(
+                                i18n_stream_editor(cx, "idmp_iids"),
+                                idmp.iids_tracked.to_string().into(),
+                                muted,
+                            ))
+                            .child(self.render_metric(
+                                i18n_stream_editor(cx, "idmp_added"),
+                                idmp.iids_added.to_string().into(),
+                                muted,
+                            ))
+                            .child(self.render_metric(
+                                i18n_stream_editor(cx, "idmp_duplicates"),
+                                idmp.iids_duplicates.to_string().into(),
+                                muted,
+                            )),
+                    ),
+            );
+        }
 
         // ── Manage groups: header + create, then per-group actions ───────────
         result = result.child(
@@ -1233,11 +1283,14 @@ impl ZedisStreamEditor {
                 ),
             );
         }
+        let can_ackdel = self.server_state.read(cx).supports_stream_ref_policies();
         let mut row_ix = 0usize;
         for g in info.groups.iter() {
             for p in g.pending_entries.iter() {
                 let ack_group = g.name.clone();
                 let ack_id = p.id.clone();
+                let ackdel_group = g.name.clone();
+                let ackdel_id = p.id.clone();
                 let claim_group = g.name.clone();
                 let claim_id = p.id.clone();
                 list = list.child(
@@ -1280,6 +1333,24 @@ impl ZedisStreamEditor {
                                     });
                                 })),
                         )
+                        // Ack + delete in one atomic XACKDEL (Redis 8.2+ —
+                        // hidden elsewhere, incl. Valkey).
+                        .when(can_ackdel, |this| {
+                            let ackdel_group = ackdel_group.clone();
+                            let ackdel_id = ackdel_id.clone();
+                            this.child(
+                                Button::new(("stream-ackdel", row_ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(Icon::new(CustomIconName::ListX))
+                                    .tooltip(i18n_stream_editor(cx, "ackdel_tooltip"))
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.server_state.update(cx, |state, cx| {
+                                            state.ackdel_stream_entry(ackdel_group.clone(), ackdel_id.clone(), cx);
+                                        });
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new(("stream-claim", row_ix))
                                 .xsmall()
@@ -1352,5 +1423,75 @@ impl Render for ZedisStreamEditor {
                 this.child(div().flex_1().min_h_0().child(self.table_state.clone()))
             })
             .into_any_element()
+    }
+}
+
+/// The XTRIM dialog body as a **view entity** (a dialog body holding an
+/// `InputState` must be one — see the CLAUDE.md dialog gotcha, and the
+/// policy toggle needs `cx.notify` to repaint anyway): the threshold input
+/// plus, on Redis 8.2+, the reference-policy toggle row.
+struct StreamTrimForm {
+    threshold: Entity<InputState>,
+    /// Offer the KEEPREF / DELREF / ACKED toggle (Redis 8.2+ only).
+    show_policy: bool,
+    policy: StreamRefPolicy,
+}
+
+impl StreamTrimForm {
+    fn new(show_policy: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let threshold =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "trim_placeholder")));
+        Self {
+            threshold,
+            show_policy,
+            policy: StreamRefPolicy::default(),
+        }
+    }
+
+    /// What the dialog submits: `None` when the server predates the
+    /// option words (nothing extra is sent on the wire).
+    fn policy_to_send(&self) -> Option<StreamRefPolicy> {
+        self.show_policy.then_some(self.policy)
+    }
+}
+
+impl Render for StreamTrimForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        // Option words are command syntax — shown verbatim, tooltips carry
+        // the localized meaning.
+        let policies: [(StreamRefPolicy, &'static str); 3] = [
+            (StreamRefPolicy::KeepRef, "trim_policy_keepref_tooltip"),
+            (StreamRefPolicy::DelRef, "trim_policy_delref_tooltip"),
+            (StreamRefPolicy::Acked, "trim_policy_acked_tooltip"),
+        ];
+        v_flex()
+            .gap_2()
+            .w_full()
+            .child(Input::new(&self.threshold))
+            .child(Label::new(i18n_stream_editor(cx, "trim_hint")).text_xs())
+            .when(self.show_policy, |this| {
+                let mut row = h_flex().gap_1().items_center().child(
+                    Label::new(i18n_stream_editor(cx, "trim_policy_label"))
+                        .text_xs()
+                        .text_color(muted),
+                );
+                for (policy, tooltip_key) in policies {
+                    let active = self.policy == policy;
+                    row = row.child(
+                        Button::new(SharedString::from(format!("stream-trim-{}", policy.word())))
+                            .xsmall()
+                            .when(active, |b| b.primary())
+                            .when(!active, |b| b.outline())
+                            .label(policy.word())
+                            .tooltip(i18n_stream_editor(cx, tooltip_key))
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                this.policy = policy;
+                                cx.notify();
+                            })),
+                    );
+                }
+                this.child(row)
+            })
     }
 }
