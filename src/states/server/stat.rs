@@ -634,7 +634,17 @@ impl ZedisServerState {
     /// back).
     fn on_link_restored(&mut self, cx: &mut Context<Self>) {
         info!(server_id = self.server_id.as_str(), "connection restored");
-        self.emit_success_notification(i18n_status_bar(cx, "conn_restored"), SharedString::default(), cx);
+        // Title + server name, so stacked toasts from several open connections
+        // are tellable apart. A name can be missing (server since removed) —
+        // then the label rides alone as the message, because a toast with an
+        // empty half renders a blank row where that half would be.
+        let server_name = get_server(&self.server_id).map(|s| s.name).unwrap_or_default();
+        let label = i18n_status_bar(cx, "conn_restored");
+        if server_name.is_empty() {
+            self.emit_success_notification(label, SharedString::default(), cx);
+        } else {
+            self.emit_success_notification(server_name.into(), label, cx);
+        }
         if let Some(key) = self.key.clone()
             && !key.is_empty()
         {

@@ -265,7 +265,9 @@ impl Zedis {
                             Notification::error(message)
                         }
                     };
-                    if let Some(title) = e.title.as_ref() {
+                    // An empty title must not reach the toast: it renders as a
+                    // blank title row with the message pushed below it.
+                    if let Some(title) = e.title.as_ref().filter(|title| !title.is_empty()) {
                         notification = notification.title(title);
                     }
                     this.pending_notification = Some(notification);
