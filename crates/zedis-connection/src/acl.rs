@@ -18,6 +18,35 @@ use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// One additional permission group of an ACL v2 user (Redis 7.0
+/// "selectors"): an independent (commands, keys, channels) tuple. A command
+/// runs if the root permissions *or* any selector allow it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AclSelector {
+    /// `-@all +lpush …` command spec.
+    pub commands: String,
+    pub keys: Vec<String>,
+    pub channels: Vec<String>,
+}
+
+impl AclSelector {
+    /// The selector as the `( … )` rule group `ACL SETUSER` accepts — one
+    /// single argument, spaces included.
+    pub fn to_rule_token(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if !self.commands.is_empty() {
+            parts.push(self.commands.as_str());
+        }
+        for k in &self.keys {
+            parts.push(k.as_str());
+        }
+        for c in &self.channels {
+            parts.push(c.as_str());
+        }
+        format!("({})", parts.join(" "))
+    }
+}
+
 /// One Redis ACL user as returned by `ACL GETUSER`.
 ///
 /// We project the raw map into typed fields, but keep the original `rules`
@@ -34,6 +63,9 @@ pub struct AclUser {
     /// `~prefix:* %R~foo &chan:*` patterns flattened into one line.
     pub keys: Vec<String>,
     pub channels: Vec<String>,
+    /// ACL v2 selectors — additional independent permission groups. Empty
+    /// on Redis < 7.0 (the `GETUSER` field doesn't exist there).
+    pub selectors: Vec<AclSelector>,
     /// True iff the user has the `on` flag.
     pub enabled: bool,
     /// True iff the user has the `nopass` flag.
@@ -43,7 +75,15 @@ pub struct AclUser {
 impl AclUser {
     /// Compose the multi-rule string that `ACL SETUSER` accepts. This is
     /// what we feed back into the textarea editor; users are free to rewrite
-    /// it line-by-line, and we send the whole thing on save.
+    /// it line-by-line, and we send the whole thing on save. Selectors ride
+    /// along as `( … )` groups — see [`split_acl_rules`] for why they must
+    /// survive tokenization as single arguments.
+    ///
+    /// Unlike the root rules, `( … )` groups are **append** operations —
+    /// re-applying this text would duplicate every selector on each save
+    /// (verified live on 8.6.1). `clearselectors` in front of the groups
+    /// makes the text authoritative for selectors: what you see is exactly
+    /// what the user ends up with, save after save.
     pub fn to_rules_text(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for flag in &self.flags {
@@ -58,8 +98,45 @@ impl AclUser {
         for c in &self.channels {
             parts.push(c.to_string());
         }
+        if !self.selectors.is_empty() {
+            parts.push("clearselectors".to_string());
+            for selector in &self.selectors {
+                parts.push(selector.to_rule_token());
+            }
+        }
         parts.join(" ")
     }
+}
+
+/// Split a rules line into `ACL SETUSER` arguments: whitespace-separated
+/// tokens, except a `( … )` selector group — which contains spaces but must
+/// reach the server as **one** argument. Selectors don't nest. An unclosed
+/// `(` keeps the rest of the line glued to it, so the server's own syntax
+/// error names the real problem instead of a mangled fragment.
+pub fn split_acl_rules(text: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut group: Option<String> = None;
+    for token in text.split_whitespace() {
+        if let Some(acc) = group.as_mut() {
+            acc.push(' ');
+            acc.push_str(token);
+            if token.ends_with(')')
+                && let Some(done) = group.take()
+            {
+                args.push(done);
+            }
+            continue;
+        }
+        if token.starts_with('(') && !token.ends_with(')') {
+            group = Some(token.to_string());
+        } else {
+            args.push(token.to_string());
+        }
+    }
+    if let Some(unclosed) = group {
+        args.push(unclosed);
+    }
+    args
 }
 
 /// Outcome of `ACL LIST`. `unsupported` is true when the server returned an
@@ -133,9 +210,8 @@ fn is_unsupported(err: &redis::RedisError) -> bool {
 /// Convert the redis-rs `Value` shape returned by `ACL GETUSER` (a flat
 /// array of [key, value, key, value, ...]) into an `AclUser`.
 ///
-/// Defensive: `GETUSER` keys vary across Redis versions (selectors landed in
-/// 7.x), but the legacy keys we read here are stable. Unknown keys are
-/// ignored rather than failing the parse.
+/// Defensive: `GETUSER` keys vary across Redis versions (`selectors` exists
+/// only on 7.0+), so unknown keys are ignored rather than failing the parse.
 fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
     let entries = match value {
         Value::Array(_) | Value::Map(_) => extract_pairs(value)?,
@@ -185,10 +261,38 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
             "channels" => {
                 user.channels = parse_keys_or_channels(&val);
             }
+            "selectors" => {
+                user.selectors = parse_selectors(&val);
+            }
             _ => {}
         }
     }
     Some(user)
+}
+
+/// The `selectors` field (Redis 7.0+): an array of per-selector maps, each
+/// shaped like a miniature `GETUSER` reply (commands / keys / channels).
+/// Malformed entries are skipped, never fatal.
+fn parse_selectors(v: &Value) -> Vec<AclSelector> {
+    let Value::Array(items) = v else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let pairs = extract_pairs(item)?;
+            let mut selector = AclSelector::default();
+            for (key, val) in pairs {
+                match key.as_str() {
+                    "commands" => selector.commands = parse_simple_string(&val).unwrap_or_default(),
+                    "keys" => selector.keys = parse_keys_or_channels(&val),
+                    "channels" => selector.channels = parse_keys_or_channels(&val),
+                    _ => {}
+                }
+            }
+            Some(selector)
+        })
+        .collect()
 }
 
 fn extract_pairs(v: &Value) -> Option<Vec<(String, Value)>> {
@@ -303,5 +407,62 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(user.to_rules_text(), "on +@read ~ro:* &log:*");
+    }
+
+    #[test]
+    fn selectors_parse_and_round_trip_as_groups() {
+        // Shape captured live from 8.6.1:
+        // `ACL SETUSER app on ~app:* +@read (+lpush ~queue:*)`.
+        let raw = Value::Array(vec![
+            bs("flags"),
+            Value::Array(vec![bs("on")]),
+            bs("commands"),
+            bs("-@all +@read"),
+            bs("keys"),
+            bs("~app:*"),
+            bs("channels"),
+            bs(""),
+            bs("selectors"),
+            Value::Array(vec![Value::Array(vec![
+                bs("commands"),
+                bs("-@all +lpush"),
+                bs("keys"),
+                bs("~queue:*"),
+                bs("channels"),
+                bs(""),
+            ])]),
+        ]);
+        let user = parse_get_user("app", &raw).expect("parse failed");
+        assert_eq!(
+            user.selectors,
+            vec![AclSelector {
+                commands: "-@all +lpush".into(),
+                keys: vec!["~queue:*".into()],
+                channels: Vec::new(),
+            }]
+        );
+        assert_eq!(user.selectors[0].to_rule_token(), "(-@all +lpush ~queue:*)");
+        // `clearselectors` precedes the groups: `( … )` appends server-side,
+        // so without it every save would duplicate the selectors.
+        assert_eq!(
+            user.to_rules_text(),
+            "on -@all +@read ~app:* clearselectors (-@all +lpush ~queue:*)"
+        );
+    }
+
+    #[test]
+    fn rule_splitting_keeps_selector_groups_whole() {
+        assert_eq!(
+            split_acl_rules("on +@read ~app:* (-@all +lpush ~queue:*) &log:*"),
+            vec!["on", "+@read", "~app:*", "(-@all +lpush ~queue:*)", "&log:*"]
+        );
+        // A one-token group and adjacent groups stay intact.
+        assert_eq!(
+            split_acl_rules("(allkeys) (+get ~a:*) (+set ~b:*)"),
+            vec!["(allkeys)", "(+get ~a:*)", "(+set ~b:*)"]
+        );
+        // Unclosed group: glued together so the server names the problem.
+        assert_eq!(split_acl_rules("on (+get ~a:*"), vec!["on", "(+get ~a:*"]);
+        assert!(split_acl_rules("  ").is_empty());
     }
 }

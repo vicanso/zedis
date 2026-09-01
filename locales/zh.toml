@@ -1037,6 +1037,7 @@ delete_tooltip = "删除用户"
 commands = "命令："
 keys = "键："
 channels = "频道："
+selectors = "选择器："
 passwords = "密码："
 
 [search]

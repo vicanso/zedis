@@ -1038,6 +1038,7 @@ delete_tooltip = "Удалить пользователя"
 commands = "Команды:"
 keys = "Ключи:"
 channels = "Каналы:"
+selectors = "Селекторы:"
 passwords = "Пароли:"
 
 [search]

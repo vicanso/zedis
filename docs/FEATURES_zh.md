@@ -173,7 +173,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### ACL 用户管理（Redis 6+）
 **覆盖完整 ACL 生命周期的 GUI。**
 
-列出用户，查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设（Full / Read-only / Disabled）和可切换 chip（命令类别 + 通配符）编辑。
+列出用户，查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设（Full / Read-only / Disabled）和可切换 chip（命令类别 + 通配符）编辑。ACL v2 **选择器**（Redis 7.0+）—— 附加的 `( … )` 权限组 —— 逐组按 SETUSER 原生语法展示，并可经规则编辑器无损往返：生成的规则文本以 `clearselectors` 开路，因为裸 `( … )` 在服务端是**追加**语义，否则每次保存都会悄悄复制一遍所有选择器。
 
 ### 安全连接与分组
 **TLS/SSL 与 SSH 隧道，配可命名、可分享的服务器分组。**

@@ -173,7 +173,7 @@ Tag each server with a preset environment — **Dev / UAT / Prod** — shown as 
 ### ACL Management (Redis 6+)
 **GUI for the full ACL lifecycle.**
 
-List users, view flags / commands / key patterns / channel rules, and edit via quick presets (Full / Read-only / Disabled) plus toggleable chips for command categories and wildcards.
+List users, view flags / commands / key patterns / channel rules, and edit via quick presets (Full / Read-only / Disabled) plus toggleable chips for command categories and wildcards. ACL v2 **selectors** (Redis 7.0+) — the additional `( … )` permission groups — are shown per group in the exact SETUSER syntax and round-trip through the rules editor losslessly: the emitted text leads with `clearselectors`, because a bare `( … )` *appends* server-side and would silently duplicate every selector on each save.
 
 ### Secure Connections & Groups
 **TLS/SSL and SSH tunnels, with named, shareable server groups.**

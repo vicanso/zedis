@@ -46,7 +46,7 @@ mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
 
-pub use acl::{AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami};
+pub use acl::{AclSelector, AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, split_acl_rules};
 pub use async_connection::{
     RedisAsyncConn, client_name, open_monitor_connection, open_node_connection, open_node_connection_cached,
     open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,

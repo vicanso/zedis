@@ -29,10 +29,10 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::{
     CommandStatus, ConflictMode, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn,
-    RedisServer, RestoreStatus, ServerCommand, ServerFlavor, SlotStatMetric, csv_header, dump_keys_chunk, entry_to_csv,
-    entry_to_json, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
-    probe_server_features, read_readable_chunk, restore_keys_chunk, save_servers, sniff_import_format,
-    write_readable_chunk,
+    RedisServer, RestoreStatus, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user,
+    csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager, get_servers,
+    open_single_connection, parse_readable_entries, probe_server_features, read_readable_chunk, restore_keys_chunk,
+    save_servers, sniff_import_format, split_acl_rules, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 
@@ -1150,6 +1150,47 @@ fn standalone_hotkeys_collects_a_report() {
         client.hotkeys_reset().await.expect("reset");
         assert!(client.hotkeys_report().await.expect("cleared").is_empty());
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// ACL v2 selectors (7.0+): a `( … )` group survives the whole round trip —
+/// tokenized as one SETUSER argument, parsed back out of GETUSER, and
+/// re-emitted verbatim by `to_rules_text`, which must itself re-apply
+/// cleanly (the editor's save path).
+#[test]
+#[ignore]
+fn standalone_acl_selectors_round_trip() {
+    smol::block_on(async {
+        let id = register(server("it-acl-sel", standalone())).await;
+        if !version_at_least(&id, "7.0.0").await {
+            eprintln!("skipped: server < 7.0");
+            return;
+        }
+        let username = unique("selector-user").replace(':', "-");
+        let mut c = conn(&id, 0).await;
+        let rules = split_acl_rules("on ~app:* +@read (-@all +lpush ~queue:*)");
+        assert_eq!(rules.len(), 4, "the selector group must stay one argument");
+        acl_set_user(&mut c, &username, &rules).await.expect("setuser");
+
+        let user = acl_get_user(&mut c, &username).await.expect("getuser");
+        assert_eq!(user.selectors.len(), 1, "the selector is parsed, not dropped");
+        assert!(
+            user.selectors[0].commands.contains("+lpush"),
+            "selector commands: {:?}",
+            user.selectors[0]
+        );
+        assert_eq!(user.selectors[0].keys, vec!["~queue:*".to_string()]);
+        let text = user.to_rules_text();
+        assert!(text.contains("(") && text.contains("~queue:*"), "rules text: {text}");
+
+        // The editor round trip: what we display must re-apply as-is.
+        acl_set_user(&mut c, &username, &split_acl_rules(&text))
+            .await
+            .expect("re-apply rules text");
+        let again = acl_get_user(&mut c, &username).await.expect("getuser again");
+        assert_eq!(again.selectors, user.selectors, "re-applying is lossless");
+
+        acl_del_user(&mut c, &username).await.expect("deluser");
     });
 }
 

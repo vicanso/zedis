@@ -23,6 +23,7 @@ use crate::{
     assets::CustomIconName,
     connection::{
         AclUser, Capability, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, get_connection_manager,
+        split_acl_rules,
     },
     error::Error,
     helpers::get_mono_font_family,
@@ -187,7 +188,10 @@ impl ZedisAclManager {
     fn submit_set_user(&mut self, username: String, rules: String, cx: &mut gpui::Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
-        let rules_vec: Vec<String> = rules.split_whitespace().map(|s| s.to_string()).collect();
+        // Not a plain whitespace split: a `( … )` selector group must reach
+        // SETUSER as one argument — splitting it used to break saving any
+        // rules line that contained a selector.
+        let rules_vec: Vec<String> = split_acl_rules(&rules);
         self._mutate_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
@@ -513,6 +517,22 @@ impl ZedisAclManager {
                     .child(Label::new(i18n_acl(cx, "channels")).text_color(muted).text_xs())
                     .child(Label::new(channels_summary).text_xs().whitespace_normal()),
             )
+            // ACL v2 selectors (7.0+): each additional permission group on
+            // its own line, in the exact `( … )` syntax SETUSER accepts —
+            // what you read here is what you can paste into the editor.
+            .when(!user.selectors.is_empty(), |this| {
+                let mut groups = v_flex().gap_0p5().flex_1().min_w_0();
+                for selector in &user.selectors {
+                    groups = groups.child(Label::new(selector.to_rule_token()).text_xs().whitespace_normal());
+                }
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_start()
+                        .child(Label::new(i18n_acl(cx, "selectors")).text_color(muted).text_xs())
+                        .child(groups),
+                )
+            })
             .when(!user.password_digests.is_empty(), |this| {
                 let pw_summary: SharedString = user
                     .password_digests

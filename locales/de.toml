@@ -1038,6 +1038,7 @@ delete_tooltip = "Benutzer löschen"
 commands = "Befehle:"
 keys = "Schlüssel:"
 channels = "Kanäle:"
+selectors = "Selektoren:"
 passwords = "Passwörter:"
 
 [search]

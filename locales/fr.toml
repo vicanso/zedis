@@ -1039,6 +1039,7 @@ delete_tooltip = "Supprimer l'utilisateur"
 commands = "Commandes :"
 keys = "Clés :"
 channels = "Canaux :"
+selectors = "Sélecteurs :"
 passwords = "Mots de passe :"
 
 [search]
