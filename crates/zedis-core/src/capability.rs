@@ -113,6 +113,9 @@ pub enum Capability {
     AclWrite,
     /// `CONFIG SET` / rewrite / resetstat.
     ConfigWrite,
+    /// `HOTKEYS START` / `STOP` / `RESET` — hot-key tracking control. Reading
+    /// the report (`HOTKEYS GET`) stays under [`Capability::Observe`].
+    HotkeysControl,
     /// Cluster failover / forget / meet / replicate.
     ClusterWrite,
     /// Sentinel failover / reset / remove.
@@ -166,6 +169,7 @@ impl Capability {
         Capability::KillClient,
         Capability::AclWrite,
         Capability::ConfigWrite,
+        Capability::HotkeysControl,
         Capability::ClusterWrite,
         Capability::SentinelWrite,
         Capability::PersistenceWrite,
@@ -197,6 +201,7 @@ impl Capability {
                 | Capability::KillClient
                 | Capability::AclWrite
                 | Capability::ConfigWrite
+                | Capability::HotkeysControl
                 | Capability::ClusterWrite
                 | Capability::SentinelWrite
                 | Capability::PersistenceWrite
@@ -229,6 +234,7 @@ impl Capability {
             Capability::KillClient => &[ServerCommand::ClientKill],
             Capability::AclWrite => &[ServerCommand::AclSetUser],
             Capability::ConfigWrite => &[ServerCommand::ConfigSet],
+            Capability::HotkeysControl => &[ServerCommand::HotkeysStart],
             Capability::PersistenceWrite => &[ServerCommand::Bgsave],
             Capability::PublishMessage => &[ServerCommand::Publish],
             Capability::FunctionWrite => &[ServerCommand::FunctionLoad],
@@ -299,6 +305,7 @@ mod tests {
         (Capability::KillClient, false),
         (Capability::AclWrite, false),
         (Capability::ConfigWrite, false),
+        (Capability::HotkeysControl, false),
         (Capability::ClusterWrite, false),
         (Capability::SentinelWrite, false),
         (Capability::PersistenceWrite, false),

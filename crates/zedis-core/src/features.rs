@@ -61,7 +61,10 @@ pub enum ServerCommand {
     Subscribe,
     Publish,
     ClusterInfo,
+    ClusterSlotStats,
     FlushDb,
+    HotkeysGet,
+    HotkeysStart,
 }
 
 impl ServerCommand {
@@ -95,7 +98,10 @@ impl ServerCommand {
         ServerCommand::Subscribe,
         ServerCommand::Publish,
         ServerCommand::ClusterInfo,
+        ServerCommand::ClusterSlotStats,
         ServerCommand::FlushDb,
+        ServerCommand::HotkeysGet,
+        ServerCommand::HotkeysStart,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -124,8 +130,9 @@ impl ServerCommand {
             ServerCommand::PubsubNumpat => "PUBSUB",
             ServerCommand::Subscribe => "SUBSCRIBE",
             ServerCommand::Publish => "PUBLISH",
-            ServerCommand::ClusterInfo => "CLUSTER",
+            ServerCommand::ClusterInfo | ServerCommand::ClusterSlotStats => "CLUSTER",
             ServerCommand::FlushDb => "FLUSHDB",
+            ServerCommand::HotkeysGet | ServerCommand::HotkeysStart => "HOTKEYS",
         }
     }
 
@@ -147,6 +154,9 @@ impl ServerCommand {
             ServerCommand::ScriptExists => Some("EXISTS"),
             ServerCommand::PubsubNumpat => Some("NUMPAT"),
             ServerCommand::ClusterInfo => Some("INFO"),
+            ServerCommand::ClusterSlotStats => Some("SLOT-STATS"),
+            ServerCommand::HotkeysGet => Some("GET"),
+            ServerCommand::HotkeysStart => Some("START"),
             _ => None,
         }
     }
@@ -178,6 +188,7 @@ impl ServerCommand {
                 | ServerCommand::Publish
                 | ServerCommand::Subscribe
                 | ServerCommand::FlushDb
+                | ServerCommand::HotkeysStart
         )
     }
 

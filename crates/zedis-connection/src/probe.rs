@@ -320,6 +320,19 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::ClusterInfo => {
             c.arg("INFO");
         }
+        // One slot, zero traffic. Pre-8.2 answers "unknown subcommand"
+        // (→ Missing); a standalone 8.2+ answers "cluster support
+        // disabled", which proves the command exists (→ Available) — the
+        // slot-stats section is additionally gated on the cluster server
+        // type, so that verdict never shows a dead panel.
+        ServerCommand::ClusterSlotStats => {
+            c.arg("SLOT-STATS").arg("SLOTSRANGE").arg(0).arg(0);
+        }
+        // Read-only: with tracking never started it answers nil; with a
+        // collection present it returns the report without touching it.
+        ServerCommand::HotkeysGet => {
+            c.arg("GET");
+        }
         // Mutating variants never reach here (filtered by `is_mutating`);
         // fall back to a harmless no-op so a future slip can't execute them.
         _ => {
@@ -345,6 +358,7 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
         ServerCommand::Publish => &["PUBLISH", PROBE_KEY, "x"],
         ServerCommand::Subscribe => &["SUBSCRIBE", PROBE_KEY],
         ServerCommand::FlushDb => &["FLUSHDB"],
+        ServerCommand::HotkeysStart => &["HOTKEYS", "START", "METRICS", "1", "CPU"],
         _ => &["PING"],
     }
 }

@@ -53,6 +53,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
+use zedis_core::keysizes::{KeysizesDist, KeysizesUnit};
 use zedis_core::rdb::RdbParser;
 use zedis_ui::{ZedisDivider, help_popover, hint_banner};
 
@@ -353,6 +354,14 @@ pub struct ZedisMemoryAnalysis {
     /// (no extra Redis round-trip — `KeyMemoryUsage::ttl` is already
     /// in the pipeline). Reset on each `start_analysis`.
     ttl_histogram: TtlHistogram,
+    /// Server-side per-type key-size histogram (`INFO keysizes`, Redis 8+)
+    /// — exact whole-keyspace counts, unlike the sampled tables. Fetched
+    /// ambiently (one tiny INFO) and refreshed on each run; empty on
+    /// servers without the section, which hides the card.
+    keysizes: Vec<KeysizesDist>,
+    /// Selected type index into `keysizes` for the histogram card.
+    keysizes_selected: usize,
+    keysizes_task: Option<Task<()>>,
     /// Offline rule-engine findings, recomputed locally each time a scan
     /// finishes (no Redis round-trip, no external AI). Empty while a scan
     /// is running or when the keyspace is healthy.
@@ -463,6 +472,10 @@ impl ZedisMemoryAnalysis {
             }
             this.dbsize = dbsize;
             this.update_est_commands();
+            // The connection is demonstrably up now — (re)pull the keysizes
+            // card too, covering the restored-route case where construction
+            // ran before the server finished connecting.
+            this.fetch_keysizes(cx);
             cx.notify();
         }));
 
@@ -506,6 +519,9 @@ impl ZedisMemoryAnalysis {
             scan_count_input_state,
             est_commands: 0,
             ttl_histogram: TtlHistogram::default(),
+            keysizes: Vec::new(),
+            keysizes_selected: 0,
+            keysizes_task: None,
             recommendations: Vec::new(),
             ai_status: AiStatus::Idle,
             ai_output: None,
@@ -518,7 +534,36 @@ impl ZedisMemoryAnalysis {
             _subscriptions: subscriptions,
         };
         this.update_est_commands();
+        this.fetch_keysizes(cx);
         this
+    }
+
+    /// Refresh the `INFO keysizes` card — one tiny INFO, exact counts, no
+    /// sampling. Failures (pre-8 servers, restricted INFO) stay silent: the
+    /// card simply doesn't render without data.
+    fn fetch_keysizes(&mut self, cx: &mut gpui::Context<Self>) {
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let db = state.db();
+        self.keysizes_task = Some(cx.spawn(async move |handle, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let client = get_connection_manager().get_client(&server_id, db).await?;
+                    Ok::<Vec<KeysizesDist>, Error>(client.info_keysizes().await?)
+                })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                this.keysizes_task = None;
+                if let Ok(dists) = result {
+                    this.keysizes_selected = this.keysizes_selected.min(dists.len().saturating_sub(1));
+                    this.keysizes = dists;
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn update_est_commands(&mut self) {
@@ -667,6 +712,7 @@ impl ZedisMemoryAnalysis {
     fn start_analysis(&mut self, cx: &mut gpui::Context<Self>) {
         self.reset_for_run(false, cx);
         self.rdb_file = None;
+        self.fetch_keysizes(cx);
 
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();

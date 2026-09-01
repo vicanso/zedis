@@ -32,13 +32,17 @@
 //! servers get the escalated warning.
 
 use crate::assets::CustomIconName;
-use crate::connection::{CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap};
+use crate::connection::{
+    CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, ServerCommand, SlotStatMetric, SlotStatRow, get_connection_manager,
+};
+use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
     ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, ReplicaInfo, ServerEvent, ZedisGlobalStore, ZedisServerState,
     dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, i18n_hints, i18n_topology,
     plan_cluster_reshard, source_owners_for_slots, update_app_state_and_save_quiet,
 };
+use crate::views::unavailable_chip;
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -166,6 +170,12 @@ pub struct ZedisTopology {
     load_error: Option<SharedString>,
     load_metric: LoadMetric,
     load_poll_task: Option<Task<()>>,
+    // Per-slot usage (CLUSTER SLOT-STATS, Redis 8.2) on the Slots tab.
+    /// `None` until the first fetch answers (or after a refresh cleared it).
+    slot_stats: Option<Vec<SlotStatRow>>,
+    slot_stats_error: Option<SharedString>,
+    slot_stats_metric: SlotStatMetric,
+    slot_stats_task: Option<Task<()>>,
     /// First visit ever (HINT_TOPOLOGY not yet dismissed) — show the one-time
     /// intro banner. Local so closing it repaints without waiting for the
     /// async state save.
@@ -233,6 +243,10 @@ impl ZedisTopology {
             load_error: None,
             load_metric: LoadMetric::Memory,
             load_poll_task: None,
+            slot_stats: None,
+            slot_stats_error: None,
+            slot_stats_metric: SlotStatMetric::default(),
+            slot_stats_task: None,
             show_first_visit_hint: !cx.global::<ZedisGlobalStore>().read(cx).hint_dismissed(HINT_TOPOLOGY),
             _subscriptions: subscriptions,
         };
@@ -271,7 +285,66 @@ impl ZedisTopology {
             self.node_loads.clear();
             self.load_poll_task = None;
             self.ensure_load_poll(cx);
+            self.slot_stats = None;
+            self.slot_stats_task = None;
+            self.ensure_slot_stats(cx);
         }
+        cx.notify();
+    }
+
+    /// One-shot `CLUSTER SLOT-STATS` fetch for the Slots tab — no polling:
+    /// slot counters move slowly and the tab has an explicit Refresh. Skipped
+    /// when the probe found the subcommand unusable (the section renders the
+    /// reason chip instead) and when a fetch is already in flight or done.
+    fn ensure_slot_stats(&mut self, cx: &mut Context<Self>) {
+        if self.cluster_tab != ClusterTab::Slots
+            || self.mode != TopologyMode::Cluster
+            || self.slot_stats.is_some()
+            || self.slot_stats_task.is_some()
+        {
+            return;
+        }
+        let state = self.server_state.read(cx);
+        if state
+            .features()
+            .first_unusable(&[ServerCommand::ClusterSlotStats])
+            .is_some()
+        {
+            return;
+        }
+        let server_id = state.server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let db = state.db();
+        let metric = self.slot_stats_metric;
+        self.slot_stats_task = Some(cx.spawn(async move |this, cx| {
+            let result = fetch_slot_stats(server_id, db, metric).await;
+            let _ = this.update(cx, |this, cx| {
+                this.slot_stats_task = None;
+                match result {
+                    Ok(rows) => {
+                        this.slot_stats = Some(rows);
+                        this.slot_stats_error = None;
+                    }
+                    Err(e) => this.slot_stats_error = Some(e.to_string().into()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Re-sort server-side: `ORDERBY` runs on the node, so a metric switch
+    /// is a re-fetch, not a client-side sort of the key-count top list.
+    fn set_slot_stats_metric(&mut self, metric: SlotStatMetric, cx: &mut Context<Self>) {
+        if self.slot_stats_metric == metric {
+            return;
+        }
+        self.slot_stats_metric = metric;
+        self.slot_stats = None;
+        self.slot_stats_task = None;
+        self.slot_stats_error = None;
+        self.ensure_slot_stats(cx);
         cx.notify();
     }
 
@@ -388,6 +461,9 @@ impl ZedisTopology {
             // Dropping the task cancels the poll loop (and its in-flight
             // sample) the moment the heatmap is no longer visible.
             self.load_poll_task = None;
+        }
+        if tab == ClusterTab::Slots {
+            self.ensure_slot_stats(cx);
         }
         cx.notify();
     }
@@ -909,7 +985,244 @@ impl ZedisTopology {
             .child(self.render_slot_bar(slot_map, cx))
             .child(self.render_slot_legend(slot_map, cx))
             .child(self.render_migrations_list(slot_map, cx))
+            .child(self.render_slot_stats_section(slot_map, cx))
             .into_any_element()
+    }
+
+    /// "Hot slots" — the top slots by the chosen `CLUSTER SLOT-STATS`
+    /// metric, merged across masters. Extended metrics (memory / CPU /
+    /// network) exist only when the cluster runs
+    /// `cluster-slot-stats-enabled yes` (start-time config), so their sort
+    /// buttons unlock from the reply and a hint names the config otherwise.
+    fn render_slot_stats_section(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let title = Label::new(i18n_topology(cx, "slot_stats_title")).font_semibold();
+
+        // Pre-8.2 (or denied): the section stays discoverable, with the
+        // probe's verdict as the reason chip.
+        if let Some((command, status)) = self
+            .server_state
+            .read(cx)
+            .features()
+            .first_unusable(&[ServerCommand::ClusterSlotStats])
+        {
+            return v_flex()
+                .gap_1()
+                .child(title)
+                .child(unavailable_chip(cx, command, status))
+                .into_any_element();
+        }
+        if let Some(err) = self.slot_stats_error.clone() {
+            return v_flex()
+                .gap_1()
+                .child(title)
+                .child(Label::new(err).text_xs().text_color(theme.danger))
+                .into_any_element();
+        }
+        let Some(rows) = &self.slot_stats else {
+            return v_flex()
+                .gap_1()
+                .child(title)
+                .child(
+                    Label::new(i18n_topology(cx, "slot_stats_loading"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .into_any_element();
+        };
+        let extended = rows.first().is_some_and(SlotStatRow::has_extended_metrics);
+
+        // Metric picker — server-side ORDERBY, so switching re-fetches.
+        let metrics: [(SlotStatMetric, &'static str, bool); 5] = [
+            (SlotStatMetric::KeyCount, "slot_stats_col_keys", true),
+            (SlotStatMetric::MemoryBytes, "slot_stats_col_memory", extended),
+            (SlotStatMetric::CpuUsec, "slot_stats_col_cpu", extended),
+            (SlotStatMetric::NetworkBytesIn, "slot_stats_col_net_in", extended),
+            (SlotStatMetric::NetworkBytesOut, "slot_stats_col_net_out", extended),
+        ];
+        let mut picker = h_flex().gap_1().items_center().flex_wrap();
+        for (metric, key, enabled) in metrics {
+            let active = self.slot_stats_metric == metric;
+            picker = picker.child(
+                Button::new(SharedString::from(format!("slot-stats-m-{}", metric.word())))
+                    .xsmall()
+                    .when(active, |b| b.primary())
+                    .when(!active, |b| b.outline())
+                    .label(i18n_topology(cx, key))
+                    .disabled(!enabled)
+                    .when(!enabled, |b| b.tooltip(i18n_topology(cx, "slot_stats_extended_hint")))
+                    .on_click(cx.listener(move |this, _, _w, cx| this.set_slot_stats_metric(metric, cx))),
+            );
+        }
+
+        let mut section = v_flex().gap_2().child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(title)
+                .child(picker),
+        );
+        if !extended {
+            section = section.child(
+                Label::new(i18n_topology(cx, "slot_stats_extended_hint"))
+                    .text_xs()
+                    .text_color(muted),
+            );
+        }
+        if rows.is_empty() {
+            return section
+                .child(
+                    Label::new(i18n_topology(cx, "slot_stats_empty"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .into_any_element();
+        }
+
+        // Owner color dots come from the same palette as the slot bar, so a
+        // hot slot is visually traceable to its segment.
+        let color_of = |addr: &str| -> Option<Hsla> {
+            slot_map
+                .masters
+                .iter()
+                .find(|m| m.addr.as_str() == addr)
+                .map(|m| master_color(m.color_index))
+        };
+        let num_col = px(96.);
+        let header = h_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div().w(px(56.)).child(
+                    Label::new(i18n_topology(cx, "slot_stats_col_slot"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().flex_1().min_w_0().child(
+                    Label::new(i18n_topology(cx, "slot_stats_col_node"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                h_flex().w(num_col).justify_end().child(
+                    Label::new(i18n_topology(cx, "slot_stats_col_keys"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .when(extended, |this| {
+                this.child(
+                    h_flex().w(num_col).justify_end().child(
+                        Label::new(i18n_topology(cx, "slot_stats_col_memory"))
+                            .text_xs()
+                            .text_color(muted),
+                    ),
+                )
+                .child(
+                    h_flex().w(num_col).justify_end().child(
+                        Label::new(i18n_topology(cx, "slot_stats_col_cpu"))
+                            .text_xs()
+                            .text_color(muted),
+                    ),
+                )
+                .child(
+                    h_flex().w(num_col).justify_end().child(
+                        Label::new(i18n_topology(cx, "slot_stats_col_net_in"))
+                            .text_xs()
+                            .text_color(muted),
+                    ),
+                )
+                .child(
+                    h_flex().w(num_col).justify_end().child(
+                        Label::new(i18n_topology(cx, "slot_stats_col_net_out"))
+                            .text_xs()
+                            .text_color(muted),
+                    ),
+                )
+            });
+
+        let stripe_bg = theme.table_even;
+        let mut list = v_flex()
+            .w_full()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius_lg)
+            .overflow_hidden()
+            .child(header);
+        let bytes = |v: Option<u64>| -> SharedString {
+            v.map(|v| humansize::format_size(v, humansize::DECIMAL).into())
+                .unwrap_or_else(|| "—".into())
+        };
+        for (ix, row) in rows.iter().enumerate() {
+            let dot = color_of(&row.node);
+            list = list.child(
+                h_flex()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .when(ix % 2 != 0, |this| this.bg(stripe_bg))
+                    .child(div().w(px(56.)).child(Label::new(row.slot.to_string()).text_xs()))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .items_center()
+                            .when_some(dot, |this, color| {
+                                this.child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
+                            })
+                            .child(Label::new(row.node.clone()).text_xs().text_color(muted).truncate()),
+                    )
+                    .child(
+                        h_flex()
+                            .w(num_col)
+                            .justify_end()
+                            .child(Label::new(row.key_count.to_string()).text_xs().font_semibold()),
+                    )
+                    .when(extended, |this| {
+                        this.child(
+                            h_flex()
+                                .w(num_col)
+                                .justify_end()
+                                .child(Label::new(bytes(row.memory_bytes)).text_xs()),
+                        )
+                        .child(
+                            h_flex().w(num_col).justify_end().child(
+                                Label::new(match row.cpu_usec {
+                                    Some(v) => SharedString::from(format!("{v} µs")),
+                                    None => "—".into(),
+                                })
+                                .text_xs(),
+                            ),
+                        )
+                        .child(
+                            h_flex()
+                                .w(num_col)
+                                .justify_end()
+                                .child(Label::new(bytes(row.network_bytes_in)).text_xs()),
+                        )
+                        .child(
+                            h_flex()
+                                .w(num_col)
+                                .justify_end()
+                                .child(Label::new(bytes(row.network_bytes_out)).text_xs()),
+                        )
+                    }),
+            );
+        }
+        section.child(list).into_any_element()
     }
 
     fn render_slot_bar(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1945,4 +2258,12 @@ impl Render for ZedisTopology {
             .children(first_visit_hint)
             .child(body)
     }
+}
+
+/// Top slots by `metric` across all masters — the client merges, re-sorts
+/// and truncates (see `RedisClient::cluster_slot_stats`).
+async fn fetch_slot_stats(server_id: String, db: usize, metric: SlotStatMetric) -> Result<Vec<SlotStatRow>, Error> {
+    const SLOT_STATS_LIMIT: u64 = 20;
+    let client = get_connection_manager().get_client(&server_id, db).await?;
+    Ok(client.cluster_slot_stats(metric, SLOT_STATS_LIMIT).await?)
 }

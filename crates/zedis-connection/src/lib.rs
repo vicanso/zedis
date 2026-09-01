@@ -30,6 +30,7 @@ mod danger;
 mod diagnostics;
 mod dump_restore;
 mod functions;
+mod hotkeys;
 mod import_clients;
 mod latency;
 mod lua_script;
@@ -40,6 +41,7 @@ mod probe;
 mod readable_export;
 mod readable_import;
 mod search;
+mod slot_stats;
 mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
@@ -70,6 +72,7 @@ pub use functions::{
     function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
     function_stats, validate_library_source,
 };
+pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
@@ -84,6 +87,7 @@ pub use readable_import::{
     ImportFormat, ReadableWriteStatus, detect_import_format, parse_readable_entries, preview_import_conflicts,
     sniff_import_format, write_readable_chunk,
 };
+pub use slot_stats::{SlotStatMetric, SlotStatRow};
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,

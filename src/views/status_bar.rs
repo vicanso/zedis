@@ -21,8 +21,8 @@ use crate::{
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
-        i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology, i18n_trash,
-        i18n_value_search, save_session_option,
+        i18n_hotkeys, i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology,
+        i18n_trash, i18n_value_search, save_session_option,
     },
 };
 use gpui::{
@@ -716,6 +716,9 @@ impl ZedisStatusBar {
         let (monitor_label, monitor_off) =
             gated(i18n_status_bar(cx, "toggle_monitor_tooltip"), ServerView::Monitor, None);
         let (load_label, load_off) = gated(i18n_server_load(cx, "title"), ServerView::ServerLoad, None);
+        // HOTKEYS tracking — Redis 8.6; the probe's verdict on HOTKEYS GET
+        // disables it (with the command as the why-suffix) everywhere else.
+        let (hotkeys_label, hotkeys_off) = gated(i18n_hotkeys(cx, "title"), ServerView::Hotkeys, None);
         // Keyspace Notifications relies on `notify-keyspace-events`
         // (since 2.8); an empty config surfaces a one-click Enable banner
         // inside the panel. Its hard dependency is SUBSCRIBE.
@@ -752,6 +755,12 @@ impl ZedisStatusBar {
                 Icon::new(CustomIconName::Zap),
                 Box::new(ServerToolsAction::ServerLoad),
                 load_off,
+            )
+            .menu_with_icon_and_disabled(
+                hotkeys_label,
+                Icon::new(CustomIconName::Flame),
+                Box::new(ServerToolsAction::Hotkeys),
+                hotkeys_off,
             )
             .menu_with_icon_and_disabled(
                 keyspace_label,

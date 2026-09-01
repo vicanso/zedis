@@ -93,7 +93,7 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 内存分析器 + 体检建议
 **排查 BigKey、查看 TTL 分布、获取离线体检与可选 AI 建议。**
 
-Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。扫描一结束，**离线规则引擎** 即自动给出体检建议 —— 大 key、`volatile-*` 策略下无法淘汰的键、`noeviction`、内存碎片偏高、应合并为 Hash 的大量小 string、占用大部分内存的前缀 —— 零配置、零网络。也可一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。
+Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。Redis 8+ 上还有一张 **key 大小分布** 卡片，直读 `INFO keysizes` —— 服务端按类型分桶的精确计数（string 按值字节、容器按元素数），零采样，未扫描也能看，集群下跨 master 求和。扫描一结束，**离线规则引擎** 即自动给出体检建议 —— 大 key、`volatile-*` 策略下无法淘汰的键、`noeviction`、内存碎片偏高、应合并为 Hash 的大量小 string、占用大部分内存的前缀 —— 零配置、零网络。也可一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。
 
 完全不想碰生产环境？**分析 RDB** 可离线解析本地备份文件 —— 流式解析器（支持到 Redis 8.6 的全部取值编码，值按长度跳过，多 GB 文件以 I/O 速度解析）喂给同一套表格、TTL 直方图和规则引擎，全程不向任何服务器发送命令。大小为 key 在文件中的序列化字节数：不等于在线内存，但用于大 key 与前缀排查的排序完全可信。在线扫描与文件解析都有进度条，前缀分组与 Top key 两张表均可导出 CSV。
 
@@ -101,6 +101,11 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动
 **慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。**
 
 Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开）、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。
+
+### 热点 Key
+**`HOTKEYS` 跟踪（Redis 8.6+）：哪些 key 在烧 CPU 和带宽。**
+
+启动一次采集（CPU 时间与/或网络字节，Top 10/20/50），看两张排名列表实时填充，随时停止、查看、重置。每条记录带占比条与百分比，点击即复制 key 名。集群下会同时在每个 master 上跟踪并合并列表 —— slot 互不重叠，不会重复计数。开始/停止/重置受写权限门控（只读连接仍可查看报告），不支持该命令的服务器上面板降级为说明占位页。
 
 ### 按值搜索
 **找出*值里包含*某段文本的 key（带护栏的采样扫描）。**
@@ -110,7 +115,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 集群健康与管理
 **带复制延迟的拓扑树、slot 分布图、逐节点负载，以及重分片向导。**
 
-以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` 与 `SENTINEL FAILOVER` / `RESET` / `REMOVE`，每个写操作都过确认对话框、PROD 升级。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。仅在多节点部署出现。
+以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` 与 `SENTINEL FAILOVER` / `RESET` / `REMOVE`，每个写操作都过确认对话框、PROD 升级。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。仅在多节点部署出现。
 
 ### 持久化与键事件
 **RDB/AOF 状态 + 一键保存，外加实时键事件排查。**

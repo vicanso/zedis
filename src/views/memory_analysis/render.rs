@@ -643,6 +643,100 @@ impl ZedisMemoryAnalysis {
     /// total ("12,345 sampled → ~123,450 estimated") which matters when
     /// they ran with `ratio < 1.0` and the absolute bar height alone
     /// doesn't reveal cluster impact.
+    /// Server-side key-size histogram (`INFO keysizes`, Redis 8+): one bar
+    /// chart with a type picker. Unlike the sampled tables these are exact
+    /// whole-keyspace counts straight from the server — buckets are
+    /// power-of-two lower bounds, strings by value bytes, containers by
+    /// element count.
+    pub(super) fn render_keysizes_body(&self, cx: &mut gpui::Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let Some(dist) = self.keysizes.get(self.keysizes_selected) else {
+            return div().into_any_element();
+        };
+
+        let dates: Vec<SharedString> = dist
+            .buckets
+            .iter()
+            .map(|(label, _)| SharedString::from(format!("≥{label}")))
+            .collect();
+        let values: Vec<f64> = dist.buckets.iter().map(|(_, count)| *count as f64).collect();
+        let raw_max = values.iter().cloned().fold(0.0_f64, f64::max);
+        let y_max = (raw_max * 1.1).max(1.0);
+        let params = ChartParams {
+            dates: Arc::new(dates),
+            y_max,
+            y_format: Box::new(|v| format!("{v:.0}")),
+            tick_margin: 1,
+            border: theme.border,
+            muted_fg: muted,
+        };
+        let chart = make_bar_canvas(params, Arc::new(values), theme.chart_1);
+
+        // Type picker — Redis type names verbatim, with each type's exact
+        // key count so the busiest type is pickable at a glance.
+        let mut picker = h_flex().gap_1().items_center().flex_wrap();
+        for (ix, d) in self.keysizes.iter().enumerate() {
+            let active = ix == self.keysizes_selected;
+            picker = picker.child(
+                Button::new(SharedString::from(format!("keysizes-type-{ix}")))
+                    .xsmall()
+                    .when(active, |b| b.primary())
+                    .when(!active, |b| b.outline())
+                    .label(format!("{} ({})", d.type_name, group_thousands(d.total())))
+                    .on_click(cx.listener(move |this, _, _w, cx| {
+                        this.keysizes_selected = ix;
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let unit = i18n_memory_analysis(
+            cx,
+            match dist.unit {
+                KeysizesUnit::Bytes => "keysizes_unit_bytes",
+                KeysizesUnit::Items => "keysizes_unit_items",
+            },
+        );
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let summary: SharedString = rust_i18n::t!(
+            "memory_analysis.keysizes_summary",
+            count = group_thousands(dist.total()),
+            kind = dist.type_name,
+            unit = unit.as_ref(),
+            locale = locale
+        )
+        .to_string()
+        .into();
+
+        v_flex()
+            .w_full()
+            .flex_none()
+            .gap_2()
+            .child(
+                v_flex()
+                    .w_full()
+                    .flex_none()
+                    .h(px(220.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+                    .p_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .mb_2()
+                            .child(div().font_semibold().child(i18n_memory_analysis(cx, "keysizes_title")))
+                            .child(picker),
+                    )
+                    .child(chart),
+            )
+            .child(div().px_2().child(Label::new(summary).text_sm().text_color(muted)))
+            .into_any_element()
+    }
+
     pub(super) fn render_ttl_histogram_body(&self, cx: &mut gpui::Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -971,6 +1065,14 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     && let Some(chart) = self.render_fragmentation_chart(cx)
                 {
                     body = body.child(chart);
+                }
+
+                // Server-side key-size histogram — like the fragmentation
+                // chart it needs no scan (one INFO), so it shows ambiently.
+                // Hidden for offline RDB results (it describes the live
+                // server) and on servers without the section (empty).
+                if self.rdb_file.is_none() && !self.keysizes.is_empty() {
+                    body = body.child(self.render_keysizes_body(cx));
                 }
 
                 // Unified empty state: nothing sampled yet and not running.

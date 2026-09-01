@@ -93,7 +93,7 @@ Eight headline stat cards (memory · clients · OPS · latency · hit rate · ne
 ### Memory Analyzer + Recommendations
 **Hunt BigKeys, see the TTL distribution, get instant offline health checks plus optional AI tips.**
 
-Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` auto-picked from `maxmemory-policy`), with a **TTL histogram** alongside. The moment a scan finishes, an **offline rule engine** flags issues automatically — big keys, keys that can't be evicted under a `volatile-*` policy, `noeviction`, high fragmentation, many tiny strings that should be a Hash, and memory-dominating prefixes — no config or network needed. One click also sends the report (key *names*, sizes, TTLs only — never values) to any **OpenAI-compatible** endpoint for inline advice in your UI language.
+Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` auto-picked from `maxmemory-policy`), with a **TTL histogram** alongside. On Redis 8+ a **key-size distribution** card reads `INFO keysizes` — exact per-type bucket counts straight from the server (strings by value bytes, containers by element count), no sampling, shown even before a scan runs and summed across cluster masters. The moment a scan finishes, an **offline rule engine** flags issues automatically — big keys, keys that can't be evicted under a `volatile-*` policy, `noeviction`, high fragmentation, many tiny strings that should be a Hash, and memory-dominating prefixes — no config or network needed. One click also sends the report (key *names*, sizes, TTLs only — never values) to any **OpenAI-compatible** endpoint for inline advice in your UI language.
 
 Prefer not to touch production at all? **Analyze RDB** parses a local dump file offline — a streaming parser (every value encoding through Redis 8.6, values length-skipped so multi-GB files parse at I/O speed) feeds the same tables, TTL histogram, and rule engine, with zero commands sent to any server. Sizes are the keys' serialized bytes in the file: not equal to live memory, but a faithful ranking for big-key and prefix hunting. Both the live scan and the file parse show a progress bar, and the prefix / top-key tables export to CSV.
 
@@ -101,6 +101,11 @@ Prefer not to touch production at all? **Analyze RDB** parses a local dump file 
 **Slow Log ↔ Latency, live MONITOR, clients, and command stats.**
 
 The Performance panel cross-links **Slow Log** entries with `LATENCY` events (±5 s chips jump to the `LATENCY HISTORY` sparkline), aggregates them into a **Top Commands** view ranked by total time consumed (one click filters back to the raw entries), and exports the filtered view to **CSV/JSON** — with a confirm-guarded `SLOWLOG RESET` to start a fresh window; plus live `MONITOR` with keyword filtering, pause, a live events/s badge with an auto-stop rate guard, and CSV/JSON export; client management (`CLIENT LIST` / `CLIENT KILL`, filterable by connection type — normal / replica / master / monitor / pub-sub / blocked — with a confirm-guarded batch kill of everything matching the filter); and a per-command **calls/second** table from `INFO commandstats` with a summary row, idle/self-connection noise filtering, and export.
+
+### Hot Keys
+**`HOTKEYS` tracking (Redis 8.6+): which keys burn the CPU and the bandwidth.**
+
+Start a collection (CPU time and/or network bytes, top 10/20/50), watch the two ranked lists fill live, stop, read, reset. Each entry carries its share of the totals as a bar and a percentage, and a click copies the key name. On a cluster the tracking runs on every master at once and the lists merge — slots are disjoint, so nothing double-counts. Start/stop/reset are write-gated (a read-only connection still reads the report), and the panel degrades to an explanatory placeholder on servers without the command.
 
 ### Value Search
 **Find which key *contains* some text (a guarded, sampled scan).**
@@ -110,7 +115,7 @@ Redis can't index values, so this `O(keyspace)` search runs behind guardrails: a
 ### Cluster Health & Management
 **Topology tree with replication lag, a slot map, per-node load, and a reshard wizard.**
 
-Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per-replica lag from `INFO replication`), then act: `CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` and `SENTINEL FAILOVER` / `RESET` / `REMOVE`, each through the confirm dialog with PROD escalation. Three more tabs go deeper: **Slots** maps every master's slot ranges and in-flight migrations, **Load** samples memory / OPS / clients across the masters, and the **Reshard** wizard moves slots between masters — pick a target (and optionally a source, one click from a Load card), preview the plan, then execute a confirm-guarded `CLUSTER RESHARD` with a live per-slot progress bar. Only appears on multi-node deployments.
+Inspect Cluster/Sentinel topology as a tree (masters, slot ranges, replicas, per-replica lag from `INFO replication`), then act: `CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` and `SENTINEL FAILOVER` / `RESET` / `REMOVE`, each through the confirm dialog with PROD escalation. Three more tabs go deeper: **Slots** maps every master's slot ranges and in-flight migrations plus a **Hot Slots** table (`CLUSTER SLOT-STATS`, Redis 8.2+) — top slots by key count, or by memory / CPU / network I/O on clusters running `cluster-slot-stats-enabled`, each row color-traceable to its owning master; **Load** samples memory / OPS / clients across the masters, and the **Reshard** wizard moves slots between masters — pick a target (and optionally a source, one click from a Load card), preview the plan, then execute a confirm-guarded `CLUSTER RESHARD` with a live per-slot progress bar. Only appears on multi-node deployments.
 
 ### Persistence & Keyspace Events
 **RDB/AOF status with one-click saves, plus live key-event triage.**

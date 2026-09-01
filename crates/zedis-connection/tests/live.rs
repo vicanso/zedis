@@ -29,10 +29,12 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::{
     CommandStatus, ConflictMode, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn,
-    RedisServer, RestoreStatus, ServerCommand, ServerFlavor, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
-    get_connection_manager, get_servers, open_single_connection, parse_readable_entries, probe_server_features,
-    read_readable_chunk, restore_keys_chunk, save_servers, sniff_import_format, write_readable_chunk,
+    RedisServer, RestoreStatus, ServerCommand, ServerFlavor, SlotStatMetric, csv_header, dump_keys_chunk, entry_to_csv,
+    entry_to_json, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
+    probe_server_features, read_readable_chunk, restore_keys_chunk, save_servers, sniff_import_format,
+    write_readable_chunk,
 };
+use zedis_core::keysizes::KeysizesUnit;
 
 /// `host:port` from an env var, or `None` when that scenario wasn't started.
 fn scenario(var: &str) -> Option<(String, u16)> {
@@ -1089,6 +1091,150 @@ fn cluster_discovers_nodes_and_scans_every_master() {
         let features = probe_server_features(&id, 0).await.expect("probe");
         assert_eq!(features.status(ServerCommand::ClusterInfo), CommandStatus::Available);
         assert_eq!(features.status(ServerCommand::Scan), CommandStatus::Available);
+
+        for key in &keys {
+            cmd("DEL").arg(key).exec_async(&mut c).await.expect("del");
+        }
+    });
+}
+
+/// `HOTKEYS` (8.6): the full lifecycle — start with both metrics, hammer a
+/// key, read the live report, stop (report stays), reset (report gone).
+#[test]
+#[ignore]
+fn standalone_hotkeys_collects_a_report() {
+    smol::block_on(async {
+        let id = register(server("it-hotkeys", standalone())).await;
+        if !version_at_least(&id, "8.6.0").await {
+            eprintln!("skipped: server < 8.6");
+            return;
+        }
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        // A stale collection from an earlier run: stop (idempotent) + reset.
+        client.hotkeys_stop().await.expect("stop stale");
+        client.hotkeys_reset().await.expect("reset stale");
+        let empty = client.hotkeys_report().await.expect("empty report");
+        assert!(empty.is_empty() && !empty.tracking_active);
+
+        client.hotkeys_start(true, true, 10).await.expect("start");
+        let key = unique("hot");
+        let mut c = conn(&id, 0).await;
+        cmd("SET").arg(&key).arg("v").exec_async(&mut c).await.expect("set");
+        for _ in 0..40 {
+            let _: Option<String> = cmd("GET").arg(&key).query_async(&mut c).await.expect("get");
+        }
+        assert!(
+            client.hotkeys_report().await.expect("live report").tracking_active,
+            "tracking shows active while collecting"
+        );
+
+        client.hotkeys_stop().await.expect("stop");
+        let report = client.hotkeys_report().await.expect("stopped report");
+        assert!(!report.tracking_active);
+        assert!(
+            report.by_cpu.iter().any(|e| e.key == key),
+            "the hammered key ranks by CPU time: {:?}",
+            report.by_cpu
+        );
+        assert!(
+            report.by_net.iter().any(|e| e.key == key),
+            "…and by network bytes: {:?}",
+            report.by_net
+        );
+        assert!(report.total_cpu_us > 0 && report.total_net_bytes > 0);
+        assert!(
+            report.by_cpu.windows(2).all(|w| w[0].value >= w[1].value),
+            "merged list is descending"
+        );
+
+        client.hotkeys_reset().await.expect("reset");
+        assert!(client.hotkeys_report().await.expect("cleared").is_empty());
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// `INFO keysizes` (8+): written keys land in per-type bucket histograms —
+/// strings bucketed by value bytes, containers by element count.
+#[test]
+#[ignore]
+fn standalone_info_keysizes_buckets_types() {
+    smol::block_on(async {
+        let id = register(server("it-keysizes", standalone())).await;
+        if !version_at_least(&id, "8.0.0").await {
+            eprintln!("skipped: server < 8.0");
+            return;
+        }
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let prefix = unique("ks");
+        let mut c = conn(&id, 0).await;
+        cmd("SET")
+            .arg(format!("{prefix}:s"))
+            .arg("x".repeat(100))
+            .exec_async(&mut c)
+            .await
+            .expect("set");
+        for i in 0..5 {
+            cmd("RPUSH")
+                .arg(format!("{prefix}:l"))
+                .arg(i)
+                .exec_async(&mut c)
+                .await
+                .expect("rpush");
+        }
+
+        let dists = client.info_keysizes().await.expect("keysizes");
+        let strings = dists.iter().find(|d| d.type_name == "strings").expect("strings dist");
+        assert_eq!(strings.unit, KeysizesUnit::Bytes);
+        assert!(strings.total() >= 1);
+        let lists = dists.iter().find(|d| d.type_name == "lists").expect("lists dist");
+        assert_eq!(lists.unit, KeysizesUnit::Items);
+        assert!(lists.total() >= 1);
+
+        cmd("DEL")
+            .arg(format!("{prefix}:s"))
+            .arg(format!("{prefix}:l"))
+            .exec_async(&mut c)
+            .await
+            .expect("del");
+    });
+}
+
+/// `CLUSTER SLOT-STATS` (8.2): per-master top lists merge, sort by the
+/// chosen metric and stay key-count-only while the extended metrics config
+/// is off (its default — it cannot be enabled at runtime).
+#[test]
+#[ignore]
+fn cluster_slot_stats_ranks_slots_by_key_count() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(server("it-slot-stats", addr)).await;
+        if !version_at_least(&id, "8.2.0").await {
+            eprintln!("skipped: cluster < 8.2");
+            return;
+        }
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let prefix = unique("ss");
+        let mut c = conn(&id, 0).await;
+        let keys: Vec<String> = (0..20).map(|i| format!("{prefix}:{i}")).collect();
+        for key in &keys {
+            cmd("SET").arg(key).arg("x").exec_async(&mut c).await.expect("set");
+        }
+
+        let rows = client
+            .cluster_slot_stats(SlotStatMetric::KeyCount, 10)
+            .await
+            .expect("slot stats");
+        assert_eq!(rows.len(), 10, "3 masters × top 10 → global top 10");
+        assert!(rows[0].key_count >= 1, "the busiest slot holds at least one test key");
+        assert!(
+            rows.windows(2).all(|w| w[0].key_count >= w[1].key_count),
+            "descending by key-count"
+        );
+        assert!(rows.iter().all(|r| !r.node.is_empty()), "rows carry the owning master");
+        assert!(
+            rows.iter().all(|r| !r.has_extended_metrics()),
+            "extended metrics stay None while cluster-slot-stats-enabled is off"
+        );
 
         for key in &keys {
             cmd("DEL").arg(key).exec_async(&mut c).await.expect("del");

@@ -171,6 +171,10 @@ pub fn i18n_server_load<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("server_load.{key}"), locale = locale).into()
 }
+pub fn i18n_hotkeys<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("hotkeys.{key}"), locale = locale).into()
+}
 pub fn i18n_server_info<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("server_info.{key}"), locale = locale).into()
@@ -312,6 +316,7 @@ pub fn server_view_title(cx: &App, view: ServerView) -> SharedString {
         ServerView::KeyspaceNotifications => i18n_keyspace_notifications(cx, "title"),
         ServerView::Topology => i18n_topology(cx, "title"),
         ServerView::ServerLoad => i18n_server_load(cx, "title"),
+        ServerView::Hotkeys => i18n_hotkeys(cx, "title"),
         ServerView::ValueSearch => i18n_value_search(cx, "title"),
         ServerView::ServerInfo => i18n_server_info(cx, "title"),
     }

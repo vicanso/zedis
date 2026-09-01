@@ -76,6 +76,8 @@ pub enum ServerView {
     KeyspaceNotifications,
     Topology,
     ServerLoad,
+    /// `HOTKEYS` tracking (Redis 8.6) — top keys by CPU time / network bytes.
+    Hotkeys,
     ValueSearch,
     /// Raw `INFO everything` browser — every field, filterable, for the
     /// long tail the structured panels don't surface.
@@ -143,6 +145,7 @@ impl ServerView {
             ServerView::KeyspaceNotifications => "keyspacenotifications",
             ServerView::Topology => "topology",
             ServerView::ServerLoad => "serverload",
+            ServerView::Hotkeys => "hotkeys",
             ServerView::ValueSearch => "valuesearch",
             ServerView::ServerInfo => "serverinfo",
         }
@@ -159,6 +162,7 @@ impl ServerView {
                 &[ServerCommand::Info]
             }
             ServerView::Slowlog => &[ServerCommand::SlowlogGet],
+            ServerView::Hotkeys => &[ServerCommand::HotkeysGet],
             ServerView::Clients => &[ServerCommand::ClientList],
             ServerView::Monitor => &[ServerCommand::Monitor],
             ServerView::Config => &[ServerCommand::ConfigGet],
@@ -192,6 +196,7 @@ impl ServerView {
             "keyspacenotifications" => ServerView::KeyspaceNotifications,
             "topology" => ServerView::Topology,
             "serverload" => ServerView::ServerLoad,
+            "hotkeys" => ServerView::Hotkeys,
             "valuesearch" => ServerView::ValueSearch,
             "serverinfo" => ServerView::ServerInfo,
             _ => return None,
@@ -276,6 +281,7 @@ pub enum ServerToolsAction {
     KeyspaceNotifications,
     Topology,
     ServerLoad,
+    Hotkeys,
     ValueSearch,
     ServerInfo,
     /// Opens the local recycle-bin dialog (soft-deleted keys) instead of a

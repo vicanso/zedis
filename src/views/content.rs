@@ -19,11 +19,11 @@ use crate::{
         update_app_state_and_save_quiet_debounced,
     },
     views::{
-        ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisKeyTree,
-        ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisMonitor,
-        ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerInfo, ZedisServerLoad,
-        ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology, ZedisUnsupportedPanel,
-        ZedisValueSearch,
+        ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisHotkeys,
+        ZedisKeyTree, ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics,
+        ZedisMonitor, ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerInfo,
+        ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology,
+        ZedisUnsupportedPanel, ZedisValueSearch,
     },
 };
 use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
@@ -466,6 +466,7 @@ impl ZedisContent {
             ServerView::KeyspaceNotifications => cx.new(|cx| ZedisKeyspaceNotifications::new(state, window, cx)).into(),
             ServerView::Topology => cx.new(|cx| ZedisTopology::new(state, window, cx)).into(),
             ServerView::ServerLoad => cx.new(|cx| ZedisServerLoad::new(state, window, cx)).into(),
+            ServerView::Hotkeys => cx.new(|cx| ZedisHotkeys::new(state, window, cx)).into(),
             ServerView::ValueSearch => cx.new(|cx| ZedisValueSearch::new(state, window, cx)).into(),
             ServerView::ServerInfo => cx.new(|cx| ZedisServerInfo::new(state, window, cx)).into(),
         };

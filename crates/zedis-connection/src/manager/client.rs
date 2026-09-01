@@ -16,6 +16,9 @@
 //! slow logs, topology.
 
 use super::*;
+use crate::hotkeys::HotkeysReport;
+use crate::slot_stats::{SlotStatMetric, SlotStatRow, parse_slot_stats};
+use zedis_core::keysizes::{KeysizesDist, merge_keysizes, parse_keysizes};
 
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -782,6 +785,98 @@ impl RedisClient {
             .into_iter()
             .map(|(name, (calls, usec))| CommandStat { name, calls, usec })
             .collect())
+    }
+
+    /// `HOTKEYS START` (Redis 8.6) on every master — tracking is per node,
+    /// so a cluster collects on all of them at once. `count` is the top-K
+    /// size; both metric flags false falls back to CPU (the server rejects
+    /// an empty METRICS list).
+    pub async fn hotkeys_start(&self, cpu: bool, net: bool, count: u64) -> Result<()> {
+        let mut request = cmd("HOTKEYS");
+        request.arg("START").arg("METRICS");
+        match (cpu, net) {
+            (true, true) => request.arg(2).arg("CPU").arg("NET"),
+            (false, true) => request.arg(1).arg("NET"),
+            _ => request.arg(1).arg("CPU"),
+        };
+        request.arg("COUNT").arg(count);
+        // Replies are OK — or nil for a STOP/RESET with no session; type as
+        // Value so the idempotent no-op cases don't fail decoding.
+        let (_, _oks): (_, Vec<Value>) = self.query_async_masters(vec![request]).await?;
+        Ok(())
+    }
+
+    /// `HOTKEYS STOP` on every master. Idempotent server-side — stopping an
+    /// idle tracker answers OK, and the collected report stays readable.
+    pub async fn hotkeys_stop(&self) -> Result<()> {
+        let (_, _oks): (_, Vec<Value>) = self
+            .query_async_masters(vec![cmd("HOTKEYS").arg("STOP").clone()])
+            .await?;
+        Ok(())
+    }
+
+    /// `HOTKEYS RESET` on every master — frees the collection. The server
+    /// rejects it while tracking is active ("stop tracking first").
+    pub async fn hotkeys_reset(&self) -> Result<()> {
+        let (_, _oks): (_, Vec<Value>) = self
+            .query_async_masters(vec![cmd("HOTKEYS").arg("RESET").clone()])
+            .await?;
+        Ok(())
+    }
+
+    /// `HOTKEYS GET` on every master, merged into one report (cluster slots
+    /// are disjoint, so per-node top-K lists concatenate without double
+    /// counting). An empty report means no node ever collected.
+    pub async fn hotkeys_report(&self) -> Result<HotkeysReport> {
+        let (_, replies): (_, Vec<Value>) = self
+            .query_async_masters(vec![cmd("HOTKEYS").arg("GET").clone()])
+            .await?;
+        let mut report = HotkeysReport::default();
+        for reply in &replies {
+            report.merge_node_reply(reply);
+        }
+        report.sort();
+        Ok(report)
+    }
+
+    /// `CLUSTER SLOT-STATS ORDERBY <metric> LIMIT <limit> DESC` (Redis 8.2)
+    /// on every master. Each node reports only its own slots, so the union
+    /// of per-node top lists contains the true global top `limit`; rows come
+    /// back re-sorted by `metric`, truncated, and tagged with the owning
+    /// master's `host:port`. Sorting by an extended metric fails server-side
+    /// unless the cluster runs `cluster-slot-stats-enabled yes`.
+    pub async fn cluster_slot_stats(&self, metric: SlotStatMetric, limit: u64) -> Result<Vec<SlotStatRow>> {
+        let addrs = self.master_servers();
+        let mut request = cmd("CLUSTER");
+        request
+            .arg("SLOT-STATS")
+            .arg("ORDERBY")
+            .arg(metric.word())
+            .arg("LIMIT")
+            .arg(limit)
+            .arg("DESC");
+        let cmds = vec![Some(request); addrs.len()];
+        let replies: Vec<Option<Value>> = self.query_async_masters_with_option(cmds).await?;
+        let mut rows = Vec::new();
+        for (server, reply) in addrs.iter().zip(replies) {
+            if let Some(reply) = reply {
+                rows.extend(parse_slot_stats(&reply, &format!("{}:{}", server.host, server.port)));
+            }
+        }
+        rows.sort_by(|a, b| b.metric(metric).cmp(&a.metric(metric)).then(a.slot.cmp(&b.slot)));
+        rows.truncate(limit as usize);
+        Ok(rows)
+    }
+
+    /// `INFO keysizes` (Redis 8+) for the connection's database, summed
+    /// across masters. Empty on servers without the section.
+    pub async fn info_keysizes(&self) -> Result<Vec<KeysizesDist>> {
+        let (_, texts): (_, Vec<String>) = self
+            .query_async_masters(vec![cmd("INFO").arg("keysizes").clone()])
+            .await?;
+        Ok(merge_keysizes(
+            texts.iter().map(|t| parse_keysizes(t, self.db)).collect(),
+        ))
     }
 
     /// One bounded round of **search-by-value**: SCAN a single page across all
