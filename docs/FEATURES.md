@@ -62,7 +62,7 @@ Every collection is walked incrementally (`HSCAN` / `SSCAN` / `ZSCAN`, `LRANGE` 
 ### Specialized Type Viewers
 **Opaque values open in purpose-built, interactive viewers.**
 
-**Bitmap/Bitfield** paints bits on a GPU grid (`SETBIT`/`BITCOUNT`/`BITFIELD`); **HyperLogLog** shows `PFCOUNT` cardinality; **Vector Set + KNN** (Redis 8) walks the HNSW graph via `VSIM`; **Geo Map** plots a sorted set's members (`GEOPOS`) on a tile-less, zoom/pan radar, with a `GEOSEARCH` radius filter and Shift-click distance measuring; **Probabilistic** (RedisBloom: Bloom/Cuckoo/Count-Min/Top-K/t-digest) and **Time Series** (RedisTimeSeries `TS.INFO` + bucketed `TS.RANGE` chart) each get a dedicated card. Dispatched by the key's type / module.
+**Bitmap/Bitfield** paints bits on a GPU grid (`SETBIT`/`BITCOUNT`/`BITFIELD`); **HyperLogLog** shows `PFCOUNT` cardinality; **Vector Set + KNN** (Redis 8) walks the HNSW graph via `VSIM`, narrows it with a `FILTER` expression over element attributes (neighbours show theirs inline via `WITHATTRIBS` on 8.2+, `FILTER-EF` sets the candidate budget) and shows the queried element's dequantized `VEMB` components, copyable; **Geo Map** plots a sorted set's members (`GEOPOS`) on a tile-less, zoom/pan radar, with a `GEOSEARCH` radius filter and Shift-click distance measuring; **Probabilistic** (RedisBloom: Bloom/Cuckoo/Count-Min/Top-K/t-digest) and **Time Series** (RedisTimeSeries `TS.INFO` + bucketed `TS.RANGE` chart) each get a dedicated card. Dispatched by the key's type / module.
 
 ### Module Browsers
 **Dedicated panels for RediSearch (FT.*) and Functions (Lua libraries).**
