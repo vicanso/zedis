@@ -27,10 +27,12 @@
 //! is absent — but relative sizes are faithful, which is what big-key
 //! and prefix analysis need.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
 
 /// RDB opcodes (`RDB_OPCODE_*` in redis `rdb.h`).
+const OP_HASH_TEMPLATE: u8 = 0xF2;
 const OP_SLOT_INFO: u8 = 0xF4;
 const OP_FUNCTION2: u8 = 0xF5;
 const OP_FUNCTION_PRE_GA: u8 = 0xF6;
@@ -74,6 +76,22 @@ const T_HASH_LISTPACK_EX: u8 = 25;
 const T_STREAM_LISTPACKS_4: u8 = 26;
 /// Redis 8.6+: stream with per-group NACK zones on top of IDMP.
 const T_STREAM_LISTPACKS_5: u8 = 27;
+/// Redis 8.8 array type.
+const T_ARRAY: u8 = 28;
+/// Redis 8.10 template ("compact") hashes. The `_REF` forms are what a
+/// BGSAVE writes — they cite a template from the registry records at the
+/// top of the file; the self-contained forms carry their field names and
+/// only ever appear in DUMP payloads.
+const T_HASH_TMPL_LP: u8 = 29;
+const T_HASH_TMPL_LP_REF: u8 = 30;
+const T_HASH_TMPL_ARRAY: u8 = 31;
+const T_HASH_TMPL_ARRAY_REF: u8 = 32;
+
+/// Array element tags (`AR_RDB_TAG_*` in `sparsearray.h`).
+const AR_TAG_SDS: u64 = 0;
+const AR_TAG_INT: u64 = 1;
+const AR_TAG_FLOAT: u64 = 2;
+const AR_TAG_SMALLSTR: u64 = 3;
 
 /// Module value opcodes (`RDB_MODULE_OPCODE_*`).
 const MODULE_OP_EOF: u64 = 0;
@@ -111,7 +129,7 @@ pub struct RdbEntry {
     /// matching how the live key tree renders them).
     pub key: String,
     /// Canonical Redis type name: `string` / `list` / `set` / `zset` /
-    /// `hash` / `stream` / `module`.
+    /// `hash` / `stream` / `array` / `module`.
     pub key_type: &'static str,
     /// Absolute expiry in unix milliseconds, `None` for persistent keys.
     pub expire_at_ms: Option<i64>,
@@ -130,6 +148,11 @@ pub struct RdbParser<R: Read> {
     version: u32,
     current_db: u64,
     aux: Vec<(String, String)>,
+    /// Hash-template registry (Redis 8.10): template id → field count,
+    /// from the `OP_HASH_TEMPLATE` records that precede every key. A
+    /// `TMPL_ARRAY_REF` hash carries only its values, so the count comes
+    /// from here.
+    templates: HashMap<u64, u64>,
     done: bool,
 }
 
@@ -148,6 +171,7 @@ impl<R: Read> RdbParser<R> {
             version: 0,
             current_db: 0,
             aux: Vec::new(),
+            templates: HashMap::new(),
             done: false,
         };
         let mut header = [0u8; 9];
@@ -163,7 +187,8 @@ impl<R: Read> RdbParser<R> {
         Ok(parser)
     }
 
-    /// RDB format version from the header (Redis 7.x writes 11/12).
+    /// RDB format version from the header (Redis 7.x writes 11/12, 8.x
+    /// 13–15).
     pub fn rdb_version(&self) -> u32 {
         self.version
     }
@@ -194,9 +219,12 @@ impl<R: Read> RdbParser<R> {
                 OP_EOF => {
                     self.done = true;
                     // CRC64 trailer (version >= 5). Best-effort: a dump
-                    // written with `rdbchecksum no` still carries zeros.
+                    // written with `rdbchecksum no` still carries zeros —
+                    // counted into the offset so progress reaches 100%.
                     let mut trailer = [0u8; 8];
-                    let _ = self.reader.read(&mut trailer);
+                    if let Ok(n) = self.reader.read(&mut trailer) {
+                        self.offset += n as u64;
+                    }
                     return Ok(None);
                 }
                 OP_SELECTDB => {
@@ -243,6 +271,15 @@ impl<R: Read> RdbParser<R> {
                     self.read_length_value()?;
                     self.read_length_value()?;
                     self.read_length_value()?;
+                }
+                OP_HASH_TEMPLATE => {
+                    // 8.10 template registry record: [id][field_count][field…].
+                    let id = self.read_length_value()?;
+                    let field_count = self.read_length_value()?;
+                    for _ in 0..field_count {
+                        self.skip_string()?;
+                    }
+                    self.templates.insert(id, field_count);
                 }
                 value_type => {
                     let start = entry_start.unwrap_or(opcode_offset);
@@ -518,8 +555,84 @@ impl<R: Read> RdbParser<R> {
                 self.skip_module_opcodes()?;
                 Ok("module")
             }
+            T_ARRAY => {
+                self.skip_array()?;
+                Ok("array")
+            }
+            T_HASH_TMPL_LP_REF => {
+                // One listpack blob; its first entry is the template id.
+                self.skip_string()?;
+                Ok("hash")
+            }
+            T_HASH_TMPL_ARRAY_REF => {
+                let id = self.read_length_value()?;
+                let Some(field_count) = self.templates.get(&id).copied() else {
+                    return Err(self.err(format!("hash references unknown template id {id}")));
+                };
+                for _ in 0..field_count {
+                    self.skip_string()?;
+                }
+                Ok("hash")
+            }
+            T_HASH_TMPL_LP => {
+                self.skip_template_fields()?;
+                self.skip_string()?; // values listpack
+                Ok("hash")
+            }
+            T_HASH_TMPL_ARRAY => {
+                let field_count = self.skip_template_fields()?;
+                for _ in 0..field_count {
+                    self.skip_string()?;
+                }
+                Ok("hash")
+            }
             T_MODULE_PRE_GA => Err(self.err("pre-GA module value (Redis < 4.0 GA) is not supported")),
             other => Err(self.err(format!("unknown RDB value type {other}"))),
+        }
+    }
+
+    /// Redis 8.8 array: `[count][insert flag (0|1)][insert index]?` then
+    /// `count` × `[index][tag][value]`, where the tag picks the value
+    /// encoding — string (plain or small), 8-byte LE integer, or 8-byte
+    /// binary double.
+    fn skip_array(&mut self) -> Result<()> {
+        let count = self.read_length_value()?;
+        match self.read_length_value()? {
+            0 => {}
+            1 => {
+                self.read_length_value()?; // insert index
+            }
+            flag => return Err(self.err(format!("invalid array insert flag {flag}"))),
+        }
+        for _ in 0..count {
+            self.read_length_value()?; // element index
+            match self.read_length_value()? {
+                AR_TAG_SDS | AR_TAG_SMALLSTR => self.skip_string()?,
+                AR_TAG_INT | AR_TAG_FLOAT => self.skip(8)?,
+                tag => return Err(self.err(format!("unknown array element tag {tag}"))),
+            }
+        }
+        Ok(())
+    }
+
+    /// The field-name block of a self-contained (DUMP-form) template hash:
+    /// `[format]` then either one listpack blob (0) or `[count][field…]`
+    /// (1). Returns the field count, which `TMPL_ARRAY` needs to know how
+    /// many values follow.
+    fn skip_template_fields(&mut self) -> Result<u64> {
+        match self.read_length_value()? {
+            0 => {
+                let blob = self.read_string()?;
+                listpack_len(&blob).ok_or_else(|| self.err("template field listpack has no element count"))
+            }
+            1 => {
+                let count = self.read_length_value()?;
+                for _ in 0..count {
+                    self.skip_string()?;
+                }
+                Ok(count)
+            }
+            format => Err(self.err(format!("unknown template field format {format}"))),
         }
     }
 
@@ -622,6 +735,14 @@ impl<R: Read> RdbParser<R> {
 /// LZF decompression (the only variant Redis uses). Hand-rolled to keep
 /// the dependency surface lean — the format is a simple mix of literal
 /// runs and back-references.
+/// Element count from a listpack header (`<total bytes u32><count u16>`).
+/// `None` when the header's count slot is the 65535 "unknown" sentinel —
+/// a listpack that large is never a template's field list.
+fn listpack_len(blob: &[u8]) -> Option<u64> {
+    let count = u16::from_le_bytes([*blob.get(4)?, *blob.get(5)?]);
+    (count != u16::MAX).then_some(u64::from(count))
+}
+
 fn lzf_decompress(input: &[u8], expected_len: usize) -> std::result::Result<Vec<u8>, String> {
     let mut out: Vec<u8> = Vec::with_capacity(expected_len);
     let mut i = 0usize;
@@ -712,6 +833,174 @@ mod tests {
             entries.push(entry);
         }
         entries
+    }
+
+    fn summary(entries: &[RdbEntry]) -> Vec<(&str, &str)> {
+        entries.iter().map(|e| (e.key.as_str(), e.key_type)).collect()
+    }
+
+    #[test]
+    fn parses_redis_8_8_arrays() {
+        // count 4, insert cursor at 6, then int / double / small string /
+        // string elements at sparse indexes.
+        let data = Fixture::new()
+            .op(T_ARRAY)
+            .str(b"arr")
+            .byte(4)
+            .byte(1)
+            .byte(6)
+            .byte(0)
+            .byte(AR_TAG_INT as u8)
+            .bytes(&(-7i64).to_le_bytes())
+            .byte(1)
+            .byte(AR_TAG_FLOAT as u8)
+            .bytes(&4.5f64.to_le_bytes())
+            .byte(2)
+            .byte(AR_TAG_SMALLSTR as u8)
+            .str(b"ab")
+            .byte(5)
+            .byte(AR_TAG_SDS as u8)
+            .str(b"hello")
+            .op(T_STRING)
+            .str(b"after")
+            .str(b"x")
+            .eof();
+        let entries = parse_all(&data);
+        assert_eq!(summary(&entries), [("arr", "array"), ("after", "string")]);
+        // type (1) + key (4) + count/flag/cursor (3) + 4 elements:
+        // (2+8) + (2+8) + (2+3) + (2+6) = 33 → 41.
+        assert_eq!(entries[0].serialized_bytes, 41);
+
+        let bad_tag = Fixture::new()
+            .op(T_ARRAY)
+            .str(b"arr")
+            .byte(1)
+            .byte(0)
+            .byte(0)
+            .byte(9)
+            .eof();
+        let err = RdbParser::new(bad_tag.as_slice())
+            .expect("valid header")
+            .next_entry()
+            .expect_err("tag 9 is not an array element encoding");
+        assert!(err.message.contains("array element tag 9"), "{err}");
+    }
+
+    #[test]
+    fn template_registry_resolves_ref_encoded_hashes() {
+        // Two registry records (ids 0 and 7), a TMPL_ARRAY_REF hash citing
+        // id 7 (two values), a TMPL_LP_REF hash (one listpack blob).
+        let data = Fixture::new()
+            .op(OP_HASH_TEMPLATE)
+            .byte(0)
+            .byte(3)
+            .str(b"a")
+            .str(b"b")
+            .str(b"c")
+            .op(OP_HASH_TEMPLATE)
+            .byte(7)
+            .byte(2)
+            .str(b"name")
+            .str(b"age")
+            .op(T_HASH_TMPL_ARRAY_REF)
+            .str(b"user:1")
+            .byte(7)
+            .str(b"bob")
+            .str(b"42")
+            .op(T_HASH_TMPL_LP_REF)
+            .str(b"user:2")
+            .str(b"<listpack>")
+            .op(T_STRING)
+            .str(b"s")
+            .str(b"v")
+            .eof();
+        let entries = parse_all(&data);
+        assert_eq!(
+            summary(&entries),
+            [("user:1", "hash"), ("user:2", "hash"), ("s", "string")]
+        );
+
+        let unknown = Fixture::new().op(T_HASH_TMPL_ARRAY_REF).str(b"orphan").byte(3).eof();
+        let err = RdbParser::new(unknown.as_slice())
+            .expect("valid header")
+            .next_entry()
+            .expect_err("no template 3 was registered");
+        assert!(err.message.contains("unknown template id 3"), "{err}");
+    }
+
+    #[test]
+    fn self_contained_template_hashes_parse_too() {
+        // DUMP-form layouts: raw field names + values; listpack field names
+        // (header count 2) + a values listpack; listpack field names + two
+        // raw values.
+        let fields_lp = [12, 0, 0, 0, 2, 0, b'x', b'y', 0xFF];
+        let data = Fixture::new()
+            .op(T_HASH_TMPL_ARRAY)
+            .str(b"h1")
+            .byte(1)
+            .byte(2)
+            .str(b"f1")
+            .str(b"f2")
+            .str(b"v1")
+            .str(b"v2")
+            .op(T_HASH_TMPL_LP)
+            .str(b"h2")
+            .byte(0)
+            .str(&fields_lp)
+            .str(b"<values lp>")
+            .op(T_HASH_TMPL_ARRAY)
+            .str(b"h3")
+            .byte(0)
+            .str(&fields_lp)
+            .str(b"v1")
+            .str(b"v2")
+            .op(T_STRING)
+            .str(b"s")
+            .str(b"v")
+            .eof();
+        let entries = parse_all(&data);
+        assert_eq!(
+            summary(&entries),
+            [("h1", "hash"), ("h2", "hash"), ("h3", "hash"), ("s", "string")]
+        );
+    }
+
+    #[test]
+    fn parses_a_real_redis_8_10_dump() {
+        // Written by redis-server 8.10.1 (`SAVE`): plain keys, two arrays,
+        // template hashes in both REF encodings (listpack and array), and
+        // the template registry records they cite.
+        let data: &[u8] = include_bytes!("../tests/fixtures/redis-8.10.1.rdb");
+        let mut parser = RdbParser::new(data).expect("valid header");
+        assert_eq!(parser.rdb_version(), 15);
+        let mut entries = Vec::new();
+        while let Some(entry) = parser.next_entry().expect("parse entry") {
+            entries.push(entry);
+        }
+        let mut seen = summary(&entries);
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            [
+                ("arr:dense", "array"),
+                ("arr:sparse", "array"),
+                ("plain:hash", "hash"),
+                ("plain:list", "list"),
+                ("plain:str", "string"),
+                ("plain:stream", "stream"),
+                ("th:arr1", "hash"),
+                ("th:arr2", "hash"),
+                ("th:lp1", "hash"),
+                ("th:lp2", "hash"),
+                ("th:other", "hash"),
+            ]
+        );
+        assert_eq!(parser.bytes_read(), data.len() as u64, "the whole file was consumed");
+        assert!(
+            parser.aux().iter().any(|(k, v)| k == "redis-ver" && v == "8.10.1"),
+            "{:?}",
+            parser.aux()
+        );
     }
 
     #[test]
