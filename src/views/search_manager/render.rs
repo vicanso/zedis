@@ -433,6 +433,7 @@ impl ZedisSearchManager {
                 );
             }
         }
+        let params_editor = self.render_params_editor(cx);
         let muted = cx.theme().muted_foreground;
         let mode_search_selected = self.mode == SearchMode::Search;
         let mode_aggregate_selected = self.mode == SearchMode::Aggregate;
@@ -487,8 +488,69 @@ impl ZedisSearchManager {
                                 .child(Label::new(i18n_search(cx, "fields_hint")).text_xs().text_color(muted))
                                 .children(hint_chips),
                         )
-                    }),
+                    })
+                    .children(params_editor),
             )
+    }
+
+    /// One row per `$name` the query references: the placeholder, an
+    /// encoding toggle (TEXT, or a vector float type matching the field's
+    /// TYPE) and the value input. `None` while the query has no
+    /// placeholders, so the bar stays as compact as before.
+    pub(super) fn render_params_editor(&self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
+        let query = self.query_input.read(cx).value().to_string();
+        let rows: Vec<(String, ParamKind, Entity<InputState>)> = self
+            .active_params(&query)
+            .into_iter()
+            .map(|row| (row.name.clone(), row.kind, row.value.clone()))
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        let muted = cx.theme().muted_foreground;
+        let mut elements: Vec<gpui::AnyElement> = Vec::new();
+        for (name, current, value) in rows {
+            let mut kinds = h_flex().gap_1();
+            for kind in ParamKind::ALL {
+                let active = current == kind;
+                let row_name = name.clone();
+                kinds = kinds.child(
+                    Button::new(SharedString::from(format!("search-param-{name}-{}", kind.label())))
+                        .xsmall()
+                        .when(active, |b| b.primary())
+                        .when(!active, |b| b.ghost())
+                        .label(kind.label())
+                        .tooltip(i18n_search(cx, "params_kind_tooltip"))
+                        .on_click(cx.listener(move |this, _, _w, cx| this.set_param_kind(&row_name, kind, cx))),
+                );
+            }
+            elements.push(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Label::new(SharedString::from(format!("${name}")))
+                            .text_xs()
+                            .w(px(110.0)),
+                    )
+                    .child(kinds)
+                    .child(Input::new(&value).small().flex_1())
+                    .into_any_element(),
+            );
+        }
+        Some(
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_search(cx, "params_label")).text_xs().text_color(muted))
+                        .child(Label::new(i18n_search(cx, "params_hint")).text_xs().text_color(muted)),
+                )
+                .children(elements)
+                .into_any_element(),
+        )
     }
 
     pub(super) fn render_options_bar(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
@@ -1049,6 +1111,10 @@ impl ZedisSearchManager {
         let mut chips: Vec<gpui::AnyElement> = Vec::new();
         for (i, (label, query)) in examples.into_iter().enumerate() {
             let q = query.clone();
+            // A `$name` example needs its value first — insert it and let
+            // the params editor appear instead of running into "No such
+            // parameter".
+            let run = param_names(&query).is_empty();
             chips.push(
                 Button::new(SharedString::from(format!("search-example-{i}")))
                     .outline()
@@ -1056,7 +1122,7 @@ impl ZedisSearchManager {
                     .label(label)
                     .tooltip(SharedString::from(query))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.apply_example_query(&q, true, window, cx);
+                        this.apply_example_query(&q, run, window, cx);
                     }))
                     .into_any_element(),
             );

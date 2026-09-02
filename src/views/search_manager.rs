@@ -52,9 +52,11 @@ use gpui_component::{
     spinner::Spinner,
     v_flex,
 };
+use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::info;
+use zedis_core::search_params::{ParamKind, encode_param, is_vector_param, param_names};
 use zedis_ui::ZedisDialog;
 
 mod render;
@@ -135,6 +137,14 @@ struct AddFieldForm {
     no_index: bool,
 }
 
+/// One `PARAMS` binding: the `$name` a query references, how its text is
+/// encoded, and the input that holds the text.
+struct ParamRow {
+    name: String,
+    kind: ParamKind,
+    value: Entity<InputState>,
+}
+
 pub struct ZedisSearchManager {
     server_state: Entity<ZedisServerState>,
     indexes: Vec<SharedString>,
@@ -163,6 +173,11 @@ pub struct ZedisSearchManager {
     sort_by_input: Entity<InputState>,
     /// DIALECT version string (empty = omit / server default).
     dialect_input: Entity<InputState>,
+    /// `PARAMS` rows, one per `$name` ever seen in the query bar. Rows
+    /// outlive their placeholder so retyping `$BLOB` never loses a pasted
+    /// vector; only the names the query currently references are shown
+    /// and sent (`active_params`).
+    params: Vec<ParamRow>,
 
     reducer_fn: ReducerFn,
     /// When SORTBY is set: `true` = DESC, `false` = ASC.
@@ -217,10 +232,10 @@ impl ZedisSearchManager {
         // Pressing Enter in the query bar triggers a run — keeps the UX
         // similar to `redis-cli` and the existing JSONPath bar.
         subscriptions.push(
-            cx.subscribe_in(&query_input, window, |this, _state, event, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.run(window, cx);
-                }
+            cx.subscribe_in(&query_input, window, |this, _state, event, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.run(window, cx),
+                InputEvent::Change => this.sync_params(window, cx),
+                _ => {}
             }),
         );
         let limit_offset_input = cx.new(|cx| InputState::new(window, cx).default_value("0"));
@@ -258,6 +273,7 @@ impl ZedisSearchManager {
             reducer_alias_input,
             sort_by_input,
             dialect_input,
+            params: Vec::new(),
             reducer_fn: ReducerFn::Count,
             sort_desc: false,
             schema_collapsed: false,
@@ -737,6 +753,15 @@ impl ZedisSearchManager {
         let mode = self.mode;
         let offset = parse_u32(&self.limit_offset_input.read(cx).value()).unwrap_or(0);
         let count = parse_u32(&self.limit_count_input.read(cx).value()).unwrap_or(DEFAULT_LIMIT_COUNT);
+        let dialect = parse_u32(&self.dialect_input.read(cx).value());
+        let params = match self.collect_params(&query, cx) {
+            Ok(params) => params,
+            Err(message) => {
+                self.error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
 
         self.running_query = true;
         self.error = None;
@@ -762,7 +787,6 @@ impl ZedisSearchManager {
                     let t = sort_raw.trim();
                     if t.is_empty() { None } else { Some(t.to_string()) }
                 };
-                let dialect = parse_u32(&self.dialect_input.read(cx).value());
                 let opts = SearchOptions {
                     limit: (offset, count),
                     return_fields,
@@ -772,6 +796,7 @@ impl ZedisSearchManager {
                     sort_by,
                     sort_desc: self.sort_desc,
                     dialect,
+                    params,
                 };
                 let index_for_task = index.clone();
                 self._query_task = Some(cx.spawn(async move |handle, cx| {
@@ -813,6 +838,8 @@ impl ZedisSearchManager {
                     group_by,
                     reducer,
                     limit: Some((offset, count)),
+                    dialect,
+                    params,
                 };
                 let index_for_task = index.clone();
                 self._query_task = Some(cx.spawn(async move |handle, cx| {
@@ -865,6 +892,14 @@ impl ZedisSearchManager {
         };
         let dialect = parse_u32(&self.dialect_input.read(cx).value());
         let aggregate = self.mode == SearchMode::Aggregate;
+        let params = match self.collect_params(&query, cx) {
+            Ok(params) => params,
+            Err(message) => {
+                self.error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
 
         self.running_query = true;
         self.error = None;
@@ -872,9 +907,9 @@ impl ZedisSearchManager {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 if profile {
-                    ft_profile(&mut conn, index.as_ref(), aggregate, &query).await
+                    ft_profile(&mut conn, index.as_ref(), aggregate, &query, &params, dialect).await
                 } else {
-                    ft_explain(&mut conn, index.as_ref(), &query, dialect).await
+                    ft_explain(&mut conn, index.as_ref(), &query, &params, dialect).await
                 }
             });
             let result: Result<String> = task.await.map_err(Into::into);
@@ -917,6 +952,7 @@ impl ZedisSearchManager {
             state.set_value(SharedString::from(next), window, cx);
             state.focus(window, cx);
         });
+        self.sync_params(window, cx);
         cx.notify();
     }
 
@@ -925,6 +961,7 @@ impl ZedisSearchManager {
         self.query_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(query.to_string()), window, cx);
         });
+        self.sync_params(window, cx);
         if run {
             self.run(window, cx);
         } else {
@@ -971,6 +1008,79 @@ impl ZedisSearchManager {
     }
 
     /// Example (label, query) pairs derived from the current schema, plus `*`.
+    /// Keep one value row per `$name` the query references. New names get
+    /// a row (vector slots — `KNN k @f $name`, `VECTOR_RANGE r $name` —
+    /// default to FLOAT32, anything else to TEXT); names that vanished keep
+    /// their row while it holds text, and are pruned once empty so typing
+    /// `$BLOB` letter by letter leaves no `$B` / `$BL` litter behind.
+    fn sync_params(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let query = self.query_input.read(cx).value().to_string();
+        let names = param_names(&query);
+        let before = self.params.len();
+        self.params
+            .retain(|row| names.contains(&row.name) || !row.value.read(cx).value().trim().is_empty());
+        for name in names {
+            if self.params.iter().any(|row| row.name == name) {
+                continue;
+            }
+            let kind = if is_vector_param(&query, &name) {
+                ParamKind::Float32
+            } else {
+                ParamKind::Text
+            };
+            let value =
+                cx.new(|cx| InputState::new(window, cx).placeholder(i18n_search(cx, "params_value_placeholder")));
+            self.params.push(ParamRow { name, kind, value });
+        }
+        if self.params.len() != before {
+            cx.notify();
+        }
+    }
+
+    /// The rows the query currently references, in placeholder order.
+    fn active_params(&self, query: &str) -> Vec<&ParamRow> {
+        param_names(query)
+            .into_iter()
+            .filter_map(|name| self.params.iter().find(|row| row.name == name))
+            .collect()
+    }
+
+    /// Encode every active `$name` for the wire; the first missing or
+    /// malformed value aborts with a message naming the parameter, so the
+    /// server never sees a half-bound query.
+    fn collect_params(&self, query: &str, cx: &gpui::App) -> Result<Vec<(String, Vec<u8>)>, SharedString> {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let mut out = Vec::new();
+        for row in self.active_params(query) {
+            let text = row.value.read(cx).value().to_string();
+            if text.trim().is_empty() {
+                return Err(t!("search.params_missing", name = row.name.as_str(), locale = locale)
+                    .to_string()
+                    .into());
+            }
+            let bytes = encode_param(row.kind, &text).map_err(|reason| {
+                SharedString::from(
+                    t!(
+                        "search.params_invalid",
+                        name = row.name.as_str(),
+                        reason = reason,
+                        locale = locale
+                    )
+                    .to_string(),
+                )
+            })?;
+            out.push((row.name.clone(), bytes));
+        }
+        Ok(out)
+    }
+
+    fn set_param_kind(&mut self, name: &str, kind: ParamKind, cx: &mut gpui::Context<Self>) {
+        if let Some(row) = self.params.iter_mut().find(|row| row.name == name) {
+            row.kind = kind;
+            cx.notify();
+        }
+    }
+
     fn example_queries(&self) -> Vec<(SharedString, String)> {
         let mut out = vec![("*".into(), "*".to_string())];
         let Some(info) = &self.index_info else {

@@ -67,7 +67,7 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 模块面板
 **RediSearch（FT.*）与 Functions（Lua library）的专用面板。**
 
-**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS`。模块 / 版本不满足时自动隐藏。
+**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。查询里的每个 `$name` 占位符都有一行 **PARAMS 编辑器**：TEXT，或向量类型（FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16）把逗号分隔的浮点数编成 `KNN` / `VECTOR_RANGE` 需要的小端二进制；绑定同样随 `FT.EXPLAIN` / `FT.PROFILE` 发送。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS`。模块 / 版本不满足时自动隐藏。
 
 ### Redis Streams
 **浏览、实时跟踪、管理消费者组，全程不离开 GUI。**

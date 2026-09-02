@@ -30,12 +30,14 @@ use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
     CommandStatus, ConflictMode, ExpireCondition, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus,
-    RedisAsyncConn, RedisServer, RestoreStatus, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user,
-    acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager,
-    get_servers, open_single_connection, parse_readable_entries, probe_server_features, read_readable_chunk,
-    restore_keys_chunk, save_servers, sniff_import_format, split_acl_rules, write_readable_chunk,
+    RedisAsyncConn, RedisServer, RestoreStatus, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
+    acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain,
+    ft_search, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
+    probe_server_features, read_readable_chunk, restore_keys_chunk, save_servers, sniff_import_format, split_acl_rules,
+    write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
+use zedis_core::search_params::{ParamKind, encode_param};
 
 /// `host:port` from an env var, or `None` when that scenario wasn't started.
 fn scenario(var: &str) -> Option<(String, u16)> {
@@ -1455,5 +1457,87 @@ fn stack_modules_are_detected_and_usable() {
         let listing = zedis_connection::ft_list(&mut c).await.expect("ft._list");
         assert!(!listing.unsupported);
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// `FT.SEARCH … PARAMS`: a KNN query bound to a FLOAT32 blob encoded by
+/// `search_params` ranks the nearest document first, and `FT.EXPLAIN`
+/// plans the same query only because the binding travels with it.
+#[test]
+#[ignore]
+fn stack_search_params_bind_a_knn_vector() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack-knn", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let index = unique("idx");
+        let prefix = unique("vec");
+        cmd("FT.CREATE")
+            .arg(&index)
+            .arg("ON")
+            .arg("HASH")
+            .arg("PREFIX")
+            .arg(1)
+            .arg(format!("{prefix}:"))
+            .arg("SCHEMA")
+            .arg("v")
+            .arg("VECTOR")
+            .arg("FLAT")
+            .arg(6)
+            .arg("TYPE")
+            .arg("FLOAT32")
+            .arg("DIM")
+            .arg(2)
+            .arg("DISTANCE_METRIC")
+            .arg("L2")
+            .exec_async(&mut c)
+            .await
+            .expect("ft.create");
+        for (name, vector) in [("a", "1, 0"), ("b", "0, 1")] {
+            cmd("HSET")
+                .arg(format!("{prefix}:{name}"))
+                .arg("v")
+                .arg(encode_param(ParamKind::Float32, vector).expect("encode"))
+                .exec_async(&mut c)
+                .await
+                .expect("hset");
+        }
+
+        let query = "*=>[KNN 2 @v $BLOB]";
+        let params = vec![(
+            "BLOB".to_string(),
+            encode_param(ParamKind::Float32, "0.9, 0.1").expect("encode"),
+        )];
+        let opts = SearchOptions {
+            limit: (0, 10),
+            dialect: Some(2),
+            params: params.clone(),
+            ..Default::default()
+        };
+        let result = ft_search(&mut c, &index, query, &opts).await.expect("ft.search");
+        assert_eq!(result.total, 2);
+        assert_eq!(
+            result.hits.first().map(|h| h.doc_id.as_str()),
+            Some(format!("{prefix}:a").as_str()),
+            "(0.9, 0.1) is nearest to (1, 0)"
+        );
+        let plan = ft_explain(&mut c, &index, query, &params, Some(2))
+            .await
+            .expect("ft.explain");
+        assert!(plan.contains("VECTOR"), "plan names the vector iterator: {plan}");
+        assert!(
+            ft_explain(&mut c, &index, query, &[], Some(2)).await.is_err(),
+            "without the binding the server refuses to plan"
+        );
+
+        cmd("FT.DROPINDEX")
+            .arg(&index)
+            .arg("DD")
+            .exec_async(&mut c)
+            .await
+            .expect("ft.dropindex");
     });
 }

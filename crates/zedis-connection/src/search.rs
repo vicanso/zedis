@@ -27,7 +27,7 @@
 
 use super::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use redis::{Value, cmd};
+use redis::{Cmd, Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -123,6 +123,9 @@ pub struct SearchOptions {
     /// Query dialect version (`DIALECT N`). `None` omits the clause so the
     /// server default applies. Dialects ≥ 2 unlock modern syntax.
     pub dialect: Option<u32>,
+    /// `PARAMS` bindings for the query's `$name` placeholders — values are
+    /// raw bytes because a KNN / VECTOR_RANGE blob is a binary float array.
+    pub params: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -146,6 +149,10 @@ pub struct AggregateOptions {
     pub group_by: Vec<String>,
     pub reducer: Option<ReducerSpec>,
     pub limit: Option<(u32, u32)>,
+    /// `DIALECT N` — a KNN clause needs ≥ 2 here just like in FT.SEARCH.
+    pub dialect: Option<u32>,
+    /// `PARAMS` bindings, see [`SearchOptions::params`].
+    pub params: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,30 +364,75 @@ pub async fn ft_info(conn: &mut RedisAsyncConn, index: &str) -> Result<IndexInfo
 /// the server's own indented tree, one bulk string with embedded
 /// newlines. Also valid for the query half of an aggregation (the plan
 /// covers the filter expression, not the pipeline).
-pub async fn ft_explain(conn: &mut RedisAsyncConn, index: &str, query: &str, dialect: Option<u32>) -> Result<String> {
-    let mut c = cmd("FT.EXPLAIN");
-    c.arg(index).arg(query);
+/// `PARAMS n name value …` — binary-safe values, so a vector blob goes out
+/// as the exact bytes the field's TYPE expects.
+fn push_params(c: &mut Cmd, params: &[(String, Vec<u8>)]) {
+    if params.is_empty() {
+        return;
+    }
+    c.arg("PARAMS").arg(params.len() * 2);
+    for (name, value) in params {
+        c.arg(name.as_str()).arg(value.as_slice());
+    }
+}
+
+fn push_dialect(c: &mut Cmd, dialect: Option<u32>) {
     if let Some(d) = dialect {
         c.arg("DIALECT").arg(d);
     }
-    let value: Value = c.query_async(conn).await?;
+}
+
+/// `FT.EXPLAIN index query [PARAMS …] [DIALECT n]` — a parameterised query
+/// cannot even be planned without its bindings ("No such parameter").
+fn explain_cmd(index: &str, query: &str, params: &[(String, Vec<u8>)], dialect: Option<u32>) -> Cmd {
+    let mut c = cmd("FT.EXPLAIN");
+    c.arg(index).arg(query);
+    push_params(&mut c, params);
+    push_dialect(&mut c, dialect);
+    c
+}
+
+pub async fn ft_explain(
+    conn: &mut RedisAsyncConn,
+    index: &str,
+    query: &str,
+    params: &[(String, Vec<u8>)],
+    dialect: Option<u32>,
+) -> Result<String> {
+    let value: Value = explain_cmd(index, query, params, dialect).query_async(conn).await?;
     parse_simple_string(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.EXPLAIN {index} returned unexpected shape"),
     })
 }
 
-/// `FT.PROFILE index SEARCH|AGGREGATE QUERY query` — run the query and
-/// return the profile section (parsing/iterator timings) rendered as
-/// indented text. The reply nests differently per module version and
-/// RESP transport, so instead of committing to a schema the raw tree is
-/// pretty-printed — robust the same way the other parsers here are.
-pub async fn ft_profile(conn: &mut RedisAsyncConn, index: &str, aggregate: bool, query: &str) -> Result<String> {
+/// `FT.PROFILE index SEARCH|AGGREGATE QUERY query [PARAMS …] [DIALECT n]`.
+fn profile_cmd(index: &str, aggregate: bool, query: &str, params: &[(String, Vec<u8>)], dialect: Option<u32>) -> Cmd {
     let mut c = cmd("FT.PROFILE");
     c.arg(index)
         .arg(if aggregate { "AGGREGATE" } else { "SEARCH" })
         .arg("QUERY")
         .arg(query);
-    let value: Value = c.query_async(conn).await?;
+    push_params(&mut c, params);
+    push_dialect(&mut c, dialect);
+    c
+}
+
+/// `FT.PROFILE` — run the query and return the profile section
+/// (parsing/iterator timings) rendered as indented text. The reply nests
+/// differently per module version and RESP transport, so instead of
+/// committing to a schema the raw tree is pretty-printed — robust the same
+/// way the other parsers here are.
+pub async fn ft_profile(
+    conn: &mut RedisAsyncConn,
+    index: &str,
+    aggregate: bool,
+    query: &str,
+    params: &[(String, Vec<u8>)],
+    dialect: Option<u32>,
+) -> Result<String> {
+    let value: Value = profile_cmd(index, aggregate, query, params, dialect)
+        .query_async(conn)
+        .await?;
     let profile = profile_section(&value);
     let mut out = String::new();
     pretty_value(profile, 0, &mut out);
@@ -392,14 +444,9 @@ pub async fn ft_profile(conn: &mut RedisAsyncConn, index: &str, aggregate: bool,
     Ok(out)
 }
 
-/// Build and dispatch an `FT.SEARCH` invocation. Options that are
-/// "empty" simply omit their clause.
-pub async fn ft_search(
-    conn: &mut RedisAsyncConn,
-    index: &str,
-    query: &str,
-    opts: &SearchOptions,
-) -> Result<SearchResult> {
+/// Build an `FT.SEARCH` invocation. Options that are "empty" simply omit
+/// their clause.
+fn search_cmd(index: &str, query: &str, opts: &SearchOptions) -> Cmd {
     let mut c = cmd("FT.SEARCH");
     c.arg(index).arg(query);
     if !opts.return_fields.is_empty() {
@@ -429,21 +476,24 @@ pub async fn ft_search(
     }
     let (offset, count) = opts.limit;
     c.arg("LIMIT").arg(offset).arg(count);
-    if let Some(d) = opts.dialect {
-        c.arg("DIALECT").arg(d);
-    }
-    let value: Value = c.query_async(conn).await?;
+    push_params(&mut c, &opts.params);
+    push_dialect(&mut c, opts.dialect);
+    c
+}
+
+pub async fn ft_search(
+    conn: &mut RedisAsyncConn,
+    index: &str,
+    query: &str,
+    opts: &SearchOptions,
+) -> Result<SearchResult> {
+    let value: Value = search_cmd(index, query, opts).query_async(conn).await?;
     parse_search(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.SEARCH {index} returned unexpected shape"),
     })
 }
 
-pub async fn ft_aggregate(
-    conn: &mut RedisAsyncConn,
-    index: &str,
-    query: &str,
-    opts: &AggregateOptions,
-) -> Result<AggregateResult> {
+fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions) -> Cmd {
     let mut c = cmd("FT.AGGREGATE");
     c.arg(index).arg(query);
     if !opts.group_by.is_empty() {
@@ -474,7 +524,18 @@ pub async fn ft_aggregate(
     if let Some((offset, count)) = opts.limit {
         c.arg("LIMIT").arg(offset).arg(count);
     }
-    let value: Value = c.query_async(conn).await?;
+    push_params(&mut c, &opts.params);
+    push_dialect(&mut c, opts.dialect);
+    c
+}
+
+pub async fn ft_aggregate(
+    conn: &mut RedisAsyncConn,
+    index: &str,
+    query: &str,
+    opts: &AggregateOptions,
+) -> Result<AggregateResult> {
+    let value: Value = aggregate_cmd(index, query, opts).query_async(conn).await?;
     parse_aggregate(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.AGGREGATE {index} returned unexpected shape"),
     })
@@ -878,9 +939,94 @@ fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redis::Arg;
 
     fn bs(s: &str) -> Value {
         Value::BulkString(s.as_bytes().to_vec())
+    }
+
+    fn args(c: &Cmd) -> Vec<Vec<u8>> {
+        c.args_iter()
+            .map(|a| match a {
+                Arg::Simple(bytes) => bytes.to_vec(),
+                // `Arg` is non-exhaustive; a cursor never appears here.
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    fn position(args: &[Vec<u8>], word: &str) -> usize {
+        args.iter()
+            .position(|a| a == word.as_bytes())
+            .unwrap_or_else(|| panic!("{word} missing from {args:?}"))
+    }
+
+    #[test]
+    fn search_cmd_binds_params_binary_safe_before_dialect() {
+        let blob = vec![0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00];
+        let opts = SearchOptions {
+            limit: (0, 10),
+            dialect: Some(2),
+            params: vec![("BLOB".to_string(), blob.clone()), ("k".to_string(), b"3".to_vec())],
+            ..Default::default()
+        };
+        let a = args(&search_cmd("idx", "*=>[KNN $k @v $BLOB]", &opts));
+        assert_eq!(a[0], b"FT.SEARCH");
+        let p = position(&a, "PARAMS");
+        assert_eq!(a[p + 1], b"4", "nargs counts names and values");
+        assert_eq!(a[p + 2], b"BLOB");
+        assert_eq!(a[p + 3], blob, "the blob goes out byte for byte");
+        assert_eq!(a[p + 4], b"k");
+        assert_eq!(a[p + 5], b"3");
+        let d = position(&a, "DIALECT");
+        assert!(d > p, "DIALECT trails PARAMS");
+        assert_eq!(a[d + 1], b"2");
+        assert!(position(&a, "LIMIT") < p, "PARAMS comes after the option clauses");
+    }
+
+    #[test]
+    fn no_params_means_no_params_clause() {
+        let search = args(&search_cmd("idx", "*", &SearchOptions::default()));
+        let aggregate = args(&aggregate_cmd("idx", "*", &AggregateOptions::default()));
+        let explain = args(&explain_cmd("idx", "*", &[], None));
+        let profile = args(&profile_cmd("idx", false, "*", &[], None));
+        for a in [search, aggregate, explain, profile] {
+            assert!(!a.iter().any(|x| x == b"PARAMS"), "{a:?}");
+            assert!(!a.iter().any(|x| x == b"DIALECT"), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn aggregate_explain_and_profile_carry_params_and_dialect() {
+        let params = vec![("q".to_string(), vec![1, 2, 3, 4])];
+        let aggregate = args(&aggregate_cmd(
+            "idx",
+            "*=>[KNN 2 @v $q]",
+            &AggregateOptions {
+                limit: Some((0, 5)),
+                dialect: Some(2),
+                params: params.clone(),
+                ..Default::default()
+            },
+        ));
+        let explain = args(&explain_cmd("idx", "*=>[KNN 2 @v $q]", &params, Some(2)));
+        let profile = args(&profile_cmd("idx", true, "*=>[KNN 2 @v $q]", &params, Some(2)));
+        assert_eq!(
+            &profile[..4],
+            [
+                b"FT.PROFILE".to_vec(),
+                b"idx".to_vec(),
+                b"AGGREGATE".to_vec(),
+                b"QUERY".to_vec()
+            ]
+        );
+        for a in [aggregate, explain, profile] {
+            let p = position(&a, "PARAMS");
+            assert_eq!(a[p + 1], b"2");
+            assert_eq!(a[p + 2], b"q");
+            assert_eq!(a[p + 3], [1, 2, 3, 4]);
+            assert_eq!(a[position(&a, "DIALECT") + 1], b"2");
+        }
     }
 
     #[test]

@@ -67,7 +67,7 @@ Every collection is walked incrementally (`HSCAN` / `SSCAN` / `ZSCAN`, `LRANGE` 
 ### Module Browsers
 **Dedicated panels for RediSearch (FT.*) and Functions (Lua libraries).**
 
-**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor, starter templates, direct **`FCALL`** invocation, and `DUMP` / `RESTORE` / `FLUSH` / `STATS`. Both auto-hide when the module / version isn't present.
+**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. A query's `$name` placeholders get a **PARAMS editor** row each — TEXT, or a vector kind (FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16) that turns comma-separated floats into the little-endian blob a `KNN` / `VECTOR_RANGE` clause expects — and the bindings travel with `FT.EXPLAIN` / `FT.PROFILE` too. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor, starter templates, direct **`FCALL`** invocation, and `DUMP` / `RESTORE` / `FLUSH` / `STATS`. Both auto-hide when the module / version isn't present.
 
 ### Redis Streams
 **Browse, live-tail, and manage consumer groups without leaving the GUI.**

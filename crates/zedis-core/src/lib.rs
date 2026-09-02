@@ -27,6 +27,7 @@ pub mod hex;
 pub mod jsonpath;
 pub mod keysizes;
 pub mod rdb;
+pub mod search_params;
 pub mod string;
 pub mod ttl;
 pub mod ttl_cache;
