@@ -16,6 +16,7 @@
 //! slow logs, topology.
 
 use super::*;
+use crate::floors::{self, Floor};
 use crate::hotkeys::HotkeysReport;
 use crate::slot_stats::{SlotStatMetric, SlotStatRow, parse_slot_stats};
 use zedis_core::keysizes::{KeysizesDist, merge_keysizes, parse_keysizes};
@@ -319,22 +320,19 @@ impl RedisClient {
     pub fn is_cluster(&self) -> bool {
         self.server_type == ServerType::Cluster
     }
-    /// Checks if the client version is at least the given version.
-    /// # Arguments
-    /// * `version` - The version to check.
-    /// # Returns
-    /// * `bool` - True if the client version is at least the given version, false otherwise.
-    pub fn is_at_least_version(&self, version: &str) -> bool {
-        self.version >= Version::parse(version).unwrap_or(Version::new(0, 0, 0))
+    /// The one version gate: both flavors decided by a [`Floor`] from
+    /// `floors.rs` (Valkey's version numbers run ahead of Redis's, so a
+    /// bare floor written for Redis is wrong on Valkey).
+    pub fn supports(&self, floor: Floor) -> bool {
+        floor.met_by(self.is_valkey, &self.version)
     }
-    /// `SET … IFEQ` (compare-and-set): Redis 8.4.0; Valkey adopted the
-    /// same option earlier, in 8.1.0 (valkey-io/valkey#1324).
+    /// `SET … IFEQ` compare-and-set — see [`floors::SET_IFEQ`].
     pub fn supports_set_ifeq(&self) -> bool {
-        if self.is_valkey {
-            self.is_at_least_version("8.1.0")
-        } else {
-            self.is_at_least_version("8.4.0")
-        }
+        self.supports(floors::SET_IFEQ)
+    }
+    /// `INFO keysizes` — see [`floors::INFO_KEYSIZES`].
+    pub fn supports_info_keysizes(&self) -> bool {
+        self.supports(floors::INFO_KEYSIZES)
     }
     pub fn supports_rejson(&self) -> bool {
         self.modules.iter().any(|(name, _)| name == "ReJSON")
@@ -401,47 +399,66 @@ impl RedisClient {
     /// Apply `EXPIRE` (`ttl_secs = Some`) or `PERSIST` (`None`) to many keys,
     /// cluster-safe. Mirrors [`Self::unlike_keys_scattered`]: one pipeline on a
     /// standalone, per-key concurrent commands (chunked) on a cluster so no
-    /// cross-slot pipeline is ever built.
-    pub async fn set_ttl_keys_scattered(&self, keys: Vec<String>, ttl_secs: Option<u64>) -> Result<(), Error> {
+    /// cross-slot pipeline is ever built. `condition` adds an `EXPIRE` option
+    /// word (Redis 7.0+ — the caller gates on the version; ignored for
+    /// `PERSIST`).
+    ///
+    /// Returns one flag per key, in the caller's order: whether the server
+    /// changed that key (0 = missing, rejected by `condition`, or already
+    /// persistent).
+    pub async fn set_ttl_keys_scattered(
+        &self,
+        keys: Vec<String>,
+        ttl_secs: Option<u64>,
+        condition: Option<ExpireCondition>,
+    ) -> Result<Vec<bool>, Error> {
         if keys.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
+        let build = move |key: &str| {
+            let mut c = match ttl_secs {
+                Some(secs) => {
+                    let mut c = cmd("EXPIRE");
+                    c.arg(key).arg(secs);
+                    c
+                }
+                None => {
+                    let mut c = cmd("PERSIST");
+                    c.arg(key);
+                    c
+                }
+            };
+            if ttl_secs.is_some()
+                && let Some(condition) = condition
+            {
+                c.arg(condition.word());
+            }
+            c
+        };
         if !self.is_cluster() {
             let mut conn = self.connection();
             let mut pipe = redis::pipe();
             for key in &keys {
-                match ttl_secs {
-                    Some(secs) => pipe.cmd("EXPIRE").arg(key.as_str()).arg(secs),
-                    None => pipe.cmd("PERSIST").arg(key.as_str()),
-                };
+                pipe.add_command(build(key));
             }
-            let _: Vec<i64> = pipe.query_async(&mut conn).await?;
-            return Ok(());
+            let replies: Vec<i64> = pipe.query_async(&mut conn).await?;
+            return Ok(replies.into_iter().map(|reply| reply == 1).collect());
         }
         let conn = self.connection();
+        let mut applied = Vec::with_capacity(keys.len());
         for chunk in keys.chunks(1000) {
             let futures = chunk.iter().map(|key| {
                 let mut conn_clone = conn.clone();
-                let key = key.clone();
+                let c = build(key);
                 async move {
-                    match ttl_secs {
-                        Some(secs) => {
-                            let _: i64 = cmd("EXPIRE")
-                                .arg(key.as_str())
-                                .arg(secs)
-                                .query_async(&mut conn_clone)
-                                .await?;
-                        }
-                        None => {
-                            let _: i64 = cmd("PERSIST").arg(key.as_str()).query_async(&mut conn_clone).await?;
-                        }
-                    }
-                    Ok::<(), Error>(())
+                    let reply: i64 = c.query_async(&mut conn_clone).await?;
+                    Ok::<bool, Error>(reply == 1)
                 }
             });
-            let _: Vec<()> = try_join_all(futures).await?;
+            let flags: Vec<bool> = try_join_all(futures).await?;
+            applied.extend(flags);
         }
-        Ok(())
+        Ok(applied)
     }
 
     /// Returns the memory usage of a key.
@@ -454,7 +471,7 @@ impl RedisClient {
         let mut conn = self.connection.clone();
         let key_type = key_type.to_lowercase();
 
-        if self.is_at_least_version("4.0.0") {
+        if self.supports(floors::MEMORY_USAGE) {
             let memory_usage: u64 = cmd("MEMORY").arg("USAGE").arg(key).query_async(&mut conn).await?;
             return Ok(memory_usage);
         }
@@ -1260,7 +1277,7 @@ impl RedisClient {
         // covers older servers (the per-key TYPE is fetched regardless). TYPE
         // filters within each COUNT batch, so a sparse type just needs more
         // rounds — the caller's paging loop handles that.
-        let server_type = if type_filter.is_some() && self.is_at_least_version("6.0.0") {
+        let server_type = if type_filter.is_some() && self.supports(floors::SCAN_TYPE) {
             type_filter
         } else {
             None

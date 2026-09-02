@@ -419,6 +419,35 @@ async fn get_async_connection(client: &RClient, db: usize, use_cache: bool) -> R
     }
 }
 
+/// Condition word for a batch `EXPIRE` (Redis 7.0+, and every Valkey
+/// release — the fork started at 7.2). The server answers 0 for a key the
+/// condition rejects, so a batch can report how many keys it really touched.
+/// A key without a TTL counts as an infinite one for GT / LT: GT never
+/// touches it, LT always does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpireCondition {
+    /// Only keys that have no TTL yet.
+    Nx,
+    /// Only keys that already have a TTL.
+    Xx,
+    /// Only when the new expiry is later than the current one.
+    Gt,
+    /// Only when the new expiry is sooner than the current one.
+    Lt,
+}
+
+impl ExpireCondition {
+    /// The option word as `EXPIRE` spells it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Nx => "NX",
+            Self::Xx => "XX",
+            Self::Gt => "GT",
+            Self::Lt => "LT",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlowLogEntry {
     pub id: i64,

@@ -23,11 +23,12 @@ use super::{
     value::{KeyType, MAX_INLINE_VALUE_SIZE, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
+use crate::connection::{ExpireCondition, floors};
 use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
     insert_trash_entry, purge_trash, recent_keys_scope,
 };
-use crate::states::{QueryMode, ZedisGlobalStore, i18n_status_bar};
+use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar};
 use crate::{
     connection::{Capability, RedisAsyncConn, get_connection_manager},
     error::Error,
@@ -37,6 +38,7 @@ use ahash::AHashSet;
 use futures::stream::{self, StreamExt};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
+use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -747,7 +749,9 @@ impl ZedisServerState {
                     KeyType::List => first_load_list_value(&mut conn, &key).await,
                     KeyType::Set => first_load_set_value(&mut conn, &key).await,
                     KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
-                    KeyType::Hash => first_load_hash_value(&mut conn, &key, client.is_at_least_version("7.4.0")).await,
+                    KeyType::Hash => {
+                        first_load_hash_value(&mut conn, &key, client.supports(floors::HASH_FIELD_TTL)).await
+                    }
                     KeyType::Stream => first_load_stream_value(&mut conn, &key, true).await,
                     KeyType::Json => get_redis_json_value(&mut conn, &key).await,
                     // The chart + metadata are loaded lazily by
@@ -1244,9 +1248,18 @@ impl ZedisServerState {
     }
 
     /// Batch-apply a TTL to an explicit key list (multi-select). `ttl_secs =
-    /// Some` issues `EXPIRE`, `None` issues `PERSIST`; cluster-safe via
-    /// `set_ttl_keys_scattered`. Updates the local TTL cache on success.
-    pub fn batch_set_ttl_keys(&mut self, keys: Vec<SharedString>, ttl_secs: Option<u64>, cx: &mut Context<Self>) {
+    /// Some` issues `EXPIRE`, `None` issues `PERSIST`; `condition` (NX / XX /
+    /// GT / LT, Redis 7.0+ — the caller gates on the version) makes the server
+    /// skip keys that don't qualify. Cluster-safe via `set_ttl_keys_scattered`.
+    /// The local TTL cache is updated only for the keys the server actually
+    /// changed, and a conditional run reports its applied / skipped split.
+    pub fn batch_set_ttl_keys(
+        &mut self,
+        keys: Vec<SharedString>,
+        ttl_secs: Option<u64>,
+        condition: Option<ExpireCondition>,
+        cx: &mut Context<Self>,
+    ) {
         if keys.is_empty() {
             return;
         }
@@ -1259,17 +1272,22 @@ impl ZedisServerState {
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 Ok(client
-                    .set_ttl_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect(), ttl_secs)
+                    .set_ttl_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect(), ttl_secs, condition)
                     .await?)
             },
             move |this, result, cx| {
-                if result.is_ok() {
+                if let Ok(applied) = result {
                     let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
                     let key_ttls = Arc::make_mut(&mut this.key_ttls);
-                    for key in &affected {
-                        key_ttls.insert(key.clone(), new_ttl);
+                    let mut changed = 0usize;
+                    for (key, done) in affected.iter().zip(&applied) {
+                        if *done {
+                            key_ttls.insert(key.clone(), new_ttl);
+                            changed += 1;
+                        }
                     }
                     this.key_tree_id = Uuid::now_v7().to_string().into();
+                    this.notify_batch_ttl_outcome(condition, changed, affected.len().saturating_sub(changed), cx);
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
@@ -1279,14 +1297,20 @@ impl ZedisServerState {
     }
 
     /// Batch-apply a TTL to every key under a folder prefix. Scans `prefix*`
-    /// across masters (like `delete_folder`) and applies in pages.
-    pub fn batch_set_ttl_folder(&mut self, folder: SharedString, ttl_secs: Option<u64>, cx: &mut Context<Self>) {
+    /// across masters (like `delete_folder`) and applies in pages; the task
+    /// hands back the keys the server changed plus the count it skipped.
+    pub fn batch_set_ttl_folder(
+        &mut self,
+        folder: SharedString,
+        ttl_secs: Option<u64>,
+        condition: Option<ExpireCondition>,
+        cx: &mut Context<Self>,
+    ) {
         let server_id = self.server_id.clone();
         let db = self.db;
         let separator = self.key_separator().to_string();
         let prefix = format!("{folder}{separator}");
         let pattern = format!("{prefix}*");
-        let prefix_done = prefix.clone();
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
             prefix,
@@ -1294,32 +1318,66 @@ impl ZedisServerState {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
                 let count = 10_000;
                 let mut cursors: Option<Vec<u64>> = None;
+                let mut changed: Vec<String> = Vec::new();
+                let mut skipped = 0usize;
                 for _ in 0..20 {
                     let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count, None).await?;
                     let flat: Vec<String> = keys_per_node.into_iter().flatten().collect();
-                    client.set_ttl_keys_scattered(flat, ttl_secs).await?;
+                    let applied = client.set_ttl_keys_scattered(flat.clone(), ttl_secs, condition).await?;
+                    for (key, done) in flat.into_iter().zip(applied) {
+                        if done {
+                            changed.push(key);
+                        } else {
+                            skipped += 1;
+                        }
+                    }
                     if new_cursors.iter().sum::<u64>() == 0 {
                         break;
                     }
                     cursors = Some(new_cursors);
                 }
-                Ok(())
+                Ok((changed, skipped))
             },
             move |this, result, cx| {
-                if result.is_ok() {
+                if let Ok((changed, skipped)) = result {
                     let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
+                    let changed_set: AHashSet<&str> = changed.iter().map(String::as_str).collect();
                     for (k, v) in Arc::make_mut(&mut this.key_ttls).iter_mut() {
-                        if k.starts_with(prefix_done.as_str()) {
+                        if changed_set.contains(&**k) {
                             *v = new_ttl;
                         }
                     }
                     this.key_tree_id = Uuid::now_v7().to_string().into();
+                    this.notify_batch_ttl_outcome(condition, changed.len(), skipped, cx);
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
             },
             cx,
         );
+    }
+
+    /// One toast per batch TTL run that used a condition — the server's
+    /// applied / skipped split is the whole point of asking for one.
+    fn notify_batch_ttl_outcome(
+        &self,
+        condition: Option<ExpireCondition>,
+        applied: usize,
+        skipped: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(condition) = condition else {
+            return;
+        };
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let message = t!(
+            "key_tree.batch_ttl_result",
+            condition = condition.word(),
+            applied = applied,
+            skipped = skipped,
+            locale = locale
+        );
+        self.emit_success_notification(message.to_string().into(), i18n_key_tree(cx, "batch_ttl_title"), cx);
     }
 
     pub fn add_key(

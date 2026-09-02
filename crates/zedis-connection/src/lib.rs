@@ -19,6 +19,7 @@
 use tracing::info;
 
 pub mod error;
+pub mod floors;
 pub mod string;
 pub mod time;
 
@@ -90,9 +91,9 @@ pub use readable_import::{
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 
 pub use manager::{
-    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, HeatMetric, HeatProbe, KeyMemoryUsage, MatchLocation,
-    RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager,
-    plan_reshard_slots,
+    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, HeatMetric, HeatProbe,
+    KeyMemoryUsage, MatchLocation, RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound,
+    get_connection_manager, plan_reshard_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

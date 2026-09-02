@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::connection::error::Error as ConnectionError;
+use crate::connection::floors::{self, Floor};
 use crate::connection::{
     AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerFeatures, SlowLogEntry,
     get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
@@ -984,56 +985,51 @@ impl ZedisServerState {
         &self.version
     }
 
-    /// Returns true when the connected Redis server supports per-field hash TTL
-    /// commands (HEXPIRE, HTTL, HPERSIST), introduced in Redis 7.4.
-    pub fn supports_hash_field_ttl(&self) -> bool {
+    /// The one version gate: both flavors decided by a [`Floor`] from
+    /// `floors.rs` — Valkey's version numbers run ahead of Redis's, so a
+    /// bare floor written for Redis is wrong on Valkey.
+    pub fn supports(&self, floor: Floor) -> bool {
         use semver::Version;
         Version::parse(self.version.as_ref())
-            .map(|v| v >= Version::new(7, 4, 0))
+            .map(|v| floor.met_by(self.nodes_description().is_valkey, &v))
             .unwrap_or(false)
+    }
+
+    /// Per-field hash TTL (`HEXPIRE / HTTL / HPERSIST`) — Redis 7.4,
+    /// Valkey 9.0; see [`floors::HASH_FIELD_TTL`].
+    pub fn supports_hash_field_ttl(&self) -> bool {
+        self.supports(floors::HASH_FIELD_TTL)
     }
 
     /// `XACKDEL` / `XDELEX` and the `XTRIM`/`XADD` reference-policy words
-    /// (KEEPREF / DELREF / ACKED) — Redis 8.2+. Valkey doesn't ship them,
-    /// and its own version number (9.x) would sail past a bare floor
-    /// check, so the flavor matters as much as the version.
+    /// — Redis 8.2, never Valkey; see [`floors::STREAM_REF_POLICIES`].
     pub fn supports_stream_ref_policies(&self) -> bool {
-        use semver::Version;
-        !self.nodes_description().is_valkey
-            && Version::parse(self.version.as_ref())
-                .map(|v| v >= Version::new(8, 2, 0))
-                .unwrap_or(false)
+        self.supports(floors::STREAM_REF_POLICIES)
     }
 
-    /// Returns true when the server is at least Redis 6.0, where ACL
-    /// (the `ACL USERS / GETUSER / SETUSER / WHOAMI` family) was
-    /// introduced. Drives Tools-menu visibility so users on older
-    /// servers don't see a non-functional entry.
+    /// The ACL family (`ACL USERS / GETUSER / SETUSER / WHOAMI`) — drives
+    /// Tools-menu visibility so older servers don't see a dead entry; see
+    /// [`floors::ACL`].
     pub fn supports_acl(&self) -> bool {
-        use semver::Version;
-        Version::parse(self.version.as_ref())
-            .map(|v| v >= Version::new(6, 0, 0))
-            .unwrap_or(false)
+        self.supports(floors::ACL)
     }
 
-    /// Returns true when the server is at least Redis 7.0, where
-    /// Functions (the `FUNCTION LIST / LOAD / DELETE / FCALL` family)
-    /// were introduced as the successor to EVAL scripts.
+    /// Functions (`FUNCTION LIST / LOAD / DELETE / FCALL`) — see
+    /// [`floors::FUNCTIONS`].
     pub fn supports_functions(&self) -> bool {
-        use semver::Version;
-        Version::parse(self.version.as_ref())
-            .map(|v| v >= Version::new(7, 0, 0))
-            .unwrap_or(false)
+        self.supports(floors::FUNCTIONS)
     }
 
-    /// Returns true when the server is at least Redis 7.0, where sharded
-    /// Pub/Sub (`SSUBSCRIBE` / `SPUBLISH`) was introduced. Gates the
-    /// Sharded toggle in the Pub/Sub panel.
+    /// Sharded Pub/Sub (`SSUBSCRIBE` / `SPUBLISH`) — gates the Sharded
+    /// toggle in the Pub/Sub panel; see [`floors::SHARDED_PUBSUB`].
     pub fn supports_sharded_pubsub(&self) -> bool {
-        use semver::Version;
-        Version::parse(self.version.as_ref())
-            .map(|v| v >= Version::new(7, 0, 0))
-            .unwrap_or(false)
+        self.supports(floors::SHARDED_PUBSUB)
+    }
+
+    /// `EXPIRE … NX | XX | GT | LT` — gates the condition radios in the
+    /// batch-TTL dialog; see [`floors::EXPIRE_CONDITIONS`].
+    pub fn supports_expire_conditions(&self) -> bool {
+        self.supports(floors::EXPIRE_CONDITIONS)
     }
 
     /// Whether the Topology panel is meaningful: true for multi-node

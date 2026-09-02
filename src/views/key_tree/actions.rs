@@ -397,7 +397,7 @@ impl Render for ZedisKeyTree {
                     ZedisDialog::new_alert(i18n_key_tree(cx, "persist_title"), i18n_key_tree(cx, "persist_prompt"))
                         .button_props(dialog_button_props(cx))
                         .on_ok(move |_, _, cx| {
-                            server_state.update(cx, |state, cx| state.batch_set_ttl_keys(keys.clone(), None, cx));
+                            server_state.update(cx, |state, cx| state.batch_set_ttl_keys(keys.clone(), None, None, cx));
                             true
                         })
                         .open(window, cx);
@@ -408,7 +408,7 @@ impl Render for ZedisKeyTree {
                     ZedisDialog::new_alert(i18n_key_tree(cx, "persist_title"), i18n_key_tree(cx, "persist_prompt"))
                         .button_props(dialog_button_props(cx))
                         .on_ok(move |_, _, cx| {
-                            server_state.update(cx, |state, cx| state.batch_set_ttl_folder(id.clone(), None, cx));
+                            server_state.update(cx, |state, cx| state.batch_set_ttl_folder(id.clone(), None, None, cx));
                             true
                         })
                         .open(window, cx);
@@ -426,70 +426,32 @@ impl Render for ZedisKeyTree {
                         return;
                     }
                     let server_state = this.server_state.clone();
-                    let ttl_input = cx
-                        .new(|cx| InputState::new(window, cx).placeholder(i18n_key_tree(cx, "batch_ttl_placeholder")));
-                    let input_child = ttl_input.clone();
-                    let input_ok = ttl_input.clone();
-                    let prompt = i18n_key_tree(cx, "batch_ttl_prompt");
-                    ZedisDialog::new(i18n_key_tree(cx, "batch_ttl_title"))
-                        .w(px(360.))
-                        .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
-                        .cancel_text(i18n_common(cx, "cancel"))
-                        .button_props(
-                            dialog_button_props(cx)
-                                .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
-                                .cancel_text(i18n_common(cx, "cancel")),
-                        )
-                        .child(move || {
-                            v_flex()
-                                .gap_2()
-                                .child(Label::new(prompt.clone()).text_sm())
-                                .child(Input::new(&input_child).small())
-                        })
-                        .on_ok(move |_, _, cx| match parse_duration(input_ok.read(cx).value().trim()) {
-                            Ok(d) => {
-                                let secs = d.as_secs();
-                                server_state
-                                    .update(cx, |state, cx| state.batch_set_ttl_keys(keys.clone(), Some(secs), cx));
-                                true
-                            }
-                            Err(_) => false,
-                        })
-                        .open(window, cx);
+                    let show_condition = server_state.read(cx).supports_expire_conditions();
+                    open_batch_ttl_dialog(
+                        show_condition,
+                        move |secs, condition, cx| {
+                            server_state.update(cx, |state, cx| {
+                                state.batch_set_ttl_keys(keys.clone(), Some(secs), condition, cx)
+                            });
+                        },
+                        window,
+                        cx,
+                    );
                 }
                 KeyTreeAction::SetTtlFolder(id) => {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
-                    let ttl_input = cx
-                        .new(|cx| InputState::new(window, cx).placeholder(i18n_key_tree(cx, "batch_ttl_placeholder")));
-                    let input_child = ttl_input.clone();
-                    let input_ok = ttl_input.clone();
-                    let prompt = i18n_key_tree(cx, "batch_ttl_prompt");
-                    ZedisDialog::new(i18n_key_tree(cx, "batch_ttl_title"))
-                        .w(px(360.))
-                        .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
-                        .cancel_text(i18n_common(cx, "cancel"))
-                        .button_props(
-                            dialog_button_props(cx)
-                                .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
-                                .cancel_text(i18n_common(cx, "cancel")),
-                        )
-                        .child(move || {
-                            v_flex()
-                                .gap_2()
-                                .child(Label::new(prompt.clone()).text_sm())
-                                .child(Input::new(&input_child).small())
-                        })
-                        .on_ok(move |_, _, cx| match parse_duration(input_ok.read(cx).value().trim()) {
-                            Ok(d) => {
-                                let secs = d.as_secs();
-                                server_state
-                                    .update(cx, |state, cx| state.batch_set_ttl_folder(id.clone(), Some(secs), cx));
-                                true
-                            }
-                            Err(_) => false,
-                        })
-                        .open(window, cx);
+                    let show_condition = server_state.read(cx).supports_expire_conditions();
+                    open_batch_ttl_dialog(
+                        show_condition,
+                        move |secs, condition, cx| {
+                            server_state.update(cx, |state, cx| {
+                                state.batch_set_ttl_folder(id.clone(), Some(secs), condition, cx)
+                            });
+                        },
+                        window,
+                        cx,
+                    );
                 }
                 KeyTreeAction::ExportSelectedKeys => {
                     let keys = this.key_tree_list_state.update(cx, |state, _cx| {
@@ -568,4 +530,106 @@ impl Render for ZedisKeyTree {
                 }
             }))
     }
+}
+
+/// Radio order in the batch-TTL dialog: unconditional first, then the four
+/// `EXPIRE` option words; the second field is the label's i18n key.
+const TTL_CONDITION_CHOICES: [(Option<ExpireCondition>, &str); 5] = [
+    (None, "batch_ttl_cond_none"),
+    (Some(ExpireCondition::Nx), "batch_ttl_cond_nx"),
+    (Some(ExpireCondition::Xx), "batch_ttl_cond_xx"),
+    (Some(ExpireCondition::Gt), "batch_ttl_cond_gt"),
+    (Some(ExpireCondition::Lt), "batch_ttl_cond_lt"),
+];
+
+/// The batch-TTL dialog body as a **view entity** (a dialog body holding an
+/// `InputState` must be one — see the CLAUDE.md dialog gotcha — and the
+/// condition radios need `cx.notify` to repaint): the TTL input plus, on
+/// Redis 7.0+ / Valkey, the `EXPIRE` condition (NX / XX / GT / LT).
+struct BatchTtlForm {
+    ttl: Entity<InputState>,
+    /// Offer the condition radios (`EXPIRE` option words, Redis 7.0+).
+    show_condition: bool,
+    condition: Option<ExpireCondition>,
+}
+
+impl BatchTtlForm {
+    fn new(show_condition: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let ttl = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_key_tree(cx, "batch_ttl_placeholder")));
+        Self {
+            ttl,
+            show_condition,
+            condition: None,
+        }
+    }
+
+    /// What the dialog submits: the parsed TTL (`None` keeps the dialog
+    /// open) and the condition — never one on a server that predates the
+    /// option words, so nothing extra goes on the wire there.
+    fn submission(&self, cx: &App) -> Option<(u64, Option<ExpireCondition>)> {
+        let secs = parse_duration(self.ttl.read(cx).value().trim()).ok()?.as_secs();
+        Some((secs, self.show_condition.then_some(self.condition).flatten()))
+    }
+}
+
+impl Render for BatchTtlForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let selected = TTL_CONDITION_CHOICES.iter().position(|(c, _)| *c == self.condition);
+        v_flex()
+            .gap_2()
+            .w_full()
+            .child(Label::new(i18n_key_tree(cx, "batch_ttl_prompt")).text_sm())
+            .child(Input::new(&self.ttl).small())
+            .when(self.show_condition, |this| {
+                this.child(
+                    Label::new(i18n_key_tree(cx, "batch_ttl_condition"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(
+                    RadioGroup::vertical("batch-ttl-condition")
+                        .selected_index(selected)
+                        .children(
+                            TTL_CONDITION_CHOICES
+                                .iter()
+                                .map(|(_, key)| Radio::new(*key).label(i18n_key_tree(cx, key))),
+                        )
+                        .on_click(cx.listener(|this, index: &usize, _window, cx| {
+                            this.condition = TTL_CONDITION_CHOICES.get(*index).and_then(|(c, _)| *c);
+                            cx.notify();
+                        })),
+                )
+            })
+    }
+}
+
+/// Open the batch-TTL dialog; `apply` gets the parsed seconds and the chosen
+/// `EXPIRE` condition once the user confirms with a valid duration.
+fn open_batch_ttl_dialog(
+    show_condition: bool,
+    apply: impl Fn(u64, Option<ExpireCondition>, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let form = cx.new(|cx| BatchTtlForm::new(show_condition, window, cx));
+    let body = form.clone();
+    ZedisDialog::new(i18n_key_tree(cx, "batch_ttl_title"))
+        .w(px(360.))
+        .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
+        .cancel_text(i18n_common(cx, "cancel"))
+        .button_props(
+            dialog_button_props(cx)
+                .ok_text(i18n_key_tree(cx, "set_ttl_confirm"))
+                .cancel_text(i18n_common(cx, "cancel")),
+        )
+        .child(move || body.clone())
+        .on_ok(move |_, _, cx| match form.read(cx).submission(cx) {
+            Some((secs, condition)) => {
+                apply(secs, condition, cx);
+                true
+            }
+            None => false,
+        })
+        .open(window, cx);
 }

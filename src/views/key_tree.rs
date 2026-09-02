@@ -15,7 +15,7 @@
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
-    connection::{Capability, ServerCommand, get_server},
+    connection::{Capability, ExpireCondition, ServerCommand, get_server},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::{
         KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_recent_keys_manager,
@@ -47,6 +47,7 @@ use gpui_component::{
     label::Label,
     menu::ContextMenuExt,
     notification::Notification,
+    radio::{Radio, RadioGroup},
     spinner::Spinner,
     v_flex,
 };

@@ -27,12 +27,13 @@ use std::collections::HashSet;
 use std::env;
 use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
+use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    CommandStatus, ConflictMode, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn,
-    RedisServer, RestoreStatus, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user,
-    csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager, get_servers,
-    open_single_connection, parse_readable_entries, probe_server_features, read_readable_chunk, restore_keys_chunk,
-    save_servers, sniff_import_format, split_acl_rules, write_readable_chunk,
+    CommandStatus, ConflictMode, ExpireCondition, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus,
+    RedisAsyncConn, RedisServer, RestoreStatus, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user,
+    acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, get_connection_manager,
+    get_servers, open_single_connection, parse_readable_entries, probe_server_features, read_readable_chunk,
+    restore_keys_chunk, save_servers, sniff_import_format, split_acl_rules, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 
@@ -120,12 +121,14 @@ fn unique(prefix: &str) -> String {
     )
 }
 
-async fn version_at_least(id: &str, version: &str) -> bool {
+/// Version gate for a test: the same [`Floor`] the app uses, so a test
+/// never carries its own (flavor-blind) version string.
+async fn supports(id: &str, floor: Floor) -> bool {
     get_connection_manager()
         .get_client(id, 0)
         .await
         .expect("client")
-        .is_at_least_version(version)
+        .supports(floor)
 }
 
 // ── standalone ───────────────────────────────────────────────────────────
@@ -722,7 +725,7 @@ fn standalone_feature_probe_matches_the_server() {
         ] {
             assert_eq!(features.status(c), CommandStatus::Available, "{c:?}");
         }
-        let has_functions = version_at_least(&id, "7.0.0").await;
+        let has_functions = supports(&id, floors::FUNCTIONS).await;
         let expect_functions = if has_functions {
             CommandStatus::Available
         } else {
@@ -822,7 +825,7 @@ fn standalone_acl_users_are_classified() {
             assert_eq!(features.status(c), CommandStatus::Denied, "{c:?}");
         }
         assert_eq!(features.status(ServerCommand::Scan), CommandStatus::Available);
-        if version_at_least(&admin_id, "7.0.0").await {
+        if supports(&admin_id, floors::ACL_V2).await {
             for c in [ServerCommand::ConfigSet, ServerCommand::Bgsave, ServerCommand::FlushDb] {
                 assert_eq!(features.status(c), CommandStatus::Denied, "{c:?} (ACL DRYRUN)");
             }
@@ -1105,11 +1108,13 @@ fn cluster_discovers_nodes_and_scans_every_master() {
 fn standalone_hotkeys_collects_a_report() {
     smol::block_on(async {
         let id = register(server("it-hotkeys", standalone())).await;
-        if !version_at_least(&id, "8.6.0").await {
-            eprintln!("skipped: server < 8.6");
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        // A Valkey 9.x version number clears the 8.6 floor, but HOTKEYS is
+        // a Redis-only command — the floor table knows.
+        if !client.supports(floors::HOTKEYS) {
+            eprintln!("skipped: HOTKEYS is Redis 8.6+ only");
             return;
         }
-        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         // A stale collection from an earlier run: stop (idempotent) + reset.
         client.hotkeys_stop().await.expect("stop stale");
         client.hotkeys_reset().await.expect("reset stale");
@@ -1162,8 +1167,8 @@ fn standalone_hotkeys_collects_a_report() {
 fn standalone_acl_selectors_round_trip() {
     smol::block_on(async {
         let id = register(server("it-acl-sel", standalone())).await;
-        if !version_at_least(&id, "7.0.0").await {
-            eprintln!("skipped: server < 7.0");
+        if !supports(&id, floors::ACL_V2).await {
+            eprintln!("skipped: server predates ACL v2");
             return;
         }
         let username = unique("selector-user").replace(':', "-");
@@ -1237,6 +1242,100 @@ fn standalone_set_ifeq_guards_concurrent_writes() {
     });
 }
 
+/// `EXPIRE … NX | XX | GT | LT` (7.0): the batch helper reports, per key,
+/// whether the server honoured the condition — a key without a TTL counts
+/// as infinite, so GT skips it and LT catches it.
+#[test]
+#[ignore]
+fn standalone_batch_ttl_conditions_report_skipped_keys() {
+    smol::block_on(async {
+        let id = register(server("it-ttl-cond", standalone())).await;
+        check_batch_ttl_conditions(&id).await;
+    });
+}
+
+/// Same contract on a cluster, where the two keys land in different slots
+/// and the helper fans out per key: the flags must still come back in the
+/// caller's order (the folder batch aligns its TTL cache on that).
+#[test]
+#[ignore]
+fn cluster_batch_ttl_conditions_keep_key_order() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(server("it-ttl-cond-cluster", addr)).await;
+        check_batch_ttl_conditions(&id).await;
+    });
+}
+
+async fn check_batch_ttl_conditions(id: &str) {
+    let client = get_connection_manager().get_client(id, 0).await.expect("client");
+    if !client.supports(floors::EXPIRE_CONDITIONS) {
+        eprintln!("skipped: server predates EXPIRE conditions");
+        return;
+    }
+    let mut c = conn(id, 0).await;
+    let volatile = unique("ttl:volatile");
+    let permanent = unique("ttl:permanent");
+    cmd("SET")
+        .arg(&volatile)
+        .arg("v")
+        .arg("EX")
+        .arg(1000)
+        .exec_async(&mut c)
+        .await
+        .expect("set volatile");
+    cmd("SET")
+        .arg(&permanent)
+        .arg("v")
+        .exec_async(&mut c)
+        .await
+        .expect("set permanent");
+    let keys = vec![volatile.clone(), permanent.clone()];
+
+    // GT: 500 is sooner than the volatile key's 1000, and a permanent key
+    // is never "extended".
+    let applied = client
+        .set_ttl_keys_scattered(keys.clone(), Some(500), Some(ExpireCondition::Gt))
+        .await
+        .expect("gt");
+    assert_eq!(applied, [false, false], "GT touches neither key");
+    // NX: only the permanent key gains a TTL.
+    let applied = client
+        .set_ttl_keys_scattered(keys.clone(), Some(500), Some(ExpireCondition::Nx))
+        .await
+        .expect("nx");
+    assert_eq!(applied, [false, true], "NX only sets a TTL where there is none");
+    // LT: 200 is sooner than both 1000 and 500.
+    let applied = client
+        .set_ttl_keys_scattered(keys.clone(), Some(200), Some(ExpireCondition::Lt))
+        .await
+        .expect("lt");
+    assert_eq!(applied, [true, true], "LT shortens both");
+    let ttl: i64 = cmd("TTL").arg(&volatile).query_async(&mut c).await.expect("ttl");
+    assert!(
+        (150..=200).contains(&ttl),
+        "LT shortened the volatile key to 200s, got {ttl}"
+    );
+    // Unconditional PERSIST reports 0 for a key that is already permanent.
+    cmd("PERSIST")
+        .arg(&permanent)
+        .exec_async(&mut c)
+        .await
+        .expect("persist");
+    let applied = client
+        .set_ttl_keys_scattered(keys, None, None)
+        .await
+        .expect("persist batch");
+    assert_eq!(applied, [true, false], "PERSIST only changes the volatile key");
+
+    cmd("DEL")
+        .arg(&volatile)
+        .arg(&permanent)
+        .exec_async(&mut c)
+        .await
+        .expect("del");
+}
+
 /// `INFO keysizes` (8+): written keys land in per-type bucket histograms —
 /// strings bucketed by value bytes, containers by element count.
 #[test]
@@ -1244,11 +1343,13 @@ fn standalone_set_ifeq_guards_concurrent_writes() {
 fn standalone_info_keysizes_buckets_types() {
     smol::block_on(async {
         let id = register(server("it-keysizes", standalone())).await;
-        if !version_at_least(&id, "8.0.0").await {
-            eprintln!("skipped: server < 8.0");
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        // Flavor-aware: Valkey 8.x passes a bare 8.0 floor but has no
+        // `keysizes` section, so `INFO keysizes` comes back empty there.
+        if !client.supports_info_keysizes() {
+            eprintln!("skipped: server has no INFO keysizes (Redis 8+ only)");
             return;
         }
-        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         let prefix = unique("ks");
         let mut c = conn(&id, 0).await;
         cmd("SET")
@@ -1292,8 +1393,8 @@ fn cluster_slot_stats_ranks_slots_by_key_count() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
         let id = register(server("it-slot-stats", addr)).await;
-        if !version_at_least(&id, "8.2.0").await {
-            eprintln!("skipped: cluster < 8.2");
+        if !supports(&id, floors::CLUSTER_SLOT_STATS).await {
+            eprintln!("skipped: cluster predates SLOT-STATS (Redis 8.2 / Valkey 8.0)");
             return;
         }
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");

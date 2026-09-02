@@ -539,8 +539,9 @@ impl ZedisMemoryAnalysis {
     }
 
     /// Refresh the `INFO keysizes` card — one tiny INFO, exact counts, no
-    /// sampling. Failures (pre-8 servers, restricted INFO) stay silent: the
-    /// card simply doesn't render without data.
+    /// sampling. Servers without the section (pre-8 Redis, Valkey) are not
+    /// asked at all, and failures (restricted INFO) stay silent: the card
+    /// simply doesn't render without data.
     fn fetch_keysizes(&mut self, cx: &mut gpui::Context<Self>) {
         let state = self.server_state.read(cx);
         let server_id = state.server_id().to_string();
@@ -552,6 +553,9 @@ impl ZedisMemoryAnalysis {
             let result = cx
                 .background_spawn(async move {
                     let client = get_connection_manager().get_client(&server_id, db).await?;
+                    if !client.supports_info_keysizes() {
+                        return Ok(Vec::new());
+                    }
                     Ok::<Vec<KeysizesDist>, Error>(client.info_keysizes().await?)
                 })
                 .await;

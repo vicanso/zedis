@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
-use crate::connection::get_connection_manager;
+use crate::connection::{floors, get_connection_manager};
 use bytes::Bytes;
 use chrono::Local;
 use gpui::{Hsla, SharedString, prelude::*};
@@ -934,8 +934,8 @@ impl ZedisServerState {
                 } else {
                     let mut binding = cmd("SET");
                     let mut new_cmd = binding.arg(key.as_str()).arg(new_value.as_str());
-                    // keep ttl if the version is at least 6.0.0
-                    new_cmd = if client.is_at_least_version("6.0.0") {
+                    // KEEPTTL where the server has it; otherwise re-apply the TTL by hand
+                    new_cmd = if client.supports(floors::SET_KEEPTTL) {
                         new_cmd.arg("KEEPTTL")
                     } else if ttl > 0 {
                         new_cmd.arg("PX").arg(ttl)
@@ -1062,7 +1062,7 @@ impl ZedisServerState {
                 let mut conn = client.connection();
                 let mut binding = cmd("SET");
                 let mut new_cmd = binding.arg(key.as_str()).arg(new_bytes.as_slice());
-                new_cmd = if client.is_at_least_version("6.0.0") {
+                new_cmd = if client.supports(floors::SET_KEEPTTL) {
                     new_cmd.arg("KEEPTTL")
                 } else if ttl > 0 {
                     new_cmd.arg("PX").arg(ttl)
