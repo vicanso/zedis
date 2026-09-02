@@ -103,6 +103,9 @@ pub const STREAM_REF_POLICIES: Floor = Floor::redis_only("8.2.0");
 pub const SET_IFEQ: Floor = Floor::both("8.4.0", "8.1.0");
 /// `HOTKEYS START / GET / STOP / RESET` (Redis 8.6; not in Valkey).
 pub const HOTKEYS: Floor = Floor::redis_only("8.6.0");
+/// `maxmemory-policy allkeys-lrm` / `volatile-lrm` — least recently
+/// *modified* eviction (Redis 8.6; not in Valkey).
+pub const MAXMEMORY_LRM: Floor = Floor::redis_only("8.6.0");
 
 #[cfg(test)]
 mod tests {
@@ -131,7 +134,7 @@ mod tests {
 
     #[test]
     fn redis_only_features_never_clear_on_valkey() {
-        for floor in [INFO_KEYSIZES, STREAM_REF_POLICIES, HOTKEYS] {
+        for floor in [INFO_KEYSIZES, STREAM_REF_POLICIES, HOTKEYS, MAXMEMORY_LRM] {
             assert!(!floor.met_by(true, &v("99.0.0")), "{floor:?}");
             assert!(floor.met_by(false, &v("99.0.0")), "{floor:?}");
         }

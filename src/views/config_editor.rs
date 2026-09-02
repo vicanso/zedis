@@ -16,7 +16,7 @@ use crate::views::config_doc::ConfigDocMap;
 use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
-    connection::{Capability, DangerKind, get_connection_manager, get_server, get_servers},
+    connection::{Capability, DangerKind, floors, get_connection_manager, get_server, get_servers},
     error::Error,
     helpers::{ConfigEditAction, card_background, get_mono_font_family, humanize_keystroke},
     states::{
@@ -67,22 +67,35 @@ enum ConfigKind {
     Text,
 }
 
+/// Every `maxmemory-policy` value, the stable eight first so they form a
+/// prefix; the two Redis 8.6 least-recently-*modified* policies sit last and
+/// are offered only behind `floors::MAXMEMORY_LRM`.
+const MAXMEMORY_POLICIES: &[&str] = &[
+    "noeviction",
+    "allkeys-lru",
+    "allkeys-lfu",
+    "allkeys-random",
+    "volatile-lru",
+    "volatile-lfu",
+    "volatile-random",
+    "volatile-ttl",
+    "allkeys-lrm",
+    "volatile-lrm",
+];
+/// How many of `MAXMEMORY_POLICIES` every supported server understands.
+const STABLE_MAXMEMORY_POLICIES: usize = 8;
+
 /// Candidate values for well-known enum config parameters. Curated and kept
-/// version-independent (only options stable across Redis versions); the editor
-/// always also offers the server's current value, so an option added in a newer
-/// Redis is never lost. Parameters not listed fall back to value inference.
-fn config_enum_options(key: &str) -> Option<&'static [&'static str]> {
+/// version-independent (only options stable across Redis versions) — with one
+/// gated exception: `lrm` adds Redis 8.6's least-recently-modified eviction
+/// policies, and the caller sets it from `floors::MAXMEMORY_LRM` (Valkey never
+/// has them). The editor always also offers the server's current value, so an
+/// option added in a newer Redis is never lost. Parameters not listed fall
+/// back to value inference.
+fn config_enum_options(key: &str, lrm: bool) -> Option<&'static [&'static str]> {
     let opts: &[&str] = match key {
-        "maxmemory-policy" => &[
-            "noeviction",
-            "allkeys-lru",
-            "allkeys-lfu",
-            "allkeys-random",
-            "volatile-lru",
-            "volatile-lfu",
-            "volatile-random",
-            "volatile-ttl",
-        ],
+        "maxmemory-policy" if lrm => MAXMEMORY_POLICIES,
+        "maxmemory-policy" => &MAXMEMORY_POLICIES[..STABLE_MAXMEMORY_POLICIES],
         "appendfsync" => &["everysec", "always", "no"],
         "loglevel" => &["debug", "verbose", "notice", "warning", "nothing"],
         "tls-auth-clients" => &["no", "yes", "optional"],
@@ -103,8 +116,8 @@ fn config_enum_options(key: &str) -> Option<&'static [&'static str]> {
     Some(opts)
 }
 
-fn config_kind(key: &str, value: &str) -> ConfigKind {
-    if let Some(opts) = config_enum_options(key) {
+fn config_kind(key: &str, value: &str, lrm: bool) -> ConfigKind {
+    if let Some(opts) = config_enum_options(key, lrm) {
         return ConfigKind::Enum(opts);
     }
     match value {
@@ -598,7 +611,8 @@ impl ZedisConfigEditor {
         // Shared card surface, matching the server cards (Home).
         let card_bg = card_background(cx);
         let radius = cx.theme().radius;
-        let kind = config_kind(&key, &value);
+        let lrm = self.server_state.read(cx).supports(floors::MAXMEMORY_LRM);
+        let kind = config_kind(&key, &value, lrm);
         // CONFIG SET is a server write — hide the pencil without
         // Capability::ConfigWrite (read-only keeps values + help visible).
         let can_write = self.server_state.read(cx).can(Capability::ConfigWrite);
@@ -823,7 +837,7 @@ impl ZedisConfigEditor {
                                             .tooltip(i18n_config_editor(cx, "edit_tooltip"))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.editing_key = Some(edit_key.clone());
-                                                let kind = config_kind(&edit_key, &edit_value);
+                                                let kind = config_kind(&edit_key, &edit_value, lrm);
                                                 match kind {
                                                     ConfigKind::Enum(options) => {
                                                         this.build_enum_select(options, &edit_value, window, cx)
@@ -1214,15 +1228,15 @@ mod tests {
     #[test]
     fn config_kind_infers_from_value() {
         // yes/no → checkbox.
-        assert!(matches!(config_kind("appendonly", "yes"), ConfigKind::Bool));
-        assert!(matches!(config_kind("appendonly", "no"), ConfigKind::Bool));
+        assert!(matches!(config_kind("appendonly", "yes", false), ConfigKind::Bool));
+        assert!(matches!(config_kind("appendonly", "no", false), ConfigKind::Bool));
         // Parseable number → numeric input.
-        assert!(matches!(config_kind("maxmemory", "0"), ConfigKind::Number));
-        assert!(matches!(config_kind("databases", "16"), ConfigKind::Number));
+        assert!(matches!(config_kind("maxmemory", "0", false), ConfigKind::Number));
+        assert!(matches!(config_kind("databases", "16", false), ConfigKind::Number));
         // Paths / multi-segment / empty → plain text.
-        assert!(matches!(config_kind("dir", "./"), ConfigKind::Text));
-        assert!(matches!(config_kind("save", "3600 1 300 100"), ConfigKind::Text));
-        assert!(matches!(config_kind("requirepass", ""), ConfigKind::Text));
+        assert!(matches!(config_kind("dir", "./", false), ConfigKind::Text));
+        assert!(matches!(config_kind("save", "3600 1 300 100", false), ConfigKind::Text));
+        assert!(matches!(config_kind("requirepass", "", false), ConfigKind::Text));
     }
 
     #[test]
@@ -1230,29 +1244,36 @@ mod tests {
         // Known enum params resolve to Enum even when their value would
         // otherwise infer as Text (or a number).
         assert!(matches!(
-            config_kind("maxmemory-policy", "noeviction"),
+            config_kind("maxmemory-policy", "noeviction", false),
             ConfigKind::Enum(_)
         ));
-        assert!(matches!(config_kind("loglevel", "notice"), ConfigKind::Enum(_)));
+        assert!(matches!(config_kind("loglevel", "notice", false), ConfigKind::Enum(_)));
     }
 
     #[test]
     fn config_enum_options_lookup() {
         // Unknown keys fall through (→ value inference).
-        assert!(config_enum_options("definitely-not-a-config").is_none());
+        assert!(config_enum_options("definitely-not-a-config", false).is_none());
 
-        let fsync = config_enum_options("appendfsync").expect("appendfsync is a known enum");
+        let fsync = config_enum_options("appendfsync", false).expect("appendfsync is a known enum");
         assert_eq!(fsync, &["everysec", "always", "no"]);
 
         // loglevel includes the easy-to-miss `nothing`.
-        let loglevel = config_enum_options("loglevel").expect("loglevel is a known enum");
+        let loglevel = config_enum_options("loglevel", false).expect("loglevel is a known enum");
         assert!(loglevel.contains(&"nothing"));
 
         // tls-auth-clients was added after the initial catalog.
-        let tls = config_enum_options("tls-auth-clients").expect("tls-auth-clients is a known enum");
+        let tls = config_enum_options("tls-auth-clients", false).expect("tls-auth-clients is a known enum");
         assert_eq!(tls, &["no", "yes", "optional"]);
 
-        // All 8 standard eviction policies.
-        assert_eq!(config_enum_options("maxmemory-policy").map(|o| o.len()), Some(8));
+        // The 8 stable eviction policies; Redis 8.6's two `lrm` ones only
+        // when the floor says the server has them.
+        let stable = config_enum_options("maxmemory-policy", false).expect("maxmemory-policy is a known enum");
+        assert_eq!(stable.len(), 8);
+        assert!(!stable.contains(&"allkeys-lrm"));
+        let with_lrm = config_enum_options("maxmemory-policy", true).expect("maxmemory-policy is a known enum");
+        assert_eq!(with_lrm.len(), 10);
+        assert!(with_lrm.starts_with(stable), "the stable eight stay a prefix");
+        assert!(with_lrm.ends_with(&["allkeys-lrm", "volatile-lrm"]));
     }
 }
