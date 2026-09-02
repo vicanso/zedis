@@ -750,6 +750,45 @@ impl ZedisStreamEditor {
             .open(window, cx);
     }
 
+    /// XGROUP CREATECONSUMER dialog: a consumer name (Redis 6.2+).
+    fn create_consumer_dialog(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let name_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "create_consumer_placeholder")));
+        let hint = i18n_stream_editor(cx, "create_consumer_hint");
+        let body_name = name_state.clone();
+        let submit_name = name_state.clone();
+        let server_state = self.server_state.clone();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "create_consumer_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Input::new(&body_name))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let name = submit_name.read(cx).value().trim().to_string();
+                if name.is_empty() {
+                    return false;
+                }
+                let group = group.clone();
+                server_state.update(cx, |state, cx| {
+                    state.create_stream_consumer(group, name.into(), cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
     /// XGROUP DESTROY confirmation. Destructive — drops the group and
     /// its entire PEL, so it routes through the standard alert dialog.
     fn confirm_destroy_group(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
@@ -1129,10 +1168,12 @@ impl ZedisStreamEditor {
                 ),
         );
 
+        let can_create_consumer = self.server_state.read(cx).supports_stream_create_consumer();
         for (idx, g) in info.groups.iter().enumerate() {
             let setid_group = g.name.clone();
             let autoclaim_group = g.name.clone();
             let destroy_group = g.name.clone();
+            let create_consumer_group = g.name.clone();
             result = result.child(
                 h_flex()
                     .w_full()
@@ -1146,6 +1187,20 @@ impl ZedisStreamEditor {
                     .child(Label::new(g.name.clone()).text_sm())
                     .child(Label::new(g.last_delivered_id.clone()).text_xs().text_color(muted))
                     .child(div().flex_1())
+                    // An empty consumer, visible in XINFO before it reads.
+                    .when(can_create_consumer, |this| {
+                        let create_consumer_group = create_consumer_group.clone();
+                        this.child(
+                            Button::new(("stream-create-consumer", idx))
+                                .small()
+                                .ghost()
+                                .icon(Icon::new(CustomIconName::UserRoundPlus))
+                                .tooltip(i18n_stream_editor(cx, "create_consumer_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.create_consumer_dialog(create_consumer_group.clone(), window, cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new(("stream-setid", idx))
                             .small()
@@ -1284,6 +1339,7 @@ impl ZedisStreamEditor {
             );
         }
         let can_ackdel = self.server_state.read(cx).supports_stream_ref_policies();
+        let can_nack = self.server_state.read(cx).supports_stream_nack();
         let mut row_ix = 0usize;
         for g in info.groups.iter() {
             for p in g.pending_entries.iter() {
@@ -1291,6 +1347,8 @@ impl ZedisStreamEditor {
                 let ack_id = p.id.clone();
                 let ackdel_group = g.name.clone();
                 let ackdel_id = p.id.clone();
+                let nack_group = g.name.clone();
+                let nack_id = p.id.clone();
                 let claim_group = g.name.clone();
                 let claim_id = p.id.clone();
                 list = list.child(
@@ -1310,11 +1368,23 @@ impl ZedisStreamEditor {
                                 .text_ellipsis(),
                         )
                         .child(Label::new(p.id.clone()).text_xs().w(px(150.)).text_ellipsis())
-                        .child(Label::new(p.consumer.clone()).text_xs().w(px(120.)).text_ellipsis())
+                        // A released (XNACKed) entry has no consumer and
+                        // reports idle -1 until someone claims it.
                         .child(
-                            Label::new(SharedString::from(format_duration(Duration::from_millis(
-                                p.idle_ms as u64,
-                            ))))
+                            Label::new(if p.consumer.is_empty() {
+                                i18n_stream_editor(cx, "pending_unowned")
+                            } else {
+                                p.consumer.clone()
+                            })
+                            .text_xs()
+                            .w(px(120.))
+                            .text_ellipsis(),
+                        )
+                        .child(
+                            Label::new(match u64::try_from(p.idle_ms) {
+                                Ok(ms) => SharedString::from(format_duration(Duration::from_millis(ms))),
+                                Err(_) => SharedString::from("-"),
+                            })
                             .text_xs()
                             .text_color(muted)
                             .w(px(80.)),
@@ -1347,6 +1417,25 @@ impl ZedisStreamEditor {
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.server_state.update(cx, |state, cx| {
                                             state.ackdel_stream_entry(ackdel_group.clone(), ackdel_id.clone(), cx);
+                                        });
+                                    })),
+                            )
+                        })
+                        // Release back to the group without acking (XNACK,
+                        // Redis 8.8+): the consumer is cleared and the entry
+                        // becomes claimable at once.
+                        .when(can_nack, |this| {
+                            let nack_group = nack_group.clone();
+                            let nack_id = nack_id.clone();
+                            this.child(
+                                Button::new(("stream-nack", row_ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(Icon::new(CustomIconName::Undo2))
+                                    .tooltip(i18n_stream_editor(cx, "nack_tooltip"))
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.server_state.update(cx, |state, cx| {
+                                            state.nack_stream_entry(nack_group.clone(), nack_id.clone(), cx);
                                         });
                                     })),
                             )

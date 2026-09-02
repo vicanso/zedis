@@ -20,6 +20,7 @@ use super::{
     },
 };
 use crate::states::ZedisGlobalStore;
+use crate::states::i18n_stream_editor;
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager, next_stream_id},
     error::Error,
@@ -817,6 +818,60 @@ impl ZedisServerState {
                     .map(|s| s.reverse)
                     .unwrap_or_default();
                 this.reload_stream_value(reverse, cx);
+                this.fetch_stream_info(cx);
+            },
+        );
+    }
+
+    /// XNACK key group FAIL IDS 1 id — release one pending entry back to
+    /// the group PEL without acking (Redis 8.8+): its consumer is cleared
+    /// and it moves to the head of the idle order, claimable at once. FAIL
+    /// keeps the delivery counter, so a retry policy still sees the failed
+    /// attempt (SILENT would undo it, FATAL would poison the entry).
+    pub fn nack_stream_entry(&mut self, group: SharedString, entry_id: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::NackStreamEntry,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                // Reply: how many ids were released (0 = not pending).
+                let _: i64 = cmd("XNACK")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg("FAIL")
+                    .arg("IDS")
+                    .arg(1)
+                    .arg(entry_id.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// XGROUP CREATECONSUMER key group consumer (Redis 6.2+) — an empty
+    /// consumer, so it shows up in XINFO before its first read. The server
+    /// answers 0 when the name already exists.
+    pub fn create_stream_consumer(&mut self, group: SharedString, consumer: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::CreateStreamConsumer,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let created: i64 = cmd("XGROUP")
+                    .arg("CREATECONSUMER")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(consumer.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(created == 1)
+            },
+            |this, created, cx| {
+                if !created {
+                    this.emit_warning_notification(i18n_stream_editor(cx, "consumer_exists"), cx);
+                }
                 this.fetch_stream_info(cx);
             },
         );

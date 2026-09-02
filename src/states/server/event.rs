@@ -103,6 +103,8 @@ pub enum ServerTask {
     FetchStreamInfo,
     /// XGROUP CREATE — create a consumer group
     CreateStreamGroup,
+    /// XGROUP CREATECONSUMER — add an empty consumer to a group
+    CreateStreamConsumer,
     /// XGROUP SETID — reposition a group's last-delivered-id
     SetStreamGroupId,
     /// XGROUP DESTROY — drop a consumer group (and its PEL)
@@ -111,6 +113,8 @@ pub enum ServerTask {
     AckStreamEntry,
     /// XACKDEL — acknowledge one pending entry and delete it (Redis 8.2+)
     AckDelStreamEntry,
+    /// XNACK — release one pending entry back to the group PEL (Redis 8.8+)
+    NackStreamEntry,
     /// XCLAIM — reassign one pending entry to a consumer
     ClaimStreamEntry,
     /// XAUTOCLAIM — batch-claim idle pending entries to a consumer
@@ -202,10 +206,12 @@ impl ServerTask {
             ServerTask::RemoveStreamEntry => "remove_stream_entry",
             ServerTask::FetchStreamInfo => "fetch_stream_info",
             ServerTask::CreateStreamGroup => "create_stream_group",
+            ServerTask::CreateStreamConsumer => "create_stream_consumer",
             ServerTask::SetStreamGroupId => "set_stream_group_id",
             ServerTask::DestroyStreamGroup => "destroy_stream_group",
             ServerTask::AckStreamEntry => "ack_stream_entry",
             ServerTask::AckDelStreamEntry => "ackdel_stream_entry",
+            ServerTask::NackStreamEntry => "nack_stream_entry",
             ServerTask::ClaimStreamEntry => "claim_stream_entry",
             ServerTask::AutoclaimStreamEntries => "autoclaim_stream_entries",
             ServerTask::TrimStream => "trim_stream",

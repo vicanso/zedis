@@ -101,6 +101,11 @@ pub const CLUSTER_SLOT_STATS: Floor = Floor::both("8.2.0", "8.0.0");
 /// `XACKDEL` / `XDELEX` and the `XTRIM`/`XADD` KEEPREF / DELREF / ACKED
 /// words (Redis 8.2; not in Valkey).
 pub const STREAM_REF_POLICIES: Floor = Floor::redis_only("8.2.0");
+/// `XNACK` — release a pending entry without acking (Redis 8.8; not in
+/// Valkey).
+pub const STREAM_NACK: Floor = Floor::redis_only("8.8.0");
+/// `XGROUP CREATECONSUMER` (Redis 6.2).
+pub const STREAM_CREATE_CONSUMER: Floor = Floor::since_fork("6.2.0");
 /// `SET … IFEQ` compare-and-set (Redis 8.4; Valkey 8.1, valkey-io/valkey#1324).
 pub const SET_IFEQ: Floor = Floor::both("8.4.0", "8.1.0");
 /// `HOTKEYS START / GET / STOP / RESET` (Redis 8.6; not in Valkey).
@@ -142,6 +147,7 @@ mod tests {
         for floor in [
             INFO_KEYSIZES,
             STREAM_REF_POLICIES,
+            STREAM_NACK,
             HOTKEYS,
             MAXMEMORY_LRM,
             VSIM_WITHATTRIBS,

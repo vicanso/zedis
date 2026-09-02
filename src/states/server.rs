@@ -1007,6 +1007,18 @@ impl ZedisServerState {
         self.supports(floors::STREAM_REF_POLICIES)
     }
 
+    /// `XNACK` — release a pending entry without acking (Redis 8.8, never
+    /// Valkey); see [`floors::STREAM_NACK`].
+    pub fn supports_stream_nack(&self) -> bool {
+        self.supports(floors::STREAM_NACK)
+    }
+
+    /// `XGROUP CREATECONSUMER` (Redis 6.2); see
+    /// [`floors::STREAM_CREATE_CONSUMER`].
+    pub fn supports_stream_create_consumer(&self) -> bool {
+        self.supports(floors::STREAM_CREATE_CONSUMER)
+    }
+
     /// The ACL family (`ACL USERS / GETUSER / SETUSER / WHOAMI`) — drives
     /// Tools-menu visibility so older servers don't see a dead entry; see
     /// [`floors::ACL`].

@@ -72,7 +72,7 @@ Every collection is walked incrementally (`HSCAN` / `SSCAN` / `ZSCAN`, `LRANGE` 
 ### Redis Streams
 **Browse, live-tail, and manage consumer groups without leaving the GUI.**
 
-Browse entries, **live-tail** new messages (`XREAD BLOCK`, ring-buffered), inspect Consumer Groups & Pending Entries via `XINFO`, and manage groups (`XGROUP CREATE` / `SETID` / `DESTROY`, with a confirm guard on destroy). On Redis 8.2+ a pending row also offers **ack + delete** in one atomic `XACKDEL`, and the trim dialog gains the **reference policy** (KEEPREF / DELREF / ACKED — what happens to groups' pending references of trimmed entries); on 8.6+ the info view shows the **idempotent producer (IDMP)** counters — producers tracked, entries added, duplicates suppressed.
+Browse entries, **live-tail** new messages (`XREAD BLOCK`, ring-buffered), inspect Consumer Groups & Pending Entries via `XINFO`, and manage groups (`XGROUP CREATE` / `SETID` / `DESTROY`, with a confirm guard on destroy). On Redis 8.2+ a pending row also offers **ack + delete** in one atomic `XACKDEL`, and the trim dialog gains the **reference policy** (KEEPREF / DELREF / ACKED — what happens to groups' pending references of trimmed entries); on 8.6+ the info view shows the **idempotent producer (IDMP)** counters — producers tracked, entries added, duplicates suppressed. On 8.8+ a pending row can also be **released** without an ack (`XNACK FAIL`: consumer cleared, delivery count kept, claimable at once), and each group row offers **create consumer** (`XGROUP CREATECONSUMER`, 6.2+).
 
 ### Pub/Sub
 **Subscribe to channels and publish messages, with a live message log.**
