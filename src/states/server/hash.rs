@@ -26,7 +26,10 @@ use super::{
     value::{RedisHashValue, RedisValue, RedisValueStatus},
 };
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager},
+    connection::{
+        CommandStatus, FieldTtl, RedisAsyncConn, ServerCommand, get_connection_manager, rename_hash_field,
+        write_hash_field,
+    },
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_hash_editor},
 };
@@ -170,6 +173,13 @@ pub(crate) async fn first_load_hash_value(
 impl ZedisServerState {
     /// A generic helper for Redis Hash operations (Add, Remove, Update).
     /// Handles status switching, optimistic UI updates, and background task execution.
+    /// Whether field writes may use `HSETEX`: only a probe that positively
+    /// found the command counts — an unprobed server gets the `HSET` path,
+    /// because a guessed write command fails loudly, unlike a greyed panel.
+    fn hsetex_available(&self) -> bool {
+        self.features().status(ServerCommand::HSetEx) == CommandStatus::Available
+    }
+
     fn exec_hash_op<F, Fut, R>(
         &mut self,
         task: ServerTask,
@@ -221,9 +231,11 @@ impl ZedisServerState {
     }
     /// Adds a field-value pair in the Redis HASH.
     ///
-    /// Uses HSET command which creates a new field or updates an existing one.
-    /// Updates the UI state and shows appropriate notifications based on whether
-    /// it was a new field (count=1) or an update (count=0).
+    /// Creates a new field or updates an existing one; with a TTL the write
+    /// and its expiry are one atomic `HSETEX` where the probe found the
+    /// command (Redis 8.0+), else `HSET` then `HEXPIRE`. Updates the UI state
+    /// and shows appropriate notifications based on whether it was a new
+    /// field (count=1) or an update (count=0).
     ///
     /// # Arguments
     /// * `field` - The field name to add
@@ -238,32 +250,21 @@ impl ZedisServerState {
     ) {
         let field_clone = field.clone();
         let value_clone = value.clone();
-
+        let atomic = self.hsetex_available();
+        // No TTL asked for means none: an `HSET` overwrite drops a field's
+        // TTL anyway (7.4+), so this is the same outcome on every server.
+        let field_ttl = match ttl {
+            Some(secs) if secs > 0 => FieldTtl::Expire(secs),
+            _ => FieldTtl::Persist,
+        };
         self.exec_hash_op(
             ServerTask::AddHashField,
             cx,
             |_| {}, // Wait for server confirmation to avoid duplicate UI entries during scan
             move |key, mut conn| async move {
-                let count: usize = cmd("HSET")
-                    .arg(&key)
-                    .arg(field.as_str())
-                    .arg(value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
-                // Apply an optional per-field TTL (Redis 7.4+, HEXPIRE).
-                if let Some(secs) = ttl
-                    && secs > 0
-                {
-                    let _: Vec<i64> = cmd("HEXPIRE")
-                        .arg(&key)
-                        .arg(secs)
-                        .arg("FIELDS")
-                        .arg(1)
-                        .arg(field.as_str())
-                        .query_async(&mut conn)
-                        .await?;
-                }
-                Ok(count)
+                let created =
+                    write_hash_field(&mut conn, &key, field.as_str(), value.as_str(), field_ttl, atomic).await?;
+                Ok(usize::from(created))
             },
             move |this, count, cx| {
                 if let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
@@ -290,14 +291,17 @@ impl ZedisServerState {
             },
         );
     }
-    /// Updates a field-value pair in the Redis HASH.
-    /// Uses HSET command to update the value of the specified field.
+    /// Updates a field-value pair in the Redis HASH — one `HSETEX` where
+    /// the probe found it (Redis 8.0+), so the value and its TTL change
+    /// together and an untouched TTL survives the edit (`KEEPTTL`); the
+    /// `HSET` fallback cannot keep one, the server drops it with the old
+    /// value.
     ///
     /// # Arguments
     /// * `old_field` - The current field name (before any rename)
     /// * `new_field` - The new field name (same as `old_field` when not renaming)
     /// * `new_value` - The new value to store
-    /// * `ttl`       - `Some(secs)` sets HEXPIRE, `Some(-1)` calls HPERSIST, `None` leaves TTL unchanged
+    /// * `ttl`       - `Some(secs)` sets a TTL, `Some(-1)` removes it, `None` leaves it unchanged
     /// * `cx`        - GPUI context
     pub fn update_hash_value(
         &mut self,
@@ -311,6 +315,8 @@ impl ZedisServerState {
         let new_field_clone = new_field.clone();
         let new_value_clone = new_value.clone();
         let is_rename = old_field != new_field;
+        let atomic = self.hsetex_available();
+        let field_ttl = FieldTtl::from_editor(ttl);
 
         self.exec_hash_op(
             ServerTask::UpdateHashField,
@@ -331,45 +337,26 @@ impl ZedisServerState {
             },
             move |key, mut conn| async move {
                 if is_rename {
-                    let _: () = redis::pipe()
-                        .atomic()
-                        .cmd("HSET")
-                        .arg(&key)
-                        .arg(new_field.as_str())
-                        .arg(new_value.as_str())
-                        .cmd("HDEL")
-                        .arg(&key)
-                        .arg(old_field.as_str())
-                        .query_async(&mut conn)
-                        .await?;
+                    rename_hash_field(
+                        &mut conn,
+                        &key,
+                        old_field.as_str(),
+                        new_field.as_str(),
+                        new_value.as_str(),
+                        field_ttl,
+                        atomic,
+                    )
+                    .await?;
                 } else {
-                    let _: () = cmd("HSET")
-                        .arg(&key)
-                        .arg(new_field.as_str())
-                        .arg(new_value.as_str())
-                        .query_async(&mut conn)
-                        .await?;
-                }
-                // Apply TTL change in the same task
-                if let Some(t) = ttl {
-                    if t > 0 {
-                        let _: Vec<i64> = cmd("HEXPIRE")
-                            .arg(&key)
-                            .arg(t)
-                            .arg("FIELDS")
-                            .arg(1)
-                            .arg(new_field.as_ref())
-                            .query_async(&mut conn)
-                            .await?;
-                    } else {
-                        let _: Vec<i64> = cmd("HPERSIST")
-                            .arg(&key)
-                            .arg("FIELDS")
-                            .arg(1)
-                            .arg(new_field.as_ref())
-                            .query_async(&mut conn)
-                            .await?;
-                    }
+                    write_hash_field(
+                        &mut conn,
+                        &key,
+                        new_field.as_str(),
+                        new_value.as_str(),
+                        field_ttl,
+                        atomic,
+                    )
+                    .await?;
                 }
                 Ok(())
             },

@@ -65,6 +65,8 @@ pub enum ServerCommand {
     FlushDb,
     HotkeysGet,
     HotkeysStart,
+    /// `HSETEX` — a hash field and its TTL in one write (Redis 8.0).
+    HSetEx,
 }
 
 impl ServerCommand {
@@ -102,6 +104,7 @@ impl ServerCommand {
         ServerCommand::FlushDb,
         ServerCommand::HotkeysGet,
         ServerCommand::HotkeysStart,
+        ServerCommand::HSetEx,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -133,6 +136,7 @@ impl ServerCommand {
             ServerCommand::ClusterInfo | ServerCommand::ClusterSlotStats => "CLUSTER",
             ServerCommand::FlushDb => "FLUSHDB",
             ServerCommand::HotkeysGet | ServerCommand::HotkeysStart => "HOTKEYS",
+            ServerCommand::HSetEx => "HSETEX",
         }
     }
 
@@ -189,6 +193,7 @@ impl ServerCommand {
                 | ServerCommand::Subscribe
                 | ServerCommand::FlushDb
                 | ServerCommand::HotkeysStart
+                | ServerCommand::HSetEx
         )
     }
 

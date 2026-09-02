@@ -31,6 +31,7 @@ mod danger;
 mod diagnostics;
 mod dump_restore;
 mod functions;
+mod hash_fields;
 mod hotkeys;
 mod import_clients;
 mod latency;
@@ -73,6 +74,7 @@ pub use functions::{
     function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
     function_stats, validate_library_source,
 };
+pub use hash_fields::{FieldTtl, rename_hash_field, write_hash_field};
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,

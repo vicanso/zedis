@@ -29,12 +29,12 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    CommandStatus, ConflictMode, ExpireCondition, ImportFormat, ReadLimits, ReadableValue, ReadableWriteStatus,
-    RedisAsyncConn, RedisServer, RestoreStatus, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
-    acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain,
-    ft_search, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
-    probe_server_features, read_readable_chunk, restore_keys_chunk, save_servers, sniff_import_format, split_acl_rules,
-    write_readable_chunk,
+    CommandStatus, ConflictMode, ExpireCondition, FieldTtl, ImportFormat, ReadLimits, ReadableValue,
+    ReadableWriteStatus, RedisAsyncConn, RedisServer, RestoreStatus, SearchOptions, ServerCommand, ServerFlavor,
+    SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
+    ft_explain, ft_search, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
+    probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk, save_servers,
+    sniff_import_format, split_acl_rules, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -1336,6 +1336,89 @@ async fn check_batch_ttl_conditions(id: &str) {
         .exec_async(&mut c)
         .await
         .expect("del");
+}
+
+/// Hash field writes carry their TTL decision: the `HSET` + `HEXPIRE` /
+/// `HPERSIST` fallback on any 7.4+ server, and — where the probe finds
+/// `HSETEX` — one atomic write whose `KEEPTTL` survives a value edit that
+/// plain `HSET` would strip.
+#[test]
+#[ignore]
+fn standalone_hash_field_writes_carry_their_ttl() {
+    smol::block_on(async {
+        let id = register(server("it-hash-ttl", standalone())).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        if !client.supports(floors::HASH_FIELD_TTL) {
+            eprintln!("skipped: server has no hash field TTL");
+            return;
+        }
+        let atomic = probe_server_features(&id, 0)
+            .await
+            .expect("probe")
+            .status(ServerCommand::HSetEx)
+            == CommandStatus::Available;
+        let mut c = conn(&id, 0).await;
+        let key = unique("hf");
+
+        async fn ttl_of(c: &mut RedisAsyncConn, key: &str, field: &str) -> i64 {
+            let ttls: Vec<i64> = cmd("HTTL")
+                .arg(key)
+                .arg("FIELDS")
+                .arg(1)
+                .arg(field)
+                .query_async(c)
+                .await
+                .expect("httl");
+            ttls[0]
+        }
+
+        // Fallback path, available on every 7.4+ server.
+        let created = write_hash_field(&mut c, &key, "f", "v1", FieldTtl::Expire(1000), false)
+            .await
+            .expect("hset+hexpire");
+        assert!(created, "first write creates the field");
+        assert!((900..=1000).contains(&ttl_of(&mut c, &key, "f").await));
+        let created = write_hash_field(&mut c, &key, "f", "v2", FieldTtl::Persist, false)
+            .await
+            .expect("hset+hpersist");
+        assert!(!created, "second write overwrites");
+        assert_eq!(ttl_of(&mut c, &key, "f").await, -1, "Persist removed the TTL");
+
+        if atomic {
+            let created = write_hash_field(&mut c, &key, "f", "v3", FieldTtl::Expire(500), true)
+                .await
+                .expect("hsetex ex");
+            assert!(!created, "HSETEX on an existing field reports an overwrite");
+            assert!((450..=500).contains(&ttl_of(&mut c, &key, "f").await));
+            write_hash_field(&mut c, &key, "f", "v4", FieldTtl::Keep, true)
+                .await
+                .expect("hsetex keepttl");
+            let value: String = cmd("HGET").arg(&key).arg("f").query_async(&mut c).await.expect("hget");
+            assert_eq!(value, "v4");
+            assert!(
+                (450..=500).contains(&ttl_of(&mut c, &key, "f").await),
+                "KEEPTTL: the value changed, the TTL did not"
+            );
+            rename_hash_field(&mut c, &key, "f", "g", "v5", FieldTtl::Expire(300), true)
+                .await
+                .expect("rename");
+            let old: i64 = cmd("HEXISTS")
+                .arg(&key)
+                .arg("f")
+                .query_async(&mut c)
+                .await
+                .expect("hexists");
+            assert_eq!(old, 0, "rename removed the old field");
+            assert!(
+                (250..=300).contains(&ttl_of(&mut c, &key, "g").await),
+                "the new field got its TTL"
+            );
+        } else {
+            eprintln!("HSETEX not probed on this server: atomic path not exercised");
+        }
+
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
 }
 
 /// `INFO keysizes` (8+): written keys land in per-type bucket histograms —
