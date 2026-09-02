@@ -25,8 +25,8 @@ use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
-        Capability, ScriptRunOutcome, get_connection_manager, max_keys_index, run_script, script_exists, script_flush,
-        script_load,
+        Capability, ScriptRunOutcome, floors, get_connection_manager, max_keys_index, run_script, script_exists,
+        script_flush, script_load,
     },
     db::{LuaScript, LuaScriptExport, LuaScriptManager},
     error::Error,
@@ -115,6 +115,9 @@ struct EditForm {
 struct RunForm {
     keys: Entity<TextareaState>,
     args: Entity<TextareaState>,
+    /// Run as `EVALSHA_RO` (Redis 7.0+): the server refuses writes inside
+    /// the script — the Functions panel's FCALL_RO toggle, for scripts.
+    readonly: bool,
     last: Option<RunResult>,
 }
 
@@ -227,7 +230,15 @@ impl ZedisLuaScriptLibrary {
                     .placeholder(i18n_lua_scripts(cx, "args_placeholder"))
                     .default_value(args_default)
             });
-            self.run_forms.insert(id, RunForm { keys, args, last: None });
+            self.run_forms.insert(
+                id,
+                RunForm {
+                    keys,
+                    args,
+                    readonly: false,
+                    last: None,
+                },
+            );
         }
         cx.notify();
     }
@@ -438,6 +449,13 @@ impl ZedisLuaScriptLibrary {
         self.probe_cache(cx);
     }
 
+    fn toggle_run_readonly(&mut self, id: String, cx: &mut gpui::Context<Self>) {
+        if let Some(form) = self.run_forms.get_mut(&id) {
+            form.readonly = !form.readonly;
+            cx.notify();
+        }
+    }
+
     fn run(&mut self, id: String, cx: &mut gpui::Context<Self>) {
         if !self.server_state.read(cx).can(Capability::EvalScript) {
             return;
@@ -456,6 +474,9 @@ impl ZedisLuaScriptLibrary {
         };
         let keys = parse_lines(&form.keys.read(cx).value());
         let args = parse_lines(&form.args.read(cx).value());
+        // The toggle only renders on 7.0+, but never send the RO spelling
+        // to a server that would answer "unknown command".
+        let readonly = form.readonly && self.server_state.read(cx).supports(floors::EVAL_RO);
         let needed = max_keys_index(&script.code);
         if needed > keys.len() {
             if let Some(form) = self.run_forms.get_mut(&id) {
@@ -488,7 +509,7 @@ impl ZedisLuaScriptLibrary {
         self._run_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                run_script(&mut conn, &code, &sha, &keys, &args).await
+                run_script(&mut conn, &code, &sha, &keys, &args, readonly).await
             });
             let result: Result<ScriptRunOutcome> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -1102,6 +1123,9 @@ impl ZedisLuaScriptLibrary {
                 });
 
                 let id_save_defaults = id.clone();
+                let id_ro = id.clone();
+                let readonly = form.readonly;
+                let supports_ro = self.server_state.read(cx).supports(floors::EVAL_RO);
                 div()
                     .border_t_1()
                     .border_color(cx.theme().border)
@@ -1139,6 +1163,19 @@ impl ZedisLuaScriptLibrary {
                             .child(
                                 v_flex()
                                     .gap_1()
+                                    .when(supports_ro, |this| {
+                                        this.child(
+                                            Button::new(("lua-ro", card_hash))
+                                                .small()
+                                                .when(readonly, |b| b.primary())
+                                                .when(!readonly, |b| b.outline())
+                                                .label(if readonly { "EVALSHA_RO" } else { "EVALSHA" })
+                                                .tooltip(i18n_lua_scripts(cx, "evalsha_ro_tooltip"))
+                                                .on_click(cx.listener(move |this, _, _w, cx| {
+                                                    this.toggle_run_readonly(id_ro.clone(), cx)
+                                                })),
+                                        )
+                                    })
                                     .child(
                                         Button::new(("lua-run-btn", card_hash))
                                             .primary()

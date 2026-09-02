@@ -28,6 +28,7 @@ use redis::{Value, cmd};
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Outcome of one script invocation.
+#[derive(Debug)]
 pub struct ScriptRunOutcome {
     /// Raw response, formatted for display. We stringify here rather
     /// than expose `redis::Value` so callers don't need to walk a
@@ -42,14 +43,17 @@ pub struct ScriptRunOutcome {
 /// Run a script with keys + args. `sha` is the locally-computed SHA1
 /// of `code` (matching what `SCRIPT LOAD` would return) — pass the
 /// cached value to skip a `redis::Script::new` hash recomputation.
+/// `readonly` spells it `EVALSHA_RO` (Redis 7.0+): the server then refuses
+/// any write the script attempts.
 pub async fn run_script(
     conn: &mut RedisAsyncConn,
     code: &str,
     sha: &str,
     keys: &[String],
     args: &[String],
+    readonly: bool,
 ) -> Result<ScriptRunOutcome> {
-    let res: redis::RedisResult<Value> = build_evalsha(sha, keys, args).query_async(conn).await;
+    let res: redis::RedisResult<Value> = build_evalsha(sha, keys, args, readonly).query_async(conn).await;
     match res {
         Ok(v) => Ok(ScriptRunOutcome {
             formatted: format_value(&v),
@@ -69,7 +73,7 @@ pub async fn run_script(
                     message: format!("SHA mismatch: client={sha} server={returned_sha}"),
                 });
             }
-            let v: Value = build_evalsha(sha, keys, args).query_async(conn).await?;
+            let v: Value = build_evalsha(sha, keys, args, readonly).query_async(conn).await?;
             Ok(ScriptRunOutcome {
                 formatted: format_value(&v),
                 was_hit: false,
@@ -79,8 +83,8 @@ pub async fn run_script(
     }
 }
 
-fn build_evalsha(sha: &str, keys: &[String], args: &[String]) -> redis::Cmd {
-    let mut c = cmd("EVALSHA");
+fn build_evalsha(sha: &str, keys: &[String], args: &[String], readonly: bool) -> redis::Cmd {
+    let mut c = cmd(if readonly { "EVALSHA_RO" } else { "EVALSHA" });
     c.arg(sha).arg(keys.len());
     for k in keys {
         c.arg(k.as_str());
@@ -196,6 +200,22 @@ fn format_value(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readonly_run_is_spelled_evalsha_ro() {
+        let word = |readonly: bool| {
+            build_evalsha("abc", &["k".to_string()], &[], readonly)
+                .args_iter()
+                .next()
+                .map(|a| match a {
+                    redis::Arg::Simple(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                    _ => String::new(),
+                })
+                .expect("command word")
+        };
+        assert_eq!(word(false), "EVALSHA");
+        assert_eq!(word(true), "EVALSHA_RO");
+    }
     use redis::Value;
 
     #[test]

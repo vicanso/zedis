@@ -89,6 +89,8 @@ pub const FUNCTIONS: Floor = Floor::since_fork("7.0.0");
 pub const SHARDED_PUBSUB: Floor = Floor::since_fork("7.0.0");
 /// `EXPIRE … NX | XX | GT | LT` (Redis 7.0).
 pub const EXPIRE_CONDITIONS: Floor = Floor::since_fork("7.0.0");
+/// `EVAL_RO` / `EVALSHA_RO` — read-only script execution (Redis 7.0).
+pub const EVAL_RO: Floor = Floor::since_fork("7.0.0");
 /// Hash field TTL — `HEXPIRE / HTTL / HPERSIST` (Redis 7.4; Valkey 9.0).
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
 /// `INFO keysizes` per-type histograms (Redis 8.0; not in Valkey).

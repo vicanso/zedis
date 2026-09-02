@@ -33,7 +33,7 @@ use zedis_connection::{
     ReadableWriteStatus, RedisAsyncConn, RedisServer, RestoreStatus, SearchOptions, ServerCommand, ServerFlavor,
     SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
     ft_explain, ft_search, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
-    probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk, save_servers,
+    probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers,
     sniff_import_format, split_acl_rules, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
@@ -1416,6 +1416,47 @@ fn standalone_hash_field_writes_carry_their_ttl() {
         } else {
             eprintln!("HSETEX not probed on this server: atomic path not exercised");
         }
+
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// `EVALSHA_RO` (7.0): the read-only spelling makes the server refuse a
+/// write inside the script; the same script runs under `EVALSHA`, and a
+/// reading script runs under the read-only one.
+#[test]
+#[ignore]
+fn standalone_evalsha_ro_rejects_writes() {
+    smol::block_on(async {
+        let id = register(server("it-eval-ro", standalone())).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        if !client.supports(floors::EVAL_RO) {
+            eprintln!("skipped: server predates EVALSHA_RO");
+            return;
+        }
+        let mut c = conn(&id, 0).await;
+        let key = unique("evalro");
+        let writer = "return redis.call('SET', KEYS[1], 'written')";
+        let reader = "return redis.call('GET', KEYS[1])";
+        let sha_of = |code: &str| redis::Script::new(code).get_hash().to_string();
+        let keys = vec![key.clone()];
+
+        let refused = run_script(&mut c, writer, &sha_of(writer), &keys, &[], true).await;
+        let message = refused.expect_err("EVALSHA_RO must refuse a write").to_string();
+        assert!(
+            message.to_lowercase().contains("read-only"),
+            "the server names the reason: {message}"
+        );
+        let exists: i64 = cmd("EXISTS").arg(&key).query_async(&mut c).await.expect("exists");
+        assert_eq!(exists, 0, "the refused write left nothing behind");
+
+        run_script(&mut c, writer, &sha_of(writer), &keys, &[], false)
+            .await
+            .expect("EVALSHA writes");
+        let read = run_script(&mut c, reader, &sha_of(reader), &keys, &[], true)
+            .await
+            .expect("EVALSHA_RO reads");
+        assert!(read.formatted.contains("written"), "read back: {}", read.formatted);
 
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });

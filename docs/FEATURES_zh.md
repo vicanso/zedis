@@ -225,7 +225,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Lua 脚本库
 **保存、复用、以 EVALSHA 运行 Lua 脚本，带命中率统计。**
 
-本地保存的具名 Lua 脚本库（源码 + 预算 SHA1），带起步模板，一键 **EVALSHA 优先** 执行，预填 `KEYS` / `ARGS` 默认值便于一键重跑，并记录终身命中 / 未命中计数以发现总被刷出 Redis 缓存的脚本——外加缓存控制（**预热** = 仅 `SCRIPT LOAD` 不执行，及带确认保护的 `SCRIPT FLUSH`）与脚本库导入导出。（与 **Functions** 不同——后者管理服务端 `FUNCTION` library。）
+本地保存的具名 Lua 脚本库（源码 + 预算 SHA1），带起步模板，一键 **EVALSHA 优先** 执行（Redis 7.0+ 可切换 `EVALSHA_RO`，服务器会拒绝脚本内的写命令），预填 `KEYS` / `ARGS` 默认值便于一键重跑，并记录终身命中 / 未命中计数以发现总被刷出 Redis 缓存的脚本——外加缓存控制（**预热** = 仅 `SCRIPT LOAD` 不执行，及带确认保护的 `SCRIPT FLUSH`）与脚本库导入导出。（与 **Functions** 不同——后者管理服务端 `FUNCTION` library。）
 
 ### 首次启动与引导
 **首次运行的欢迎卡片，以及需要上下文的面板上的一次性提示。**

@@ -225,7 +225,7 @@ Version-aware command completion with inline argument/summary hints, each sugges
 ### Lua Script Library
 **Save, reuse, and EVALSHA-run Lua scripts with hit-rate stats.**
 
-A local library of named Lua scripts (source + precomputed SHA1) with starter templates, one-click **EVALSHA-first** execution, saved `KEYS` / `ARGS` defaults for one-click re-runs, and lifetime hit/miss counters to spot scripts being flushed from Redis's cache — plus cache control (**Warm** = `SCRIPT LOAD` without executing, and a guarded `SCRIPT FLUSH`) and library import/export. (Distinct from **Functions** — that manages server-side `FUNCTION` libraries.)
+A local library of named Lua scripts (source + precomputed SHA1) with starter templates, one-click **EVALSHA-first** execution (an `EVALSHA_RO` toggle on Redis 7.0+ makes the server refuse writes inside the script), saved `KEYS` / `ARGS` defaults for one-click re-runs, and lifetime hit/miss counters to spot scripts being flushed from Redis's cache — plus cache control (**Warm** = `SCRIPT LOAD` without executing, and a guarded `SCRIPT FLUSH`) and library import/export. (Distinct from **Functions** — that manages server-side `FUNCTION` libraries.)
 
 ### First Launch & Onboarding
 **A welcome card on the first run, one-time hints on the panels that need context.**
