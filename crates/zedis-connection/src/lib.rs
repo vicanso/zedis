@@ -54,8 +54,8 @@ pub use async_connection::{
     open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
 pub use config::{
-    ImportError, RedisServer, TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers,
-    servers_toml_redacted, tag_color_index,
+    ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
+    TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, servers_toml_redacted, tag_color_index,
 };
 pub use danger::{
     ConfirmStrictness, DangerKind, classify_dangerous_line, confirm_strictness, is_write_command,

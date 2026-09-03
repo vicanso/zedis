@@ -143,6 +143,18 @@ fn keep_first_host(uri: &str) -> Cow<'_, str> {
     }
 }
 
+/// `RedisServer::server_type` discriminants — the server form's radio order
+/// (Auto · Standalone · Sentinel · Cluster) and what `manager.rs`'s
+/// `From<usize> for ServerType` reads back. `SERVER_TYPE_AUTO` (like `None`)
+/// lets the pool detect the topology from `ROLE` / `INFO cluster`; the other
+/// three pin it and *skip* detection. So an importer that writes the wrong
+/// number does worse than mislabel a server: it switches off the detection
+/// that would have corrected it.
+pub const SERVER_TYPE_AUTO: usize = 0;
+pub const SERVER_TYPE_STANDALONE: usize = 1;
+pub const SERVER_TYPE_SENTINEL: usize = 2;
+pub const SERVER_TYPE_CLUSTER: usize = 3;
+
 /// One saved connection (`redis-servers.toml`). `#[serde(default)]` is the
 /// upgrade contract: an entry written by any earlier version must parse, so
 /// a new field is always optional or defaulted — see `upgrade_fixtures` in
@@ -685,11 +697,12 @@ impl RedisServer {
             .ok_or(ImportError::InvalidPort)?;
         let name = get_str("name").unwrap_or_else(|| format!("{host}:{port}"));
 
-        // connectionType → server_type (0 standalone / 1 cluster / 2 sentinel).
+        // connectionType → server_type. STANDALONE becomes Auto rather than
+        // the pinned Standalone, so topology detection still runs on it.
         let server_type = match obj.get("connectionType").and_then(|v| v.as_str()) {
-            Some("CLUSTER") => Some(1),
-            Some("SENTINEL") => Some(2),
-            _ => Some(0),
+            Some("CLUSTER") => Some(SERVER_TYPE_CLUSTER),
+            Some("SENTINEL") => Some(SERVER_TYPE_SENTINEL),
+            _ => Some(SERVER_TYPE_AUTO),
         };
 
         let tls = get_bool("tls");
@@ -1048,7 +1061,7 @@ mod upgrade_fixtures {
         let servers = load(V0_7_0);
         assert_eq!(servers.len(), 1);
         let s = &servers[0];
-        assert_eq!(s.server_type, Some(2));
+        assert_eq!(s.server_type, Some(SERVER_TYPE_SENTINEL));
         assert_eq!(s.master_name.as_deref(), Some("mymaster"));
         assert_eq!(s.databases, Some(16));
         assert_eq!(s.connection_timeout, Some(5));
@@ -1288,7 +1301,7 @@ mod tests {
         assert_eq!(s.host, "127.0.0.1");
         assert_eq!(s.port, 6379);
         assert_eq!(s.name, "127.0.0.1:6379");
-        assert_eq!(s.server_type, Some(0)); // STANDALONE
+        assert_eq!(s.server_type, Some(SERVER_TYPE_AUTO)); // STANDALONE → detect
         assert!(s.username.is_none() && s.password.is_none());
         assert!(s.tls.is_none() && s.insecure.is_none());
         assert!(s.ssh_tunnel.is_none() && s.ssh_addr.is_none());
@@ -1327,7 +1340,11 @@ mod tests {
         ]"#;
         let servers = RedisServer::from_import_multi(ri).expect("ri import");
         let s = &servers[0];
-        assert_eq!(s.server_type, Some(1)); // CLUSTER
+        // Regression: this was `Some(1)` — the *Standalone* pin, which also
+        // switches off topology detection — so every imported Redis Insight
+        // cluster opened as a single node.
+        assert_eq!(s.server_type, Some(SERVER_TYPE_CLUSTER));
+        assert_ne!(s.server_type, Some(SERVER_TYPE_STANDALONE));
         assert_eq!(s.username.as_deref(), Some("app"));
         assert_eq!(s.password.as_deref(), Some("pw"));
         assert_eq!(s.tls, Some(true));
@@ -1352,7 +1369,7 @@ mod tests {
         let servers = RedisServer::from_import_multi(ri).expect("ri import");
         assert_eq!(servers.len(), 2);
         assert_eq!(servers[0].host, "a");
-        assert_eq!(servers[1].server_type, Some(2)); // SENTINEL
+        assert_eq!(servers[1].server_type, Some(SERVER_TYPE_SENTINEL));
         assert_ne!(servers[0].id, servers[1].id);
     }
 

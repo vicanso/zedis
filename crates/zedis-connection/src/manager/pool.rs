@@ -16,6 +16,8 @@
 //! count) and the pooled `ConnectionManager`.
 
 use super::*;
+use tracing::warn;
+use uuid::Uuid;
 
 /// Detects the type of Redis server (Sentinel, Cluster, or Standalone).
 /// This function checks the role of the Redis server and returns the server type.
@@ -50,58 +52,134 @@ async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerTyp
     }
 }
 
-async fn check_permission_by_probing(mut conn: RedisAsyncConn) -> bool {
-    let probe: redis::RedisResult<String> = cmd("SET")
-        .arg("_zedis_auth_test_")
-        .arg("1")
-        .arg("EX")
-        .arg("1")
-        .query_async(&mut conn)
-        .await;
+/// What a permission probe learned about the connected ACL user's right to
+/// write. Only [`CommandDenied`](Self::CommandDenied) makes the connection
+/// [`AccessMode::StrictReadOnly`]; everything uncertain leans writable,
+/// because a wrongly locked UI blocks real work while a wrongly unlocked one
+/// just surfaces the server's own `NOPERM` on the first write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteVerdict {
+    /// The write would go through.
+    Allowed,
+    /// The user may not run the write command at all — a read-only user.
+    CommandDenied,
+    /// The command is allowed, just not on the probe key: the user writes
+    /// within a key scope (`~app:*`). A `%R~*` read-only key permission
+    /// lands here too — the one shape a fresh-key probe cannot tell apart.
+    KeyDenied,
+    /// The reply said nothing about the user: a replica's `READONLY`, an
+    /// `OOM`, a proxy's refusal.
+    Unknown,
+}
 
-    match probe {
-        Ok(_) => false,
-        Err(e) => e.code() == Some("NOPERM"),
+/// Read a denial — `ACL DRYRUN`'s reply text or a `NOPERM` error — for
+/// *what* was denied. Every Redis since 6.0 words a command denial as
+/// "…no permissions to run the '<cmd>' command" and a key denial as
+/// "…no permissions to access …" (6.x: "one of the keys used as arguments";
+/// 7.0+: "a key" / "the '<key>' key"). Unrecognised text counts as a
+/// command denial, the conservative reading of "not OK".
+fn classify_denial(text: &str) -> WriteVerdict {
+    if text.contains("to run the") {
+        WriteVerdict::CommandDenied
+    } else if text.contains("to access") {
+        WriteVerdict::KeyDenied
+    } else {
+        WriteVerdict::CommandDenied
     }
 }
 
-async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
-    let user: String = cmd("ACL")
-        .arg("WHOAMI")
-        .query_async(&mut conn)
-        .await
-        .unwrap_or_default();
-    if user.is_empty() {
-        return false;
+/// Key name for the write probes. Fresh per call, so it cannot collide with
+/// a real key: `SET … XX` only ever meets an absent key and stays a no-op.
+fn probe_key() -> String {
+    format!("zedis:acl-probe:{}", Uuid::now_v7())
+}
+
+/// Fallback when `ACL DRYRUN` is unavailable (before 7.0) or denied to this
+/// user (it is `@admin` — exactly what a restricted user lacks): send a real
+/// write so the ACL check runs, but one that cannot mutate. `SET <fresh key>
+/// 1 XX` (2.6.12+) aborts with nil before touching the dataset when the key
+/// is absent: no key, no keyspace event, nothing replicated or appended to
+/// the AOF. Only MONITOR, `INFO commandstats` and, when denied, `ACL LOG`
+/// see it. Its predecessor, `SET … EX 1`, really wrote a key on production
+/// and fired set / expire / expired events on every connect.
+async fn probe_write_permission(mut conn: RedisAsyncConn) -> WriteVerdict {
+    let key = probe_key();
+    let probe: redis::RedisResult<Value> = cmd("SET").arg(&key).arg("1").arg("XX").query_async(&mut conn).await;
+    match probe {
+        Ok(Value::Okay) => {
+            // Only possible if the fresh key already existed. Nothing can be
+            // undone safely from here, so say so.
+            warn!(key, "write probe found its fresh key present and overwrote it");
+            WriteVerdict::Allowed
+        }
+        Ok(_) => WriteVerdict::Allowed,
+        Err(e) => match e.code() {
+            Some("NOPERM") => classify_denial(&e.to_string()),
+            // A replica refuses every write whatever the ACL says (`READONLY`);
+            // `OOM`, `NOREPLICAS` or a proxy's refusal are about the server
+            // too. None of them describes the user.
+            Some(code) => {
+                debug!(code, error = %e, "write probe inconclusive");
+                WriteVerdict::Unknown
+            }
+            None => WriteVerdict::Unknown,
+        },
     }
+}
+
+/// Stage 2: `ACL DRYRUN` (7.0+) is a pure simulation — no side effects at
+/// all — so it is asked first. When the server has no DRYRUN ("unknown
+/// subcommand" before 7.0) or the user may not run it, the no-op write
+/// answers instead.
+async fn dryrun_or_probe(mut conn: RedisAsyncConn, user: &str) -> WriteVerdict {
     let result: redis::RedisResult<String> = cmd("ACL")
         .arg("DRYRUN")
         .arg(user)
         .arg("SET")
-        .arg("zedis")
-        .arg("treexie")
+        .arg(probe_key())
+        .arg("1")
         .query_async(&mut conn)
         .await;
     match result {
-        Ok(res) => res != "OK",
-
+        Ok(res) if res == "OK" => WriteVerdict::Allowed,
+        Ok(res) => classify_denial(&res),
+        Err(e) if e.code() == Some("NOPERM") || e.to_string().to_ascii_lowercase().contains("unknown") => {
+            probe_write_permission(conn).await
+        }
         Err(e) => {
-            if let Some(code) = e.code()
-                && code == "NOPERM"
-            {
-                if e.to_string().contains("acl|dryrun") {
-                    return check_permission_by_probing(conn).await;
-                }
-                return true;
-            }
-            // Redis < 7 has no ACL DRYRUN: fall back to the throwaway SET
-            // probe so a read-only ACL user is still detected there.
-            if e.to_string().to_ascii_lowercase().contains("unknown") {
-                return check_permission_by_probing(conn).await;
-            }
-            false
+            debug!(error = %e, "ACL DRYRUN inconclusive");
+            WriteVerdict::Unknown
         }
     }
+}
+
+/// Whether the connected ACL user is read-only. Three stages, each asked
+/// only when the previous one could not answer, and none of them writes:
+///
+/// 1. `ACL WHOAMI`. "Unknown command" means no ACL at all (pre-6.0, some
+///    proxies) and therefore no read-only users. A `NOPERM` is itself
+///    information — ACL exists, the user just cannot introspect — and goes
+///    straight to stage 3: `+@read ~*`, the most ordinary read-only user,
+///    lands here, and used to be reported writable because the check gave
+///    up on it.
+/// 2. [`dryrun_or_probe`] — `ACL DRYRUN`, falling through to
+/// 3. [`probe_write_permission`] — the no-op write.
+///
+/// Only a denial of the *command* is read-only; a denial of the probe *key*
+/// means the user writes within a key scope and must keep the write UI
+/// (`~app:*` users used to be locked out entirely).
+async fn safe_check_user_readonly(mut conn: RedisAsyncConn) -> bool {
+    let whoami: redis::RedisResult<String> = cmd("ACL").arg("WHOAMI").query_async(&mut conn).await;
+    let verdict = match whoami {
+        Ok(user) if !user.is_empty() => dryrun_or_probe(conn, &user).await,
+        Ok(_) => WriteVerdict::Unknown,
+        Err(e) if e.code() == Some("NOPERM") => probe_write_permission(conn).await,
+        Err(e) => {
+            debug!(error = %e, "ACL WHOAMI unavailable, assuming a server without ACL users");
+            WriteVerdict::Unknown
+        }
+    };
+    verdict == WriteVerdict::CommandDenied
 }
 
 async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<(String, Version)>> {
@@ -212,7 +290,7 @@ impl ConnectionManager {
                 }
             };
             if let Some(server_type) = config.server_type
-                && server_type > 0
+                && server_type != SERVER_TYPE_AUTO
             {
                 (conn, server_type.into())
             } else {
@@ -348,7 +426,7 @@ impl ConnectionManager {
                 message: "no nodes found".to_string(),
             });
         };
-        let client = match server_type {
+        let rclient = match server_type {
             ServerType::Cluster => {
                 let addrs: Vec<String> = nodes.iter().map(|n| n.server.get_connection_url()).collect();
                 // Bake the (per-server, else global) timeouts into the client
@@ -389,7 +467,7 @@ impl ConnectionManager {
             .collect();
         let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();
         info!(master_nodes = ?master_nodes_description, "server master nodes");
-        let connection = get_async_connection(&client, db, false).await?;
+        let connection = get_async_connection(&rclient, db, false).await?;
         let access_mode = if safe_check_user_readonly(connection.clone()).await {
             AccessMode::StrictReadOnly
         } else if config.readonly.unwrap_or(false) {
@@ -418,6 +496,7 @@ impl ConnectionManager {
             version: Version::new(0, 0, 0),
             is_valkey: false,
             connection,
+            client: rclient,
         };
         let mut conn = client.connection.clone();
         let get_version = |info: InfoDict| -> (bool, Option<Version>) {
@@ -475,5 +554,69 @@ impl ConnectionManager {
     pub async fn get_connection(&self, server_id: &str, db: usize) -> Result<RedisAsyncConn> {
         let client = self.get_client(server_id, db).await?;
         Ok(client.connection.clone())
+    }
+
+    /// A fresh connection that shares nothing with the pooled client, for an
+    /// owner that sends *connection-scoped* commands. The terminal is the
+    /// case: `SELECT`, `AUTH`, `CLIENT SETNAME`, `CLIENT TRACKING` and
+    /// `MULTI` typed there change the state of whichever connection carries
+    /// them — and on the pooled one that state is shared with the key tree,
+    /// so a `SELECT 3` silently moved every later `SCAN` to db 3.
+    ///
+    /// Topology (cluster / SSH cluster) comes from the cached client, so no
+    /// discovery re-runs. The connection itself is never cached, never
+    /// heartbeat-checked and never healed: the caller owns it, drops it to
+    /// close it, and reopens after a link error.
+    pub async fn open_dedicated_connection(&self, server_id: &str, db: usize) -> Result<RedisAsyncConn> {
+        let client = self.get_client(server_id, db).await?;
+        client.open_dedicated_connection().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WriteVerdict, classify_denial, probe_key};
+
+    #[test]
+    fn denial_texts_of_every_supported_server_are_classified() {
+        // Redis 7.0+ / Valkey — DRYRUN reply and the real NOPERM.
+        assert_eq!(
+            classify_denial("User ro has no permissions to run the 'set' command"),
+            WriteVerdict::CommandDenied
+        );
+        assert_eq!(
+            classify_denial("NOPERM User ro has no permissions to run the 'set' command"),
+            WriteVerdict::CommandDenied
+        );
+        assert_eq!(
+            classify_denial("User scoped has no permissions to access the 'zedis:acl-probe:x' key"),
+            WriteVerdict::KeyDenied
+        );
+        assert_eq!(
+            classify_denial("NOPERM No permissions to access a key"),
+            WriteVerdict::KeyDenied
+        );
+        // Redis 6.x wording.
+        assert_eq!(
+            classify_denial("NOPERM this user has no permissions to run the 'set' command or its subcommand"),
+            WriteVerdict::CommandDenied
+        );
+        assert_eq!(
+            classify_denial("NOPERM this user has no permissions to access one of the keys used as arguments"),
+            WriteVerdict::KeyDenied
+        );
+        // Anything else that was still "not OK" stays on the safe side.
+        assert_eq!(classify_denial("NOPERM"), WriteVerdict::CommandDenied);
+    }
+
+    #[test]
+    fn probe_keys_never_repeat() {
+        let a = probe_key();
+        let b = probe_key();
+        assert!(a.starts_with("zedis:acl-probe:"));
+        assert_ne!(
+            a, b,
+            "a repeated probe key could meet a key the previous probe left behind"
+        );
     }
 }

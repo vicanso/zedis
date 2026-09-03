@@ -27,12 +27,7 @@
 //! Both formats store secrets in the clear; once imported they land in
 //! Zedis's per-machine encrypted store, so importing is a step up.
 
-use super::config::{ImportError, RedisServer};
-
-/// `ServerType` discriminants as persisted in `RedisServer::server_type`
-/// (see the `From<usize> for ServerType` impl in `manager.rs`).
-const SERVER_TYPE_SENTINEL: usize = 2;
-const SERVER_TYPE_CLUSTER: usize = 3;
+use super::config::{ImportError, RedisServer, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL};
 
 /// Trim a string field into `Option`, dropping empties.
 fn opt(value: &str) -> Option<String> {

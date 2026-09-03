@@ -314,6 +314,13 @@ impl RedisClient {
         self.connection.clone()
     }
 
+    /// A second, uncached connection built from the same topology as
+    /// [`connection`](Self::connection) — see
+    /// [`ConnectionManager::open_dedicated_connection`].
+    pub async fn open_dedicated_connection(&self) -> Result<RedisAsyncConn> {
+        get_async_connection(&self.client, self.db, false).await
+    }
+
     /// Checks if the client is a cluster client.
     /// # Returns
     /// * `bool` - True if the client is a cluster client, false otherwise.

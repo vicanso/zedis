@@ -14,7 +14,8 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{
-    ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, open_single_connection, tag_color_index,
+    ImportError, RedisServer, SERVER_TYPE_SENTINEL, TAG_ENV_LABELS, get_server_groups, get_servers,
+    open_single_connection, tag_color_index,
 };
 use crate::error::Error;
 use crate::helpers::{
@@ -636,7 +637,7 @@ impl ZedisServers {
                                             open_single_connection(&tmp, 0, false).await?
                                         }
                                     };
-                                    if server.server_type == Some(2) {
+                                    if server.server_type == Some(SERVER_TYPE_SENTINEL) {
                                         // sentinel: verify by connecting to the actual master
                                         let masters: Vec<std::collections::HashMap<String, String>> =
                                             cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;

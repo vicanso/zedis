@@ -803,16 +803,100 @@ fn standalone_acl_users_are_classified() {
             .await
             .expect("setuser limited");
 
-        let mut ro = server(&format!("it-ro-{suffix}"), standalone());
-        ro.username = Some(ro_user.clone());
-        ro.password = Some("pw".into());
-        let ro_id = register(ro).await;
-        let client = get_connection_manager().get_client(&ro_id, 0).await.expect("ro client");
+        // Three more shapes the probe has to get right without writing:
+        // a plain read-only user (reads, `INFO`, the connection commands —
+        // but no `acl`, so not even `ACL WHOAMI`: the check used to give up
+        // on it and report writable); a user scoped to `app:*` who *can*
+        // write (the fixed-key probe used to lock the UI for them); and an
+        // app user without `@admin`, who cannot run `ACL DRYRUN` and so
+        // exercises the no-op write on 7+.
+        let plain_user = format!("zedis_it_plain_{suffix}");
+        let scoped_user = format!("zedis_it_scoped_{suffix}");
+        let app_user = format!("zedis_it_app_{suffix}");
+        for (user, rules) in [
+            (&plain_user, vec!["~*", "&*", "+@read", "+@connection", "+info"]),
+            (&scoped_user, vec!["~app:*", "&*", "+@all"]),
+            (&app_user, vec!["~*", "&*", "+@all", "-@admin"]),
+        ] {
+            let mut c = cmd("ACL");
+            c.arg("SETUSER").arg(user).arg("on").arg(">pw");
+            for rule in rules {
+                c.arg(rule);
+            }
+            c.exec_async(&mut admin).await.expect("setuser");
+        }
+
+        // The probes run on a db of their own, so a concurrent test's writes
+        // can't blur the "nothing was written" check.
+        let admin_client = get_connection_manager()
+            .get_client(&admin_id, 0)
+            .await
+            .expect("admin client");
+        let probe_db = if admin_client.databases() > 15 { 15 } else { 0 };
+        let mut probe_admin = conn(&admin_id, probe_db).await;
+        let dbsize_before: i64 = cmd("DBSIZE").query_async(&mut probe_admin).await.expect("dbsize");
+
+        let connect = |name: &str, user: &str| {
+            let mut s = server(&format!("it-{name}-{suffix}"), standalone());
+            s.username = Some(user.to_string());
+            s.password = Some("pw".into());
+            s
+        };
+        let ro_id = register(connect("ro", &ro_user)).await;
+        let plain_id = register(connect("plain", &plain_user)).await;
+        let scoped_id = register(connect("scoped", &scoped_user)).await;
+        let app_id = register(connect("app", &app_user)).await;
+        async fn mode(id: &str, db: usize) -> String {
+            let client = get_connection_manager().get_client(id, db).await.expect("client");
+            format!("{:?}", client.access_mode())
+        }
         assert_eq!(
-            format!("{:?}", client.access_mode()),
+            mode(&ro_id, probe_db).await,
             "StrictReadOnly",
-            "a read-only ACL user must be detected (DRYRUN on 7+, SET probe before)"
+            "a read-only ACL user must be detected (DRYRUN on 7+, the no-op SET before)"
         );
+        assert_eq!(
+            mode(&plain_id, probe_db).await,
+            "StrictReadOnly",
+            "a read-only user who cannot even run ACL WHOAMI must still be detected"
+        );
+        assert_eq!(
+            mode(&scoped_id, probe_db).await,
+            "ReadWrite",
+            "a user scoped to a key pattern writes within it — not read-only"
+        );
+        assert_eq!(
+            mode(&app_id, probe_db).await,
+            "ReadWrite",
+            "an app user without @admin writes"
+        );
+
+        // None of those four connects left a trace in the dataset.
+        let dbsize_after: i64 = cmd("DBSIZE").query_async(&mut probe_admin).await.expect("dbsize");
+        assert_eq!(dbsize_before, dbsize_after, "the read-only probe must not write a key");
+        let mut cursor: u64 = 0;
+        loop {
+            let (next, keys): (u64, Vec<String>) = cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg("zedis:acl-probe:*")
+                .arg("COUNT")
+                .arg(1000)
+                .query_async(&mut probe_admin)
+                .await
+                .expect("scan");
+            assert!(keys.is_empty(), "probe keys left behind: {keys:?}");
+            cursor = next;
+            if cursor == 0 {
+                break;
+            }
+        }
+        let legacy: bool = cmd("EXISTS")
+            .arg("_zedis_auth_test_")
+            .query_async(&mut probe_admin)
+            .await
+            .expect("exists");
+        assert!(!legacy, "the old throwaway key must be gone for good");
 
         let mut limited = server(&format!("it-limited-{suffix}"), standalone());
         limited.username = Some(limited_user.clone());
@@ -833,7 +917,7 @@ fn standalone_acl_users_are_classified() {
             }
         }
 
-        for user in [&ro_user, &limited_user] {
+        for user in [&ro_user, &limited_user, &plain_user, &scoped_user, &app_user] {
             cmd("ACL")
                 .arg("DELUSER")
                 .arg(user)
@@ -886,6 +970,83 @@ fn standalone_recovers_after_the_server_drops_the_link() {
             .await
             .expect("rebuilt client");
         client.ping().await.expect("ping after rebuild");
+    });
+}
+
+/// The terminal's connection (`open_dedicated_connection`) shares nothing
+/// with the pooled one: a `SELECT` typed there must not move the db the key
+/// tree scans on. Before this existed the terminal ran on the pooled
+/// connection, and `SELECT 3` silently redirected every later `SCAN`.
+#[test]
+#[ignore]
+fn standalone_dedicated_connection_keeps_select_to_itself() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut pooled = conn(&id, 0).await;
+        let mut dedicated = get_connection_manager()
+            .open_dedicated_connection(&id, 0)
+            .await
+            .expect("dedicated connection");
+
+        // Two sockets, not two handles onto one.
+        let pooled_id: i64 = cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut pooled)
+            .await
+            .expect("client id");
+        let dedicated_id: i64 = cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut dedicated)
+            .await
+            .expect("client id");
+        assert_ne!(
+            pooled_id, dedicated_id,
+            "the dedicated connection must be its own client"
+        );
+
+        let _: () = cmd("SELECT")
+            .arg(1)
+            .query_async(&mut dedicated)
+            .await
+            .expect("select 1");
+        let key = unique("dedicated");
+        let _: () = cmd("SET")
+            .arg(&key)
+            .arg("1")
+            .arg("EX")
+            .arg(60)
+            .query_async(&mut dedicated)
+            .await
+            .expect("set on db 1");
+
+        // The dedicated connection stayed on db 1 …
+        let on_dedicated: bool = cmd("EXISTS")
+            .arg(&key)
+            .query_async(&mut dedicated)
+            .await
+            .expect("exists");
+        assert!(
+            on_dedicated,
+            "the SELECT must hold for later commands on the same connection"
+        );
+        // … and the pooled one never left db 0.
+        let on_pooled: bool = cmd("EXISTS").arg(&key).query_async(&mut pooled).await.expect("exists");
+        assert!(
+            !on_pooled,
+            "a SELECT on the dedicated connection leaked into the pooled one"
+        );
+        let mut pooled_again = conn(&id, 0).await;
+        let on_pooled_again: bool = cmd("EXISTS")
+            .arg(&key)
+            .query_async(&mut pooled_again)
+            .await
+            .expect("exists");
+        assert!(
+            !on_pooled_again,
+            "the cached client must still hand out a db-0 connection"
+        );
+
+        let _: () = cmd("DEL").arg(&key).query_async(&mut dedicated).await.expect("cleanup");
     });
 }
 

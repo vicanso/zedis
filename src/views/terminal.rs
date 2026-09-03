@@ -14,11 +14,11 @@
 
 use crate::{
     connection::{
-        DangerKind, classify_dangerous_line, command_doc_url, get_command_description, get_connection_manager,
-        get_server, is_write_command, list_commands, requires_write_confirm,
+        DangerKind, RedisAsyncConn, classify_dangerous_line, command_doc_url, get_command_description,
+        get_connection_manager, get_server, is_write_command, list_commands, requires_write_confirm,
     },
     db::get_cmd_history_manager,
-    error::Error,
+    error::{ConnectionErrorKind, Error},
     helpers::{
         AiEndpoint, get_mono_font_family, redis_value_to_string, starts_with_ignore_ascii_case, suggest_command,
     },
@@ -36,6 +36,8 @@ use gpui_component::{
     v_flex,
 };
 use redis::cmd;
+use smol::lock::Mutex;
+use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -53,13 +55,13 @@ const ZEDIS_LOGO: &str = r#" __________ ____ ___ ____
 /// Shown when a blocking command is typed in the terminal (see
 /// [`is_blocking_command`]). Hardcoded English to match the rest of this
 /// panel, which is not internationalized.
-const BLOCKING_REJECT_MSG: &str = "Blocking commands (BLPOP / BRPOP / BLMOVE / BRPOPLPUSH / BLMPOP / BZPOPMIN / BZPOPMAX / BZMPOP / XREAD BLOCK / XREADGROUP BLOCK / WAIT / WAITAOF) are not run here: on the app's shared connection they would stall every other operation on this database (key tree, metrics, other lines). Use the live key tail or the Monitor view for blocking reads.";
+const BLOCKING_REJECT_MSG: &str = "Blocking commands (BLPOP / BRPOP / BLMOVE / BRPOPLPUSH / BLMPOP / BZPOPMIN / BZPOPMAX / BZMPOP / XREAD BLOCK / XREADGROUP BLOCK / WAIT / WAITAOF) are not run here: they would park the terminal's connection until data arrives, and the response timeout would cut the wait short and leave the connection out of step with its replies. Use the live key tail or the Monitor view for blocking reads.";
 
 /// Whether a parsed command would park the Redis connection until data
-/// arrives or it times out. The terminal runs lines on the app's shared
-/// multiplexed connection, so a blocking command there is a hazard — it
-/// stalls the key tree, metrics, and every other operation on the same db —
-/// and the response timeout would break its semantics anyway. Refuse up front.
+/// arrives or it times out. The terminal has a connection of its own, so a
+/// blocking command no longer stalls the key tree — but it would still hang
+/// every later line until data arrives, and the response timeout would break
+/// its semantics anyway. Refuse up front.
 fn is_blocking_command(cmd_name: &str, args: &[String]) -> bool {
     const ALWAYS_BLOCKING: &[&str] = &[
         "BLPOP",
@@ -96,6 +98,58 @@ fn strip_redis_cli_prefix(line: &str) -> &str {
         None if trimmed.eq_ignore_ascii_case("redis-cli") => "",
         _ => line,
     }
+}
+
+/// What one executed line produced: the rendered reply, and the db a
+/// successful `SELECT` moved the terminal's connection to.
+#[derive(Default)]
+struct LineOutcome {
+    text: SharedString,
+    selected_db: Option<usize>,
+}
+
+/// The db a successful `SELECT <n>` moved the connection to, else `None`.
+/// Only the plain one-argument form counts: anything else Redis accepted
+/// was not a database switch.
+fn selected_db(cmd_name: &str, args: &[String], reply: &redis::Value) -> Option<usize> {
+    if !cmd_name.eq_ignore_ascii_case("SELECT") || !matches!(reply, redis::Value::Okay) {
+        return None;
+    }
+    match args {
+        [db] => db.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Whether an error means the terminal's connection is gone and the next
+/// line must reopen it. Mirrors what the pool does with its own client
+/// (`note_link_error`): a dropped link, refused connect or broken tunnel
+/// discards the connection; a response timeout does not — the multiplexed
+/// connection stays in step after one, and a dead link surfaces as a
+/// network error on the next line anyway.
+fn drops_link(err: &Error) -> bool {
+    use ConnectionErrorKind as K;
+    matches!(err.connection_kind(), K::Network | K::Tls | K::Tunnel)
+}
+
+/// The terminal's connection, opened on first use. Cloning a
+/// `RedisAsyncConn` shares the underlying socket, so every line — and every
+/// later batch — sees the same connection state: the db a `SELECT` picked,
+/// a `MULTI` still open.
+async fn terminal_connection(
+    slot: &Mutex<Option<RedisAsyncConn>>,
+    server_id: &str,
+    db: usize,
+) -> Result<RedisAsyncConn> {
+    let mut slot = slot.lock().await;
+    if let Some(conn) = slot.as_ref() {
+        return Ok(conn.clone());
+    }
+    let conn = get_connection_manager()
+        .open_dedicated_connection(server_id, db)
+        .await?;
+    *slot = Some(conn.clone());
+    Ok(conn)
 }
 
 /// Scrollback cap for the REPL output pane. The whole buffer is re-cloned
@@ -168,6 +222,19 @@ pub struct ZedisTerminal {
     /// consumed by `render`, which has the `Window` that `set_value`
     /// needs. The user reviews and hits Enter; nothing auto-executes.
     pending_ai_fill: Option<SharedString>,
+    /// The terminal's own connection — never the pooled one the key tree
+    /// scans on, so `SELECT` / `AUTH` / `CLIENT SETNAME` / `MULTI` typed
+    /// here reach nothing else (see
+    /// `ConnectionManager::open_dedicated_connection`). Opened lazily by
+    /// the first line and shared by every later one, replaced on a server
+    /// or db switch, and cleared after a link error so the next line
+    /// reconnects. Behind an async lock because each line runs on its own
+    /// background task.
+    conn: Arc<Mutex<Option<RedisAsyncConn>>>,
+    /// Database the terminal's connection sits on after a `SELECT` typed
+    /// here. Shown beside the prompt while it differs from the panel's db,
+    /// so the divergence from the key tree is visible instead of silent.
+    terminal_db: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -238,7 +305,10 @@ impl ZedisTerminal {
 
         subscriptions.push(
             cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+                // Fires for a db switch too (`select` resets the state either
+                // way), so the connection is rebuilt on the new db.
                 ServerEvent::ServerSelected(_) => {
+                    this.drop_connection();
                     this.reset_cmd_state(cx);
                 }
                 ServerEvent::ServerInfoUpdated => {
@@ -299,11 +369,21 @@ impl ZedisTerminal {
             should_focus_input: false,
             ai_task: None,
             pending_ai_fill: None,
+            conn: Arc::new(Mutex::new(None)),
+            terminal_db: None,
             _subscriptions: subscriptions,
         };
         this.reset_cmd_state(cx);
         this.update_redis_commands(cx);
         this
+    }
+
+    /// Forget the terminal's connection; the next line opens a fresh one on
+    /// the panel's db. A new `Arc` rather than `take()`, so a line still in
+    /// flight on the old connection can't write it back into the slot.
+    fn drop_connection(&mut self) {
+        self.conn = Arc::new(Mutex::new(None));
+        self.terminal_db = None;
     }
 
     fn reset_cmd_state(&mut self, _cx: &mut Context<Self>) {
@@ -602,7 +682,7 @@ impl ZedisTerminal {
             state.version(),
             description.server_type.as_str(),
             description.modules,
-            state.db(),
+            self.terminal_db.unwrap_or(state.db()),
         );
 
         // A second `?` while one is pending replaces the task (its
@@ -654,34 +734,53 @@ impl ZedisTerminal {
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
+        let conn_slot = self.conn.clone();
         cx.spawn(async move |handle, cx| {
             for line in command.lines() {
                 let line = line.trim().to_string();
                 let line_clone = line.clone();
                 let server_id = server_id.clone();
+                let conn_slot = conn_slot.clone();
                 let task = cx.background_spawn(async move {
                     let Some(parts) = shlex::split(&line) else {
-                        return Ok(SharedString::default());
+                        return Ok(LineOutcome::default());
                     };
                     if parts.is_empty() {
-                        return Ok(SharedString::default());
+                        return Ok(LineOutcome::default());
                     }
                     let cmd_name = parts[0].clone();
                     let args = parts[1..].to_vec();
-                    // Refuse blocking commands before touching the shared
-                    // connection — running them here would stall the whole db.
+                    // Refuse blocking commands before touching the connection —
+                    // they would park it until data arrives.
                     if is_blocking_command(&cmd_name, &args) {
-                        return Ok(SharedString::from(BLOCKING_REJECT_MSG));
+                        return Ok(LineOutcome {
+                            text: BLOCKING_REJECT_MSG.into(),
+                            selected_db: None,
+                        });
                     }
-                    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                    let data: redis::Value = cmd(&cmd_name).arg(&args).query_async(&mut conn).await?;
+                    let mut conn = terminal_connection(&conn_slot, &server_id, db).await?;
+                    let data: redis::Value = match cmd(&cmd_name).arg(&args).query_async(&mut conn).await {
+                        Ok(data) => data,
+                        Err(e) => {
+                            let e = Error::from(e);
+                            // A dead link is forgotten here, so the next line
+                            // reconnects instead of failing the same way.
+                            if drops_link(&e) {
+                                conn_slot.lock().await.take();
+                            }
+                            return Err(e);
+                        }
+                    };
                     let _ = get_cmd_history_manager().add_record(server_id.as_str(), line.as_str());
-                    Ok(redis_value_to_string(&data).into())
+                    Ok(LineOutcome {
+                        text: redis_value_to_string(&data).into(),
+                        selected_db: selected_db(&cmd_name, &args, &data),
+                    })
                 });
-                let result: Result<SharedString> = task.await;
-                let content: SharedString = match result {
-                    Ok(v) => v,
-                    Err(e) => e.to_string().into(),
+                let result: Result<LineOutcome> = task.await;
+                let (content, selected_db, link_dropped) = match result {
+                    Ok(outcome) => (outcome.text, outcome.selected_db, false),
+                    Err(e) => (SharedString::from(e.to_string()), None, drops_link(&e)),
                 };
                 let _ = handle.update(cx, |this, cx| {
                     use std::fmt::Write;
@@ -689,6 +788,13 @@ impl ZedisTerminal {
                     let _ = writeln!(this.cmd_output_text, "{content}");
                     trim_output_scrollback(&mut this.cmd_output_text);
                     this.cmd_output_dirty = true;
+                    if let Some(db) = selected_db {
+                        this.terminal_db = Some(db);
+                    }
+                    // The reconnect lands on the panel's db again.
+                    if link_dropped {
+                        this.terminal_db = None;
+                    }
                     cx.notify();
                 });
             }
@@ -835,6 +941,10 @@ impl Render for ZedisTerminal {
                 let muted = cx.theme().muted_foreground;
                 let search_active = self.reverse_search.is_some();
                 let current_match = self.current_reverse_match();
+                // `[n]` after the prompt, redis-cli style, once a `SELECT`
+                // typed here has parted the terminal from the key tree's db.
+                let panel_db = self.server_state.read(cx).db();
+                let prompt_db = self.terminal_db.filter(|db| *db != panel_db);
 
                 // The bottom row: normally the single-line REPL (completion +
                 // history + Batch toggle); while reverse-search is active it is
@@ -890,6 +1000,13 @@ impl Render for ZedisTerminal {
                                 .items_center()
                                 .gap_1()
                                 .child(Label::new(CMD_LABEL).text_color(cx.theme().yellow))
+                                .when_some(prompt_db, |this, db| {
+                                    this.child(
+                                        Label::new(format!("[{db}]"))
+                                            .font_family(font_family.clone())
+                                            .text_color(muted),
+                                    )
+                                })
                                 .child(
                                     Textarea::new(&self.cmd_input_state)
                                         .flex_1()
@@ -1017,7 +1134,22 @@ impl Render for ZedisTerminal {
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_last_line, strip_redis_cli_prefix};
+    use super::{remove_last_line, selected_db, strip_redis_cli_prefix};
+    use redis::Value;
+
+    #[test]
+    fn selected_db_reads_only_a_successful_plain_select() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(selected_db("SELECT", &args(&["3"]), &Value::Okay), Some(3));
+        assert_eq!(selected_db("select", &args(&["0"]), &Value::Okay), Some(0));
+        // The server refused it (out of range, cluster mode) — nothing moved.
+        assert_eq!(selected_db("SELECT", &args(&["99"]), &Value::Nil), None);
+        // Not a SELECT, or not the one-argument form.
+        assert_eq!(selected_db("GET", &args(&["3"]), &Value::Okay), None);
+        assert_eq!(selected_db("SELECT", &args(&[]), &Value::Okay), None);
+        assert_eq!(selected_db("SELECT", &args(&["3", "x"]), &Value::Okay), None);
+        assert_eq!(selected_db("SELECT", &args(&["three"]), &Value::Okay), None);
+    }
 
     #[test]
     fn remove_last_line_clears_waiting_placeholder() {

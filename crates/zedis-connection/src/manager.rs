@@ -17,7 +17,7 @@ use super::{
         RedisAsyncConn, open_single_connection, query_async_masters, query_async_masters_pipeline,
         remove_connection_from_pool, resolve_connection_timeout, resolve_response_timeout,
     },
-    config::{RedisServer, get_server},
+    config::{RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
 use crate::{async_connection::configure_client_connection, error::Error};
@@ -96,8 +96,8 @@ enum ServerType {
 impl From<usize> for ServerType {
     fn from(value: usize) -> Self {
         match value {
-            2 => ServerType::Sentinel,
-            3 => ServerType::Cluster,
+            SERVER_TYPE_SENTINEL => ServerType::Sentinel,
+            SERVER_TYPE_CLUSTER => ServerType::Cluster,
             _ => ServerType::Standalone,
         }
     }
@@ -545,6 +545,10 @@ pub struct RedisClient {
     version: Version,
     is_valkey: bool,
     connection: RedisAsyncConn,
+    /// What built `connection` — kept so a caller can open a *second*,
+    /// uncached connection to the same server (`open_dedicated_connection`)
+    /// without re-running topology discovery.
+    client: RClient,
 }
 /// One node in the structured topology: address, role marker glyph, and an
 /// optional annotation (e.g. `slots 0-5460`, `(mymaster)`).
