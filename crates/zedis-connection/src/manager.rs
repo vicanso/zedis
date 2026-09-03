@@ -34,7 +34,7 @@ use std::{
     sync::LazyLock,
     time::Duration,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use zedis_core::string::format_host_port;
 use zedis_core::ttl_cache::TtlCache;
 

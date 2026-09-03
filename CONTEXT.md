@@ -19,6 +19,10 @@ Architecture and conventions live in `CLAUDE.md`; decisions in `docs/adr/`.
   error. It never carries connection-scoped state (ADR 4).
 - **Dedicated connection** — a connection one owner opens and drops: the
   terminal, `MONITOR`, live tails, sharded Pub/Sub, the feature probe.
+- **Heartbeat** — the status bar's 2s `PING` + `INFO` tick, one per workspace
+  tab; it is what notices a dropped link and rebuilds the pooled client. While
+  the server is unreachable it backs off (2s doubling to 60s) and a background
+  tab polls every 30s (ADR 5).
 - **Tunnel target** (`SshTarget`) — where a tunnel session goes after
   `~/.ssh/config` filled the blanks (ADR 3); a **jump host** is one hop in
   front of it.

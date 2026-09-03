@@ -16,7 +16,6 @@
 //! count) and the pooled `ConnectionManager`.
 
 use super::*;
-use crate::error::ConnectionErrorKind;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -269,25 +268,16 @@ impl ConnectionManager {
     pub(super) async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_server(name)?;
         let (mut conn, server_type) = {
-            // The seed helper already retried a refused login with the
-            // sentinel's credentials (or none); a failure that is still
-            // about credentials is the user's to fix, anything else falls
-            // back to treating the endpoint as a standalone.
-            let conn = match open_seed_connection(&config).await {
-                Ok(conn) => conn,
-                Err(e) if e.connection_kind() == ConnectionErrorKind::Auth => return Err(e),
-                Err(e) => {
-                    error!("detect server type failed: {e:?}, use standalone mode");
-                    return Ok((
-                        vec![RedisNode {
-                            server: config.clone(),
-                            role: NodeRole::Master,
-                            ..Default::default()
-                        }],
-                        ServerType::Standalone,
-                    ));
-                }
-            };
+            // A seed the helper cannot reach is not a standalone in
+            // disguise. The old fallback re-dialled the very same endpoint
+            // with the same credentials and TLS material as a standalone,
+            // so an unreachable server cost two handshakes per attempt and
+            // surfaced as a "standalone" whose PING then failed a second
+            // later. The error (already retried with the sentinel's
+            // credentials, or none) is the answer; only a server that
+            // *answers* but rejects the detection commands is treated as a
+            // standalone below (ADR 5).
+            let conn = open_seed_connection(&config).await?;
             if let Some(server_type) = config.server_type
                 && server_type != SERVER_TYPE_AUTO
             {
@@ -627,5 +617,41 @@ mod tests {
             a, b,
             "a repeated probe key could meet a key the previous probe left behind"
         );
+    }
+
+    /// An endpoint that refuses the connection is reported as the error it
+    /// is and never re-dialled as a "standalone" (ADR 5): the heartbeat used
+    /// to pay two handshakes per tick for that against a dead server.
+    #[test]
+    fn unreachable_seed_is_an_error_not_a_standalone() {
+        use crate::config::{RedisServer, save_servers};
+        use crate::error::ConnectionErrorKind;
+        use crate::get_connection_manager;
+        use std::net::TcpListener;
+        use zedis_core::fs::override_config_dir;
+
+        override_config_dir(std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())));
+        // Bind an ephemeral port and release it: nothing listens there now.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("ephemeral port")
+            .port();
+        let id = "unreachable-seed";
+        let server = RedisServer {
+            id: id.to_string(),
+            name: id.to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let err = smol::block_on(async {
+            save_servers(vec![server]).await.expect("save servers");
+            get_connection_manager()
+                .get_client(id, 0)
+                .await
+                .err()
+                .expect("a refused connection must not become a standalone client")
+        });
+        assert_eq!(err.connection_kind(), ConnectionErrorKind::Network, "{err}");
     }
 }

@@ -241,6 +241,18 @@ pub struct ZedisServerState {
     /// Unix seconds of the last refresh allowed through while `background`.
     last_background_refresh: i64,
 
+    /// Earliest moment the heartbeat may dial again after a failed PING.
+    /// Consecutive failures double the wait (2s, 4s, 8s … capped at 60s), so
+    /// an unreachable server is not put through DNS, the TLS/SSH handshake
+    /// and topology discovery every two seconds for as long as the tab stays
+    /// open. Cleared by a healthy PING, by any other task reaching the server
+    /// (the link is evidently up) and by `reset` (ADR 5).
+    heartbeat_retry_at: Option<Instant>,
+
+    /// A heartbeat refresh is still in flight: the next tick skips instead of
+    /// stacking a second attempt while a connect timeout runs its course.
+    heartbeat_in_flight: bool,
+
     /// Total number of keys in the database (from DBSIZE command)
     dbsize: Option<u64>,
 
@@ -429,6 +441,8 @@ impl ZedisServerState {
         self.connection_health = ConnectionHealth::Unknown;
         self.last_connection_error = ConnectionErrorKind::Unknown;
         self.ping_failures = 0;
+        self.heartbeat_retry_at = None;
+        self.heartbeat_in_flight = false;
         // A fresh select / reconnect always re-establishes the link, so clear
         // any manual-disconnect pause (reconnect routes through here too).
         self.manually_offline = false;
@@ -624,6 +638,12 @@ impl ZedisServerState {
                 }
                 if stale {
                     return;
+                }
+                if result.is_ok() && name != ServerTask::RefreshRedisInfo {
+                    // Some other task just reached the server, so the link
+                    // is up: let the next heartbeat tick PING right away
+                    // instead of sitting out its backoff.
+                    this.heartbeat_retry_at = None;
                 }
                 callback(this, result, cx);
                 let latency = start.elapsed();

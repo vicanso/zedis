@@ -418,8 +418,8 @@ impl ZedisStatusBar {
                     this.state.error = Some(error.clone());
                 }
                 ServerEvent::TaskStarted(task) => {
-                    // Background heartbeat (RefreshRedisInfo) fires once
-                    // per 5s and never changes anything visible from
+                    // Background heartbeat (RefreshRedisInfo) fires every
+                    // 2s (less while backing off) and never changes anything visible from
                     // this handler — return early so it doesn't trigger
                     // an empty re-render. Other tasks clear any stale
                     // error chip.
@@ -652,6 +652,9 @@ impl ZedisStatusBar {
     /// snappy — matches the Metrics panel heartbeat for consistency.
     /// The CPU baseline is dominated by other render paths anyway,
     /// so this interval doesn't move the needle either direction.
+    /// The tick is only the metronome: `refresh_redis_info` decides
+    /// whether an attempt goes out (one in flight at a time, exponential
+    /// backoff while the server is unreachable, 30s in a background tab).
     fn start_heartbeat(&mut self, server_state: Entity<ZedisServerState>, cx: &mut Context<Self>) {
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
             loop {

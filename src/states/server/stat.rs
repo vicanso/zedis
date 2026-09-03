@@ -25,7 +25,7 @@ use redis::cmd;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Default, Clone)]
@@ -595,6 +595,24 @@ impl ZedisServerState {
     /// Offline rather than Reconnecting (~2s heartbeat cadence -> >=6s down).
     const PING_OFFLINE_THRESHOLD: u32 = 3;
 
+    /// The status bar's heartbeat cadence; also the first retry wait.
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+    /// Longest wait between two attempts against an unreachable server.
+    const HEARTBEAT_BACKOFF_CAP: Duration = Duration::from_secs(60);
+
+    /// How long the heartbeat waits before dialling again after `failures`
+    /// consecutive misses: the interval doubled per miss — 2s, 4s, 8s, 16s,
+    /// 32s — and pinned at the cap from there. A failed attempt is a full
+    /// connect (DNS, TLS/SSH handshake, topology discovery, PING), which is
+    /// what the plain 2s tick used to repeat against a dead endpoint for as
+    /// long as its tab stayed open.
+    fn heartbeat_backoff(failures: u32) -> Duration {
+        let doublings = failures.saturating_sub(1).min(5);
+        Self::HEARTBEAT_INTERVAL
+            .saturating_mul(1 << doublings)
+            .min(Self::HEARTBEAT_BACKOFF_CAP)
+    }
+
     /// Fold a heartbeat `PING` outcome into the observable [`ConnectionHealth`].
     /// Success -> `Connected` (failure counter cleared). Failure ->
     /// `Reconnecting` for the first few consecutive misses, then `Offline` past
@@ -609,10 +627,19 @@ impl ZedisServerState {
         );
         let next = if ok {
             self.ping_failures = 0;
+            self.heartbeat_retry_at = None;
             self.last_connection_error = ConnectionErrorKind::Unknown;
             ConnectionHealth::Connected
         } else {
             self.ping_failures = self.ping_failures.saturating_add(1);
+            let wait = Self::heartbeat_backoff(self.ping_failures);
+            self.heartbeat_retry_at = Some(Instant::now() + wait);
+            debug!(
+                server_id = self.server_id.as_str(),
+                failures = self.ping_failures,
+                retry_in_secs = wait.as_secs(),
+                "heartbeat backing off"
+            );
             if self.ping_failures >= Self::PING_OFFLINE_THRESHOLD {
                 ConnectionHealth::Offline
             } else {
@@ -678,6 +705,20 @@ impl ZedisServerState {
         if self.manually_offline {
             return;
         }
+        // One attempt at a time: a connect against a dead host takes up to
+        // the 10s connection timeout, and the 2s tick would otherwise stack
+        // five of them.
+        if self.heartbeat_in_flight {
+            return;
+        }
+        // Backing off after failed PINGs (`note_ping_result`): sit this tick
+        // out. Checked before the background throttle so a blocked tick
+        // doesn't consume the background window either.
+        if let Some(retry_at) = self.heartbeat_retry_at
+            && Instant::now() < retry_at
+        {
+            return;
+        }
         // Inactive workspace tabs poll at a relaxed cadence: the 2s status-bar
         // heartbeat keeps firing, but only one refresh per interval gets
         // through. Re-activating the tab resets the window (`set_background`).
@@ -700,6 +741,7 @@ impl ZedisServerState {
         let db = self.db;
         let server_id_clone = server_id.clone();
 
+        self.heartbeat_in_flight = true;
         self.spawn(
             ServerTask::RefreshRedisInfo,
             move || async move {
@@ -754,71 +796,74 @@ impl ZedisServerState {
                 info.metrics.latency_ms = latency.as_millis() as u64;
                 Ok((info, slow_logs))
             },
-            move |this, result, cx| match result {
-                Ok((info, slow_logs)) => {
-                    // Sentinel: the node we resolved as master now reports
-                    // itself a replica — a failover happened underneath us.
-                    // Drop the client so the next call re-asks the sentinel
-                    // (and tell the user once; the cached value is reloaded
-                    // when the link settles).
-                    if info.meta.role == "slave" && this.nodes_description().server_type == "Sentinel" {
-                        warn!(
-                            server_id = server_id_clone.as_str(),
-                            "sentinel master demoted; re-resolving"
-                        );
-                        get_connection_manager().remove_client(&server_id_clone, db);
-                        let now = unix_ts();
-                        if now.saturating_sub(this.last_link_notice) >= 10 {
-                            this.last_link_notice = now;
-                            this.emit_warning_notification(i18n_status_bar(cx, "conn_master_changed"), cx);
+            move |this, result, cx| {
+                this.heartbeat_in_flight = false;
+                match result {
+                    Ok((info, slow_logs)) => {
+                        // Sentinel: the node we resolved as master now reports
+                        // itself a replica — a failover happened underneath us.
+                        // Drop the client so the next call re-asks the sentinel
+                        // (and tell the user once; the cached value is reloaded
+                        // when the link settles).
+                        if info.meta.role == "slave" && this.nodes_description().server_type == "Sentinel" {
+                            warn!(
+                                server_id = server_id_clone.as_str(),
+                                "sentinel master demoted; re-resolving"
+                            );
+                            get_connection_manager().remove_client(&server_id_clone, db);
+                            let now = unix_ts();
+                            if now.saturating_sub(this.last_link_notice) >= 10 {
+                                this.last_link_notice = now;
+                                this.emit_warning_notification(i18n_status_bar(cx, "conn_master_changed"), cx);
+                            }
                         }
+                        METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
+                        maybe_persist_metrics(&server_id_clone, info.metrics, cx);
+                        // The same INFO carries the keyspace section, and
+                        // `db{n}: keys=` is DBSIZE by another name (already
+                        // summed across masters by the aggregation) — refill
+                        // the status bar's key total from it, at most once a
+                        // minute: the number needn't track every tick, and a
+                        // steady denominator reads calmer than a live one.
+                        // A fully absent keyspace (restricted proxies, or a
+                        // server with every db empty) leaves the last known
+                        // value alone rather than guessing zero.
+                        let now = unix_ts();
+                        if !info.keyspace.is_empty() && now - this.last_dbsize_refreshed_at >= DBSIZE_REFRESH_INTERVAL {
+                            this.last_dbsize_refreshed_at = now;
+                            let keys = info
+                                .keyspace
+                                .get(&format!("db{db}"))
+                                .map(|stats| stats.keys)
+                                .unwrap_or(0);
+                            this.dbsize = Some(keys);
+                        }
+                        this.redis_info = Some(info);
+                        if let Some(slow_logs) = slow_logs {
+                            this.last_slow_log_count = slow_logs
+                                .iter()
+                                .filter(|item| item.timestamp >= last_slow_logs_checked_at)
+                                .count();
+                            this.slow_logs = slow_logs;
+                            this.last_slow_logs_checked_at = unix_ts();
+                        }
+                        cx.emit(ServerEvent::ServerRedisInfoUpdated);
+                        this.note_ping_result(true, cx);
                     }
-                    METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
-                    maybe_persist_metrics(&server_id_clone, info.metrics, cx);
-                    // The same INFO carries the keyspace section, and
-                    // `db{n}: keys=` is DBSIZE by another name (already
-                    // summed across masters by the aggregation) — refill
-                    // the status bar's key total from it, at most once a
-                    // minute: the number needn't track every tick, and a
-                    // steady denominator reads calmer than a live one.
-                    // A fully absent keyspace (restricted proxies, or a
-                    // server with every db empty) leaves the last known
-                    // value alone rather than guessing zero.
-                    let now = unix_ts();
-                    if !info.keyspace.is_empty() && now - this.last_dbsize_refreshed_at >= DBSIZE_REFRESH_INTERVAL {
-                        this.last_dbsize_refreshed_at = now;
-                        let keys = info
-                            .keyspace
-                            .get(&format!("db{db}"))
-                            .map(|stats| stats.keys)
-                            .unwrap_or(0);
-                        this.dbsize = Some(keys);
+                    Err(e) => {
+                        // Connection is invalid, remove cached client
+                        get_connection_manager().remove_client(&server_id_clone, db);
+                        error!(error = %e, "Ping failed, client connection removed");
+                        // Remember *why* so the offline tooltip can name it. Set
+                        // before note_ping_result, which emits the health
+                        // transition the status bar reads. TLS-aware so a dropped
+                        // plaintext link points the user at the TLS toggle.
+                        let tls_enabled = get_server(&server_id_clone)
+                            .map(|s| s.tls.unwrap_or(false))
+                            .unwrap_or(false);
+                        this.last_connection_error = e.connection_kind_tls_aware(tls_enabled);
+                        this.note_ping_result(false, cx);
                     }
-                    this.redis_info = Some(info);
-                    if let Some(slow_logs) = slow_logs {
-                        this.last_slow_log_count = slow_logs
-                            .iter()
-                            .filter(|item| item.timestamp >= last_slow_logs_checked_at)
-                            .count();
-                        this.slow_logs = slow_logs;
-                        this.last_slow_logs_checked_at = unix_ts();
-                    }
-                    cx.emit(ServerEvent::ServerRedisInfoUpdated);
-                    this.note_ping_result(true, cx);
-                }
-                Err(e) => {
-                    // Connection is invalid, remove cached client
-                    get_connection_manager().remove_client(&server_id_clone, db);
-                    error!(error = %e, "Ping failed, client connection removed");
-                    // Remember *why* so the offline tooltip can name it. Set
-                    // before note_ping_result, which emits the health
-                    // transition the status bar reads. TLS-aware so a dropped
-                    // plaintext link points the user at the TLS toggle.
-                    let tls_enabled = get_server(&server_id_clone)
-                        .map(|s| s.tls.unwrap_or(false))
-                        .unwrap_or(false);
-                    this.last_connection_error = e.connection_kind_tls_aware(tls_enabled);
-                    this.note_ping_result(false, cx);
                 }
             },
             cx,
@@ -964,5 +1009,15 @@ mod tests {
         let parsed: RedisMetrics = serde_json::from_str(legacy).expect("parse legacy sample");
         assert_eq!(parsed.used_memory, 123);
         assert_eq!(parsed.latency_ms, 0);
+    }
+
+    #[test]
+    fn heartbeat_backoff_doubles_per_miss_and_caps_at_a_minute() {
+        let secs: Vec<u64> = (0..8)
+            .map(|failures| ZedisServerState::heartbeat_backoff(failures).as_secs())
+            .collect();
+        // 0 misses is never asked for, but must not underflow below the interval.
+        assert_eq!(secs, vec![2, 2, 4, 8, 16, 32, 60, 60]);
+        assert_eq!(ZedisServerState::heartbeat_backoff(u32::MAX).as_secs(), 60);
     }
 }
