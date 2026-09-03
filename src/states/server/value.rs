@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 
@@ -33,6 +34,12 @@ pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 /// payload — the editor then offers an explicit "load anyway".
 /// Collection types are exempt: their first loads are paginated.
 pub const MAX_INLINE_VALUE_SIZE: u64 = 5 * 1024 * 1024;
+/// Hard cap on a module-type value fetched with `DUMP`. Unlike the native
+/// containers, which page with `HSCAN` / `LRANGE`, DUMP serializes the
+/// whole value on the server's main thread with no way to read part of
+/// it — above this the value is described, never fetched, and the
+/// "load anyway" bypass is not offered.
+pub const MAX_MODULE_DUMP_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum DataFormat {
@@ -551,6 +558,54 @@ impl ProbKind {
     }
 }
 
+/// A key type Zedis has no viewer for, identified by the raw `TYPE` reply
+/// (`graphdata`, `TairHash-`, …). The name is interned once per process so
+/// [`KeyType`] stays `Copy` for the key-tree snapshot; `name()` reads it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleTypeId(u16);
+
+/// Every module type name seen so far; the index is the id. Module type
+/// names are a small fixed set per server, so the leak is bounded.
+static MODULE_TYPE_NAMES: RwLock<Vec<&'static str>> = RwLock::new(Vec::new());
+
+/// The id for a raw `TYPE` name, registering it on first sight.
+pub fn intern_module_type(name: &str) -> ModuleTypeId {
+    if let Ok(names) = MODULE_TYPE_NAMES.read()
+        && let Some(ix) = names.iter().position(|n| *n == name)
+    {
+        return ModuleTypeId(ix as u16);
+    }
+    let mut names = MODULE_TYPE_NAMES
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(ix) = names.iter().position(|n| *n == name) {
+        return ModuleTypeId(ix as u16);
+    }
+    names.push(Box::leak(name.to_string().into_boxed_str()));
+    ModuleTypeId((names.len() - 1) as u16)
+}
+
+impl ModuleTypeId {
+    /// The raw `TYPE` name this id stands for.
+    pub fn name(self) -> &'static str {
+        MODULE_TYPE_NAMES
+            .read()
+            .ok()
+            .and_then(|names| names.get(self.0 as usize).copied())
+            .unwrap_or("")
+    }
+
+    /// The id as a number — for an `Action` payload, which must be `Copy`
+    /// and serializable.
+    pub fn raw(self) -> u16 {
+        self.0
+    }
+
+    pub fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+}
+
 /// Redis key types: string, list, set, zset, hash, stream, and vectorset
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum KeyType {
@@ -567,6 +622,8 @@ pub enum KeyType {
     Json,
     TimeSeries,
     Probabilistic(ProbKind),
+    /// A module type without a viewer — see [`ModuleTypeId`].
+    Module(ModuleTypeId),
 }
 impl KeyType {
     /// Returns the abbreviated string representation of the key type
@@ -583,7 +640,25 @@ impl KeyType {
             KeyType::Json => "JSON",
             KeyType::TimeSeries => "TS",
             KeyType::Probabilistic(kind) => kind.prefix(),
+            KeyType::Module(id) => id.name(),
             KeyType::Unknown => "",
+        }
+    }
+
+    /// The short code the type badge shows: the fixed codes for known
+    /// types, a trimmed upper-case prefix of the raw name for a module type
+    /// (`TairHash-` → `TAIRHA`).
+    pub fn badge_code(&self) -> SharedString {
+        match self {
+            KeyType::Module(id) => id
+                .name()
+                .trim_matches('-')
+                .chars()
+                .take(6)
+                .collect::<String>()
+                .to_uppercase()
+                .into(),
+            other => other.as_str().into(),
         }
     }
 
@@ -792,8 +867,35 @@ impl From<&str> for KeyType {
             "CMSk-TYPE" => KeyType::Probabilistic(ProbKind::CountMinSketch),
             "TopK-TYPE" => KeyType::Probabilistic(ProbKind::TopK),
             "TDIS-TYPE" => KeyType::Probabilistic(ProbKind::TDigest),
-            _ => KeyType::Unknown,
+            // `TYPE` answers "none" for a missing key; anything else the
+            // server names is a module type Zedis has no viewer for.
+            "none" | "" => KeyType::Unknown,
+            other => KeyType::Module(intern_module_type(other)),
         }
+    }
+}
+
+#[cfg(test)]
+mod module_type_tests {
+    use super::{KeyType, intern_module_type};
+
+    #[test]
+    fn unknown_type_names_are_interned_not_dropped() {
+        let a = KeyType::from("graphdata");
+        let b = KeyType::from("graphdata");
+        assert_eq!(a, b, "the same name interns to the same id");
+        let KeyType::Module(id) = a else {
+            panic!("a module type");
+        };
+        assert_eq!(id.name(), "graphdata");
+        assert_eq!(a.as_str(), "graphdata");
+        assert_eq!(a.badge_code().as_ref(), "GRAPHD");
+        assert_eq!(KeyType::from("TairHash-").badge_code().as_ref(), "TAIRHA");
+        assert_ne!(KeyType::from("TairHash-"), a);
+        assert_eq!(intern_module_type("graphdata"), id);
+        // Missing keys and known types are untouched.
+        assert_eq!(KeyType::from("none"), KeyType::Unknown);
+        assert_eq!(KeyType::from("hash"), KeyType::Hash);
     }
 }
 

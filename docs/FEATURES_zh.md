@@ -62,7 +62,7 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 专项类型查看器
 **不透明的值都会打开为专用的交互式查看器。**
 
-**位图/Bitfield** 在 GPU 网格上绘制每一位（`SETBIT`/`BITCOUNT`/`BITFIELD`）；**HyperLogLog** 展示 `PFCOUNT` 基数；**向量集 + KNN**（Redis 8）经 `VSIM` 逐跳遍历 HNSW 图，可用作用于元素属性的 `FILTER` 表达式收窄结果（8.2+ 经 `WITHATTRIBS` 把邻居属性一并显示，`FILTER-EF` 控制候选预算），并显示被查元素反量化后的 `VEMB` 分量、可一键复制；**地理地图** 用 `GEOPOS` 把 sorted set 的成员画在可缩放拖动的无底图雷达上，并支持 `GEOSEARCH` 半径筛选与 Shift+点击量距；**概率型**（RedisBloom：Bloom/Cuckoo/Count-Min/Top-K/t-digest）与**时间序列**（RedisTimeSeries `TS.INFO` + 分桶 `TS.RANGE` 图表）各有专卡。按 key 的类型 / 模块分发。
+**位图/Bitfield** 在 GPU 网格上绘制每一位（`SETBIT`/`BITCOUNT`/`BITFIELD`）；**HyperLogLog** 展示 `PFCOUNT` 基数；**向量集 + KNN**（Redis 8）经 `VSIM` 逐跳遍历 HNSW 图，可用作用于元素属性的 `FILTER` 表达式收窄结果（8.2+ 经 `WITHATTRIBS` 把邻居属性一并显示，`FILTER-EF` 控制候选预算），并显示被查元素反量化后的 `VEMB` 分量、可一键复制；**地理地图** 用 `GEOPOS` 把 sorted set 的成员画在可缩放拖动的无底图雷达上，并支持 `GEOSEARCH` 半径筛选与 Shift+点击量距；**概率型**（RedisBloom：Bloom/Cuckoo/Count-Min/Top-K/t-digest）与**时间序列**（RedisTimeSeries `TS.INFO` + 分桶 `TS.RANGE` 图表）各有专卡。按 key 的类型 / 模块分发。没有专用查看器的模块类型（RedisGraph、Tair 等）也不是死路：编辑器会显示类型名和服务器加载的模块，把值以 `DUMP` 序列化字节只读展示，沿用字符串的自动加载上限，且 32 MB 以上绝不发 `DUMP`（它会在服务器主线程序列化整个值）；重命名、TTL、删除、跨服务器复制照常可用，键树的类型过滤器也会按名字列出这些类型。
 
 ### 模块面板
 **RediSearch（FT.*）与 Functions（Lua library）的专用面板。**

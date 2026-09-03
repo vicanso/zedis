@@ -53,7 +53,7 @@ impl RenderOnce for KeyTypeBadge {
             // Plain colored uppercase text (compact `as_str` codes — STR / STRM
             // / VEC) — the design renders types as a quiet colored label, not a
             // pill.
-            return Label::new(self.key_type.as_str())
+            return Label::new(self.key_type.badge_code())
                 .text_size(px(10.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .flex_none()
@@ -69,7 +69,7 @@ impl RenderOnce for KeyTypeBadge {
         bg.fade_out(KEY_TYPE_FADE_ALPHA);
         let border = bg;
 
-        Label::new(self.key_type.as_str())
+        Label::new(self.key_type.badge_code())
             .text_size(px(10.))
             // Render in a concrete font (the app monospace) so the weight below
             // actually renders bold: the default `.AppleSystemUIFont` resolves

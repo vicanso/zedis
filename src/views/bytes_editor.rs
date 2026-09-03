@@ -37,6 +37,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::jsonpath_completion::{JsonDoc, JsonPathCompletionProvider};
+use crate::states::KeyType;
 use tracing::info;
 
 // Constants for editor configuration
@@ -499,7 +500,10 @@ impl ZedisBytesEditor {
         if let Some(redis_bytes_value) = &redis_bytes_value {
             // Hex mode is always editable — even for binary keys — because
             // we round-trip through hex text on save.
-            self.readonly = readonly || (!hex_mode && !redis_bytes_value.is_utf8_text());
+            // A module type's DUMP bytes are a read-only view: written back
+            // with SET they would turn the key into a string.
+            let module_dump = value.is_some_and(|v| matches!(v.key_type(), KeyType::Module(_)));
+            self.readonly = readonly || module_dump || (!hex_mode && !redis_bytes_value.is_utf8_text());
             self.data = format_byte_editor_data(redis_bytes_value, cx);
         } else {
             self.data = ByteEditorData::Text(SharedString::default());

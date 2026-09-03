@@ -20,10 +20,13 @@ use super::{
     set::first_load_set_value,
     stream::first_load_stream_value,
     string::get_redis_bytes_value,
-    value::{KeyType, MAX_INLINE_VALUE_SIZE, RedisValue, RedisValueData, RedisValueStatus, SortOrder},
+    value::{
+        KeyType, MAX_INLINE_VALUE_SIZE, MAX_MODULE_DUMP_BYTES, ModuleTypeId, RedisBytesValue, RedisValue,
+        RedisValueData, RedisValueStatus, SortOrder, ViewMode,
+    },
     zset::first_load_zset_value,
 };
-use crate::connection::{ExpireCondition, floors};
+use crate::connection::{ExpireCondition, ServerCommand, floors, get_server_features};
 use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
     insert_trash_entry, purge_trash, recent_keys_scope,
@@ -35,6 +38,7 @@ use crate::{
     helpers::{parse_duration, unix_ts, unix_ts_millis},
 };
 use ahash::AHashSet;
+use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
@@ -777,8 +781,22 @@ impl ZedisServerState {
                         key_type: KeyType::Vectorset,
                         ..Default::default()
                     }),
-                    _ => Err(Error::Invalid {
-                        message: "unsupported key type".to_string(),
+                    // A module type without a viewer: its DUMP bytes,
+                    // behind the size gates — see `load_module_value`.
+                    KeyType::Module(_) => {
+                        let size = client.memory_usage(key.as_str(), key_type.as_str()).await.ok();
+                        load_module_value(
+                            &mut conn,
+                            server_id.as_str(),
+                            key.as_str(),
+                            key_type,
+                            size,
+                            bypass_size_gate,
+                        )
+                        .await
+                    }
+                    KeyType::Unknown | KeyType::Channel => Err(Error::Invalid {
+                        message: format!("unsupported key type: {}", key_type.as_str()),
                     }),
                 }?;
                 if let Ok(memory_usage) = client.memory_usage(key.as_str(), key_type.as_str()).await {
@@ -852,6 +870,21 @@ impl ZedisServerState {
     /// Reloads the value for a key with the oversized-value gate disabled
     /// ("Load anyway" on the too-large panel). The bypass is remembered for
     /// the key so a later refresh doesn't bounce back to the gate panel.
+    /// The module types among the loaded keys, for the type-filter menu.
+    pub fn module_types_seen(&self) -> Vec<ModuleTypeId> {
+        let mut ids: Vec<ModuleTypeId> = self
+            .keys
+            .values()
+            .filter_map(|t| match t {
+                KeyType::Module(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn load_value_ignore_size_limit(&mut self, key: SharedString, cx: &mut Context<Self>) {
         self.size_gate_bypassed = Some(key.clone());
         // Blank + busy while the (large) payload downloads — mirrors the
@@ -1467,4 +1500,50 @@ impl ZedisServerState {
             cx,
         );
     }
+}
+
+/// A key of a type Zedis has no viewer for. The value is shown as its
+/// serialized form (`DUMP`), read-only, behind two gates: the auto-load cap
+/// the string editor uses (the "load anyway" path lifts it), and a hard cap
+/// above which DUMP is never sent — it serializes the whole value on the
+/// server's main thread with no way to page, so a huge module value is
+/// read from the terminal, not clicked on. `size` is what `MEMORY USAGE`
+/// said: a module reports it through its own `mem_usage` callback, and a
+/// missing one answers 0 or an error — unknown, which is not "small", and
+/// unknown never gets a DUMP. A value the card cannot show still carries
+/// its type, size and TTL, so rename / TTL / delete / copy keep working.
+async fn load_module_value(
+    conn: &mut RedisAsyncConn,
+    server_id: &str,
+    key: &str,
+    key_type: KeyType,
+    size: Option<u64>,
+    bypass_size_gate: bool,
+) -> Result<RedisValue, Error> {
+    let size = size.filter(|s| *s > 0);
+    let mut value = RedisValue {
+        key_type,
+        size: size.unwrap_or(0),
+        ..Default::default()
+    };
+    let Some(size) = size else {
+        return Ok(value);
+    };
+    if size > MAX_MODULE_DUMP_BYTES {
+        return Ok(value);
+    }
+    if !bypass_size_gate && size > MAX_INLINE_VALUE_SIZE {
+        value.status = RedisValueStatus::TooLarge(size);
+        return Ok(value);
+    }
+    if !get_server_features(server_id).is_usable(ServerCommand::Dump) {
+        return Ok(value);
+    }
+    let payload: Vec<u8> = cmd("DUMP").arg(key).query_async(conn).await?;
+    value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+        bytes: Bytes::from(payload),
+        view_mode: ViewMode::Hex,
+        ..Default::default()
+    })));
+    Ok(value)
 }

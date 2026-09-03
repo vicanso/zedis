@@ -269,6 +269,7 @@ impl ZedisKeyTree {
         }
         let query_mode = self.state.query_mode;
         let type_filter = self.server_state.read(cx).type_filter();
+        let module_types = self.server_state.read(cx).module_types_seen();
         let show_key_tree_ttl = self.server_state.read(cx).show_key_tree_ttl();
         let ttl_filter = self.state.selected_ttl_filter;
         // Always offer the tag filter next to Type/TTL (not buried in ⋯ and
@@ -398,64 +399,80 @@ impl ZedisKeyTree {
                     i18n_key_tree(cx, "type_filter"),
                     window,
                     cx,
-                    move |submenu, _window, _cx| {
-                        submenu
-                            .menu_element_with_check(type_filter.is_none(), Box::new(KeyTypeFilter::All), |_, cx| {
-                                Label::new(i18n_key_tree(cx, "type_filter_all"))
-                            })
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::String),
-                                Box::new(KeyTypeFilter::String),
-                                |_, _| Label::new("String"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::Hash),
-                                Box::new(KeyTypeFilter::Hash),
-                                |_, _| Label::new("Hash"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::List),
-                                Box::new(KeyTypeFilter::List),
-                                |_, _| Label::new("List"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::Set),
-                                Box::new(KeyTypeFilter::Set),
-                                |_, _| Label::new("Set"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::Zset),
-                                Box::new(KeyTypeFilter::Zset),
-                                |_, _| Label::new("Zset"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::Stream),
-                                Box::new(KeyTypeFilter::Stream),
-                                |_, _| Label::new("Stream"),
-                            )
-                            // Module types: no `SCAN … TYPE` narrowing exists
-                            // for these — the client-side post-filter over the
-                            // resolved types does the work alone.
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::Json),
-                                Box::new(KeyTypeFilter::Json),
-                                |_, _| Label::new("JSON"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::TimeSeries),
-                                Box::new(KeyTypeFilter::TimeSeries),
-                                |_, _| Label::new("Time Series"),
-                            )
-                            .menu_element_with_check(
-                                type_filter == Some(KeyType::Vectorset),
-                                Box::new(KeyTypeFilter::Vectorset),
-                                |_, _| Label::new("Vector Set"),
-                            )
-                            .menu_element_with_check(
-                                matches!(type_filter, Some(KeyType::Probabilistic(_))),
-                                Box::new(KeyTypeFilter::Probabilistic),
-                                |_, _| Label::new("Probabilistic"),
-                            )
+                    {
+                        let module_types = module_types.clone();
+                        move |submenu, _window, _cx| {
+                            let submenu = submenu
+                                .menu_element_with_check(
+                                    type_filter.is_none(),
+                                    Box::new(KeyTypeFilter::All),
+                                    |_, cx| Label::new(i18n_key_tree(cx, "type_filter_all")),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::String),
+                                    Box::new(KeyTypeFilter::String),
+                                    |_, _| Label::new("String"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::Hash),
+                                    Box::new(KeyTypeFilter::Hash),
+                                    |_, _| Label::new("Hash"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::List),
+                                    Box::new(KeyTypeFilter::List),
+                                    |_, _| Label::new("List"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::Set),
+                                    Box::new(KeyTypeFilter::Set),
+                                    |_, _| Label::new("Set"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::Zset),
+                                    Box::new(KeyTypeFilter::Zset),
+                                    |_, _| Label::new("Zset"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::Stream),
+                                    Box::new(KeyTypeFilter::Stream),
+                                    |_, _| Label::new("Stream"),
+                                )
+                                // Module types: no `SCAN … TYPE` narrowing exists
+                                // for these — the client-side post-filter over the
+                                // resolved types does the work alone.
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::Json),
+                                    Box::new(KeyTypeFilter::Json),
+                                    |_, _| Label::new("JSON"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::TimeSeries),
+                                    Box::new(KeyTypeFilter::TimeSeries),
+                                    |_, _| Label::new("Time Series"),
+                                )
+                                .menu_element_with_check(
+                                    type_filter == Some(KeyType::Vectorset),
+                                    Box::new(KeyTypeFilter::Vectorset),
+                                    |_, _| Label::new("Vector Set"),
+                                )
+                                .menu_element_with_check(
+                                    matches!(type_filter, Some(KeyType::Probabilistic(_))),
+                                    Box::new(KeyTypeFilter::Probabilistic),
+                                    |_, _| Label::new("Probabilistic"),
+                                );
+                            // Module types the loaded keys have, by their raw
+                            // TYPE name — there is nothing to translate.
+                            let mut submenu = submenu;
+                            for id in module_types.iter().copied() {
+                                submenu = submenu.menu_element_with_check(
+                                    type_filter == Some(KeyType::Module(id)),
+                                    Box::new(KeyTypeFilter::Module(id.raw())),
+                                    move |_, _| Label::new(id.name()),
+                                );
+                            }
+                            submenu
+                        }
                     },
                 )
                 // Tag colour filter (local metadata AND). Always visible so

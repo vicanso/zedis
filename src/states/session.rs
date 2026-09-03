@@ -89,6 +89,9 @@ pub enum KeyTypeFilter {
     TimeSeries,
     Vectorset,
     Probabilistic,
+    /// A module type by its interned id (`ModuleTypeId::raw`) — the
+    /// menu lists whichever module types the loaded keys have.
+    Module(u16),
 }
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]

@@ -17,6 +17,7 @@
 //! of `key_tree.rs`.
 
 use super::*;
+use crate::states::ModuleTypeId;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
 pub(super) enum KeyTreeAction {
@@ -130,6 +131,7 @@ impl Render for ZedisKeyTree {
                     // Representative kind — `matches_filter` treats any
                     // probabilistic filter as matching every sketch kind.
                     KeyTypeFilter::Probabilistic => Some(KeyType::Probabilistic(ProbKind::Bloom)),
+                    KeyTypeFilter::Module(raw) => Some(KeyType::Module(ModuleTypeId::from_raw(*raw))),
                 };
                 this.server_state
                     .update(cx, |state, cx| state.set_type_filter(filter, cx));

@@ -48,13 +48,106 @@ impl ZedisEditor {
             )
     }
 
+    /// The card for a key type Zedis has no viewer for: what the server
+    /// calls it, which modules it runs, and the value as its DUMP bytes when
+    /// they were fetched — else why not (size unknown, above the DUMP cap,
+    /// DUMP unavailable). Type-agnostic actions in the toolbar (rename, TTL,
+    /// delete, copy to another server) work as for any key.
+    pub(super) fn render_module_value(
+        &mut self,
+        id: ModuleTypeId,
+        size: u64,
+        has_dump: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let title: SharedString = t!("editor.module_no_viewer", type_name = id.name(), locale = &locale)
+            .to_string()
+            .into();
+        let modules = self.server_state.read(cx).nodes_description().modules.clone();
+        let loaded: Option<SharedString> = (!modules.is_empty()).then(|| {
+            t!("editor.module_loaded_modules", modules = modules, locale = &locale)
+                .to_string()
+                .into()
+        });
+        let dump_usable = self.server_state.read(cx).can(Capability::ExportKeys);
+        let why_not: Option<SharedString> = if has_dump {
+            None
+        } else if size == 0 {
+            Some(i18n_editor(cx, "module_size_unknown"))
+        } else if size > MAX_MODULE_DUMP_BYTES {
+            Some(
+                t!(
+                    "editor.module_too_large",
+                    size = format_size(size, DECIMAL),
+                    limit = format_size(MAX_MODULE_DUMP_BYTES, DECIMAL),
+                    locale = &locale
+                )
+                .to_string()
+                .into(),
+            )
+        } else if !dump_usable {
+            Some(i18n_editor(cx, "module_dump_unavailable"))
+        } else {
+            None
+        };
+        let muted = cx.theme().muted_foreground;
+        let hint = i18n_editor(cx, "module_hint");
+        let open_terminal = i18n_editor(cx, "module_open_terminal");
+        let mut card = v_flex()
+            .size_full()
+            .gap_2()
+            .p_4()
+            .child(Label::new(title))
+            .when_some(loaded, |this, text| {
+                this.child(Label::new(text).text_sm().text_color(muted))
+            })
+            .child(Label::new(hint).text_sm().text_color(muted))
+            .child(
+                div().child(
+                    Button::new("module-open-terminal")
+                        .outline()
+                        .label(open_terminal)
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.server_state.update(cx, |state, cx| state.toggle_terminal(cx));
+                        })),
+                ),
+            );
+        if has_dump {
+            let editor = self
+                .bytes_editor
+                .get_or_insert_with(|| {
+                    debug!("Creating new bytes editor for a module value");
+                    cx.new(|cx| ZedisBytesEditor::new(self.server_state.clone(), window, cx))
+                })
+                .clone();
+            card = card.child(div().flex_1().min_h_0().w_full().child(editor));
+        } else if let Some(text) = why_not {
+            card = card.child(Label::new(text).text_sm().text_color(muted));
+        }
+        card
+    }
+
     /// Inline panel shown when the oversized-value gate skipped the load:
     /// the probed size, the cap it exceeded, and an explicit bypass load.
     pub(super) fn render_value_too_large(&mut self, size: u64, cx: &mut Context<Self>) -> impl IntoElement {
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
         let title = i18n_editor(cx, "value_too_large");
+        // A module value is fetched with DUMP, which stalls the *server*,
+        // not just this UI — say so before the bypass.
+        let is_module = self
+            .server_state
+            .read(cx)
+            .value()
+            .is_some_and(|v| matches!(v.key_type(), KeyType::Module(_)));
+        let message_key = if is_module {
+            "editor.module_value_too_large_message"
+        } else {
+            "editor.value_too_large_message"
+        };
         let message: SharedString = t!(
-            "editor.value_too_large_message",
+            message_key,
             size = format_size(size, DECIMAL),
             limit = format_size(MAX_INLINE_VALUE_SIZE, DECIMAL),
             locale = locale
@@ -104,6 +197,18 @@ impl ZedisEditor {
         // Don't render anything if key type is unknown and still loading
         if value.key_type == KeyType::Unknown && value.is_busy() {
             return div().into_any_element();
+        }
+
+        // A module type without a viewer: the module card — type name,
+        // loaded modules, and the DUMP bytes (read-only) when they were
+        // fetched. The bytes editor is kept: it renders the hex.
+        if let KeyType::Module(id) = value.key_type() {
+            let size = value.size;
+            let has_dump = value.bytes_value().is_some();
+            self.reset_editors(KeyType::String);
+            return self
+                .render_module_value(id, size, has_dump, window, cx)
+                .into_any_element();
         }
 
         // HyperLogLog sketches live in string keys; detect them from the
@@ -667,4 +772,6 @@ impl Render for ZedisEditor {
             .into_any_element()
     }
 }
+use crate::connection::Capability;
+use crate::states::{MAX_MODULE_DUMP_BYTES, ModuleTypeId};
 use crate::states::{SortOrder, i18n_zset_editor};
