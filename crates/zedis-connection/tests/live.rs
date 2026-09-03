@@ -269,6 +269,26 @@ fn standalone_scan_sees_every_type_it_wrote() {
 
 #[test]
 #[ignore]
+fn standalone_bulk_delete_removes_every_key() {
+    // The verb is picked per server (`UNLINK` from 4.0, `DEL` before —
+    // floors::UNLINK); every CI server clears the floor, so this pins the
+    // pipeline path and the unit test in floors.rs pins the fallback.
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let keys: Vec<String> = (0..3).map(|i| unique(&format!("bulk{i}"))).collect();
+        for key in &keys {
+            cmd("SET").arg(key).arg("x").exec_async(&mut c).await.expect("set");
+        }
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        client.unlike_keys_scattered(keys.clone()).await.expect("bulk delete");
+        let left: i64 = cmd("EXISTS").arg(&keys).query_async(&mut c).await.expect("exists");
+        assert_eq!(left, 0, "bulk delete must remove every key");
+    });
+}
+
+#[test]
+#[ignore]
 fn standalone_dump_restore_round_trips_a_key() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;

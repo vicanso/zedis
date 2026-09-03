@@ -353,12 +353,23 @@ impl RedisClient {
         self.modules.iter().any(|(name, _)| name == "search")
     }
 
-    /// Unlinks keys on all master nodes concurrently.
+    /// The verb bulk deletes send: `UNLINK` frees the value off the main
+    /// thread but only exists from Redis 4.0 ([`floors::UNLINK`]); before
+    /// that — the Windows 3.0 port a user still runs — it is `DEL`, which
+    /// every server has. An unparsed version fails the floor and also
+    /// lands on `DEL`, the safe side.
+    fn delete_verb(&self) -> &'static str {
+        if self.supports(floors::UNLINK) { "UNLINK" } else { "DEL" }
+    }
+
+    /// Unlinks keys on all master nodes concurrently (`DEL` before Redis 4.0,
+    /// see [`Self::delete_verb`]).
     /// # Arguments
     /// * `keys_per_node` - A vector of vectors of keys, one for each master node.
     /// # Returns
     /// * `Result<(), Error>` - The result of the operation.
     pub async fn unlike_keys(&self, keys_per_node: Vec<Vec<String>>) -> Result<(), Error> {
+        let verb = self.delete_verb();
         let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
         let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
         for (index, keys) in keys_per_node.iter().enumerate() {
@@ -367,7 +378,7 @@ impl RedisClient {
             }
             let mut pipe = redis::pipe();
             for key in keys {
-                pipe.cmd("UNLINK").arg(key.as_str());
+                pipe.cmd(verb).arg(key.as_str());
             }
             pipes[index] = Some(pipe);
         }
@@ -375,16 +386,18 @@ impl RedisClient {
         Ok(())
     }
 
-    /// Unlinks keys that may be distributed across different nodes.
+    /// Unlinks keys that may be distributed across different nodes (`DEL`
+    /// before Redis 4.0, see [`Self::delete_verb`]).
     pub async fn unlike_keys_scattered(&self, keys: Vec<String>) -> Result<(), Error> {
         if keys.is_empty() {
             return Ok(());
         }
+        let verb = self.delete_verb();
         if !self.is_cluster() {
             let mut conn = self.connection();
             let mut pipe = redis::pipe();
             for key in &keys {
-                pipe.cmd("UNLINK").arg(key.as_str());
+                pipe.cmd(verb).arg(key.as_str());
             }
             let _: () = pipe.query_async(&mut conn).await?;
             return Ok(());
@@ -394,7 +407,7 @@ impl RedisClient {
             let futures = chunk.iter().map(|key| {
                 let mut conn_clone = conn.clone();
                 async move {
-                    let _: () = cmd("UNLINK").arg(key.as_str()).query_async(&mut conn_clone).await?;
+                    let _: () = cmd(verb).arg(key.as_str()).query_async(&mut conn_clone).await?;
                     Ok::<(), Error>(())
                 }
             });

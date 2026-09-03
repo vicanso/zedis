@@ -75,6 +75,9 @@ impl Floor {
 
 /// `MEMORY USAGE` (Redis 4.0).
 pub const MEMORY_USAGE: Floor = Floor::since_fork("4.0.0");
+/// `UNLINK` (Redis 4.0) — bulk deletes fall back to `DEL` below it; the
+/// Windows 3.0 / 3.2 ports still in use answer `unknown command 'UNLINK'`.
+pub const UNLINK: Floor = Floor::since_fork("4.0.0");
 /// `SET … KEEPTTL` (Redis 6.0).
 pub const SET_KEEPTTL: Floor = Floor::since_fork("6.0.0");
 /// `SCAN … TYPE` (Redis 6.0).
@@ -132,6 +135,15 @@ mod tests {
         assert!(SET_IFEQ.met_by(false, &v("8.4.0")));
         assert!(SET_IFEQ.met_by(false, &v("8.6.1")));
         assert!(!SET_IFEQ.met_by(false, &v("8.2.9")));
+    }
+
+    #[test]
+    fn unlink_is_missing_on_the_windows_ports() {
+        // MSOpenTech / tporadowski builds report 3.0.504 and 3.2.100.
+        assert!(!UNLINK.met_by(false, &v("3.0.504")));
+        assert!(!UNLINK.met_by(false, &v("3.2.100")));
+        assert!(UNLINK.met_by(false, &v("4.0.0")));
+        assert!(UNLINK.met_by(true, &v("7.2.4")));
     }
 
     #[test]
