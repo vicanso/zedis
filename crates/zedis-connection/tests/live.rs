@@ -802,7 +802,10 @@ fn standalone_acl_users_are_classified() {
         let ro_user = format!("zedis_it_ro_{suffix}");
         let limited_user = format!("zedis_it_limited_{suffix}");
         // Read-only: every read, no writes. Container-level denials keep
-        // the rule valid on Redis 6 (subcommand denials are 7.0+).
+        // the rule valid on Redis 6 (subcommand denials are 7.0+). `SELECT`
+        // is granted by name: it joined `@connection` only in 7.0 — on 6.2 it
+        // sits in `@keyspace @fast`, and `@keyspace` also holds writes — and
+        // the probe db below is 15, so the connect itself would be denied.
         cmd("ACL")
             .arg("SETUSER")
             .arg(&ro_user)
@@ -812,6 +815,7 @@ fn standalone_acl_users_are_classified() {
             .arg("&*")
             .arg("+@read")
             .arg("+@connection")
+            .arg("+select")
             .arg("+acl")
             .arg("+info")
             .arg("+scan")
@@ -847,7 +851,10 @@ fn standalone_acl_users_are_classified() {
         let scoped_user = format!("zedis_it_scoped_{suffix}");
         let app_user = format!("zedis_it_app_{suffix}");
         for (user, rules) in [
-            (&plain_user, vec!["~*", "&*", "+@read", "+@connection", "+info"]),
+            (
+                &plain_user,
+                vec!["~*", "&*", "+@read", "+@connection", "+select", "+info"],
+            ),
             (&scoped_user, vec!["~app:*", "&*", "+@all"]),
             (&app_user, vec!["~*", "&*", "+@all", "-@admin"]),
         ] {
