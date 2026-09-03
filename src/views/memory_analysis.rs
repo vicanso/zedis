@@ -32,7 +32,7 @@ use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
 /// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
 use crate::views::{export_to_file, open_key_in_editor, search_keys_in_tree};
-use gpui::{ClipboardItem, Edges, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
+use gpui::{ClipboardItem, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::DropdownMenu;
@@ -45,16 +45,19 @@ use gpui_component::{
     h_flex,
     label::Label,
     select::{Select, SelectEvent, SelectItem, SelectState},
-    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     v_flex,
 };
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
 use zedis_core::keysizes::{KeysizesDist, KeysizesUnit};
 use zedis_core::rdb::RdbParser;
+use zedis_ui::ZedisTextTable;
 use zedis_ui::{ZedisDivider, help_popover, hint_banner};
 
 mod render;
@@ -247,15 +250,6 @@ const COL_HEAT: &str = "heat";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn make_paddings() -> Option<Edges<Pixels>> {
-    Some(Edges {
-        top: px(2.),
-        bottom: px(2.),
-        left: px(10.),
-        right: px(10.),
-    })
-}
-
 fn format_memory(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::FormatSizeOptions::default().decimal_places(2))
 }
@@ -309,8 +303,15 @@ enum AiStatus {
 
 pub struct ZedisMemoryAnalysis {
     server_state: Entity<ZedisServerState>,
-    prefix_table: Entity<TableState<PrefixTableDelegate>>,
-    single_table: Entity<TableState<SingleKeyTableDelegate>>,
+    prefix_table: Entity<TableState<ZedisTextTable>>,
+    single_table: Entity<TableState<ZedisTextTable>>,
+    /// The rows behind the two tables, kept for the AI report (the tables
+    /// hold only their cells).
+    prefix_rows: Vec<PrefixRow>,
+    single_rows: Vec<SingleKeyRow>,
+    /// Rows came from an offline RDB file: the tables' jump actions read
+    /// this at click time and stay hidden, since there is no live key.
+    offline: Rc<Cell<bool>>,
     status: AnalysisStatus,
     prefix_count: usize,
     single_count: usize,
@@ -391,16 +392,17 @@ impl ZedisMemoryAnalysis {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
+        let offline = Rc::new(Cell::new(false));
         let prefix_table = cx.new(|cx| {
             TableState::new(
-                PrefixTableDelegate::new(Vec::new(), server_state.clone(), window, cx),
+                prefix_table(server_state.clone(), offline.clone(), window, cx),
                 window,
                 cx,
             )
         });
         let single_table = cx.new(|cx| {
             TableState::new(
-                SingleKeyTableDelegate::new(Vec::new(), server_state.clone(), window, cx),
+                single_key_table(server_state.clone(), offline.clone(), window, cx),
                 window,
                 cx,
             )
@@ -501,6 +503,9 @@ impl ZedisMemoryAnalysis {
             sort_state,
             should_rebuild_sort_items: None,
             single_groups: SingleKeyTopGroups::new(TOP_N),
+            prefix_rows: Vec::new(),
+            single_rows: Vec::new(),
+            offline,
             server_state,
             prefix_table,
             single_table,
@@ -621,8 +626,8 @@ impl ZedisMemoryAnalysis {
 
         // Build the Markdown report from the freshly computed rows. Only
         // key names/sizes/TTLs are sent — never key values.
-        let prefix_rows = self.prefix_table.read(cx).delegate().rows.clone();
-        let single_rows = self.single_table.read(cx).delegate().rows.clone();
+        let prefix_rows = self.prefix_rows.clone();
+        let single_rows = self.single_rows.clone();
         if prefix_rows.is_empty() && single_rows.is_empty() && self.ttl_histogram.total() == 0 {
             window.push_notification(Notification::warning(i18n_memory_analysis(cx, "ai_no_data")), cx);
             return;
@@ -692,16 +697,11 @@ impl ZedisMemoryAnalysis {
         // the panel hides until the fresh run completes and recomputes.
         self.recommendations.clear();
 
-        self.prefix_table.update(cx, |s, _| {
-            let delegate = s.delegate_mut();
-            delegate.rows.clear();
-            delegate.offline = offline;
-        });
-        self.single_table.update(cx, |s, _| {
-            let delegate = s.delegate_mut();
-            delegate.rows.clear();
-            delegate.offline = offline;
-        });
+        self.offline.set(offline);
+        self.prefix_rows.clear();
+        self.single_rows.clear();
+        self.prefix_table.update(cx, |s, _| s.delegate_mut().clear());
+        self.single_table.update(cx, |s, _| s.delegate_mut().clear());
     }
 
     /// The live sampler's hard dependencies (`SCAN` + `MEMORY USAGE`) — the
@@ -843,8 +843,16 @@ impl ZedisMemoryAnalysis {
                     let mode = this.sort_mode;
                     let single_rows = this.single_groups.rows_for(mode);
                     this.single_count = single_rows.len();
-                    prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
-                    single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
+                    prefix_table.update(cx, |s, _| {
+                        s.delegate_mut()
+                            .set_rows(prefix_rows.iter().map(PrefixRow::cells).collect());
+                    });
+                    single_table.update(cx, |s, _| {
+                        s.delegate_mut()
+                            .set_rows(single_rows.iter().map(SingleKeyRow::cells).collect());
+                    });
+                    this.prefix_rows = prefix_rows;
+                    this.single_rows = single_rows;
                     cx.notify();
                 });
 
@@ -891,8 +899,16 @@ impl ZedisMemoryAnalysis {
                 let mode = this.sort_mode;
                 let single_rows = this.single_groups.rows_for(mode);
                 this.single_count = single_rows.len();
-                prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
-                single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
+                prefix_table.update(cx, |s, _| {
+                    s.delegate_mut()
+                        .set_rows(prefix_rows.iter().map(PrefixRow::cells).collect());
+                });
+                single_table.update(cx, |s, _| {
+                    s.delegate_mut()
+                        .set_rows(single_rows.iter().map(SingleKeyRow::cells).collect());
+                });
+                this.prefix_rows = prefix_rows;
+                this.single_rows = single_rows;
                 cx.notify();
             });
         }));
@@ -1061,8 +1077,16 @@ impl ZedisMemoryAnalysis {
                     let mode = this.sort_mode;
                     let single_rows = this.single_groups.rows_for(mode);
                     this.single_count = single_rows.len();
-                    prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
-                    single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
+                    prefix_table.update(cx, |s, _| {
+                        s.delegate_mut()
+                            .set_rows(prefix_rows.iter().map(PrefixRow::cells).collect());
+                    });
+                    single_table.update(cx, |s, _| {
+                        s.delegate_mut()
+                            .set_rows(single_rows.iter().map(SingleKeyRow::cells).collect());
+                    });
+                    this.prefix_rows = prefix_rows;
+                    this.single_rows = single_rows;
                     cx.notify();
                 });
                 // View dropped (route change) — stop parsing.
@@ -1095,8 +1119,16 @@ impl ZedisMemoryAnalysis {
                 let mode = this.sort_mode;
                 let single_rows = this.single_groups.rows_for(mode);
                 this.single_count = single_rows.len();
-                prefix_table.update(cx, |s, _| s.delegate_mut().rows = prefix_rows);
-                single_table.update(cx, |s, _| s.delegate_mut().rows = single_rows);
+                prefix_table.update(cx, |s, _| {
+                    s.delegate_mut()
+                        .set_rows(prefix_rows.iter().map(PrefixRow::cells).collect());
+                });
+                single_table.update(cx, |s, _| {
+                    s.delegate_mut()
+                        .set_rows(single_rows.iter().map(SingleKeyRow::cells).collect());
+                });
+                this.prefix_rows = prefix_rows;
+                this.single_rows = single_rows;
                 cx.notify();
             });
         }));
@@ -1111,7 +1143,11 @@ impl ZedisMemoryAnalysis {
         self.sort_mode = mode;
         let rows = self.single_groups.rows_for(mode);
         self.single_count = rows.len();
-        self.single_table.update(cx, |s, _| s.delegate_mut().rows = rows);
+        self.single_table.update(cx, |s, _| {
+            s.delegate_mut()
+                .set_rows(rows.iter().map(SingleKeyRow::cells).collect())
+        });
+        self.single_rows = rows;
         cx.notify();
     }
 
@@ -1119,21 +1155,23 @@ impl ZedisMemoryAnalysis {
     /// included alongside the display strings so the file sorts and
     /// aggregates cleanly in a spreadsheet.
     pub(super) fn export_prefixes_csv(&mut self, cx: &mut gpui::Context<Self>) {
-        let rows = self.prefix_table.read(cx).delegate().rows.clone();
+        // In the table's current order, raw numbers from the payload cells.
+        let rows = self.prefix_table.read(cx).delegate().visible_rows();
         if rows.is_empty() {
             return;
         }
+        let cell = |cells: &[SharedString], ix: usize| cells.get(ix).map(|c| c.to_string()).unwrap_or_default();
         let data: Vec<Vec<String>> = rows
             .iter()
-            .map(|r| {
+            .map(|c| {
                 vec![
-                    r.prefix.to_string(),
-                    r.key_count.to_string(),
-                    r.memory_bytes.to_string(),
-                    r.memory.to_string(),
-                    r.types.to_string(),
-                    r.avg_ttl.to_string(),
-                    r.perm_count.to_string(),
+                    cell(c, 0),
+                    cell(c, PREFIX_CELL_KEY_COUNT),
+                    cell(c, PREFIX_CELL_MEMORY_BYTES),
+                    cell(c, 2),
+                    cell(c, 5),
+                    cell(c, 3),
+                    cell(c, PREFIX_CELL_PERM_COUNT),
                 ]
             })
             .collect();
@@ -1154,20 +1192,21 @@ impl ZedisMemoryAnalysis {
 
     /// Export the single-key Top-N table (in its current ranking) as CSV.
     pub(super) fn export_keys_csv(&mut self, cx: &mut gpui::Context<Self>) {
-        let rows = self.single_table.read(cx).delegate().rows.clone();
+        let rows = self.single_table.read(cx).delegate().visible_rows();
         if rows.is_empty() {
             return;
         }
+        let cell = |cells: &[SharedString], ix: usize| cells.get(ix).map(|c| c.to_string()).unwrap_or_default();
         let data: Vec<Vec<String>> = rows
             .iter()
-            .map(|r| {
+            .map(|c| {
                 vec![
-                    r.key.to_string(),
-                    r.key_type.to_string(),
-                    r.memory_bytes.to_string(),
-                    r.memory.to_string(),
-                    r.ttl.to_string(),
-                    r.heat_display.to_string(),
+                    cell(c, 0),
+                    cell(c, 3),
+                    cell(c, KEY_CELL_MEMORY_BYTES),
+                    cell(c, 1),
+                    cell(c, 2),
+                    cell(c, 4),
                 ]
             })
             .collect();

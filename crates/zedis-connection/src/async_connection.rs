@@ -14,7 +14,7 @@
 
 use super::config::{RedisServer, SERVER_TYPE_SENTINEL, get_server};
 use super::ssh_cluster_connection::SshMultiplexedConnection;
-use super::ssh_tunnel::open_single_ssh_tunnel_connection;
+use super::ssh_tunnel::{open_single_sni_tls_connection, open_single_ssh_tunnel_connection, tls_server_name};
 use crate::error::{ConnectionErrorKind, Error};
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
@@ -159,6 +159,19 @@ pub(crate) async fn configure_client_connection(conn: &mut impl ConnectionLike) 
     if let Err(err) = cmd("CLIENT").arg("SETNAME").arg(CLIENT_NAME).exec_async(conn).await {
         error!(error = %err, "set client name failed");
     }
+    // `CLIENT SETINFO` (7.2+) fills the `lib-name` / `lib-ver` columns of
+    // `CLIENT LIST`; older servers answer "unknown subcommand".
+    for (field, value) in [("LIB-NAME", "zedis"), ("LIB-VER", env!("CARGO_PKG_VERSION"))] {
+        if let Err(err) = cmd("CLIENT")
+            .arg("SETINFO")
+            .arg(field)
+            .arg(value)
+            .exec_async(conn)
+            .await
+        {
+            debug!(error = %err, field, "client setinfo not applied");
+        }
+    }
     for flag in ["NO-EVICT", "NO-TOUCH"] {
         if let Err(err) = cmd("CLIENT").arg(flag).arg("ON").exec_async(conn).await {
             debug!(error = %err, flag, "client flag not applied");
@@ -195,9 +208,19 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
         return Ok(conn);
     }
 
-    // Create a new connection: SSH tunnel or direct connection
+    // Create a new connection: SSH tunnel, TLS with its own server name, or
+    // the URL-based client for everything else (plain, TLS, Unix socket).
     let mut conn = if config.is_ssh_tunnel() {
+        if config.is_unix_socket() {
+            return Err(Error::Invalid {
+                message: "a Unix socket cannot be reached through an SSH tunnel".to_string(),
+            });
+        }
         open_single_ssh_tunnel_connection(config).await?
+    } else if config.tls.unwrap_or(false)
+        && let Some(server_name) = tls_server_name(config)
+    {
+        open_single_sni_tls_connection(config, &server_name).await?
     } else {
         let client = open_single_client(config)?;
         // Configure connection with timeouts
@@ -239,7 +262,35 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
 /// accommodation for an auth-less sentinel in front of a protected master,
 /// which until now was the *only* way a sentinel could differ from its
 /// data nodes.
+///
+/// A Sentinel entry may list several seed addresses (`host:port, …` in
+/// its host field): they are tried in order, and only a failure that is
+/// not about credentials moves on to the next.
 pub async fn open_seed_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
+    let endpoints = config.seed_endpoints();
+    if endpoints.len() <= 1 {
+        return open_seed_endpoint(config).await;
+    }
+    let mut last_error = None;
+    for (host, port) in endpoints {
+        let mut seed = config.clone();
+        seed.host = host;
+        seed.port = port;
+        match open_seed_endpoint(&seed).await {
+            Ok(conn) => return Ok(conn),
+            Err(e) if e.connection_kind() == ConnectionErrorKind::Auth => return Err(e),
+            Err(e) => {
+                debug!(name = config.name, host = seed.host, port = seed.port, error = %e, "seed unreachable, trying the next");
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| Error::Invalid {
+        message: "no seed address configured".to_string(),
+    }))
+}
+
+async fn open_seed_endpoint(config: &RedisServer) -> Result<MultiplexedConnection> {
     if config.server_type == Some(SERVER_TYPE_SENTINEL) && config.has_sentinel_credentials() {
         return open_single_connection(&config.sentinel_login(), 0, false).await;
     }
@@ -286,7 +337,7 @@ pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
 pub fn open_single_client(config: &RedisServer) -> Result<Client> {
     let url = config.get_connection_url();
     // Build client with TLS if certificates are provided
-    let client = if let Some(certificates) = config.tls_certificates() {
+    let client = if let Some(certificates) = config.tls_certificates()? {
         Client::build_with_tls(url, certificates)?
     } else {
         Client::open(url)?

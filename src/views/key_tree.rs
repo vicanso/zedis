@@ -64,7 +64,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tracing::info;
+use tracing::{info, warn};
 use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
 
 // Constants for tree layout and behavior
@@ -665,7 +665,10 @@ impl ZedisKeyTree {
             if sid.is_empty() {
                 std::collections::HashMap::new()
             } else {
-                get_key_metadata_manager().records(sid).unwrap_or_default()
+                get_key_metadata_manager().records(sid).unwrap_or_else(|e| {
+                    warn!(error = %e, "key tags / notes unavailable");
+                    std::collections::HashMap::new()
+                })
             }
         };
         let tag_filter_snapshot = self.state.selected_tag_filter;

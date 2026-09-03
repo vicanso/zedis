@@ -25,22 +25,20 @@ use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
 use crate::views::unavailable_chip;
 use chrono::Local;
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::button::ButtonVariants;
-use gpui_component::notification::Notification;
+use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon,
     button::Button,
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
-    table::{Column, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     v_flex,
 };
 use redis::aio::PubSub;
-use std::collections::VecDeque;
 use tracing::{error, info};
+use zedis_ui::{TextColumn, ZedisTextTable};
 
 /// Cap on retained messages. The list is a ring buffer (like the Monitor
 /// view's `MAX_RECORDS`) so subscribing to a hot channel can't grow
@@ -82,171 +80,35 @@ async fn forward_message(
     .await
 }
 
-/// Table delegate that drives the message list display.
-/// Column widths are computed from the available content area so the message
-/// column fills whatever space remains after timestamp and channel.
-/// `messages` is a newest-first ring buffer owned by the delegate — the
-/// subscription drainer pushes batches in via `TableState::update`.
-struct PubsubTableDelegate {
-    messages: VecDeque<PubsubMessage>,
-    columns: Vec<Column>,
-}
-
-impl PubsubTableDelegate {
-    fn new(window: &mut Window, cx: &mut gpui::App) -> Self {
-        // Use the global content width if available; fall back to the full window width.
-        let window_width = window.viewport_size().width;
-        let content_width = cx
-            .global::<ZedisGlobalStore>()
-            .read(cx)
-            .content_width()
-            .unwrap_or(window_width);
-        // Fixed widths for timestamp and channel; the message column gets the
-        // rest. Timestamp: "2026-08-01 12:34:56" = 19 mono chars + cell
-        // padding — 200px clipped the seconds.
-        let timestamp_width = 230.;
-        let channel_width = 150.;
-        let remaining_width = content_width.as_f32() - timestamp_width - channel_width - 10.;
-        let columns = vec![
-            Column::new("timestamp", i18n_pubsub_editor(cx, "timestamp"))
-                .width(timestamp_width)
-                .map(|mut col| {
-                    col.paddings = Some(Edges {
-                        top: px(2.),
-                        bottom: px(2.),
-                        left: px(10.),
-                        right: px(10.),
-                    });
-                    col
-                }),
-            Column::new("channel", i18n_pubsub_editor(cx, "channel"))
-                .width(channel_width)
-                .map(|mut col| {
-                    col.paddings = Some(Edges {
-                        top: px(2.),
-                        bottom: px(2.),
-                        left: px(10.),
-                        right: px(10.),
-                    });
-                    col
-                }),
-            Column::new("message", i18n_pubsub_editor(cx, "message"))
-                .width(remaining_width)
-                .map(|mut col| {
-                    col.paddings = Some(Edges {
-                        top: px(2.),
-                        bottom: px(2.),
-                        left: px(10.),
-                        right: px(10.),
-                    });
-                    col
-                }),
-        ];
-        Self {
-            messages: VecDeque::new(),
-            columns,
-        }
+impl PubsubMessage {
+    fn cells(&self) -> Vec<SharedString> {
+        vec![self.timestamp.clone(), self.channel.clone(), self.message.clone()]
     }
 }
 
-impl TableDelegate for PubsubTableDelegate {
-    fn columns_count(&self, _cx: &gpui::App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _cx: &gpui::App) -> usize {
-        self.messages.len()
-    }
-
-    fn column(&self, index: usize, _cx: &gpui::App) -> Column {
-        self.columns[index].clone()
-    }
-
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        // h_flex (items_center) matches render_td, so header text is
-        // vertically centered like the cells.
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .child(
-                Label::new(column.name.clone())
-                    .text_align(column.align)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_sm()
-                    .flex_1(),
-            )
-    }
-
-    /// Renders a table cell. Each cell shows a copy button on hover that writes
-    /// the cell text to the system clipboard.
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let value = if let Some(msg) = self.messages.get(row_ix) {
-            match col_ix {
-                0 => msg.timestamp.clone(),
-                1 => msg.channel.clone(),
-                2 => msg.message.clone(),
-                _ => "--".into(),
-            }
-        } else {
-            "--".into()
-        };
-
-        // Unique group name per cell so hover state is scoped correctly.
-        let group_name: SharedString = format!("pubsub-td-{}-{}", row_ix, col_ix).into();
-        let copied_message = i18n_common(cx, "copied_to_clipboard");
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .group(group_name.clone())
-            .overflow_hidden()
-            .child(
-                Label::new(value.clone())
-                    .text_align(column.align)
-                    .text_ellipsis()
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .child(
-                div()
-                    .id(("copy-wrapper", row_ix * 100 + col_ix))
-                    .invisible()
-                    .group_hover(group_name, |style| style.visible())
-                    .flex_none()
-                    .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
-                    .child(
-                        Button::new(("copy-cell", row_ix * 100 + col_ix))
-                            .ghost()
-                            .icon(IconName::Copy)
-                            .on_click(move |_, window, cx: &mut gpui::App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
-                                window.push_notification(Notification::info(copied_message.clone()), cx);
-                            }),
-                    ),
-            )
-    }
-
-    fn has_more(&self, _cx: &gpui::App) -> bool {
-        false
-    }
-
-    fn load_more_threshold(&self) -> usize {
-        0
-    }
-
-    fn load_more(&mut self, _window: &mut Window, _cx: &mut gpui::Context<TableState<Self>>) {}
+/// The message grid: newest first, capped at [`MAX_MESSAGES`]. Fixed
+/// widths for timestamp and channel; the message column takes the rest.
+fn build_table(window: &mut Window, cx: &mut gpui::App) -> ZedisTextTable {
+    // Use the global content width if available; fall back to the full window width.
+    let window_width = window.viewport_size().width;
+    let content_width = cx
+        .global::<ZedisGlobalStore>()
+        .read(cx)
+        .content_width()
+        .unwrap_or(window_width);
+    // Timestamp: "2026-08-01 12:34:56" = 19 mono chars + cell padding —
+    // 200px clipped the seconds.
+    let timestamp_width = 230.;
+    let channel_width = 150.;
+    let remaining_width = content_width.as_f32() - timestamp_width - channel_width - 10.;
+    let columns = vec![
+        TextColumn::new("timestamp", i18n_pubsub_editor(cx, "timestamp"), timestamp_width),
+        TextColumn::new("channel", i18n_pubsub_editor(cx, "channel"), channel_width),
+        TextColumn::new("message", i18n_pubsub_editor(cx, "message"), remaining_width),
+    ];
+    ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
+        .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
+        .max_rows(MAX_MESSAGES)
 }
 
 /// Main Pub/Sub editor component.
@@ -268,7 +130,7 @@ pub struct ZedisPubsubEditor {
     publish_channel_input_state: Entity<InputState>,
     publish_message_input_state: Entity<InputState>,
 
-    table_state: Entity<TableState<PubsubTableDelegate>>,
+    table_state: Entity<TableState<ZedisTextTable>>,
     /// Mirror of the delegate's row count, kept by the drainer so
     /// `render` can branch to the empty state without reading the table.
     message_count: usize,
@@ -338,8 +200,7 @@ impl ZedisPubsubEditor {
             },
         ));
 
-        let delegate = PubsubTableDelegate::new(window, cx);
-        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+        let table_state = cx.new(|cx| TableState::new(build_table(window, cx), window, cx));
 
         info!("Creating new pubsub editor");
 
@@ -455,14 +316,11 @@ impl ZedisPubsubEditor {
                         let result = entity.update(cx, |this, cx| {
                             let count = this.table_state.update(cx, |state, _| {
                                 let delegate = state.delegate_mut();
-                                // Newest first: prepend, trim from the tail.
+                                // Newest first: prepend, the cap trims the tail.
                                 for entry in batch {
-                                    delegate.messages.push_front(entry);
+                                    delegate.push_front(entry.cells());
                                 }
-                                while delegate.messages.len() > MAX_MESSAGES {
-                                    delegate.messages.pop_back();
-                                }
-                                delegate.messages.len()
+                                delegate.total_len()
                             });
                             this.message_count = count;
                             cx.notify();

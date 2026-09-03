@@ -36,6 +36,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
+use tracing::warn;
 use zedis_ui::{ZedisSelect, ZedisSelectEvent};
 
 /// Locale codes in display order, matching the items passed to locale_select.
@@ -261,7 +262,10 @@ impl ZedisSettingEditor {
         // "http://" could never be typed. Validation happens on blur instead.
         let http_proxy_state = Self::create_input_state(window, cx, "http_proxy_placeholder", http_proxy, None);
 
-        let config_dir = get_or_create_config_dir().unwrap_or_default();
+        let config_dir = get_or_create_config_dir().unwrap_or_else(|e| {
+            warn!(error = %e, "config directory unavailable");
+            std::path::PathBuf::new()
+        });
 
         let mut subscriptions = Vec::new();
         subscriptions.push(Self::bind_blur_save(

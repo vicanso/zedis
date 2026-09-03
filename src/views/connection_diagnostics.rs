@@ -121,32 +121,34 @@ impl ZedisConnectionDiagnostics {
         let timeout = diag_timeout(&server);
         let (dial_host, dial_port) = dial_endpoint(&server);
 
-        // DNS
-        if !Self::set_row(&this, cx, DiagStage::Dns, RowState::Running) {
-            return;
-        }
-        let (dns, addrs) = probe_dns(&dial_host, dial_port, timeout).await;
-        let failed = dns.status == DiagStatus::Failed;
-        if !Self::set_row(&this, cx, DiagStage::Dns, RowState::Done(dns)) {
-            return;
-        }
-        if failed {
-            Self::skip_rest(&this, cx);
-            return;
-        }
+        // DNS + TCP — not for a Unix socket, which has neither (the stage
+        // list already omits the rows).
+        if !server.is_unix_socket() {
+            if !Self::set_row(&this, cx, DiagStage::Dns, RowState::Running) {
+                return;
+            }
+            let (dns, addrs) = probe_dns(&dial_host, dial_port, timeout).await;
+            let failed = dns.status == DiagStatus::Failed;
+            if !Self::set_row(&this, cx, DiagStage::Dns, RowState::Done(dns)) {
+                return;
+            }
+            if failed {
+                Self::skip_rest(&this, cx);
+                return;
+            }
 
-        // TCP
-        if !Self::set_row(&this, cx, DiagStage::Tcp, RowState::Running) {
-            return;
-        }
-        let tcp = probe_tcp(&addrs, timeout).await;
-        let failed = tcp.status == DiagStatus::Failed;
-        if !Self::set_row(&this, cx, DiagStage::Tcp, RowState::Done(tcp)) {
-            return;
-        }
-        if failed {
-            Self::skip_rest(&this, cx);
-            return;
+            if !Self::set_row(&this, cx, DiagStage::Tcp, RowState::Running) {
+                return;
+            }
+            let tcp = probe_tcp(&addrs, timeout).await;
+            let failed = tcp.status == DiagStatus::Failed;
+            if !Self::set_row(&this, cx, DiagStage::Tcp, RowState::Done(tcp)) {
+                return;
+            }
+            if failed {
+                Self::skip_rest(&this, cx);
+                return;
+            }
         }
 
         // SSH auth + tunnel target

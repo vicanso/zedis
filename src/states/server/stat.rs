@@ -709,8 +709,13 @@ impl ZedisServerState {
                 let latency = start.elapsed();
                 let now = unix_ts();
                 let slow_logs = if now - last_slow_logs_checked_at >= slow_logs_check_interval {
-                    // ignore get slow error
-                    let slow_logs = client.get_slow_logs().await.unwrap_or_default();
+                    // A denied / missing SLOWLOG is normal on restricted
+                    // servers — the feature matrix greys the panel — so this
+                    // only leaves a trace, never a notice.
+                    let slow_logs = client.get_slow_logs().await.unwrap_or_else(|e| {
+                        debug!(error = %e, "slowlog sample skipped");
+                        Vec::new()
+                    });
                     Some(slow_logs)
                 } else {
                     None

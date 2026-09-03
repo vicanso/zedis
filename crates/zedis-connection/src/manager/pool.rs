@@ -407,7 +407,7 @@ impl ConnectionManager {
     pub async fn get_pubsub_connection(&self, server_id: &str) -> Result<redis::aio::PubSub> {
         let config = get_server(server_id)?;
         let url = config.get_connection_url();
-        let client = if let Some(certificates) = config.tls_certificates() {
+        let client = if let Some(certificates) = config.tls_certificates()? {
             redis::Client::build_with_tls(url, certificates)
         } else {
             redis::Client::open(url)
@@ -443,11 +443,16 @@ impl ConnectionManager {
                 if db != 0 {
                     builder = builder.database_id(db as i64);
                 }
-                if let Some(certificates) = first_node.server.tls_certificates() {
+                if let Some(certificates) = first_node.server.tls_certificates()? {
                     builder = builder.certs(certificates);
                 }
                 if first_node.server.insecure.unwrap_or(false) {
                     builder = builder.danger_accept_invalid_hostnames(true);
+                }
+                // Reads go to a replica of the slot's shard when asked;
+                // scans are unaffected (they fan out to the masters explicitly).
+                if first_node.server.cluster_read_replicas.unwrap_or(false) {
+                    builder = builder.read_routing_strategy(redis::cluster_read_routing::RandomReplicaStrategy);
                 }
                 if first_node.server.is_ssh_tunnel() {
                     builder = builder.username(server_id);
@@ -474,7 +479,12 @@ impl ConnectionManager {
         } else {
             AccessMode::ReadWrite
         };
-        let modules = get_modules(connection.clone()).await.unwrap_or_default();
+        // `MODULE LIST` is denied on most managed clouds; module panels
+        // then stay hidden, which is right — but the reason belongs in the log.
+        let modules = get_modules(connection.clone()).await.unwrap_or_else(|e| {
+            debug!(error = %e, "MODULE LIST unavailable, assuming no modules");
+            Vec::new()
+        });
         // Prefer the user-configured count — it works on managed clouds that
         // block `CONFIG` (ElastiCache) and on Valkey cluster (multi-db). Only
         // probe `CONFIG GET databases` when the server config leaves it unset.

@@ -24,6 +24,7 @@ futures = { workspace = true }
 humantime = { workspace = true }
 indexmap = { workspace = true }
 percent-encoding = { workspace = true }
+pkcs8 = { workspace = true }
 shlex = { workspace = true }
 rand = { workspace = true }
 redis = { workspace = true }

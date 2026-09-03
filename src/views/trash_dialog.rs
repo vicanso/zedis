@@ -39,6 +39,7 @@ use gpui_component::{
 };
 use redis::cmd;
 use rust_i18n::t;
+use tracing::warn;
 use zedis_ui::ZedisDialog;
 
 pub struct ZedisTrashDialog {
@@ -181,8 +182,13 @@ impl ZedisTrashDialog {
         cx.spawn(async move |this, cx| {
             let entries = cx
                 .background_spawn(async move {
-                    let _ = purge_trash(&server_id, unix_ts_millis() - TRASH_RETENTION_MS);
-                    list_trash_meta(&server_id).unwrap_or_default()
+                    if let Err(e) = purge_trash(&server_id, unix_ts_millis() - TRASH_RETENTION_MS) {
+                        warn!(error = %e, "trash purge failed");
+                    }
+                    list_trash_meta(&server_id).unwrap_or_else(|e| {
+                        warn!(error = %e, "trash listing unavailable");
+                        Vec::new()
+                    })
                 })
                 .await;
             let _ = this.update(cx, |state, cx| {

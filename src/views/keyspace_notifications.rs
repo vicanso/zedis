@@ -44,14 +44,17 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     notification::Notification,
-    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     tooltip::Tooltip,
     v_flex,
 };
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::Instant;
 use tracing::error;
-use zedis_ui::{ZedisDialog, help_popover};
+use zedis_ui::{
+    CellRenderer, CellStyle, CellStyleProvider, RowPredicate, TextColumn, ZedisDialog, ZedisTextTable, help_popover,
+};
 
 const KEYSPACE_PATTERN: &str = "__keyspace@*__:*";
 const KEYEVENT_PATTERN: &str = "__keyevent@*__:*";
@@ -126,187 +129,81 @@ const COL_KEY: &str = "col_key";
 const COL_EVENT: &str = "col_event";
 const COL_SOURCE: &str = "col_source";
 
-struct KeyspaceTableDelegate {
-    all_rows: VecDeque<NotificationRow>,
-    filtered_rows: Vec<NotificationRow>,
-    is_filtered: bool,
-    columns: Vec<Column>,
-    column_keys: Vec<&'static str>,
-    server_state: Entity<ZedisServerState>,
-}
+const KEYSPACE_COLUMNS: [&str; 5] = [COL_TIME, COL_DB, COL_KEY, COL_EVENT, COL_SOURCE];
+const TIME_COLUMN: usize = 0;
+const DB_COLUMN: usize = 1;
+const KEY_COLUMN: usize = 2;
+const EVENT_COLUMN: usize = 3;
+const SOURCE_COLUMN: usize = 4;
 
-impl KeyspaceTableDelegate {
-    fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &gpui::App) -> Self {
-        let content_width = content_area_width(window, cx);
-
-        let time_width = 160.;
-        let db_width = 60.;
-        let event_width = 120.;
-        let source_width = 90.;
-        let remaining = content_width.as_f32() - time_width - db_width - event_width - source_width - 10.;
-        let key_width = remaining.max(200.);
-
-        let make_paddings = || {
-            Some(Edges {
-                top: px(2.),
-                bottom: px(2.),
-                left: px(10.),
-                right: px(10.),
-            })
-        };
-
-        let column_keys = vec![COL_TIME, COL_DB, COL_KEY, COL_EVENT, COL_SOURCE];
-        let widths = [time_width, db_width, key_width, event_width, source_width];
-
-        let columns = column_keys
-            .iter()
-            .zip(widths.iter())
-            .map(|(&key, &width)| {
-                Column::new(key, SharedString::default()).width(width).map(|mut col| {
-                    col.paddings = make_paddings();
-                    col
-                })
-            })
-            .collect();
-
-        Self {
-            all_rows: VecDeque::new(),
-            filtered_rows: Vec::new(),
-            is_filtered: false,
-            columns,
-            column_keys,
-            server_state,
-        }
-    }
-
-    fn apply_filter(
-        &mut self,
-        selected_events: &Option<AHashSet<String>>,
-        key_filter: &str,
-        selected_dbs: &Option<AHashSet<u32>>,
-        source_filter: SourceFilter,
-    ) {
-        let no_event = selected_events.is_none();
-        let no_key = key_filter.is_empty();
-        let no_db = selected_dbs.is_none();
-        let no_src = matches!(source_filter, SourceFilter::Both);
-        if no_event && no_key && no_db && no_src {
-            self.is_filtered = false;
-            self.filtered_rows.clear();
-            return;
-        }
-        self.is_filtered = true;
-        self.filtered_rows = self
-            .all_rows
-            .iter()
-            .filter(|r| match selected_events {
-                None => true,
-                Some(set) => set.contains(r.event.as_ref()),
-            })
-            .filter(|r| key_filter.is_empty() || r.key.contains(key_filter))
-            .filter(|r| match selected_dbs {
-                None => true,
-                Some(set) => set.contains(&r.db),
-            })
-            .filter(|r| match source_filter {
-                SourceFilter::Both => true,
-                SourceFilter::KeyeventOnly => r.source == NotificationSource::Keyevent,
-                SourceFilter::KeyspaceOnly => r.source == NotificationSource::Keyspace,
-            })
-            .cloned()
-            .collect();
-    }
-
-    fn visible_row(&self, index: usize) -> Option<&NotificationRow> {
-        if self.is_filtered {
-            self.filtered_rows.get(index)
-        } else {
-            self.all_rows.get(index)
-        }
-    }
-
-    fn visible_count(&self) -> usize {
-        if self.is_filtered {
-            self.filtered_rows.len()
-        } else {
-            self.all_rows.len()
-        }
-    }
-
-    fn total_count(&self) -> usize {
-        self.all_rows.len()
+impl NotificationRow {
+    fn cells(&self) -> Vec<SharedString> {
+        vec![
+            self.timestamp.clone(),
+            self.db.to_string().into(),
+            self.key.clone(),
+            self.event.clone(),
+            self.source.as_str().into(),
+        ]
     }
 }
 
-impl Clone for KeyspaceTableDelegate {
-    fn clone(&self) -> Self {
-        Self {
-            all_rows: self.all_rows.clone(),
-            filtered_rows: self.filtered_rows.clone(),
-            is_filtered: self.is_filtered,
-            columns: self.columns.clone(),
-            column_keys: self.column_keys.clone(),
-            server_state: self.server_state.clone(),
-        }
-    }
-}
+/// The event grid: newest first, capped at [`RING_BUFFER_CAPACITY`]. The
+/// time and source columns are muted, the event is coloured by what it
+/// did to the key, and the key cell opens the key in the editor.
+fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &gpui::App) -> ZedisTextTable {
+    let content_width = content_area_width(window, cx);
 
-impl TableDelegate for KeyspaceTableDelegate {
-    fn columns_count(&self, _cx: &App) -> usize {
-        self.columns.len()
-    }
+    let time_width = 160.;
+    let db_width = 60.;
+    let event_width = 120.;
+    let source_width = 90.;
+    let remaining = content_width.as_f32() - time_width - db_width - event_width - source_width - 10.;
+    let key_width = remaining.max(200.);
+    let widths = [time_width, db_width, key_width, event_width, source_width];
 
-    fn rows_count(&self, _cx: &App) -> usize {
-        self.visible_count()
-    }
+    let columns = KEYSPACE_COLUMNS
+        .iter()
+        .zip(widths)
+        .map(|(&key, width)| TextColumn::new(key, i18n_keyspace_notifications(cx, key), width))
+        .collect();
 
-    fn column(&self, index: usize, _cx: &App) -> Column {
-        self.columns[index].clone()
-    }
-
-    fn perform_sort(&mut self, _col_ix: usize, _sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {}
-
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let name = i18n_keyspace_notifications(cx, self.column_keys[col_ix]);
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .child(
-                Label::new(name)
-                    .text_align(column.align)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_sm()
-                    .flex_1(),
-            )
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let col_key = self.column_keys[col_ix];
+    let style: CellStyleProvider = Rc::new(|col_ix, cells, cx| {
         let theme = cx.theme();
-        let muted = theme.muted_foreground;
+        let color = match col_ix {
+            TIME_COLUMN | SOURCE_COLUMN => theme.muted_foreground,
+            EVENT_COLUMN => match cells.get(EVENT_COLUMN).map(|e| e.as_ref()) {
+                Some("del" | "expired" | "evicted") => theme.red,
+                Some("set" | "hset" | "sadd" | "zadd" | "lpush" | "rpush" | "xadd") => theme.green,
+                Some("expire") => theme.yellow,
+                _ => theme.foreground,
+            },
+            _ => theme.foreground,
+        };
+        CellStyle {
+            color: Some(color),
+            ..Default::default()
+        }
+    });
 
-        if col_key == COL_KEY
-            && let Some(row) = self.visible_row(row_ix)
-        {
-            let key = row.key.clone();
-            let server_state = self.server_state.clone();
-            let tooltip = i18n_common(cx, "open_key_tooltip");
-            return div()
+    // The key cell is itself the link: click anywhere on it to open the key.
+    let open_key: CellRenderer = Rc::new(move |row_ix, col_ix, cells, _window, cx| {
+        if col_ix != KEY_COLUMN {
+            return None;
+        }
+        let key = cells.get(KEY_COLUMN)?.clone();
+        let server_state = server_state.clone();
+        let tooltip = i18n_common(cx, "open_key_tooltip");
+        let foreground = cx.theme().foreground;
+        Some(
+            div()
                 .size_full()
-                .when_some(column.paddings, |this, paddings| this.paddings(paddings))
+                .paddings(Edges {
+                    top: px(2.),
+                    bottom: px(2.),
+                    left: px(10.),
+                    right: px(10.),
+                })
                 .child(
                     div()
                         .id(("ks-open-key", row_ix))
@@ -316,63 +213,68 @@ impl TableDelegate for KeyspaceTableDelegate {
                             open_key_in_editor(&server_state, key.clone(), cx);
                         })
                         .child(
-                            Label::new(row.key.clone())
-                                .text_align(column.align)
-                                .text_color(theme.foreground)
+                            Label::new(cells[KEY_COLUMN].clone())
+                                .text_color(foreground)
                                 .text_sm()
                                 .text_ellipsis(),
                         ),
                 )
-                .into_any_element();
+                .into_any_element(),
+        )
+    });
+
+    ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
+        .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
+        .max_rows(RING_BUFFER_CAPACITY)
+        .cell_style(style)
+        .cell_render(open_key)
+}
+
+/// The structured filter as a row predicate over the cells — `None` when
+/// nothing is narrowed, so the table shows every row.
+fn row_predicate(
+    selected_events: &Option<AHashSet<String>>,
+    key_filter: &str,
+    selected_dbs: &Option<AHashSet<u32>>,
+    source_filter: SourceFilter,
+) -> Option<RowPredicate> {
+    if selected_events.is_none()
+        && key_filter.is_empty()
+        && selected_dbs.is_none()
+        && source_filter == SourceFilter::Both
+    {
+        return None;
+    }
+    let events = selected_events.clone();
+    let key_filter = key_filter.to_string();
+    let dbs = selected_dbs.clone();
+    Some(Rc::new(move |cells: &[SharedString]| {
+        let cell = |ix: usize| cells.get(ix).map(|c| c.as_ref()).unwrap_or("");
+        if let Some(set) = &events
+            && !set.contains(cell(EVENT_COLUMN))
+        {
+            return false;
         }
-
-        let (value, color): (SharedString, gpui::Hsla) = if let Some(row) = self.visible_row(row_ix) {
-            match col_key {
-                COL_TIME => (row.timestamp.clone(), muted),
-                COL_DB => (row.db.to_string().into(), theme.foreground),
-                COL_KEY => (row.key.clone(), theme.foreground),
-                COL_EVENT => {
-                    let c = match row.event.as_ref() {
-                        "del" | "expired" | "evicted" => theme.red,
-                        "set" | "hset" | "sadd" | "zadd" | "lpush" | "rpush" | "xadd" => theme.green,
-                        "expire" => theme.yellow,
-                        _ => theme.foreground,
-                    };
-                    (row.event.clone(), c)
-                }
-                COL_SOURCE => (row.source.as_str().into(), muted),
-                _ => ("--".into(), theme.foreground),
-            }
-        } else {
-            ("--".into(), theme.foreground)
-        };
-
-        div()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .child(
-                Label::new(value)
-                    .text_align(column.align)
-                    .text_color(color)
-                    .text_sm()
-                    .text_ellipsis(),
-            )
-            .into_any_element()
-    }
-
-    fn has_more(&self, _cx: &App) -> bool {
-        false
-    }
-    fn load_more_threshold(&self) -> usize {
-        0
-    }
-    fn load_more(&mut self, _window: &mut Window, _cx: &mut Context<TableState<Self>>) {}
+        if !key_filter.is_empty() && !cell(KEY_COLUMN).contains(key_filter.as_str()) {
+            return false;
+        }
+        if let Some(set) = &dbs
+            && !cell(DB_COLUMN).parse::<u32>().is_ok_and(|db| set.contains(&db))
+        {
+            return false;
+        }
+        match source_filter {
+            SourceFilter::Both => true,
+            SourceFilter::KeyeventOnly => cell(SOURCE_COLUMN) == NotificationSource::Keyevent.as_str(),
+            SourceFilter::KeyspaceOnly => cell(SOURCE_COLUMN) == NotificationSource::Keyspace.as_str(),
+        }
+    }))
 }
 
 pub struct ZedisKeyspaceNotifications {
     server_state: Entity<ZedisServerState>,
     title: SharedString,
-    table_state: Entity<TableState<KeyspaceTableDelegate>>,
+    table_state: Entity<TableState<ZedisTextTable>>,
     row_count: usize,
     total_count: usize,
     subscribe_task: Option<Task<()>>,
@@ -409,8 +311,7 @@ impl ZedisKeyspaceNotifications {
                 .placeholder(i18n_keyspace_notifications(cx, "key_pattern_placeholder"))
         });
 
-        let delegate = KeyspaceTableDelegate::new(server_state.clone(), window, cx);
-        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+        let table_state = cx.new(|cx| TableState::new(build_table(server_state.clone(), window, cx), window, cx));
 
         let mut subscriptions = Vec::new();
         subscriptions.push(
@@ -604,12 +505,9 @@ impl ZedisKeyspaceNotifications {
         self.table_state.update(cx, |state, _| {
             let delegate = state.delegate_mut();
             for row in batch {
-                delegate.all_rows.push_front(row);
-                if delegate.all_rows.len() > RING_BUFFER_CAPACITY {
-                    delegate.all_rows.pop_back();
-                }
+                delegate.push_front(row.cells());
             }
-            delegate.apply_filter(&selected, &key_filter, &selected_dbs, source_filter);
+            delegate.set_row_filter(row_predicate(&selected, &key_filter, &selected_dbs, source_filter));
         });
         let now = Instant::now();
         for _ in 0..n {
@@ -628,12 +526,7 @@ impl ZedisKeyspaceNotifications {
         if self.total_count == 0 {
             return;
         }
-        self.table_state.update(cx, |state, _| {
-            let delegate = state.delegate_mut();
-            delegate.all_rows.clear();
-            delegate.filtered_rows.clear();
-            delegate.is_filtered = false;
-        });
+        self.table_state.update(cx, |state, _| state.delegate_mut().clear());
         self.row_count = 0;
         self.total_count = 0;
         self.rate_ticks.clear();
@@ -642,8 +535,8 @@ impl ZedisKeyspaceNotifications {
 
     fn refresh_counts(&mut self, cx: &App) {
         let d = self.table_state.read(cx).delegate();
-        self.row_count = d.visible_count();
-        self.total_count = d.total_count();
+        self.row_count = d.visible_len();
+        self.total_count = d.total_len();
     }
 
     fn apply_filter_now(&mut self, cx: &mut Context<Self>) {
@@ -654,7 +547,7 @@ impl ZedisKeyspaceNotifications {
         self.table_state.update(cx, |state, _| {
             state
                 .delegate_mut()
-                .apply_filter(&selected, &key_filter, &selected_dbs, source_filter);
+                .set_row_filter(row_predicate(&selected, &key_filter, &selected_dbs, source_filter));
         });
         self.refresh_counts(cx);
         cx.notify();
@@ -821,9 +714,10 @@ impl ZedisKeyspaceNotifications {
             .table_state
             .read(cx)
             .delegate()
-            .all_rows
+            .all_rows()
             .iter()
-            .map(|r| r.event.to_string())
+            .filter_map(|cells| cells.get(EVENT_COLUMN))
+            .map(|e| e.to_string())
             .filter(|e| !seen.contains(e.as_str()))
             .collect();
         let mut extra_sorted: Vec<String> = extra.into_iter().collect();
@@ -841,9 +735,9 @@ impl ZedisKeyspaceNotifications {
             .table_state
             .read(cx)
             .delegate()
-            .all_rows
+            .all_rows()
             .iter()
-            .map(|r| r.db)
+            .filter_map(|cells| cells.get(DB_COLUMN)?.parse::<u32>().ok())
             .collect::<AHashSet<_>>()
             .into_iter()
             .collect();
@@ -855,26 +749,13 @@ impl ZedisKeyspaceNotifications {
     /// CSV file — same `build_csv` + `export_to_file` flow as the
     /// slow-log panel, instead of the old clipboard-only copy.
     fn export_csv(&mut self, cx: &mut Context<Self>) {
-        let d = self.table_state.read(cx).delegate();
-        let rows: Vec<&NotificationRow> = if d.is_filtered {
-            d.filtered_rows.iter().collect()
-        } else {
-            d.all_rows.iter().collect()
-        };
+        let rows = self.table_state.read(cx).delegate().visible_rows();
         if rows.is_empty() {
             return;
         }
         let data: Vec<Vec<String>> = rows
             .iter()
-            .map(|r| {
-                vec![
-                    r.timestamp.to_string(),
-                    r.db.to_string(),
-                    r.key.to_string(),
-                    r.event.to_string(),
-                    r.source.as_str().to_string(),
-                ]
-            })
+            .map(|cells| cells.iter().map(|c| c.to_string()).collect())
             .collect();
         let csv = build_csv(&["time", "db", "key", "event", "source"], &data);
         let server_state = self.server_state.clone();

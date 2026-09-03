@@ -37,6 +37,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 use std::collections::HashSet;
+use tracing::warn;
 
 pub struct ZedisExportServersDialog {
     /// Every configured server — the export candidates.
@@ -57,7 +58,10 @@ pub struct ZedisExportServersDialog {
 
 impl ZedisExportServersDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let servers = get_servers().unwrap_or_default();
+        let servers = get_servers().unwrap_or_else(|e| {
+            warn!(error = %e, "export dialog: server list unavailable");
+            Vec::new()
+        });
         // Default to everything selected — the common "export my setup" intent.
         let selected = servers.iter().map(|s| s.id.clone()).collect();
         let passphrase_state = cx.new(|cx| {

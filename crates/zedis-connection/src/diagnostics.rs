@@ -23,12 +23,13 @@
 
 use super::async_connection::{open_single_connection, resolve_connection_timeout};
 use super::config::{RedisServer, SERVER_TYPE_SENTINEL};
-use super::ssh_tunnel::{SshHandle, new_ssh_session, run_in_tokio};
+use super::ssh_tunnel::{
+    SshSession, new_ssh_session, resolve_ssh_target, resolve_ssh_target_with, run_in_tokio, user_ssh_config,
+};
 use crate::error::Error;
 use redis::{ErrorKind, cmd};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
-use zedis_core::string::split_host_port_or;
 
 /// One diagnostic stage. The set of stages for a server depends on its
 /// config — see [`diag_stages`].
@@ -109,7 +110,12 @@ impl DiagOutcome {
 
 /// The ordered stage list for this server's configuration.
 pub fn diag_stages(server: &RedisServer) -> Vec<DiagStage> {
-    let mut stages = vec![DiagStage::Dns, DiagStage::Tcp];
+    // A Unix socket has no name to resolve and no port to reach.
+    let mut stages = if server.is_unix_socket() {
+        Vec::new()
+    } else {
+        vec![DiagStage::Dns, DiagStage::Tcp]
+    };
     if server.is_ssh_tunnel() {
         stages.push(DiagStage::SshAuth);
         stages.push(DiagStage::SshTunnel);
@@ -122,16 +128,22 @@ pub fn diag_stages(server: &RedisServer) -> Vec<DiagStage> {
     stages
 }
 
-/// The endpoint we actually dial from this machine: the SSH server when a
-/// tunnel is configured (the Redis host is then resolved remotely by the
-/// SSH server), otherwise the Redis host itself.
+/// The endpoint we actually dial from this machine: the jump host, else
+/// the SSH server, when a tunnel is configured (the Redis host is then
+/// resolved remotely by the SSH server), otherwise the Redis host itself —
+/// the first seed of a multi-address Sentinel entry.
 pub fn dial_endpoint(server: &RedisServer) -> (String, u16) {
+    dial_endpoint_with(server, user_ssh_config().as_deref())
+}
+
+/// [`dial_endpoint`] against a given ssh config text (`None` = no file).
+pub(crate) fn dial_endpoint_with(server: &RedisServer, ssh_config: Option<&str>) -> (String, u16) {
     if server.is_ssh_tunnel() {
-        let addr = server.ssh_addr.clone().unwrap_or_default();
-        let (host, port) = split_host_port_or(&addr, 22);
-        return (host.to_string(), port);
+        let target = resolve_ssh_target_with(server, ssh_config);
+        let hop = target.jump.as_deref().unwrap_or(&target);
+        return (hop.host.clone(), hop.port);
     }
-    (server.host.clone(), server.port)
+    server.primary_endpoint()
 }
 
 async fn with_timeout<T>(fut: impl Future<Output = T>, timeout: Duration) -> Option<T> {
@@ -223,20 +235,22 @@ pub async fn probe_tcp(addrs: &[SocketAddr], timeout: Duration) -> DiagOutcome {
 /// credentials. A fresh session is deliberate: the shared session cache is
 /// keyed only by `user@addr`, so a live session created with *old*
 /// credentials would mask an auth problem in the values being edited.
-pub async fn probe_ssh_auth(server: &RedisServer) -> (DiagOutcome, Option<SshHandle>) {
-    let ssh_addr = server.ssh_addr.clone().unwrap_or_default();
-    let ssh_user = server.ssh_username.clone().unwrap_or_default();
-    let ssh_key = server.ssh_key.clone().unwrap_or_default();
-    let ssh_password = server.ssh_password.clone().unwrap_or_default();
-    let ssh_key_passphrase = server.ssh_key_passphrase.clone().unwrap_or_default();
+///
+/// The success detail lists what `~/.ssh/config` contributed (and the
+/// jump host), so a value the form never showed is visible here.
+pub async fn probe_ssh_auth(server: &RedisServer) -> (DiagOutcome, Option<SshSession>) {
+    let target = resolve_ssh_target(server);
+    let mut notes = target.from_config.clone();
+    if let Some(jump) = &target.jump {
+        notes.push(format!("via {}@{}:{}", jump.user, jump.host, jump.port));
+        notes.extend(jump.from_config.iter().map(|n| format!("jump {n}")));
+    }
+    let detail = (!notes.is_empty()).then(|| format!("~/.ssh/config: {}", notes.join(", ")));
     let start = Instant::now();
-    let result = run_in_tokio(async move {
-        new_ssh_session(&ssh_addr, &ssh_user, &ssh_key, &ssh_password, &ssh_key_passphrase).await
-    })
-    .await;
+    let result = run_in_tokio(async move { new_ssh_session(&target).await }).await;
     let elapsed = start.elapsed();
     match result {
-        Ok(session) => (DiagOutcome::success(None, elapsed), Some(session)),
+        Ok(session) => (DiagOutcome::success(detail, elapsed), Some(session)),
         Err(e) => (DiagOutcome::failed(e.to_string(), DiagHint::SshAuth, elapsed), None),
     }
 }
@@ -244,12 +258,12 @@ pub async fn probe_ssh_auth(server: &RedisServer) -> (DiagOutcome, Option<SshHan
 /// Ask the SSH server to open a direct-tcpip channel to the Redis
 /// host:port — this verifies the Redis endpoint is reachable *from the
 /// SSH server*, which is the leg a local TCP probe cannot see.
-pub async fn probe_ssh_tunnel(session: SshHandle, server: &RedisServer) -> DiagOutcome {
-    let host = server.host.clone();
-    let port = server.port;
+pub async fn probe_ssh_tunnel(session: SshSession, server: &RedisServer) -> DiagOutcome {
+    let (host, port) = server.primary_endpoint();
     let start = Instant::now();
     let result = run_in_tokio(async move {
         let channel = session
+            .handle
             .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
             .await?;
         let _ = channel.close().await;
@@ -402,15 +416,43 @@ mod tests {
     #[test]
     fn test_dial_endpoint() {
         let s = server("redis.internal", 6379);
-        assert_eq!(dial_endpoint(&s), ("redis.internal".to_string(), 6379));
+        assert_eq!(dial_endpoint_with(&s, None), ("redis.internal".to_string(), 6379));
+        // A multi-address Sentinel entry dials its first seed.
+        let seeds = server("s1.internal:26379, s2.internal:26380", 26379);
+        assert_eq!(dial_endpoint_with(&seeds, None), ("s1.internal".to_string(), 26379));
 
         let mut tunneled = server("10.0.0.5", 6380);
         tunneled.ssh_tunnel = Some(true);
         tunneled.ssh_addr = Some("bastion.example.com:2222".to_string());
-        assert_eq!(dial_endpoint(&tunneled), ("bastion.example.com".to_string(), 2222));
+        assert_eq!(
+            dial_endpoint_with(&tunneled, None),
+            ("bastion.example.com".to_string(), 2222)
+        );
 
         tunneled.ssh_addr = Some("bastion.example.com".to_string());
-        assert_eq!(dial_endpoint(&tunneled), ("bastion.example.com".to_string(), 22));
+        assert_eq!(
+            dial_endpoint_with(&tunneled, None),
+            ("bastion.example.com".to_string(), 22)
+        );
+
+        // ssh config: the alias resolves, and a ProxyJump is what gets dialed.
+        let config = "Host bastion\n  HostName 10.9.9.9\n  Port 2200\nHost prod\n  ProxyJump bastion\n";
+        tunneled.ssh_addr = Some("bastion".to_string());
+        assert_eq!(
+            dial_endpoint_with(&tunneled, Some(config)),
+            ("10.9.9.9".to_string(), 2200)
+        );
+        tunneled.ssh_addr = Some("prod".to_string());
+        assert_eq!(
+            dial_endpoint_with(&tunneled, Some(config)),
+            ("10.9.9.9".to_string(), 2200)
+        );
+    }
+
+    #[test]
+    fn unix_socket_skips_the_network_stages() {
+        let s = server("/var/run/redis.sock", 0);
+        assert_eq!(diag_stages(&s), vec![DiagStage::Auth, DiagStage::Ping]);
     }
 
     #[test]

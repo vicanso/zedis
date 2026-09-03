@@ -107,7 +107,7 @@ impl ConnectionManager {
                     .response_timeout(resolve_response_timeout(&first_node.server))
                     .use_protocol(ProtocolVersion::RESP3)
                     .push_sender(move |info: PushInfo| tx.try_send(info));
-                if let Some(certificates) = first_node.server.tls_certificates() {
+                if let Some(certificates) = first_node.server.tls_certificates()? {
                     builder = builder.certs(certificates);
                 }
                 if first_node.server.insecure.unwrap_or(false) {
@@ -131,7 +131,7 @@ impl ConnectionManager {
                     let info = config.get_connection_url().as_str().into_connection_info()?;
                     let redis_settings = info.redis_settings().clone().set_protocol(ProtocolVersion::RESP3);
                     let info = info.set_redis_settings(redis_settings);
-                    let client = if let Some(certificates) = config.tls_certificates() {
+                    let client = if let Some(certificates) = config.tls_certificates()? {
                         Client::build_with_tls(info, certificates)?
                     } else {
                         Client::open(info)?

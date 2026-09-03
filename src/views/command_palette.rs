@@ -27,6 +27,7 @@ use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, 
 use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{ActiveTheme, label::Label, v_flex};
 use std::mem::take;
+use tracing::warn;
 
 /// Cap on loaded-key matches shown in the palette. Keeps a non-empty query
 /// on a large keyspace from turning tens of thousands of loaded keys into
@@ -368,7 +369,11 @@ impl ZedisCommandPalette {
             // the tree holds and cap at `KEY_RESULT_CAP`, so a big keyspace
             // never materialises tens of thousands of rows per keystroke.
             Scope::General => {
-                for server in get_servers().unwrap_or_default() {
+                let servers = get_servers().unwrap_or_else(|e| {
+                    warn!(error = %e, "command palette: server list unavailable");
+                    Vec::new()
+                });
+                for server in servers {
                     let hint = format!("{}:{}", server.host, server.port);
                     // Match against name + address so "10.0" finds a server too.
                     let search = format!("{} {hint}", server.name);

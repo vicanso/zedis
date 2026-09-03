@@ -184,7 +184,10 @@ fn collect_refresh_data(cx: &App) -> (Vec<RedisServer>, Option<(String, usize)>,
         let metrics = get_metrics_cache().list_metrics(id);
         metrics.last().copied()
     });
-    let servers = get_servers().unwrap_or_default();
+    let servers = get_servers().unwrap_or_else(|e| {
+        error!(error = %e, "tray: server list unavailable");
+        Vec::new()
+    });
     (servers, active, active_metrics)
 }
 
@@ -212,7 +215,10 @@ fn refresh_tray_menu(state: &Rc<RefCell<TrayMenuState>>, tray: &Rc<tray_icon::Tr
 
 pub fn init_tray(cx: &mut App) {
     let icon = load_icon();
-    let servers = get_servers().unwrap_or_default();
+    let servers = get_servers().unwrap_or_else(|e| {
+        error!(error = %e, "tray: server list unavailable");
+        Vec::new()
+    });
     let (menu, menu_state) = TrayMenuState::build(&servers, cx);
 
     let tray = TrayIconBuilder::new()

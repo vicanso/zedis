@@ -37,6 +37,7 @@ use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::debug;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -152,7 +153,10 @@ pub(crate) async fn first_load_hash_value(
 
     let field_ttls = if supports_field_ttl {
         let field_names: Vec<SharedString> = values.iter().map(|(f, _)| f.clone()).collect();
-        get_hash_field_ttls(conn, key, &field_names).await.unwrap_or_default()
+        get_hash_field_ttls(conn, key, &field_names).await.unwrap_or_else(|e| {
+            debug!(error = %e, "hash field TTLs unavailable, showing none");
+            HashMap::new()
+        })
     } else {
         HashMap::new()
     };
@@ -464,7 +468,10 @@ impl ZedisServerState {
 
                 let ttls = if supports_field_ttl && !new_values.is_empty() {
                     let fields: Vec<SharedString> = new_values.iter().map(|(f, _)| f.clone()).collect();
-                    get_hash_field_ttls(&mut conn, &key, &fields).await.unwrap_or_default()
+                    get_hash_field_ttls(&mut conn, &key, &fields).await.unwrap_or_else(|e| {
+                        debug!(error = %e, "hash field TTLs unavailable, showing none");
+                        HashMap::new()
+                    })
                 } else {
                     HashMap::new()
                 };

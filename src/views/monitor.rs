@@ -29,24 +29,24 @@ use crate::states::{
 use crate::views::{export_to_file, open_key_in_editor};
 use chrono::Local;
 use futures::StreamExt;
-use gpui::{App, ClipboardItem, Edges, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{App, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
-use gpui_component::notification::Notification;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
     button::Button,
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     menu::DropdownMenu,
-    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     v_flex,
 };
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::Instant;
 use tracing::error;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{CellAction, CellActionProvider, TextColumn, ZedisDialog, ZedisTextTable};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -143,21 +143,7 @@ fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
     })
 }
 
-/// Case-insensitive substring search. Uses a zero-allocation ASCII fast
-/// path (covers virtually all Redis MONITOR output) with a fallback for
-/// non-ASCII content.
-fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
-    if haystack.is_ascii() {
-        haystack
-            .as_bytes()
-            .windows(needle_lower.len())
-            .any(|w| w.eq_ignore_ascii_case(needle_lower.as_bytes()))
-    } else {
-        haystack.to_lowercase().contains(needle_lower)
-    }
-}
-
-// ── Table delegate ───────────────────────────────────────────────────
+// ── Table columns ────────────────────────────────────────────────────
 
 const COL_TIMESTAMP: &str = "timestamp";
 const COL_NODE: &str = "node";
@@ -165,289 +151,87 @@ const COL_DB: &str = "db";
 const COL_CLIENT: &str = "client";
 const COL_COMMAND: &str = "command";
 const COL_ARGS: &str = "args";
+const COLUMN_KEYS: [&str; 6] = [COL_TIMESTAMP, COL_NODE, COL_DB, COL_CLIENT, COL_COMMAND, COL_ARGS];
+/// Index of the args column in [`COLUMN_KEYS`] — the cell with the
+/// open-first-arg-as-key jump.
+const ARGS_COLUMN: usize = 5;
 
-struct MonitorTableDelegate {
-    /// For the args column's open-first-arg-as-key jump.
-    server_state: Entity<ZedisServerState>,
-    /// All entries (unfiltered).
-    all_rows: VecDeque<MonitorEntry>,
-    /// Visible rows when a keyword filter is active.
-    filtered_rows: Vec<MonitorEntry>,
-    /// Whether a keyword filter is currently active.
-    is_filtered: bool,
-    columns: Vec<Column>,
-    column_keys: Vec<&'static str>,
-}
-
-impl MonitorTableDelegate {
-    fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &gpui::App) -> Self {
-        let content_width = content_area_width(window, cx);
-
-        // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
-        // button only appears on hover — it takes ~36px out of the label's box, so
-        // text that fits at rest is clipped the moment the pointer lands on the
-        // row. These budget for it, on top of the 20px of side padding:
-        //   timestamp: "22:31:05.123" — 12 mono chars (~101px)
-        //   node:      "192.168.1.10:31545" — the master's host:port, ~18 (~151px)
-        //   client:    "127.0.0.1:60866" — ~15 (~126px)
-        let ts_width = 190.;
-        let node_width = 240.;
-        let db_width = 80.;
-        let client_width = 220.;
-        let cmd_width = 120.;
-        let remaining = content_width.as_f32() - ts_width - node_width - db_width - client_width - cmd_width - 10.;
-        let args_width = remaining.max(200.);
-
-        let make_paddings = || {
-            Some(Edges {
-                top: px(2.),
-                bottom: px(2.),
-                left: px(10.),
-                right: px(10.),
-            })
-        };
-
-        let column_keys = vec![COL_TIMESTAMP, COL_NODE, COL_DB, COL_CLIENT, COL_COMMAND, COL_ARGS];
-        let widths = [ts_width, node_width, db_width, client_width, cmd_width, args_width];
-
-        let columns = column_keys
-            .iter()
-            .zip(widths.iter())
-            .map(|(&key, &width)| {
-                Column::new(key, SharedString::default())
-                    .width(width)
-                    .map(|mut col| {
-                        col.paddings = make_paddings();
-                        col
-                    })
-                    .sortable()
-            })
-            .collect();
-
-        Self {
-            server_state,
-            all_rows: VecDeque::new(),
-            filtered_rows: Vec::new(),
-            is_filtered: false,
-            columns,
-            column_keys,
-        }
-    }
-
-    fn apply_filter(&mut self, keyword: &str) {
-        if keyword.is_empty() {
-            self.is_filtered = false;
-            self.filtered_rows.clear();
-        } else {
-            self.is_filtered = true;
-            let kw = keyword.to_lowercase();
-            self.filtered_rows = self
-                .all_rows
-                .iter()
-                .filter(|e| {
-                    contains_ignore_case(&e.command, &kw)
-                        || contains_ignore_case(&e.args, &kw)
-                        || contains_ignore_case(&e.client, &kw)
-                        || contains_ignore_case(&e.node, &kw)
-                        || contains_ignore_case(&e.db, &kw)
-                })
-                .cloned()
-                .collect();
-        }
-    }
-
-    fn visible_row(&self, index: usize) -> Option<&MonitorEntry> {
-        if self.is_filtered {
-            self.filtered_rows.get(index)
-        } else {
-            self.all_rows.get(index)
-        }
-    }
-
-    fn visible_count(&self) -> usize {
-        if self.is_filtered {
-            self.filtered_rows.len()
-        } else {
-            self.all_rows.len()
-        }
+impl MonitorEntry {
+    fn cells(&self) -> Vec<SharedString> {
+        vec![
+            self.timestamp.clone(),
+            self.node.clone(),
+            self.db.clone(),
+            self.client.clone(),
+            self.command.clone(),
+            self.args.clone(),
+        ]
     }
 }
 
-impl Clone for MonitorTableDelegate {
-    fn clone(&self) -> Self {
-        Self {
-            server_state: self.server_state.clone(),
-            all_rows: self.all_rows.clone(),
-            filtered_rows: self.filtered_rows.clone(),
-            is_filtered: self.is_filtered,
-            columns: self.columns.clone(),
-            column_keys: self.column_keys.clone(),
+/// The MONITOR grid: six text columns, newest row first, capped at
+/// [`MAX_RECORDS`], with a hover jump from an args cell to its key.
+fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &App) -> ZedisTextTable {
+    let content_width = content_area_width(window, cx);
+
+    // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
+    // button only appears on hover — it takes ~36px out of the label's box, so
+    // text that fits at rest is clipped the moment the pointer lands on the
+    // row. These budget for it, on top of the 20px of side padding:
+    //   timestamp: "22:31:05.123" — 12 mono chars (~101px)
+    //   node:      "192.168.1.10:31545" — the master's host:port, ~18 (~151px)
+    //   client:    "127.0.0.1:60866" — ~15 (~126px)
+    let ts_width = 190.;
+    let node_width = 240.;
+    let db_width = 80.;
+    let client_width = 220.;
+    let cmd_width = 120.;
+    let remaining = content_width.as_f32() - ts_width - node_width - db_width - client_width - cmd_width - 10.;
+    let args_width = remaining.max(200.);
+    let widths = [ts_width, node_width, db_width, client_width, cmd_width, args_width];
+
+    let columns = COLUMN_KEYS
+        .iter()
+        .zip(widths)
+        .map(|(&key, width)| TextColumn::new(key, i18n_monitor(cx, key), width).sortable())
+        .collect();
+
+    // Args cell: the first argument is the key for most commands — offer a
+    // hover jump straight to it in the editor (heuristic; args with spaces
+    // are ambiguous, so only the first token is used).
+    let open_key_tooltip = i18n_common(cx, "open_key_tooltip");
+    let jump: CellActionProvider = Rc::new(move |col_ix, cells| {
+        if col_ix != ARGS_COLUMN {
+            return None;
         }
-    }
-}
+        let key: SharedString = cells
+            .get(ARGS_COLUMN)?
+            .split(' ')
+            .next()
+            .filter(|s| !s.is_empty())?
+            .to_string()
+            .into();
+        let server_state = server_state.clone();
+        Some(CellAction {
+            icon: IconName::Search,
+            tooltip: open_key_tooltip.clone(),
+            on_click: Rc::new(move |_window, cx| open_key_in_editor(&server_state, key.clone(), cx)),
+        })
+    });
 
-impl TableDelegate for MonitorTableDelegate {
-    fn columns_count(&self, _cx: &App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _cx: &App) -> usize {
-        self.visible_count()
-    }
-
-    fn column(&self, index: usize, _cx: &App) -> Column {
-        self.columns[index].clone()
-    }
-
-    fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {
-        let key = self.column_keys[col_ix];
-        let cmp = |a: &MonitorEntry, b: &MonitorEntry| -> std::cmp::Ordering {
-            match key {
-                COL_TIMESTAMP => a.timestamp.cmp(&b.timestamp),
-                COL_NODE => a.node.cmp(&b.node),
-                COL_DB => a.db.cmp(&b.db),
-                COL_CLIENT => a.client.cmp(&b.client),
-                COL_COMMAND => a.command.cmp(&b.command),
-                COL_ARGS => a.args.cmp(&b.args),
-                _ => std::cmp::Ordering::Equal,
-            }
-        };
-        if self.is_filtered {
-            match sort {
-                ColumnSort::Ascending => self.filtered_rows.sort_by(cmp),
-                _ => self.filtered_rows.sort_by(|a, b| cmp(b, a)),
-            }
-        } else {
-            let mut rows: Vec<MonitorEntry> = self.all_rows.drain(..).collect();
-            match sort {
-                ColumnSort::Ascending => rows.sort_by(cmp),
-                _ => rows.sort_by(|a, b| cmp(b, a)),
-            }
-            self.all_rows = rows.into();
-        }
-    }
-
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let name = i18n_monitor(cx, self.column_keys[col_ix]);
-        // h_flex (items_center) matches render_td, so header text is
-        // vertically centered like the cells.
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .child(
-                Label::new(name)
-                    .text_align(column.align)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_sm()
-                    .flex_1(),
-            )
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let col_key = self.column_keys[col_ix];
-
-        let value: SharedString = if let Some(row) = self.visible_row(row_ix) {
-            match col_key {
-                COL_TIMESTAMP => row.timestamp.clone(),
-                COL_NODE => row.node.clone(),
-                COL_DB => row.db.clone(),
-                COL_CLIENT => row.client.clone(),
-                COL_COMMAND => row.command.clone(),
-                COL_ARGS => row.args.clone(),
-                _ => "--".into(),
-            }
-        } else {
-            "--".into()
-        };
-
-        let group_name: SharedString = format!("monitor-td-{}-{}", row_ix, col_ix).into();
-        let copied_message = i18n_common(cx, "copied_to_clipboard");
-        // Args cell: the first argument is the key for most commands — offer a
-        // hover jump straight to it in the editor (heuristic; args with spaces
-        // are ambiguous, so only the first token is used).
-        let jump_key: Option<SharedString> = if col_key == COL_ARGS {
-            self.visible_row(row_ix).and_then(|row| {
-                row.args
-                    .split(' ')
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| SharedString::from(s.to_string()))
-            })
-        } else {
-            None
-        };
-        let jump_server_state = self.server_state.clone();
-        let open_key_tooltip = i18n_common(cx, "open_key_tooltip");
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .group(group_name.clone())
-            .overflow_hidden()
-            .child(
-                Label::new(value.clone())
-                    .text_align(column.align)
-                    .text_ellipsis()
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .child(
-                div()
-                    .id(("copy-wrapper", row_ix * 100 + col_ix))
-                    .invisible()
-                    .group_hover(group_name, |style| style.visible())
-                    .flex_none()
-                    .on_click(|_, _, cx: &mut App| cx.stop_propagation())
-                    .when_some(jump_key, |this, key| {
-                        this.child(
-                            Button::new(("open-key-cell", row_ix * 100 + col_ix))
-                                .ghost()
-                                .icon(IconName::Search)
-                                .tooltip(open_key_tooltip.clone())
-                                .on_click(move |_, _, cx: &mut gpui::App| {
-                                    open_key_in_editor(&jump_server_state, key.clone(), cx);
-                                }),
-                        )
-                    })
-                    .child(
-                        Button::new(("copy-cell", row_ix * 100 + col_ix))
-                            .ghost()
-                            .icon(IconName::Copy)
-                            .on_click(move |_, window, cx: &mut gpui::App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
-                                window.push_notification(Notification::info(copied_message.clone()), cx);
-                            }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn has_more(&self, _cx: &App) -> bool {
-        false
-    }
-    fn load_more_threshold(&self) -> usize {
-        0
-    }
-    fn load_more(&mut self, _window: &mut Window, _cx: &mut Context<TableState<Self>>) {}
+    ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
+        .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
+        .max_rows(MAX_RECORDS)
+        // The timestamp is never what someone searches for.
+        .filter_columns(&[COL_NODE, COL_DB, COL_CLIENT, COL_COMMAND, COL_ARGS])
+        .cell_action(jump)
 }
 
 // ── Main view ────────────────────────────────────────────────────────
 
 pub struct ZedisMonitor {
     server_state: Entity<ZedisServerState>,
-    table_state: Entity<TableState<MonitorTableDelegate>>,
+    table_state: Entity<TableState<ZedisTextTable>>,
     keyword_state: Entity<InputState>,
     monitoring: bool,
     /// Drop inbound batches while true (the MONITOR connections stay up).
@@ -465,17 +249,13 @@ pub struct ZedisMonitor {
 impl ZedisMonitor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        let delegate = MonitorTableDelegate::new(server_state.clone(), window, cx);
+        let delegate = build_table(server_state.clone(), window, cx);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         subscriptions.push(cx.subscribe(&server_state, |this, _, event, cx| {
             if matches!(event, ServerEvent::ServerSelected(_)) {
                 this.handle_stop(cx);
-                this.table_state.update(cx, |state, _| {
-                    state.delegate_mut().all_rows.clear();
-                    state.delegate_mut().filtered_rows.clear();
-                    state.delegate_mut().is_filtered = false;
-                });
+                this.table_state.update(cx, |state, _| state.delegate_mut().clear());
                 this.row_count = 0;
                 this.auto_stopped = false;
                 this.rate_ticks.clear();
@@ -538,9 +318,9 @@ impl ZedisMonitor {
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         let keyword = self.keyword_state.read(cx).value().to_string();
         self.table_state.update(cx, |state, _| {
-            state.delegate_mut().apply_filter(&keyword);
+            state.delegate_mut().set_filter(&keyword);
         });
-        self.row_count = self.table_state.read(cx).delegate().visible_count();
+        self.row_count = self.table_state.read(cx).delegate().visible_len();
         cx.notify();
     }
 
@@ -709,14 +489,11 @@ impl ZedisMonitor {
                     table_state.update(cx, |state, _| {
                         let delegate = state.delegate_mut();
                         for entry in batch {
-                            delegate.all_rows.push_front(entry);
+                            delegate.push_front(entry.cells());
                         }
-                        while delegate.all_rows.len() > MAX_RECORDS {
-                            delegate.all_rows.pop_back();
-                        }
-                        delegate.apply_filter(&keyword);
+                        delegate.set_filter(&keyword);
                     });
-                    this.row_count = table_state.read(cx).delegate().visible_count();
+                    this.row_count = table_state.read(cx).delegate().visible_len();
                     let auto_stop = this.record_rate(n);
                     if auto_stop {
                         this.auto_stopped = true;
@@ -806,13 +583,8 @@ impl ZedisMonitor {
 
     /// Snapshot of the rows the table is currently showing (filtered rows
     /// when a keyword filter is active, the whole ring buffer otherwise).
-    fn visible_rows_snapshot(&self, cx: &Context<Self>) -> Vec<MonitorEntry> {
-        let delegate = self.table_state.read(cx).delegate();
-        if delegate.is_filtered {
-            delegate.filtered_rows.clone()
-        } else {
-            delegate.all_rows.iter().cloned().collect()
-        }
+    fn visible_rows_snapshot(&self, cx: &Context<Self>) -> Vec<Vec<SharedString>> {
+        self.table_state.read(cx).delegate().visible_rows()
     }
 
     fn export_csv(&mut self, cx: &mut Context<Self>) {
@@ -822,18 +594,9 @@ impl ZedisMonitor {
         }
         let data: Vec<Vec<String>> = rows
             .iter()
-            .map(|e| {
-                vec![
-                    e.timestamp.to_string(),
-                    e.node.to_string(),
-                    e.db.to_string(),
-                    e.client.to_string(),
-                    e.command.to_string(),
-                    e.args.to_string(),
-                ]
-            })
+            .map(|cells| cells.iter().map(|c| c.to_string()).collect())
             .collect();
-        let csv = build_csv(&["timestamp", "node", "db", "client", "command", "args"], &data);
+        let csv = build_csv(&COLUMN_KEYS, &data);
         self.save_export(csv.into_bytes(), "monitor.csv", true, cx);
     }
 
@@ -844,15 +607,13 @@ impl ZedisMonitor {
         }
         let values: Vec<serde_json::Value> = rows
             .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "timestamp": e.timestamp.to_string(),
-                    "node": e.node.to_string(),
-                    "db": e.db.to_string(),
-                    "client": e.client.to_string(),
-                    "command": e.command.to_string(),
-                    "args": e.args.to_string(),
-                })
+            .map(|cells| {
+                let object: serde_json::Map<String, serde_json::Value> = COLUMN_KEYS
+                    .iter()
+                    .zip(cells)
+                    .map(|(key, cell)| (key.to_string(), serde_json::Value::String(cell.to_string())))
+                    .collect();
+                serde_json::Value::Object(object)
             })
             .collect();
         let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
@@ -873,11 +634,7 @@ impl ZedisMonitor {
     }
 
     fn handle_clear(&mut self, cx: &mut Context<Self>) {
-        self.table_state.update(cx, |state, _| {
-            state.delegate_mut().all_rows.clear();
-            state.delegate_mut().filtered_rows.clear();
-            state.delegate_mut().is_filtered = false;
-        });
+        self.table_state.update(cx, |state, _| state.delegate_mut().clear());
         self.row_count = 0;
         cx.notify();
     }
@@ -886,7 +643,7 @@ impl ZedisMonitor {
 impl Render for ZedisMonitor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_empty = self.row_count == 0 && !self.monitoring;
-        let total = self.table_state.read(cx).delegate().all_rows.len();
+        let total = self.table_state.read(cx).delegate().total_len();
         let count_label = if self.row_count == total {
             format!("({})", total)
         } else {

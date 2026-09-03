@@ -48,7 +48,7 @@ use std::cell::Cell;
 use std::mem::take;
 use std::rc::Rc;
 use substring::Substring;
-use tracing::info;
+use tracing::{info, warn};
 use zedis_ui::ZedisCard;
 use zedis_ui::ZedisDialog;
 use zedis_ui::{ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
@@ -414,6 +414,10 @@ impl ZedisServers {
                 .placeholder(i18n_common(cx, "insecure_tls_check_label"))
                 .tab_index(1)
                 .field_type(ZedisFormFieldType::Checkbox),
+            ZedisFormField::new("tls_server_name", i18n_common(cx, "tls_server_name"))
+                .default_value(redis_server.tls_server_name.clone().unwrap_or_default())
+                .placeholder(i18n_common(cx, "tls_server_name_placeholder"))
+                .tab_index(1),
             ZedisFormField::new("client_cert", i18n_common(cx, "client_cert"))
                 .default_value(redis_server.client_cert.clone().unwrap_or_default())
                 .placeholder(i18n_common(cx, "client_cert_placeholder"))
@@ -424,6 +428,12 @@ impl ZedisServers {
                 .placeholder(i18n_common(cx, "client_key_placeholder"))
                 .tab_index(1)
                 .field_type(ZedisFormFieldType::AutoGrow(2, 100)),
+            ZedisFormField::new("client_key_passphrase", i18n_common(cx, "client_key_passphrase"))
+                .default_value(redis_server.client_key_passphrase.clone().unwrap_or_default())
+                .placeholder(i18n_common(cx, "client_key_passphrase_placeholder"))
+                .visible_when_filled("client_key")
+                .tab_index(1)
+                .mask(),
             ZedisFormField::new("root_cert", i18n_common(cx, "root_cert"))
                 .default_value(redis_server.root_cert.clone().unwrap_or_default())
                 .placeholder(i18n_common(cx, "root_cert_placeholder"))
@@ -438,6 +448,10 @@ impl ZedisServers {
             ZedisFormField::new("ssh_addr", i18n_servers(cx, "ssh_addr"))
                 .default_value(redis_server.ssh_addr.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "ssh_addr_placeholder"))
+                .tab_index(2),
+            ZedisFormField::new("ssh_jump", i18n_servers(cx, "ssh_jump"))
+                .default_value(redis_server.ssh_jump.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "ssh_jump_placeholder"))
                 .tab_index(2),
             ZedisFormField::new("ssh_username", i18n_servers(cx, "ssh_username"))
                 .default_value(redis_server.ssh_username.clone().unwrap_or_default())
@@ -494,6 +508,11 @@ impl ZedisServers {
                 .default_value(redis_server.response_timeout.map(|n| n.to_string()).unwrap_or_default())
                 .placeholder(i18n_servers(cx, "response_timeout_placeholder"))
                 .tab_index(3),
+            ZedisFormField::new("cluster_read_replicas", i18n_servers(cx, "cluster_read_replicas"))
+                .default_value(redis_server.cluster_read_replicas.unwrap_or(false).to_string())
+                .placeholder(i18n_servers(cx, "cluster_read_replicas_check_label"))
+                .tab_index(3)
+                .field_type(ZedisFormFieldType::Checkbox),
             ZedisFormField::new("readonly", i18n_servers(cx, "readonly"))
                 .default_value(redis_server.readonly.unwrap_or(false).to_string())
                 .placeholder(i18n_servers(cx, "readonly_check_label"))
@@ -1297,7 +1316,10 @@ impl Render for ZedisServers {
         // First-run / empty Home: before any connection is configured, show a
         // centered welcome hero (primary "add" CTA + import shortcut) instead
         // of the near-blank page the floating Add/Import cards left behind.
-        let all_servers = get_servers().unwrap_or_default();
+        let all_servers = get_servers().unwrap_or_else(|e| {
+            warn!(error = %e, "servers page: server list unavailable");
+            Vec::new()
+        });
         if all_servers.is_empty() {
             return self.render_empty(window, cx).into_any_element();
         }

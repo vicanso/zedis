@@ -91,6 +91,7 @@ pub use readable_import::{
     sniff_import_format, write_readable_chunk,
 };
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
+pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, set_host_key_approver};
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, HeatMetric, HeatProbe,

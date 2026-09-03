@@ -26,9 +26,8 @@ use crate::states::{
     dialog_button_props, escalate_dangerous_body, i18n_clients_manager, i18n_common,
 };
 use crate::views::unavailable_chip;
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
-use gpui_component::notification::Notification;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::Button,
@@ -36,16 +35,19 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     select::{Select, SelectEvent, SelectItem, SelectState},
-    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     tooltip::Tooltip,
     v_flex,
 };
 use redis::cmd;
 use rust_i18n::t;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{CellRenderer, CellStyle, CellStyleProvider, RowPredicate, TextColumn, ZedisDialog, ZedisTextTable};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -173,309 +175,213 @@ const COLUMN_FLAGS: &str = "flags";
 const COLUMN_CMD: &str = "cmd";
 const COLUMN_ACTION: &str = "action";
 
-struct ClientsTableDelegate {
-    /// All rows (unfiltered).
-    all_rows: Vec<ClientRow>,
-    /// Visible rows after filtering.
-    rows: Vec<ClientRow>,
-    columns: Vec<Column>,
-    column_keys: Vec<&'static str>,
-    /// Callback for killing a client by (ID, addr, node).
-    kill_callback: Option<KillCallback>,
+const CLIENT_COLUMNS: [&str; 8] = [
+    COLUMN_ID,
+    COLUMN_ADDR,
+    COLUMN_NAME,
+    COLUMN_AGE,
+    COLUMN_IDLE,
+    COLUMN_DB,
+    COLUMN_FLAGS,
+    COLUMN_CMD,
+];
+const ID_COLUMN: usize = 0;
+const FLAGS_COLUMN: usize = 6;
+const CMD_COLUMN: usize = 7;
+/// The kill-button column, present only when `CLIENT KILL` is usable.
+const ACTION_COLUMN: usize = 8;
+/// Payload cells: raw age and idle seconds, behind the humanised columns,
+/// for sorting and the `>=` filters.
+const CELL_AGE: usize = 9;
+const CELL_IDLE: usize = 10;
+
+impl ClientRow {
+    fn cells(&self) -> Vec<SharedString> {
+        vec![
+            self.id.clone(),
+            self.addr.clone(),
+            self.name.clone(),
+            self.age_display.clone(),
+            self.idle_display.clone(),
+            self.db.clone(),
+            self.flags.clone(),
+            self.command.clone(),
+            SharedString::default(),
+            self.age.to_string().into(),
+            self.idle.to_string().into(),
+        ]
+    }
+}
+
+/// A replica link (`S`) or the master's link on a replica (`M`): never a
+/// kill target.
+fn is_replica_link(flags: &str) -> bool {
+    flags.contains('S') || flags.contains('M')
+}
+
+/// What the per-row kill button needs beyond the row: whether kills are
+/// allowed at all, the server (for the PROD-escalated wording), the
+/// callback, and the node each client id was listed from. Shared between
+/// the view, which refreshes it with every `CLIENT LIST`, and the table's
+/// cell renderer.
+#[derive(Default)]
+struct KillContext {
     readonly: bool,
-    /// Active server id, used to escalate the kill-confirm wording on
-    /// high-risk (PROD-tagged) servers. Set when the client list loads.
     server_id: String,
+    callback: Option<KillCallback>,
+    nodes: HashMap<String, RedisServer>,
 }
 
-impl ClientsTableDelegate {
-    fn new(rows: Vec<ClientRow>, readonly: bool, window: &mut Window, cx: &mut gpui::App) -> Self {
-        let content_width = content_area_width(window, cx);
-        let id_width = 120.;
-        // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
-        // button only appears on hover — so it steals ~28px from the label's box
-        // and clips text that fitted perfectly at rest. Both widths budget for it.
-        //
-        // addr must fit the longest IPv4 form, "255.255.255.255:65535" — 21 mono
-        // chars (~176px) plus 20px of padding.
-        //
-        // name is deliberately the smallest column that still identifies the
-        // client ("zedis…" is enough to tell ours apart); most clients set no
-        // name at all, so every pixel spent here is taken from `cmd`, which is
-        // what you actually read when diagnosing. Longer names ellipsize and can
-        // be read via the copy button.
-        let name_width = 120.;
-        let addr_width = 240.;
-        let age_width = 110.;
-        let idle_width = 110.;
-        let db_width = 100.;
-        let flags_width = 80.;
-        // CLIENT KILL is gated by the capability matrix.
-        let can_kill = Capability::KillClient.allowed(readonly);
-        let action_width = if can_kill { ACTION_COLUMN_WIDTH } else { 0. };
-        let remaining_width = content_width.as_f32()
-            - id_width
-            - name_width
-            - age_width
-            - idle_width
-            - db_width
-            - flags_width
-            - action_width
-            - addr_width
-            - 10.;
-        // `cmd` is the flexible column, but a narrow window must not drive it to
-        // zero (or negative) — the table scrolls horizontally instead.
-        let cmd_width = remaining_width.max(160.);
-
-        let make_paddings = || {
-            Some(Edges {
-                top: px(2.),
-                bottom: px(2.),
-                left: px(10.),
-                right: px(10.),
-            })
-        };
-
-        let mut column_keys: Vec<&'static str> = vec![
-            COLUMN_ID,
-            COLUMN_ADDR,
-            COLUMN_NAME,
-            COLUMN_AGE,
-            COLUMN_IDLE,
-            COLUMN_DB,
-            COLUMN_FLAGS,
-            COLUMN_CMD,
-        ];
-        let mut widths = vec![
-            id_width,
-            addr_width,
-            name_width,
-            age_width,
-            idle_width,
-            db_width,
-            flags_width,
-            cmd_width,
-        ];
-        if can_kill {
-            column_keys.push(COLUMN_ACTION);
-            widths.push(action_width);
-        }
-        let sortable_cols = [
-            COLUMN_ID,
-            COLUMN_ADDR,
-            COLUMN_AGE,
-            COLUMN_IDLE,
-            COLUMN_DB,
-            COLUMN_FLAGS,
-            COLUMN_CMD,
-        ];
-
-        let columns = column_keys
-            .iter()
-            .zip(widths.iter())
-            .map(|(&key, &width)| {
-                let mut column = Column::new(key, SharedString::default()).width(width).map(|mut col| {
-                    // The action column's cell is a centered button and its header
-                    // is a single word — the text columns' side paddings would only
-                    // eat 20 of its 60px and clip the header.
-                    if key != COLUMN_ACTION {
-                        col.paddings = make_paddings();
-                    }
-                    col
-                });
-                if sortable_cols.contains(&key) {
-                    column = column.sortable();
-                }
-                column
-            })
-            .collect();
-
-        Self {
-            all_rows: rows.clone(),
-            rows,
-            columns,
-            column_keys,
-            kill_callback: None,
-            readonly,
-            server_id: String::new(),
-        }
-    }
-
-    /// Apply client-side filter.
-    ///
-    /// - `keyword` — fuzzy match on addr, name, id, db, flags, cmd
-    /// - `min_idle` — filter clients idle for at least N seconds
-    /// - `min_age`  — filter clients connected for at least N seconds
-    /// - `flag`     — client type, as its `CLIENT LIST` flag letter (see
-    ///   [`FLAG_FILTERS`]); `None` keeps every type
-    fn apply_filter(&mut self, keyword: &str, min_idle: Option<u64>, min_age: Option<u64>, flag: Option<char>) {
-        if keyword.is_empty() && min_idle.is_none() && min_age.is_none() && flag.is_none() {
-            self.rows = self.all_rows.clone();
-            return;
-        }
-
-        let kw = keyword.to_lowercase();
-        self.rows = self
-            .all_rows
-            .iter()
-            .filter(|row| {
-                if let Some(n) = min_idle
-                    && row.idle < n
-                {
-                    return false;
-                }
-                if let Some(n) = min_age
-                    && row.age < n
-                {
-                    return false;
-                }
-                // Client type: the `flags=` field is a set of letters, so a
-                // membership test is the whole rule.
-                if let Some(flag) = flag
-                    && !row.flags.contains(flag)
-                {
-                    return false;
-                }
-                if kw.is_empty() {
-                    return true;
-                }
-                row.addr.to_lowercase().contains(&kw)
-                    || row.name.to_lowercase().contains(&kw)
-                    || row.id.to_lowercase().contains(&kw)
-                    || row.db.to_lowercase().contains(&kw)
-                    || row.flags.to_lowercase().contains(&kw)
-                    || row.command.to_lowercase().contains(&kw)
-            })
-            .cloned()
-            .collect();
-    }
-}
-
-impl Clone for ClientsTableDelegate {
-    fn clone(&self) -> Self {
-        Self {
-            all_rows: self.all_rows.clone(),
-            rows: self.rows.clone(),
-            columns: self.columns.clone(),
-            column_keys: self.column_keys.clone(),
-            kill_callback: self.kill_callback.clone(),
-            readonly: self.readonly,
-            server_id: self.server_id.clone(),
-        }
-    }
-}
-
-impl TableDelegate for ClientsTableDelegate {
-    fn columns_count(&self, _cx: &gpui::App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _cx: &gpui::App) -> usize {
-        self.rows.len()
-    }
-
-    fn column(&self, index: usize, _cx: &gpui::App) -> Column {
-        self.columns[index].clone()
-    }
-
-    fn perform_sort(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        _: &mut Window,
-        _: &mut gpui::Context<TableState<Self>>,
-    ) {
-        let col = &self.columns[col_ix];
-        match col.key.as_ref() {
-            COLUMN_ID => match sort {
-                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.id.parse::<u64>().unwrap_or(0)),
-                _ => self
-                    .rows
-                    .sort_by_key(|b| std::cmp::Reverse(b.id.parse::<u64>().unwrap_or(0))),
-            },
-            COLUMN_ADDR => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.addr.cmp(&b.addr)),
-                _ => self.rows.sort_by(|a, b| b.addr.cmp(&a.addr)),
-            },
-            COLUMN_AGE => match sort {
-                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.age),
-                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.age)),
-            },
-            COLUMN_IDLE => match sort {
-                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.idle),
-                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.idle)),
-            },
-            COLUMN_DB => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.db.cmp(&b.db)),
-                _ => self.rows.sort_by(|a, b| b.db.cmp(&a.db)),
-            },
-            COLUMN_FLAGS => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.flags.cmp(&b.flags)),
-                _ => self.rows.sort_by(|a, b| b.flags.cmp(&a.flags)),
-            },
-            COLUMN_CMD => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.command.cmp(&b.command)),
-                _ => self.rows.sort_by(|a, b| b.command.cmp(&a.command)),
-            },
-            _ => {}
-        }
-    }
-
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let name = i18n_clients_manager(cx, self.column_keys[col_ix]);
-        // h_flex (items_center) matches render_td, so header text is
-        // vertically centered like the cells.
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .child(
-                Label::new(name)
-                    .text_align(column.align)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_sm()
-                    .flex_1(),
-            )
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let col_key = self.column_keys[col_ix];
-
-        // Action column: render kill button (skip for replica connections flagged S or M)
-        if col_key == COLUMN_ACTION {
-            let Some(row) = self.rows.get(row_ix) else {
-                return div().into_any_element();
-            };
-            if row.flags.contains('S') || row.flags.contains('M') {
-                return div().into_any_element();
+/// The client grid: eight text columns plus, when the user may kill
+/// clients, an action column with the per-row button.
+fn build_table(
+    readonly: bool,
+    kill: Rc<RefCell<KillContext>>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> ZedisTextTable {
+    let content_width = content_area_width(window, cx);
+    let id_width = 120.;
+    // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
+    // button only appears on hover — so it steals ~28px from the label's box
+    // and clips text that fitted perfectly at rest. Both widths budget for it.
+    //
+    // addr must fit the longest IPv4 form, "255.255.255.255:65535" — 21 mono
+    // chars (~176px) plus 20px of padding.
+    //
+    // name is deliberately the smallest column that still identifies the
+    // client ("zedis…" is enough to tell ours apart); most clients set no
+    // name at all, so every pixel spent here is taken from `cmd`, which is
+    // what you actually read when diagnosing. Longer names ellipsize and can
+    // be read via the copy button.
+    let name_width = 120.;
+    let addr_width = 240.;
+    let age_width = 110.;
+    let idle_width = 110.;
+    let db_width = 100.;
+    let flags_width = 80.;
+    // CLIENT KILL is gated by the capability matrix.
+    let can_kill = Capability::KillClient.allowed(readonly);
+    let action_width = if can_kill { ACTION_COLUMN_WIDTH } else { 0. };
+    let remaining_width = content_width.as_f32()
+        - id_width
+        - name_width
+        - age_width
+        - idle_width
+        - db_width
+        - flags_width
+        - action_width
+        - addr_width
+        - 10.;
+    // `cmd` is the flexible column, but a narrow window must not drive it to
+    // zero (or negative) — the table scrolls horizontally instead.
+    let cmd_width = remaining_width.max(160.);
+    let widths = [
+        id_width,
+        addr_width,
+        name_width,
+        age_width,
+        idle_width,
+        db_width,
+        flags_width,
+        cmd_width,
+    ];
+    let mut columns: Vec<TextColumn> = CLIENT_COLUMNS
+        .iter()
+        .zip(widths)
+        .map(|(&key, width)| {
+            let column = TextColumn::new(key, i18n_clients_manager(cx, key), width);
+            match key {
+                COLUMN_ID => column.sortable().numeric(),
+                COLUMN_AGE => column.sort_by_cell(CELL_AGE),
+                COLUMN_IDLE => column.sort_by_cell(CELL_IDLE),
+                COLUMN_ADDR | COLUMN_DB | COLUMN_FLAGS | COLUMN_CMD => column.sortable(),
+                _ => column,
             }
-            let client_id = row.id.clone();
-            let client_addr = row.addr.clone();
-            let client_node = row.node.clone();
-            let kill_callback = self.kill_callback.clone();
-            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-            let title = i18n_clients_manager(cx, "kill_confirm_title");
-            let prompt = t!(
-                "clients_manager.kill_confirm_prompt",
-                addr = client_addr.as_ref(),
-                id = client_id.as_ref(),
-                locale = locale
+        })
+        .collect();
+    if can_kill {
+        // The action column's cell is a centered button and its header is a
+        // single word — the text columns' side paddings would only eat 20 of
+        // its 80px and clip the header.
+        columns.push(TextColumn::new(COLUMN_ACTION, i18n_clients_manager(cx, COLUMN_ACTION), action_width).unpadded());
+    }
+
+    // Flags column: a replica link shows as a drive, a normal client as a
+    // laptop, anything else as its letters.
+    let style: CellStyleProvider = Rc::new(|col_ix, cells, _cx| {
+        if col_ix != FLAGS_COLUMN {
+            return CellStyle::default();
+        }
+        let flags = cells.get(FLAGS_COLUMN).map(|f| f.as_ref()).unwrap_or("");
+        let icon = if flags.contains('S') {
+            Some(Icon::new(CustomIconName::HardDrive))
+        } else if flags.contains('N') {
+            Some(Icon::new(CustomIconName::Laptop))
+        } else {
+            None
+        };
+        CellStyle {
+            icon_only: icon.is_some(),
+            icon,
+            color: None,
+        }
+    });
+
+    let render: CellRenderer = Rc::new(move |row_ix, col_ix, cells, _window, cx| {
+        let cell = |ix: usize| cells.get(ix).cloned().unwrap_or_default();
+        // `cmd` is the *last command run*, and Redis writes the literal
+        // string "NULL" for a connection that has never run one. Printed
+        // as-is it reads like a command actually named NULL, so show a muted
+        // placeholder and put the meaning in a tooltip. There is nothing
+        // worth copying either, so this cell drops the copy button.
+        if col_ix == CMD_COLUMN && cell(CMD_COLUMN).as_ref() == REDIS_NO_COMMAND {
+            let tooltip = i18n_clients_manager(cx, "cmd_none_tooltip");
+            return Some(
+                h_flex()
+                    .id(("cmd-none", row_ix))
+                    .size_full()
+                    .paddings(Edges {
+                        top: px(2.),
+                        bottom: px(2.),
+                        left: px(10.),
+                        right: px(10.),
+                    })
+                    .child(Label::new("—").text_color(cx.theme().muted_foreground))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .into_any_element(),
+            );
+        }
+        if col_ix != ACTION_COLUMN {
+            return None;
+        }
+        // Action column: the kill button, except for replica links.
+        if is_replica_link(cell(FLAGS_COLUMN).as_ref()) {
+            return Some(div().into_any_element());
+        }
+        let client_id = cell(ID_COLUMN);
+        let client_addr = cell(1);
+        let (kill_callback, client_node, server_id) = {
+            let ctx = kill.borrow();
+            (
+                ctx.callback.clone(),
+                ctx.nodes.get(client_id.as_ref()).cloned(),
+                ctx.server_id.clone(),
             )
-            .to_string();
-            let prompt = escalate_dangerous_body(cx, &self.server_id, prompt);
-            return div()
+        };
+        let client_node = client_node?;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let title = i18n_clients_manager(cx, "kill_confirm_title");
+        let prompt = t!(
+            "clients_manager.kill_confirm_prompt",
+            addr = client_addr.as_ref(),
+            id = client_id.as_ref(),
+            locale = locale
+        )
+        .to_string();
+        let prompt = escalate_dangerous_body(cx, &server_id, prompt);
+        Some(
+            div()
                 .size_full()
                 .flex()
                 .items_center()
@@ -502,108 +408,45 @@ impl TableDelegate for ClientsTableDelegate {
                                 .open(window, cx);
                         }),
                 )
-                .into_any_element();
-        }
+                .into_any_element(),
+        )
+    });
 
-        // `cmd` is the *last command run*, and Redis writes the literal string
-        // "NULL" for a connection that has never run one. Printed as-is it reads
-        // like a command actually named NULL, so show a muted placeholder and put
-        // the meaning in a tooltip. There is nothing worth copying either, so this
-        // cell drops the copy button.
-        if col_key == COLUMN_CMD
-            && let Some(row) = self.rows.get(row_ix)
-            && row.command == REDIS_NO_COMMAND
+    ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
+        .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
+        .filter_columns(&[COLUMN_ADDR, COLUMN_NAME, COLUMN_ID, COLUMN_DB, COLUMN_FLAGS, COLUMN_CMD])
+        .cell_style(style)
+        .cell_render(render)
+}
+
+/// The structured part of the filter — `min_idle` / `min_age` in seconds
+/// and the client-type flag letter (see [`FLAG_FILTERS`]) — as a row
+/// predicate; `None` when none of them is set.
+fn row_predicate(min_idle: Option<u64>, min_age: Option<u64>, flag: Option<char>) -> Option<RowPredicate> {
+    if min_idle.is_none() && min_age.is_none() && flag.is_none() {
+        return None;
+    }
+    Some(Rc::new(move |cells: &[SharedString]| {
+        let secs = |ix: usize| cells.get(ix).and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
+        if let Some(n) = min_idle
+            && secs(CELL_IDLE) < n
         {
-            let tooltip = i18n_clients_manager(cx, "cmd_none_tooltip");
-            return h_flex()
-                .id(("cmd-none", row_ix))
-                .size_full()
-                .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-                .child(Label::new("—").text_color(cx.theme().muted_foreground))
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .into_any_element();
+            return false;
         }
-
-        // Flags column: render S as HardDrive icon, N as Laptop icon
-        if col_key == COLUMN_FLAGS {
-            let Some(row) = self.rows.get(row_ix) else {
-                return div().into_any_element();
-            };
-            let flags = &row.flags;
-            let content = if flags.contains('S') {
-                Icon::new(CustomIconName::HardDrive).into_any_element()
-            } else if flags.contains('N') {
-                Icon::new(CustomIconName::Laptop).into_any_element()
-            } else {
-                Label::new(flags.clone()).into_any_element()
-            };
-            return div()
-                .size_full()
-                .flex()
-                .items_center()
-                .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-                .child(content)
-                .into_any_element();
+        if let Some(n) = min_age
+            && secs(CELL_AGE) < n
+        {
+            return false;
         }
-
-        let value: SharedString = if let Some(row) = self.rows.get(row_ix) {
-            match col_key {
-                COLUMN_ID => row.id.clone(),
-                COLUMN_ADDR => row.addr.clone(),
-                COLUMN_NAME => row.name.clone(),
-                COLUMN_AGE => row.age_display.clone(),
-                COLUMN_IDLE => row.idle_display.clone(),
-                COLUMN_DB => row.db.clone(),
-                COLUMN_CMD => row.command.clone(),
-                _ => "--".into(),
-            }
-        } else {
-            "--".into()
-        };
-
-        let group_name: SharedString = format!("clients-td-{}-{}", row_ix, col_ix).into();
-        let copied_message = i18n_common(cx, "copied_to_clipboard");
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .group(group_name.clone())
-            .overflow_hidden()
-            .child(
-                Label::new(value.clone())
-                    .text_align(column.align)
-                    .text_ellipsis()
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .child(
-                div()
-                    .id(("copy-wrapper", row_ix * 100 + col_ix))
-                    .invisible()
-                    .group_hover(group_name, |style| style.visible())
-                    .flex_none()
-                    .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
-                    .child(
-                        Button::new(("copy-cell", row_ix * 100 + col_ix))
-                            .ghost()
-                            .icon(IconName::Copy)
-                            .on_click(move |_, window, cx: &mut gpui::App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
-                                window.push_notification(Notification::info(copied_message.clone()), cx);
-                            }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn has_more(&self, _cx: &gpui::App) -> bool {
-        false
-    }
-
-    fn load_more_threshold(&self) -> usize {
-        0
-    }
-
-    fn load_more(&mut self, _window: &mut Window, _cx: &mut gpui::Context<TableState<Self>>) {}
+        // Client type: the `flags=` field is a set of letters, so a
+        // membership test is the whole rule.
+        if let Some(flag) = flag
+            && !cells.get(FLAGS_COLUMN).is_some_and(|f| f.contains(flag))
+        {
+            return false;
+        }
+        true
+    }))
 }
 
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
@@ -612,7 +455,9 @@ const FLAG_SELECT_WIDTH: f32 = 120.0;
 
 pub struct ZedisClientsManager {
     server_state: Entity<ZedisServerState>,
-    table_state: Entity<TableState<ClientsTableDelegate>>,
+    table_state: Entity<TableState<ZedisTextTable>>,
+    /// Shared with the table's kill button — see [`KillContext`].
+    kill: Rc<RefCell<KillContext>>,
     keyword_state: Entity<InputState>,
     idle_state: Entity<InputState>,
     age_state: Entity<InputState>,
@@ -639,8 +484,11 @@ impl ZedisClientsManager {
         // mode or a server where KILL is missing / denied both hide the
         // per-row button.
         let readonly = !server_state.read(cx).can(Capability::KillClient);
-        let delegate = ClientsTableDelegate::new(vec![], readonly, window, cx);
-        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+        let kill = Rc::new(RefCell::new(KillContext {
+            readonly,
+            ..Default::default()
+        }));
+        let table_state = cx.new(|cx| TableState::new(build_table(readonly, kill.clone(), window, cx), window, cx));
 
         subscriptions.push(cx.subscribe(&server_state, {
             let table_state = table_state.clone();
@@ -699,6 +547,7 @@ impl ZedisClientsManager {
             _kill_task: None,
             _unpause_task: None,
             _batch_kill_task: None,
+            kill,
             _subscriptions: subscriptions,
         };
 
@@ -717,13 +566,15 @@ impl ZedisClientsManager {
     fn handle_filter(&mut self, cx: &mut gpui::Context<Self>) {
         let (keyword, min_idle, min_age, flag) = self.filter_params(cx);
         self.table_state.update(cx, |state, _| {
-            state.delegate_mut().apply_filter(&keyword, min_idle, min_age, flag);
+            let delegate = state.delegate_mut();
+            delegate.set_filter(&keyword);
+            delegate.set_row_filter(row_predicate(min_idle, min_age, flag));
         });
-        self.row_count = self.table_state.read(cx).delegate().rows.len();
+        self.row_count = self.table_state.read(cx).delegate().visible_len();
         cx.notify();
     }
 
-    fn fetch_clients(&mut self, table_state: Entity<TableState<ClientsTableDelegate>>, cx: &mut gpui::Context<Self>) {
+    fn fetch_clients(&mut self, table_state: Entity<TableState<ZedisTextTable>>, cx: &mut gpui::Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         if server_id.is_empty() {
             return;
@@ -751,13 +602,19 @@ impl ZedisClientsManager {
                 match result {
                     Ok(rows) => {
                         let (keyword, min_idle, min_age, flag) = this.filter_params(cx);
+                        {
+                            let mut kill = this.kill.borrow_mut();
+                            kill.readonly = readonly;
+                            kill.server_id = server_id_for_delegate;
+                            kill.nodes = rows.iter().map(|r| (r.id.to_string(), r.node.clone())).collect();
+                        }
                         table_state.update(cx, |state, _| {
-                            state.delegate_mut().all_rows = rows;
-                            state.delegate_mut().readonly = readonly;
-                            state.delegate_mut().server_id = server_id_for_delegate;
-                            state.delegate_mut().apply_filter(&keyword, min_idle, min_age, flag);
+                            let delegate = state.delegate_mut();
+                            delegate.set_rows(rows.iter().map(ClientRow::cells).collect());
+                            delegate.set_filter(&keyword);
+                            delegate.set_row_filter(row_predicate(min_idle, min_age, flag));
                         });
-                        this.row_count = table_state.read(cx).delegate().rows.len();
+                        this.row_count = table_state.read(cx).delegate().visible_len();
                         this.error = None;
                         this.setup_kill_callback(cx);
                     }
@@ -771,17 +628,33 @@ impl ZedisClientsManager {
         }));
     }
 
+    /// The visible rows minus replica links, each with the node it was
+    /// listed from — the batch-kill set.
+    fn killable_targets(&self, cx: &gpui::Context<Self>) -> Vec<(SharedString, RedisServer)> {
+        let kill = self.kill.borrow();
+        self.table_state
+            .read(cx)
+            .delegate()
+            .visible_rows()
+            .iter()
+            .filter(|cells| !cells.get(FLAGS_COLUMN).is_some_and(|f| is_replica_link(f)))
+            .filter_map(|cells| {
+                let id = cells.get(ID_COLUMN)?;
+                let node = kill.nodes.get(id.as_ref())?;
+                Some((id.clone(), node.clone()))
+            })
+            .collect()
+    }
+
     fn setup_kill_callback(&mut self, cx: &mut gpui::Context<Self>) {
         let server_state = self.server_state.clone();
         let table_state = self.table_state.clone();
 
         let (tx, rx) = smol::channel::unbounded::<(SharedString, SharedString, RedisServer)>();
 
-        self.table_state.update(cx, |state, _| {
-            state.delegate_mut().kill_callback = Some(Arc::new(move |id, addr, node| {
-                let _ = tx.send_blocking((id, addr, node));
-            }));
-        });
+        self.kill.borrow_mut().callback = Some(Arc::new(move |id, addr, node| {
+            let _ = tx.send_blocking((id, addr, node));
+        }));
 
         self._kill_task = Some(cx.spawn(async move |handle, cx| {
             while let Ok((client_id, _client_addr, node)) = rx.recv().await {
@@ -877,15 +750,7 @@ impl ZedisClientsManager {
         if !self.server_state.read(cx).can(Capability::KillClient) {
             return;
         }
-        let targets: Vec<(SharedString, RedisServer)> = self
-            .table_state
-            .read(cx)
-            .delegate()
-            .rows
-            .iter()
-            .filter(|row| !row.flags.contains('S') && !row.flags.contains('M'))
-            .map(|row| (row.id.clone(), row.node.clone()))
-            .collect();
+        let targets = self.killable_targets(cx);
         if targets.is_empty() {
             return;
         }
@@ -983,18 +848,11 @@ impl gpui::Render for ZedisClientsManager {
         } else {
             (i18n_clients_manager(cx, "no_clients"), cx.theme().muted_foreground)
         };
-        let total = self.table_state.read(cx).delegate().all_rows.len();
-        let readonly = self.table_state.read(cx).delegate().readonly;
+        let total = self.table_state.read(cx).delegate().total_len();
+        let readonly = self.kill.borrow().readonly;
         // Batch kill targets = the filtered rows minus replica links (S/M),
         // mirroring the per-row kill button's rule.
-        let killable = self
-            .table_state
-            .read(cx)
-            .delegate()
-            .rows
-            .iter()
-            .filter(|row| !row.flags.contains('S') && !row.flags.contains('M'))
-            .count();
+        let killable = self.killable_targets(cx).len();
         let count_label = if self.row_count == total {
             format!("({})", total)
         } else {

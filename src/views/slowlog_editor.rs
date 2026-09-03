@@ -34,11 +34,10 @@ use crate::views::export_to_file;
 use ahash::AHashMap;
 use chrono::TimeZone;
 use gpui::{
-    ClipboardItem, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px, relative,
+    AnyElement, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px, relative,
 };
 use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::notification::Notification;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -46,13 +45,14 @@ use gpui_component::{
     h_flex,
     label::Label,
     menu::DropdownMenu,
-    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     v_flex,
 };
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use zedis_ui::{ZedisDialog, ZedisDivider};
+use zedis_ui::{CellRenderer, TextColumn, ZedisDialog, ZedisDivider, ZedisTextTable};
 
 /// Which sub-panel the performance view is showing. Slow Log is the
 /// default — historically this view was slow-log only, so keeping it
@@ -291,319 +291,169 @@ const COLUMN_CORRELATED: &str = "correlated";
 /// Owns the pre-formatted row data and the column definitions. Column headers
 /// are translated on every render via [`i18n_slowlog_editor`] so the UI updates
 /// when the user switches language at runtime.
-struct SlowlogTableDelegate {
-    rows: Vec<SlowLogRow>,
-    columns: Vec<Column>,
-    /// i18n keys corresponding to each column, used to re-translate headers on every render.
-    column_keys: Vec<&'static str>,
-    /// Weak handle to the parent editor so the correlation chip's click
-    /// handler can jump the user to the Latency tab. WeakEntity avoids
-    /// the parent⇄child cycle (`ZedisSlowlogEditor` already owns the
-    /// `TableState` that contains this delegate).
-    editor: WeakEntity<ZedisSlowlogEditor>,
-}
+const SLOWLOG_COLUMNS: [&str; 6] = [
+    COLUMN_TIMESTAMP,
+    COLUMN_DURATION,
+    COLUMN_COMMAND,
+    COLUMN_ARGS,
+    COLUMN_CLIENT,
+    COLUMN_CORRELATED,
+];
+/// Index of the correlation column, drawn as a chip rather than text.
+const CORRELATED_COLUMN: usize = 5;
+/// Payload cells after the six columns: the raw duration the duration
+/// column sorts by, and the correlated latency event's name and delta.
+const CELL_DURATION_MS: usize = 6;
+const CELL_EVENT: usize = 7;
+const CELL_EVENT_DELTA: usize = 8;
 
-impl SlowlogTableDelegate {
-    /// Creates the delegate with the given rows and computes column widths based on the
-    /// current viewport. The "args" column takes all remaining space after the fixed-width
-    /// columns (timestamp, duration, command, client, correlated) are allocated.
-    fn new(
-        rows: Vec<SlowLogRow>,
-        editor: WeakEntity<ZedisSlowlogEditor>,
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) -> Self {
-        let content_width = content_area_width(window, cx);
-        // Cells are `[label ..flex_1..][copy button ..flex_none..]` and the copy
-        // button only appears on hover, taking ~28px out of the label's box — so
-        // text that fits at rest gets clipped the moment the pointer lands on the
-        // row. Both of these budget for it, on top of the 20px of side padding:
-        //   timestamp: "2026-07-14 22:31:05" — 19 mono chars
-        //   client:    "192.168.1.10:53166" — sized for the address only. The
-        //              client *name* is appended after it ("… (zedis:v0.5.5)") and
-        //              is allowed to ellipsize: it repeats across every row of the
-        //              same client, whereas the address is what tells them apart.
-        let timestamp_width = 240.;
-        let duration_width = 130.;
-        let command_width = 150.;
-        let client_width = 240.;
-        // Wide enough for "<event> +Ns" — event names cap around 24 chars
-        // (e.g. "active-defrag-cycle"). Fixed instead of stretchy so the
-        // chip stays compact next to client info.
-        let correlated_width = 170.;
-        // Subtract a small gutter (10 px) so the table doesn't overflow horizontally.
-        // `args` is the flexible column; floor it so a narrow window scrolls the
-        // table horizontally instead of collapsing the column to nothing.
-        let remaining_width = (content_width.as_f32()
-            - timestamp_width
-            - duration_width
-            - command_width
-            - client_width
-            - correlated_width
-            - 10.)
-            .max(200.);
-
-        let make_paddings = || {
-            Some(Edges {
-                top: px(2.),
-                bottom: px(2.),
-                left: px(10.),
-                right: px(10.),
-            })
+impl SlowLogRow {
+    fn cells(&self) -> Vec<SharedString> {
+        let (event, delta) = match &self.correlated_event {
+            Some((event, delta)) => (event.clone(), SharedString::from(delta.to_string())),
+            None => (SharedString::default(), SharedString::default()),
         };
-
-        let column_keys: Vec<&'static str> = vec![
-            COLUMN_TIMESTAMP,
-            COLUMN_DURATION,
-            COLUMN_COMMAND,
-            COLUMN_ARGS,
-            COLUMN_CLIENT,
-            COLUMN_CORRELATED,
-        ];
-        let widths = [
-            timestamp_width,
-            duration_width,
-            command_width,
-            remaining_width,
-            client_width,
-            correlated_width,
-        ];
-        let columns = column_keys
-            .iter()
-            .zip(widths)
-            .map(|(&key, width)| {
-                let mut column = Column::new(key, SharedString::default()).width(width).map(|mut col| {
-                    col.paddings = make_paddings();
-                    col
-                });
-
-                if [COLUMN_TIMESTAMP, COLUMN_COMMAND, COLUMN_CLIENT, COLUMN_DURATION].contains(&key) {
-                    column = column.sortable();
-                }
-
-                column
-            })
-            .collect();
-
-        Self {
-            rows,
-            columns,
-            column_keys,
-            editor,
-        }
+        vec![
+            self.timestamp.clone(),
+            self.duration.clone(),
+            self.command.clone(),
+            self.args.clone(),
+            self.client.clone(),
+            SharedString::default(),
+            self.duration_ms.to_string().into(),
+            event,
+            delta,
+        ]
     }
 }
 
-impl TableDelegate for SlowlogTableDelegate {
-    fn columns_count(&self, _cx: &gpui::App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _cx: &gpui::App) -> usize {
-        self.rows.len()
-    }
-
-    fn column(&self, index: usize, _cx: &gpui::App) -> Column {
-        self.columns[index].clone()
-    }
-
-    /// Sorts `self.rows` in place according to the clicked column and direction.
-    ///
-    /// The duration column uses the raw `duration_ms` for numerically correct comparison.
-    fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {
-        let col = &self.columns[col_ix];
-
-        match col.key.as_ref() {
-            COLUMN_TIMESTAMP => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.timestamp.cmp(&b.timestamp)),
-                _ => self.rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)),
-            },
-            COLUMN_COMMAND => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.command.cmp(&b.command)),
-                _ => self.rows.sort_by(|a, b| b.command.cmp(&a.command)),
-            },
-            COLUMN_CLIENT => match sort {
-                ColumnSort::Ascending => self.rows.sort_by(|a, b| a.client.cmp(&b.client)),
-                _ => self.rows.sort_by(|a, b| b.client.cmp(&a.client)),
-            },
-            COLUMN_DURATION => match sort {
-                ColumnSort::Ascending => self.rows.sort_by_key(|a| a.duration_ms),
-                _ => self.rows.sort_by_key(|b| std::cmp::Reverse(b.duration_ms)),
-            },
-            _ => {}
-        }
-    }
-
-    /// Renders a column header cell. The label text is looked up via i18n on
-    /// every render so language changes are reflected immediately.
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let name = i18n_slowlog_editor(cx, self.column_keys[col_ix]);
-        // h_flex (items_center) matches render_td, so header text is
-        // vertically centered like the cells.
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .child(
-                Label::new(name)
-                    .text_align(column.align)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_sm()
-                    .flex_1(),
-            )
-    }
-
-    /// Renders a table cell with a hover copy button.
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        // The correlation column is rendered as an interactive chip,
-        // not a plain text cell — short-circuit the generic path below.
-        if self.column_keys.get(col_ix).copied() == Some(COLUMN_CORRELATED) {
-            return self.render_correlation_chip_cell(row_ix, col_ix, cx).into_any_element();
-        }
-
-        let column = &self.columns[col_ix];
-        let value: SharedString = if let Some(row) = self.rows.get(row_ix) {
-            match col_ix {
-                0 => row.timestamp.clone(),
-                1 => row.duration.clone(),
-                2 => row.command.clone(),
-                3 => row.args.clone(),
-                4 => row.client.clone(),
-                _ => "--".into(),
+/// The slow-log grid. Column widths come from the viewport: the "args"
+/// column takes all remaining space after the fixed-width columns.
+fn build_table(editor: WeakEntity<ZedisSlowlogEditor>, window: &mut Window, cx: &mut gpui::App) -> ZedisTextTable {
+    let content_width = content_area_width(window, cx);
+    // Cells are `[label ..flex_1..][copy button ..flex_none..]` and the copy
+    // button only appears on hover, taking ~28px out of the label's box — so
+    // text that fits at rest gets clipped the moment the pointer lands on the
+    // row. Both of these budget for it, on top of the 20px of side padding:
+    //   timestamp: "2026-07-14 22:31:05" — 19 mono chars
+    //   client:    "192.168.1.10:53166" — sized for the address only. The
+    //              client *name* is appended after it ("… (zedis:v0.5.5)") and
+    //              is allowed to ellipsize: it repeats across every row of the
+    //              same client, whereas the address is what tells them apart.
+    let timestamp_width = 240.;
+    let duration_width = 130.;
+    let command_width = 150.;
+    let client_width = 240.;
+    // Wide enough for "<event> +Ns" — event names cap around 24 chars
+    // (e.g. "active-defrag-cycle"). Fixed instead of stretchy so the
+    // chip stays compact next to client info.
+    let correlated_width = 170.;
+    // Subtract a small gutter (10 px) so the table doesn't overflow horizontally.
+    // `args` is the flexible column; floor it so a narrow window scrolls the
+    // table horizontally instead of collapsing the column to nothing.
+    let remaining_width = (content_width.as_f32()
+        - timestamp_width
+        - duration_width
+        - command_width
+        - client_width
+        - correlated_width
+        - 10.)
+        .max(200.);
+    let widths = [
+        timestamp_width,
+        duration_width,
+        command_width,
+        remaining_width,
+        client_width,
+        correlated_width,
+    ];
+    let columns = SLOWLOG_COLUMNS
+        .iter()
+        .zip(widths)
+        .map(|(&key, width)| {
+            let column = TextColumn::new(key, i18n_slowlog_editor(cx, key), width);
+            match key {
+                // The duration column shows "12ms" but sorts by the raw value.
+                COLUMN_DURATION => column.sort_by_cell(CELL_DURATION_MS),
+                COLUMN_TIMESTAMP | COLUMN_COMMAND | COLUMN_CLIENT => column.sortable(),
+                _ => column,
             }
-        } else {
-            "--".into()
-        };
-
-        let group_name: SharedString = format!("slowlog-td-{}-{}", row_ix, col_ix).into();
-        let copied_message = i18n_common(cx, "copied_to_clipboard");
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, paddings| this.paddings(paddings))
-            .group(group_name.clone())
-            .overflow_hidden()
-            .child(
-                Label::new(value.clone())
-                    .text_align(column.align)
-                    .text_ellipsis()
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .child(
-                div()
-                    .id(("copy-wrapper", row_ix * 100 + col_ix))
-                    .invisible()
-                    .group_hover(group_name, |style| style.visible())
-                    .flex_none()
-                    .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
-                    .child(
-                        Button::new(("copy-cell", row_ix * 100 + col_ix))
-                            .ghost()
-                            .icon(IconName::Copy)
-                            .on_click(move |_, window, cx: &mut gpui::App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
-                                window.push_notification(Notification::info(copied_message.clone()), cx);
-                            }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// Slow-log data is fetched in a single batch; there is no pagination.
-    fn has_more(&self, _cx: &gpui::App) -> bool {
-        false
-    }
-
-    fn load_more_threshold(&self) -> usize {
-        0
-    }
-
-    /// No-op: all rows are loaded upfront; incremental loading is not supported.
-    fn load_more(&mut self, _window: &mut Window, _cx: &mut gpui::Context<TableState<Self>>) {}
+        })
+        .collect();
+    let chip: CellRenderer = Rc::new(move |row_ix, col_ix, cells, _window, cx| {
+        (col_ix == CORRELATED_COLUMN).then(|| render_correlation_chip(row_ix, cells, editor.clone(), cx))
+    });
+    ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
+        .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
+        .cell_render(chip)
 }
 
-impl SlowlogTableDelegate {
-    /// Render the chip-style cell for the "correlated event" column.
-    /// Empty cell when no Latency event lines up. Otherwise a small
-    /// outline button whose click hops the user to the Latency tab and
-    /// pre-expands the matching event. We render a button (not a
-    /// label) so the affordance is unmistakable — the row's `timestamp`
-    /// column already shows the time; the chip's job is *navigation*.
-    fn render_correlation_chip_cell(
-        &self,
-        row_ix: usize,
-        col_ix: usize,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        let paddings = column.paddings;
-
-        let Some(row) = self.rows.get(row_ix) else {
-            return h_flex()
-                .size_full()
-                .when_some(paddings, |this, p| this.paddings(p))
-                .into_any_element();
-        };
-        let Some((event, delta)) = row.correlated_event.clone() else {
-            return h_flex()
-                .size_full()
-                .when_some(paddings, |this, p| this.paddings(p))
-                .child(
-                    Label::new(i18n_slowlog_editor(cx, "no_correlation"))
-                        .text_color(cx.theme().muted_foreground)
-                        .text_xs(),
-                )
-                .into_any_element();
-        };
-
-        // Use the formatted "<event> +Ns" string from i18n so RTL/CJK
-        // wording isn't broken by hard-coded English concatenation.
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let label_text: SharedString = rust_i18n::t!(
-            "slowlog_editor.chip_near_event",
-            event = event.as_ref(),
-            // `delta` is signed seconds; render `+1` / `-2` directly.
-            delta = format!("{:+}", delta),
-            locale = locale
-        )
-        .to_string()
-        .into();
-
-        let editor = self.editor.clone();
-        let event_for_click = event.clone();
-        // djb2 is already used downstream for stable u32 ids derived
-        // from event names — reuse it here so ButtonId stays unique.
-        let id_hash: u32 = djb2_hash(event.as_ref()).wrapping_add(row_ix as u32);
-
-        h_flex()
+/// The chip-style cell for the "correlated event" column. Empty text when
+/// no Latency event lines up. Otherwise a small outline button whose click
+/// hops the user to the Latency tab and pre-expands the matching event. A
+/// button (not a label) so the affordance is unmistakable — the row's
+/// `timestamp` column already shows the time; the chip's job is
+/// *navigation*.
+fn render_correlation_chip(
+    row_ix: usize,
+    cells: &[SharedString],
+    editor: WeakEntity<ZedisSlowlogEditor>,
+    cx: &mut gpui::App,
+) -> AnyElement {
+    let paddings = Edges {
+        top: px(2.),
+        bottom: px(2.),
+        left: px(10.),
+        right: px(10.),
+    };
+    let Some(event) = cells.get(CELL_EVENT).filter(|e| !e.is_empty()).cloned() else {
+        return h_flex()
             .size_full()
-            .when_some(paddings, |this, p| this.paddings(p))
+            .paddings(paddings)
             .child(
-                Button::new(("slowlog-correlated-chip", id_hash))
-                    .outline()
-                    .xsmall()
-                    .label(label_text)
-                    .on_click(move |_, _w, cx| {
-                        let Some(editor) = editor.upgrade() else { return };
-                        let event_name = event_for_click.clone();
-                        editor.update(cx, |this, cx| {
-                            this.jump_to_latency_event(event_name, cx);
-                        });
-                    }),
+                Label::new(i18n_slowlog_editor(cx, "no_correlation"))
+                    .text_color(cx.theme().muted_foreground)
+                    .text_xs(),
             )
-            .into_any_element()
-    }
+            .into_any_element();
+    };
+    let delta: i64 = cells.get(CELL_EVENT_DELTA).and_then(|d| d.parse().ok()).unwrap_or(0);
+
+    // Use the formatted "<event> +Ns" string from i18n so RTL/CJK
+    // wording isn't broken by hard-coded English concatenation.
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+    let label_text: SharedString = rust_i18n::t!(
+        "slowlog_editor.chip_near_event",
+        event = event.as_ref(),
+        // `delta` is signed seconds; render `+1` / `-2` directly.
+        delta = format!("{:+}", delta),
+        locale = locale
+    )
+    .to_string()
+    .into();
+
+    let event_for_click = event.clone();
+    // djb2 is already used downstream for stable u32 ids derived
+    // from event names — reuse it here so ButtonId stays unique.
+    let id_hash: u32 = djb2_hash(event.as_ref()).wrapping_add(row_ix as u32);
+
+    h_flex()
+        .size_full()
+        .paddings(paddings)
+        .child(
+            Button::new(("slowlog-correlated-chip", id_hash))
+                .outline()
+                .xsmall()
+                .label(label_text)
+                .on_click(move |_, _w, cx| {
+                    let Some(editor) = editor.upgrade() else { return };
+                    let event_name = event_for_click.clone();
+                    editor.update(cx, |this, cx| {
+                        this.jump_to_latency_event(event_name, cx);
+                    });
+                }),
+        )
+        .into_any_element()
 }
 
 /// Main Slow Log viewer component.
@@ -619,7 +469,7 @@ impl SlowlogTableDelegate {
 pub struct ZedisSlowlogEditor {
     server_state: Entity<ZedisServerState>,
     /// Shared table state that owns the [`SlowlogTableDelegate`] and drives rendering.
-    table_state: Entity<TableState<SlowlogTableDelegate>>,
+    table_state: Entity<TableState<ZedisTextTable>>,
     /// Timestamp of the most recently seen slow-log entry, used to skip redundant refreshes.
     last_time_stamp: SharedString,
     /// Total number of filtered rows currently displayed.
@@ -696,8 +546,12 @@ impl ZedisSlowlogEditor {
         let filtered = all_rows.clone();
         let row_count = filtered.len();
         let editor_weak = cx.entity().downgrade();
-        let delegate = SlowlogTableDelegate::new(filtered, editor_weak, window, cx);
-        let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
+        let table_state = cx.new(|cx| TableState::new(build_table(editor_weak, window, cx), window, cx));
+        table_state.update(cx, |state, _| {
+            state
+                .delegate_mut()
+                .set_rows(filtered.iter().map(SlowLogRow::cells).collect());
+        });
 
         let duration_input_state = cx.new(|cx| InputState::new(window, cx));
 
@@ -756,7 +610,9 @@ impl ZedisSlowlogEditor {
                     let filtered = this.filter_rows();
                     this.row_count = filtered.len();
                     table_state.update(cx, |state, _| {
-                        state.delegate_mut().rows = filtered;
+                        state
+                            .delegate_mut()
+                            .set_rows(filtered.iter().map(SlowLogRow::cells).collect());
                     });
                     cx.notify();
                 }
@@ -1291,7 +1147,9 @@ impl ZedisSlowlogEditor {
         let filtered = self.filter_rows();
         self.row_count = filtered.len();
         self.table_state.update(cx, |state, _| {
-            state.delegate_mut().rows = filtered;
+            state
+                .delegate_mut()
+                .set_rows(filtered.iter().map(SlowLogRow::cells).collect());
         });
         cx.notify();
     }

@@ -33,21 +33,21 @@ use crate::states::{
 };
 use crate::views::export_to_file;
 use chrono::Local;
-use gpui::{ClipboardItem, Edges, Entity, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{Entity, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
-use gpui_component::notification::Notification;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
-    table::{Column, DataTable, TableDelegate, TableState},
+    table::{DataTable, TableState},
     v_flex,
 };
 use redis::cmd;
+use std::rc::Rc;
 use tracing::{error, info};
-use zedis_ui::{ZedisDivider, help_popover};
+use zedis_ui::{CellStyle, CellStyleProvider, TextColumn, ZedisDivider, ZedisTextTable, help_popover};
 
 use crate::assets::CustomIconName;
 
@@ -130,127 +130,32 @@ fn filter_rows(rows: &[InfoRow], filter: &str) -> Vec<InfoRow> {
         .collect()
 }
 
-struct InfoTableDelegate {
-    rows: Vec<InfoRow>,
-    columns: Vec<Column>,
-}
-
-impl InfoTableDelegate {
-    fn new(window: &mut Window, cx: &mut gpui::App) -> Self {
-        let content_width = content_area_width(window, cx).as_f32();
-        let value_w = content_width - SECTION_COL_WIDTH - FIELD_COL_WIDTH - 26.;
-        let paddings = Edges {
-            top: px(2.),
-            bottom: px(2.),
-            left: px(10.),
-            right: px(10.),
-        };
-        let columns = [
-            ("section", SECTION_COL_WIDTH),
-            ("field", FIELD_COL_WIDTH),
-            ("value", value_w),
-        ]
-        .into_iter()
-        .map(|(key, w)| {
-            let mut c = Column::new(key, SharedString::default()).width(w);
-            c.paddings = Some(paddings);
-            c
-        })
-        .collect();
-        Self {
-            rows: Vec::new(),
-            columns,
-        }
+impl InfoRow {
+    fn cells(&self) -> Vec<SharedString> {
+        vec![self.section.clone(), self.field.clone(), self.value.clone()]
     }
 }
 
-impl TableDelegate for InfoTableDelegate {
-    fn columns_count(&self, _cx: &gpui::App) -> usize {
-        self.columns.len()
-    }
-    fn rows_count(&self, _cx: &gpui::App) -> usize {
-        self.rows.len()
-    }
-    fn column(&self, ix: usize, _cx: &gpui::App) -> Column {
-        self.columns[ix].clone()
-    }
-
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let column = &self.columns[col_ix];
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, p| this.paddings(p))
-            .child(
-                Label::new(i18n_server_info(cx, column.key.as_ref()))
-                    .text_color(cx.theme().muted_foreground)
-                    .text_sm()
-                    .flex_1(),
-            )
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut gpui::Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let (value, muted) = self
-            .rows
-            .get(row_ix)
-            .map(|r| match col_ix {
-                0 => (r.section.clone(), true),
-                1 => (r.field.clone(), false),
-                _ => (r.value.clone(), false),
-            })
-            .unwrap_or_else(|| ("--".into(), false));
-        let column = &self.columns[col_ix];
-
-        let group_name: SharedString = format!("info-td-{row_ix}-{col_ix}").into();
-        let copied_message = i18n_common(cx, "copied_to_clipboard");
-        h_flex()
-            .size_full()
-            .when_some(column.paddings, |this, p| this.paddings(p))
-            .group(group_name.clone())
-            .overflow_hidden()
-            .child(
-                Label::new(value.clone())
-                    .when(muted, |this| this.text_color(cx.theme().muted_foreground))
-                    .text_ellipsis()
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .child(
-                div()
-                    .id((group_name.clone(), 0_usize))
-                    .invisible()
-                    .group_hover(group_name.clone(), |style| style.visible())
-                    .flex_none()
-                    .on_click(|_, _, cx: &mut gpui::App| cx.stop_propagation())
-                    .child(
-                        Button::new((group_name.clone(), 1_usize))
-                            .ghost()
-                            .icon(IconName::Copy)
-                            .on_click(move |_, window, cx: &mut gpui::App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
-                                window.push_notification(Notification::info(copied_message.clone()), cx);
-                            }),
-                    ),
-            )
-    }
-
-    fn has_more(&self, _cx: &gpui::App) -> bool {
-        false
-    }
-    fn load_more_threshold(&self) -> usize {
-        0
-    }
-    fn load_more(&mut self, _: &mut Window, _: &mut gpui::Context<TableState<Self>>) {}
+/// Three text columns; the section column is muted, as it repeats down
+/// every row of a section.
+fn build_table(window: &mut Window, cx: &mut gpui::App) -> ZedisTextTable {
+    let content_width = content_area_width(window, cx).as_f32();
+    let value_w = content_width - SECTION_COL_WIDTH - FIELD_COL_WIDTH - 26.;
+    let columns = [
+        ("section", SECTION_COL_WIDTH),
+        ("field", FIELD_COL_WIDTH),
+        ("value", value_w),
+    ]
+    .into_iter()
+    .map(|(key, w)| TextColumn::new(key, i18n_server_info(cx, key), w))
+    .collect();
+    let muted_section: CellStyleProvider = Rc::new(|col_ix, _cells, cx| CellStyle {
+        color: (col_ix == 0).then(|| cx.theme().muted_foreground),
+        ..Default::default()
+    });
+    ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
+        .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
+        .cell_style(muted_section)
 }
 
 /// Raw INFO browser view — see the module docs.
@@ -261,7 +166,7 @@ impl TableDelegate for InfoTableDelegate {
 pub struct ZedisServerInfo {
     server_state: Entity<ZedisServerState>,
     filter_input_state: Entity<InputState>,
-    table_state: Entity<TableState<InfoTableDelegate>>,
+    table_state: Entity<TableState<ZedisTextTable>>,
     /// All parsed rows, unfiltered — the filter narrows a copy into the
     /// table delegate so clearing it is instant.
     rows: Vec<InfoRow>,
@@ -314,7 +219,7 @@ impl ZedisServerInfo {
                 this.refresh(cx);
             }
         }));
-        let table_state = cx.new(|cx| TableState::new(InfoTableDelegate::new(window, cx), window, cx));
+        let table_state = cx.new(|cx| TableState::new(build_table(window, cx), window, cx));
 
         info!("Creating new server info view");
         let mut this = Self {
@@ -354,7 +259,9 @@ impl ZedisServerInfo {
         let filter: SharedString = self.filter_input_state.read(cx).value();
         let visible = filter_rows(&source, filter.as_ref());
         self.visible_count = visible.len();
-        self.table_state.update(cx, |s, _| s.delegate_mut().rows = visible);
+        self.table_state.update(cx, |s, _| {
+            s.delegate_mut().set_rows(visible.iter().map(InfoRow::cells).collect())
+        });
         cx.notify();
     }
 
@@ -462,13 +369,13 @@ impl ZedisServerInfo {
     /// Export whatever the table currently shows (filtered raw fields,
     /// or the diff rows in compare mode) as CSV.
     fn export_csv(&mut self, cx: &mut Context<Self>) {
-        let rows = self.table_state.read(cx).delegate().rows.clone();
+        let rows = self.table_state.read(cx).delegate().visible_rows();
         if rows.is_empty() {
             return;
         }
         let data: Vec<Vec<String>> = rows
             .iter()
-            .map(|r| vec![r.section.to_string(), r.field.to_string(), r.value.to_string()])
+            .map(|cells| cells.iter().map(|c| c.to_string()).collect())
             .collect();
         let csv = build_csv(&["section", "field", "value"], &data);
         let success = i18n_common(cx, "csv_exported");

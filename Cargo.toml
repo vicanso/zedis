@@ -193,6 +193,9 @@ home = "0.5.12"
 keyring = "4.1.6"
 path-absolutize = "4.0.1"
 percent-encoding = "2.3.2"
+# Decrypts a passphrase-protected PKCS#8 client key for TLS. Already in the
+# lock through russh-keys; `encryption` + `pem` are the two features used.
+pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
 protox = "0.9.1"
 rand = "0.10.2"
@@ -221,7 +224,7 @@ shlex = "2.0.1"
 smol = "2.0.2"
 snafu = "0.9.2"
 tempfile = "3.27.0"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "time"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [
     "ring",
     "tls12",

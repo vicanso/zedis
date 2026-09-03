@@ -143,6 +143,19 @@ fn standalone_connect_reports_metadata() {
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         client.ping().await.expect("ping");
         assert!(!client.version().is_empty(), "version must be read from INFO server");
+        if supports(&id, floors::CLIENT_SETINFO).await {
+            let mut c = conn(&id, 0).await;
+            let info: String = cmd("CLIENT")
+                .arg("INFO")
+                .query_async(&mut c)
+                .await
+                .expect("client info");
+            assert!(
+                info.contains("lib-name=zedis"),
+                "CLIENT SETINFO must name the client: {info}"
+            );
+            assert!(info.contains("name=zedis:v"), "CLIENT SETNAME must still apply: {info}");
+        }
         assert!(client.databases() >= 1);
         assert_eq!(client.nodes(), (1, 1), "standalone: one master, one node in total");
         assert_eq!(
@@ -1109,8 +1122,15 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
             .expect("sentinel connection");
         let before = sentinel_master_port(&mut sentinel, &master_name).await;
 
-        let mut s = server("it-sentinel", addr);
+        // Seeds are walked in order: a dead first address must not stop
+        // discovery — the real sentinel is the second entry.
+        let (sentinel_host, sentinel_port) = addr.clone();
+        let mut s = server(
+            "it-sentinel",
+            (format!("127.0.0.1:1, {sentinel_host}:{sentinel_port}"), sentinel_port),
+        );
         s.master_name = Some(master_name.clone());
+        assert_eq!(s.seed_endpoints().len(), 2);
         let id = register(s).await;
         get_connection_manager().remove_client(&id, 0);
         let client = get_connection_manager()

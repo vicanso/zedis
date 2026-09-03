@@ -38,6 +38,7 @@ use gpui_component::{
 use redis::cmd;
 use smol::lock::Mutex;
 use std::sync::Arc;
+use tracing::warn;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -150,6 +151,16 @@ async fn terminal_connection(
         .await?;
     *slot = Some(conn.clone());
     Ok(conn)
+}
+
+/// The saved command history for `server_id`; an unreadable local
+/// database reads as empty, with the cause in the log rather than a
+/// silently amnesiac ↑ key.
+fn command_history(server_id: &str) -> Vec<String> {
+    get_cmd_history_manager().records(server_id).unwrap_or_else(|e| {
+        warn!(error = %e, "command history unavailable");
+        Vec::new()
+    })
 }
 
 /// Scrollback cap for the REPL output pane. The whole buffer is re-cloned
@@ -457,7 +468,7 @@ impl ZedisTerminal {
             return;
         }
         let offset: i32 = if is_up { 1 } else { -1 };
-        let records = get_cmd_history_manager().records(server_id).unwrap_or_default();
+        let records = command_history(server_id);
         if records.is_empty() {
             return;
         }
@@ -491,7 +502,7 @@ impl ZedisTerminal {
         if server_id.is_empty() {
             return Vec::new();
         }
-        let records = get_cmd_history_manager().records(server_id).unwrap_or_default();
+        let records = command_history(server_id);
         let q = query.to_lowercase();
         records
             .into_iter()

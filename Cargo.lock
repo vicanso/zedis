@@ -11809,6 +11809,7 @@ dependencies = [
  "indexmap",
  "keyring",
  "percent-encoding",
+ "pkcs8",
  "rand 0.10.2",
  "redis",
  "regex",
@@ -11944,6 +11945,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "indexmap",
+ "zedis-core",
 ]
 
 [[package]]

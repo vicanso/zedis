@@ -21,6 +21,7 @@ mod help;
 mod hint;
 mod loading;
 mod select;
+mod text_table;
 
 pub use about::*;
 pub use card::*;
@@ -31,3 +32,4 @@ pub use help::*;
 pub use hint::*;
 pub use loading::*;
 pub use select::*;
+pub use text_table::*;
