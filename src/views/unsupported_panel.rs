@@ -22,7 +22,7 @@
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_features, server_view_title};
 use gpui::{Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,

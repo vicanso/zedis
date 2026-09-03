@@ -31,7 +31,7 @@ use crate::states::{
 };
 use crate::views::unavailable_chip;
 use gpui::{App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

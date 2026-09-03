@@ -27,7 +27,7 @@ use gpui::{
     App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, prelude::*,
     px, size,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, h_flex,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,

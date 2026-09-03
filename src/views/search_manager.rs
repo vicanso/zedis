@@ -42,7 +42,7 @@ use crate::{
     views::open_key_in_editor,
 };
 use gpui::{Action, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,

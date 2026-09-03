@@ -22,13 +22,13 @@ use gpui::{
     App, Background, Bounds, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, canvas, div,
     linear_color_stop, linear_gradient, prelude::*, px,
 };
-use gpui_component::h_flex;
-use gpui_component::plot::{
+use gpui_kit::component::h_flex;
+use gpui_kit::component::plot::{
     AXIS_GAP, AxisText, Grid, PlotAxis, StrokeStyle,
     scale::{Scale, ScaleBand, ScaleLinear, ScalePoint},
     shape::{Area, Bar, Line},
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     label::Label,

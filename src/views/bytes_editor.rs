@@ -22,14 +22,14 @@ use crate::states::{
 use bytes::Bytes;
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px, relative};
 use gpui::{div, hsla, prelude::*};
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::highlighter::Language;
-use gpui_component::input::{
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::highlighter::Language;
+use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorMode, EditorState, Enter, InputEvent, InputModeKind, RopeExt, TabSize,
 };
-use gpui_component::label::Label;
-use gpui_component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_component::{ActiveTheme, IconName, IndexPath, Sizable, h_flex, v_flex};
+use gpui_kit::component::label::Label;
+use gpui_kit::component::list::{List, ListDelegate, ListItem, ListState};
+use gpui_kit::component::{ActiveTheme, IconName, IndexPath, Sizable, h_flex, v_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
 use std::cell::RefCell;

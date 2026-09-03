@@ -18,7 +18,7 @@
 //! caller — this widget only draws the strip.
 
 use gpui::{App, ClickEvent, SharedString, Window, prelude::*};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,

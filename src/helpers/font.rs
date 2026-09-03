@@ -14,7 +14,7 @@
 
 use arc_swap::ArcSwap;
 use gpui::{App, SharedString, px};
-use gpui_component::Theme;
+use gpui_kit::component::Theme;
 use std::sync::{Arc, LazyLock};
 
 /// Bundled and registered at startup via `add_fonts` (see `main.rs` +

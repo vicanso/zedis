@@ -146,7 +146,7 @@ pub use zset_editor::ZedisZsetEditor;
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_features};
 use gpui::{App, Entity, IntoElement, ParentElement, SharedString, Styled};
-use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
 use rust_i18n::t;
 
 /// The per-section "CONFIG SET unavailable — denied for this user (NOPERM)"

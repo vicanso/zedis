@@ -17,7 +17,7 @@ use gpui::{App, Bounds, Menu, MenuItem, WindowBounds, WindowOptions, prelude::*,
 // server-side decorations — see the cfg at the open_window call).
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 use gpui::TitlebarOptions;
-use gpui_component::{Root, Theme};
+use gpui_kit::component::{Root, Theme};
 use sys_locale::get_locale;
 use tracing::{error, info, warn};
 
@@ -120,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // history / proto / script / Lua). The window explains the cause and,
         // for a damaged or too-new file, offers to move it aside and rebuild.
         app.run(move |cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             // Match the user's chosen mode, or the OS appearance, so the error
             // window isn't a jarring light flash on a dark system.
             let mode = match app_state.theme() {
@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_caches();
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
-        gpui_component::init(cx);
+        gpui_kit::component::init(cx);
         launch(cx, app_state);
     });
     Ok(())

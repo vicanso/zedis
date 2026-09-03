@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use gpui::{ClipboardItem, Image, Render, SharedString, Window, img, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, StyledExt, button::Button, h_flex, label::Label, scroll::ScrollableElement, v_flex,
 };
 use std::sync::Arc;

@@ -40,7 +40,7 @@ use crate::{
     states::{ZedisServerState, dialog_button_props, i18n_common, i18n_vector_set},
 };
 use gpui::{App, ClipboardItem, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

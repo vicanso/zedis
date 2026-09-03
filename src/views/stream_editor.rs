@@ -26,7 +26,7 @@ use crate::{
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
 use gpui::{App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -683,7 +683,7 @@ impl ZedisStreamEditor {
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .gap_2()
                     .w_full()
                     .child(Label::new(name_label.clone()).text_xs())
@@ -730,7 +730,7 @@ impl ZedisStreamEditor {
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .gap_2()
                     .w_full()
                     .child(Input::new(&body_id))
@@ -769,7 +769,7 @@ impl ZedisStreamEditor {
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .gap_2()
                     .w_full()
                     .child(Input::new(&body_name))
@@ -844,7 +844,7 @@ impl ZedisStreamEditor {
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .gap_2()
                     .w_full()
                     .child(Input::new(&body_consumer))
@@ -893,7 +893,7 @@ impl ZedisStreamEditor {
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .gap_2()
                     .w_full()
                     .child(Input::new(&body_consumer))

@@ -33,7 +33,7 @@
 
 use crate::states::{GlobalEvent, ZedisGlobalStore, i18n_update};
 use gpui::{App, Subscription, Window, prelude::*};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

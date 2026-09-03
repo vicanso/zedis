@@ -25,7 +25,7 @@ use crate::helpers::{
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString, Window};
-use gpui_component::{ThemeMode, dialog::DialogButtonProps};
+use gpui_kit::component::{ThemeMode, dialog::DialogButtonProps};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;

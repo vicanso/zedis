@@ -27,7 +27,7 @@ use crate::{
     },
 };
 use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
 };

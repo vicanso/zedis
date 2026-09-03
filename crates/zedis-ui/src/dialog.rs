@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use gpui::{AnyElement, App, ClickEvent, IntoElement, ParentElement, Pixels, SharedString, Styled, Window};
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::dialog::{DialogButtonProps, DialogFooter};
-use gpui_component::{Icon, IconName, WindowExt, h_flex};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dialog::{DialogButtonProps, DialogFooter};
+use gpui_kit::component::{Icon, IconName, WindowExt, h_flex};
 use std::rc::Rc;
 
 type ZedisDialogOnOk = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static>;

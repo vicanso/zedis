@@ -19,7 +19,7 @@
 //! the crate rule that platform/app values arrive from the caller.
 
 use gpui::{Anchor, ScrollHandle, SharedString, div, prelude::*, px, rems};
-use gpui_component::{
+use gpui_kit::component::{
     Icon, Sizable,
     button::{Button, ButtonVariants},
     popover::Popover,

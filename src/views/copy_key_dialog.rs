@@ -23,7 +23,7 @@
 use crate::connection::{ConflictMode, get_servers};
 use crate::states::i18n_copy;
 use gpui::{Entity, SharedString, Window, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,

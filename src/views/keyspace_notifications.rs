@@ -37,7 +37,7 @@ use ahash::AHashSet;
 use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

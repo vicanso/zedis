@@ -26,7 +26,7 @@ use crate::{
     views::{ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
 };
 use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,

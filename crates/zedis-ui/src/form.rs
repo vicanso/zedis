@@ -16,21 +16,21 @@ use gpui::{
     AnyElement, App, ElementId, Entity, FontWeight, Pixels, Render, SharedString, StyleRefinement, Subscription,
     Window, div, prelude::*,
 };
-use gpui_component::alert::Alert;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::checkbox::Checkbox;
-use gpui_component::form::{field, v_form};
-use gpui_component::highlighter::Language;
-use gpui_component::input::{
+use gpui_kit::component::alert::Alert;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::form::{field, v_form};
+use gpui_kit::component::highlighter::Language;
+use gpui_kit::component::input::{
     Editor, EditorState, Input, InputEvent, InputState, NumberInput, NumberInputEvent, Position, StepAction, Textarea,
     TextareaState,
 };
-use gpui_component::label::Label;
-use gpui_component::radio::RadioGroup;
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::tab::{Tab, TabBar};
-use gpui_component::text::TextView;
-use gpui_component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex};
+use gpui_kit::component::label::Label;
+use gpui_kit::component::radio::RadioGroup;
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::text::TextView;
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::mem::take;

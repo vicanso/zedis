@@ -26,7 +26,7 @@ use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_
 use crate::views::unavailable_chip;
 use chrono::Local;
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon,
     button::Button,
     checkbox::Checkbox,

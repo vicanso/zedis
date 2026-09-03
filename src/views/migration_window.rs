@@ -28,7 +28,7 @@ use gpui::{
     App, Bounds, Entity, FocusHandle, Focusable, KeyDownEvent, SharedString, Subscription, TitlebarOptions, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Root, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
@@ -584,7 +584,7 @@ impl Render for ZedisMigrationWindow {
         // v_flex, not div: a Block container would kill the child's flex
         // sizing (see the CLAUDE.md gotcha), and the list box grows with
         // the window via flex_1 instead of a fixed height.
-        let log_section = gpui_component::v_flex()
+        let log_section = gpui_kit::component::v_flex()
             .px_6()
             .pt_4()
             .flex_1()
@@ -618,7 +618,7 @@ impl Render for ZedisMigrationWindow {
             );
 
         let footer = {
-            let mut row = gpui_component::h_flex().gap_2().justify_end().px_6().py_4();
+            let mut row = gpui_kit::component::h_flex().gap_2().justify_end().px_6().py_4();
             row = row.child(
                 Button::new("migration-close")
                     .ghost()

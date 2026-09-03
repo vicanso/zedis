@@ -34,8 +34,8 @@ use crate::states::{
 use crate::views::export_to_file;
 use chrono::Local;
 use gpui::{Entity, SharedString, Task, Window, div, prelude::*, px};
-use gpui_component::button::ButtonVariants;
-use gpui_component::{
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable,
     button::Button,
     h_flex,

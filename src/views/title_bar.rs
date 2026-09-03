@@ -27,7 +27,7 @@ use crate::{
 use gpui::{
     Anchor, App, Context, Decorations, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, TITLE_BAR_HEIGHT, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,

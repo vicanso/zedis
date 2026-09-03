@@ -28,7 +28,7 @@ use crate::helpers::{get_mono_font_family, unix_ts_millis};
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, i18n_common, i18n_trash};
 use chrono::{Local, LocalResult, TimeZone};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
     h_flex,

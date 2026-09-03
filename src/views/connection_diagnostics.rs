@@ -26,7 +26,7 @@ use crate::connection::{
 };
 use crate::states::{i18n_common, i18n_servers};
 use gpui::{App, AsyncApp, Div, SharedString, Task, WeakEntity, Window, div, prelude::*, px};
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, label::Label, spinner::Spinner, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, label::Label, spinner::Spinner, v_flex};
 use std::time::Duration;
 use zedis_ui::ZedisDialog;
 

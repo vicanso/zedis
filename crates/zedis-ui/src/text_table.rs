@@ -29,7 +29,7 @@
 //! which the route switch already does.
 
 use gpui::{AnyElement, App, ClipboardItem, Edges, Hsla, SharedString, Window, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

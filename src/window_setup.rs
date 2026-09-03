@@ -19,7 +19,7 @@ use crate::states::ZedisAppState;
 use gpui::{App, Bounds, Pixels, WindowAppearance, px, size};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
-use gpui_component::{Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use std::rc::Rc;
 use tracing::info;
 

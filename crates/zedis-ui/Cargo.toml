@@ -16,6 +16,6 @@ rust-version.workspace = true
 
 [dependencies]
 gpui = { workspace = true }
-gpui-component = { workspace = true }
+gpui-kit = { workspace = true }
 indexmap = { workspace = true }
 zedis-core = { path = "../zedis-core" }

@@ -66,8 +66,7 @@ flate2 = "1.1.9"
 futures = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
-gpui-component = { workspace = true }
-gpui-component-assets = { workspace = true }
+gpui-kit = { workspace = true }
 gpui_macros = { workspace = true }
 home = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -238,35 +237,26 @@ url = "2.5.8"
 # which drags in no GUI stack, failed to build on its own.
 uuid = { version = "1.24.1", features = ["v7"] }
 webpki-roots = "1.0.9"
-# Matched pair with gpui-component. Current component tip depends on zed
-# *without* a `rev=` — Cargo treats `git+…/zed?rev=X` and `git+…/zed` as
-# different package identities even when the commit is identical, so we must
-# use the same source form (no rev) here and let Cargo.lock pin the commit.
-# Pin only gpui-component's rev; after upgrade, confirm a single gpui via
-# `cargo tree -i gpui` and commit the lockfile.
-# component: 5a5e2abc837b6d927e2b38e2097d2fbf39ebee77
-# zed (lockfile): e0931d5a9dbf4f781b336fdf448739e74a2ac0b5
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+# GPUI comes from crates.io as the `gpui-pre-*` family: zed publishes `gpui`
+# too slowly for gpui-kit, so gpui-kit ships a matching snapshot under those
+# names (0.3.x = zed@801c087) and depends on it itself. The `package =`
+# renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
+# and must stay on the exact family gpui-kit's own manifest pins, or two
+# GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
+gpui = { package = "gpui-pre", version = "0.3.2" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.2", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-# gpui-component tip gates the native highlighter behind `tree-sitter`
-# (older pins used cfg(not(wasm)) and needed no feature). Enables
-# LanguageConfig / LanguageRegistry; pulls tree-sitter + tree-sitter-json
-# only — not `tree-sitter-languages` (30+ parsers). Without this feature
-# only the WASM stub is built and LanguageConfig has no constructor.
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "5a5e2abc837b6d927e2b38e2097d2fbf39ebee77", features = [
-    "tree-sitter",
-] }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "5a5e2abc837b6d927e2b38e2097d2fbf39ebee77" }
-gpui_macros = { git = "https://github.com/zed-industries/zed" }
-# gpui = "0.2.2"
-# gpui-component = "0.5.1"
-# gpui-component-assets = "0.5.1"
-# gpui-macros = "0.2.2"
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.2" }
+# gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
+# the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
+# on the component crate's native highlighter — LanguageConfig /
+# LanguageRegistry, pulling tree-sitter + tree-sitter-json only, not the
+# 30-parser `tree-sitter-languages` bundle; we register Lua ourselves.
+gpui-kit = { version = "0.6.0", features = ["tree-sitter"] }
 
 [build-dependencies]
 winres = "0.1.12"

@@ -15,7 +15,7 @@
 use crate::helpers::get_mono_font_family;
 use crate::states::KeyType;
 use gpui::{App, FontWeight, IntoElement, RenderOnce, Styled, Window, div, px};
-use gpui_component::label::Label;
+use gpui_kit::component::label::Label;
 
 // Constants for key type badge styling
 const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges

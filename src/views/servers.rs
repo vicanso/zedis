@@ -30,16 +30,16 @@ use gpui::{
     Action, Anchor, App, ClipboardItem, Entity, ExternalPaths, FocusHandle, Focusable, SharedString, Subscription,
     Window, div, prelude::*, px,
 };
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::menu::DropdownMenu;
-use gpui_component::notification::Notification;
-use gpui_component::tooltip::Tooltip;
-use gpui_component::{
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::menu::DropdownMenu;
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     label::Label,
 };
-use gpui_component::{h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use redis::cmd;
 use rust_i18n::t;
 use schemars::JsonSchema;
@@ -829,7 +829,7 @@ impl ZedisServers {
                         window.push_notification(Notification::success(copied.clone()), cx);
                     });
 
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .gap_3()
                     .w_full()
                     .child(Label::new(hint.clone()).text_xs())
@@ -1131,7 +1131,7 @@ impl Render for ImportServersBody {
         let needs_pass = is_share_token(self.json_state.read(cx).value().as_ref());
         let hint_color = cx.theme().yellow;
         let drop_state = self.json_state.clone();
-        gpui_component::v_flex()
+        gpui_kit::component::v_flex()
             .gap_2()
             .w_full()
             // Drop a file onto the dialog to load it — dropping carries
@@ -1572,7 +1572,7 @@ impl Render for ZedisServers {
                 IconName::ChevronDown
             };
             sections.push(
-                gpui_component::v_flex()
+                gpui_kit::component::v_flex()
                     .id(section_id)
                     .gap_2()
                     .w_full()
@@ -1700,7 +1700,7 @@ impl Render for ZedisServers {
                     ),
             );
 
-        gpui_component::v_flex()
+        gpui_kit::component::v_flex()
             .gap_4()
             .w_full()
             .track_focus(&self.focus_handle)

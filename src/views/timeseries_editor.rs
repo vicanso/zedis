@@ -35,7 +35,7 @@ use crate::{
     views::{ChartParams, format_timestamp_ms, make_line_canvas},
 };
 use gpui::{Context, Entity, SharedString, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,

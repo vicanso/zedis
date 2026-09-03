@@ -21,12 +21,12 @@ use crate::states::ZedisGlobalStore;
 use crate::states::i18n_script_editor;
 use crate::states::{ZedisServerState, dialog_button_props};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::label::Label;
-use gpui_component::radio::RadioGroup;
-use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
-use gpui_component::{ActiveTheme, IconName, Sizable, h_flex};
-use gpui_component::{
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::label::Label;
+use gpui_kit::component::radio::RadioGroup;
+use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex};
+use gpui_kit::component::{
     alert::Alert,
     form::{field, v_form},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
@@ -298,7 +298,7 @@ impl ZedisScriptEditor {
         let found = servers
             .iter()
             .position(|s| s.value == server_id)
-            .map(gpui_component::IndexPath::new);
+            .map(gpui_kit::component::IndexPath::new);
         let servers_for_delegate = servers.clone();
         let server_select_state = cx.new(|cx| SelectState::new(servers, found, window, cx));
         let field_errors = cx.new(|_| HashMap::new());
@@ -464,7 +464,7 @@ impl ZedisScriptEditor {
             .servers
             .iter()
             .position(|s| s.value == cfg.server_id)
-            .map(gpui_component::IndexPath::new);
+            .map(gpui_kit::component::IndexPath::new);
         self.server_id = cfg.server_id.clone().into();
         self.server_select_state
             .update(cx, |s, cx| s.set_selected_index(selected_index, window, cx));

@@ -26,7 +26,7 @@ use crate::{
     views::confirm_dangerous_command,
 };
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,

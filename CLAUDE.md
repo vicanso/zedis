@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](https://www.gpui.rs/) (the Zed UI framework) and `gpui-component`.
+Zedis is a native, GPU-accelerated Redis GUI client built in Rust with [GPUI](https://www.gpui.rs/) (the Zed UI framework) and `gpui-component`, both taken from crates.io through `gpui-kit`: GPUI is the `gpui-pre-*` snapshot family gpui-kit pins (renamed back to `gpui` / `gpui_platform` / `gpui_macros` in `[workspace.dependencies]`, so source keeps `gpui::…`), and the component library and its icon assets are reached as `gpui_kit::component::…` / `gpui_kit::assets::Assets`. Bump the four together and confirm one `gpui-pre` in `Cargo.lock`.
 
 ## Commands
 
@@ -61,7 +61,9 @@ The app re-exports the sub-crates through thin shims, so call sites keep their o
 
 ## GPUI gotchas (learned the hard way)
 
-- `gpui_component::list::ListItem` **now** impls `InteractiveElement` + `StatefulInteractiveElement` (it did not before the 5a5e2ab bump, which is why several call sites still wrap one in a stateful `div().id(...)`/`div().group(...)` — that wrapping is still fine). Two caveats upstream spells out: listeners registered through those traits are **not** gated by `disabled`/`separator`, and the hover style is managed internally — use `.on_hover(...)`, not `.hover(...)`.
+The general GPUI / gpui-component rules live in the `gpui-kit` and `gpui-kit-design-guides` skills (see *Agent skills*); this list is only what this codebase hit on top of them.
+
+- `gpui_kit::component::list::ListItem` **now** impls `InteractiveElement` + `StatefulInteractiveElement` (it did not before gpui-component 0.5.2, which is why several call sites still wrap one in a stateful `div().id(...)`/`div().group(...)` — that wrapping is still fine). Two caveats upstream spells out: listeners registered through those traits are **not** gated by `disabled`/`separator`, and the hover style is managed internally — use `.on_hover(...)`, not `.hover(...)`.
 - **Text input is three types, not one.** gpui-component splits the editing engine by kind, and the element has to match the state: `InputState`/`Input` (single line — `masked`, `pattern`, `validate`, `prefix`/`suffix`, and the only one that is `Sizable`), `TextareaState`/`Textarea` (`auto_grow`, `rows`), `EditorState`/`Editor` (`language`, `line_number`, `folding`, `indent_guides`). `soft_wrap` / `searchable` / `tab_size` are shared by the two multi-line kinds. The **LSP lives on the editor only**, so a completion provider (`state.lsp_mut().completion_provider`) forces an `EditorState` even for a one-line bar — file it back down with `.line_number(false).indent_guides(false).folding(false).searchable(false).submit_on_enter(true)` and a pinned `.h(...)` (the JSONPath bar in `bytes_editor.rs`) — `folding` **defaults to true** and reserves the fold-icon hitbox on the left even with line numbers off, so forgetting it leaves the cursor floating a gutter's width from the field's edge. `Editor` already applies the theme's mono font, its own line height, and `focus_bordered(false)`; don't re-set them.
 - **`Scrollable` + `max_h` silently clips instead of scrolling.** `overflow_y_scrollbar()` copies the caller's size styles onto its wrapper but the inner content keeps a copy too; the forced `h_auto` overrides a fixed `h` yet nothing resets `max_h`, so the content itself is clamped and the scroll range is zero. Give the viewport a definite `h(...)` (branching on content length for short-content inline rendering) — never `max_h` (fixed in the update dialog / trash dialog / migration preview; grep before copying those patterns).
 - `TabBar::child(impl Into<Tab>)` only accepts `Tab`, so a context menu (`.context_menu(...)` returns `ContextMenu<Self>`), drag & drop, or middle-click can't be attached to its tabs. The workspace tab strip in `main.rs` is hand-rolled pills for exactly this reason.
@@ -78,7 +80,7 @@ The app re-exports the sub-crates through thin shims, so call sites keep their o
 
 ## Conventions
 
-- UI components: **prefer `gpui-component`'s built-in components first**. Only when `gpui-component` has no suitable component, use the shared widgets in `crates/zedis-ui` (`ZedisCard`, `ZedisDialog`, `ZedisForm`, ...). Hand-rolling a one-off widget is a last resort.
+- UI components: **prefer `gpui-component`'s built-in components first** — the `gpui-kit` skill's component catalog is the list to check. Only when `gpui-component` has no suitable component, use the shared widgets in `crates/zedis-ui` (`ZedisCard`, `ZedisDialog`, `ZedisForm`, ...). Hand-rolling a one-off widget is a last resort.
 - Maintain README parity: `README.md` and `README_zh.md` are both kept in sync when features change.
 - Destructive Redis ops (`FLUSHALL`, `XGROUP DESTROY`, key/server delete, …) route through a confirm dialog (`ZedisDialog::new_alert` + `dialog_button_props`); production-tagged servers escalate the wording.
 - Keep the dependency surface lean (e.g. fuzzy matching is hand-rolled, Lua highlighting registers tree-sitter manually) — prefer a small in-crate implementation over a new dependency for self-contained needs.
@@ -93,6 +95,22 @@ The app re-exports the sub-crates through thin shims, so call sites keep their o
 - When actually adding the dependency, use `cargo add <crate>` so the version is written by cargo, not by hand.
 
 ## Agent skills
+
+### GPUI / gpui-kit
+
+Two upstream skills are vendored in `.claude/skills/` (from `longbridge/gpui-kit`'s `skills/`, the set `npx skills add longbridge/gpui-kit` installs):
+
+- `gpui-kit` — load before any GPUI or gpui-component work. Its `references/coding-guides.md` is the normative coding guide (read *Architecture at a glance* and *Rules for coding agents* first, then the section for the change); `SKILL.md` holds the component catalog with import paths, and `references/gpui/*.md` the mechanics (actions, async, contexts, custom elements, entities, events, focus, globals, layout, `ElementId`, tests).
+- `gpui-kit-design-guides` — load before changing anything with a visible surface: layout, spacing, hierarchy, color, density, component choice, interaction states, overlays, motion, data-heavy views, interface copy.
+
+How the skills' code maps onto this repo — the only places they differ:
+
+- The skills write `use gpui_kit::*;` for GPUI. Here GPUI stays `gpui::…` (the `gpui-pre` rename in `[workspace.dependencies]`, so `gpui::Context`, `gpui::test`, `gpui::Task` are the spellings in use — see the intro at the top). Component and asset paths are the same as in the skills: `gpui_kit::component::…`, `gpui_kit::assets::Assets`.
+- `gpui_kit::init(cx)` in the skills is `gpui_kit::component::init(cx)` in `main.rs` — the same function (kit's `init` calls it), with our theme loading after it.
+- Their "one dependency" rule is deliberately not followed to the letter: the `gpui`, `gpui_platform` and `gpui_macros` renames sit next to `gpui-kit` so the import paths did not have to change; do not "fix" that, and keep all four on the same `gpui-pre` version.
+- `#[gpui_kit::test]` in the skills is `#[gpui::test]` here (`TestAppContext` tests in `src/`).
+
+Updating: `npx skills update` refreshes `gpui-kit-design-guides` (tracked in `skills-lock.json`). `gpui-kit` was copied by hand because the skills CLI rejects its frontmatter (an unquoted `description:` containing `::`), and its `description` is quoted here for the same reason — re-copy it from upstream and re-quote when bumping gpui-kit.
 
 ### Issue tracker
 

@@ -22,7 +22,7 @@ use crate::connection::{CommandStatus, ServerCommand};
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisServerState, i18n_common, i18n_features};
 use gpui::{App, Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, WindowExt, button::Button, h_flex, label::Label, scroll::ScrollableElement, v_flex,
 };
 use zedis_ui::ZedisDialog;

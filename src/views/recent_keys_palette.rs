@@ -21,8 +21,8 @@ use crate::db::{get_recent_keys_manager, recent_keys_scope};
 use crate::helpers::fuzzy_score;
 use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_recent_keys_palette};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
-use gpui_component::scroll::{Scrollbar, ScrollbarMode};
-use gpui_component::{ActiveTheme, label::Label, v_flex};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::{ActiveTheme, label::Label, v_flex};
 use std::mem::take;
 
 pub struct ZedisRecentKeysPalette {
@@ -32,7 +32,7 @@ pub struct ZedisRecentKeysPalette {
     /// Whether a server connection is in context (not Home/Settings).
     in_server_context: bool,
     open: bool,
-    query: gpui::Entity<gpui_component::input::InputState>,
+    query: gpui::Entity<gpui_kit::component::input::InputState>,
     selected: usize,
     focus_handle: FocusHandle,
     pending_focus: bool,
@@ -47,7 +47,7 @@ pub struct ZedisRecentKeysPalette {
 impl ZedisRecentKeysPalette {
     pub fn new(server_state: gpui::Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| {
-            gpui_component::input::InputState::new(window, cx)
+            gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder(i18n_recent_keys_palette(cx, "search_placeholder"))
         });
         Self {
@@ -155,7 +155,7 @@ impl Render for ZedisRecentKeysPalette {
             if take(&mut self.pending_restore) {
                 match self.prev_focus.take() {
                     Some(prev) => prev.focus(window, cx),
-                    None => window.blur(),
+                    None => window.blur(cx),
                 }
             }
             return div().into_any_element();
@@ -208,7 +208,7 @@ impl Render for ZedisRecentKeysPalette {
                 let key = self.recent[item_idx].clone();
                 let is_sel = row == selected;
                 let key_for_click = key.clone();
-                let mut r = gpui_component::h_flex()
+                let mut r = gpui_kit::component::h_flex()
                     .id(("zedis-recent-keys-row", row))
                     .w_full()
                     .items_center()
@@ -309,7 +309,7 @@ impl Render for ZedisRecentKeysPalette {
                                     .text_color(muted)
                                     .mb_1(),
                             )
-                            .child(gpui_component::input::Input::new(&self.query)),
+                            .child(gpui_kit::component::input::Input::new(&self.query)),
                     )
                     .child(
                         div().relative().child(list).child(

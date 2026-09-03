@@ -14,7 +14,7 @@
 
 use crate::db::TagColor;
 use gpui::{Hsla, hsla, rgb};
-use gpui_component::ActiveTheme;
+use gpui_kit::component::ActiveTheme;
 
 /// Canonical environment key for a stored tag color preset. Normalizes
 /// case/whitespace, maps legacy palette keys (`green` / `red` / `blue` /

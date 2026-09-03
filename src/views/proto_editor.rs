@@ -21,12 +21,12 @@ use crate::states::ZedisGlobalStore;
 use crate::states::i18n_proto_editor;
 use crate::states::{ZedisServerState, dialog_button_props};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::label::Label;
-use gpui_component::radio::RadioGroup;
-use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
-use gpui_component::{IconName, h_flex};
-use gpui_component::{
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::label::Label;
+use gpui_kit::component::radio::RadioGroup;
+use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_kit::component::{IconName, h_flex};
+use gpui_kit::component::{
     IndexPath,
     alert::Alert,
     form::{field, v_form},

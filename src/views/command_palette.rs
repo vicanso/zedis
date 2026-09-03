@@ -24,8 +24,8 @@ use crate::states::{
     Route, ServerView, ZedisGlobalStore, ZedisServerState, command_status_label, i18n_command_palette, i18n_shortcuts,
 };
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
-use gpui_component::scroll::{Scrollbar, ScrollbarMode};
-use gpui_component::{ActiveTheme, label::Label, v_flex};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::{ActiveTheme, label::Label, v_flex};
 use std::mem::take;
 use tracing::warn;
 
@@ -85,7 +85,7 @@ struct PaletteItem {
 
 /// One `<sigil> label` segment of the palette footer's scope legend.
 fn scope_hint(sigil: &str, label: gpui::SharedString, chip_bg: gpui::Hsla, text: gpui::Hsla) -> impl IntoElement {
-    gpui_component::h_flex()
+    gpui_kit::component::h_flex()
         .gap_1p5()
         .items_center()
         .child(
@@ -105,7 +105,7 @@ pub struct ZedisCommandPalette {
     /// opens so the per-keystroke `build_items` stays DB- and alloc-light.
     favorites: Vec<gpui::SharedString>,
     open: bool,
-    query: gpui::Entity<gpui_component::input::InputState>,
+    query: gpui::Entity<gpui_kit::component::input::InputState>,
     selected: usize,
     focus_handle: FocusHandle,
     /// Set when the palette is opened; `render` consumes it to reset
@@ -139,7 +139,7 @@ pub struct ZedisCommandPalette {
 impl ZedisCommandPalette {
     pub fn new(server_state: gpui::Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| {
-            gpui_component::input::InputState::new(window, cx)
+            gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder(i18n_command_palette(cx, "search_placeholder"))
         });
         Self {
@@ -510,7 +510,7 @@ impl Render for ZedisCommandPalette {
             if take(&mut self.pending_restore) {
                 match self.prev_focus.take() {
                     Some(prev) => prev.focus(window, cx),
-                    None => window.blur(),
+                    None => window.blur(cx),
                 }
             }
             return div().into_any_element();
@@ -584,7 +584,7 @@ impl Render for ZedisCommandPalette {
                 let it = &items[item_idx];
                 let is_sel = row == selected;
                 let cmd = it.command.clone();
-                let mut r = gpui_component::h_flex()
+                let mut r = gpui_kit::component::h_flex()
                     .id(("zedis-palette-row", row))
                     .w_full()
                     .items_center()
@@ -695,7 +695,7 @@ impl Render for ZedisCommandPalette {
                             .p_2()
                             .border_b_1()
                             .border_color(border)
-                            .child(gpui_component::input::Input::new(&self.query)),
+                            .child(gpui_kit::component::input::Input::new(&self.query)),
                     )
                     .child(
                         // Relative wrapper so the absolutely-positioned
@@ -733,7 +733,7 @@ impl Render for ZedisCommandPalette {
                                 .border_t_1()
                                 .border_color(border)
                                 .child(
-                                    gpui_component::h_flex()
+                                    gpui_kit::component::h_flex()
                                         .gap_4()
                                         .px_3()
                                         .py_1p5()

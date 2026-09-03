@@ -21,8 +21,8 @@
 use crate::helpers::{humanize_keystroke, shortcut_reference};
 use crate::states::i18n_shortcuts;
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
-use gpui_component::scroll::{Scrollbar, ScrollbarMode};
-use gpui_component::{ActiveTheme, StyledExt, h_flex, label::Label, v_flex};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::{ActiveTheme, StyledExt, h_flex, label::Label, v_flex};
 
 pub struct ZedisShortcutsOverlay {
     open: bool,
@@ -65,7 +65,7 @@ impl ZedisShortcutsOverlay {
         // The open overlay holds focus; the closed render drops that
         // element, orphaning focus. Blur returns it to the window root
         // so the ⌘/ keybinding keeps a dispatch path to reopen.
-        window.blur();
+        window.blur(cx);
         cx.notify();
     }
 }

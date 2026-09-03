@@ -16,7 +16,7 @@
 //! views instead of each recomputing (and drifting from) the value.
 
 use gpui::{App, Hsla};
-use gpui_component::{ActiveTheme, Colorize};
+use gpui_kit::component::{ActiveTheme, Colorize};
 
 /// How far a card surface is lifted off the theme background — lightened in
 /// dark themes, darkened in light. Kept subtle so cards read as a gentle

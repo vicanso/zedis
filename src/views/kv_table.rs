@@ -26,9 +26,9 @@ use crate::{
     views::export_to_file,
 };
 use gpui::{App, Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
-use gpui_component::TITLE_BAR_HEIGHT;
-use gpui_component::notification::Notification;
-use gpui_component::{
+use gpui_kit::component::TITLE_BAR_HEIGHT;
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

@@ -33,13 +33,13 @@ use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_
 /// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
 use crate::views::{export_to_file, open_key_in_editor, search_keys_in_tree};
 use gpui::{ClipboardItem, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
-use gpui_component::button::ButtonVariants;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::DropdownMenu;
-use gpui_component::notification::Notification;
-use gpui_component::progress::Progress;
-use gpui_component::text::{TextView, TextViewStyle};
-use gpui_component::{
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::DropdownMenu;
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::progress::Progress;
+use gpui_kit::component::text::{TextView, TextViewStyle};
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,

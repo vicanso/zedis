@@ -17,7 +17,7 @@ use gpui::{
     AnyWindowHandle, App, AppContext, DisplayId, Entity, FocusHandle, Focusable, Global, KeyDownEvent, Window,
     WindowOptions, div, prelude::*,
 };
-use gpui_component::Root;
+use gpui_kit::component::Root;
 use std::{any::TypeId, collections::HashMap};
 
 /// The `DisplayId` of the monitor the main (active) window is currently on, or

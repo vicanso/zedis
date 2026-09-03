@@ -28,8 +28,8 @@ use crate::{
 use gpui::{
     Anchor, App, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
-use gpui_component::{
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
     button::{Button, ButtonVariants},
     h_flex,

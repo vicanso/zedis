@@ -38,7 +38,7 @@ use gpui::{
     Point, SharedString, Subscription, Task, Window, bounds, canvas, div, fill, point, prelude::*, px, quad, rgb, size,
     transparent_black,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use gpui::{AnyElement, App, StyleRefinement, Window, div, prelude::*};
-use gpui_component::{ActiveTheme, StyledExt, h_flex};
+use gpui_kit::component::{ActiveTheme, StyledExt, h_flex};
 
 /// A container that automatically inserts vertical divider lines between its children.
 #[derive(IntoElement, Default)]

@@ -30,8 +30,8 @@ use crate::views::{export_to_file, open_key_in_editor};
 use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::button::ButtonVariants;
-use gpui_component::{
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
     button::Button,
     dialog::DialogButtonProps,

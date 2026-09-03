@@ -39,7 +39,7 @@ use gpui::{
     Action, Anchor, App, AppContext, ClipboardItem, Entity, FocusHandle, Focusable, FontWeight, Hsla, ScrollStrategy,
     SharedString, Subscription, Task, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
@@ -51,7 +51,7 @@ use gpui_component::{
     spinner::Spinner,
     v_flex,
 };
-use gpui_component::{
+use gpui_kit::component::{
     list::{List, ListDelegate, ListEvent, ListItem, ListState},
     menu::DropdownMenu,
 };

@@ -44,7 +44,7 @@ use gpui::{
     ClipboardItem, Context, Entity, FocusHandle, Hsla, KeyDownEvent, SharedString, Subscription, Task, Window, div,
     prelude::*, px, uniform_list,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
@@ -189,7 +189,7 @@ impl ZedisMultiSearch {
         self.open = false;
         // Return focus to the window root so global hotkeys keep a
         // dispatch path (same as the command palette).
-        window.blur();
+        window.blur(cx);
         cx.notify();
     }
 
@@ -677,7 +677,7 @@ impl ZedisMultiSearch {
                                         .on_click(move |_, window, cx: &mut gpui::App| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(copy_key.to_string()));
                                             window.push_notification(
-                                                gpui_component::notification::Notification::info(i18n_common(
+                                                gpui_kit::component::notification::Notification::info(i18n_common(
                                                     cx,
                                                     "copied_to_clipboard",
                                                 )),

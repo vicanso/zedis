@@ -27,8 +27,8 @@ use crate::states::{
 };
 use crate::views::unavailable_chip;
 use gpui::{Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::button::ButtonVariants;
-use gpui_component::{
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,

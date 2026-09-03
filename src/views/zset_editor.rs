@@ -30,7 +30,7 @@ use crate::{
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
-use gpui_component::button::Button;
+use gpui_kit::component::button::Button;
 use zedis_ui::ZedisFormFieldType;
 
 /// Factory producing extra footer buttons each render (e.g. the Table/Map

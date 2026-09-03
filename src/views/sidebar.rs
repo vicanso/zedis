@@ -20,9 +20,9 @@ use crate::{
     states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save},
 };
 use gpui::{Context, Hsla, Image, ImageFormat, SharedString, Subscription, Window, div, img, prelude::*, px, rgb};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::tooltip::Tooltip;
-use gpui_component::{
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,

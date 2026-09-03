@@ -35,7 +35,7 @@ use crate::states::{ZedisGlobalStore, i18n_editor, json_merge_diff};
 // parent module we can reach it via `super::editor`.
 use super::editor::DiffSession;
 use gpui::{FocusHandle, ScrollHandle, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,

@@ -27,7 +27,7 @@ use crate::views::{DialogCallback, ZedisUpdateDialog};
 use gpui::{App, SharedString, WeakEntity, Window, div, prelude::*, px, rems};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName,
     label::Label,
     scroll::ScrollableElement,

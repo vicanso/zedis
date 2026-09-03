@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, Hsla, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, StyledExt, button::Button, h_flex, label::Label, list::ListItem, tooltip::Tooltip, v_flex,
 };
 

@@ -37,7 +37,7 @@ use crate::db::{KeyMetadata, TagColor, get_key_metadata_manager};
 use crate::helpers::theme_color_for_tag;
 use crate::states::{ZedisGlobalStore, dialog_button_props, i18n_common, i18n_key_tag};
 use gpui::{Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

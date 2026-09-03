@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use gpui::{App, SharedString, StyleRefinement, Styled, Window, prelude::*, relative};
-use gpui_component::{ActiveTheme, StyledExt, skeleton::Skeleton, v_flex};
+use gpui_kit::component::{ActiveTheme, StyledExt, skeleton::Skeleton, v_flex};
 
 #[derive(IntoElement, Default)]
 pub struct ZedisSkeletonLoading {

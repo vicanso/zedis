@@ -17,7 +17,7 @@
 //!
 //! The parsing/resolution logic is pure and unit-tested in
 //! `helpers::jsonpath`; this file is only the thin
-//! `gpui_component::input::CompletionProvider` adapter plus a lazily
+//! `gpui_kit::component::input::CompletionProvider` adapter plus a lazily
 //! parsed, cached document handle shared with the editor.
 
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use gpui::{App, SharedString, Task, Window};
-use gpui_component::input::{CompletionProvider, Rope, RopeExt};
+use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, InsertReplaceEdit,
     Range as LspRange,

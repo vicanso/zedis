@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use gpui::{Entity, EventEmitter, SharedString, Subscription, Window, prelude::*};
-use gpui_component::{
+use gpui_kit::component::{
     IndexPath,
     select::{Select, SelectEvent, SelectItem, SelectState},
 };

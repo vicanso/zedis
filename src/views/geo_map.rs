@@ -38,7 +38,7 @@ use gpui::{
     MouseUpEvent, Pixels, Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Subscription, Task, Window,
     bounds, canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black, uniform_list,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,

@@ -16,7 +16,7 @@ use super::{KvTableColumn, KvTableColumnType};
 use crate::helpers::get_mono_font_family;
 use crate::states::{KeyType, RedisValue, ZedisServerState, i18n_common};
 use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

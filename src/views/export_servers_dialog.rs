@@ -24,7 +24,7 @@ use crate::connection::{RedisServer, get_servers};
 use crate::helpers::encrypt_share;
 use crate::states::{ZedisGlobalStore, i18n_servers};
 use gpui::{App, ClipboardItem, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,

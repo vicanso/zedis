@@ -34,7 +34,7 @@ use crate::{
     states::{ZedisServerState, i18n_hll},
 };
 use gpui::{Context, Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, StyledExt,
     button::Button,
     h_flex,

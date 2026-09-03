@@ -36,10 +36,10 @@ use chrono::TimeZone;
 use gpui::{
     AnyElement, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px, relative,
 };
-use gpui_component::button::ButtonVariants;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,

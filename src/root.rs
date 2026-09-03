@@ -40,7 +40,7 @@ use crate::window_setup::*;
 use gpui::{Action, Bounds, Entity, MouseButton, Pixels, Point, SharedString, Task, Window, div, prelude::*};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName, Root, Sizable, Theme, ThemeMode, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,

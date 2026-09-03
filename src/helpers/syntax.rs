@@ -24,7 +24,7 @@
 //! by following the same pattern — pull the parser crate, call
 //! `register_*`, the rest is free.
 
-use gpui_component::highlighter::{LanguageConfig, LanguageRegistry};
+use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
 
 /// Wire up every extra tree-sitter language we want at runtime.
 /// Idempotent — `register` overwrites by name, so calling twice is

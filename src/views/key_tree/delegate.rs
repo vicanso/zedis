@@ -516,7 +516,8 @@ impl ListDelegate for KeyTreeDelegate {
                                                 entry.id.clone()
                                             };
                                             move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                                                gpui_kit::component::tooltip::Tooltip::new(text.clone())
+                                                    .build(window, cx)
                                             }
                                         })
                                         .child(row_label),
