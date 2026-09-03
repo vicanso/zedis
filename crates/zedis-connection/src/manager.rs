@@ -14,8 +14,9 @@
 
 use super::{
     async_connection::{
-        RedisAsyncConn, open_single_connection, query_async_masters, query_async_masters_pipeline,
-        remove_connection_from_pool, resolve_connection_timeout, resolve_response_timeout,
+        RedisAsyncConn, open_seed_connection, open_single_connection, query_async_masters,
+        query_async_masters_pipeline, remove_connection_from_pool, resolve_connection_timeout,
+        resolve_response_timeout,
     },
     config::{RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
@@ -34,6 +35,7 @@ use std::{
     time::Duration,
 };
 use tracing::{debug, error, info};
+use zedis_core::string::format_host_port;
 use zedis_core::ttl_cache::TtlCache;
 
 type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
@@ -310,8 +312,9 @@ struct RedisNode {
 }
 
 impl RedisNode {
+    /// `host:port` as a label — an IPv6 literal bracketed.
     pub fn host_port(&self) -> String {
-        format!("{}:{}", self.server.host, self.server.port)
+        format_host_port(&self.server.host, self.server.port)
     }
 }
 

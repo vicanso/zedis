@@ -15,7 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{
     ImportError, RedisServer, SERVER_TYPE_SENTINEL, TAG_ENV_LABELS, get_server_groups, get_servers,
-    open_single_connection, tag_color_index,
+    open_seed_connection, open_single_connection, tag_color_index,
 };
 use crate::error::Error;
 use crate::helpers::{
@@ -386,6 +386,19 @@ impl ZedisServers {
                             }))
                     }
                 }),
+            // Sentinel-only, so they follow the master name: a sentinel with
+            // credentials of its own is the exception, not the rule.
+            ZedisFormField::new("sentinel_username", i18n_servers(cx, "sentinel_username"))
+                .default_value(redis_server.sentinel_username.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "sentinel_username_placeholder"))
+                .visible_when_filled("master_name")
+                .tab_index(0),
+            ZedisFormField::new("sentinel_password", i18n_servers(cx, "sentinel_password"))
+                .default_value(redis_server.sentinel_password.clone().unwrap_or_default())
+                .placeholder(i18n_servers(cx, "sentinel_password_placeholder"))
+                .visible_when_filled("master_name")
+                .tab_index(0)
+                .mask(),
             ZedisFormField::new("description", i18n_common(cx, "description"))
                 .default_value(redis_server.description.clone().unwrap_or_default())
                 .placeholder(i18n_common(cx, "description_placeholder"))
@@ -625,18 +638,10 @@ impl ZedisServers {
                             cx.notify();
                             cx.spawn(async move |handle, cx| {
                                 let result = async {
-                                    let mut conn = match open_single_connection(&server, 0, false).await {
-                                        Ok(conn) => conn,
-                                        Err(e) => {
-                                            if !e.to_string().contains("AuthenticationFailed") {
-                                                return Err(e.into());
-                                            }
-                                            // sentinel nodes typically don't require auth
-                                            let mut tmp = server.clone();
-                                            tmp.password = None;
-                                            open_single_connection(&tmp, 0, false).await?
-                                        }
-                                    };
+                                    // The same dial as discovery: the sentinel's own
+                                    // credentials when it has some, else the legacy
+                                    // retry without a password.
+                                    let mut conn = open_seed_connection(&server).await?;
                                     if server.server_type == Some(SERVER_TYPE_SENTINEL) {
                                         // sentinel: verify by connecting to the actual master
                                         let masters: Vec<std::collections::HashMap<String, String>> =

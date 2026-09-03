@@ -22,12 +22,13 @@
 //! attempt rather than probed separately.
 
 use super::async_connection::{open_single_connection, resolve_connection_timeout};
-use super::config::RedisServer;
+use super::config::{RedisServer, SERVER_TYPE_SENTINEL};
 use super::ssh_tunnel::{SshHandle, new_ssh_session, run_in_tokio};
 use crate::error::Error;
 use redis::{ErrorKind, cmd};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
+use zedis_core::string::split_host_port_or;
 
 /// One diagnostic stage. The set of stages for a server depends on its
 /// config — see [`diag_stages`].
@@ -127,10 +128,8 @@ pub fn diag_stages(server: &RedisServer) -> Vec<DiagStage> {
 pub fn dial_endpoint(server: &RedisServer) -> (String, u16) {
     if server.is_ssh_tunnel() {
         let addr = server.ssh_addr.clone().unwrap_or_default();
-        if let Some((host, port)) = addr.split_once(':') {
-            return (host.to_string(), port.parse::<u16>().unwrap_or(22));
-        }
-        return (addr, 22);
+        let (host, port) = split_host_port_or(&addr, 22);
+        return (host.to_string(), port);
     }
     (server.host.clone(), server.port)
 }
@@ -309,6 +308,14 @@ pub struct RedisProbe {
 /// Run one real connection (the same path the app itself uses, including
 /// the SSH tunnel when configured) plus a PING, and attribute the result.
 pub async fn probe_redis(server: &RedisServer) -> RedisProbe {
+    // The configured host of a Sentinel entry *is* a sentinel: dial it with
+    // the sentinel's own credentials when it has some.
+    let dialed = if server.server_type == Some(SERVER_TYPE_SENTINEL) && server.has_sentinel_credentials() {
+        server.sentinel_login()
+    } else {
+        server.clone()
+    };
+    let server = &dialed;
     let tls_enabled = server.tls.unwrap_or(false);
     let has_credentials = server.password.as_deref().is_some_and(|p| !p.trim().is_empty())
         || server.username.as_deref().is_some_and(|u| !u.trim().is_empty());

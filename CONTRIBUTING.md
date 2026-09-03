@@ -15,7 +15,7 @@ Thanks for your interest in improving Zedis! 🦀 This guide covers how to get s
 - **Typos / formatting:** please don't open PRs *solely* for minor doc/comment typos; we batch those or fix them alongside larger changes.
 
 ### Development setup
-Zedis is built with Rust (edition 2024; **Rust 1.95.0** is the toolchain we build with) and [GPUI](https://www.gpui.rs/).
+Zedis is built with Rust (edition 2024; **Rust 1.98.0** is the toolchain we build with — pinned in `rust-toolchain.toml`, which rustup applies automatically) and [GPUI](https://www.gpui.rs/).
 
 ```bash
 git clone https://github.com/vicanso/zedis
@@ -64,7 +64,7 @@ A few project-specific rules:
 - **拼写 / 格式:** 请**不要**仅为修复文档/注释中个别拼写或格式问题而单独提 PR;这类问题我们会集中处理或在较大改动中顺带修复。
 
 ### 开发环境
-Zedis 使用 Rust(edition 2024;我们以 **Rust 1.95.0** 构建)与 [GPUI](https://www.gpui.rs/) 开发。
+Zedis 使用 Rust(edition 2024;我们以 **Rust 1.98.0** 构建,版本固定在 `rust-toolchain.toml` 中,rustup 会自动应用)与 [GPUI](https://www.gpui.rs/) 开发。
 
 ```bash
 git clone https://github.com/vicanso/zedis

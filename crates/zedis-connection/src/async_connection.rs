@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::config::{RedisServer, get_server};
+use super::config::{RedisServer, SERVER_TYPE_SENTINEL, get_server};
 use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
-use crate::error::Error;
+use crate::error::{ConnectionErrorKind, Error};
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use redis::{
@@ -30,6 +30,7 @@ use std::sync::{
 };
 use std::{sync::LazyLock, time::Duration};
 use tracing::{debug, error};
+use zedis_core::string::split_host_port;
 use zedis_core::ttl_cache::{TtlCache, now_secs};
 
 /// Name reported to Redis via `CLIENT SETNAME` — visible in `CLIENT LIST`,
@@ -227,6 +228,45 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
 
     Ok(conn)
 }
+/// The first connection to a configured endpoint, before its topology is
+/// known — what discovery, the form's Test button and the diagnostics dial.
+///
+/// Sentinel nodes may carry credentials of their own. With
+/// `sentinel_username` / `sentinel_password` set they are used outright on
+/// an entry pinned to Sentinel, and as the retry when the data-node
+/// credentials are refused on an auto-detected one. Without them an
+/// authentication failure retries with no password at all — the legacy
+/// accommodation for an auth-less sentinel in front of a protected master,
+/// which until now was the *only* way a sentinel could differ from its
+/// data nodes.
+pub async fn open_seed_connection(config: &RedisServer) -> Result<MultiplexedConnection> {
+    if config.server_type == Some(SERVER_TYPE_SENTINEL) && config.has_sentinel_credentials() {
+        return open_single_connection(&config.sentinel_login(), 0, false).await;
+    }
+    match open_single_connection(config, 0, false).await {
+        Ok(conn) => Ok(conn),
+        Err(e) if e.connection_kind() == ConnectionErrorKind::Auth => {
+            let retry = if config.has_sentinel_credentials() {
+                debug!(
+                    name = config.name,
+                    "data credentials refused, retrying with the sentinel's"
+                );
+                config.sentinel_login()
+            } else {
+                debug!(
+                    name = config.name,
+                    "credentials refused, retrying without a password (sentinel?)"
+                );
+                let mut anonymous = config.clone();
+                anonymous.password = None;
+                anonymous
+            };
+            open_single_connection(&retry, 0, false).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
     let key = config.get_hash(db);
     CONNECTION_POOL.remove(&key);
@@ -440,14 +480,10 @@ async fn open_node_connection_inner(
     host_port: &str,
     use_cache: bool,
 ) -> Result<MultiplexedConnection> {
-    // rsplit so hostnames with colons in them (rare; technically only
-    // IPv6 literals would have them, and those should arrive bracketed)
-    // still parse — we take the LAST colon as the port separator.
-    let (host, port) = host_port.rsplit_once(':').ok_or_else(|| Error::Invalid {
+    // Last colon is the port separator, so an IPv6 literal parses whether
+    // it arrives bracketed (a label) or bare (`CLUSTER NODES`).
+    let (host, port) = split_host_port(host_port).ok_or_else(|| Error::Invalid {
         message: format!("invalid host:port \"{host_port}\""),
-    })?;
-    let port: u16 = port.parse().map_err(|e| Error::Invalid {
-        message: format!("invalid port \"{port}\": {e}"),
     })?;
     let mut config = get_server(server_name)?;
     config.host = host.to_string();

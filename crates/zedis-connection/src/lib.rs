@@ -51,7 +51,7 @@ mod ssh_tunnel;
 pub use acl::{AclSelector, AclUser, acl_del_user, acl_get_user, acl_list, acl_set_user, acl_whoami, split_acl_rules};
 pub use async_connection::{
     RedisAsyncConn, client_name, open_monitor_connection, open_node_connection, open_node_connection_cached,
-    open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
+    open_seed_connection, open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
 pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,

@@ -162,6 +162,17 @@ fn ardm_connection(
     if let Some(sentinel) = conn.get("sentinelOptions").filter(|v| v.is_object()) {
         server.server_type = Some(SERVER_TYPE_SENTINEL);
         server.master_name = sentinel.get("masterName").and_then(|v| v.as_str()).and_then(opt);
+        // ARDM's top-level `auth` is what the *sentinel* takes; the master's
+        // own login lives in the sentinel options. Only when it is there do
+        // the two sets part ways.
+        let node_username = sentinel.get("nodeUsername").and_then(|v| v.as_str()).and_then(opt);
+        let node_password = sentinel.get("nodePassword").and_then(|v| v.as_str()).and_then(opt);
+        if node_username.is_some() || node_password.is_some() {
+            server.sentinel_username = server.username.take();
+            server.sentinel_password = server.password.take();
+            server.username = node_username;
+            server.password = node_password;
+        }
     }
     if let Some(ssh) = conn.get("sshOptions").filter(|v| v.is_object()) {
         let ssh_str = |key: &str| ssh.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
@@ -282,6 +293,16 @@ fn tinyrdm_connection(item: &yaml::Yaml, group: Option<&str>) -> Result<RedisSer
     if let Some(sentinel) = item.get("sentinel").filter(|s| s.get_bool("enable") == Some(true)) {
         server.server_type = Some(SERVER_TYPE_SENTINEL);
         server.master_name = sentinel.get_str("master").and_then(opt);
+        // Tiny RDM's top-level login is the sentinel's; the master's own is
+        // nested under `sentinel`. Same split as for ARDM above.
+        let node_username = sentinel.get_str("username").and_then(opt);
+        let node_password = sentinel.get_str("password").and_then(opt);
+        if node_username.is_some() || node_password.is_some() {
+            server.sentinel_username = server.username.take();
+            server.sentinel_password = server.password.take();
+            server.username = node_username;
+            server.password = node_password;
+        }
     }
     if item.get("cluster").is_some_and(|c| c.get_bool("enable") == Some(true)) {
         server.server_type = Some(SERVER_TYPE_CLUSTER);
@@ -630,6 +651,30 @@ mod tests {
     }
 
     #[test]
+    fn ardm_sentinel_node_password_splits_the_logins() {
+        let json = r#"{"connections": [{
+            "name": "s", "host": "sentinel.internal", "port": 26379, "auth": "sentinel-pw",
+            "sentinelOptions": {"masterName": "mymaster", "nodePassword": "master-pw"}
+        }]}"#;
+        let servers = try_ardm_import(json).expect("ok").expect("recognized");
+        let s = &servers[0];
+        assert_eq!(s.server_type, Some(SERVER_TYPE_SENTINEL));
+        assert_eq!(s.master_name.as_deref(), Some("mymaster"));
+        assert_eq!(s.password.as_deref(), Some("master-pw"));
+        assert_eq!(s.sentinel_password.as_deref(), Some("sentinel-pw"));
+        assert!(s.username.is_none() && s.sentinel_username.is_none());
+
+        // Without a node password the single login stays with the data nodes.
+        let json = r#"{"connections": [{
+            "name": "s", "host": "sentinel.internal", "port": 26379, "auth": "pw",
+            "sentinelOptions": {"masterName": "mymaster"}
+        }]}"#;
+        let s = &try_ardm_import(json).expect("ok").expect("recognized")[0];
+        assert_eq!(s.password.as_deref(), Some("pw"));
+        assert!(s.sentinel_password.is_none());
+    }
+
+    #[test]
     fn ardm_rejects_foreign_payloads() {
         assert!(try_ardm_import("not base64 at all !!!").expect("ok").is_none());
         // Valid JSON but not ARDM-shaped.
@@ -720,6 +765,29 @@ mod tests {
         assert_eq!(prod.ssh_key.as_deref(), Some("/home/ops/id_rsa"));
         assert_eq!(prod.server_type, Some(SERVER_TYPE_SENTINEL));
         assert_eq!(prod.master_name.as_deref(), Some("mymaster"));
+    }
+
+    #[test]
+    fn tinyrdm_sentinel_login_splits_the_logins() {
+        let yaml = r#"- name: s
+  addr: sentinel.internal
+  port: 26379
+  username: sentinel-user
+  password: sentinel-pw
+  sentinel:
+    enable: true
+    master: mymaster
+    username: app
+    password: master-pw
+"#;
+        let servers = try_tinyrdm_import(yaml).expect("import ok").expect("recognized");
+        let s = &servers[0];
+        assert_eq!(s.server_type, Some(SERVER_TYPE_SENTINEL));
+        assert_eq!(s.master_name.as_deref(), Some("mymaster"));
+        assert_eq!(s.username.as_deref(), Some("app"));
+        assert_eq!(s.password.as_deref(), Some("master-pw"));
+        assert_eq!(s.sentinel_username.as_deref(), Some("sentinel-user"));
+        assert_eq!(s.sentinel_password.as_deref(), Some("sentinel-pw"));
     }
 
     #[test]

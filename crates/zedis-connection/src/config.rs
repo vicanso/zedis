@@ -34,6 +34,7 @@ use zedis_core::env::is_development;
 use zedis_core::fs::{
     ConfigRecovery, get_or_create_config_dir, load_config_with_recovery, write_file_atomic_with_backup,
 };
+use zedis_core::string::{bracket_ipv6, strip_ipv6_brackets};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -103,7 +104,9 @@ fn parse_url(host: String) -> RedisUrl {
         format!("redis://{host}")
     };
     if let Ok(u) = Url::parse(input_to_parse.as_str()) {
-        let host = u.host_str().unwrap_or("");
+        // `url` keeps the brackets on an IPv6 host; the stored host is the
+        // bare literal, bracketed again only where a URL is built.
+        let host = strip_ipv6_brackets(u.host_str().unwrap_or(""));
         let port = u.port();
         RedisUrl {
             host: host.to_string(),
@@ -207,6 +210,15 @@ pub struct RedisServer {
     /// Show TTL chips in the key tree. `None` = use global Settings default.
     pub show_key_tree_ttl: Option<bool>,
     pub master_name: Option<String>,
+    /// Credentials for the Sentinel nodes themselves, when they differ from
+    /// the data nodes' — `username` / `password` always authenticate the
+    /// master and replicas Sentinel points at. Both empty means the
+    /// sentinels take the same credentials, with the legacy "retry without
+    /// a password" fallback for an auth-less sentinel in front of a
+    /// protected master.
+    pub sentinel_username: Option<String>,
+    /// Encrypted at rest like `password`.
+    pub sentinel_password: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
     pub tls: Option<bool>,
@@ -309,6 +321,8 @@ impl RedisServer {
             username,
             password,
             master_name: get_str("master_name"),
+            sentinel_username: get_str("sentinel_username"),
+            sentinel_password: get_str("sentinel_password"),
             description: get_str("description"),
             updated_at: None,
 
@@ -460,6 +474,7 @@ impl RedisServer {
         clone.sort_order = None;
         if !include_secrets {
             clone.password = None;
+            clone.sentinel_password = None;
             clone.ssh_password = None;
             clone.ssh_key = None;
             clone.ssh_key_passphrase = None;
@@ -559,7 +574,7 @@ impl RedisServer {
         }
         let host = parsed
             .host_str()
-            .map(str::to_string)
+            .map(|h| strip_ipv6_brackets(h).to_string())
             .filter(|h| !h.is_empty())
             .ok_or(ImportError::MissingHost)?;
         let port = parsed.port().unwrap_or(6379);
@@ -705,6 +720,27 @@ impl RedisServer {
             _ => Some(SERVER_TYPE_AUTO),
         };
 
+        // For a Sentinel entry Redis Insight's top-level credentials are the
+        // *sentinel's*; the master's own live under `sentinelMaster`. Zedis
+        // keeps the data-node credentials in `username` / `password` and the
+        // sentinel's beside them — but only when the export really carries
+        // both, so an entry with one set of credentials keeps them for the
+        // data nodes as before.
+        let sentinel_master_username = nested_str("sentinelMaster", "username");
+        let sentinel_master_password = nested_str("sentinelMaster", "password");
+        let (username, password, sentinel_username, sentinel_password) = if server_type == Some(SERVER_TYPE_SENTINEL)
+            && (sentinel_master_username.is_some() || sentinel_master_password.is_some())
+        {
+            (
+                sentinel_master_username,
+                sentinel_master_password,
+                get_str("username"),
+                get_str("password"),
+            )
+        } else {
+            (get_str("username"), get_str("password"), None, None)
+        };
+
         let tls = get_bool("tls");
         // Redis Insight `verifyServerCert == false` ⇒ skip verification, which
         // is Zedis `insecure == true`. Only meaningful when TLS is enabled.
@@ -728,9 +764,11 @@ impl RedisServer {
             name,
             host,
             port,
-            username: get_str("username"),
-            password: get_str("password"),
+            username,
+            password,
             server_type,
+            sentinel_username,
+            sentinel_password,
             default_db: obj
                 .get("db")
                 .and_then(serde_json::Value::as_u64)
@@ -763,25 +801,43 @@ impl RedisServer {
     pub fn is_high_risk_tag(&self) -> bool {
         matches!(self.tag_color.as_deref(), Some("magenta") | Some("red"))
     }
+    /// Whether the Sentinel nodes carry credentials of their own.
+    pub fn has_sentinel_credentials(&self) -> bool {
+        let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        set(&self.sentinel_username) || set(&self.sentinel_password)
+    }
+
+    /// This entry with the Sentinel credentials swapped in — what the
+    /// sentinel nodes are dialed with. The data nodes keep `username` /
+    /// `password`.
+    pub fn sentinel_login(&self) -> RedisServer {
+        let mut login = self.clone();
+        login.username = self.sentinel_username.clone();
+        login.password = self.sentinel_password.clone();
+        login
+    }
+
     /// Generates the connection URL based on host, port, and optional password.
+    /// An IPv6 literal host is bracketed, as a URL requires (`redis://[::1]:6379`).
     pub fn get_connection_url(&self) -> String {
         let tls = self.tls.unwrap_or(false);
         let scheme = if tls { "rediss" } else { "redis" };
 
         let safe_pwd = self.password.as_deref().filter(|s| !s.trim().is_empty());
         let safe_usr = self.username.as_deref().filter(|s| !s.trim().is_empty());
+        let host = bracket_ipv6(&self.host);
 
         let url = match (safe_pwd, safe_usr) {
             (Some(pwd), Some(username)) => {
                 let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
                 let username_enc = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
-                format!("{scheme}://{username_enc}:{pwd_enc}@{}:{}", self.host, self.port)
+                format!("{scheme}://{username_enc}:{pwd_enc}@{host}:{}", self.port)
             }
             (Some(pwd), None) => {
                 let pwd_enc = utf8_percent_encode(pwd, NON_ALPHANUMERIC).to_string();
-                format!("{scheme}://:{pwd_enc}@{}:{}", self.host, self.port)
+                format!("{scheme}://:{pwd_enc}@{host}:{}", self.port)
             }
-            _ => format!("{scheme}://{}:{}", self.host, self.port),
+            _ => format!("{scheme}://{host}:{}", self.port),
         };
         if tls && self.insecure.unwrap_or(false) {
             return format!("{url}/#insecure");
@@ -880,6 +936,9 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         if let Some(password) = &server.password {
             server.password = Some(decrypt(password).unwrap_or(password.clone()));
         }
+        if let Some(password) = &server.sentinel_password {
+            server.sentinel_password = Some(decrypt(password).unwrap_or(password.clone()));
+        }
         if let Some(ssh_password) = &server.ssh_password {
             server.ssh_password = Some(decrypt(ssh_password).unwrap_or(ssh_password.clone()));
         }
@@ -924,6 +983,9 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
         configs.insert(server.id.clone(), server.clone());
         if let Some(password) = &server.password {
             server.password = Some(encrypt(password)?);
+        }
+        if let Some(password) = &server.sentinel_password {
+            server.sentinel_password = Some(encrypt(password)?);
         }
         if let Some(ssh_password) = &server.ssh_password {
             server.ssh_password = Some(encrypt(ssh_password)?);
@@ -977,6 +1039,7 @@ fn redact_servers(mut servers: Vec<RedisServer>) -> Result<String> {
     for server in servers.iter_mut() {
         for secret in [
             &mut server.password,
+            &mut server.sentinel_password,
             &mut server.ssh_password,
             &mut server.ssh_key,
             &mut server.ssh_key_passphrase,
@@ -1088,6 +1151,94 @@ mod upgrade_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv6_hosts_are_bracketed_in_urls_and_stripped_on_import() {
+        let mut s = RedisServer {
+            host: "::1".into(),
+            port: 6379,
+            ..Default::default()
+        };
+        assert_eq!(s.get_connection_url(), "redis://[::1]:6379");
+        s.password = Some("pw".into());
+        assert_eq!(s.get_connection_url(), "redis://:pw@[::1]:6379");
+        s.username = Some("app".into());
+        assert_eq!(s.get_connection_url(), "redis://app:pw@[::1]:6379");
+        s.host = "[::1]".into();
+        assert_eq!(
+            s.get_connection_url(),
+            "redis://app:pw@[::1]:6379",
+            "an already bracketed host is not wrapped twice"
+        );
+        // Names and IPv4 are untouched.
+        s.host = "redis.example.com".into();
+        assert_eq!(s.get_connection_url(), "redis://app:pw@redis.example.com:6379");
+
+        // A pasted URI keeps the bare literal; the brackets come back only
+        // where a URL is built.
+        let imported = RedisServer::from_import_uri("redis://[2001:db8::1]:6380/2").expect("uri");
+        assert_eq!(imported.host, "2001:db8::1");
+        assert_eq!(imported.port, 6380);
+        assert_eq!(imported.default_db, Some(2));
+        assert_eq!(imported.get_connection_url(), "redis://[2001:db8::1]:6380");
+        // The form's host field takes a URL too.
+        let form = parse_url("redis://[::1]:6390".to_string());
+        assert_eq!(form.host, "::1");
+        assert_eq!(form.port, Some(6390));
+    }
+
+    #[test]
+    fn redis_insight_sentinel_entries_keep_both_logins() {
+        // Redis Insight: top-level credentials are the sentinel's, the
+        // master's own sit under `sentinelMaster`.
+        let ri = r#"[{
+            "host": "sentinel.example.com", "port": 26379, "name": "s", "connectionType": "SENTINEL",
+            "username": "sentinel-user", "password": "sentinel-pw",
+            "sentinelMaster": { "name": "mymaster", "username": "app", "password": "master-pw" }
+        }]"#;
+        let servers = RedisServer::from_import_multi(ri).expect("ri import");
+        let s = &servers[0];
+        assert_eq!(s.server_type, Some(SERVER_TYPE_SENTINEL));
+        assert_eq!(s.master_name.as_deref(), Some("mymaster"));
+        assert_eq!(s.username.as_deref(), Some("app"));
+        assert_eq!(s.password.as_deref(), Some("master-pw"));
+        assert_eq!(s.sentinel_username.as_deref(), Some("sentinel-user"));
+        assert_eq!(s.sentinel_password.as_deref(), Some("sentinel-pw"));
+        assert!(s.has_sentinel_credentials());
+        let login = s.sentinel_login();
+        assert_eq!(login.username.as_deref(), Some("sentinel-user"));
+        assert_eq!(login.password.as_deref(), Some("sentinel-pw"));
+        assert_eq!(login.host, s.host, "only the credentials change");
+
+        // One set of credentials stays with the data nodes, as before.
+        let ri = r#"[{
+            "host": "h", "port": 26379, "name": "s", "connectionType": "SENTINEL", "password": "pw",
+            "sentinelMaster": { "name": "mymaster" }
+        }]"#;
+        let servers = RedisServer::from_import_multi(ri).expect("ri import");
+        let s = &servers[0];
+        assert_eq!(s.password.as_deref(), Some("pw"));
+        assert!(s.sentinel_username.is_none() && s.sentinel_password.is_none());
+        assert!(!s.has_sentinel_credentials());
+    }
+
+    #[test]
+    fn export_strips_the_sentinel_password_with_the_others() {
+        let s = RedisServer {
+            host: "h".into(),
+            port: 1,
+            password: Some("data-secret".into()),
+            sentinel_password: Some("sentinel-secret".into()),
+            ..Default::default()
+        };
+        let json = s.to_export_json(false).expect("json");
+        assert!(!json.contains("data-secret") && !json.contains("sentinel-secret"));
+        let json = s.to_export_json(true).expect("json");
+        assert!(json.contains("sentinel-secret"));
+        let redacted = redact_servers(vec![s]).expect("toml");
+        assert!(redacted.contains("sentinel_password = \"<redacted>\""));
+        assert!(!redacted.contains("sentinel-secret"));
+    }
 
     fn sample_server() -> RedisServer {
         RedisServer {

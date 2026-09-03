@@ -20,6 +20,7 @@ use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::AuthResult;
 use russh::client::{Handle, Handler};
 use russh::keys::ssh_key::PublicKey;
+use zedis_core::string::split_host_port_or;
 // Agent auth is unix-only (see the `#[cfg(unix)]` auth path below) — so
 // are its imports.
 #[cfg(unix)]
@@ -385,14 +386,9 @@ pub(crate) async fn new_ssh_session(
     };
     let config = Arc::new(config);
 
-    // Parse host and port from address string
-    let (host, port) = if let Some((host, port)) = addr.split_once(':') {
-        let host = host.to_string();
-        let port = port.parse::<u16>().unwrap_or(22);
-        (host.to_string(), port)
-    } else {
-        (addr.to_string(), 22)
-    };
+    // `host`, `host:port`, `[v6]`, `[v6]:port` or a bare IPv6 literal.
+    let (host, port) = split_host_port_or(addr, 22);
+    let host = host.to_string();
 
     let handler = ClientHandler {
         host: host.clone(),

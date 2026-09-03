@@ -16,6 +16,7 @@
 //! count) and the pooled `ConnectionManager`.
 
 use super::*;
+use crate::error::ConnectionErrorKind;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -268,25 +269,23 @@ impl ConnectionManager {
     pub(super) async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
         let config = get_server(name)?;
         let (mut conn, server_type) = {
-            let conn = match open_single_connection(&config, 0, false).await {
+            // The seed helper already retried a refused login with the
+            // sentinel's credentials (or none); a failure that is still
+            // about credentials is the user's to fix, anything else falls
+            // back to treating the endpoint as a standalone.
+            let conn = match open_seed_connection(&config).await {
                 Ok(conn) => conn,
+                Err(e) if e.connection_kind() == ConnectionErrorKind::Auth => return Err(e),
                 Err(e) => {
-                    if !e.to_string().contains("AuthenticationFailed") {
-                        error!("detect server type failed: {e:?}, use standalone mode");
-                        return Ok((
-                            vec![RedisNode {
-                                server: config.clone(),
-                                role: NodeRole::Master,
-                                ..Default::default()
-                            }],
-                            ServerType::Standalone,
-                        ));
-                    }
-                    // sentinel without password
-                    // detect server type again
-                    let mut tmp_config = config.clone();
-                    tmp_config.password = None;
-                    open_single_connection(&tmp_config, 0, false).await?
+                    error!("detect server type failed: {e:?}, use standalone mode");
+                    return Ok((
+                        vec![RedisNode {
+                            server: config.clone(),
+                            role: NodeRole::Master,
+                            ..Default::default()
+                        }],
+                        ServerType::Standalone,
+                    ));
                 }
             };
             if let Some(server_type) = config.server_type

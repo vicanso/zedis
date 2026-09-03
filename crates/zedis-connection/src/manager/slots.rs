@@ -15,6 +15,7 @@
 //! Cluster topology parsing + slot reshard planning (pure functions).
 
 use super::*;
+use zedis_core::string::split_host_port;
 
 fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
     // Split into address part and optional cluster bus port part
@@ -23,13 +24,10 @@ fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
         .map(|(a, c)| (a, Some(c)))
         .unwrap_or((address_str, None));
 
-    // Parse IP and Port
-    let (ip, port_str) = addr_part.split_once(':').ok_or_else(|| Error::Invalid {
+    // Parse IP and port. `CLUSTER NODES` prints an IPv6 address bare
+    // (`::1:7000@17000`), so the last colon is the separator.
+    let (ip, port) = split_host_port(addr_part).ok_or_else(|| Error::Invalid {
         message: format!("Invalid address format: {}", addr_part),
-    })?;
-
-    let port = port_str.parse::<u16>().map_err(|e| Error::Invalid {
-        message: format!("Invalid port '{}': {}", port_str, e),
     })?;
 
     // Parse cluster bus port if present

@@ -361,12 +361,41 @@ impl ZedisServerState {
         let new_zset = RedisZsetValue {
             keyword,
             size: zset.size,
+            sort_order: zset.sort_order,
             ..Default::default()
         };
         value.data = Some(RedisValueData::Zset(Arc::new(new_zset)));
 
         // Trigger load with the new filter
         self.load_more_zset_value(cx);
+    }
+
+    /// Re-walk the sorted set from rank 0 in `order` — `ZRANGE` or
+    /// `ZREVRANGE`. Any keyword filter stays; a `ZSCAN` walk is unordered,
+    /// so the order shows once the filter is cleared.
+    pub fn set_zset_sort_order(&mut self, order: SortOrder, cx: &mut Context<Self>) {
+        let Some((_, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        let Some(zset) = value.zset_value() else {
+            return;
+        };
+        if zset.sort_order == order {
+            return;
+        }
+        let new_zset = RedisZsetValue {
+            keyword: zset.keyword.clone(),
+            size: zset.size,
+            sort_order: order,
+            ..Default::default()
+        };
+        value.data = Some(RedisValueData::Zset(Arc::new(new_zset)));
+        self.load_more_zset_value(cx);
+    }
+
+    /// The order the loaded sorted set is walked in, if one is loaded.
+    pub fn zset_sort_order(&self) -> Option<SortOrder> {
+        self.value().and_then(|v| v.zset_value()).map(|z| z.sort_order)
     }
     /// Loads the next batch of ZSET members using appropriate pagination strategy.
     ///

@@ -175,25 +175,49 @@ impl ZedisEditor {
                                     let Some(ed) = weak.upgrade() else {
                                         return vec![];
                                     };
-                                    if ed.read(cx).zset_is_geo != Some(true) {
-                                        return vec![];
+                                    let mut buttons = Vec::new();
+                                    // Score order: the chevron shows the
+                                    // current walk (ZRANGE up, ZREVRANGE
+                                    // down), a click flips it.
+                                    let server_state = ed.read(cx).server_state.clone();
+                                    if let Some(order) = server_state.read(cx).zset_sort_order() {
+                                        let (icon, tooltip) = match order {
+                                            SortOrder::Asc => {
+                                                (IconName::ChevronUp, i18n_zset_editor(cx, "sort_desc_tooltip"))
+                                            }
+                                            SortOrder::Desc => {
+                                                (IconName::ChevronDown, i18n_zset_editor(cx, "sort_asc_tooltip"))
+                                            }
+                                        };
+                                        buttons.push(
+                                            Button::new("zset-sort-order").icon(icon).tooltip(tooltip).on_click(
+                                                move |_, _, cx| {
+                                                    server_state.update(cx, |state, cx| {
+                                                        state.set_zset_sort_order(order.toggled(), cx);
+                                                    });
+                                                },
+                                            ),
+                                        );
                                     }
-                                    let w_map = weak.clone();
-                                    // Icon-only button matching the footer's
-                                    // Add/Bulk style; opens the GEO map view.
-                                    vec![
-                                        Button::new("zset-view-map")
-                                            .icon(IconName::Map)
-                                            .tooltip(i18n_geo_map(cx, "map"))
-                                            .on_click(move |_, _, cx| {
-                                                let _ = w_map.update(cx, |e, cx| {
-                                                    if !e.zset_map_mode {
-                                                        e.zset_map_mode = true;
-                                                        cx.notify();
-                                                    }
-                                                });
-                                            }),
-                                    ]
+                                    if ed.read(cx).zset_is_geo == Some(true) {
+                                        let w_map = weak.clone();
+                                        // Icon-only button matching the footer's
+                                        // Add/Bulk style; opens the GEO map view.
+                                        buttons.push(
+                                            Button::new("zset-view-map")
+                                                .icon(IconName::Map)
+                                                .tooltip(i18n_geo_map(cx, "map"))
+                                                .on_click(move |_, _, cx| {
+                                                    let _ = w_map.update(cx, |e, cx| {
+                                                        if !e.zset_map_mode {
+                                                            e.zset_map_mode = true;
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                }),
+                                        );
+                                    }
+                                    buttons
                                 }),
                                 cx,
                             );
@@ -643,3 +667,4 @@ impl Render for ZedisEditor {
             .into_any_element()
     }
 }
+use crate::states::{SortOrder, i18n_zset_editor};

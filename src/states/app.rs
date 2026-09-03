@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use sys_locale::get_locale;
@@ -656,6 +657,33 @@ pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
     Ok(())
 }
 
+/// The bundled UI locales — one `locales/<lang>.toml` each.
+pub const SUPPORTED_LOCALES: [&str; 8] = ["en", "zh", "de", "es", "fr", "ja", "pt", "ru"];
+
+/// The bundled locale for an OS language tag — `zh-Hans-CN`, `en_US`,
+/// `pt-BR`, `de_DE.UTF-8`: the language subtag decides, region and script
+/// are ignored, and a language without a bundle falls back to English.
+pub fn language_from_system_locale(tag: Option<&str>) -> &'static str {
+    let lang = tag
+        .unwrap_or_default()
+        .trim()
+        .split(['-', '_', '.', '@'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    SUPPORTED_LOCALES
+        .iter()
+        .copied()
+        .find(|bundled| *bundled == lang)
+        .unwrap_or("en")
+}
+
+/// The OS language as a bundled locale, read once per process.
+fn system_language() -> &'static str {
+    static LANGUAGE: OnceLock<&'static str> = OnceLock::new();
+    LANGUAGE.get_or_init(|| language_from_system_locale(get_locale().as_deref()))
+}
+
 impl ZedisAppState {
     pub fn try_new() -> Result<Self> {
         let path = get_or_create_server_config()?;
@@ -674,24 +702,12 @@ impl ZedisAppState {
             None => {}
         }
         let mut state = loaded.value.unwrap_or_default();
-        if state.locale.clone().unwrap_or_default().is_empty() {
-            if let Some(locale) = get_locale() {
-                // Try to extract the language code from the locale string
-                // Handle formats like: "en-US", "zh-CN", "en", "zh", etc.
-                let lang = if let Some((lang, _)) = locale.split_once('-') {
-                    lang
-                } else if let Some((lang, _)) = locale.split_once('_') {
-                    // Some systems use underscore: "en_US"
-                    lang
-                } else {
-                    // Already a simple language code like "en" or "zh"
-                    locale.as_str()
-                };
-                state.locale = Some(lang.to_lowercase());
-            } else {
-                // Fallback to English if locale detection fails
-                state.locale = Some("en".to_string());
-            }
+        // First launch, or a cleared preference: follow the OS language,
+        // clamped to a bundled locale. The raw language tag used to be
+        // stored verbatim, so an unsupported one ("ko") rendered English
+        // through the fallback while the language menu showed nothing.
+        if state.locale.as_deref().is_none_or(|l| l.trim().is_empty()) {
+            state.locale = Some(system_language().to_string());
         }
         // Reassemble the runtime route from the persisted flat token plus the
         // last-connection snapshot; a connection-scoped view whose remembered
@@ -913,8 +929,13 @@ impl ZedisAppState {
     pub fn set_theme_name(&mut self, name: Option<String>) {
         self.theme_name = name;
     }
+    /// The UI language: the saved choice when it is a bundled locale, else
+    /// the OS language clamped to one (never a code the app can't render).
     pub fn locale(&self) -> &str {
-        self.locale.as_deref().unwrap_or("en")
+        match self.locale.as_deref() {
+            Some(locale) if SUPPORTED_LOCALES.contains(&locale) => locale,
+            _ => system_language(),
+        }
     }
 
     pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
@@ -2090,6 +2111,28 @@ mod tests {
             isolate_config();
             cx.update(|cx| flush_app_state_on_quit(cx));
             cx.quit();
+        }
+    }
+}
+
+#[cfg(test)]
+mod system_locale_tests {
+    use super::{SUPPORTED_LOCALES, language_from_system_locale};
+
+    #[test]
+    fn os_language_tags_map_to_bundled_locales() {
+        assert_eq!(language_from_system_locale(Some("zh-Hans-CN")), "zh");
+        assert_eq!(language_from_system_locale(Some("zh_TW")), "zh");
+        assert_eq!(language_from_system_locale(Some("en-US")), "en");
+        assert_eq!(language_from_system_locale(Some("pt-BR")), "pt");
+        assert_eq!(language_from_system_locale(Some("de_DE.UTF-8")), "de");
+        assert_eq!(language_from_system_locale(Some("JA")), "ja");
+        // A language without a bundle, an empty tag, and no tag at all.
+        assert_eq!(language_from_system_locale(Some("ko-KR")), "en");
+        assert_eq!(language_from_system_locale(Some("")), "en");
+        assert_eq!(language_from_system_locale(None), "en");
+        for bundled in SUPPORTED_LOCALES {
+            assert_eq!(language_from_system_locale(Some(bundled)), bundled);
         }
     }
 }

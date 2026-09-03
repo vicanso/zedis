@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 /// Performs fast case-insensitive substring search with ASCII optimization.
@@ -141,5 +142,101 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(60)), "1.0m");
         assert_eq!(format_duration(Duration::from_secs(59)), "59s");
         assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+    }
+}
+
+/// `host:port` → `(host, port)`, split at the **last** colon so an
+/// unbracketed IPv6 literal (`::1:6379`, the shape `CLUSTER NODES` prints)
+/// parses; a bracketed host (`[::1]:6379`) has its brackets stripped.
+/// `None` when there is no port.
+pub fn split_host_port(addr: &str) -> Option<(&str, u16)> {
+    let (host, port) = addr.trim().rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    Some((strip_ipv6_brackets(host), port))
+}
+
+/// A user-typed endpoint whose port is optional: `host`, `host:22`,
+/// `[::1]`, `[::1]:22`, or a bare IPv6 literal (`::1` — which is then the
+/// whole host: an IPv6 address *with* a port must be bracketed, as
+/// everywhere else). An unparsable port falls back to `default_port`.
+pub fn split_host_port_or(addr: &str, default_port: u16) -> (&str, u16) {
+    let addr = addr.trim();
+    if let Some(rest) = addr.strip_prefix('[')
+        && let Some((host, tail)) = rest.split_once(']')
+    {
+        let port = tail
+            .strip_prefix(':')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(default_port);
+        return (host, port);
+    }
+    if addr.matches(':').count() > 1 {
+        return (addr, default_port);
+    }
+    match addr.split_once(':') {
+        Some((host, port)) => (host, port.parse().unwrap_or(default_port)),
+        None => (addr, default_port),
+    }
+}
+
+/// `host:port` for URLs and labels, with an IPv6 literal bracketed.
+pub fn format_host_port(host: &str, port: u16) -> String {
+    format!("{}:{port}", bracket_ipv6(host))
+}
+
+/// `[::1]` for an IPv6 literal, any other host unchanged. A colon in a host
+/// can only be an IPv6 literal (hostnames and IPv4 have none); an already
+/// bracketed one is left alone.
+pub fn bracket_ipv6(host: &str) -> Cow<'_, str> {
+    if host.contains(':') && !host.starts_with('[') {
+        Cow::Owned(format!("[{host}]"))
+    } else {
+        Cow::Borrowed(host)
+    }
+}
+
+/// `[::1]` → `::1`; anything else unchanged.
+pub fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
+}
+
+#[cfg(test)]
+mod host_port_tests {
+    use super::{bracket_ipv6, format_host_port, split_host_port, split_host_port_or, strip_ipv6_brackets};
+
+    #[test]
+    fn last_colon_is_the_port_separator() {
+        assert_eq!(split_host_port("localhost:6379"), Some(("localhost", 6379)));
+        assert_eq!(split_host_port("10.0.0.1:7000"), Some(("10.0.0.1", 7000)));
+        // The unbracketed form CLUSTER NODES prints.
+        assert_eq!(split_host_port("::1:7000"), Some(("::1", 7000)));
+        assert_eq!(split_host_port("fe80::1%en0:7000"), Some(("fe80::1%en0", 7000)));
+        // Bracketed, as a user or a URL would write it.
+        assert_eq!(split_host_port("[::1]:7000"), Some(("::1", 7000)));
+        assert_eq!(split_host_port("localhost"), None);
+        assert_eq!(split_host_port("localhost:port"), None);
+    }
+
+    #[test]
+    fn optional_port_endpoints() {
+        assert_eq!(split_host_port_or("bastion", 22), ("bastion", 22));
+        assert_eq!(split_host_port_or("bastion:2200", 22), ("bastion", 2200));
+        assert_eq!(split_host_port_or(" bastion:bad ", 22), ("bastion", 22));
+        assert_eq!(split_host_port_or("[::1]", 22), ("::1", 22));
+        assert_eq!(split_host_port_or("[::1]:2200", 22), ("::1", 2200));
+        assert_eq!(split_host_port_or("[2001:db8::1]:22", 22), ("2001:db8::1", 22));
+        // A bare literal is a host, never "host ::1 plus port 1".
+        assert_eq!(split_host_port_or("2001:db8::1", 22), ("2001:db8::1", 22));
+    }
+
+    #[test]
+    fn ipv6_is_bracketed_for_urls_and_labels() {
+        assert_eq!(format_host_port("::1", 6379), "[::1]:6379");
+        assert_eq!(format_host_port("[::1]", 6379), "[::1]:6379");
+        assert_eq!(format_host_port("redis.example.com", 6379), "redis.example.com:6379");
+        assert_eq!(bracket_ipv6("127.0.0.1"), "127.0.0.1");
+        assert_eq!(strip_ipv6_brackets("[::1]"), "::1");
+        assert_eq!(strip_ipv6_brackets("::1"), "::1");
+        assert_eq!(strip_ipv6_brackets("[::1"), "[::1");
     }
 }

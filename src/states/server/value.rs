@@ -208,11 +208,22 @@ pub struct RedisSetValue {
     pub done: bool,
 }
 
-/// Sort order for sorted sets
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
+/// Rank order a sorted set is walked in — `ZRANGE` (score ascending) or
+/// `ZREVRANGE` (descending).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum SortOrder {
     #[default]
-    Asc, // Ascending order (default)
+    Asc,
+    Desc,
+}
+
+impl SortOrder {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Asc => Self::Desc,
+            Self::Desc => Self::Asc,
+        }
+    }
 }
 
 /// Redis Sorted Set value structure with pagination and sorting support
