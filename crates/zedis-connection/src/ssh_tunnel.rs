@@ -35,7 +35,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, Once, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio_rustls::TlsConnector;
@@ -956,11 +956,29 @@ impl rustls::client::danger::ServerCertVerifier for InsecureServerCertVerifier {
     }
 }
 
+/// Pick rustls's process-level crypto provider: ring, the backend every
+/// TLS user in this tree (redis, tokio-rustls, ureq, russh) is built on.
+/// With `aws-lc-rs` also in a binary — rustls's default, which gpui-kit's
+/// HTTP client turns on — rustls refuses to choose on its own and
+/// `ClientConfig::builder()` panics, in whichever thread first opens a TLS
+/// connection. Idempotent, and a provider someone else installed first is
+/// kept. `main` calls it before anything can dial; the TLS builder below
+/// calls it too, for a binary that never went through `main`.
+pub fn install_crypto_provider() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if rustls::crypto::ring::default_provider().install_default().is_err() {
+            debug!("rustls crypto provider already installed; keeping it");
+        }
+    });
+}
+
 /// Builds a `TlsConnector` from the server's TLS configuration.
 ///
 /// Handles insecure mode (skip verification), custom root CA, and
 /// optional mTLS (client certificate + key).
 fn build_tls_connector(config: &RedisServer) -> Result<TlsConnector> {
+    install_crypto_provider();
     let insecure = config.insecure.unwrap_or(false);
 
     let builder = if insecure {

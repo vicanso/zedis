@@ -733,6 +733,12 @@ impl ZedisServerState {
 
         let slow_logs_check_interval = 60;
         let mut last_slow_logs_checked_at = self.last_slow_logs_checked_at;
+        // The status bar's key total: one `DBSIZE` at most every minute —
+        // the number needn't track every tick, and a steady denominator
+        // reads calmer than a live one. The same call the initial load
+        // made, so the total never changes its meaning between the connect
+        // and a minute later.
+        let refresh_dbsize = unix_ts() - self.last_dbsize_refreshed_at >= DBSIZE_REFRESH_INTERVAL;
         if last_slow_logs_checked_at == 0 {
             last_slow_logs_checked_at = unix_ts() - slow_logs_check_interval;
         }
@@ -768,6 +774,20 @@ impl ZedisServerState {
                 // `commandstats`/`latencystats` — payloads that scale with the
                 // number of distinct commands and were parsed into nothing —
                 // on every heartbeat tick, per master.
+                let dbsize = if refresh_dbsize {
+                    match client.dbsize().await {
+                        Ok(dbsize) => Some(dbsize),
+                        // Denied on a restricted proxy: keep the last known
+                        // total rather than guessing zero, and try again in a
+                        // minute.
+                        Err(e) => {
+                            debug!(error = %e, "DBSIZE unavailable; keeping the last key total");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let (servers, list): (_, Vec<String>) = client.query_async_masters(vec![cmd("INFO")]).await?;
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 // Cluster only: keep a per-master persistence row so the
@@ -794,12 +814,12 @@ impl ZedisServerState {
                 info.persistence_nodes = persistence_nodes;
                 info.metrics.timestamp_ms = unix_ts_millis();
                 info.metrics.latency_ms = latency.as_millis() as u64;
-                Ok((info, slow_logs))
+                Ok((info, slow_logs, dbsize))
             },
             move |this, result, cx| {
                 this.heartbeat_in_flight = false;
                 match result {
-                    Ok((info, slow_logs)) => {
+                    Ok((info, slow_logs, dbsize)) => {
                         // Sentinel: the node we resolved as master now reports
                         // itself a replica — a failover happened underneath us.
                         // Drop the client so the next call re-asks the sentinel
@@ -819,24 +839,13 @@ impl ZedisServerState {
                         }
                         METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
                         maybe_persist_metrics(&server_id_clone, info.metrics, cx);
-                        // The same INFO carries the keyspace section, and
-                        // `db{n}: keys=` is DBSIZE by another name (already
-                        // summed across masters by the aggregation) — refill
-                        // the status bar's key total from it, at most once a
-                        // minute: the number needn't track every tick, and a
-                        // steady denominator reads calmer than a live one.
-                        // A fully absent keyspace (restricted proxies, or a
-                        // server with every db empty) leaves the last known
-                        // value alone rather than guessing zero.
-                        let now = unix_ts();
-                        if !info.keyspace.is_empty() && now - this.last_dbsize_refreshed_at >= DBSIZE_REFRESH_INTERVAL {
-                            this.last_dbsize_refreshed_at = now;
-                            let keys = info
-                                .keyspace
-                                .get(&format!("db{db}"))
-                                .map(|stats| stats.keys)
-                                .unwrap_or(0);
-                            this.dbsize = Some(keys);
+                        if refresh_dbsize {
+                            // Attempted, whether or not it answered — a denied
+                            // DBSIZE is asked again next minute, not next tick.
+                            this.last_dbsize_refreshed_at = unix_ts();
+                            if let Some(dbsize) = dbsize {
+                                this.dbsize = Some(dbsize);
+                            }
                         }
                         this.redis_info = Some(info);
                         if let Some(slow_logs) = slow_logs {

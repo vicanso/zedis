@@ -653,12 +653,18 @@ impl RedisClient {
         let values = query_async_masters(&addrs, self.db, cmds).await?;
         Ok(values)
     }
-    /// Calculates the total DB size across all masters.
-    /// # Returns
-    /// * `u64` - The total DB size.
+    /// `DBSIZE` on the pooled connection. A standalone (or the Sentinel
+    /// master) answers directly; on a cluster redis-rs fans the command out
+    /// to every master of its *live* slot map and sums the replies
+    /// (`ResponsePolicy::Aggregate(Sum)`). Not `query_async_masters`: that
+    /// walks the node list captured at connect, which a failover or reshard
+    /// leaves stale until the client is rebuilt — a demoted master still on
+    /// it answers with its replica's count, so one shard is summed twice
+    /// while `SCAN` (deduplicated by key) is not, and the status bar's total
+    /// sits above what a completed scan found.
     pub async fn dbsize(&self) -> Result<u64> {
-        let (_, list): (_, Vec<u64>) = self.query_async_masters(vec![cmd("DBSIZE")]).await?;
-        Ok(list.iter().sum())
+        let mut conn = self.connection.clone();
+        Ok(cmd("DBSIZE").query_async(&mut conn).await?)
     }
     /// Pings the server to check connectivity.
     pub async fn ping(&self) -> Result<()> {

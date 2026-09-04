@@ -93,7 +93,7 @@ pub use readable_import::{
 };
 pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
-pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, set_host_key_approver};
+pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, HeatMetric, HeatProbe,

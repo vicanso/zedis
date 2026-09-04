@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use crate::connection::{get_server, get_servers};
+use crate::connection::{get_server, get_servers, install_crypto_provider};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database, open_failure_kind};
 use crate::helpers::{
     CrashContext, DiagnosticsAction, MemuAction, MultiSearchAction, PaletteAction, RecentKeysAction, ShortcutsAction,
@@ -70,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         os: os.clone(),
         arch: arch.clone(),
     });
+    // Before anything can dial: the first TLS connection — a `rediss://`
+    // server, the update check — panics without a provider (see the fn).
+    install_crypto_provider();
     let config_dir = if let Ok(dir) = get_or_create_config_dir() {
         dir.to_string_lossy().to_string()
     } else {
@@ -530,4 +533,21 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
         Ok::<_, anyhow::Error>(())
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::connection::install_crypto_provider;
+
+    /// Both rustls backends are in this binary's build — ring through the
+    /// Redis stack, aws-lc-rs through gpui-kit's HTTP client — and rustls
+    /// panics on `ClientConfig::builder()` until one is picked. This crate
+    /// is where they meet, so this is where it is checked.
+    #[test]
+    fn rustls_has_a_process_level_crypto_provider() {
+        install_crypto_provider();
+        // Panics ("Could not automatically determine the process-level
+        // CryptoProvider") without the install above.
+        let _ = rustls::ClientConfig::builder();
+    }
 }

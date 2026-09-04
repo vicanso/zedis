@@ -243,14 +243,14 @@ webpki-roots = "1.0.9"
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.2" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.2", features = [
+gpui = { package = "gpui-pre", version = "0.3.3" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.3", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.2" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.3" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
