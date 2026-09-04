@@ -398,6 +398,16 @@ impl ConnectionManager {
             )),
         }
     }
+    /// The masters of the pooled client for `(server, db)` when one is
+    /// cached — read without dialling, so a server answering `BUSY` to
+    /// everything still yields the nodes a kill has to reach.
+    pub fn cached_master_servers(&self, server_id: &str, db: usize) -> Option<Vec<RedisServer>> {
+        let config = get_server(server_id).ok()?;
+        self.clients
+            .get(&config.get_hash(db))
+            .map(|client| client.master_servers())
+    }
+
     pub fn remove_client(&self, server_id: &str, db: usize) {
         let Ok(config) = get_server(server_id) else {
             return;

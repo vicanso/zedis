@@ -178,6 +178,9 @@ pub enum ServerTask {
     SentinelCkquorum,
     /// `SENTINEL FLUSHCONFIG` on every sentinel.
     SentinelFlushConfig,
+    /// `SCRIPT KILL` / `FUNCTION KILL` on every data node, over fresh
+    /// connections a BUSY server still answers.
+    KillScript,
 }
 
 impl ServerTask {
@@ -243,6 +246,7 @@ impl ServerTask {
             ServerTask::SentinelSet => "sentinel_set",
             ServerTask::SentinelCkquorum => "sentinel_ckquorum",
             ServerTask::SentinelFlushConfig => "sentinel_flushconfig",
+            ServerTask::KillScript => "kill_script",
         }
     }
 }

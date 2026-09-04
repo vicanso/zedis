@@ -68,7 +68,7 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 模块面板
 **RediSearch（FT.*）与 Functions（Lua library）的专用面板。**
 
-**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。查询里的每个 `$name` 占位符都有一行 **PARAMS 编辑器**：TEXT，或向量类型（FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16）把逗号分隔的浮点数编成 `KNN` / `VECTOR_RANGE` 需要的小端二进制；绑定同样随 `FT.EXPLAIN` / `FT.PROFILE` 发送。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS`。模块 / 版本不满足时自动隐藏。
+**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。查询里的每个 `$name` 占位符都有一行 **PARAMS 编辑器**：TEXT，或向量类型（FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16）把逗号分隔的浮点数编成 `KNN` / `VECTOR_RANGE` 需要的小端二进制；绑定同样随 `FT.EXPLAIN` / `FT.PROFILE` 发送。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS` / `KILL`。模块 / 版本不满足时自动隐藏。
 
 ### Redis Streams
 **浏览、实时跟踪、管理消费者组，全程不离开 GUI。**
@@ -226,7 +226,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Lua 脚本库
 **保存、复用、以 EVALSHA 运行 Lua 脚本，带命中率统计。**
 
-本地保存的具名 Lua 脚本库（源码 + 预算 SHA1），带起步模板，一键 **EVALSHA 优先** 执行（Redis 7.0+ 可切换 `EVALSHA_RO`，服务器会拒绝脚本内的写命令），预填 `KEYS` / `ARGS` 默认值便于一键重跑，并记录终身命中 / 未命中计数以发现总被刷出 Redis 缓存的脚本——外加缓存控制（**预热** = 仅 `SCRIPT LOAD` 不执行，及带确认保护的 `SCRIPT FLUSH`）与脚本库导入导出。（与 **Functions** 不同——后者管理服务端 `FUNCTION` library。）
+本地保存的具名 Lua 脚本库（源码 + 预算 SHA1），带起步模板，一键 **EVALSHA 优先** 执行（Redis 7.0+ 可切换 `EVALSHA_RO`，服务器会拒绝脚本内的写命令），预填 `KEYS` / `ARGS` 默认值便于一键重跑，并记录终身命中 / 未命中计数以发现总被刷出 Redis 缓存的脚本——外加缓存控制（**预热** = 仅 `SCRIPT LOAD` 不执行，及带确认保护的 `SCRIPT FLUSH`）与脚本库导入导出。（与 **Functions** 不同——后者管理服务端 `FUNCTION` library。）**终止脚本**按钮发送 `SCRIPT KILL`（Functions 面板对应有**终止函数**，发 `FUNCTION KILL`），走一条 `BUSY` 状态的服务器仍会应答的新连接——池化连接此时已被脚本卡住；状态栏在链路因 `BUSY` 断开时也提供同一个按钮。每个数据节点都会收到命令（集群里任何一个 master 都可能是忙的那个）；已经写入过数据的脚本只会提示无法终止，不会替你执行 SHUTDOWN。
 
 ### 首次启动与引导
 **首次运行的欢迎卡片，以及需要上下文的面板上的一次性提示。**

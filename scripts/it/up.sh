@@ -5,7 +5,9 @@
 #   tls         127.0.0.1:16380   TLS-only server with a self-signed CA (.run/tls/ca.crt)
 #   sentinel    127.0.0.1:16479   one sentinel over two masters: 16381 / replica 16382
 #                                 ("mymaster") and 16383 / replica 16384 ("mymaster2")
-#                                 (`IT_PORT_BASE=26379` shifts these seven ports together)
+#   busy        127.0.0.1:16385   plain server the runaway-script test parks in BUSY (its own,
+#                                 so the other tests never see the BUSY replies)
+#                                 (`IT_PORT_BASE=26379` shifts these eight ports together)
 #   cluster     127.0.0.1:17000-17005   3 masters + 3 replicas (cluster bus on 27000-27005;
 #                                       `IT_CLUSTER_BASE=7100` moves the block when those are taken)
 #
@@ -28,7 +30,7 @@ IMAGE=${REDIS_IMAGE:-}
 STACK=${IT_STACK:-0}
 SERVER_BIN=${SERVER_BIN:-redis-server}
 CLI_BIN=${CLI_BIN:-redis-cli}
-SCENARIOS=${IT_SCENARIOS:-"standalone tls sentinel cluster"}
+SCENARIOS=${IT_SCENARIOS:-"standalone tls sentinel cluster busy"}
 if [ "$STACK" = "1" ]; then SCENARIOS="standalone"; fi
 
 # `IT_PORT_BASE` shifts the whole non-cluster block (defaults: 16379 /
@@ -41,6 +43,7 @@ PORT_MASTER=$((PORT_BASE + 2))
 PORT_REPLICA=$((PORT_BASE + 3))
 PORT_MASTER2=$((PORT_BASE + 4))
 PORT_REPLICA2=$((PORT_BASE + 5))
+PORT_BUSY=$((PORT_BASE + 6))
 PORT_SENTINEL=$((PORT_BASE + 100))
 PORT_CLUSTER_BASE=${IT_CLUSTER_BASE:-17000}
 MASTER_NAME=mymaster
@@ -210,6 +213,15 @@ CONF
   env_put ZEDIS_IT_SENTINEL "127.0.0.1:$PORT_SENTINEL"
   env_put ZEDIS_IT_MASTER_NAME "$MASTER_NAME"
   env_put ZEDIS_IT_MASTER_NAME2 "$MASTER_NAME2"
+fi
+
+# ── busy ─────────────────────────────────────────────────────────────────
+if has busy; then
+  echo "busy :$PORT_BUSY"
+  wait_port_free "$PORT_BUSY" busy
+  start busy --port "$PORT_BUSY" --save "" --appendonly no --dir "$FS"
+  wait_pong busy -p "$PORT_BUSY"
+  env_put ZEDIS_IT_BUSY "127.0.0.1:$PORT_BUSY"
 fi
 
 # ── cluster ──────────────────────────────────────────────────────────────

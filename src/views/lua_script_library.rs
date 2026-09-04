@@ -25,8 +25,8 @@ use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
-        Capability, ScriptRunOutcome, floors, get_connection_manager, max_keys_index, run_script, script_exists,
-        script_flush, script_load,
+        Capability, KillTarget, ScriptRunOutcome, floors, get_connection_manager, max_keys_index, run_script,
+        script_exists, script_flush, script_load,
     },
     db::{LuaScript, LuaScriptExport, LuaScriptManager},
     error::Error,
@@ -964,6 +964,17 @@ impl ZedisLuaScriptLibrary {
                                 .on_click(cx.listener(|this, _, w, cx| this.confirm_flush(w, cx))),
                         )
                     })
+                    .child(
+                        Button::new("lua-kill")
+                            .ghost()
+                            .small()
+                            .label(i18n_common(cx, "kill_script_button"))
+                            .tooltip(i18n_common(cx, "kill_script_tooltip"))
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                this.server_state
+                                    .update(cx, |state, cx| state.kill_running_script(KillTarget::Script, cx));
+                            })),
+                    )
                     .child(
                         Button::new("lua-new")
                             .outline()

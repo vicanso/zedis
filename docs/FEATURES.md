@@ -68,7 +68,7 @@ Every collection is walked incrementally (`HSCAN` / `SSCAN` / `ZSCAN`, `LRANGE` 
 ### Module Browsers
 **Dedicated panels for RediSearch (FT.*) and Functions (Lua libraries).**
 
-**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. A query's `$name` placeholders get a **PARAMS editor** row each — TEXT, or a vector kind (FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16) that turns comma-separated floats into the little-endian blob a `KNN` / `VECTOR_RANGE` clause expects — and the bindings travel with `FT.EXPLAIN` / `FT.PROFILE` too. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor, starter templates, direct **`FCALL`** invocation, and `DUMP` / `RESTORE` / `FLUSH` / `STATS`. Both auto-hide when the module / version isn't present.
+**RediSearch**: list/inspect indexes, run `FT.SEARCH` / `FT.AGGREGATE` with chips, create / alter / drop from a form. A query's `$name` placeholders get a **PARAMS editor** row each — TEXT, or a vector kind (FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16) that turns comma-separated floats into the little-endian blob a `KNN` / `VECTOR_RANGE` clause expects — and the bindings travel with `FT.EXPLAIN` / `FT.PROFILE` too. **Functions** (Redis 7+): manage libraries via `FUNCTION LIST/LOAD/DELETE` with a tree-sitter Lua editor, starter templates, direct **`FCALL`** invocation, and `DUMP` / `RESTORE` / `FLUSH` / `STATS` / `KILL`. Both auto-hide when the module / version isn't present.
 
 ### Redis Streams
 **Browse, live-tail, and manage consumer groups without leaving the GUI.**
@@ -226,7 +226,7 @@ Version-aware command completion with inline argument/summary hints, each sugges
 ### Lua Script Library
 **Save, reuse, and EVALSHA-run Lua scripts with hit-rate stats.**
 
-A local library of named Lua scripts (source + precomputed SHA1) with starter templates, one-click **EVALSHA-first** execution (an `EVALSHA_RO` toggle on Redis 7.0+ makes the server refuse writes inside the script), saved `KEYS` / `ARGS` defaults for one-click re-runs, and lifetime hit/miss counters to spot scripts being flushed from Redis's cache — plus cache control (**Warm** = `SCRIPT LOAD` without executing, and a guarded `SCRIPT FLUSH`) and library import/export. (Distinct from **Functions** — that manages server-side `FUNCTION` libraries.)
+A local library of named Lua scripts (source + precomputed SHA1) with starter templates, one-click **EVALSHA-first** execution (an `EVALSHA_RO` toggle on Redis 7.0+ makes the server refuse writes inside the script), saved `KEYS` / `ARGS` defaults for one-click re-runs, and lifetime hit/miss counters to spot scripts being flushed from Redis's cache — plus cache control (**Warm** = `SCRIPT LOAD` without executing, and a guarded `SCRIPT FLUSH`) and library import/export. (Distinct from **Functions** — that manages server-side `FUNCTION` libraries.) A **Kill script** button sends `SCRIPT KILL` (the Functions panel has **Kill function** for `FUNCTION KILL`) over a fresh connection that a `BUSY` server still answers — the pooled one is stuck behind the script — and the status bar offers the same button whenever `BUSY` is why the link is down. Every data node is told (on a cluster any master may be the busy one); a script that has already written is reported as unkillable rather than shut down for you.
 
 ### First Launch & Onboarding
 **A welcome card on the first run, one-time hints on the panels that need context.**

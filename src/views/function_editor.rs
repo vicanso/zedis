@@ -23,7 +23,7 @@ use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
-        Capability, FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, function_delete,
+        Capability, FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, KillTarget, function_delete,
         function_dump, function_fcall, function_flush, function_list, function_load, function_restore, function_stats,
         get_connection_manager, validate_library_source,
     },
@@ -814,6 +814,21 @@ impl ZedisFunctionEditor {
                                 .label(i18n_functions(cx, "new_library"))
                                 .disabled(self.submitting || self.unsupported)
                                 .on_click(cx.listener(|this, _, w, cx| this.open_form(None, w, cx))),
+                        )
+                    })
+                    // Not a write: stopping a runaway FCALL changes no data,
+                    // and a read-only ACL user gets the server's answer.
+                    .when(!self.unsupported, |this| {
+                        this.child(
+                            Button::new("functions-kill")
+                                .ghost()
+                                .small()
+                                .label(i18n_common(cx, "kill_function_button"))
+                                .tooltip(i18n_common(cx, "kill_function_tooltip"))
+                                .on_click(cx.listener(|this, _, _w, cx| {
+                                    this.server_state
+                                        .update(cx, |state, cx| state.kill_running_script(KillTarget::Function, cx));
+                                })),
                         )
                     })
                     .child(

@@ -15,7 +15,7 @@
 use crate::states::{command_status_label, i18n_features};
 use crate::{
     assets::CustomIconName,
-    connection::{RedisClientDescription, ServerFeatures, get_server},
+    connection::{KillTarget, RedisClientDescription, ServerFeatures, get_server},
     constants::STATUS_BAR_HEIGHT,
     helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
     states::{
@@ -1263,6 +1263,26 @@ impl ZedisStatusBar {
                             }
                         });
                     })),
+            )
+            // The link is down because a script has the server: reconnecting
+            // cannot help, the kill can — offered right where the reason is
+            // shown, on a connection a BUSY server still answers.
+            .when(
+                is_link_down && server_state.last_connection_error == ConnectionErrorKind::Busy,
+                |this| {
+                    this.child(
+                        Button::new("zedis-status-bar-kill-script")
+                            .danger()
+                            .small()
+                            .compact()
+                            .label(i18n_common(cx, "kill_script_button"))
+                            .tooltip(i18n_common(cx, "kill_script_tooltip"))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.server_state
+                                    .update(cx, |state, cx| state.kill_running_script(KillTarget::Script, cx));
+                            })),
+                    )
+                },
             )
             .child(
                 h_flex()

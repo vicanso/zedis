@@ -51,6 +51,7 @@ pub mod json;
 pub mod key;
 pub mod list;
 pub mod persistence;
+pub mod script_kill;
 pub mod sentinel;
 pub mod set;
 pub mod stat;
