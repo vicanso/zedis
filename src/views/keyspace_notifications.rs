@@ -26,7 +26,7 @@
 
 use crate::connection::{Capability, get_connection_manager, get_server};
 use crate::error::Error;
-use crate::helpers::{build_csv, get_mono_font_family};
+use crate::helpers::{build_csv, get_mono_font_family, now_clock};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, i18n_common, i18n_keyspace_notifications,
@@ -34,7 +34,6 @@ use crate::states::{
 use crate::views::unavailable_chip;
 use crate::views::{export_to_file, open_key_in_editor};
 use ahash::AHashSet;
-use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -1294,7 +1293,7 @@ fn parse_notification(channel: &str, payload: &[u8]) -> Option<NotificationRow> 
         return None;
     }
     let payload_str = String::from_utf8_lossy(payload).into_owned();
-    let timestamp = Local::now().format("%H:%M:%S%.3f").to_string().into();
+    let timestamp = now_clock(true).into();
 
     let (key, event, source) = match kind {
         "keyspace" => (after_db.to_string(), payload_str, NotificationSource::Keyspace),

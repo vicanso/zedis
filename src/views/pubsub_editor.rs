@@ -21,10 +21,9 @@ use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
 use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{get_mono_font_family, now_datetime};
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
 use crate::views::unavailable_chip;
-use chrono::Local;
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon,
@@ -71,7 +70,7 @@ async fn forward_message(
 ) -> Result<(), smol::channel::SendError<PubsubMessage>> {
     let channel: String = msg.get_channel_name().to_string();
     let (_, text) = detect_and_decode(msg.get_payload_bytes(), 1024);
-    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let timestamp = now_datetime();
     tx.send(PubsubMessage {
         timestamp: timestamp.into(),
         channel: channel.into(),

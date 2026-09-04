@@ -10,6 +10,9 @@ on:
   workflow_dispatch:
 
 env:
+  # Baked into the binaries (startup::BUILD_CHANNEL): the rolling build from
+  # main follows the pre-release update channel by default.
+  ZEDIS_BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'nightly' || 'stable' }}
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.98.0

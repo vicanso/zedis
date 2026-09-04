@@ -44,8 +44,9 @@ pub(crate) fn default_window_bounds(cx: &mut App) -> Bounds<Pixels> {
 /// 3. otherwise center on the primary display.
 ///
 /// In all cases the result is clamped so the window fits and its title bar
-/// stays reachable.
-pub(crate) fn resolve_window_bounds(state: &ZedisAppState, cx: &mut App) -> Bounds<Pixels> {
+/// stays reachable. The flag says whether the window was maximized there,
+/// so it can open maximized again over that rectangle.
+pub(crate) fn resolve_window_bounds(state: &ZedisAppState, cx: &mut App) -> (Bounds<Pixels>, bool) {
     // Shrink to fit the display, then keep the origin (title bar) on-screen.
     let clamp_to = |mut b: Bounds<Pixels>, screen: Bounds<Pixels>| -> Bounds<Pixels> {
         b.size = b.size.min(&screen.size);
@@ -80,7 +81,7 @@ pub(crate) fn resolve_window_bounds(state: &ZedisAppState, cx: &mut App) -> Boun
     if let Some(p) = placement
         && let Some((_, screen)) = displays.iter().find(|(uuid, _)| uuid == &p.display_uuid)
     {
-        return clamp_to(p.bounds + screen.origin, *screen);
+        return (clamp_to(p.bounds + screen.origin, *screen), p.maximized);
     }
 
     // 2) Fallback: snap the absolute saved bounds onto the display they overlap
@@ -99,13 +100,13 @@ pub(crate) fn resolve_window_bounds(state: &ZedisAppState, cx: &mut App) -> Boun
             .filter(|(_, b)| area(b) > 0.0)
             .max_by(|(_, a), (_, b)| area(a).total_cmp(&area(b)))
         {
-            return clamp_to(saved, *screen);
+            return (clamp_to(saved, *screen), false);
         }
     }
 
     // 3) Nothing usable → center on the primary display.
     info!("no usable saved window placement; centering on primary display");
-    default_window_bounds(cx)
+    (default_window_bounds(cx), false)
 }
 
 /// Apply a registry theme by name (e.g. "Ayu Dark") if present, returning

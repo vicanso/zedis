@@ -25,14 +25,13 @@ use crate::connection::{
     latency_monitor_threshold, latency_reset, list_commands,
 };
 use crate::error::Error;
-use crate::helpers::{SlowlogAction, build_csv, get_mono_font_family};
+use crate::helpers::{SlowlogAction, build_csv, format_unix_secs, get_mono_font_family};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, escalate_dangerous_body, i18n_common, i18n_slowlog_editor,
 };
 use crate::views::export_to_file;
 use ahash::AHashMap;
-use chrono::TimeZone;
 use gpui::{
     AnyElement, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px, relative,
 };
@@ -120,11 +119,7 @@ impl SlowLogRow {
     ///   used. All tokens are upper-cased for consistent display.
     /// - `client` combines the peer address with the optional connection name.
     fn from_entry(entry: &SlowLogEntry) -> Self {
-        let timestamp = chrono::Local
-            .timestamp_opt(entry.timestamp, 0)
-            .single()
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-            .unwrap_or_default();
+        let timestamp = format_unix_secs(entry.timestamp).unwrap_or_default();
         let raw_timestamp = entry.timestamp;
 
         let duration_ms = entry.duration.as_millis() as u64;
@@ -763,11 +758,7 @@ impl ZedisSlowlogEditor {
         let lo = event_ts - CORRELATION_WINDOW_SECS;
         let hi = event_ts + CORRELATION_WINDOW_SECS;
         self.window_filter = Some((lo, hi));
-        let when = chrono::Local
-            .timestamp_opt(event_ts, 0)
-            .single()
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-            .unwrap_or_else(|| event_ts.to_string());
+        let when = format_unix_secs(event_ts).unwrap_or_else(|| event_ts.to_string());
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         self.window_filter_label = Some(
             rust_i18n::t!(
@@ -1984,10 +1975,7 @@ fn format_unix_seconds(ts: i64) -> String {
     if ts <= 0 {
         return "--".to_string();
     }
-    match chrono::Local.timestamp_opt(ts, 0).single() {
-        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-        None => ts.to_string(),
-    }
+    format_unix_secs(ts).unwrap_or_else(|| ts.to_string())
 }
 
 /// Stable DJB2 hash so `(static_id, u32)` element keys derived from

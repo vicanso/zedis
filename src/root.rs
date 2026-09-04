@@ -20,10 +20,10 @@ use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{TRASH_RETENTION_MS, purge_all_trash};
 use crate::dialogs::*;
 use crate::helpers::{
-    ConfigRecovery, CrashReport, Delivery, DiagnosticsAction, DiagnosticsInput, EditorAction, MemuAction, NavAction,
-    UpdateInfo, WorkspaceTabAction, apply_default_ui_font_size, download_and_verify, export_diagnostics,
-    fetch_latest_release, get_or_create_config_dir, humanize_keystroke, install_update, installer_requires_quit,
-    is_app_store_build, unix_ts_millis,
+    ConfigRecovery, CrashReport, DEFAULT_UI_FONT_SIZE, Delivery, DiagnosticsAction, DiagnosticsInput, EditorAction,
+    MemuAction, NavAction, UpdateInfo, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size,
+    download_and_verify, export_diagnostics, fetch_latest_release, get_or_create_config_dir, humanize_keystroke,
+    install_update, installer_requires_quit, is_app_store_build, unix_ts_millis,
 };
 use crate::startup::{GIT_SHA, PKG_NAME, VERSION};
 use crate::states::{
@@ -54,6 +54,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, info};
+
+/// The Settings slider's range, which ⌘+ / ⌘- step within.
+const UI_ZOOM_MIN_PX: f32 = 12.0;
+const UI_ZOOM_MAX_PX: f32 = 20.0;
 
 /// Upper bound on workspace tabs — each tab holds its own `ZedisServerState`
 /// (heartbeat, pooled connections, loaded keys), so the cap keeps a runaway
@@ -604,9 +608,12 @@ impl Zedis {
         cx.global::<ZedisGlobalStore>()
             .clone()
             .update(cx, |state, cx| state.set_update_checking(true, cx));
+        let include_prerelease = cx.global::<ZedisGlobalStore>().read(cx).update_prerelease();
         self.update_task = Some(cx.spawn(async move |handle, cx| {
             // `fetch_latest_release` is blocking (ureq) — keep it off the UI thread.
-            let result = cx.background_spawn(async move { fetch_latest_release() }).await;
+            let result = cx
+                .background_spawn(async move { fetch_latest_release(include_prerelease) })
+                .await;
             let _ = handle.update(cx, |this, cx| {
                 this.update_task = None;
                 // For a chip click we keep the spinner running until the dialog
@@ -811,6 +818,7 @@ impl Zedis {
         &mut self,
         new_bounds: Bounds<Pixels>,
         display: Option<(String, Point<Pixels>)>,
+        maximized: bool,
         cx: &mut Context<Self>,
     ) {
         self.last_bounds = new_bounds;
@@ -820,6 +828,7 @@ impl Zedis {
         let placement = display.map(|(display_uuid, screen_origin)| WindowPlacement {
             display_uuid,
             bounds: new_bounds - screen_origin,
+            maximized,
         });
         let task = cx.spawn(async move |_, cx| {
             // wait 500ms
@@ -835,7 +844,10 @@ impl Zedis {
             // written — freezing `last_update_check` and re-checking on every
             // launch. Same reason `apply_and_save` clones after its own wait.
             let value = store.update(cx, move |state, cx| {
-                state.set_bounds(new_bounds);
+                // The maximized rectangle is the display's, not the window's.
+                if !maximized {
+                    state.set_bounds(new_bounds);
+                }
                 if let Some(p) = placement {
                     state.upsert_window_placement(p);
                 }
@@ -1014,7 +1026,7 @@ impl Render for Zedis {
             let display = window
                 .display(cx)
                 .and_then(|d| Some((d.uuid().ok()?.to_string(), d.bounds().origin)));
-            self.persist_window_state(current_bounds, display, cx);
+            self.persist_window_state(current_bounds, display, window.is_maximized(), cx);
         }
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
@@ -1356,6 +1368,30 @@ impl Render for Zedis {
             // app on macOS / closes the window elsewhere — the red-button
             // behavior. Handled here (not only globally) so the view's tab list
             // is in reach; ⌘W stays bound to the one `MemuAction::Close`.
+            // ⌘+ / ⌘- / ⌘0: the same UI font size the Settings slider sets,
+            // stepped by one pixel inside the slider's range; the store's
+            // value is applied to the theme on the next frame.
+            .on_action(cx.listener(|_this, e: &ZoomAction, _window, cx| {
+                let current = cx
+                    .global::<ZedisGlobalStore>()
+                    .read(cx)
+                    .font_rem_px()
+                    .unwrap_or(DEFAULT_UI_FONT_SIZE);
+                let next = match e {
+                    ZoomAction::In => current + 1.0,
+                    ZoomAction::Out => current - 1.0,
+                    ZoomAction::Reset => DEFAULT_UI_FONT_SIZE,
+                }
+                .clamp(UI_ZOOM_MIN_PX, UI_ZOOM_MAX_PX);
+                update_app_state_and_save(cx, "zoom", move |state, _| {
+                    state.set_font_rem_px(Some(next));
+                });
+            }))
+            .on_action(cx.listener(|_this, e: &WindowAction, window, _cx| match e {
+                WindowAction::Minimize => window.minimize_window(),
+                WindowAction::Zoom => window.zoom_window(),
+                WindowAction::ToggleFullscreen => window.toggle_fullscreen(),
+            }))
             .on_action(cx.listener(|this, e: &MemuAction, _window, cx| {
                 if matches!(e, MemuAction::Close) && this.tabs.len() > 1 {
                     this.close_tab(this.active_tab, cx);

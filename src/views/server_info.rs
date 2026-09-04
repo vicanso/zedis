@@ -26,13 +26,12 @@
 
 use crate::connection::get_connection_manager;
 use crate::error::Error;
-use crate::helpers::{KvDelta, build_csv, get_mono_font_family, kv_diff};
+use crate::helpers::{KvDelta, build_csv, get_mono_font_family, kv_diff, now_clock};
 use crate::states::{
     InfoSnapshot, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip,
     content_area_width, i18n_common, i18n_server_info,
 };
 use crate::views::export_to_file;
-use chrono::Local;
 use gpui::{Entity, SharedString, Task, Window, div, prelude::*, px};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{
@@ -342,7 +341,7 @@ impl ZedisServerInfo {
                 .iter()
                 .map(|r| (r.section.clone(), r.field.clone(), r.value.clone()))
                 .collect(),
-            taken_at: Local::now().format("%H:%M:%S").to_string().into(),
+            taken_at: now_clock(false).into(),
         };
         self.server_state
             .update(cx, |state, _| state.set_info_snapshot(Some(snapshot)));
@@ -436,7 +435,7 @@ impl ZedisServerInfo {
                 match result {
                     Ok(replies) => {
                         this.rows = build_rows(&replies);
-                        this.refreshed_at = Some(Local::now().format("%H:%M:%S").to_string().into());
+                        this.refreshed_at = Some(now_clock(false).into());
                     }
                     Err(e) => {
                         error!(error = %e, "INFO fetch failed");

@@ -26,13 +26,12 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, get_connection_manager, get_server};
-use crate::helpers::{format_duration, get_mono_font_family, unix_ts};
+use crate::helpers::{format_duration, format_unix_secs, get_mono_font_family, unix_ts};
 use crate::states::{
     PersistenceNodeSnapshot, RedisMetrics, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
     back_to_editor_tooltip, dialog_button_props, escalate_dangerous_body, i18n_common, i18n_persistence,
 };
 use crate::views::unavailable_chip;
-use chrono::{Local, TimeZone};
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -942,10 +941,7 @@ impl ZedisPersistence {
 }
 
 fn format_unix_local(ts: i64) -> String {
-    match Local.timestamp_opt(ts, 0) {
-        chrono::LocalResult::Single(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-        _ => ts.to_string(),
-    }
+    format_unix_secs(ts).unwrap_or_else(|| ts.to_string())
 }
 
 /// Turn Redis `save` config (`900 1 300 10 60 10000`) into `900s/1 · 300s/10 · 60s/10000`.

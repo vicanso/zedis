@@ -67,6 +67,27 @@ impl HistoryManager {
         Ok(history)
     }
 
+    /// Every server's history straight from the table, for the local-data
+    /// backup. A row that does not parse is skipped, never deleted.
+    pub fn all_records(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let db = get_database()?;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(self.definition)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (server_id, value) = entry?;
+            let Ok(history) = serde_json::from_str::<Vec<String>>(value.value()) else {
+                continue;
+            };
+            if history.is_empty() {
+                continue;
+            }
+            out.push((server_id.value().to_string(), history));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
     pub fn records(&self, server_id: &str) -> Result<Vec<String>> {
         if let Some(history) = self.history_cache.get(server_id) {
             return Ok(history.clone());

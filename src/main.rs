@@ -2,9 +2,11 @@
 use crate::connection::{get_server, get_servers, install_crypto_provider};
 use crate::db::{LuaScriptManager, ProtoManager, ScriptManager, init_database, open_failure_kind};
 use crate::helpers::{
-    CrashContext, DiagnosticsAction, MemuAction, MultiSearchAction, PaletteAction, RecentKeysAction, ShortcutsAction,
-    UpdateAction, apply_default_ui_font_size, apply_fonts, get_or_create_config_dir, init_logger, install_panic_hook,
-    is_app_store_build, logs_dir, new_hot_keys, register_extra_languages, set_configured_proxy, take_config_recoveries,
+    CrashContext, DiagnosticsAction, InstanceMessage, InstanceRole, MemuAction, MultiSearchAction, PaletteAction,
+    RecentKeysAction, ShortcutsAction, UpdateAction, WindowAction, apply_default_ui_font_size, apply_fonts,
+    claim_instance, get_or_create_config_dir, init_logger, install_panic_hook, instance_messages, is_app_store_build,
+    load_keybinding_overrides, logs_dir, new_hot_keys, post_instance_message, register_extra_languages,
+    release_instance, set_configured_proxy, set_datetime_prefs, take_config_recoveries, take_instance_server,
     take_pending_crash, with_app_identity,
 };
 use crate::states::{
@@ -12,7 +14,8 @@ use crate::states::{
     update_app_state_and_save_quiet,
 };
 use crate::views::open_about_window;
-use gpui::{App, Bounds, Menu, MenuItem, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{App, Bounds, Menu, MenuItem, OsAction, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
@@ -109,12 +112,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::connection::init_commands_json(file.data.to_vec());
     }
     let app = gpui_platform::application().with_assets(assets::Assets);
+    // redis:// links: macOS delivers them as Apple Events through the
+    // registered scheme (`osx_url_schemes`) — possibly before the window
+    // exists, so they queue for `launch`. The other platforms start a second
+    // process with the link as an argument, which hands it off the same way.
+    app.on_open_urls(|urls| post_instance_message(InstanceMessage { urls }));
     let app_state = ZedisAppState::try_new().unwrap_or_else(|e| {
         error!(error = %e, "zedis.toml could not be loaded; starting with defaults");
         ZedisAppState::new()
     });
     if let Err(e) = get_servers() {
         error!(error = %e, "get servers fail",);
+    }
+    // One Zedis per profile: a second launch hands its arguments (a
+    // redis:// link, or nothing — "bring the window up") to the running
+    // instance and exits, instead of tripping over the database lock.
+    if claim_instance(&InstanceMessage { urls: cli_redis_urls() }) == InstanceRole::Forwarded {
+        return Ok(());
     }
     if let Err(e) = init_database() {
         let failure = open_failure_kind(&e);
@@ -169,6 +183,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Lua editor tables, and loading them in a post-window background task (the
 /// old placement) raced: an editor restored as the startup route read an
 /// empty cache and showed no rows until the view was recreated.
+/// A second launch reached the running instance: bring the window up and
+/// open its link, if it carried one.
+fn activate_from_instance(message: InstanceMessage, cx: &mut App) {
+    cx.activate(true);
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+    }
+    if !message.urls.is_empty() {
+        open_redis_urls(message.urls, cx);
+    }
+}
+
 pub(crate) fn init_caches() {
     if let Err(e) = ProtoManager::init() {
         error!(error = %e, "init protos fail");
@@ -201,8 +227,8 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
     assets::register_themes(cx);
 
     cx.activate(true);
-    let window_bounds = resolve_window_bounds(&app_state, cx);
-    info!(bounds = ?window_bounds, "resolved window bounds");
+    let (window_bounds, maximized) = resolve_window_bounds(&app_state, cx);
+    info!(bounds = ?window_bounds, maximized, "resolved window bounds");
     let app_state = cx.new(|_| app_state);
     let app_store = ZedisGlobalStore::new(app_state);
     // A saved named theme wins; otherwise fall back to the Light/Dark/System
@@ -246,6 +272,8 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
     {
         let proxy = cx.global::<ZedisGlobalStore>().read(cx).http_proxy();
         set_configured_proxy(&proxy);
+        let store = cx.global::<ZedisGlobalStore>().read(cx);
+        set_datetime_prefs(store.time_zone(), &store.date_format());
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -253,6 +281,12 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
         if tray_enabled {
             tray::init_tray(cx);
         }
+    }
+    // The user's `keybindings.toml` overrides must be in place before the
+    // keymap is bound — there is no rebinding later.
+    let overridden = load_keybinding_overrides();
+    if overridden > 0 {
+        info!(overridden, "keybinding overrides loaded");
     }
     cx.bind_keys(new_hot_keys());
     cx.on_action(|e: &MemuAction, cx: &mut App| match e {
@@ -291,18 +325,66 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
         MenuItem::action("Close Window", MemuAction::Close),
         MenuItem::action("Quit", MemuAction::Quit),
     ]);
-    cx.set_menus(vec![Menu {
-        name: "Zedis".into(),
-        items: menu_items,
-        disabled: false,
-    }]);
+    cx.set_menus(vec![
+        Menu {
+            name: "Zedis".into(),
+            items: menu_items,
+            disabled: false,
+        },
+        // The standard Edit menu: macOS routes these to the focused text
+        // field through the OS actions, and the inputs' own bindings answer
+        // the shortcuts the menu shows.
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::separator(),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", WindowAction::Minimize),
+                MenuItem::action("Zoom", WindowAction::Zoom),
+                MenuItem::action("Toggle Full Screen", WindowAction::ToggleFullscreen),
+                MenuItem::separator(),
+                MenuItem::action("Close Window", MemuAction::Close),
+            ],
+            disabled: false,
+        },
+    ]);
 
     install_host_key_prompt(cx);
+
+    // Hand-offs from a second launch and redis:// links from the OS both
+    // queue in the instance inbox; drain it here, on the foreground.
+    if let Some(server) = take_instance_server() {
+        server.serve(post_instance_message);
+    }
+    let inbox = instance_messages();
+    cx.spawn(async move |cx| {
+        while let Ok(message) = inbox.recv().await {
+            cx.update(|cx| activate_from_instance(message, cx));
+        }
+    })
+    .detach();
+    cx.on_app_quit(|_cx| async { release_instance() }).detach();
 
     cx.spawn(async move |cx| {
         cx.open_window(
             with_app_identity(WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+                window_bounds: Some(if maximized {
+                    WindowBounds::Maximized(window_bounds)
+                } else {
+                    WindowBounds::Windowed(window_bounds)
+                }),
                 // macOS / Windows: custom-drawn title bar (transparent OS chrome).
                 // Linux: server-side decorations show the title from
                 // `with_app_identity` ("Zedis") — see issue #106.
@@ -433,6 +515,9 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
                         state.activate(route, cx);
                     });
                 }
+                // A redis:// link on the command line lands on that server,
+                // over the restored / deep-linked route above.
+                open_redis_urls(cli_redis_urls(), cx);
                 // Global (focus-independent) ⌘K handler — element
                 // `.on_action` is focus-routed and dies when the
                 // palette closes and orphans its focus handle.

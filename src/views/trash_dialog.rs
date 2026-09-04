@@ -24,9 +24,8 @@ use crate::assets::CustomIconName;
 use crate::connection::get_connection_manager;
 use crate::db::{TRASH_RETENTION_MS, TrashMeta, get_trash_entry, list_trash_meta, purge_trash, remove_trash_entry};
 use crate::error::Error;
-use crate::helpers::{get_mono_font_family, unix_ts_millis};
+use crate::helpers::{format_unix_millis_with, get_mono_font_family, unix_ts_millis};
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, i18n_common, i18n_trash};
-use chrono::{Local, LocalResult, TimeZone};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
@@ -54,10 +53,9 @@ pub struct ZedisTrashDialog {
 }
 
 fn format_deleted_at(ts_ms: i64) -> SharedString {
-    match Local.timestamp_millis_opt(ts_ms) {
-        LocalResult::Single(dt) => dt.format("%m-%d %H:%M").to_string().into(),
-        _ => "--".into(),
-    }
+    format_unix_millis_with(ts_ms, "%m-%d %H:%M")
+        .map(SharedString::from)
+        .unwrap_or_else(|| "--".into())
 }
 
 fn emit_notification(notification: NotificationAction, cx: &mut App) {

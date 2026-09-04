@@ -15,7 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, RedisServer, get_connection_manager, get_server, open_monitor_connection};
 use crate::error::Error;
-use crate::helpers::{MonitorAction, build_csv, get_mono_font_family};
+use crate::helpers::{MonitorAction, build_csv, format_clock, get_mono_font_family};
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
     back_to_editor_tooltip, content_area_width, escalate_dangerous_body, i18n_common, i18n_monitor, i18n_status_bar,
@@ -27,7 +27,6 @@ use crate::states::{
 /// scrollable table.  Supports keyword and command-type filtering.
 /// The buffer is capped at `MAX_RECORDS` entries.
 use crate::views::{export_to_file, open_key_in_editor};
-use chrono::Local;
 use futures::StreamExt;
 use gpui::{App, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::button::ButtonVariants;
@@ -96,7 +95,7 @@ fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
     let ts_str = ts_part.trim();
     let timestamp: SharedString = if let Ok(secs) = ts_str.parse::<f64>() {
         let dt = chrono::DateTime::from_timestamp(secs as i64, ((secs.fract()) * 1_000_000_000.0) as u32);
-        dt.map(|d| d.with_timezone(&Local).format("%H:%M:%S%.3f").to_string())
+        dt.map(|d| format_clock(&d, true))
             .unwrap_or_else(|| ts_str.to_string())
             .into()
     } else {

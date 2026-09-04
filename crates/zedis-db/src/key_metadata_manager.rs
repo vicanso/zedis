@@ -34,7 +34,7 @@
 use super::{KEY_METADATA_TABLE, get_database};
 use crate::error::Error;
 use dashmap::DashMap;
-use redb::ReadableDatabase;
+use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -174,6 +174,28 @@ impl KeyMetadataManager {
         };
         self.cache.insert(server_id.to_string(), entries.clone());
         Ok(entries)
+    }
+
+    /// Every server's records straight from the table, for the local-data
+    /// backup. Bypasses the per-server cache (it only holds servers touched
+    /// this session). A row that does not parse is skipped, never deleted.
+    pub fn all_records(&self) -> Result<Vec<(String, HashMap<String, KeyMetadata>)>> {
+        let db = get_database()?;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(KEY_METADATA_TABLE)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (server_id, value) = entry?;
+            let Ok(envelope) = serde_json::from_str::<StoredEnvelope>(value.value()) else {
+                continue;
+            };
+            if envelope.v != ENVELOPE_VERSION || envelope.entries.is_empty() {
+                continue;
+            }
+            out.push((server_id.value().to_string(), envelope.entries));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
     }
 
     /// Fetch one key's annotation. `None` means "no record" — distinct

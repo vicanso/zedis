@@ -179,6 +179,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let build = Build::all_build();
     let git2 = Git2::all_git();
 
+    // The channel is baked into the binary (`startup::BUILD_CHANNEL`); a
+    // changed env must rebuild it.
+    println!("cargo:rerun-if-env-changed=ZEDIS_BUILD_CHANNEL");
     Emitter::default()
         .add_instructions(&build)?
         .add_instructions(&git2)?

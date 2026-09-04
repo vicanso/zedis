@@ -15,11 +15,11 @@
 //! Pre-window startup pieces: version constants, the database recovery
 //! window, CLI argument parsing and the smoke-test gates.
 
-use crate::connection::get_servers;
+use crate::connection::{RedisServer, get_servers};
 use crate::db::{DbOpenFailure, init_database, quarantine_database};
-use crate::states::{Route, ServerView, ZedisAppState};
+use crate::states::{GlobalEvent, NotificationAction, Route, ServerView, ZedisAppState, ZedisGlobalStore};
 use crate::{init_caches, launch};
-use gpui::{SharedString, Window, div, prelude::*};
+use gpui::{App, SharedString, Window, div, prelude::*};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
 use gpui_kit::component::{
@@ -30,11 +30,24 @@ use gpui_kit::component::{
     v_flex,
 };
 use rust_i18n::t;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 pub(crate) const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
+/// RFC 3339 build time (vergen), what a nightly is compared against.
+pub(crate) const BUILD_TIMESTAMP: &str = env!("VERGEN_BUILD_TIMESTAMP");
+/// `ZEDIS_BUILD_CHANNEL` at build time: `nightly` for the rolling build
+/// publish.yml makes from main, else stable. A nightly build follows the
+/// pre-release channel by default, since /releases/latest would never
+/// name it a newer version.
+pub(crate) const BUILD_CHANNEL: &str = match option_env!("ZEDIS_BUILD_CHANNEL") {
+    Some(channel) => channel,
+    None => "stable",
+};
+pub(crate) fn is_nightly_build() -> bool {
+    BUILD_CHANNEL == "nightly"
+}
 
 /// Shown when the local database can't be opened. Three causes, three
 /// remedies: another instance holds the lock (quit it), the file was written by
@@ -161,6 +174,51 @@ impl Render for DatabaseErrorView {
                     }),
             )
     }
+}
+
+/// `true` for a Redis connection link (`redis://` / `rediss://`).
+pub(crate) fn is_redis_url(arg: &str) -> bool {
+    let arg = arg.trim();
+    arg.starts_with("redis://") || arg.starts_with("rediss://")
+}
+
+/// The `redis://` / `rediss://` links among the arguments. The OS hands a
+/// clicked link to the binary this way (the `%u` of the desktop entry, the
+/// `"%1"` of the Windows registry command), and a terminal user can pass one
+/// directly; macOS delivers links through `on_open_urls` instead.
+pub(crate) fn cli_redis_urls() -> Vec<String> {
+    std::env::args().skip(1).filter(|arg| is_redis_url(arg)).collect()
+}
+
+/// A link without its credentials, for the log.
+fn redact_url(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => match rest.rsplit_once('@') {
+            Some((_, host)) => format!("{scheme}://***@{host}"),
+            None => url.to_string(),
+        },
+        None => url.to_string(),
+    }
+}
+
+/// Open the first Redis link of `urls` (the rest are ignored — one link is
+/// one connection to land on). Handles links from the OS, a second launch
+/// and the command line alike; an unparsable one becomes a notice.
+pub(crate) fn open_redis_urls(urls: Vec<String>, cx: &mut App) {
+    let Some(url) = urls.into_iter().find(|url| is_redis_url(url)) else {
+        return;
+    };
+    info!(url = %redact_url(&url), "opening redis link");
+    let store = cx.global::<ZedisGlobalStore>().clone();
+    store.update(cx, |state, cx| match RedisServer::from_import_uri(url.trim()) {
+        Ok(server) => state.open_server_from_uri(server, cx),
+        Err(e) => {
+            warn!(error = ?e, url = %redact_url(&url), "redis link rejected");
+            let locale = state.locale().to_string();
+            let message = t!("common.deep_link_invalid", error = format!("{e:?}"), locale = &locale).to_string();
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(message.into())));
+        }
+    });
 }
 
 /// Value of a `--flag <value>` / `--flag=<value>` command-line argument.

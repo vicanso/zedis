@@ -15,9 +15,10 @@
 use super::value::{DataFormat, RedisBytesValue, detect_format};
 use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::decompress_zstd;
+use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
-use chrono::{DateTime, Local};
+use chrono::DateTime;
 use flate2::read::GzDecoder;
 use gpui::SharedString;
 use lz4_flex::block::decompress_size_prepended;
@@ -341,11 +342,15 @@ fn format_unix_timestamp(bytes: &[u8]) -> Option<SharedString> {
     } else {
         (DateTime::from_timestamp(value, 0)?, "seconds")
     };
-    let local = dt.with_timezone(&Local);
+    // The configured zone + layout first, the other zone under it, so a
+    // UTC-minded user and a local-minded one both get their answer on the
+    // first line.
+    let primary = configured_time_zone();
+    let (other_label, other) = format_datetime_other_zone(&dt);
     let text = format!(
-        "{raw} ({unit})\nLocal: {}\nUTC:   {}",
-        local.format("%Y-%m-%d %H:%M:%S %:z"),
-        dt.format("%Y-%m-%d %H:%M:%S UTC"),
+        "{raw} ({unit})\n{}: {}\n{other_label}: {other}",
+        primary.label(),
+        format_datetime_in(&dt, primary),
     );
     Some(SharedString::from(text))
 }

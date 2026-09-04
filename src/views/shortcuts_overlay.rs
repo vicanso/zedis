@@ -132,7 +132,7 @@ impl Render for ZedisShortcutsOverlay {
                                 .bg(chip_bg)
                                 .border_1()
                                 .border_color(border)
-                                .child(Label::new(humanize_keystroke(keystroke)).text_xs().text_color(fg)),
+                                .child(Label::new(humanize_keystroke(&keystroke)).text_xs().text_color(fg)),
                         ),
                 );
             }

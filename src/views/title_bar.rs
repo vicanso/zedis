@@ -295,6 +295,9 @@ impl Render for ZedisTitleBar {
         } else {
             (rgb(0xfdf2f8).into(), rgb(0xbe185d).into())
         };
+        // A production connection tints the whole bar, not just its chip: the
+        // window itself says where a stray command would land.
+        let is_prod = Self::selected_server_info(cx).is_some_and(|info| info.prod_label.is_some());
         let center =
             h_flex()
                 .flex_1()
@@ -442,12 +445,14 @@ impl Render for ZedisTitleBar {
                 .border_b_1()
                 .border_color(cx.theme().title_bar_border)
                 .bg(cx.theme().tokens.title_bar)
+                .when(is_prod, |this| this.bg(prod_bg).border_t_2().border_color(prod_fg))
                 .child(h_flex().flex_1())
                 .child(center)
                 .child(right_actions)
                 .into_any_element()
         } else {
             TitleBar::new()
+                .when(is_prod, |this| this.bg(prod_bg).border_t_2().border_color(prod_fg))
                 .child(h_flex().flex_1())
                 .child(center)
                 .child(right_actions)

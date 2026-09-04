@@ -23,6 +23,8 @@ use crate::helpers::{
     ConfigRecovery, DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir,
     load_config_with_recovery, set_configured_proxy, unix_ts, write_file_atomic_with_backup,
 };
+use crate::helpers::{DEFAULT_DATE_FORMAT, TimeZonePref};
+use crate::startup::is_nightly_build;
 use crate::states::i18n_common;
 use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString, Window};
@@ -438,6 +440,10 @@ const MAX_WINDOW_PLACEMENTS: usize = 8;
 pub struct WindowPlacement {
     pub display_uuid: String,
     pub bounds: Bounds<Pixels>,
+    /// The window was maximized on this display; `bounds` then keeps the
+    /// last *windowed* rectangle, which is what un-maximizing returns to.
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 /// Persisted scope of the multi-database search palette (which
@@ -595,6 +601,13 @@ pub struct ZedisAppState {
     /// throttled to [`UPDATE_CHECK_INTERVAL`]. `false` disables the network
     /// check entirely.
     auto_update_check: Option<bool>,
+    /// Follow pre-releases and the nightly build as well as stable releases.
+    /// Unset = on for a nightly build, off otherwise.
+    update_prerelease: Option<bool>,
+    /// Zone every rendered timestamp uses: `"local"` (default) or `"utc"`.
+    time_zone: Option<String>,
+    /// Date + time layout id (`helpers::DATE_FORMATS`); unset = ISO-like.
+    date_format: Option<String>,
     /// Unix seconds of the last update check, used to throttle the startup
     /// check to one per [`UPDATE_CHECK_INTERVAL`].
     last_update_check: Option<i64>,
@@ -951,7 +964,19 @@ impl ZedisAppState {
     /// Upsert a per-display placement: drop any prior entry for the same display,
     /// move it to the front (most-recently-used), and keep at most
     /// `MAX_WINDOW_PLACEMENTS` distinct displays.
-    pub fn upsert_window_placement(&mut self, placement: WindowPlacement) {
+    pub fn upsert_window_placement(&mut self, mut placement: WindowPlacement) {
+        // A maximized window reports the display rectangle as its bounds;
+        // keep the windowed rectangle we already had for that display, so a
+        // later un-maximize (and the next launch, once un-maximized) lands
+        // where the user left the window.
+        if placement.maximized
+            && let Some(previous) = self
+                .window_placements
+                .iter()
+                .find(|p| p.display_uuid == placement.display_uuid)
+        {
+            placement.bounds = previous.bounds;
+        }
         self.window_placements
             .retain(|p| p.display_uuid != placement.display_uuid);
         self.window_placements.insert(0, placement);
@@ -1205,6 +1230,32 @@ impl ZedisAppState {
     }
     pub fn set_auto_update_check(&mut self, enabled: bool) {
         self.auto_update_check = Some(enabled);
+    }
+    /// Whether the update check also considers pre-releases and the nightly
+    /// build. A nightly build defaults to yes — the stable channel would
+    /// never offer it anything.
+    pub fn update_prerelease(&self) -> bool {
+        self.update_prerelease.unwrap_or_else(is_nightly_build)
+    }
+    pub fn set_update_prerelease(&mut self, enabled: bool) {
+        self.update_prerelease = Some(enabled);
+    }
+    pub fn time_zone(&self) -> TimeZonePref {
+        self.time_zone
+            .as_deref()
+            .map(TimeZonePref::from_name)
+            .unwrap_or_default()
+    }
+    pub fn set_time_zone(&mut self, zone: TimeZonePref) {
+        self.time_zone = Some(zone.name().to_string());
+    }
+    pub fn date_format(&self) -> String {
+        self.date_format
+            .clone()
+            .unwrap_or_else(|| DEFAULT_DATE_FORMAT.to_string())
+    }
+    pub fn set_date_format(&mut self, id: &str) {
+        self.date_format = Some(id.to_string());
     }
     /// Whether a startup update check is due: never run, or longer than
     /// [`UPDATE_CHECK_INTERVAL`] ago.
@@ -1510,7 +1561,59 @@ impl ZedisAppState {
         .detach();
     }
 
-    pub fn upsert_server(&mut self, mut server: RedisServer, cx: &mut Context<Self>) {
+    /// Deep link (`redis://…` from the OS or a second launch). The saved
+    /// connection with the same host / port / TLS / user wins — a link
+    /// carries no name, so that is its identity — otherwise the link is
+    /// saved as a new connection; either way the editor opens on it, in the
+    /// link's `/db` when it names one.
+    pub fn open_server_from_uri(&mut self, server: RedisServer, cx: &mut Context<Self>) {
+        let db = server.default_db.map(usize::from);
+        let existing = get_servers().ok().and_then(|servers| {
+            servers.into_iter().find(|saved| {
+                saved.host == server.host
+                    && saved.port == server.port
+                    && saved.tls.unwrap_or(false) == server.tls.unwrap_or(false)
+                    && saved.username == server.username
+            })
+        });
+        if let Some(found) = existing {
+            let db = db.unwrap_or_else(|| self.open_db_for(&found.id));
+            self.go_to(
+                Route::Server {
+                    id: found.id.into(),
+                    db,
+                    view: ServerView::Editor,
+                },
+                cx,
+            );
+            return;
+        }
+        let id = server.id.clone();
+        self.upsert_server_then(server, cx, move |state, cx| {
+            let db = db.unwrap_or_else(|| state.open_db_for(&id));
+            state.go_to(
+                Route::Server {
+                    id: id.into(),
+                    db,
+                    view: ServerView::Editor,
+                },
+                cx,
+            );
+        });
+    }
+
+    pub fn upsert_server(&mut self, server: RedisServer, cx: &mut Context<Self>) {
+        self.upsert_server_then(server, cx, |_, _| {});
+    }
+
+    /// [`Self::upsert_server`] plus a continuation that runs once the list
+    /// is saved — the moment a freshly added server can be selected.
+    fn upsert_server_then(
+        &mut self,
+        mut server: RedisServer,
+        cx: &mut Context<Self>,
+        after: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
         if server.id.is_empty() {
             server.id = Uuid::now_v7().to_string();
         }
@@ -1552,7 +1655,7 @@ impl ZedisAppState {
             });
             let result: Result<()> = task.await;
 
-            handle.update(cx, |_this, cx| {
+            handle.update(cx, |this, cx| {
                 if let Err(e) = &result {
                     error!(error = %e, "Failed to upsert server");
                     cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
@@ -1562,6 +1665,7 @@ impl ZedisAppState {
                 }
                 cx.emit(GlobalEvent::ServerListUpdated);
                 cx.notify();
+                after(this, cx);
             })
         })
         .detach();

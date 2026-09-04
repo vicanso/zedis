@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::keybinding_overrides;
 use gpui::Action;
 use gpui::KeyBinding;
 use schemars::JsonSchema;
@@ -94,6 +95,24 @@ pub enum TerminalAction {
     CopyAll,
     Save,
     Clear,
+}
+
+/// UI zoom (⌘+ / ⌘- / ⌘0): steps the UI font size the Settings slider also
+/// drives, so the two never disagree.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ZoomAction {
+    In,
+    Out,
+    Reset,
+}
+
+/// The macOS Window menu's commands, handled on the `Zedis` root with the
+/// window in hand.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum WindowAction {
+    Minimize,
+    Zoom,
+    ToggleFullscreen,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -294,97 +313,228 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
     display_text
 }
 
+/// One user-configurable shortcut. `id` is the key in `keybindings.toml`
+/// (`helpers/keybindings.rs`); `reference` places it in the ⌘/ overlay as
+/// `(group title key, description key)`, both under the `shortcuts.` i18n
+/// section — `None` keeps a binding out of the overlay.
+pub struct HotKey {
+    pub id: &'static str,
+    pub default: &'static str,
+    pub reference: Option<(&'static str, &'static str)>,
+    bind: fn(&str) -> KeyBinding,
+}
+
+impl HotKey {
+    /// The keystroke in effect: the user's override, else the default.
+    pub fn effective(&self) -> &str {
+        keybinding_overrides()
+            .get(self.id)
+            .map(String::as_str)
+            .unwrap_or(self.default)
+    }
+}
+
+const GROUP_GENERAL: &str = "group_general";
+const GROUP_EDITOR: &str = "group_editor";
+const GROUP_NAVIGATION: &str = "group_navigation";
+
+/// Every user-configurable shortcut, in overlay order. `secondary` = cmd on
+/// macOS, ctrl on Linux / Windows, so `secondary-w` is ⌘W / Ctrl+W.
+static HOT_KEYS: &[HotKey] = &[
+    HotKey {
+        id: "command_palette",
+        default: "secondary-k",
+        reference: Some((GROUP_GENERAL, "command_palette")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, PaletteAction::Toggle, None),
+    },
+    // Quick-open recent keys (Zed/VS Code ⌘P style). Global so it works
+    // from tool pages and after the picker closes (focus-independent).
+    HotKey {
+        id: "recent_keys",
+        default: "secondary-p",
+        reference: Some((GROUP_GENERAL, "recent_keys")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, RecentKeysAction::Toggle, None),
+    },
+    // Multi-database search — ⌘⇧F, deliberately adjacent to the
+    // key-tree filter's ⌘F ("search here" vs "search everywhere").
+    HotKey {
+        id: "multi_search",
+        default: "secondary-shift-f",
+        reference: Some((GROUP_GENERAL, "multi_search")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, MultiSearchAction::Toggle, None),
+    },
+    HotKey {
+        id: "keyboard_shortcuts",
+        default: "secondary-/",
+        reference: Some((GROUP_GENERAL, "keyboard_shortcuts")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, ShortcutsAction::Toggle, None),
+    },
+    HotKey {
+        id: "zoom_in",
+        default: "secondary-=",
+        reference: Some((GROUP_GENERAL, "zoom_in")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, ZoomAction::In, None),
+    },
+    HotKey {
+        id: "zoom_out",
+        default: "secondary--",
+        reference: Some((GROUP_GENERAL, "zoom_out")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, ZoomAction::Out, None),
+    },
+    HotKey {
+        id: "zoom_reset",
+        default: "secondary-0",
+        reference: Some((GROUP_GENERAL, "zoom_reset")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, ZoomAction::Reset, None),
+    },
+    HotKey {
+        id: "quit",
+        default: "secondary-q",
+        reference: Some((GROUP_GENERAL, "quit")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, MemuAction::Quit, None),
+    },
+    HotKey {
+        id: "new_key",
+        default: "secondary-n",
+        reference: Some((GROUP_EDITOR, "new_key")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Create, None),
+    },
+    HotKey {
+        id: "save",
+        default: "secondary-s",
+        reference: Some((GROUP_EDITOR, "save")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Save, None),
+    },
+    // Key-tree refresh is the primary, high-frequency action so it owns
+    // plain `cmd-r`; value reload is the rarer one and takes `cmd-shift-r`.
+    HotKey {
+        id: "reload_keys",
+        default: "secondary-r",
+        reference: Some((GROUP_EDITOR, "reload_keys")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::ReloadKeyTree, None),
+    },
+    HotKey {
+        id: "reload_value",
+        default: "secondary-shift-r",
+        reference: Some((GROUP_EDITOR, "reload_value")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Reload, None),
+    },
+    HotKey {
+        id: "update_ttl",
+        default: "secondary-t",
+        reference: Some((GROUP_EDITOR, "update_ttl")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::UpdateTtl, None),
+    },
+    // Delete the selected key. A modifier combo (not bare Backspace) so it
+    // can't fire while navigating the tree or typing; still routes through
+    // the confirm dialog (with PROD escalation), so a stray press is safe.
+    // When a text editor is focused it keeps ⌘⌫ for editing — the global
+    // delete only fires when no input consumes it.
+    HotKey {
+        id: "delete_key",
+        default: "secondary-backspace",
+        reference: Some((GROUP_EDITOR, "delete_key")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Delete, None),
+    },
+    // Rename the selected key. ⌘E is free on macOS text inputs (unlike
+    // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
+    // keys; the rename flow routes through its own dialog with an
+    // overwrite confirm, so a stray press is safe.
+    HotKey {
+        id: "rename_key",
+        default: "secondary-e",
+        reference: Some((GROUP_EDITOR, "rename_key")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Rename, None),
+    },
+    // Focus the active page's filter box — except while focus is inside
+    // any gpui-component `Input`: a context-free binding out-ranks every
+    // context-bound one (`binding_enabled` gives it the full stack
+    // depth), so without `!Input` this would shadow the code editor's
+    // own ⌘F search panel and searching inside a value/script editor
+    // would be impossible.
+    HotKey {
+        id: "search",
+        default: "secondary-f",
+        reference: Some((GROUP_EDITOR, "search")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Search, Some("!Input")),
+    },
+    HotKey {
+        id: "terminal",
+        default: "secondary-j",
+        reference: Some((GROUP_EDITOR, "terminal")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Cmd, None),
+    },
+    // Close the window via ⌘W, mirroring the red close button (on macOS
+    // that hides the app — `on_window_should_close` in `main.rs`). Not in
+    // the overlay: it is the platform's own convention.
+    HotKey {
+        id: "close_window",
+        default: "secondary-w",
+        reference: None,
+        bind: |keystroke: &str| KeyBinding::new(keystroke, MemuAction::Close, None),
+    },
+];
+
+/// The user-configurable shortcuts — the ids `keybindings.toml` accepts.
+pub fn hot_key_table() -> &'static [HotKey] {
+    HOT_KEYS
+}
+
 /// One section of the keyboard-shortcuts reference overlay.
 pub struct ShortcutGroup {
     /// i18n key (under the `shortcuts.` section) for the group heading.
     pub title_key: &'static str,
-    /// `(raw keystroke, i18n key for the human description)`. The
+    /// `(effective keystroke, i18n key for the human description)`. The
     /// keystroke is rendered through [`humanize_keystroke`] so it shows
     /// the right per-platform symbols (⌘ vs Ctrl, …).
-    pub items: &'static [(&'static str, &'static str)],
+    pub items: Vec<(String, &'static str)>,
 }
 
-/// Curated, user-facing keyboard-shortcut reference shown by the ⌘/
-/// overlay. Deliberately *not* derived from [`new_hot_keys`]: that list
-/// also holds context-scoped internal bindings (the `tab` JSONPath
-/// completion, the `escape` back/close handlers) that would only confuse
-/// users as "global shortcuts", and a raw `KeyBinding` carries no
-/// localizable description. Keep this in sync with [`new_hot_keys`] when
-/// adding a user-visible binding.
-pub fn shortcut_reference() -> &'static [ShortcutGroup] {
-    &[
+/// The user-facing keyboard-shortcut reference shown by the ⌘/ overlay:
+/// the configurable table (with the user's overrides applied) grouped by
+/// section, plus the fixed navigation keys. The context-scoped internal
+/// bindings (`tab` JSONPath completion, the `escape` back/close handlers)
+/// stay out — they would only read as "global shortcuts".
+pub fn shortcut_reference() -> Vec<ShortcutGroup> {
+    let mut groups = vec![
         ShortcutGroup {
-            title_key: "group_general",
-            items: &[
-                ("cmd-k", "command_palette"),
-                ("cmd-p", "recent_keys"),
-                ("cmd-shift-f", "multi_search"),
-                ("cmd-/", "keyboard_shortcuts"),
-                ("cmd-q", "quit"),
-            ],
+            title_key: GROUP_GENERAL,
+            items: Vec::new(),
         },
         ShortcutGroup {
-            title_key: "group_editor",
-            items: &[
-                ("cmd-n", "new_key"),
-                ("cmd-s", "save"),
-                ("cmd-r", "reload_keys"),
-                ("cmd-shift-r", "reload_value"),
-                ("cmd-t", "update_ttl"),
-                ("cmd-backspace", "delete_key"),
-                ("cmd-e", "rename_key"),
-                ("cmd-f", "search"),
-                ("cmd-j", "terminal"),
-            ],
+            title_key: GROUP_EDITOR,
+            items: Vec::new(),
         },
-        ShortcutGroup {
-            title_key: "group_navigation",
-            items: &[("escape", "back"), ("cmd-1 … cmd-8", "workspace_tab")],
-        },
-    ]
+    ];
+    for hot_key in HOT_KEYS {
+        let Some((group, desc_key)) = hot_key.reference else {
+            continue;
+        };
+        if let Some(group) = groups.iter_mut().find(|candidate| candidate.title_key == group) {
+            group.items.push((hot_key.effective().to_string(), desc_key));
+        }
+    }
+    groups.push(ShortcutGroup {
+        title_key: GROUP_NAVIGATION,
+        items: vec![
+            ("escape".to_string(), "back"),
+            ("cmd-1 … cmd-8".to_string(), "workspace_tab"),
+        ],
+    });
+    groups
 }
 
 pub fn new_hot_keys() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new("secondary-q", MemuAction::Quit, None),
-        // `secondary` = cmd on macOS, ctrl on Linux/Windows — so this is ⌘W /
-        // Ctrl+W on the respective platforms.
-        KeyBinding::new("secondary-w", MemuAction::Close, None),
-        KeyBinding::new("secondary-k", PaletteAction::Toggle, None),
-        // Multi-database search — ⌘⇧F, deliberately adjacent to the
-        // key-tree filter's ⌘F ("search here" vs "search everywhere").
-        KeyBinding::new("secondary-shift-f", MultiSearchAction::Toggle, None),
-        // Quick-open recent keys (Zed/VS Code ⌘P style). Global so it works
-        // from tool pages and after the picker closes (focus-independent).
-        KeyBinding::new("secondary-p", RecentKeysAction::Toggle, None),
-        KeyBinding::new("secondary-/", ShortcutsAction::Toggle, None),
-        KeyBinding::new("secondary-s", EditorAction::Save, None),
-        KeyBinding::new("secondary-r", EditorAction::ReloadKeyTree, None),
-        KeyBinding::new("secondary-n", EditorAction::Create, None),
-        KeyBinding::new("secondary-t", EditorAction::UpdateTtl, None),
-        KeyBinding::new("secondary-j", EditorAction::Cmd, None),
-        // Focus the active page's filter box — except while focus is inside
-        // any gpui-component `Input`: a context-free binding out-ranks every
-        // context-bound one (`binding_enabled` gives it the full stack
-        // depth), so without `!Input` this would shadow the code editor's
-        // own ⌘F search panel and searching inside a value/script editor
-        // would be impossible.
-        KeyBinding::new("secondary-f", EditorAction::Search, Some("!Input")),
-        // Rename the selected key. ⌘E is free on macOS text inputs (unlike
-        // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
-        // keys; the rename flow routes through its own dialog with an
-        // overwrite confirm, so a stray press is safe.
-        KeyBinding::new("secondary-e", EditorAction::Rename, None),
-        // Delete the selected key. A modifier combo (not bare Backspace) so it
-        // can't fire while navigating the tree or typing; still routes through
-        // the confirm dialog (with PROD escalation), so a stray press is safe.
-        // When a text editor is focused it keeps ⌘⌫ for editing — the global
-        // delete only fires when no input consumes it.
-        KeyBinding::new("secondary-backspace", EditorAction::Delete, None),
-        // Key-tree refresh is the primary, high-frequency action so it
-        // owns plain `cmd-r` (above); value reload is the rarer one and
-        // takes `cmd-shift-r`.
-        KeyBinding::new("secondary-shift-r", EditorAction::Reload, None),
+    let mut keys: Vec<KeyBinding> = HOT_KEYS
+        .iter()
+        .map(|hot_key| (hot_key.bind)(hot_key.effective()))
+        .collect();
+    // `=` is the unshifted `+` key on every layout that has one, so both
+    // spellings zoom in — unless the user moved zoom-in elsewhere.
+    if !keybinding_overrides().contains_key("zoom_in") {
+        keys.push(KeyBinding::new("secondary-shift-=", ZoomAction::In, None));
+    }
+    keys.extend([
         // Esc on a tool page returns to the editor (mirrors the page's
         // back button). Scoped to the `Workspace` context (the content
         // container) so it never reaches overlays that live outside it —
@@ -415,5 +565,28 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-6", WorkspaceTabAction::Select(5), None),
         KeyBinding::new("secondary-7", WorkspaceTabAction::Select(6), None),
         KeyBinding::new("secondary-8", WorkspaceTabAction::Select(7), None),
-    ]
+    ]);
+    keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hot_key_ids_are_unique_and_every_reference_group_exists() {
+        let mut ids: Vec<&str> = HOT_KEYS.iter().map(|hot_key| hot_key.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), HOT_KEYS.len());
+        let groups = shortcut_reference();
+        let titles: Vec<&str> = groups.iter().map(|group| group.title_key).collect();
+        for hot_key in HOT_KEYS.iter().filter_map(|hot_key| hot_key.reference) {
+            assert!(titles.contains(&hot_key.0), "{}", hot_key.0);
+        }
+        let listed: usize = groups.iter().map(|group| group.items.len()).sum();
+        let referenced = HOT_KEYS.iter().filter(|hot_key| hot_key.reference.is_some()).count();
+        // + the two fixed navigation rows.
+        assert_eq!(listed, referenced + 2);
+    }
 }

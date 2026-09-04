@@ -25,6 +25,8 @@ use zedis_core::fs::get_or_create_config_dir;
 
 pub mod error;
 
+mod backup;
+
 mod cmd_history_manager;
 mod favorites_manager;
 mod history_manager;
@@ -37,6 +39,7 @@ mod scripts;
 mod search_history_manager;
 mod trash;
 
+pub use backup::*;
 pub use cmd_history_manager::*;
 pub use favorites_manager::*;
 pub use key_metadata_manager::*;

@@ -38,6 +38,7 @@
 
 use super::proxy::app_proxy;
 use crate::error::Error;
+use crate::startup::{BUILD_TIMESTAMP, is_nightly_build};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -55,6 +56,15 @@ const MANIFEST_URL: &str = "https://github.com/vicanso/zedis/releases/latest/dow
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/vicanso/zedis/releases/latest";
 /// Browser fallback when no manifest/asset is available.
 const RELEASES_PAGE: &str = "https://github.com/vicanso/zedis/releases/latest";
+/// The release list, newest first, for the pre-release channel: tagged
+/// pre-releases and the rolling `nightly` build both live here and never in
+/// `/releases/latest`.
+const RELEASE_LIST_API: &str = "https://api.github.com/repos/vicanso/zedis/releases?per_page=15";
+/// The rolling build publish.yml recreates on every push to main.
+const NIGHTLY_TAG: &str = "nightly";
+/// A nightly published this soon after our own build time is this very
+/// build finishing its uploads, not a newer one.
+const NIGHTLY_GRACE: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// Upper bound on an installer download (guards against a runaway body).
@@ -114,7 +124,8 @@ struct ManifestAsset {
     size: u64,
 }
 
-/// Subset of the GitHub "release" object, used only for the API fallback.
+/// Subset of the GitHub "release" object, used for the API fallback and
+/// the pre-release channel.
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
@@ -126,6 +137,45 @@ struct GithubRelease {
     prerelease: bool,
     #[serde(default)]
     draft: bool,
+    /// RFC 3339; for the nightly it is the build's own publish time.
+    #[serde(default)]
+    published_at: String,
+    #[serde(default)]
+    assets: Vec<GithubAsset>,
+}
+
+/// One uploaded file of a release, as the API lists it.
+#[derive(Debug, Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    size: u64,
+}
+
+/// The API's asset list in the manifest's shape, read off the file names
+/// publish.yml uses (`zedis-<os>-<arch>.<kind>`): what a release without
+/// a `latest.json` (the nightly) can still offer to install. No checksum
+/// travels with it, so the download is not verified — the page link stays
+/// beside it.
+fn assets_from_api(assets: &[GithubAsset]) -> Vec<ManifestAsset> {
+    assets
+        .iter()
+        .filter_map(|asset| {
+            let stem = asset.name.strip_prefix("zedis-")?;
+            let (os, rest) = stem.split_once('-')?;
+            let (arch, kind) = rest.rsplit_once('.')?;
+            Some(ManifestAsset {
+                os: os.to_string(),
+                arch: arch.to_string(),
+                kind: kind.to_string(),
+                name: asset.name.clone(),
+                url: asset.browser_download_url.clone(),
+                sha256: String::new(),
+                size: asset.size,
+            })
+        })
+        .collect()
 }
 
 /// Decide whether the latest release is newer than the running build.
@@ -134,7 +184,15 @@ struct GithubRelease {
 /// manifest error falls back to the API (version + page only). Returns
 /// `Ok(None)` when already up to date. Blocking (`ureq`): **must** run on a
 /// background task, never the UI thread.
-pub fn fetch_latest_release() -> Result<Option<UpdateInfo>> {
+pub fn fetch_latest_release(include_prerelease: bool) -> Result<Option<UpdateInfo>> {
+    // The pre-release channel looks at the whole list first; a listing
+    // failure falls through to the stable path rather than to silence.
+    if include_prerelease {
+        match fetch_from_release_list() {
+            Ok(found) => return Ok(found),
+            Err(e) => debug!(error = %e, "update check: release list unavailable, using the stable channel"),
+        }
+    }
     match fetch_from_manifest() {
         Ok(found) => Ok(found),
         Err(e) => {
@@ -188,6 +246,84 @@ fn fetch_release_notes(version: &str) -> String {
             debug!(error = %e, "update check: release notes unavailable");
             String::new()
         }
+    }
+}
+
+/// The pre-release channel: walk the release list newest-first and take the
+/// first non-draft entry that is newer than this build — a tagged release
+/// (stable or pre-release, by version) or the `nightly` (by publish time,
+/// which only a build older than it can be behind). Nothing newer → `None`.
+fn fetch_from_release_list() -> Result<Option<UpdateInfo>> {
+    let text = http_get_string(RELEASE_LIST_API)?;
+    let releases: Vec<GithubRelease> = serde_json::from_str(&text)?;
+    for release in releases.into_iter().filter(|r| !r.draft) {
+        let page_url = if release.html_url.trim().is_empty() {
+            RELEASES_PAGE.to_string()
+        } else {
+            release.html_url.clone()
+        };
+        if release.tag_name == NIGHTLY_TAG {
+            if !nightly_is_newer(&release.published_at, BUILD_TIMESTAMP) {
+                continue;
+            }
+            let published = release.published_at.get(..10).unwrap_or(NIGHTLY_TAG);
+            return Ok(Some(UpdateInfo {
+                version: format!("{NIGHTLY_TAG} {published}"),
+                current: current_version_label(),
+                page_url,
+                notes: release.body.trim().to_string(),
+                asset: pick_asset(&assets_from_api(&release.assets)),
+            }));
+        }
+        let Some(latest) = newer_version(&release.tag_name)? else {
+            // Newest-first: the first entry that is not newer ends the walk
+            // (an unparsable tag is skipped by `newer_version` the same way).
+            continue;
+        };
+        // A tagged release carries a manifest with checksums; the API's
+        // asset list is the fallback for one that has none yet.
+        let manifest_url = format!(
+            "https://github.com/vicanso/zedis/releases/download/{}/latest.json",
+            release.tag_name
+        );
+        let asset = http_get_string(&manifest_url)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Manifest>(&text).ok())
+            .and_then(|manifest| pick_asset(&manifest.assets))
+            .or_else(|| pick_asset(&assets_from_api(&release.assets)));
+        return Ok(Some(UpdateInfo {
+            version: latest,
+            current: current_version_label(),
+            page_url,
+            notes: release.body.trim().to_string(),
+            asset,
+        }));
+    }
+    Ok(None)
+}
+
+/// Whether a nightly published at `published_at` is a later build than
+/// the one running (`built_at`, both RFC 3339), beyond the grace window.
+fn nightly_is_newer(published_at: &str, built_at: &str) -> bool {
+    let (Ok(published), Ok(built)) = (
+        chrono::DateTime::parse_from_rfc3339(published_at.trim()),
+        chrono::DateTime::parse_from_rfc3339(built_at.trim()),
+    ) else {
+        return false;
+    };
+    published - built > NIGHTLY_GRACE
+}
+
+/// What the prompt calls the running build: the version, and for a nightly
+/// its build date as well.
+fn current_version_label() -> String {
+    if is_nightly_build() {
+        format!(
+            "{CURRENT_VERSION} ({NIGHTLY_TAG} {})",
+            BUILD_TIMESTAMP.get(..10).unwrap_or_default()
+        )
+    } else {
+        CURRENT_VERSION.to_string()
     }
 }
 
@@ -877,5 +1013,57 @@ mod tests {
             "the volume must be detached even on refusal"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_nightly_counts_as_newer_only_past_the_grace_window() {
+        let built = "2026-09-04T08:00:00Z";
+        assert!(nightly_is_newer("2026-09-05T08:00:00Z", built));
+        assert!(
+            !nightly_is_newer("2026-09-04T08:10:00Z", built),
+            "the same build finishing its upload"
+        );
+        assert!(!nightly_is_newer("2026-09-03T08:00:00Z", built), "older than us");
+        assert!(!nightly_is_newer("yesterday", built), "unparsable never prompts");
+    }
+
+    #[test]
+    fn api_assets_are_read_off_the_release_file_names() {
+        let assets = vec![
+            GithubAsset {
+                name: "zedis-macos-aarch64.dmg".into(),
+                browser_download_url: "https://x/zedis-macos-aarch64.dmg".into(),
+                size: 10,
+            },
+            GithubAsset {
+                name: "zedis-windows-x86_64.msi".into(),
+                browser_download_url: "https://x/zedis-windows-x86_64.msi".into(),
+                size: 20,
+            },
+            GithubAsset {
+                name: "SHA256SUMS".into(),
+                browser_download_url: "https://x/SHA256SUMS".into(),
+                size: 1,
+            },
+        ];
+        let manifest = assets_from_api(&assets);
+        assert_eq!(manifest.len(), 2, "only installer-shaped names");
+        assert_eq!(
+            (
+                manifest[0].os.as_str(),
+                manifest[0].arch.as_str(),
+                manifest[0].kind.as_str()
+            ),
+            ("macos", "aarch64", "dmg")
+        );
+        assert_eq!(
+            (
+                manifest[1].os.as_str(),
+                manifest[1].arch.as_str(),
+                manifest[1].kind.as_str()
+            ),
+            ("windows", "x86_64", "msi")
+        );
+        assert!(manifest[0].sha256.is_empty(), "no checksum without a manifest");
     }
 }

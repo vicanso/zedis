@@ -13,10 +13,9 @@
 // limitations under the License.
 
 use crate::connection::get_server;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{format_unix_millis_with, get_mono_font_family};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_metrics};
-use chrono::{Local, LocalResult, TimeZone};
 use core::f64;
 use gpui::{
     App, Background, Bounds, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, canvas, div,
@@ -194,10 +193,9 @@ pub struct ZedisMetrics {
 }
 
 fn format_timestamp_ms_as(ts_ms: i64, fmt: &str) -> SharedString {
-    match Local.timestamp_millis_opt(ts_ms) {
-        LocalResult::Single(dt) => dt.format(fmt).to_string().into(),
-        _ => "--".into(),
-    }
+    format_unix_millis_with(ts_ms, fmt)
+        .map(SharedString::from)
+        .unwrap_or_else(|| "--".into())
 }
 
 pub(crate) fn format_timestamp_ms(ts_ms: i64) -> SharedString {

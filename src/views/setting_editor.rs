@@ -15,8 +15,9 @@
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     helpers::{
-        DEFAULT_UI_FONT_SIZE, apply_fonts, get_or_create_config_dir, is_app_store_build, is_valid_proxy_setting,
-        parse_duration,
+        DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, apply_fonts, date_format_sample, ensure_keybindings_file,
+        export_local_data_file, get_or_create_config_dir, import_local_data_file, is_app_store_build,
+        is_valid_proxy_setting, parse_duration, set_datetime_prefs,
     },
     states::{
         ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
@@ -24,19 +25,23 @@ use crate::{
     },
 };
 use gpui::{
-    App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, prelude::*,
-    px, size,
+    App, Bounds, Entity, FontWeight, PathPromptOptions, Subscription, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, prelude::*, px, size,
 };
 use gpui_kit::component::{
-    ActiveTheme, h_flex,
+    ActiveTheme, Sizable, WindowExt,
+    button::Button,
+    h_flex,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
+    notification::Notification,
     scroll::ScrollableElement,
     slider::{Slider, SliderEvent, SliderState, SliderValue},
     switch::Switch,
     v_flex,
 };
-use tracing::warn;
+use rust_i18n::t;
+use tracing::{error, warn};
 use zedis_ui::{ZedisSelect, ZedisSelectEvent};
 
 /// Locale codes in display order, matching the items passed to locale_select.
@@ -116,8 +121,11 @@ pub struct ZedisSettingEditor {
     soft_delete: bool,
     sidebar_click_new_tab: bool,
     auto_update_check: bool,
+    update_prerelease: bool,
     font_size_slider: Entity<SliderState>,
     locale_select: Entity<ZedisSelect>,
+    time_zone_select: Entity<ZedisSelect>,
+    date_format_select: Entity<ZedisSelect>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -174,10 +182,13 @@ impl ZedisSettingEditor {
         let soft_delete = store.soft_delete();
         let sidebar_click_new_tab = store.sidebar_click_new_tab();
         let auto_update_check = store.auto_update_check();
+        let update_prerelease = store.update_prerelease();
         let font_rem = store.font_rem_px().unwrap_or(DEFAULT_UI_FONT_SIZE);
         let ui_font = store.ui_font_family();
         let mono_font = store.mono_font_family();
         let locale = store.locale().to_string();
+        let time_zone = store.time_zone();
+        let date_format = store.date_format();
         let ai_base_url = store.ai_base_url();
         let ai_api_key = store.ai_api_key();
         let ai_model = store.ai_model();
@@ -504,6 +515,53 @@ impl ZedisSettingEditor {
             },
         ));
 
+        // Time zone + date layout: both mirror into the process-wide slot
+        // right away (`set_datetime_prefs`), so every open panel renders the
+        // new choice on its next frame — no restart, no window reopen.
+        let zone_labels: Vec<String> = TimeZonePref::ALL
+            .iter()
+            .map(|zone| {
+                let key = match zone {
+                    TimeZonePref::Local => "time_zone_local",
+                    TimeZonePref::Utc => "time_zone_utc",
+                };
+                i18n_settings(cx, key).to_string()
+            })
+            .collect();
+        let zone_index = TimeZonePref::ALL.iter().position(|zone| *zone == time_zone);
+        let time_zone_select = cx.new(|cx| ZedisSelect::new(zone_labels, zone_index, window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &time_zone_select,
+            window,
+            |_view, _select, event: &ZedisSelectEvent, _window, cx| {
+                let ZedisSelectEvent::Change(index) = event;
+                let zone = TimeZonePref::ALL.get(*index).copied().unwrap_or_default();
+                update_app_state_and_save(cx, "save_time_zone", move |state, _| {
+                    state.set_time_zone(zone);
+                    set_datetime_prefs(zone, &state.date_format());
+                });
+            },
+        ));
+        // The select shows a fixed sample instant in each layout — the
+        // sample explains a format better than a name would.
+        let format_labels: Vec<String> = DATE_FORMATS.iter().map(date_format_sample).collect();
+        let format_index = DATE_FORMATS.iter().position(|format| format.id == date_format);
+        let date_format_select = cx.new(|cx| ZedisSelect::new(format_labels, format_index, window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &date_format_select,
+            window,
+            |_view, _select, event: &ZedisSelectEvent, _window, cx| {
+                let ZedisSelectEvent::Change(index) = event;
+                let Some(format) = DATE_FORMATS.get(*index) else {
+                    return;
+                };
+                update_app_state_and_save(cx, "save_date_format", move |state, _| {
+                    state.set_date_format(format.id);
+                    set_datetime_prefs(state.time_zone(), format.id);
+                });
+            },
+        ));
+
         // UI + monospace font pickers: searchable dropdowns of the installed
         // families (drop the `.`-prefixed internal ones), each led by a
         // "default" entry. Changing either applies + persists both.
@@ -574,8 +632,11 @@ impl ZedisSettingEditor {
             soft_delete,
             sidebar_click_new_tab,
             auto_update_check,
+            update_prerelease,
             font_size_slider,
             locale_select,
+            time_zone_select,
+            date_format_select,
         }
     }
 
@@ -683,6 +744,18 @@ impl Render for ZedisSettingEditor {
                 .child(Self::render_setting_row(cx, "ui_font", self.ui_font_select.clone()))
                 .child(Self::render_setting_row(cx, "mono_font", self.mono_font_select.clone()))
                 .child(Self::render_setting_row(cx, "lang", self.locale_select.clone()))
+                // — Date & time —
+                .child(Self::render_section_header(
+                    cx,
+                    "section_datetime",
+                    "section_datetime_desc",
+                ))
+                .child(Self::render_setting_row(cx, "time_zone", self.time_zone_select.clone()))
+                .child(Self::render_setting_row(
+                    cx,
+                    "date_format",
+                    self.date_format_select.clone(),
+                ))
                 // — Key Behavior —
                 .child(Self::render_section_header(
                     cx,
@@ -833,13 +906,185 @@ impl Render for ZedisSettingEditor {
                                 });
                             })),
                     ))
+                    .child(Self::render_setting_row(
+                        cx,
+                        "update_prerelease",
+                        Switch::new("update-prerelease")
+                            .checked(self.update_prerelease)
+                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                this.update_prerelease = *checked;
+                                let enabled = *checked;
+                                update_app_state_and_save(cx, "save_update_prerelease", move |state, _| {
+                                    state.set_update_prerelease(enabled);
+                                });
+                            })),
+                    ))
                 })
                 .child(Self::render_setting_row(
                     cx,
                     "config_dir",
                     Input::new(&self.config_dir_state).disabled(true),
+                ))
+                // Linux registers the scheme through the desktop entry and
+                // Windows through the installer; only macOS has a runtime
+                // hook (Launch Services) worth a button.
+                .when(cfg!(target_os = "macos"), |this| {
+                    this.child(Self::render_setting_row(
+                        cx,
+                        "url_scheme",
+                        Button::new("register-url-scheme")
+                            .small()
+                            .outline()
+                            .label(i18n_settings(cx, "url_scheme_button"))
+                            .on_click(cx.listener(|this, _, window, cx| this.register_url_scheme(window, cx))),
+                    ))
+                })
+                .child(Self::render_setting_row(
+                    cx,
+                    "keybindings_file",
+                    Button::new("edit-keybindings")
+                        .small()
+                        .outline()
+                        .label(i18n_settings(cx, "keybindings_edit"))
+                        .on_click(cx.listener(|_this, _, window, cx| Self::open_keybindings_file(window, cx))),
+                ))
+                // — Local data —
+                .child(Self::render_section_header(
+                    cx,
+                    "section_local_data",
+                    "section_local_data_desc",
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "local_data_export",
+                    Button::new("export-local-data")
+                        .small()
+                        .outline()
+                        .label(i18n_settings(cx, "local_data_export_button"))
+                        .on_click(cx.listener(|_this, _, window, cx| Self::export_local_data(window, cx))),
+                ))
+                .child(Self::render_setting_row(
+                    cx,
+                    "local_data_import",
+                    Button::new("import-local-data")
+                        .small()
+                        .outline()
+                        .label(i18n_settings(cx, "local_data_import_button"))
+                        .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
                 )),
         )
+    }
+}
+
+impl ZedisSettingEditor {
+    fn notify_error(window: &mut Window, cx: &mut App, key: &str, error: &str) {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let message = t!(key, error = error, locale = &locale).to_string();
+        window.push_notification(Notification::error(message), cx);
+    }
+
+    /// Create `keybindings.toml` from the template when it does not exist
+    /// yet and hand it to the OS default editor. Changes bind on the next
+    /// launch (the row's description says so).
+    fn open_keybindings_file(window: &mut Window, cx: &mut App) {
+        match ensure_keybindings_file() {
+            Ok(path) => cx.open_with_system(&path),
+            Err(e) => {
+                error!(error = %e, "keybindings file could not be created");
+                Self::notify_error(window, cx, "settings.keybindings_failed", &e.to_string());
+            }
+        }
+    }
+
+    /// Make Zedis the handler for `redis://` / `rediss://` links (Launch
+    /// Services on macOS). The bundle already declares the schemes; this
+    /// only matters when another client claimed them.
+    fn register_url_scheme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tasks = [cx.register_url_scheme("redis"), cx.register_url_scheme("rediss")];
+        cx.spawn_in(window, async move |this, cx| {
+            let mut failure = None;
+            for task in tasks {
+                if let Err(e) = task.await {
+                    failure = Some(e.to_string());
+                }
+            }
+            let _ = this.update_in(cx, |_this, window, cx| match failure {
+                None => {
+                    let message = i18n_settings(cx, "url_scheme_registered");
+                    window.push_notification(Notification::success(message), cx);
+                }
+                Some(error) => {
+                    error!(error = %error, "url scheme registration failed");
+                    Self::notify_error(window, cx, "settings.url_scheme_failed", &error);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn export_local_data(window: &mut Window, cx: &mut App) {
+        match export_local_data_file() {
+            Ok(path) => {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                let message = t!(
+                    "settings.local_data_exported",
+                    path = path.display().to_string(),
+                    locale = &locale
+                )
+                .to_string();
+                window.push_notification(Notification::success(message), cx);
+                cx.reveal_path(&path);
+            }
+            Err(e) => {
+                error!(error = %e, "local data export failed");
+                Self::notify_error(window, cx, "settings.local_data_failed", &e.to_string());
+            }
+        }
+    }
+
+    /// Pick a backup file and merge it into the store. The picker is
+    /// async; the merge itself is a few redb writes and runs on the
+    /// foreground so the managers' caches stay coherent.
+    fn import_local_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |_this, window, cx| match import_local_data_file(&path) {
+                Ok(summary) => {
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                    let message = t!(
+                        "settings.local_data_imported",
+                        tags = summary.key_metadata,
+                        favorites = summary.favorites,
+                        viewers = summary.script_viewers,
+                        scripts = summary.lua_scripts,
+                        protos = summary.protos,
+                        locale = &locale
+                    )
+                    .to_string();
+                    if summary.skipped > 0 {
+                        window.push_notification(Notification::warning(message), cx);
+                    } else {
+                        window.push_notification(Notification::success(message), cx);
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, path = %path.display(), "local data import failed");
+                    Self::notify_error(window, cx, "settings.local_data_failed", &e.to_string());
+                }
+            });
+        })
+        .detach();
     }
 }
 
