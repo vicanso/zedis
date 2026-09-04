@@ -245,7 +245,7 @@ jobs:
           echo "macos ${{ matrix.dmg_suffix }} dmg $NAME $SHA $SIZE" > "meta/macos-${{ matrix.dmg_suffix }}.txt"
       - name: upload checksum meta (macos)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: meta-macos-${{ matrix.dmg_suffix }}
           path: meta/macos-${{ matrix.dmg_suffix }}.txt
@@ -364,7 +364,7 @@ jobs:
           Set-Content -Encoding ascii -Path "meta/windows-${{ matrix.suffix }}.txt" -Value $lines
       - name: upload checksum meta (windows)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: meta-windows-${{ matrix.suffix }}
           path: meta/windows-${{ matrix.suffix }}.txt
@@ -497,7 +497,7 @@ jobs:
           done
       - name: upload checksum meta (linux)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: meta-linux-${{ matrix.suffix }}
           path: meta/linux-${{ matrix.suffix }}.txt
