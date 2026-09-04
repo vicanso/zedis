@@ -1524,7 +1524,16 @@ fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
         assert_eq!(desc.server_type, "Sentinel");
         let mut expected = vec![master_name, second];
         expected.sort();
-        assert_eq!(desc.sentinel_master_names, expected);
+        // `sentinel_admin_commands_reach_the_sentinels` MONITORs a throwaway
+        // `zedis-it-…` master for a moment; the suite runs in parallel, so it
+        // may be listed here too — it sorts after the real ones either way.
+        let listed: Vec<String> = desc
+            .sentinel_master_names
+            .iter()
+            .filter(|name| !name.starts_with("zedis-it-"))
+            .cloned()
+            .collect();
+        assert_eq!(listed, expected);
         assert_eq!(client.master_servers().len(), 1, "connected to one master");
         assert_eq!(desc.topology[0].master.master_name, expected[0], "the first by name");
 
