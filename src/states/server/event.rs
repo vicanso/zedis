@@ -167,6 +167,17 @@ pub enum ServerTask {
     /// `SENTINEL REMOVE master_name` — stop monitoring the named
     /// master across all sentinel instances.
     SentinelRemove,
+    /// `SENTINEL MASTERS` — the monitored masters with their quorum and
+    /// timing, for the Topology panel.
+    SentinelInfo,
+    /// `SENTINEL MONITOR name ip port quorum` on every sentinel.
+    SentinelMonitor,
+    /// `SENTINEL SET name option value` on every sentinel.
+    SentinelSet,
+    /// `SENTINEL CKQUORUM name` on every sentinel.
+    SentinelCkquorum,
+    /// `SENTINEL FLUSHCONFIG` on every sentinel.
+    SentinelFlushConfig,
 }
 
 impl ServerTask {
@@ -227,6 +238,11 @@ impl ServerTask {
             ServerTask::SentinelFailover => "sentinel_failover",
             ServerTask::SentinelReset => "sentinel_reset",
             ServerTask::SentinelRemove => "sentinel_remove",
+            ServerTask::SentinelInfo => "sentinel_info",
+            ServerTask::SentinelMonitor => "sentinel_monitor",
+            ServerTask::SentinelSet => "sentinel_set",
+            ServerTask::SentinelCkquorum => "sentinel_ckquorum",
+            ServerTask::SentinelFlushConfig => "sentinel_flushconfig",
         }
     }
 }
@@ -236,6 +252,9 @@ impl ServerTask {
 pub enum ServerEvent {
     /// A new background task has started.
     TaskStarted(ServerTask),
+
+    /// `ZedisServerState::sentinel_masters` was refreshed.
+    SentinelInfoUpdated,
 
     /// Terminal toggled
     TerminalToggled(bool),

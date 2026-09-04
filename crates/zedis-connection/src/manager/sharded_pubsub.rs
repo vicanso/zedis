@@ -23,7 +23,7 @@
 //! smol channel, and dropping the wrapper closes the connection — which is
 //! also the unsubscribe path, mirroring the Monitor/Pub/Sub task pattern.
 
-use super::{ConnectionManager, ServerType};
+use super::{ConnectionManager, NodeDiscovery, ServerType};
 use crate::async_connection::{resolve_connection_timeout, resolve_response_timeout};
 use crate::error::Error;
 use crate::ssh_cluster_connection::SshMultiplexedConnection;
@@ -91,7 +91,7 @@ impl ConnectionManager {
     /// Opens a dedicated sharded Pub/Sub connection for the server.
     /// Requires Redis 7+ (`SSUBSCRIBE` errors on older servers).
     pub async fn get_sharded_pubsub(&self, server_id: &str) -> Result<ShardedPubSub> {
-        let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
+        let NodeDiscovery { nodes, server_type, .. } = self.get_redis_nodes(server_id).await?;
         let Some(first_node) = nodes.first() else {
             return Err(Error::Invalid {
                 message: "no nodes found".to_string(),

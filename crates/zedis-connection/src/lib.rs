@@ -21,6 +21,7 @@ use tracing::info;
 pub mod error;
 pub mod floors;
 pub mod reply_format;
+pub mod sentinel;
 pub mod string;
 pub mod time;
 
@@ -92,6 +93,10 @@ pub use readable_import::{
     sniff_import_format, write_readable_chunk,
 };
 pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
+pub use sentinel::{
+    SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReply, sentinel_ckquorum, sentinel_failover, sentinel_flushconfig,
+    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_reset, sentinel_set, summarize_replies,
+};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 

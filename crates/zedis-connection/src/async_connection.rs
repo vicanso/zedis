@@ -290,7 +290,7 @@ pub async fn open_seed_connection(config: &RedisServer) -> Result<MultiplexedCon
     }))
 }
 
-async fn open_seed_endpoint(config: &RedisServer) -> Result<MultiplexedConnection> {
+pub(crate) async fn open_seed_endpoint(config: &RedisServer) -> Result<MultiplexedConnection> {
     if config.server_type == Some(SERVER_TYPE_SENTINEL) && config.has_sentinel_credentials() {
         return open_single_connection(&config.sentinel_login(), 0, false).await;
     }

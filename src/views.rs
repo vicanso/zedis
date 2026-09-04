@@ -53,6 +53,7 @@ mod recent_keys_palette;
 mod script_editor;
 mod search_manager;
 mod secondary_window;
+mod sentinel_dialogs;
 mod server_info;
 mod server_load;
 mod servers;
@@ -104,6 +105,7 @@ pub use kv_table::ZedisKvTable;
 pub use list_editor::ZedisListEditor;
 pub use lua_script_library::ZedisLuaScriptLibrary;
 pub use memory_analysis::ZedisMemoryAnalysis;
+pub use sentinel_dialogs::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
 // Chart helpers re-exported so other diagnostic panels (e.g.
 // memory_analysis) can reuse the metrics view's canvas primitives
 // without each one re-implementing axis / tick rendering.

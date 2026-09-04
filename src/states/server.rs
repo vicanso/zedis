@@ -15,8 +15,8 @@
 use crate::connection::error::Error as ConnectionError;
 use crate::connection::floors::{self, Floor};
 use crate::connection::{
-    AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerFeatures, SlowLogEntry,
-    get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
+    AccessMode, Capability, CommandStatus, RedisClientDescription, SentinelMaster, ServerCommand, ServerFeatures,
+    SlowLogEntry, get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
     note_server_command_error, probe_server_features,
 };
 use crate::db::get_search_history_manager;
@@ -260,6 +260,9 @@ pub struct ZedisServerState {
     nodes: (usize, usize),
     /// Description of the nodes
     nodes_description: Arc<RedisClientDescription>,
+    /// Sentinel only: the monitored masters as the sentinels describe them
+    /// (quorum, timing, down flags) — see `server/sentinel.rs`.
+    sentinel_masters: Vec<SentinelMaster>,
 
     /// Redis server version string
     version: SharedString,
@@ -435,6 +438,7 @@ impl ZedisServerState {
         self.value_history.clear();
         self.key_tree_id = SharedString::default();
         self.nodes_description = Arc::new(RedisClientDescription::default());
+        self.sentinel_masters.clear();
         self.dbsize = None;
         self.key = None;
         self.redis_info = None;
@@ -1297,6 +1301,7 @@ impl ZedisServerState {
                             this.dbsize = Some(dbsize);
                             this.nodes = nodes;
                             this.nodes_description = Arc::new(nodes_description);
+                            this.note_sentinel_master_choice(cx);
                             this.version = version.into();
                             this.databases = databases;
                             this.access_mode = access_mode;

@@ -116,7 +116,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 集群健康与管理
 **带复制延迟的拓扑树、slot 分布图、逐节点负载，以及重分片向导。**
 
-以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE` 与 `SENTINEL FAILOVER` / `RESET` / `REMOVE`，每个写操作都过确认对话框、PROD 升级。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。仅在多节点部署出现。
+以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE`，Sentinel 下则有 `FAILOVER` / `RESET` / `REMOVE` / `MONITOR`（添加主节点）/ `SET`（quorum、down-after、failover-timeout、parallel-syncs、auth-pass）/ `FLUSHCONFIG`，`CKQUORUM` 按哨兵逐个回答——每个写操作都过确认对话框、PROD 升级。`SENTINEL` 命令直接发给哨兵本身（连接里的种子加上它们上报的同伴），绝不发给池化的数据主节点；每个主节点行显示哨兵对它的描述：quorum、哨兵数、各时间、宕机标记。连接未填主节点名而哨兵监控多个主节点时，取名字排序的第一个并提示，其余在面板里一键切换并写回连接。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。仅在多节点部署出现。
 
 ### 持久化与键事件
 **RDB/AOF 状态 + 一键保存，外加实时键事件排查。**

@@ -32,9 +32,10 @@ use zedis_connection::{
     CommandStatus, ConflictMode, ExpireCondition, FieldTtl, ImportFormat, ReadLimits, ReadableValue,
     ReadableWriteStatus, RedisAsyncConn, RedisServer, RestoreStatus, SearchOptions, ServerCommand, ServerFlavor,
     SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
-    ft_explain, ft_search, get_connection_manager, get_servers, open_single_connection, parse_readable_entries,
-    probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers,
-    sniff_import_format, split_acl_rules, write_hash_field, write_readable_chunk,
+    ft_explain, ft_search, get_connection_manager, get_server, get_servers, open_single_connection,
+    parse_readable_entries, probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk,
+    run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor,
+    sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -1258,6 +1259,119 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
             .await
             .expect("write on the new master");
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// The admin commands go to the sentinels, never to the pooled data master
+/// (where `SENTINEL` is unknown): MASTERS lists both monitored masters,
+/// CKQUORUM answers per sentinel, SET changes what MASTERS reports next,
+/// MONITOR / REMOVE add and drop a master, FLUSHCONFIG rewrites the file.
+#[test]
+#[ignore]
+fn sentinel_admin_commands_reach_the_sentinels() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_SENTINEL");
+        let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
+        let mut s = server("it-sentinel-admin", addr);
+        s.master_name = Some(master_name.clone());
+        let id = register(s).await;
+        let server = get_server(&id).expect("saved entry");
+
+        let masters = sentinel_masters(&server).await.expect("masters");
+        assert!(masters.len() >= 2, "two monitored masters: {masters:?}");
+        let before = masters
+            .iter()
+            .find(|m| m.name == master_name)
+            .cloned()
+            .expect("the named master is listed");
+        assert_eq!(before.quorum, 1);
+
+        // One sentinel with quorum 1: from where it stands, a failover is possible.
+        let replies = sentinel_ckquorum(&server, &master_name).await.expect("ckquorum");
+        assert_eq!(replies.len(), 1, "one sentinel in the topology: {replies:?}");
+        let reply = replies[0].result.as_ref().expect("ckquorum answers");
+        assert!(reply.starts_with("OK"), "{reply}");
+
+        // SET is visible in the next MASTERS; put the value back afterwards.
+        let option = "down-after-milliseconds".to_string();
+        let replies = sentinel_set(&server, &master_name, &[(option.clone(), "6000".to_string())])
+            .await
+            .expect("set");
+        assert!(replies.iter().all(|r| r.result.is_ok()), "{replies:?}");
+        let after = sentinel_masters(&server)
+            .await
+            .expect("masters")
+            .into_iter()
+            .find(|m| m.name == master_name)
+            .expect("still listed");
+        assert_eq!(after.down_after_ms, 6000);
+        sentinel_set(&server, &master_name, &[(option, before.down_after_ms.to_string())])
+            .await
+            .expect("set back");
+
+        // MONITOR a throwaway master (an address nothing answers on is fine:
+        // the command only records it), then REMOVE it again.
+        let tmp = unique("snt").replace(':', "-");
+        let replies = sentinel_monitor(&server, &tmp, "127.0.0.1", 1, 1)
+            .await
+            .expect("monitor");
+        assert!(replies.iter().all(|r| r.result.is_ok()), "{replies:?}");
+        assert!(
+            sentinel_masters(&server)
+                .await
+                .expect("masters")
+                .iter()
+                .any(|m| m.name == tmp)
+        );
+        let replies = sentinel_remove(&server, &tmp).await.expect("remove");
+        assert!(replies.iter().all(|r| r.result.is_ok()), "{replies:?}");
+        assert!(
+            !sentinel_masters(&server)
+                .await
+                .expect("masters")
+                .iter()
+                .any(|m| m.name == tmp)
+        );
+
+        let replies = sentinel_flushconfig(&server).await.expect("flushconfig");
+        assert!(replies.iter().all(|r| r.result.is_ok()), "{replies:?}");
+    });
+}
+
+/// An entry that names no master on a sentinel with several connects to
+/// the first by name and carries the whole list for the Topology switcher;
+/// naming one the sentinel does not monitor fails and says what it does.
+#[test]
+#[ignore]
+fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_SENTINEL");
+        let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
+        let Ok(second) = env::var("ZEDIS_IT_MASTER_NAME2") else {
+            eprintln!("skipped: ZEDIS_IT_MASTER_NAME2 not set");
+            return;
+        };
+        let id = register(server("it-sentinel-unnamed", addr.clone())).await;
+        get_connection_manager().remove_client(&id, 0);
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let desc = client.nodes_description();
+        assert_eq!(desc.server_type, "Sentinel");
+        let mut expected = vec![master_name, second];
+        expected.sort();
+        assert_eq!(desc.sentinel_master_names, expected);
+        assert_eq!(client.master_servers().len(), 1, "connected to one master");
+        assert_eq!(desc.topology[0].master.master_name, expected[0], "the first by name");
+
+        let mut s = server("it-sentinel-unknown", addr);
+        s.master_name = Some("no-such-master".into());
+        let id = register(s).await;
+        get_connection_manager().remove_client(&id, 0);
+        let err = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .err()
+            .expect("an unmonitored master name must fail the connect");
+        assert!(err.to_string().contains("no-such-master"), "{err}");
     });
 }
 

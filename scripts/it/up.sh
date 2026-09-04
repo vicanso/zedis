@@ -3,8 +3,9 @@
 #
 #   standalone  127.0.0.1:16379   plain server (ACL users are created by the tests)
 #   tls         127.0.0.1:16380   TLS-only server with a self-signed CA (.run/tls/ca.crt)
-#   sentinel    127.0.0.1:16479   one sentinel over master 16381 / replica 16382 ("mymaster")
-#                                 (`IT_PORT_BASE=26379` shifts these five ports together)
+#   sentinel    127.0.0.1:16479   one sentinel over two masters: 16381 / replica 16382
+#                                 ("mymaster") and 16383 / replica 16384 ("mymaster2")
+#                                 (`IT_PORT_BASE=26379` shifts these seven ports together)
 #   cluster     127.0.0.1:17000-17005   3 masters + 3 replicas (cluster bus on 27000-27005;
 #                                       `IT_CLUSTER_BASE=7100` moves the block when those are taken)
 #
@@ -38,9 +39,12 @@ PORT_STANDALONE=$PORT_BASE
 PORT_TLS=$((PORT_BASE + 1))
 PORT_MASTER=$((PORT_BASE + 2))
 PORT_REPLICA=$((PORT_BASE + 3))
+PORT_MASTER2=$((PORT_BASE + 4))
+PORT_REPLICA2=$((PORT_BASE + 5))
 PORT_SENTINEL=$((PORT_BASE + 100))
 PORT_CLUSTER_BASE=${IT_CLUSTER_BASE:-17000}
 MASTER_NAME=mymaster
+MASTER_NAME2=mymaster2
 
 "$HERE/down.sh" >/dev/null 2>&1 || true
 mkdir -p "$IT_DIR"
@@ -165,20 +169,31 @@ fi
 
 # ── sentinel ─────────────────────────────────────────────────────────────
 if has sentinel; then
-  echo "sentinel :$PORT_SENTINEL (master :$PORT_MASTER, replica :$PORT_REPLICA)"
+  # Two monitored masters: the second is what the multi-master paths
+  # (first-by-name selection, the Topology switcher) are tested against.
+  echo "sentinel :$PORT_SENTINEL (masters :$PORT_MASTER / :$PORT_MASTER2, replicas :$PORT_REPLICA / :$PORT_REPLICA2)"
   wait_port_free "$PORT_MASTER" "sentinel master"
   wait_port_free "$PORT_REPLICA" "sentinel replica"
+  wait_port_free "$PORT_MASTER2" "sentinel master 2"
+  wait_port_free "$PORT_REPLICA2" "sentinel replica 2"
   wait_port_free "$PORT_SENTINEL" sentinel
   start master --port "$PORT_MASTER" --save "" --appendonly no --dir "$FS"
   start replica --port "$PORT_REPLICA" --save "" --appendonly no --dir "$FS" --replicaof 127.0.0.1 "$PORT_MASTER"
+  start master2 --port "$PORT_MASTER2" --save "" --appendonly no --dir "$FS"
+  start replica2 --port "$PORT_REPLICA2" --save "" --appendonly no --dir "$FS" --replicaof 127.0.0.1 "$PORT_MASTER2"
   wait_pong master -p "$PORT_MASTER"
   wait_pong replica -p "$PORT_REPLICA"
+  wait_pong master2 -p "$PORT_MASTER2"
+  wait_pong replica2 -p "$PORT_REPLICA2"
   cat > "$IT_DIR/sentinel.conf" <<CONF
 port $PORT_SENTINEL
 dir $FS
 sentinel monitor $MASTER_NAME 127.0.0.1 $PORT_MASTER 1
 sentinel down-after-milliseconds $MASTER_NAME 5000
 sentinel failover-timeout $MASTER_NAME 10000
+sentinel monitor $MASTER_NAME2 127.0.0.1 $PORT_MASTER2 1
+sentinel down-after-milliseconds $MASTER_NAME2 5000
+sentinel failover-timeout $MASTER_NAME2 10000
 sentinel resolve-hostnames no
 CONF
   chmod 666 "$IT_DIR/sentinel.conf"
@@ -194,6 +209,7 @@ CONF
   echo "  sentinel sees $n replica(s)"
   env_put ZEDIS_IT_SENTINEL "127.0.0.1:$PORT_SENTINEL"
   env_put ZEDIS_IT_MASTER_NAME "$MASTER_NAME"
+  env_put ZEDIS_IT_MASTER_NAME2 "$MASTER_NAME2"
 fi
 
 # ── cluster ──────────────────────────────────────────────────────────────

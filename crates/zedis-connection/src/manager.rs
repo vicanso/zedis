@@ -536,6 +536,26 @@ impl FromRedisValue for SlowLogEntry {
 // wraps redis multiplexed / cluster connections, which are cheap Arc-shared
 // handles — cloning a `RedisClient` shares the same underlying connection, which
 // is exactly the intended multiplexing behaviour (no per-clone socket).
+/// What node discovery found for a server entry (private to this module
+/// and the pool / pub-sub submodules that run discovery).
+struct NodeDiscovery {
+    nodes: Vec<RedisNode>,
+    server_type: ServerType,
+    /// Sentinel only: every master the sentinel monitors, sorted by name —
+    /// the connected one and the alternatives a panel can offer.
+    sentinel_master_names: Vec<String>,
+}
+
+impl NodeDiscovery {
+    fn new(nodes: Vec<RedisNode>, server_type: ServerType) -> Self {
+        Self {
+            nodes,
+            server_type,
+            sentinel_master_names: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RedisClient {
     access_mode: AccessMode,
@@ -545,6 +565,8 @@ pub struct RedisClient {
     server_type: ServerType,
     nodes: Vec<RedisNode>,
     master_nodes: Vec<RedisNode>,
+    /// See [`NodeDiscovery::sentinel_master_names`].
+    sentinel_master_names: Vec<String>,
     version: Version,
     is_valkey: bool,
     connection: RedisAsyncConn,
@@ -593,6 +615,10 @@ pub struct RedisClientDescription {
     pub topology: Vec<TopologyMaster>,
     /// Cluster slot ownership + migration markers. Empty outside cluster mode.
     pub slot_map: ClusterSlotMap,
+    /// Sentinel only: every master the sentinel monitors, sorted by name.
+    /// More than one means the entry did not name a master and the first
+    /// was taken — the Topology panel offers the rest.
+    pub sentinel_master_names: Vec<String>,
 }
 
 pub struct ConnectionManager {

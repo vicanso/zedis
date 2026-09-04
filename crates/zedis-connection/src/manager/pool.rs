@@ -265,7 +265,7 @@ impl ConnectionManager {
     /// Discovers Redis nodes and server type based on initial configuration.
     /// `pub(super)` so the sharded Pub/Sub sibling module can build its
     /// dedicated connection from the same node discovery.
-    pub(super) async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
+    pub(super) async fn get_redis_nodes(&self, name: &str) -> Result<NodeDiscovery> {
         let config = get_server(name)?;
         let (mut conn, server_type) = {
             // A seed the helper cannot reach is not a standalone in
@@ -322,15 +322,17 @@ impl ConnectionManager {
                         }
                     })
                     .collect();
-                Ok((nodes, server_type))
+                Ok(NodeDiscovery::new(nodes, server_type))
             }
             ServerType::Sentinel => {
-                // let mut conn = client.get_multiplexed_async_connection().await?;
-                // Fetch masters from Sentinel
+                // Every master the sentinel monitors, by name. The entry's
+                // master name picks one; without it the first by name is
+                // used and the whole list travels with the client, so the
+                // Topology panel can offer the others instead of the connect
+                // failing on an ambiguity the user has not been shown yet.
                 let masters_response: Vec<HashMap<String, String>> =
                     cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
-                let mut nodes = vec![];
-
+                let mut masters: Vec<(String, RedisNode)> = vec![];
                 for item in masters_response {
                     let ip = item.get("ip").ok_or_else(|| Error::Invalid {
                         message: "ip is not found".to_string(),
@@ -347,36 +349,46 @@ impl ConnectionManager {
                     let name = item.get("name").ok_or_else(|| Error::Invalid {
                         message: "master_name is not found".to_string(),
                     })?;
-                    // Filter by master name if configured
-                    if let Some(master_name) = &config.master_name
-                        && name != master_name
-                    {
-                        continue;
-                    }
                     let mut tmp_config = config.clone();
                     tmp_config.host = ip.clone();
                     tmp_config.port = port;
-
-                    nodes.push(RedisNode {
-                        server: tmp_config,
-                        role: NodeRole::Master,
-                        master_name: Some(name.clone()),
-                        ..Default::default()
-                    });
+                    masters.push((
+                        name.clone(),
+                        RedisNode {
+                            server: tmp_config,
+                            role: NodeRole::Master,
+                            master_name: Some(name.clone()),
+                            ..Default::default()
+                        },
+                    ));
                 }
-                // Check for ambiguous master configuration
-                let unique_masters: HashSet<_> = nodes.iter().filter_map(|n| n.master_name.as_ref()).collect();
-                if unique_masters.len() > 1 {
-                    return Err(Error::Invalid {
-                        message: format!(
-                            "Multiple masters found in Sentinel, please specify master_name, master_names: {unique_masters:?}"
-                        ),
-                    });
-                }
-
-                Ok((nodes, server_type))
+                masters.sort_by(|a, b| a.0.cmp(&b.0));
+                let names: Vec<String> = masters.iter().map(|(name, _)| name.clone()).collect();
+                let chosen = match config.master_name.as_deref().filter(|n| !n.is_empty()) {
+                    Some(wanted) => masters
+                        .into_iter()
+                        .find(|(name, _)| name == wanted)
+                        .map(|(_, node)| node)
+                        .ok_or_else(|| Error::Invalid {
+                            message: format!(
+                                "master {wanted} is not monitored by this sentinel; it monitors {names:?}"
+                            ),
+                        })?,
+                    None => masters
+                        .into_iter()
+                        .next()
+                        .map(|(_, node)| node)
+                        .ok_or_else(|| Error::Invalid {
+                            message: "the sentinel monitors no master".to_string(),
+                        })?,
+                };
+                Ok(NodeDiscovery {
+                    nodes: vec![chosen],
+                    server_type,
+                    sentinel_master_names: names,
+                })
             }
-            _ => Ok((
+            _ => Ok(NodeDiscovery::new(
                 vec![RedisNode {
                     server: config.clone(),
                     role: NodeRole::Master,
@@ -408,7 +420,11 @@ impl ConnectionManager {
     /// Retrieves or creates a RedisClient for the given configuration name without caching.
     pub async fn get_client_without_cache(&self, server_id: &str, db: usize) -> Result<RedisClient> {
         let config = get_server(server_id)?;
-        let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
+        let NodeDiscovery {
+            nodes,
+            server_type,
+            sentinel_master_names,
+        } = self.get_redis_nodes(server_id).await?;
         debug!(server_id, server_type = ?server_type, nodes = ?nodes, "get redis nodes");
         let Some(first_node) = nodes.first() else {
             return Err(Error::Invalid {
@@ -492,6 +508,7 @@ impl ConnectionManager {
             server_type: server_type.clone(),
             nodes,
             master_nodes,
+            sentinel_master_names,
             version: Version::new(0, 0, 0),
             is_valkey: false,
             connection,

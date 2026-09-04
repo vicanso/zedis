@@ -64,6 +64,7 @@ impl RedisClient {
             modules,
             topology,
             slot_map,
+            sentinel_master_names: self.sentinel_master_names.clone(),
         }
     }
 
