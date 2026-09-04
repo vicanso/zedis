@@ -14,7 +14,8 @@
 
 use crate::connection::ServerCommand;
 use crate::connection::{
-    RedisServer, get_server, get_servers, save_servers, set_redis_connection_timeout, set_redis_response_timeout,
+    RedisServer, ReplyFormat, get_server, get_servers, save_servers, set_redis_connection_timeout,
+    set_redis_response_timeout,
 };
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
@@ -582,6 +583,9 @@ pub struct ZedisAppState {
     ai_api_key: Option<String>,
     /// Model name passed to the AI endpoint, e.g. `gpt-4o-mini`.
     ai_model: Option<String>,
+    /// How the terminal renders replies (`text` / `table` / `json`, see
+    /// `ReplyFormat::as_str`). Unset = text.
+    terminal_reply_format: Option<String>,
     /// Outbound HTTP proxy for the app's own requests (update check, AI).
     /// `None`/empty follows the environment / OS system proxy; `"none"`
     /// forces a direct connection; anything else is a proxy URI. Mirrored
@@ -1177,10 +1181,22 @@ impl ZedisAppState {
         let model = model.trim().to_string();
         self.ai_model = if model.is_empty() { None } else { Some(model) };
     }
-    /// Whether the AI analysis feature has the minimum configuration
-    /// (endpoint + key) to be usable.
+    /// Whether the AI features have the minimum configuration to be
+    /// usable: an endpoint. The key is optional — a local endpoint (Ollama,
+    /// LM Studio, vLLM without auth) takes none, and used to need a fake
+    /// one typed in just to pass this check.
     pub fn ai_configured(&self) -> bool {
-        self.ai_base_url.is_some() && self.ai_api_key.is_some()
+        self.ai_base_url.is_some()
+    }
+    /// The terminal's reply rendering; text unless a known name is stored.
+    pub fn terminal_reply_format(&self) -> ReplyFormat {
+        self.terminal_reply_format
+            .as_deref()
+            .and_then(ReplyFormat::from_name)
+            .unwrap_or_default()
+    }
+    pub fn set_terminal_reply_format(&mut self, format: ReplyFormat) {
+        self.terminal_reply_format = Some(format.as_str().to_string());
     }
     /// Whether the app checks GitHub for a newer release on startup. Defaults
     /// to `true`; the user can disable it in Settings.

@@ -20,6 +20,7 @@ use tracing::info;
 
 pub mod error;
 pub mod floors;
+pub mod reply_format;
 pub mod string;
 pub mod time;
 
@@ -90,6 +91,7 @@ pub use readable_import::{
     ImportFormat, ReadableWriteStatus, detect_import_format, parse_readable_entries, preview_import_conflicts,
     sniff_import_format, write_readable_chunk,
 };
+pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, set_host_key_approver};
 

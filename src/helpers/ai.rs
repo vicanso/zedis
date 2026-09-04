@@ -163,7 +163,8 @@ pub struct AiEndpoint {
     /// (e.g. `https://api.openai.com/v1`) or a complete endpoint URL
     /// ending in `/chat/completions`. A trailing slash is tolerated.
     pub base_url: String,
-    /// Bearer API key (already decrypted).
+    /// Bearer API key (already decrypted). Empty for an endpoint without
+    /// auth (Ollama, LM Studio): then no `Authorization` header is sent.
     pub api_key: String,
     /// Model name; blank falls back to [`DEFAULT_AI_MODEL`].
     pub model: String,
@@ -209,10 +210,6 @@ fn chat_completion(endpoint: &AiEndpoint, system_prompt: &str, user_content: &st
     if endpoint.base_url.trim().is_empty() {
         return invalid("AI base URL is not configured");
     }
-    if endpoint.api_key.trim().is_empty() {
-        return invalid("AI API key is not configured");
-    }
-
     let url = endpoint.chat_completions_url();
     let model = endpoint.effective_model().to_string();
     let body = json!({
@@ -238,17 +235,21 @@ fn chat_completion(endpoint: &AiEndpoint, system_prompt: &str, user_content: &st
         .build()
         .new_agent();
 
-    let response = agent
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", endpoint.api_key.trim()))
-        .header("Content-Type", "application/json")
-        .send(body.as_str())
-        .map_err(|e| {
-            error!(%url, error = %e, "AI request: failed (network/TLS)");
-            Error::Invalid {
-                message: format!("AI request failed: {e}"),
-            }
-        })?;
+    // No key, no header: a local endpoint (Ollama, LM Studio) has no auth,
+    // and some reject a bearer token they never issued.
+    let api_key = endpoint.api_key.trim();
+    let request = agent.post(&url).header("Content-Type", "application/json");
+    let request = if api_key.is_empty() {
+        request
+    } else {
+        request.header("Authorization", format!("Bearer {api_key}"))
+    };
+    let response = request.send(body.as_str()).map_err(|e| {
+        error!(%url, error = %e, "AI request: failed (network/TLS)");
+        Error::Invalid {
+            message: format!("AI request failed: {e}"),
+        }
+    })?;
 
     let status = response.status();
     let text = response.into_body().read_to_string().map_err(|e| {

@@ -14,31 +14,41 @@
 
 use crate::{
     connection::{
-        DangerKind, RedisAsyncConn, classify_dangerous_line, command_doc_url, get_command_description,
-        get_connection_manager, get_server, is_write_command, list_commands, requires_write_confirm,
+        DangerKind, RedisAsyncConn, ReplyFormat, classify_dangerous_line, command_doc_url, format_exec, format_reply,
+        get_command_description, get_connection_manager, get_server, is_write_command, list_commands,
+        requires_write_confirm,
     },
     db::get_cmd_history_manager,
     error::{ConnectionErrorKind, Error},
     helpers::{
-        AiEndpoint, get_mono_font_family, redis_value_to_string, starts_with_ignore_ascii_case, suggest_command,
+        AiEndpoint, TerminalAction, get_download_dir, get_mono_font_family, get_or_create_config_dir,
+        starts_with_ignore_ascii_case, suggest_command, write_file_atomic,
     },
-    states::{ServerEvent, ZedisGlobalStore, ZedisServerState},
+    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, update_app_state_and_save_quiet},
     views::confirm_dangerous_command,
 };
-use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use chrono::Local;
+use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
+    button::{Button, ButtonGroup, ButtonVariants},
     h_flex,
     highlighter::Language,
-    input::{Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp, Position, Textarea, TextareaState},
+    input::{
+        Copy, Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp, Position, SelectAll, Textarea,
+        TextareaState,
+    },
     label::Label,
+    notification::Notification,
     v_flex,
 };
-use redis::cmd;
+use redis::{Value, cmd};
 use smol::lock::Mutex;
+use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::warn;
+use std::time::Instant;
+use tracing::{error, info, warn};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -101,12 +111,156 @@ fn strip_redis_cli_prefix(line: &str) -> &str {
     }
 }
 
-/// What one executed line produced: the rendered reply, and the db a
-/// successful `SELECT` moved the terminal's connection to.
+/// What one executed line produced: the reply — kept as a value, so the
+/// output can be re-rendered in another format — and the db a successful
+/// `SELECT` moved the terminal's connection to.
 #[derive(Default)]
 struct LineOutcome {
-    text: SharedString,
+    reply: LineReply,
     selected_db: Option<usize>,
+}
+
+/// The server's answer to one line, or the text shown in its place.
+enum LineReply {
+    /// The reply, with the command that produced it: `format_reply` needs
+    /// the command to tell a hash or `WITHSCORES` pair list from a plain
+    /// list (RESP2 flattens both).
+    Value {
+        cmd: String,
+        args: Vec<String>,
+        value: Value,
+    },
+    /// An error, or a line refused before it reached the server — verbatim.
+    Message(String),
+}
+
+impl Default for LineReply {
+    fn default() -> Self {
+        LineReply::Message(String::new())
+    }
+}
+
+/// One block of the output pane. The transcript is kept structured rather
+/// than as text so a format switch re-renders every reply, `EXEC` can be
+/// laid out against the commands it ran, and the AI placeholder can be
+/// found again while commands keep landing around it.
+enum TranscriptEntry {
+    /// Banner, notes, AI lines: verbatim.
+    Text(String),
+    Command {
+        line: String,
+        reply: LineReply,
+    },
+    /// A `MULTI … EXEC` block: the queued commands beside EXEC's replies.
+    Exec {
+        commands: Vec<String>,
+        replies: Vec<Value>,
+    },
+    /// Footer of a multi-line (Batch / pasted pipeline) run.
+    BatchSummary {
+        commands: usize,
+        errors: usize,
+        elapsed_ms: u128,
+    },
+    /// A `?` request in flight; replaced by its answer.
+    AiPending,
+}
+
+/// Entries kept; the oldest go first. The rendered text is capped again by
+/// [`MAX_OUTPUT_CHARS`], so a few huge replies can't keep 1000 blocks alive.
+const MAX_TRANSCRIPT_ENTRIES: usize = 1_000;
+
+/// The output pane's text for `entries` in `format`.
+fn render_transcript(entries: &[TranscriptEntry], format: ReplyFormat) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for entry in entries {
+        match entry {
+            TranscriptEntry::Text(text) => {
+                out.push_str(text);
+                if !text.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            TranscriptEntry::Command { line, reply } => {
+                let _ = writeln!(out, "{CMD_LABEL} {line}");
+                match reply {
+                    LineReply::Value { cmd, args, value } => {
+                        let _ = writeln!(out, "{}", format_reply(cmd, args, value, format));
+                    }
+                    LineReply::Message(message) => {
+                        let _ = writeln!(out, "{message}");
+                    }
+                }
+            }
+            TranscriptEntry::Exec { commands, replies } => {
+                let _ = writeln!(out, "{CMD_LABEL} EXEC");
+                let _ = writeln!(out, "{}", format_exec(commands, replies, format));
+            }
+            TranscriptEntry::BatchSummary {
+                commands,
+                errors,
+                elapsed_ms,
+            } => {
+                let _ = writeln!(out, "── batch: {commands} commands · {errors} errors · {elapsed_ms} ms");
+            }
+            TranscriptEntry::AiPending => {
+                let _ = writeln!(out, "{AI_WAITING_MSG}");
+            }
+        }
+    }
+    out
+}
+
+/// Fold one executed line into the `MULTI` bookkeeping and produce its
+/// transcript entries. `queue` is `Some` between a successful `MULTI` and
+/// its `EXEC` / `DISCARD`; every line Redis answers `QUEUED` joins it, and
+/// `EXEC`'s array reply is then laid out against those commands as one
+/// [`TranscriptEntry::Exec`] block instead of a bare list. `EXEC` after a
+/// `WATCH` conflict answers nil — said in words, since a bare `(nil)` reads
+/// as a missing key.
+fn transcript_entries_for(queue: &mut Option<Vec<String>>, line: String, reply: LineReply) -> Vec<TranscriptEntry> {
+    if let LineReply::Value { cmd, value, .. } = &reply {
+        match cmd.to_ascii_uppercase().as_str() {
+            "MULTI" if matches!(value, Value::Okay) => *queue = Some(Vec::new()),
+            "DISCARD" => *queue = None,
+            "EXEC" => match (queue.take(), value) {
+                (Some(commands), Value::Array(replies)) => {
+                    return vec![TranscriptEntry::Exec {
+                        commands,
+                        replies: replies.clone(),
+                    }];
+                }
+                (Some(_), Value::Nil) => {
+                    return vec![
+                        TranscriptEntry::Command { line, reply },
+                        TranscriptEntry::Text("(transaction aborted: a key under WATCH changed)".to_string()),
+                    ];
+                }
+                _ => {}
+            },
+            _ => {
+                if let Some(queued) = queue.as_mut()
+                    && matches!(value, Value::SimpleString(s) if s == "QUEUED")
+                {
+                    queued.push(line.clone());
+                }
+            }
+        }
+    }
+    vec![TranscriptEntry::Command { line, reply }]
+}
+
+/// Writes the output pane's text to `zedis-terminal-<stamp>.txt` in
+/// Downloads (the config dir when there is none — App Store sandbox) and
+/// returns its path.
+fn write_output_file(text: &str) -> io::Result<PathBuf> {
+    let dir = get_download_dir()
+        .or_else(|| get_or_create_config_dir().ok())
+        .ok_or_else(|| io::Error::other("no directory to write the output to"))?;
+    let path = dir.join(format!("zedis-terminal-{}.txt", Local::now().format("%Y%m%d-%H%M%S")));
+    write_file_atomic(&path, text.as_bytes())?;
+    Ok(path)
 }
 
 /// The db a successful `SELECT <n>` moved the connection to, else `None`.
@@ -163,26 +317,16 @@ fn command_history(server_id: &str) -> Vec<String> {
     })
 }
 
-/// Scrollback cap for the REPL output pane. The whole buffer is re-cloned
-/// into the read-only `InputState` on every command, so leaving it unbounded
-/// made a long session O(n²) in total output. ~200 KB ≈ a few thousand lines.
+/// Scrollback cap for the rendered output text. The whole text is
+/// re-rendered and handed to the read-only editor on every command, so
+/// leaving it unbounded made a long session O(n²) in total output. ~200 KB
+/// ≈ a few thousand lines.
 const MAX_OUTPUT_CHARS: usize = 200_000;
 
 /// Placeholder line shown in the output while a `?` AI request is in
 /// flight; removed when the reply (or error) lands. Distinctive on
 /// purpose so [`remove_last_line`] can't clip user output.
 const AI_WAITING_MSG: &str = "AI> … thinking — this can take a few seconds; you can keep running commands meanwhile";
-
-/// Remove the last occurrence of `line` (as a full line) from `buf`.
-/// Used to clear the AI waiting placeholder — searched rather than
-/// assumed-at-tail because the user can keep running commands while the
-/// request is in flight.
-fn remove_last_line(buf: &mut String, line: &str) {
-    let needle = format!("{line}\n");
-    if let Some(pos) = buf.rfind(&needle) {
-        buf.drain(pos..pos + needle.len());
-    }
-}
 
 /// Drop the oldest output once the scrollback buffer exceeds
 /// [`MAX_OUTPUT_CHARS`], cutting at a line boundary so the top stays clean.
@@ -209,8 +353,18 @@ struct ReverseSearchState {
 pub struct ZedisTerminal {
     server_state: Entity<ZedisServerState>,
     cmd_output_state: Entity<EditorState>,
+    /// What the output pane shows, as blocks (see [`TranscriptEntry`]).
+    transcript: Vec<TranscriptEntry>,
+    /// `transcript` rendered in `reply_format`; rebuilt in `render` while
+    /// `cmd_output_dirty`, and what Copy / Save hand out.
     cmd_output_text: String,
     cmd_output_dirty: bool,
+    /// How replies are drawn — the toolbar's Text / Table / JSON choice,
+    /// remembered in the app state.
+    reply_format: ReplyFormat,
+    /// Commands queued since a `MULTI` on the terminal's connection, so the
+    /// `EXEC` reply can be shown beside them. `None` outside a transaction.
+    multi_queue: Option<Vec<String>>,
     cmd_input_state: Entity<TextareaState>,
     /// Multi-line "Workbench" editor: one command per line, run as a
     /// batch with Cmd/Ctrl+Enter. Reuses the same execute path as the
@@ -363,11 +517,15 @@ impl ZedisTerminal {
             }),
         );
 
+        let reply_format = cx.global::<ZedisGlobalStore>().read(cx).terminal_reply_format();
         let mut this = Self {
             server_state,
             cmd_output_state,
+            transcript: Vec::new(),
             cmd_output_text: String::new(),
             cmd_output_dirty: false,
+            reply_format,
+            multi_queue: None,
             cmd_input_state,
             batch_input_state,
             batch_mode: false,
@@ -398,11 +556,69 @@ impl ZedisTerminal {
     }
 
     fn reset_cmd_state(&mut self, _cx: &mut Context<Self>) {
-        self.cmd_output_text = ZEDIS_LOGO.replace("{VERSION}", VERSION);
+        self.transcript.clear();
+        self.multi_queue = None;
+        self.push_entry(TranscriptEntry::Text(ZEDIS_LOGO.replace("{VERSION}", VERSION)));
         // Hardcoded English like the rest of this panel (not i18n'd).
-        self.cmd_output_text
-            .push_str("Type \"? <question>\" to ask AI for a command (endpoint configured in Settings).\n");
+        self.push_entry(TranscriptEntry::Text(
+            "Type \"? <question>\" to ask AI for a command (endpoint configured in Settings).".to_string(),
+        ));
+    }
+
+    /// Append to the transcript, dropping the oldest blocks past the cap,
+    /// and schedule a re-render of the output text.
+    fn push_entry(&mut self, entry: TranscriptEntry) {
+        self.transcript.push(entry);
+        if self.transcript.len() > MAX_TRANSCRIPT_ENTRIES {
+            let excess = self.transcript.len() - MAX_TRANSCRIPT_ENTRIES;
+            self.transcript.drain(..excess);
+        }
         self.cmd_output_dirty = true;
+    }
+
+    /// Switch the reply rendering: every block re-renders, and the choice
+    /// is remembered for the next session.
+    fn set_reply_format(&mut self, format: ReplyFormat, cx: &mut Context<Self>) {
+        if self.reply_format == format {
+            return;
+        }
+        self.reply_format = format;
+        self.cmd_output_dirty = true;
+        update_app_state_and_save_quiet(cx, "save_terminal_reply_format", move |state, _| {
+            state.set_terminal_reply_format(format);
+        });
+        cx.notify();
+    }
+
+    fn copy_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(self.cmd_output_text.clone()));
+        window.push_notification(Notification::success("Output copied"), cx);
+    }
+
+    fn save_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match write_output_file(&self.cmd_output_text) {
+            Ok(path) => {
+                info!(path = %path.display(), "terminal output saved");
+                window.push_notification(Notification::success(format!("Output saved to {}", path.display())), cx);
+                cx.reveal_path(&path);
+            }
+            Err(e) => {
+                error!(error = %e, "terminal output save failed");
+                window.push_notification(Notification::error(format!("Saving the output failed: {e}")), cx);
+            }
+        }
+    }
+
+    /// The output pane's right-click commands beyond the editor's own.
+    fn handle_action(&mut self, action: &TerminalAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            TerminalAction::CopyAll => self.copy_output(window, cx),
+            TerminalAction::Save => self.save_output(window, cx),
+            TerminalAction::Clear => {
+                self.reset_cmd_state(cx);
+                cx.notify();
+            }
+        }
     }
 
     fn update_redis_commands(&mut self, cx: &mut Context<Self>) {
@@ -665,17 +881,14 @@ impl ZedisTerminal {
     /// Privacy: only the question plus server *metadata* (version,
     /// deployment type, modules, current db) are sent — never key values.
     fn ask_ai(&mut self, question: String, cx: &mut Context<Self>) {
-        use std::fmt::Write;
         if question.is_empty() {
             return;
         }
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         if !store.ai_configured() {
-            let _ = writeln!(
-                self.cmd_output_text,
-                "? {question}\nAI endpoint is not configured. Set the base URL and API key in Settings first."
-            );
-            self.cmd_output_dirty = true;
+            self.push_entry(TranscriptEntry::Text(format!(
+                "? {question}\nAI endpoint is not configured. Set the base URL in Settings first (an API key only if the endpoint needs one)."
+            )));
             cx.notify();
             return;
         }
@@ -699,10 +912,10 @@ impl ZedisTerminal {
         // A second `?` while one is pending replaces the task (its
         // completion never runs) — clear the previous placeholder so it
         // can't linger in the scrollback forever.
-        remove_last_line(&mut self.cmd_output_text, AI_WAITING_MSG);
-        let _ = writeln!(self.cmd_output_text, "? {question}");
-        let _ = writeln!(self.cmd_output_text, "{AI_WAITING_MSG}");
-        self.cmd_output_dirty = true;
+        self.transcript
+            .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
+        self.push_entry(TranscriptEntry::Text(format!("? {question}")));
+        self.push_entry(TranscriptEntry::AiPending);
         cx.notify();
 
         self.ai_task = Some(cx.spawn(async move |handle, cx| {
@@ -712,14 +925,15 @@ impl ZedisTerminal {
                 .await;
             let _ = handle.update(cx, |this, cx| {
                 // The reply (or error) replaces the waiting placeholder.
-                remove_last_line(&mut this.cmd_output_text, AI_WAITING_MSG);
+                this.transcript
+                    .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
                 match result {
                     Ok(reply) => {
                         for command in &reply.commands {
-                            let _ = writeln!(this.cmd_output_text, "AI> {command}");
+                            this.push_entry(TranscriptEntry::Text(format!("AI> {command}")));
                         }
                         if !reply.explanation.is_empty() {
-                            let _ = writeln!(this.cmd_output_text, "{}", reply.explanation);
+                            this.push_entry(TranscriptEntry::Text(reply.explanation.clone()));
                         }
                         // Single command goes straight to the input box for
                         // review; a multi-command answer stays in the output
@@ -731,10 +945,9 @@ impl ZedisTerminal {
                         }
                     }
                     Err(e) => {
-                        let _ = writeln!(this.cmd_output_text, "AI error: {e}");
+                        this.push_entry(TranscriptEntry::Text(format!("AI error: {e}")));
                     }
                 }
-                trim_output_scrollback(&mut this.cmd_output_text);
                 this.cmd_output_dirty = true;
                 cx.notify();
             });
@@ -746,9 +959,19 @@ impl ZedisTerminal {
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
         let conn_slot = self.conn.clone();
+        let lines: Vec<String> = command
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        // A pasted pipeline or a Batch run: the lines stream in one by one
+        // as before, then a footer sums them up.
+        let batch = lines.len() > 1;
         cx.spawn(async move |handle, cx| {
-            for line in command.lines() {
-                let line = line.trim().to_string();
+            let started = Instant::now();
+            let mut errors = 0usize;
+            let total = lines.len();
+            for line in lines {
                 let line_clone = line.clone();
                 let server_id = server_id.clone();
                 let conn_slot = conn_slot.clone();
@@ -765,7 +988,7 @@ impl ZedisTerminal {
                     // they would park it until data arrives.
                     if is_blocking_command(&cmd_name, &args) {
                         return Ok(LineOutcome {
-                            text: BLOCKING_REJECT_MSG.into(),
+                            reply: LineReply::Message(BLOCKING_REJECT_MSG.to_string()),
                             selected_db: None,
                         });
                     }
@@ -783,29 +1006,47 @@ impl ZedisTerminal {
                         }
                     };
                     let _ = get_cmd_history_manager().add_record(server_id.as_str(), line.as_str());
+                    let selected_db = selected_db(&cmd_name, &args, &data);
                     Ok(LineOutcome {
-                        text: redis_value_to_string(&data).into(),
-                        selected_db: selected_db(&cmd_name, &args, &data),
+                        reply: LineReply::Value {
+                            cmd: cmd_name,
+                            args,
+                            value: data,
+                        },
+                        selected_db,
                     })
                 });
                 let result: Result<LineOutcome> = task.await;
-                let (content, selected_db, link_dropped) = match result {
-                    Ok(outcome) => (outcome.text, outcome.selected_db, false),
-                    Err(e) => (SharedString::from(e.to_string()), None, drops_link(&e)),
+                let (reply, selected_db, link_dropped, failed) = match result {
+                    Ok(outcome) => (outcome.reply, outcome.selected_db, false, false),
+                    Err(e) => (LineReply::Message(e.to_string()), None, drops_link(&e), true),
                 };
+                if failed {
+                    errors += 1;
+                }
                 let _ = handle.update(cx, |this, cx| {
-                    use std::fmt::Write;
-                    let _ = writeln!(this.cmd_output_text, "{CMD_LABEL} {line_clone}");
-                    let _ = writeln!(this.cmd_output_text, "{content}");
-                    trim_output_scrollback(&mut this.cmd_output_text);
-                    this.cmd_output_dirty = true;
+                    for entry in transcript_entries_for(&mut this.multi_queue, line_clone, reply) {
+                        this.push_entry(entry);
+                    }
                     if let Some(db) = selected_db {
                         this.terminal_db = Some(db);
                     }
-                    // The reconnect lands on the panel's db again.
+                    // The reconnect lands on the panel's db again — and a
+                    // transaction open on the old connection is gone with it.
                     if link_dropped {
                         this.terminal_db = None;
+                        this.multi_queue = None;
                     }
+                    cx.notify();
+                });
+            }
+            if batch {
+                let _ = handle.update(cx, |this, cx| {
+                    this.push_entry(TranscriptEntry::BatchSummary {
+                        commands: total,
+                        errors,
+                        elapsed_ms: started.elapsed().as_millis(),
+                    });
                     cx.notify();
                 });
             }
@@ -843,6 +1084,9 @@ impl ZedisTerminal {
 impl Render for ZedisTerminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if std::mem::take(&mut self.cmd_output_dirty) {
+            let mut rendered = render_transcript(&self.transcript, self.reply_format);
+            trim_output_scrollback(&mut rendered);
+            self.cmd_output_text = rendered;
             let text = SharedString::from(self.cmd_output_text.clone());
             self.cmd_output_state.update(cx, |state, cx| {
                 state.set_value(text, window, cx);
@@ -929,19 +1173,93 @@ impl Render for ZedisTerminal {
             }
         });
 
+        let reply_format = self.reply_format;
+        let toolbar_border = cx.theme().border;
+        // Above the output: how replies are drawn, and what to do with the
+        // whole transcript. Labels, not icons — three quiet commands beside
+        // a segmented choice.
+        let output_toolbar = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(toolbar_border)
+            .child(
+                ButtonGroup::new("term-reply-format")
+                    .compact()
+                    .small()
+                    .outline()
+                    .children(ReplyFormat::ALL.into_iter().enumerate().map(|(ix, format)| {
+                        Button::new(("term-reply-format", ix))
+                            .label(format.label())
+                            .selected(format == reply_format)
+                    }))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _window, cx| {
+                        if let Some(format) = clicks.first().and_then(|ix| ReplyFormat::ALL.get(*ix)) {
+                            this.set_reply_format(*format, cx);
+                        }
+                    })),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("term-copy-output")
+                            .label("Copy")
+                            .ghost()
+                            .small()
+                            .tooltip("Copy the whole output")
+                            .on_click(cx.listener(|this, _, window, cx| this.copy_output(window, cx))),
+                    )
+                    .child(
+                        Button::new("term-save-output")
+                            .label("Save")
+                            .ghost()
+                            .small()
+                            .tooltip("Save the output as a text file in Downloads")
+                            .on_click(cx.listener(|this, _, window, cx| this.save_output(window, cx))),
+                    )
+                    .child(
+                        Button::new("term-clear-output")
+                            .label("Clear")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.reset_cmd_state(cx);
+                                cx.notify();
+                            })),
+                    ),
+            );
+
         v_flex()
             .w_full()
             .h_full()
+            .on_action(cx.listener(|this, action: &TerminalAction, window, cx| this.handle_action(action, window, cx)))
+            .child(output_toolbar)
             .child(
                 div().flex_1().w_full().relative().child(
                     div().absolute().inset_0().size_full().overflow_hidden().child(
+                        // Read-only rather than disabled: the pane keeps
+                        // focus, selection, ⌘C and a right-click menu (a
+                        // disabled input has none of those — issue #60).
                         Editor::new(&self.cmd_output_state)
                             .w_full()
                             .h_full()
                             .font_family(font_family.clone())
-                            .disabled(true)
+                            .readonly(true)
                             .appearance(false)
-                            .bordered(false),
+                            .bordered(false)
+                            .context_menu(|menu, _window, _cx| {
+                                menu.menu("Copy", Box::new(Copy))
+                                    .menu("Select All", Box::new(SelectAll))
+                                    .separator()
+                                    .menu("Copy Output", Box::new(TerminalAction::CopyAll))
+                                    .menu("Save Output…", Box::new(TerminalAction::Save))
+                                    .separator()
+                                    .menu("Clear", Box::new(TerminalAction::Clear))
+                            }),
                     ),
                 ),
             )
@@ -1145,8 +1463,22 @@ impl Render for ZedisTerminal {
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_last_line, selected_db, strip_redis_cli_prefix};
+    use super::{
+        LineReply, ReplyFormat, TranscriptEntry, render_transcript, selected_db, strip_redis_cli_prefix,
+        transcript_entries_for,
+    };
     use redis::Value;
+
+    fn bulk(s: &str) -> Value {
+        Value::BulkString(s.as_bytes().to_vec())
+    }
+    fn reply(cmd: &str, args: &[&str], value: Value) -> LineReply {
+        LineReply::Value {
+            cmd: cmd.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            value,
+        }
+    }
 
     #[test]
     fn selected_db_reads_only_a_successful_plain_select() {
@@ -1163,22 +1495,72 @@ mod tests {
     }
 
     #[test]
-    fn remove_last_line_clears_waiting_placeholder() {
-        // Placeholder at the tail (the common case).
-        let mut buf = String::from("? question\nAI> waiting\n");
-        remove_last_line(&mut buf, "AI> waiting");
-        assert_eq!(buf, "? question\n");
+    fn transcript_re_renders_in_every_format() {
+        let entries = vec![
+            TranscriptEntry::Text("banner".to_string()),
+            TranscriptEntry::Command {
+                line: "HGETALL h".to_string(),
+                reply: reply("HGETALL", &["h"], Value::Array(vec![bulk("a"), bulk("1")])),
+            },
+            TranscriptEntry::Command {
+                line: "GET missing".to_string(),
+                reply: LineReply::Message("(error) boom".to_string()),
+            },
+        ];
+        assert_eq!(
+            render_transcript(&entries, ReplyFormat::Text),
+            "banner\n$ HGETALL h\n[a, 1]\n$ GET missing\n(error) boom\n"
+        );
+        assert_eq!(
+            render_transcript(&entries, ReplyFormat::Table),
+            "banner\n$ HGETALL h\nfield │ value\n──────┼──────\na     │ 1\n$ GET missing\n(error) boom\n"
+        );
+        assert_eq!(
+            render_transcript(&entries, ReplyFormat::Json),
+            "banner\n$ HGETALL h\n{\n  \"a\": \"1\"\n}\n$ GET missing\n(error) boom\n"
+        );
+    }
 
-        // Commands ran while the request was in flight — the placeholder
-        // is mid-buffer and only the LAST occurrence goes.
-        let mut buf = String::from("AI> waiting\n? q2\nAI> waiting\n$ GET k\nvalue\n");
-        remove_last_line(&mut buf, "AI> waiting");
-        assert_eq!(buf, "AI> waiting\n? q2\n$ GET k\nvalue\n");
+    #[test]
+    fn multi_exec_becomes_one_block_of_commands_and_replies() {
+        let mut queue = None;
+        let queued = |line: &str| {
+            reply(
+                line.split(' ').next().unwrap_or_default(),
+                &[],
+                Value::SimpleString("QUEUED".into()),
+            )
+        };
 
-        // Already trimmed out of the scrollback — no-op.
-        let mut buf = String::from("$ GET k\nvalue\n");
-        remove_last_line(&mut buf, "AI> waiting");
-        assert_eq!(buf, "$ GET k\nvalue\n");
+        let entries = transcript_entries_for(&mut queue, "MULTI".into(), reply("MULTI", &[], Value::Okay));
+        assert!(matches!(entries.as_slice(), [TranscriptEntry::Command { .. }]));
+        assert_eq!(queue.as_deref(), Some(&[][..]));
+
+        transcript_entries_for(&mut queue, "SET a 1".into(), queued("SET a 1"));
+        transcript_entries_for(&mut queue, "INCR a".into(), queued("INCR a"));
+        assert_eq!(queue.as_deref().map(<[String]>::len), Some(2));
+
+        let exec = Value::Array(vec![Value::Okay, Value::Int(2)]);
+        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], exec));
+        assert!(queue.is_none(), "EXEC closes the transaction");
+        let rendered = render_transcript(&entries, ReplyFormat::Text);
+        assert_eq!(
+            rendered,
+            "$ EXEC\n# │ command │ reply\n──┼─────────┼──────\n1 │ SET a 1 │ OK\n2 │ INCR a  │ 2\n"
+        );
+
+        // A WATCH conflict: EXEC answers nil, which is said in words.
+        let mut queue = Some(vec!["SET a 1".to_string()]);
+        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], Value::Nil));
+        assert!(queue.is_none());
+        assert!(render_transcript(&entries, ReplyFormat::Text).contains("key under WATCH changed"));
+
+        // DISCARD drops the queue; EXEC outside a MULTI is a plain command.
+        let mut queue = Some(vec!["SET a 1".to_string()]);
+        transcript_entries_for(&mut queue, "DISCARD".into(), reply("DISCARD", &[], Value::Okay));
+        assert!(queue.is_none());
+        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], Value::Nil));
+        assert!(matches!(entries.as_slice(), [TranscriptEntry::Command { .. }]));
     }
 
     #[test]

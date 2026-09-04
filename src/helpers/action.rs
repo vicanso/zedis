@@ -84,6 +84,18 @@ pub enum ShortcutsAction {
 /// state) as one zip in Downloads — the title-bar menu entry next to
 /// "Open Logs Folder". Handled on the `Zedis` root, which knows the active
 /// tab's connection.
+/// The terminal output pane's commands beyond the editor's own Copy /
+/// Select All: offered by its right-click menu and handled on the
+/// `ZedisTerminal` root, where the menu's dispatch (from the focused pane)
+/// bubbles up.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum TerminalAction {
+    /// Copy the whole output, not just the selection.
+    CopyAll,
+    Save,
+    Clear,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum DiagnosticsAction {
     Export,

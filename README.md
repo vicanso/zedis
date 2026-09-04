@@ -32,7 +32,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 📊 **Real-time observability** — live metrics, a memory analyzer (offline + AI recommendations, server-side key-size histogram), hot-key tracking (`HOTKEYS`), per-slot cluster stats, Slow Log ↔ Latency, `MONITOR`, and value search.
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, import from Redis Insight / ARDM / Tiny RDM, and 8 UI languages.
-- ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion + AI command assistant, batch mode, and cross-server copy/diff.
+- ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, table/JSON replies + AI command assistant, batch mode, and cross-server copy/diff.
 
 > ### 🔄 Already using Redis Insight?
 > **Paste its database export and every connection lands at once** — no re-entering hosts, ports, and passwords one by one. Point Zedis at your real setup in about a minute, then judge the speed for yourself.
