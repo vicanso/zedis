@@ -258,7 +258,7 @@ jobs:
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
           name: "Development Build (Nightly)"
@@ -379,7 +379,7 @@ jobs:
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
           name: "Development Build (Nightly)"
@@ -512,7 +512,7 @@ jobs:
         # main pushes only — a tag push must not overwrite the nightly
         # release with stable-build artifacts.
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
           name: "Development Build (Nightly)"
