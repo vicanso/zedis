@@ -84,6 +84,24 @@ pub fn format_duration(duration: Duration) -> String {
 
     format!("{}s", seconds)
 }
+/// The largest whole unit only, floored: `66d`, `1h`, `4m`, `12s`, `0s`.
+/// For columns read at a glance (a client's connected / idle time), where
+/// the sort goes by the raw seconds anyway and `6.9d` or `66d 6h` is more
+/// than the eye needs.
+pub fn format_duration_units(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let units = [
+        (SECONDS_PER_DAY, 'd'),
+        (SECONDS_PER_HOUR, 'h'),
+        (SECONDS_PER_MINUTE, 'm'),
+        (1, 's'),
+    ];
+    match units.iter().find(|(unit, _)| seconds >= *unit) {
+        Some((unit, suffix)) => format!("{}{suffix}", seconds / unit),
+        None => "0s".to_string(),
+    }
+}
+
 /// Floor `seconds / unit_secs` to one decimal place, then format as
 /// `"{whole}.{tenth}{suffix}"`. Pure integer math — no float rounding,
 /// so 6.99d formats as `6.9d`, never `7.0d`.
@@ -127,6 +145,19 @@ mod tests {
         assert_eq!(group_thousands(1_000), "1,000");
         assert_eq!(group_thousands(500_000), "500,000");
         assert_eq!(group_thousands(1_234_567_890), "1,234,567,890");
+    }
+
+    #[test]
+    fn format_duration_units_keeps_only_the_largest_whole_unit() {
+        assert_eq!(format_duration_units(Duration::from_secs(0)), "0s");
+        assert_eq!(format_duration_units(Duration::from_secs(12)), "12s");
+        assert_eq!(format_duration_units(Duration::from_secs(121)), "2m");
+        assert_eq!(format_duration_units(Duration::from_secs(3600 + 1800)), "1h");
+        assert_eq!(
+            format_duration_units(Duration::from_secs(66 * 86_400 + 6 * 3600)),
+            "66d"
+        );
+        assert_eq!(format_duration_units(Duration::from_secs(604_000)), "6d");
     }
 
     #[test]

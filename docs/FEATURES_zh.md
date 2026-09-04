@@ -101,7 +101,7 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动
 ### 性能诊断
 **慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。**
 
-Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开）、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。
+Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` 含用户、客户端库、查询缓冲与内存列 / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开，另有按 ID / ADDR / LADDR / USER / TYPE / MAXAGE 的**按条件终止**表单，以及与 `UNPAUSE` 并列的定时 `CLIENT PAUSE`（WRITE 或 ALL））、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。
 
 ### 热点 Key
 **`HOTKEYS` 跟踪（Redis 8.6+）：哪些 key 在烧 CPU 和带宽。**

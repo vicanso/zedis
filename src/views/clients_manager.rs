@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{Capability, RedisServer, get_connection_manager, open_single_connection};
+use crate::connection::{
+    Capability, PauseMode, RedisServer, floors, get_connection_manager, open_single_connection, pause_args,
+};
 use crate::error::Error;
-use crate::helpers::{format_duration, get_mono_font_family};
+use crate::helpers::{format_duration_units, get_mono_font_family};
 /// Redis Client Management viewer.
 ///
 /// Displays a sortable table of connected clients fetched via `CLIENT LIST`.
@@ -25,7 +27,7 @@ use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, escalate_dangerous_body, i18n_clients_manager, i18n_common,
 };
-use crate::views::unavailable_chip;
+use crate::views::{KillFilterSupport, ZedisClientKillFilterDialog, ZedisClientPauseDialog, unavailable_chip};
 use gpui::{Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{
@@ -60,6 +62,8 @@ struct ClientRow {
     id: SharedString,
     addr: SharedString,
     name: SharedString,
+    /// ACL user (`user=`, Redis 6+); empty before that.
+    user: SharedString,
     /// Connection age in seconds.
     age: u64,
     age_display: SharedString,
@@ -69,8 +73,27 @@ struct ClientRow {
     db: SharedString,
     flags: SharedString,
     command: SharedString,
+    /// `lib-name lib-ver` as the client announced with `CLIENT SETINFO`
+    /// (Redis 7.2+); empty for clients that never did.
+    lib: SharedString,
+    /// Query buffer bytes (`qbuf=`): a large one means a command is still
+    /// being received — or a client that never finishes one.
+    qbuf: u64,
+    qbuf_display: SharedString,
+    /// Total memory the connection holds (`tot-mem=`, Redis 7.0+): buffers,
+    /// pub/sub state, the `MULTI` queue — what `maxmemory-clients` counts.
+    tot_mem: u64,
+    tot_mem_display: SharedString,
     /// The node this client is connected to (for targeted CLIENT KILL).
     node: RedisServer,
+}
+
+/// Bytes as the table shows them; `0` stays a bare zero.
+fn format_bytes(bytes: u64) -> SharedString {
+    if bytes == 0 {
+        return "0".into();
+    }
+    humansize::format_size(bytes, humansize::FormatSizeOptions::default().decimal_places(1)).into()
 }
 
 /// Parses the raw `CLIENT LIST` output (one line per client) into rows.
@@ -81,11 +104,16 @@ fn parse_client_list(raw: &str, node: &RedisServer) -> Vec<ClientRow> {
             let mut id = String::new();
             let mut addr = String::new();
             let mut name = String::new();
+            let mut user = String::new();
             let mut age: u64 = 0;
             let mut idle: u64 = 0;
             let mut db = String::new();
             let mut flags = String::new();
             let mut command = String::new();
+            let mut lib_name = String::new();
+            let mut lib_ver = String::new();
+            let mut qbuf: u64 = 0;
+            let mut tot_mem: u64 = 0;
 
             for part in line.split_whitespace() {
                 if let Some((key, value)) = part.split_once('=') {
@@ -93,11 +121,16 @@ fn parse_client_list(raw: &str, node: &RedisServer) -> Vec<ClientRow> {
                         "id" => id = value.to_string(),
                         "addr" => addr = value.to_string(),
                         "name" => name = value.to_string(),
+                        "user" => user = value.to_string(),
                         "age" => age = value.parse().unwrap_or(0),
                         "idle" => idle = value.parse().unwrap_or(0),
                         "db" => db = value.to_string(),
                         "flags" => flags = value.to_string(),
                         "cmd" => command = value.to_string(),
+                        "lib-name" => lib_name = value.to_string(),
+                        "lib-ver" => lib_ver = value.to_string(),
+                        "qbuf" => qbuf = value.parse().unwrap_or(0),
+                        "tot-mem" => tot_mem = value.parse().unwrap_or(0),
                         _ => {}
                     }
                 }
@@ -107,17 +140,24 @@ fn parse_client_list(raw: &str, node: &RedisServer) -> Vec<ClientRow> {
                 return None;
             }
 
+            let lib = format!("{lib_name} {lib_ver}").trim().to_string();
             Some(ClientRow {
                 id: id.into(),
                 addr: addr.into(),
                 name: name.into(),
+                user: user.into(),
                 age,
-                age_display: format_duration(Duration::from_secs(age)).into(),
+                age_display: format_duration_units(Duration::from_secs(age)).into(),
                 idle,
-                idle_display: format_duration(Duration::from_secs(idle)).into(),
+                idle_display: format_duration_units(Duration::from_secs(idle)).into(),
                 db: db.into(),
                 flags: flags.into(),
                 command: command.into(),
+                lib: lib.into(),
+                qbuf,
+                qbuf_display: format_bytes(qbuf),
+                tot_mem,
+                tot_mem_display: format_bytes(tot_mem),
                 node: node.clone(),
             })
         })
@@ -168,32 +208,44 @@ const REDIS_NO_COMMAND: &str = "NULL";
 const COLUMN_ID: &str = "id";
 const COLUMN_ADDR: &str = "addr";
 const COLUMN_NAME: &str = "name";
+const COLUMN_USER: &str = "user";
 const COLUMN_AGE: &str = "age";
 const COLUMN_IDLE: &str = "idle";
 const COLUMN_DB: &str = "db";
 const COLUMN_FLAGS: &str = "flags";
 const COLUMN_CMD: &str = "cmd";
+const COLUMN_LIB: &str = "lib";
+const COLUMN_QBUF: &str = "qbuf";
+const COLUMN_TOT_MEM: &str = "tot_mem";
 const COLUMN_ACTION: &str = "action";
 
-const CLIENT_COLUMNS: [&str; 8] = [
+const CLIENT_COLUMNS: [&str; 12] = [
     COLUMN_ID,
     COLUMN_ADDR,
     COLUMN_NAME,
+    COLUMN_USER,
     COLUMN_AGE,
     COLUMN_IDLE,
     COLUMN_DB,
     COLUMN_FLAGS,
     COLUMN_CMD,
+    COLUMN_LIB,
+    COLUMN_QBUF,
+    COLUMN_TOT_MEM,
 ];
 const ID_COLUMN: usize = 0;
-const FLAGS_COLUMN: usize = 6;
-const CMD_COLUMN: usize = 7;
+const ADDR_COLUMN: usize = 1;
+const FLAGS_COLUMN: usize = 7;
+const CMD_COLUMN: usize = 8;
 /// The kill-button column, present only when `CLIENT KILL` is usable.
-const ACTION_COLUMN: usize = 8;
-/// Payload cells: raw age and idle seconds, behind the humanised columns,
-/// for sorting and the `>=` filters.
-const CELL_AGE: usize = 9;
-const CELL_IDLE: usize = 10;
+const ACTION_COLUMN: usize = 12;
+/// Payload cells behind the humanised columns — raw seconds and bytes —
+/// for sorting and the `>=` filters. Always present, so the indexes hold
+/// whether or not the action column is shown.
+const CELL_AGE: usize = 13;
+const CELL_IDLE: usize = 14;
+const CELL_QBUF: usize = 15;
+const CELL_TOT_MEM: usize = 16;
 
 impl ClientRow {
     fn cells(&self) -> Vec<SharedString> {
@@ -201,14 +253,20 @@ impl ClientRow {
             self.id.clone(),
             self.addr.clone(),
             self.name.clone(),
+            self.user.clone(),
             self.age_display.clone(),
             self.idle_display.clone(),
             self.db.clone(),
             self.flags.clone(),
             self.command.clone(),
+            self.lib.clone(),
+            self.qbuf_display.clone(),
+            self.tot_mem_display.clone(),
             SharedString::default(),
             self.age.to_string().into(),
             self.idle.to_string().into(),
+            self.qbuf.to_string().into(),
+            self.tot_mem.to_string().into(),
         ]
     }
 }
@@ -241,7 +299,7 @@ fn build_table(
     cx: &mut gpui::App,
 ) -> ZedisTextTable {
     let content_width = content_area_width(window, cx);
-    let id_width = 120.;
+    let id_width = 150.;
     // Cells are `[label ..flex_1..][copy button ..flex_none..]`, and the copy
     // button only appears on hover — so it steals ~28px from the label's box
     // and clips text that fitted perfectly at rest. Both widths budget for it.
@@ -254,22 +312,30 @@ fn build_table(
     // name at all, so every pixel spent here is taken from `cmd`, which is
     // what you actually read when diagnosing. Longer names ellipsize and can
     // be read via the copy button.
-    let name_width = 120.;
+    let name_width = 180.;
     let addr_width = 240.;
+    let user_width = 90.;
     let age_width = 110.;
     let idle_width = 110.;
-    let db_width = 100.;
+    let db_width = 90.;
     let flags_width = 80.;
+    let lib_width = 120.;
+    let qbuf_width = 90.;
+    let tot_mem_width = 100.;
     // CLIENT KILL is gated by the capability matrix.
     let can_kill = Capability::KillClient.allowed(readonly);
     let action_width = if can_kill { ACTION_COLUMN_WIDTH } else { 0. };
     let remaining_width = content_width.as_f32()
         - id_width
         - name_width
+        - user_width
         - age_width
         - idle_width
         - db_width
         - flags_width
+        - lib_width
+        - qbuf_width
+        - tot_mem_width
         - action_width
         - addr_width
         - 10.;
@@ -280,11 +346,15 @@ fn build_table(
         id_width,
         addr_width,
         name_width,
+        user_width,
         age_width,
         idle_width,
         db_width,
         flags_width,
         cmd_width,
+        lib_width,
+        qbuf_width,
+        tot_mem_width,
     ];
     let mut columns: Vec<TextColumn> = CLIENT_COLUMNS
         .iter()
@@ -295,7 +365,9 @@ fn build_table(
                 COLUMN_ID => column.sortable().numeric(),
                 COLUMN_AGE => column.sort_by_cell(CELL_AGE),
                 COLUMN_IDLE => column.sort_by_cell(CELL_IDLE),
-                COLUMN_ADDR | COLUMN_DB | COLUMN_FLAGS | COLUMN_CMD => column.sortable(),
+                COLUMN_QBUF => column.sort_by_cell(CELL_QBUF),
+                COLUMN_TOT_MEM => column.sort_by_cell(CELL_TOT_MEM),
+                COLUMN_ADDR | COLUMN_USER | COLUMN_DB | COLUMN_FLAGS | COLUMN_CMD | COLUMN_LIB => column.sortable(),
                 _ => column,
             }
         })
@@ -360,7 +432,7 @@ fn build_table(
             return Some(div().into_any_element());
         }
         let client_id = cell(ID_COLUMN);
-        let client_addr = cell(1);
+        let client_addr = cell(ADDR_COLUMN);
         let (kill_callback, client_node, server_id) = {
             let ctx = kill.borrow();
             (
@@ -414,7 +486,16 @@ fn build_table(
 
     ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
         .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
-        .filter_columns(&[COLUMN_ADDR, COLUMN_NAME, COLUMN_ID, COLUMN_DB, COLUMN_FLAGS, COLUMN_CMD])
+        .filter_columns(&[
+            COLUMN_ADDR,
+            COLUMN_NAME,
+            COLUMN_USER,
+            COLUMN_ID,
+            COLUMN_DB,
+            COLUMN_FLAGS,
+            COLUMN_CMD,
+            COLUMN_LIB,
+        ])
         .cell_style(style)
         .cell_render(render)
 }
@@ -474,6 +555,8 @@ pub struct ZedisClientsManager {
     /// outcome into a single notification + refresh (unlike the per-row
     /// channel, which notifies and refetches per kill).
     _batch_kill_task: Option<Task<()>>,
+    _pause_task: Option<Task<()>>,
+    _kill_filter_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -547,6 +630,8 @@ impl ZedisClientsManager {
             _kill_task: None,
             _unpause_task: None,
             _batch_kill_task: None,
+            _pause_task: None,
+            _kill_filter_task: None,
             kill,
             _subscriptions: subscriptions,
         };
@@ -836,6 +921,194 @@ impl ZedisClientsManager {
             });
         }));
     }
+    /// `CLIENT PAUSE` with a duration and, from Redis 6.2, a mode: the
+    /// dialog is the confirmation step — the pause is time-bounded and
+    /// Unpause lifts it early.
+    fn open_pause_dialog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::KillClient) {
+            return;
+        }
+        let mode_supported = self.server_state.read(cx).supports(floors::CLIENT_PAUSE_WRITE);
+        let view = cx.new(|cx| ZedisClientPauseDialog::new(mode_supported, window, cx));
+        let view_child = view.clone();
+        let view_ok = view.clone();
+        let entity = cx.entity().clone();
+        ZedisDialog::new(i18n_clients_manager(cx, "pause_title"))
+            .w(px(420.))
+            .ok_text(i18n_clients_manager(cx, "pause_ok"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_clients_manager(cx, "pause_ok"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, window, cx| {
+                let Some((timeout_ms, mode)) = view_ok.update(cx, |view, cx| view.validate(cx)) else {
+                    return false;
+                };
+                entity.update(cx, |this, cx| this.run_pause(timeout_ms, mode, mode_supported, cx));
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `CLIENT PAUSE` on every master, the way Unpause reaches them.
+    fn run_pause(&mut self, timeout_ms: u64, mode: PauseMode, mode_supported: bool, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let db = self.server_state.read(cx).db();
+        let server_state = self.server_state.clone();
+        let args = pause_args(timeout_ms, mode, mode_supported);
+        self._pause_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let mut command = cmd("CLIENT");
+                for arg in &args {
+                    command.arg(arg);
+                }
+                let (_, replies): (_, Vec<String>) = client.query_async_masters(vec![command]).await?;
+                let _ = replies;
+                Ok::<(), Error>(())
+            });
+            let result = task.await;
+            let _ = handle.update(cx, move |_this, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                match result {
+                    Ok(()) => {
+                        let msg = t!(
+                            "clients_manager.pause_success",
+                            ms = timeout_ms,
+                            mode = mode.as_str(),
+                            locale = locale
+                        );
+                        server_state.update(cx, |state, cx| {
+                            state.emit_success_notification(msg.to_string().into(), "CLIENT PAUSE".into(), cx);
+                        });
+                    }
+                    Err(e) => {
+                        let msg = t!("clients_manager.pause_failed", error = e.to_string(), locale = locale);
+                        server_state.update(cx, |state, cx| {
+                            state.emit_error_notification(msg.to_string().into(), cx);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A filtered `CLIENT KILL` (ids, addresses, user, type, age): the form
+    /// composes the commands, a confirm quotes them, then they run on every
+    /// master.
+    fn open_kill_filter_dialog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::KillClient) {
+            return;
+        }
+        let support = {
+            let state = self.server_state.read(cx);
+            KillFilterSupport {
+                user: state.supports(floors::CLIENT_KILL_USER),
+                laddr: state.supports(floors::CLIENT_KILL_LADDR),
+                maxage: state.supports(floors::CLIENT_KILL_MAXAGE),
+            }
+        };
+        let view = cx.new(|cx| ZedisClientKillFilterDialog::new(support, window, cx));
+        let view_child = view.clone();
+        let view_ok = view.clone();
+        let entity = cx.entity().clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new(i18n_clients_manager(cx, "kill_filter_title"))
+            .w(px(520.))
+            .ok_text(i18n_clients_manager(cx, "kill_filter_ok"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_clients_manager(cx, "kill_filter_ok"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, window, cx| {
+                let Some(plan) = view_ok.update(cx, |view, cx| view.validate(cx)) else {
+                    return false;
+                };
+                window.close_dialog(cx);
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                let title = i18n_clients_manager(cx, "kill_filter_confirm_title");
+                let prompt = t!(
+                    "clients_manager.kill_filter_confirm_prompt",
+                    command = plan.summary,
+                    locale = locale
+                )
+                .to_string();
+                let prompt = escalate_dangerous_body(cx, &server_id, prompt);
+                let entity = entity.clone();
+                let commands = plan.commands;
+                ZedisDialog::new_alert(title, prompt)
+                    .button_props(dialog_button_props(cx))
+                    .on_ok(move |_, window, cx| {
+                        let commands = commands.clone();
+                        entity.update(cx, |this, cx| this.run_kill_filter(commands, cx));
+                        window.close_dialog(cx);
+                        true
+                    })
+                    .open(window, cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Run each composed `CLIENT KILL …` on every master and sum the counts
+    /// the servers answer with.
+    fn run_kill_filter(&mut self, commands: Vec<Vec<String>>, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() || commands.is_empty() {
+            return;
+        }
+        let db = self.server_state.read(cx).db();
+        let table_state = self.table_state.clone();
+        self._kill_filter_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let mut killed: i64 = 0;
+                for args in &commands {
+                    let mut command = cmd("CLIENT");
+                    for arg in args {
+                        command.arg(arg);
+                    }
+                    let (_, counts): (_, Vec<i64>) = client.query_async_masters(vec![command]).await?;
+                    killed += counts.iter().sum::<i64>();
+                }
+                Ok::<i64, Error>(killed)
+            });
+            let result = task.await;
+            let _ = handle.update(cx, move |this, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                match result {
+                    Ok(count) => {
+                        let msg = t!("clients_manager.kill_filter_success", count = count, locale = locale);
+                        this.server_state.update(cx, |state, cx| {
+                            state.emit_success_notification(msg.to_string().into(), "CLIENT KILL".into(), cx);
+                        });
+                    }
+                    Err(e) => {
+                        let msg = t!(
+                            "clients_manager.kill_filter_failed",
+                            error = e.to_string(),
+                            locale = locale
+                        );
+                        this.server_state.update(cx, |state, cx| {
+                            state.emit_error_notification(msg.to_string().into(), cx);
+                        });
+                    }
+                }
+                this.fetch_clients(table_state, cx);
+            });
+        }));
+    }
 }
 
 impl gpui::Render for ZedisClientsManager {
@@ -962,6 +1235,26 @@ impl gpui::Render for ZedisClientsManager {
                                             this.handle_unpause(cx);
                                         })),
                                 )
+                                .child(
+                                    Button::new("pause-clients")
+                                        .outline()
+                                        .small()
+                                        .label(i18n_clients_manager(cx, "pause_button"))
+                                        .tooltip(i18n_clients_manager(cx, "pause_tooltip"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_pause_dialog(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("kill-filter-clients")
+                                        .outline()
+                                        .small()
+                                        .label(i18n_clients_manager(cx, "kill_filter_button"))
+                                        .tooltip(i18n_clients_manager(cx, "kill_filter_tooltip"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_kill_filter_dialog(window, cx);
+                                        })),
+                                )
                             })
                             .child(
                                 Button::new("refresh-clients")
@@ -1002,5 +1295,42 @@ impl gpui::Render for ZedisClientsManager {
                     }),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_list_lines_carry_user_library_and_memory() {
+        let node = RedisServer::default();
+        let raw = "id=7 addr=10.0.0.9:50000 laddr=10.0.0.1:6379 fd=12 name=zedis age=120 idle=3 flags=N db=2 \
+                   sub=0 psub=0 multi=-1 qbuf=26 qbuf-free=20448 tot-mem=22400 events=r \
+                   cmd=client|list user=app lib-name=zedis lib-ver=0.8.3\n\
+                   id=8 addr=10.0.0.9:50001 age=1 idle=0 flags=N db=0 cmd=NULL\n\
+                   \n";
+        let rows = parse_client_list(raw, &node);
+        assert_eq!(rows.len(), 2);
+        let first = &rows[0];
+        assert_eq!(
+            (first.id.as_ref(), first.user.as_ref(), first.lib.as_ref()),
+            ("7", "app", "zedis 0.8.3")
+        );
+        assert_eq!((first.qbuf, first.tot_mem), (26, 22400));
+        // The largest whole unit only: `2m`, never `2.0m` or `2m 0s`.
+        assert_eq!((first.age_display.as_ref(), first.idle_display.as_ref()), ("2m", "3s"));
+        assert_eq!(first.tot_mem_display.as_ref(), "22.4kB");
+        let cells = first.cells();
+        assert_eq!(cells[CELL_QBUF].as_ref(), "26");
+        assert_eq!(cells[CELL_TOT_MEM].as_ref(), "22400");
+        assert_eq!(cells.len(), CELL_TOT_MEM + 1);
+        // A client that announced nothing: empty user / library, zero bytes.
+        let second = &rows[1];
+        assert_eq!(
+            (second.user.as_ref(), second.lib.as_ref(), second.qbuf_display.as_ref()),
+            ("", "", "0")
+        );
+        assert_eq!(second.command.as_ref(), REDIS_NO_COMMAND);
     }
 }

@@ -18,6 +18,7 @@
 
 use tracing::info;
 
+pub mod clients;
 pub mod error;
 pub mod floors;
 pub mod reply_format;
@@ -56,6 +57,7 @@ pub use async_connection::{
     RedisAsyncConn, client_name, open_monitor_connection, open_node_connection, open_node_connection_cached,
     open_seed_connection, open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
+pub use clients::{KillFilter, PauseMode, kill_filter_commands, kill_filter_summary, pause_args};
 pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
     TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, servers_toml_redacted, tag_color_index,

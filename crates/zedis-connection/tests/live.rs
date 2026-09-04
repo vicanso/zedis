@@ -29,14 +29,14 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    CommandStatus, ConflictMode, ExpireCondition, FieldTtl, ImportFormat, KillOutcome, KillTarget, ReadLimits,
-    ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, RestoreStatus, SearchOptions, ServerCommand,
-    ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv,
-    entry_to_json, ft_explain, ft_search, get_connection_manager, get_server, get_servers, kill_running,
-    open_single_connection, parse_readable_entries, probe_server_features, read_readable_chunk, rename_hash_field,
-    restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters,
-    sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, write_hash_field,
-    write_readable_chunk,
+    CommandStatus, ConflictMode, ExpireCondition, FieldTtl, ImportFormat, KillFilter, KillOutcome, KillTarget,
+    PauseMode, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, RestoreStatus,
+    SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header,
+    dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_search, get_connection_manager, get_server,
+    get_servers, kill_filter_commands, kill_running, open_single_connection, parse_readable_entries, pause_args,
+    probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers,
+    sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set,
+    sniff_import_format, split_acl_rules, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -1164,6 +1164,96 @@ fn busy_script_kill_stops_a_runaway_script() {
             .expect("config restore");
         let pong: String = cmd("PING").query_async(&mut c).await.expect("ping after kill");
         assert_eq!(pong, "PONG");
+    });
+}
+
+/// `CLIENT PAUSE` spelled per version (a mode word from 6.2), lifted by
+/// `UNPAUSE` where it exists; a filtered `CLIENT KILL` composed the way
+/// the panel composes it takes exactly the connection it names, and a
+/// `MAXAGE` no client reaches takes none.
+#[test]
+#[ignore]
+fn standalone_client_pause_and_filtered_kill() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let entry = get_server(&id).expect("saved entry");
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let mut c = conn(&id, 0).await;
+
+        let mode_supported = client.supports(floors::CLIENT_PAUSE_WRITE);
+        let mut pause = cmd("CLIENT");
+        // Without UNPAUSE (pre-6.2) the pause has to run out on its own —
+        // keep it short so the other tests on this server barely notice.
+        let ms = if mode_supported { 5000 } else { 50 };
+        for arg in pause_args(ms, PauseMode::Write, mode_supported) {
+            pause.arg(arg);
+        }
+        let reply: String = pause.query_async(&mut c).await.expect("pause");
+        assert_eq!(reply, "OK");
+        if mode_supported {
+            let reply: String = cmd("CLIENT").arg("UNPAUSE").query_async(&mut c).await.expect("unpause");
+            assert_eq!(reply, "OK");
+        } else {
+            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+        }
+        let key = unique("pause");
+        cmd("SET")
+            .arg(&key)
+            .arg("after")
+            .exec_async(&mut c)
+            .await
+            .expect("a write after the pause");
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+
+        // A victim connection, found by its id in CLIENT LIST, killed by ADDR.
+        let mut victim = open_single_connection(&entry, 0, false)
+            .await
+            .expect("victim connection");
+        let victim_id: i64 = cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut victim)
+            .await
+            .expect("client id");
+        let list: String = cmd("CLIENT")
+            .arg("LIST")
+            .query_async(&mut c)
+            .await
+            .expect("client list");
+        let addr = list
+            .lines()
+            .find(|line| line.split_whitespace().any(|f| f == format!("id={victim_id}")))
+            .and_then(|line| line.split_whitespace().find_map(|f| f.strip_prefix("addr=")))
+            .expect("the victim is listed with an address")
+            .to_string();
+        let filter = KillFilter {
+            addr: Some(addr),
+            skipme: true,
+            ..Default::default()
+        };
+        let commands = kill_filter_commands(&filter);
+        assert_eq!(commands.len(), 1);
+        let mut kill = cmd("CLIENT");
+        for arg in &commands[0] {
+            kill.arg(arg);
+        }
+        let killed: i64 = kill.query_async(&mut c).await.expect("kill by addr");
+        assert_eq!(killed, 1, "exactly the victim");
+        let after: Result<String, redis::RedisError> = cmd("PING").query_async(&mut victim).await;
+        assert!(after.is_err(), "the victim's connection is gone");
+
+        if client.supports(floors::CLIENT_KILL_MAXAGE) {
+            let filter = KillFilter {
+                maxage_secs: Some(100_000_000),
+                skipme: true,
+                ..Default::default()
+            };
+            let mut kill = cmd("CLIENT");
+            for arg in &kill_filter_commands(&filter)[0] {
+                kill.arg(arg);
+            }
+            let killed: i64 = kill.query_async(&mut c).await.expect("kill by maxage");
+            assert_eq!(killed, 0, "no client is that old");
+        }
     });
 }
 

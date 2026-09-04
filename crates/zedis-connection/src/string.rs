@@ -32,7 +32,7 @@ use redis::Value;
 // Pure string helpers live in zedis-core; re-exported so this module's
 // public surface (and the app's `crate::helpers::*` glob) is unchanged.
 pub use zedis_core::string::{
-    fast_contains_ignore_case, format_duration, group_thousands, starts_with_ignore_ascii_case,
+    fast_contains_ignore_case, format_duration, format_duration_units, group_thousands, starts_with_ignore_ascii_case,
 };
 
 type Result<T, E = Error> = std::result::Result<T, E>;

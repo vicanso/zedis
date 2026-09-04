@@ -96,6 +96,14 @@ pub const EXPIRE_CONDITIONS: Floor = Floor::since_fork("7.0.0");
 pub const EVAL_RO: Floor = Floor::since_fork("7.0.0");
 /// `CLIENT SETINFO LIB-NAME / LIB-VER` (Redis 7.2; every Valkey release).
 pub const CLIENT_SETINFO: Floor = Floor::since_fork("7.2.0");
+/// `CLIENT PAUSE timeout WRITE|ALL` and `CLIENT UNPAUSE` (Redis 6.2).
+pub const CLIENT_PAUSE_WRITE: Floor = Floor::since_fork("6.2.0");
+/// `CLIENT KILL … USER name` (Redis 6.0, with ACL).
+pub const CLIENT_KILL_USER: Floor = Floor::since_fork("6.0.0");
+/// `CLIENT KILL … LADDR ip:port` (Redis 6.2).
+pub const CLIENT_KILL_LADDR: Floor = Floor::since_fork("6.2.0");
+/// `CLIENT KILL … MAXAGE seconds` (Redis 7.2; every Valkey release).
+pub const CLIENT_KILL_MAXAGE: Floor = Floor::since_fork("7.2.0");
 /// Hash field TTL — `HEXPIRE / HTTL / HPERSIST` (Redis 7.4; Valkey 9.0).
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
 /// `INFO keysizes` per-type histograms (Redis 8.0; not in Valkey).
