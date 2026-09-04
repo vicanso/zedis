@@ -28,7 +28,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 ## ✨ Highlights
 
 - 🦀 **Native, not Electron** — every pixel on the GPU, virtual-scrolled `SCAN`; millions of keys at 60+ FPS with tiny RAM.
-- 🧠 **Understands your data** — auto-decompresses and decodes JSON/JSONPath, Protobuf, MessagePack, timestamps, images and hex, with purpose-built viewers for every Redis type and module.
+- 🧠 **Understands your data** — auto-decompresses and decodes JSON/JSONPath, Protobuf, MessagePack, Java / PHP / pickle serialization, BSON, JWT, Base64, URL encoding, timestamps, images and hex, with purpose-built viewers for every Redis type and module.
 - 📊 **Real-time observability** — live metrics, a memory analyzer (offline + AI recommendations, server-side key-size histogram), hot-key tracking (`HOTKEYS`), per-slot cluster stats, Slow Log ↔ Latency, `MONITOR`, and value search.
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, import from Redis Insight / ARDM / Tiny RDM, and 8 UI languages.
@@ -82,7 +82,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | Area | What's inside |
 | --- | --- |
 | 🚀 **Native & Fast** | GPU rendering · virtual-scrolled `SCAN`, 60+ FPS on millions of keys · macOS / Windows / Linux · Light / Dark / System + 6 bundled themes · configurable UI & monospace fonts |
-| 🧠 **Smart Data Viewer** | Auto-decompress (LZ4 / Snappy / GZIP / ZSTD) · JSON & RedisJSON + JSONPath · Protobuf · MessagePack · timestamps · images · hex · custom script viewer |
+| 🧠 **Smart Data Viewer** | Auto-decompress (LZ4 / Snappy / GZIP / ZSTD) · JSON & RedisJSON + JSONPath · Protobuf · MessagePack · Java / PHP / pickle serialization · BSON · JWT · Base64 · URL encoding · timestamps · images · hex · custom script viewer |
 | 🗂️ **Type & Module Viewers** | Bitmap · HyperLogLog · Vector Set (KNN) · Geo map · Bloom / Cuckoo / Count-Min / Top-K · Time Series · Streams (live-tail) · Pub/Sub (incl. sharded) · RediSearch · Functions |
 | 📊 **Observability** | Live metrics + 7-day history · memory analyzer (live scan or offline RDB file) + AI tips · Slow Log ↔ Latency · `MONITOR` · value search · cluster health & slot reshard · persistence & keyspace events · typed CONFIG editor · raw INFO browser |
 | 🔑 **Keys & Data** | Namespace tree with TTL chips · paginated Hash / List / Set / ZSet editors (`HSCAN`/`SSCAN`/`ZSCAN`) · tags / notes / favorites · rename · field-level TTL · version history · local recycle bin (24h) · file import/export · bulk ops (Tools export, prefix filter, binary / JSON / CSV) · cross-server copy & diff |

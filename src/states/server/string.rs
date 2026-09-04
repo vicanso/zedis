@@ -26,6 +26,7 @@ use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
 use tracing::warn;
+use zedis_core::codec::{base64_text, bson, java, jwt, php, pickle, url};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -87,6 +88,98 @@ fn format_text(data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, S
     }
 }
 
+/// A decoded document as the pretty JSON the editor shows, its long
+/// strings clipped like any other JSON preview.
+fn pretty_value(mut value: Value, max_truncate_length: usize) -> Option<SharedString> {
+    let mut truncated = false;
+    truncate_long_strings(max_truncate_length, &mut value, &mut truncated);
+    serde_json::to_string_pretty(&value).ok().map(SharedString::from)
+}
+
+/// The signed binary serializations: each decoder is its own detector, so
+/// a sniff that lied (a MessagePack-looking pickle) falls through to bytes.
+fn decode_binary(format: DataFormat, data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, SharedString)> {
+    let value = match format {
+        DataFormat::JavaSerialized => java::decode(data)?,
+        DataFormat::Pickle => pickle::decode(data)?,
+        DataFormat::Bson => bson::decode(data)?,
+        _ => return None,
+    };
+    pretty_value(value, max_truncate_length).map(|text| (format, text))
+}
+
+/// A UTF-8 value: JSON and the text encodings before plain text. The
+/// encodings are tried from the most to the least self-evident — a JWT's
+/// three JSON-bearing segments, PHP's fully-consumed grammar, a percent
+/// escape, and last Base64, which any token can resemble and so only
+/// counts when what it hides is readable.
+fn decode_text(data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, SharedString)> {
+    let text = std::str::from_utf8(data).ok()?;
+    let trimmed = text.trim();
+    let starts_json = trimmed.starts_with('{') || trimmed.starts_with('[');
+    if !starts_json && !trimmed.is_empty() {
+        if let Some(value) = jwt::decode(trimmed) {
+            return pretty_value(value, max_truncate_length).map(|t| (DataFormat::Jwt, t));
+        }
+        if let Some(value) = php::decode(trimmed.as_bytes()) {
+            return pretty_value(value, max_truncate_length).map(|t| (DataFormat::PhpSerialized, t));
+        }
+        if let Some(value) = url::decode(trimmed) {
+            let text = match value {
+                Value::String(decoded) => Some(SharedString::from(decoded)),
+                other => pretty_value(other, max_truncate_length),
+            };
+            return text.map(|t| (DataFormat::UrlEncoded, t));
+        }
+        if let Some(bytes) = base64_text::decode(trimmed)
+            && let Some(text) = base64_payload_text(&bytes, max_truncate_length)
+        {
+            return Some((DataFormat::Base64, text));
+        }
+    }
+    format_text(data, max_truncate_length)
+}
+
+/// What Base64 decoded to, if it is worth showing: readable text (JSON
+/// pretty-printed), or a binary format the pipeline itself decodes. Noise
+/// — which is what most Base64-shaped tokens decode to — is `None`, and
+/// the value stays the text it was.
+fn base64_payload_text(bytes: &[u8], max_truncate_length: usize) -> Option<SharedString> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let readable = !text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'));
+        return readable
+            .then(|| format_text(bytes, max_truncate_length).map(|(_, t)| t))
+            .flatten();
+    }
+    let (inner, _) = detect_format(bytes);
+    if matches!(inner, DataFormat::Bytes | DataFormat::Timestamp) || inner_is_image(inner) {
+        return None;
+    }
+    // A decode that failed hands back the sniffed format with lossy text;
+    // only a rendering counts.
+    let (decoded, text) = detect_and_decode(bytes, max_truncate_length);
+    matches!(
+        decoded,
+        DataFormat::Preview
+            | DataFormat::Json
+            | DataFormat::Text
+            | DataFormat::Bson
+            | DataFormat::Pickle
+            | DataFormat::JavaSerialized
+    )
+    .then_some(text)
+}
+
+fn inner_is_image(format: DataFormat) -> bool {
+    matches!(
+        format,
+        DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif
+    )
+}
+
 pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat, SharedString) {
     let (initial_format, _) = detect_format(data);
     let process_decompressed = |decompressed: Option<Vec<u8>>| {
@@ -114,6 +207,10 @@ pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat
 
         DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
+        DataFormat::JavaSerialized | DataFormat::Pickle | DataFormat::Bson => {
+            decode_binary(initial_format, data, max_truncate_length)
+        }
+
         _ => {
             // NUL bytes mean binary even when every byte is valid
             // UTF-8 — a sparse SETBIT bitmap is mostly 0x00 and must
@@ -132,7 +229,7 @@ pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat
             } else if has_nul {
                 None
             } else {
-                format_text(data, max_truncate_length)
+                decode_text(data, max_truncate_length)
             }
         }
     };
@@ -196,6 +293,10 @@ impl RedisBytesValue {
 
                 DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
+                DataFormat::JavaSerialized | DataFormat::Pickle | DataFormat::Bson => {
+                    decode_binary(initial_format, data, max_truncate_length)
+                }
+
                 _ => {
                     // NUL bytes mean binary even when every byte is valid
                     // UTF-8 — a sparse SETBIT bitmap is mostly 0x00 and must
@@ -214,7 +315,7 @@ impl RedisBytesValue {
                     } else if has_nul {
                         None
                     } else {
-                        format_text(data, max_truncate_length)
+                        decode_text(data, max_truncate_length)
                     }
                 }
             }
@@ -296,5 +397,70 @@ mod tests {
 
         assert_eq!(format, DataFormat::Preview);
         assert_eq!(text.as_ref(), plain);
+    }
+
+    /// The text encodings sit between JSON and plain text, and only fire
+    /// on a value that really is one: a Base64 token that hides noise, a
+    /// digest, a sentence all stay text.
+    #[test]
+    fn text_encodings_are_decoded_only_when_they_hold_something_readable() {
+        let (format, text) = detect_and_decode(b"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI0MiJ9.c2ln", 1000);
+        assert_eq!(format, DataFormat::Jwt);
+        assert!(text.contains("\"sub\": \"42\""), "{text}");
+
+        let (format, text) = detect_and_decode(br#"a:1:{s:4:"name";s:5:"zedis";}"#, 1000);
+        assert_eq!(format, DataFormat::PhpSerialized);
+        assert!(text.contains("\"name\": \"zedis\""), "{text}");
+
+        let (format, text) = detect_and_decode(b"name=Zh%C3%A9+Li&page=2", 1000);
+        assert_eq!(format, DataFormat::UrlEncoded);
+        assert!(text.contains("\"name\": \"Zhé Li\""), "{text}");
+
+        // Base64 of JSON: decoded and pretty-printed.
+        let (format, text) = detect_and_decode(b"eyJpZCI6IDcsICJvayI6IHRydWV9", 1000);
+        assert_eq!(format, DataFormat::Base64);
+        assert!(text.contains("\"id\": 7"), "{text}");
+
+        // Base64-shaped, but a hex digest / a session token: left as text.
+        for token in [
+            &b"5d41402abc4b2a76b9719d911017c592"[..],
+            b"kQ2hvbmcgc2VjcmV0IGtleQ3fa8m1",
+            b"just a sentence with spaces",
+        ] {
+            let (format, text) = detect_and_decode(token, 1000);
+            assert_eq!(format, DataFormat::Text, "{}", String::from_utf8_lossy(token));
+            assert_eq!(text.as_bytes(), token);
+        }
+
+        // JSON keeps winning over anything that starts like it.
+        let (format, _) = detect_and_decode(br#"{"a":1}"#, 1000);
+        assert_eq!(format, DataFormat::Json);
+    }
+
+    #[test]
+    fn signed_binary_serializations_are_detected_and_rendered() {
+        // A pickle: {"n": 1}
+        let pickle: &[u8] = &[0x80, 0x04, b'}', 0x8c, 0x01, b'n', b'K', 0x01, b's', b'.'];
+        let (format, text) = detect_and_decode(pickle, 1000);
+        assert_eq!(format, DataFormat::Pickle);
+        assert!(text.contains("\"n\": 1"), "{text}");
+
+        // A BSON document: {"n": 1}
+        let bson: &[u8] = &[0x0c, 0, 0, 0, 0x10, b'n', 0, 1, 0, 0, 0, 0];
+        let (format, text) = detect_and_decode(bson, 1000);
+        assert_eq!(format, DataFormat::Bson);
+        assert!(text.contains("\"n\": 1"), "{text}");
+
+        // A Java stream holding one string.
+        let java: &[u8] = &[0xac, 0xed, 0x00, 0x05, 0x74, 0x00, 0x02, b'o', b'k'];
+        let (format, text) = detect_and_decode(java, 1000);
+        assert_eq!(format, DataFormat::JavaSerialized);
+        assert_eq!(text.as_ref(), "\"ok\"");
+
+        // Base64 wrapping a pickle: decoded through the inner format.
+        let wrapped = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pickle);
+        let (format, text) = detect_and_decode(wrapped.as_bytes(), 1000);
+        assert_eq!(format, DataFormat::Base64);
+        assert!(text.contains("\"n\": 1"), "{text}");
     }
 }

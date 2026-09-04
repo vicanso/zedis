@@ -57,6 +57,28 @@
 //! cat {HEX_FILE} | xxd -r -p | jq .   # hex → binary → JSON
 //! jq -r .name {RAW_FILE}               # parse JSON value directly
 //! ```
+//!
+//! ## Viewers only decode — no write-back (deliberate, TODO on demand)
+//!
+//! A viewer's output is a read-only preview, the same contract every
+//! native decoder (MessagePack, gzip, Protobuf) follows: edits go through
+//! the hex view. Values that need a private decoder are rarely hand-edited,
+//! and a decode is often lossy (`jq -r .name`), so an encode path is not
+//! built until someone asks for it. If that happens, the shape is:
+//!
+//! 1. an `encode_command: String` on [`ScriptConfig`] (the struct is
+//!    `#[serde(default)]`, so stored rows stay readable), run by a
+//!    bytes-returning twin of [`run_script`] with the edited text as
+//!    `{VALUE}` / `{RAW_FILE}` and stdout taken as the raw value;
+//! 2. the value editor lifts its read-only rule for a `Script` value whose
+//!    viewer has an encoder, and runs it before `SET` — a failure is an
+//!    error toast, never a write;
+//! 3. the script editor form gains the second command field and its copy
+//!    in every locale.
+//!
+//! Keep it opt-in per viewer: an encoder that silently emits wrong bytes
+//! overwrites the key, with only value history and the production write
+//! confirm to catch it.
 
 use super::{SCRIPT_VIEWER_TABLE, get_database};
 use crate::error::Error;

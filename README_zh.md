@@ -28,7 +28,7 @@
 ## ✨ 亮点
 
 - 🦀 **原生，而非 Electron** —— 每个像素都在 GPU 上绘制、虚拟滚动 `SCAN`，百万级键也保持 60+ FPS、极低内存。
-- 🧠 **看得懂你的数据** —— 自动解压并解码 JSON/JSONPath、Protobuf、MessagePack、时间戳、图片与 Hex，并为每种 Redis 类型和模块提供专用查看器。
+- 🧠 **看得懂你的数据** —— 自动解压并解码 JSON/JSONPath、Protobuf、MessagePack、Java / PHP / pickle 序列化、BSON、JWT、Base64、URL 编码、时间戳、图片与 Hex，并为每种 Redis 类型和模块提供专用查看器。
 - 📊 **实时可观测** —— 实时指标、内存分析器（离线 + AI 建议、服务端 key 大小直方图）、热点 Key 跟踪（`HOTKEYS`）、集群每 slot 统计、慢日志 ↔ Latency、`MONITOR`、按值搜索。
 - 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥用每机唯一密钥加密存储、破坏性操作对生产环境升级确认措辞。
 - 🌐 **连接一切** —— TLS/SSL、SSH 隧道（含带口令的加密密钥）、Cluster/Sentinel、从 Redis Insight / ARDM / Tiny RDM 导入，以及 8 种界面语言。
@@ -80,7 +80,7 @@
 | 领域 | 包含内容 |
 | --- | --- |
 | 🚀 **原生 & 快** | GPU 渲染 · 虚拟滚动 `SCAN`，百万键 60+ FPS · macOS / Windows / Linux · 浅色 / 深色 / 跟随系统 + 6 套内置主题 · 界面与等宽字体可自选 |
-| 🧠 **智能数据查看器** | 自动解压(LZ4 / Snappy / GZIP / ZSTD)· JSON & RedisJSON + JSONPath · Protobuf · MessagePack · 时间戳 · 图片 · Hex · 自定义脚本 |
+| 🧠 **智能数据查看器** | 自动解压(LZ4 / Snappy / GZIP / ZSTD)· JSON & RedisJSON + JSONPath · Protobuf · MessagePack · Java / PHP / pickle 序列化 · BSON · JWT · Base64 · URL 编码 · 时间戳 · 图片 · Hex · 自定义脚本 |
 | 🗂️ **类型 & 模块查看器** | 位图 · HyperLogLog · 向量集(KNN)· 地理地图 · Bloom / Cuckoo / Count-Min / Top-K · 时间序列 · Streams(实时跟踪)· Pub/Sub(含分片)· RediSearch · Functions |
 | 📊 **可观测性** | 实时指标 + 7 天历史 · 内存分析（在线扫描或离线 RDB 文件）+ AI 建议 · 慢日志 ↔ Latency · `MONITOR` · 按值搜索 · 集群健康 & 重分片 · 持久化 & 键事件 · 带类型的 CONFIG 编辑器 · 原始 INFO 浏览器 |
 | 🔑 **Keys & 数据** | 带 TTL chip 的命名空间树 · 分页加载的 Hash / List / Set / ZSet 编辑器（`HSCAN`/`SSCAN`/`ZSCAN`）· 标签 / 备注 / 收藏 · 重命名 · 字段级 TTL · 版本历史 · 本地回收站(24h)· 文件导入导出 · 批量操作(Tools 导出、前缀过滤、二进制 / JSON / CSV)· 跨服务器复制 & 对比 |

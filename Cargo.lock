@@ -11891,6 +11891,7 @@ dependencies = [
 name = "zedis-core"
 version = "0.8.3"
 dependencies = [
+ "base64 0.23.1",
  "criterion",
  "dashmap",
  "directories",

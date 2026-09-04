@@ -207,7 +207,11 @@ fn value_export_extension(format: DataFormat) -> &'static str {
         DataFormat::Snappy => "snappy",
         DataFormat::MessagePack => "msgpack",
         DataFormat::Protobuf => "pb",
-        DataFormat::Text => "txt",
+        DataFormat::Text | DataFormat::Base64 | DataFormat::UrlEncoded | DataFormat::PhpSerialized => "txt",
+        DataFormat::Jwt => "jwt",
+        DataFormat::Bson => "bson",
+        DataFormat::Pickle => "pkl",
+        DataFormat::JavaSerialized => "ser",
         _ => "bin",
     }
 }

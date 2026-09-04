@@ -44,11 +44,12 @@ Every string value goes through the same pipeline, top priority first:
 
 1. **Protobuf viewer** — a registered `.proto` schema matching this key
 2. **Custom script viewer** — a configured script matching this key
-3. **Native format detection** — MessagePack · GZIP · ZSTD · Snappy · Unix timestamp · images (`PNG/JPG/WEBP/SVG/GIF`)
+3. **Native format detection** — MessagePack · GZIP · ZSTD · Snappy · Unix timestamp · images (`PNG/JPG/WEBP/SVG/GIF`) · **Java serialization** (`AC ED 00 05`, with `HashMap` / `ArrayList` / boxed values read into plain JSON) · **Python pickle** (protocol 2+) · **BSON** (extended-JSON spelling for ObjectId, dates, binary)
 4. **LZ4** (size-prepended) for non-UTF-8 payloads
-5. **Text / pretty-printed JSON** fallback
+5. **Text encodings** on a UTF-8 value that is not JSON — **JWT** (header, payload, `exp` / `iat` / `nbf` as dates; the signature is shown, not verified) · **PHP `serialize()`** · **URL / form encoding** (form pairs as an object) · **Base64** (only when what it hides is readable text, JSON, or a format from step 3 — a token that decodes to noise stays text)
+6. **Text / pretty-printed JSON** fallback
 
-A viewer that matches but fails to decode falls through to native handling, so a bad script never blanks the value. Manual overrides: the **hex** view always shows the raw bytes, and small opaque strings offer a **bitmap** toggle.
+Every decoder is also its own detector: a decode has to read the whole value and end where the format says it ends, so a string that merely resembles one (a hex digest inside the Base64 alphabet, `i:1;`) is left alone. All decoded views are read-only — edit the bytes in the hex view. A viewer that matches but fails to decode falls through to native handling, so a bad script never blanks the value. Manual overrides: the **hex** view always shows the raw bytes, and small opaque strings offer a **bitmap** toggle.
 
 ---
 

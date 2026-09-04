@@ -25,6 +25,7 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::RwLock;
+use zedis_core::codec::{bson, java, pickle};
 
 pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 
@@ -60,6 +61,21 @@ pub enum DataFormat {
     MessagePack,
     Script,
     Timestamp,
+    /// Base64 text whose decoded bytes are readable (text, JSON, or a
+    /// format the pipeline knows).
+    Base64,
+    /// Percent-encoded text: a URL, or form pairs shown as an object.
+    UrlEncoded,
+    /// A JSON Web Token: header and payload shown, signature unverified.
+    Jwt,
+    /// PHP `serialize()` output.
+    PhpSerialized,
+    /// A Python pickle, protocol 2 and up.
+    Pickle,
+    /// A BSON document.
+    Bson,
+    /// A Java Object Serialization stream.
+    JavaSerialized,
 }
 
 impl DataFormat {
@@ -81,6 +97,13 @@ impl DataFormat {
             DataFormat::MessagePack => "messagepack",
             DataFormat::Script => "script",
             DataFormat::Timestamp => "timestamp",
+            DataFormat::Base64 => "base64",
+            DataFormat::UrlEncoded => "url",
+            DataFormat::Jwt => "jwt",
+            DataFormat::PhpSerialized => "php",
+            DataFormat::Pickle => "pickle",
+            DataFormat::Bson => "bson",
+            DataFormat::JavaSerialized => "java",
         }
     }
 }
@@ -169,10 +192,25 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
         return (DataFormat::Bytes, None);
     }
     let Some(kind) = infer::get(bytes) else {
+        // The signed binary serializations go before MessagePack: a pickle's
+        // `PROTO` byte (0x80) and a BSON length byte both fall inside the
+        // fixmap range, and MessagePack is only ruled out by the parse.
         return if is_snappy_framed(bytes) {
             (DataFormat::Snappy, Some("application/snappy".to_string().into()))
         } else if is_svg(bytes) {
             (DataFormat::Svg, Some("image/svg+xml".to_string().into()))
+        } else if java::looks_like(bytes) {
+            (
+                DataFormat::JavaSerialized,
+                Some("application/x-java-serialized-object".to_string().into()),
+            )
+        } else if pickle::looks_like(bytes) {
+            (
+                DataFormat::Pickle,
+                Some("application/x-python-pickle".to_string().into()),
+            )
+        } else if bson::looks_like(bytes) {
+            (DataFormat::Bson, Some("application/bson".to_string().into()))
         } else if is_valid_messagepack(bytes) {
             (DataFormat::MessagePack, None)
         } else if is_unix_timestamp(bytes) {

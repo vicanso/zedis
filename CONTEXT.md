@@ -50,7 +50,9 @@ Architecture and conventions live in `CLAUDE.md`; decisions in `docs/adr/`.
   (hash / list / set / zset / stream) or decoded bytes, and its TTL.
 - **Decode pipeline** — the fixed order a string value is interpreted in:
   registered Protobuf schema, custom script viewer, native format detection
-  (MessagePack, GZIP, ZSTD, Snappy, timestamp, image), LZ4, then text / JSON.
+  (MessagePack, GZIP, ZSTD, Snappy, timestamp, image, Java serialization,
+  pickle, BSON), LZ4, the text encodings (JWT, PHP serialize, URL, Base64 —
+  `zedis-core/src/codec`), then text / JSON. Every decoded view is read-only.
 - **Recycle bin** — the local `DUMP` payload kept for 24h after a single-key
   delete, restorable from Tools.
 

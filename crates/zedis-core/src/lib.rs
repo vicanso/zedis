@@ -17,6 +17,7 @@
 //! in the app crate (rust-i18n is per-crate) — modules here return data only.
 
 pub mod capability;
+pub mod codec;
 pub mod csv;
 pub mod diff;
 pub mod env;
