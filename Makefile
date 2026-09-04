@@ -2,6 +2,11 @@ lint:
 	typos
 	cargo clippy --all-targets --all -- --deny=warnings
 
+# Dependency gate (advisories / licenses / bans / sources); the config is
+# deny.toml. `cargo install cargo-deny --locked` once.
+deny:
+	cargo deny check advisories bans licenses sources
+
 fmt:
 	cargo fmt
 

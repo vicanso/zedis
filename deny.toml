@@ -1,0 +1,77 @@
+# cargo-deny — the dependency gate that runs on every PR and push touching
+# the Cargo files (`.github/workflows/audit.yml`), and locally as
+# `make deny`. Four checks: advisories (RUSTSEC), licenses, bans, sources.
+#
+# The daily `rustsec/audit-check` job keeps its own ignore list in
+# `.cargo/audit.toml` (that tool cannot scope "unmaintained" to direct
+# dependencies); an advisory ignored for a real vulnerability must appear
+# in BOTH files, with the same reason.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# "Unmaintained" is informational. Flag it only for crates this workspace
+# depends on directly — the ones we can act on. Transitive ones (bincode
+# under gpui-component → syntect, instant / paste / rustybuzz under gpui)
+# are the upstream's to move off; listing them here would only be a list
+# of what gpui-kit pins.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = [
+    # rsa "Marvin Attack" timing side channel — no fixed version exists.
+    # Reached through russh / ssh-key for RSA SSH keys (SSH tunnels); the
+    # only way to drop it is russh's `rsa` feature, i.e. no RSA keys. The
+    # attack needs a local attacker timing RSA decryption during the SSH
+    # handshake, outside this app's threat model. Risk accepted until
+    # russh moves off the rsa release candidate.
+    { id = "RUSTSEC-2023-0071", reason = "no fix; local timing attack on the SSH handshake is outside the threat model" },
+]
+
+[licenses]
+version = 2
+# Every expression in the tree is satisfiable from this set (cargo-deny
+# resolves `A OR B` when either is allowed, `A AND B` when both are).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "NCSA",
+    "CDLA-Permissive-2.0",
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+
+[bans]
+# A GPUI tree carries dozens of duplicate versions; warning on each would
+# bury the yanked / advisory lines that matter. `cargo deny check bans`
+# with `multiple-versions = "warn"` is a one-off audit, not a gate.
+multiple-versions = "allow"
+# crates.io refuses `*` versions, so the only wildcard this tree can hold
+# is one of our own manifests, reviewed in the PR that adds it; denying
+# would only trip on the workspace's version-less path dependencies.
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+# Everything comes from crates.io — the gpui family through the published
+# gpui-pre snapshots. A git dependency has to be a deliberate decision.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

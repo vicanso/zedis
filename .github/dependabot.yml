@@ -1,0 +1,40 @@
+# Dependabot: weekly, Cargo and the workflow actions. `audit.yml` (cargo-deny
+# + rustsec) and `lint.yml` gate every PR it opens.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # GPUI is published as the gpui-pre-* snapshot family that gpui-kit
+      # pins; the four have to move together or two GPUIs end up in the
+      # tree (see the intro of CLAUDE.md). One PR for the whole set.
+      gpui:
+        patterns:
+          - "gpui-kit"
+          - "gpui-pre*"
+      # Everything else that is not a breaking change, batched.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - "gpui-kit"
+          - "gpui-pre*"
+    ignore:
+      # Pinned to gpui-component's transitive versions so the shared types
+      # unify (`lsp-types` for the completion provider, `tree-sitter` for the
+      # Lua grammar registration); bumped by hand with gpui-kit.
+      - dependency-name: "lsp-types"
+      - dependency-name: "tree-sitter"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "tree-sitter-lua"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
