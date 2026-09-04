@@ -1591,12 +1591,22 @@ fn cluster_discovers_nodes_and_scans_every_master() {
         assert!(total >= keys.len() as u64, "dbsize sums the masters: {total}");
         // The routed DBSIZE (redis-rs fans it out and sums) must agree with
         // asking each master ourselves — the count the status bar shows
-        // against the scanned keys.
-        let (_, per_master): (_, Vec<u64>) = client
-            .query_async_masters(vec![cmd("DBSIZE")])
-            .await
-            .expect("per-master dbsize");
-        assert_eq!(total, per_master.iter().sum::<u64>(), "routed DBSIZE sums every master");
+        // against the scanned keys. The other cluster tests run in parallel
+        // and write keys between the two snapshots, so on a mismatch take
+        // both again rather than fail on a one-key race.
+        let mut agreed = false;
+        for _ in 0..10 {
+            let routed = client.dbsize().await.expect("dbsize");
+            let (_, per_master): (_, Vec<u64>) = client
+                .query_async_masters(vec![cmd("DBSIZE")])
+                .await
+                .expect("per-master dbsize");
+            if routed == per_master.iter().sum::<u64>() {
+                agreed = true;
+                break;
+            }
+        }
+        assert!(agreed, "routed DBSIZE sums every master");
 
         let features = probe_server_features(&id, 0).await.expect("probe");
         assert_eq!(features.status(ServerCommand::ClusterInfo), CommandStatus::Available);

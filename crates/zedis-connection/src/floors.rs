@@ -102,8 +102,10 @@ pub const CLIENT_PAUSE_WRITE: Floor = Floor::since_fork("6.2.0");
 pub const CLIENT_KILL_USER: Floor = Floor::since_fork("6.0.0");
 /// `CLIENT KILL … LADDR ip:port` (Redis 6.2).
 pub const CLIENT_KILL_LADDR: Floor = Floor::since_fork("6.2.0");
-/// `CLIENT KILL … MAXAGE seconds` (Redis 7.2; every Valkey release).
-pub const CLIENT_KILL_MAXAGE: Floor = Floor::since_fork("7.2.0");
+/// `CLIENT KILL … MAXAGE seconds` — Redis 7.4 (redis/redis#12299 landed
+/// after the 7.2 branch; 7.2 answers `syntax error`); Valkey 8.0 (its
+/// `client-kill.json` marks the token `since 8.0.0`).
+pub const CLIENT_KILL_MAXAGE: Floor = Floor::both("7.4.0", "8.0.0");
 /// Hash field TTL — `HEXPIRE / HTTL / HPERSIST` (Redis 7.4; Valkey 9.0).
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
 /// `INFO keysizes` per-type histograms (Redis 8.0; not in Valkey).
@@ -162,6 +164,16 @@ mod tests {
         // Later than Redis's 7.4: a Valkey 8.x would pass a bare floor.
         assert!(!HASH_FIELD_TTL.met_by(true, &v("8.1.0")));
         assert!(HASH_FIELD_TTL.met_by(true, &v("9.0.0")));
+    }
+
+    /// The 7.2 CI run answered `syntax error`: MAXAGE landed in 7.4, and
+    /// Valkey picked it up in 8.0 — not "since the fork".
+    #[test]
+    fn client_kill_maxage_is_a_7_4_and_valkey_8_feature() {
+        assert!(!CLIENT_KILL_MAXAGE.met_by(false, &v("7.2.11")));
+        assert!(CLIENT_KILL_MAXAGE.met_by(false, &v("7.4.0")));
+        assert!(!CLIENT_KILL_MAXAGE.met_by(true, &v("7.2.9")));
+        assert!(CLIENT_KILL_MAXAGE.met_by(true, &v("8.0.0")));
     }
 
     #[test]
