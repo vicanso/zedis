@@ -18,4 +18,4 @@ rust-version.workspace = true
 gpui = { workspace = true }
 gpui-kit = { workspace = true }
 indexmap = { workspace = true }
-zedis-core = { path = "../zedis-core" }
+zedis-core = { workspace = true }

@@ -2,6 +2,8 @@
 name = "zedis-cmd-builder"
 version = "0.1.0"
 edition = "2024"
+# Offline helper (`make build-cmd`), not part of the crates.io release.
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"

@@ -44,7 +44,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 webpki-roots = { workspace = true }
-zedis-core = { path = "../zedis-core" }
+zedis-core = { workspace = true }
 
 # Native OS keychain for the config-encryption key (macOS Keychain / Windows
 # Credential Manager). Deliberately absent on Linux — there `master_key.rs`

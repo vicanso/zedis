@@ -39,6 +39,19 @@ it:
 it-down:
 	scripts/it/down.sh
 
+# crates.io release of the whole workspace — crates/* (zedis-core,
+# zedis-connection, zedis-db, zedis-ui) and the app (zedis-gui) — in
+# dependency order via `cargo publish --workspace` (cargo 1.90+).
+# `make publish-check` packages and build-verifies every crate without
+# uploading (fine on a dirty branch); `make publish` needs a clean tree at
+# the release tag and a crates.io token (`cargo login` / CARGO_REGISTRY_TOKEN),
+# and skips crates already published at this version, so it can be re-run.
+publish-check:
+	scripts/publish.sh --dry-run
+
+publish:
+	scripts/publish.sh
+
 build-cmd:
 	cargo run --package zedis-cmd-builder
 

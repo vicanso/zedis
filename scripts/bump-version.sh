@@ -31,6 +31,13 @@ CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
   's|^version = "\Q$ENV{CURRENT}\E"|version = "$ENV{NEXT}"| && ++$done unless $done' Cargo.toml
 grep -q "^version = \"$NEXT\"" Cargo.toml || { echo "failed to bump Cargo.toml" >&2; exit 1; }
 
+# The in-tree crates are path dependencies that also carry a `version` (what
+# the published manifests keep) — every one of them moves with the workspace.
+CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
+  's|^(zedis-[a-z]+ = \{ path = "crates/zedis-[a-z]+", version = ")\Q$ENV{CURRENT}\E"|$1$ENV{NEXT}"|' Cargo.toml
+[ "$(grep -c "^zedis-[a-z]* = { path = \"crates/zedis-[a-z]*\", version = \"$NEXT\" }" Cargo.toml)" = 4 ] \
+  || { echo "failed to bump the in-tree dependency versions in Cargo.toml" >&2; exit 1; }
+
 cargo update --workspace --offline --quiet
 
 echo "version: $CURRENT -> $NEXT"

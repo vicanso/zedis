@@ -182,6 +182,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The channel is baked into the binary (`startup::BUILD_CHANNEL`); a
     // changed env must rebuild it.
     println!("cargo:rerun-if-env-changed=ZEDIS_BUILD_CHANNEL");
+    // A crates.io tarball (`cargo install zedis-gui`, `cargo publish`'s
+    // verify build) has no git repository: vergen then only warns and emits
+    // nothing for the git keys, and `env!("VERGEN_GIT_SHA")` fails to
+    // compile. Cargo applies `rustc-env` lines in order, so this fallback
+    // stands unless the emitter below finds a repository and overrides it.
+    println!("cargo:rustc-env=VERGEN_GIT_SHA=unknown");
     Emitter::default()
         .add_instructions(&build)?
         .add_instructions(&git2)?

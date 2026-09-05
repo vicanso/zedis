@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.9.0](https://github.com/vicanso/zedis/compare/v0.8.3..v0.9.0) - 2026-09-05
+
+### ⛰️  Features
+
+- *(acl)* V2 selectors parsed, shown, and editable — groups tokenize whole, clearselectors keeps saves idempotent - ([d3e1045](https://github.com/vicanso/zedis/commit/d3e1045631e97c21c2b483cb4f9117bb77786045))
+- *(app)* Nightly channel, single instance, redis:// links, custom keybindings, zoom, backup, date/time prefs - ([1fbc24c](https://github.com/vicanso/zedis/commit/1fbc24cbee0392da20933609941201933aea0cbc))
+- *(clients)* User / library / buffer / memory columns, CLIENT PAUSE, and CLIENT KILL by filter - ([39bf6f2](https://github.com/vicanso/zedis/commit/39bf6f2f32ec686cef5b6ff008249070c7d15490))
+- *(config)* Lrm eviction policies in the maxmemory-policy picker, gated on Redis 8.6 - ([0c6a72b](https://github.com/vicanso/zedis/commit/0c6a72b93935309d356d90ab1a82e069561687db))
+- *(editor)* Module types without a viewer show their DUMP bytes instead of "unsupported key type" - ([3a13283](https://github.com/vicanso/zedis/commit/3a132834d4c832c535eb1763b792597a056d3491))
+- *(editor)* String saves are compare-and-set — SET IFEQ refuses to clobber a concurrent write (Redis 8.4+ / Valkey 8.1+) - ([40074aa](https://github.com/vicanso/zedis/commit/40074aa677ad536e54f6c083f81be1c36fa8a4eb))
+- *(hash)* Atomic HSETEX field writes on 8.0+, HSET+HEXPIRE fallback elsewhere - ([98932f1](https://github.com/vicanso/zedis/commit/98932f18d36a84f92ebe936586f324e8f2bfe42d))
+- *(key-tree)* Batch TTL takes an EXPIRE condition — NX/XX/GT/LT radios on 7.0+, per-key replies drive the cache and an applied/skipped toast - ([c06c8fc](https://github.com/vicanso/zedis/commit/c06c8fca2d124a76d8a80f3c5b0dbc8afc431215))
+- *(observability)* HOTKEYS panel, hot-slots table, and the INFO keysizes histogram - ([58b1137](https://github.com/vicanso/zedis/commit/58b1137795ed16a248f18cf79e096e3a8b019fd4))
+- *(rdb)* 8.8 array and 8.10 compact-hash encodings, with an 8.10.1 fixture - ([53c7021](https://github.com/vicanso/zedis/commit/53c70216d71d0fdc7657c14166e400b5b003e54d))
+- *(scripts)* SCRIPT KILL / FUNCTION KILL for a server stuck in a runaway script - ([f9cd073](https://github.com/vicanso/zedis/commit/f9cd073049c8d37bdbaa91eb95c9def1fce3152a))
+- *(scripts)* Read-only EVALSHA_RO runs, same toggle as FCALL_RO - ([821cbd1](https://github.com/vicanso/zedis/commit/821cbd1129213e808145e6d9a566409270a97cb1))
+- *(search)* Bind $name PARAMS with vector encoding so KNN queries run from the panel - ([4e53e6f](https://github.com/vicanso/zedis/commit/4e53e6fcdda084c6f62dfbec6df5e75f8988d138))
+- *(sentinel)* MONITOR / SET / CKQUORUM / FLUSHCONFIG, master parameters, and multi-master entries - ([db07efc](https://github.com/vicanso/zedis/commit/db07efc21c4993bf2afc3d5182fba8eec8f00fd9))
+- *(stream)* Release pending entries with XNACK and create consumers from the group row - ([0211273](https://github.com/vicanso/zedis/commit/0211273f3ff8046ae0b41df4acb9a781eb46c442))
+- *(stream)* One-step XACKDEL, trim reference policies, and the IDMP producer card (Redis 8.2–8.6) - ([e6c3886](https://github.com/vicanso/zedis/commit/e6c38863c6eda159196c45fde21e54a8ac112d08))
+- *(terminal)* Text / table / JSON replies, MULTI and batch layout, output save, selectable pane - ([a1ea097](https://github.com/vicanso/zedis/commit/a1ea097676a2932f2072652be1ddff15e7fc50bc))
+- *(vector-set)* Filtered KNN (FILTER / FILTER-EF), WITHATTRIBS rows, and VEMB display - ([98fc938](https://github.com/vicanso/zedis/commit/98fc9384e7ddd714d005a44f92a345e6f43e876f))
+- *(viewer)* Decode Java / pickle / BSON, JWT, PHP serialize, URL and Base64 - ([8da38f3](https://github.com/vicanso/zedis/commit/8da38f3cf3e0de82244adfd41486d02540915ff2))
+- Sentinel credentials, IPv6 literals, ZSet score order, OS-language clamp, six locales completed - ([3268f94](https://github.com/vicanso/zedis/commit/3268f94867eb73d32104a87a0a5f3fc45c986b6b))
+
+### 🐛 Bug Fixes
+
+- *(connection)* CLIENT KILL MAXAGE floor is Redis 7.4 / Valkey 8.0; steady the cluster DBSIZE check - ([ffab416](https://github.com/vicanso/zedis/commit/ffab4162004d0dc51a9e477b290b391023d063ac))
+- *(connection)* Dedicated terminal connection, no-op read-only probe, Redis Insight clusters import as clusters - ([9a30a52](https://github.com/vicanso/zedis/commit/9a30a52527f095f6356d4df4b6f24f01ad9b7550))
+- *(delete)* Fall back to DEL for bulk deletes on servers without UNLINK ([#131](https://github.com/orhun/git-cliff/issues/131)) - ([ba4ee6e](https://github.com/vicanso/zedis/commit/ba4ee6ee488af12d039dd7eb61aa1655ef53a125))
+- *(editor)* JSONPath bar — fold gutter off, line centered; 10px inset needs upstream - ([9fed8e3](https://github.com/vicanso/zedis/commit/9fed8e3a030209806f0cd33bb01546e5ba76a741))
+- *(heartbeat)* Back off while the server is unreachable, one attempt at a time - ([22c8991](https://github.com/vicanso/zedis/commit/22c8991c78512c096a8323e0592beebfaa7e1a9e))
+- *(notify)* Connection-restored toast gets a title and the server name; empty titles filtered - ([c7a08a2](https://github.com/vicanso/zedis/commit/c7a08a2bb744a9cb79221566252e8960569aadca))
+- *(status-bar)* Take the key total from a routed DBSIZE, not a per-master sum - ([9c966b6](https://github.com/vicanso/zedis/commit/9c966b66c31ae5ad5902cdf19c8862cd91886528))
+- *(status-bar)* One product line in the nodes tooltip — a Valkey version is no longer labeled Redis - ([de8cd49](https://github.com/vicanso/zedis/commit/de8cd495d074a6ae67a601644b702ac8e1acbcc6))
+
+### 🚜 Refactor
+
+- One text table for the observability panels, main.rs split, logged fallbacks, ADRs and CONTEXT.md - ([04fd1e0](https://github.com/vicanso/zedis/commit/04fd1e0ed9bab63beff152a23d733b3133427189))
+
+### 🧪 Testing
+
+- *(live)* Ignore the throwaway sentinel master when listing masters - ([231c95b](https://github.com/vicanso/zedis/commit/231c95b1c265ac525f890d1ad80f662147386f46))
+- *(live)* Grant SELECT by name to the read-only ACL users (Redis 6.2) - ([0415043](https://github.com/vicanso/zedis/commit/0415043f704a0c77c5170fd44fc90a2689d98a2d))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(deps)* Gate PRs with cargo-deny, add Dependabot, scope "unmaintained" to direct deps - ([f149cd3](https://github.com/vicanso/zedis/commit/f149cd3af76af33b715bebef31e0362ef3900efa))
+
+### Build
+
+- *(deps)* Move the build-dependency toml onto the workspace version - ([7dbd6e7](https://github.com/vicanso/zedis/commit/7dbd6e72446874fd43cd7f572979fec0d206ba6a))
+- *(deps)* Bump toml from 0.9.12+spec-1.1.0 to 1.1.4+spec-1.1.0 ([#138](https://github.com/orhun/git-cliff/issues/138)) - ([6a198a7](https://github.com/vicanso/zedis/commit/6a198a73f6abf03791de4a575b07ab97679a423b))
+- *(deps)* Bump actions/stale from 10 to 11 ([#133](https://github.com/orhun/git-cliff/issues/133)) - ([29392d1](https://github.com/vicanso/zedis/commit/29392d17933352de270249a6e3864c7868e22201))
+- *(deps)* Bump softprops/action-gh-release from 2 to 3 ([#132](https://github.com/orhun/git-cliff/issues/132)) - ([907b24d](https://github.com/vicanso/zedis/commit/907b24d47d31ae709bc7f078989721fa5d28d24e))
+- *(deps)* Bump actions/upload-artifact from 4 to 7 ([#134](https://github.com/orhun/git-cliff/issues/134)) - ([2c31dae](https://github.com/vicanso/zedis/commit/2c31daeebdeeeaa723fec82c6348327de00ebd64))
+- *(deps)* Bump the minor-and-patch group with 9 updates ([#137](https://github.com/orhun/git-cliff/issues/137)) - ([8fc724c](https://github.com/vicanso/zedis/commit/8fc724c16a25a33c93e4a2a6a829d3b33282c9f1))
+- *(deps)* Bump actions/download-artifact from 4 to 8 ([#135](https://github.com/orhun/git-cliff/issues/135)) - ([54508d3](https://github.com/vicanso/zedis/commit/54508d3947a5a99deadb27b64cf2162fdc4dca65))
+- *(deps)* Bump actions/setup-node from 6 to 7 ([#136](https://github.com/orhun/git-cliff/issues/136)) - ([9e13023](https://github.com/vicanso/zedis/commit/9e13023dfebe0442a07c3c7a91c47e75aa7ab2da))
+- *(deps)* Move to gpui-kit 0.6.0 and vendor its agent skills - ([ad219ee](https://github.com/vicanso/zedis/commit/ad219ee344609f7c76a3f4228b794119779ebc0f))
+
 ## [0.8.3](https://github.com/vicanso/zedis/compare/v0.8.2..v0.8.3) - 2026-08-30
 
 ### ⛰️  Features

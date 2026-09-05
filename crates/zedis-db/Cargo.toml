@@ -25,7 +25,7 @@ serde_json = { workspace = true }
 snafu = { workspace = true }
 tempfile = { workspace = true }
 tracing = { workspace = true }
-zedis-core = { path = "../zedis-core" }
+zedis-core = { workspace = true }
 
 [lints.clippy]
 # Match the root crate: no unwrap anywhere, tests included.
