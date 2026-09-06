@@ -33,10 +33,11 @@ use semver::Version;
 pub const VALKEY_BASELINE: &str = "7.2.0";
 
 /// First Redis version that ships a feature, and the Valkey side of the
-/// same question — both mandatory, so a gate cannot forget one flavor.
+/// same question — both written down, so a gate cannot forget one flavor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Floor {
-    pub redis: &'static str,
+    /// `Some(first Redis version)`, or `None` when Redis never shipped it.
+    pub redis: Option<&'static str>,
     /// `Some(first Valkey version)`, or `None` when Valkey never shipped it.
     pub valkey: Option<&'static str>,
 }
@@ -45,7 +46,7 @@ impl Floor {
     /// Redis and Valkey adopted the feature at different versions.
     const fn both(redis: &'static str, valkey: &'static str) -> Self {
         Self {
-            redis,
+            redis: Some(redis),
             valkey: Some(valkey),
         }
     }
@@ -53,20 +54,31 @@ impl Floor {
     /// Redis had it by the fork point, so every Valkey release has it.
     const fn since_fork(redis: &'static str) -> Self {
         Self {
-            redis,
+            redis: Some(redis),
             valkey: Some(VALKEY_BASELINE),
         }
     }
 
     /// Valkey never shipped it.
     const fn redis_only(redis: &'static str) -> Self {
-        Self { redis, valkey: None }
+        Self {
+            redis: Some(redis),
+            valkey: None,
+        }
+    }
+
+    /// Valkey shipped it and Redis never did.
+    const fn valkey_only(valkey: &'static str) -> Self {
+        Self {
+            redis: None,
+            valkey: Some(valkey),
+        }
     }
 
     /// Whether a server of this flavor and version clears the floor. A
     /// malformed floor literal never clears — a typo fails closed.
     pub fn met_by(self, is_valkey: bool, version: &Version) -> bool {
-        let floor = if is_valkey { self.valkey } else { Some(self.redis) };
+        let floor = if is_valkey { self.valkey } else { self.redis };
         floor
             .and_then(|f| Version::parse(f).ok())
             .is_some_and(|f| *version >= f)
@@ -111,6 +123,9 @@ pub const CLIENT_KILL_LADDR: Floor = Floor::since_fork("6.2.0");
 pub const CLIENT_KILL_MAXAGE: Floor = Floor::both("7.4.0", "8.0.0");
 /// Hash field TTL — `HEXPIRE / HTTL / HPERSIST` (Redis 7.4; Valkey 9.0).
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
+/// `COMMANDLOG` — the slow log generalised into slow / large-request /
+/// large-reply logs (Valkey 8.1; Redis has no equivalent).
+pub const COMMANDLOG: Floor = Floor::valkey_only("8.1.0");
 /// `INFO keysizes` per-type histograms (Redis 8.0; not in Valkey).
 pub const INFO_KEYSIZES: Floor = Floor::redis_only("8.0.0");
 /// `CLUSTER SLOT-STATS` — Valkey 8.0 shipped it first; Redis 8.2 adopted
@@ -202,6 +217,13 @@ mod tests {
     }
 
     #[test]
+    fn valkey_only_features_never_clear_on_redis() {
+        assert!(COMMANDLOG.met_by(true, &v("8.1.0")));
+        assert!(!COMMANDLOG.met_by(true, &v("8.0.4")));
+        assert!(!COMMANDLOG.met_by(false, &v("99.0.0")));
+    }
+
+    #[test]
     fn since_fork_covers_every_valkey_release() {
         assert!(EXPIRE_CONDITIONS.met_by(true, &v("7.2.4")));
         assert!(MEMORY_USAGE.met_by(true, &v("8.0.0")));
@@ -211,7 +233,7 @@ mod tests {
     #[test]
     fn a_malformed_floor_fails_closed() {
         let broken = Floor {
-            redis: "eight",
+            redis: Some("eight"),
             valkey: None,
         };
         assert!(!broken.met_by(false, &v("99.0.0")));

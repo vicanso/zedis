@@ -72,6 +72,9 @@ pub enum ServerCommand {
     Replicaof,
     /// `FAILOVER` — the coordinated standalone primary switch (Redis 6.2).
     Failover,
+    /// `COMMANDLOG GET` — Valkey 8.1's slow / large-request / large-reply
+    /// logs (Redis has no such command).
+    CommandlogGet,
 }
 
 impl ServerCommand {
@@ -112,6 +115,7 @@ impl ServerCommand {
         ServerCommand::HSetEx,
         ServerCommand::Replicaof,
         ServerCommand::Failover,
+        ServerCommand::CommandlogGet,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -146,6 +150,7 @@ impl ServerCommand {
             ServerCommand::HSetEx => "HSETEX",
             ServerCommand::Replicaof => "REPLICAOF",
             ServerCommand::Failover => "FAILOVER",
+            ServerCommand::CommandlogGet => "COMMANDLOG",
         }
     }
 
@@ -170,6 +175,7 @@ impl ServerCommand {
             ServerCommand::ClusterSlotStats => Some("SLOT-STATS"),
             ServerCommand::HotkeysGet => Some("GET"),
             ServerCommand::HotkeysStart => Some("START"),
+            ServerCommand::CommandlogGet => Some("GET"),
             _ => None,
         }
     }

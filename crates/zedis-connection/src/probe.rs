@@ -334,6 +334,10 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::HotkeysGet => {
             c.arg("GET");
         }
+        // Zero entries of the slow log — proves the command, reads nothing.
+        ServerCommand::CommandlogGet => {
+            c.arg("GET").arg(0).arg("SLOW");
+        }
         // Mutating variants never reach here (filtered by `is_mutating`);
         // fall back to a harmless no-op so a future slip can't execute them.
         _ => {

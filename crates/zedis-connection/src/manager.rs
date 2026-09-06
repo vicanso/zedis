@@ -455,7 +455,12 @@ impl ExpireCondition {
 pub struct SlowLogEntry {
     pub id: i64,
     pub timestamp: i64,
+    /// The slow log's measure — `amount` as microseconds. Meaningless for
+    /// a `COMMANDLOG` size log, whose third field is bytes.
     pub duration: Duration,
+    /// The entry's third field, raw: microseconds in the slow log, bytes in
+    /// `COMMANDLOG`'s `LARGE-REQUEST` / `LARGE-REPLY` logs.
+    pub amount: u64,
     pub args: Vec<String>,
     pub client_addr: Option<String>,
     pub client_name: Option<String>,
@@ -500,7 +505,7 @@ impl FromRedisValue for SlowLogEntry {
 
         let id = get_int(&items[0])?;
         let timestamp = get_int(&items[1])?;
-        let duration = get_int(&items[2])?;
+        let amount = get_int(&items[2])?.max(0) as u64;
 
         let args = match &items[3] {
             Value::Array(arg_items) => arg_items.iter().map(get_string).collect(),
@@ -524,7 +529,8 @@ impl FromRedisValue for SlowLogEntry {
         Ok(SlowLogEntry {
             id,
             timestamp,
-            duration: Duration::from_micros(duration as u64),
+            duration: Duration::from_micros(amount),
+            amount,
             args,
             client_addr,
             client_name,
@@ -636,12 +642,14 @@ pub fn clear_expired_clients() -> (usize, usize) {
 }
 
 mod client;
+mod commandlog;
 mod pool;
 mod pubsub_channels;
 mod replication;
 mod sharded_pubsub;
 mod slots;
 
+pub use commandlog::CommandLogKind;
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
 pub use replication::FAILOVER_TIMEOUT_MS;
 pub use sharded_pubsub::ShardedPubSub;

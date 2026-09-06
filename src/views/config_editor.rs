@@ -221,9 +221,9 @@ const CONFIG_GROUPS: &[ConfigGroup] = &[
         prefixes: &["logfile", "loglevel", "syslog", "crash-"],
     },
     ConfigGroup {
-        label: "latency / slowlog",
+        label: "latency / slowlog / commandlog",
         desc_key: "group_observability",
-        prefixes: &["latency", "slowlog"],
+        prefixes: &["latency", "slowlog", "commandlog"],
     },
     ConfigGroup {
         label: "cluster-*",

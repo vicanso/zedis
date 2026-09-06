@@ -105,8 +105,8 @@ pub use slot_stats::{SlotStatMetric, SlotStatRow};
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 
 pub use manager::{
-    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS, HeatMetric,
-    HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
+    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS,
+    HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
     RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager,
     plan_reshard_slots,
 };

@@ -29,15 +29,15 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, ImportFormat, KillFilter, KillOutcome,
-    KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer,
-    ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
-    acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain,
-    ft_search, get_connection_manager, get_server, get_servers, kill_filter_commands, kill_running,
-    open_single_connection, parse_readable_entries, pause_args, probe_server_features, read_readable_chunk,
-    rename_hash_field, restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig,
-    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules,
-    write_hash_field, write_readable_chunk,
+    CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, ImportFormat,
+    KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus,
+    RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions, ServerCommand,
+    ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv,
+    entry_to_json, ft_explain, ft_search, get_connection_manager, get_server, get_servers, kill_filter_commands,
+    kill_running, open_single_connection, parse_readable_entries, pause_args, probe_server_features,
+    read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers, sentinel_ckquorum,
+    sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format,
+    split_acl_rules, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -1348,6 +1348,117 @@ fn standalone_pubsub_channels_lists_the_subscribed_ones() {
             drop(shard_subscriber);
         }
         drop(subscriber);
+    });
+}
+
+// ── commandlog ───────────────────────────────────────────────────────────
+
+/// `CONFIG GET name` → the value.
+async fn config_value(c: &mut RedisAsyncConn, name: &str) -> String {
+    let pair: Vec<String> = cmd("CONFIG")
+        .arg("GET")
+        .arg(name)
+        .query_async(c)
+        .await
+        .expect("CONFIG GET");
+    pair.get(1).cloned().expect("CONFIG GET answers name, value")
+}
+
+async fn config_set(c: &mut RedisAsyncConn, name: &str, value: &str) {
+    let _: String = cmd("CONFIG")
+        .arg("SET")
+        .arg(name)
+        .arg(value)
+        .query_async(c)
+        .await
+        .expect("CONFIG SET");
+}
+
+/// The slow log through the COMMANDLOG door on every server, and — on
+/// Valkey 8.1+ — the two size logs: a request and a reply over lowered
+/// thresholds land in their logs with their sizes, and a reset clears one
+/// log without touching the other.
+#[test]
+#[ignore]
+fn commandlog_lists_slow_and_oversized_commands() {
+    smol::block_on(async {
+        let id = register(server("it-commandlog", standalone())).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let mut c = conn(&id, 0).await;
+        let key = unique("commandlog");
+        let is_set_of_key = |entry: &zedis_connection::SlowLogEntry, command: &str| {
+            entry.args.first().is_some_and(|a| a.eq_ignore_ascii_case(command)) && entry.args.get(1) == Some(&key)
+        };
+
+        // The slow log, through the same door, on every server: log every
+        // command for a moment.
+        let slower_than = config_value(&mut c, "slowlog-log-slower-than").await;
+        config_set(&mut c, "slowlog-log-slower-than", "0").await;
+        let _: String = cmd("SET").arg(&key).arg("v").query_async(&mut c).await.expect("SET");
+        let slow = client.get_command_logs(CommandLogKind::Slow).await.expect("slow log");
+        config_set(&mut c, "slowlog-log-slower-than", &slower_than).await;
+        assert!(
+            slow.iter().any(|e| is_set_of_key(e, "SET")),
+            "the SET was logged: {slow:?}"
+        );
+
+        if !supports(&id, floors::COMMANDLOG).await {
+            eprintln!("skipped the size logs: COMMANDLOG is Valkey 8.1+");
+            return;
+        }
+        // Thresholds down to 1 KB, then one 2 KB request and one 2 KB reply.
+        let request_threshold = config_value(&mut c, "commandlog-request-larger-than").await;
+        let reply_threshold = config_value(&mut c, "commandlog-reply-larger-than").await;
+        config_set(&mut c, "commandlog-request-larger-than", "1024").await;
+        config_set(&mut c, "commandlog-reply-larger-than", "1024").await;
+        let payload = "x".repeat(2048);
+        let _: String = cmd("SET")
+            .arg(&key)
+            .arg(&payload)
+            .query_async(&mut c)
+            .await
+            .expect("SET");
+        let _: String = cmd("GET").arg(&key).query_async(&mut c).await.expect("GET");
+
+        let requests = client
+            .get_command_logs(CommandLogKind::LargeRequest)
+            .await
+            .expect("large-request log");
+        let hit = requests
+            .iter()
+            .find(|e| is_set_of_key(e, "SET"))
+            .unwrap_or_else(|| panic!("the 2 KB SET is a large request: {requests:?}"));
+        assert!(hit.amount >= 2048, "the entry carries the request size: {hit:?}");
+        let replies = client
+            .get_command_logs(CommandLogKind::LargeReply)
+            .await
+            .expect("large-reply log");
+        let hit = replies
+            .iter()
+            .find(|e| is_set_of_key(e, "GET"))
+            .unwrap_or_else(|| panic!("the 2 KB GET is a large reply: {replies:?}"));
+        assert!(hit.amount >= 2048, "the entry carries the reply size: {hit:?}");
+
+        client
+            .commandlog_reset(CommandLogKind::LargeRequest)
+            .await
+            .expect("COMMANDLOG RESET");
+        let requests = client
+            .get_command_logs(CommandLogKind::LargeRequest)
+            .await
+            .expect("large-request log");
+        assert!(requests.is_empty(), "reset cleared the large-request log: {requests:?}");
+        let replies = client
+            .get_command_logs(CommandLogKind::LargeReply)
+            .await
+            .expect("large-reply log");
+        assert!(
+            replies.iter().any(|e| is_set_of_key(e, "GET")),
+            "the other log is untouched: {replies:?}"
+        );
+
+        config_set(&mut c, "commandlog-request-larger-than", &request_threshold).await;
+        config_set(&mut c, "commandlog-reply-larger-than", &reply_threshold).await;
     });
 }
 

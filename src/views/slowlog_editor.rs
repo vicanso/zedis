@@ -20,9 +20,12 @@ use crate::connection::ServerCommand;
 /// Displays a table of slow-query log entries fetched from the server's
 /// periodic `SLOWLOG GET` refresh cycle. Columns: Timestamp, Duration,
 /// Command, Client. Rows are sortable by arrival order (newest first).
+/// On Valkey 8.1 the same table shows either of `COMMANDLOG`'s size logs
+/// (large requests / large replies, fetched by the panel with a 30s poll)
+/// behind a log-kind switch; the Duration column reads Size there.
 use crate::connection::{
-    LatencyEvent, LatencySample, SlowLogEntry, get_connection_manager, get_server, latency_history, latency_latest,
-    latency_monitor_threshold, latency_reset, list_commands,
+    CommandLogKind, LatencyEvent, LatencySample, SlowLogEntry, floors, get_connection_manager, get_server,
+    latency_history, latency_latest, latency_monitor_threshold, latency_reset, list_commands,
 };
 use crate::error::Error;
 use crate::helpers::{SlowlogAction, build_csv, format_unix_secs, get_mono_font_family};
@@ -88,13 +91,16 @@ struct SlowLogRow {
     /// correlation chip and time-window filter can compare against
     /// `LatencyEvent::timestamp` without re-parsing the formatted text.
     raw_timestamp: i64,
-    duration: SharedString,
-    /// Raw duration in milliseconds for filtering and sorting.
-    duration_ms: u64,
-    /// Raw duration in microseconds — SLOWLOG's native unit — kept for
-    /// the per-command aggregation so sub-millisecond entries don't all
-    /// collapse to zero.
-    duration_us: u64,
+    /// The entry's measure as shown: "12ms" in the slow log, "2.0 kB" in a
+    /// COMMANDLOG size log.
+    amount_text: SharedString,
+    /// The measure for filtering and sorting: milliseconds in the slow log,
+    /// bytes in a size log.
+    amount: u64,
+    /// The measure for the per-command aggregation: microseconds — SLOWLOG's
+    /// native unit, so sub-millisecond entries don't all collapse to zero —
+    /// or, again, bytes.
+    amount_fine: u64,
     /// The Redis command name (args[0]), e.g. "GET", "HSET".
     command: SharedString,
     /// The arguments following the command (args[1..]), space-joined.
@@ -112,19 +118,24 @@ impl SlowLogRow {
     /// Converts a raw [`SlowLogEntry`] from the server into a display-ready row.
     ///
     /// - `timestamp` is formatted as local time (`YYYY-MM-DD HH:MM:SS`).
-    /// - `duration` is formatted as a human-readable string (e.g. `"12ms"`).
+    /// - the measure is formatted per log: `"12ms"` in the slow log, `"2.0 kB"`
+    ///   in a size log.
     /// - `command` / `args` are split by checking whether the first two tokens
     ///   form a known two-word command (e.g. `"CONFIG GET"`, `"SLOWLOG GET"`).
     ///   If so, both tokens become the command; otherwise only the first token is
     ///   used. All tokens are upper-cased for consistent display.
     /// - `client` combines the peer address with the optional connection name.
-    fn from_entry(entry: &SlowLogEntry) -> Self {
+    fn from_entry(entry: &SlowLogEntry, kind: CommandLogKind) -> Self {
         let timestamp = format_unix_secs(entry.timestamp).unwrap_or_default();
         let raw_timestamp = entry.timestamp;
 
-        let duration_ms = entry.duration.as_millis() as u64;
-        let duration_us = entry.duration.as_micros() as u64;
-        let duration = humantime::format_duration(Duration::from_millis(duration_ms)).to_string();
+        let (amount, amount_fine, amount_text) = if kind.is_slow() {
+            let ms = entry.duration.as_millis() as u64;
+            let text = humantime::format_duration(Duration::from_millis(ms)).to_string();
+            (ms, entry.duration.as_micros() as u64, text)
+        } else {
+            (entry.amount, entry.amount, format_bytes(entry.amount))
+        };
 
         // Check whether the first two tokens form a known two-word command
         // (e.g. "CONFIG GET", "SLOWLOG GET") before splitting.
@@ -160,9 +171,9 @@ impl SlowLogRow {
         Self {
             timestamp: timestamp.into(),
             raw_timestamp,
-            duration: duration.into(),
-            duration_ms,
-            duration_us,
+            amount_text: amount_text.into(),
+            amount,
+            amount_fine,
             command: command.into(),
             args: args.into(),
             client: client.into(),
@@ -176,8 +187,9 @@ impl SlowLogRow {
 struct CommandAggRow {
     command: SharedString,
     count: usize,
-    total_us: u64,
-    max_us: u64,
+    /// Summed / largest measure in the fine unit (µs or bytes).
+    total: u64,
+    max: u64,
     /// This command's share of the summed duration across all commands,
     /// in percent (0–100).
     share_pct: f64,
@@ -185,31 +197,33 @@ struct CommandAggRow {
 
 /// Group slow-log rows by command and rank by total time consumed —
 /// "which command class is eating the slow log" rather than the raw
-/// entry list. Aggregates in microseconds (SLOWLOG's native unit).
+/// entry list. Aggregates in the fine unit: microseconds (SLOWLOG's
+/// native unit) for the slow log, bytes for a COMMANDLOG size log, where
+/// the same ranking reads "which command moves the most bytes".
 fn aggregate_commands(rows: &[SlowLogRow]) -> Vec<CommandAggRow> {
     let mut map: AHashMap<SharedString, (usize, u64, u64)> = AHashMap::new();
     for row in rows {
         let entry = map.entry(row.command.clone()).or_insert((0, 0, 0));
         entry.0 += 1;
-        entry.1 += row.duration_us;
-        entry.2 = entry.2.max(row.duration_us);
+        entry.1 += row.amount_fine;
+        entry.2 = entry.2.max(row.amount_fine);
     }
     let grand_total: u64 = map.values().map(|(_, total, _)| *total).sum();
     let mut out: Vec<CommandAggRow> = map
         .into_iter()
-        .map(|(command, (count, total_us, max_us))| CommandAggRow {
+        .map(|(command, (count, total, max))| CommandAggRow {
             command,
             count,
-            total_us,
-            max_us,
+            total,
+            max,
             share_pct: if grand_total == 0 {
                 0.0
             } else {
-                total_us as f64 * 100.0 / grand_total as f64
+                total as f64 * 100.0 / grand_total as f64
             },
         })
         .collect();
-    out.sort_by(|a, b| b.total_us.cmp(&a.total_us).then(a.command.cmp(&b.command)));
+    out.sort_by(|a, b| b.total.cmp(&a.total).then(a.command.cmp(&b.command)));
     out
 }
 
@@ -218,6 +232,41 @@ fn aggregate_commands(rows: &[SlowLogRow]) -> Vec<CommandAggRow> {
 /// switching units per row.
 fn format_us_as_ms(us: u64) -> String {
     format!("{:.1} ms", us as f64 / 1000.0)
+}
+
+/// A byte count as the size logs show it ("2.0 kB").
+fn format_bytes(bytes: u64) -> String {
+    humansize::format_size(bytes, humansize::FormatSizeOptions::default().decimal_places(1))
+}
+
+/// An aggregated figure in the shown log's unit: milliseconds for the slow
+/// log, bytes for a size log.
+fn format_amount(kind: CommandLogKind, value: u64) -> String {
+    if kind.is_slow() {
+        format_us_as_ms(value)
+    } else {
+        format_bytes(value)
+    }
+}
+
+/// What one unit in the "≥" box is worth in `SlowLogRow::amount`: the slow
+/// log takes milliseconds, a size log kilobytes.
+fn filter_unit(kind: CommandLogKind) -> u64 {
+    if kind.is_slow() { 1 } else { 1024 }
+}
+
+/// The export column for the measure.
+fn amount_key(kind: CommandLogKind) -> &'static str {
+    if kind.is_slow() { "duration_ms" } else { "bytes" }
+}
+
+/// `slowlog.csv`, or `commandlog-large-request.csv` for a size log.
+fn export_name(kind: CommandLogKind, extension: &str) -> String {
+    if kind.is_slow() {
+        format!("slowlog.{extension}")
+    } else {
+        format!("commandlog-{}.{extension}", kind.wire().to_ascii_lowercase())
+    }
 }
 
 /// Time window used to associate a slow-log entry with a Latency event,
@@ -310,12 +359,12 @@ impl SlowLogRow {
         };
         vec![
             self.timestamp.clone(),
-            self.duration.clone(),
+            self.amount_text.clone(),
             self.command.clone(),
             self.args.clone(),
             self.client.clone(),
             SharedString::default(),
-            self.duration_ms.to_string().into(),
+            self.amount.to_string().into(),
             event,
             delta,
         ]
@@ -324,7 +373,12 @@ impl SlowLogRow {
 
 /// The slow-log grid. Column widths come from the viewport: the "args"
 /// column takes all remaining space after the fixed-width columns.
-fn build_table(editor: WeakEntity<ZedisSlowlogEditor>, window: &mut Window, cx: &mut gpui::App) -> ZedisTextTable {
+fn build_table(
+    editor: WeakEntity<ZedisSlowlogEditor>,
+    kind: CommandLogKind,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> ZedisTextTable {
     let content_width = content_area_width(window, cx);
     // Cells are `[label ..flex_1..][copy button ..flex_none..]` and the copy
     // button only appears on hover, taking ~28px out of the label's box — so
@@ -366,7 +420,14 @@ fn build_table(editor: WeakEntity<ZedisSlowlogEditor>, window: &mut Window, cx: 
         .iter()
         .zip(widths)
         .map(|(&key, width)| {
-            let column = TextColumn::new(key, i18n_slowlog_editor(cx, key), width);
+            // The measure column is Duration in the slow log, Size in a
+            // COMMANDLOG size log.
+            let title_key = if key == COLUMN_DURATION && !kind.is_slow() {
+                "size"
+            } else {
+                key
+            };
+            let column = TextColumn::new(key, i18n_slowlog_editor(cx, title_key), width);
             match key {
                 // The duration column shows "12ms" but sorts by the raw value.
                 COLUMN_DURATION => column.sort_by_cell(CELL_DURATION_MS),
@@ -475,8 +536,9 @@ pub struct ZedisSlowlogEditor {
     available_commands: Vec<SharedString>,
     /// Currently selected commands for filtering. Empty means show all.
     selected_commands: HashSet<SharedString>,
-    /// Minimum duration filter in milliseconds. 0 means no filter.
-    min_duration_ms: u64,
+    /// Minimum measure filter — milliseconds in the slow log, bytes in a
+    /// size log (the box takes KB). 0 means no filter.
+    min_amount: u64,
     duration_input_state: Entity<InputState>,
     /// Free-text filter, already trimmed + lowercased. Matched against the
     /// command, its arguments and the client. Empty means no filter.
@@ -511,6 +573,19 @@ pub struct ZedisSlowlogEditor {
     /// stops polling without explicit teardown.
     _latency_poll_task: Option<Task<()>>,
 
+    /// Which log the SlowLog / Top Commands tabs show: the slow log every
+    /// server has (from the heartbeat), or one of Valkey 8.1's COMMANDLOG
+    /// size logs, fetched by the panel itself.
+    log_kind: CommandLogKind,
+    /// The size log's entries (`COMMANDLOG GET`), newest first — the slow
+    /// log's live on the server state.
+    commandlog_entries: Vec<SlowLogEntry>,
+    commandlog_loading: bool,
+    _commandlog_task: Option<Task<()>>,
+    /// 30-second poll while a size log is shown; dropped on the switch back
+    /// to the slow log.
+    _commandlog_poll_task: Option<Task<()>>,
+
     /// Time window in unix seconds (inclusive). When set, the slow-log
     /// table is filtered to rows whose `raw_timestamp` falls inside the
     /// window — used by the "N slow nearby" chip on the Latency tab to
@@ -536,12 +611,13 @@ impl ZedisSlowlogEditor {
         // by the first `fetch_latency` call when the user enters the
         // Latency tab. Initial rows therefore have no correlation chips,
         // which is correct (we have nothing to correlate against yet).
-        let all_rows = Self::build_all_rows(&server_state, &[], cx);
+        let all_rows = Self::build_all_rows(server_state.read(cx).slow_logs(), CommandLogKind::Slow, &[]);
         let available_commands = Self::extract_commands(&all_rows);
         let filtered = all_rows.clone();
         let row_count = filtered.len();
         let editor_weak = cx.entity().downgrade();
-        let table_state = cx.new(|cx| TableState::new(build_table(editor_weak, window, cx), window, cx));
+        let table_state =
+            cx.new(|cx| TableState::new(build_table(editor_weak, CommandLogKind::Slow, window, cx), window, cx));
         table_state.update(cx, |state, _| {
             state
                 .delegate_mut()
@@ -554,7 +630,7 @@ impl ZedisSlowlogEditor {
             cx.subscribe_in(&duration_input_state, window, |this, state, event, _window, cx| {
                 if let InputEvent::Change = event {
                     let text = state.read(cx).value();
-                    this.min_duration_ms = text.trim().parse::<u64>().unwrap_or(0);
+                    this.min_amount = text.trim().parse::<u64>().unwrap_or(0) * filter_unit(this.log_kind);
                     this.apply_filters(cx);
                 }
             }),
@@ -581,38 +657,35 @@ impl ZedisSlowlogEditor {
         // Refresh table whenever the server delivers updated slow-log data or the
         // active server connection changes. The early-return on equal timestamps
         // prevents redundant re-renders when the data hasn't actually changed.
-        subscriptions.push(cx.subscribe(&server_state, {
-            let table_state = table_state.clone();
-            move |this, _state, event, cx| {
+        subscriptions.push(
+            cx.subscribe_in(&server_state, window, |this, _state, event, window, cx| {
+                // A new server starts on its slow log — the size log shown was
+                // the previous server's.
+                if matches!(event, ServerEvent::ServerSelected(_)) {
+                    this.set_log_kind(CommandLogKind::Slow, window, cx);
+                }
+                // A size log is the panel's own fetch, not the heartbeat's.
+                if !this.log_kind.is_slow() {
+                    return;
+                }
                 if matches!(
                     event,
                     ServerEvent::ServerRedisInfoUpdated | ServerEvent::ServerSelected(_)
                 ) {
-                    // Use the current latency_events snapshot so chips
-                    // appear immediately when slowlog refreshes after
-                    // latency was already populated.
-                    let new_rows = Self::build_all_rows(&this.server_state, &this.latency_events, cx);
+                    // Use the current latency_events snapshot so chips appear
+                    // immediately when slowlog refreshes after latency was
+                    // already populated.
+                    let new_rows = this.rows_from_current_log(cx);
                     let new_time_stamp = new_rows.first().map(|row| row.timestamp.clone()).unwrap_or_default();
                     // Skip re-render if the newest entry's timestamp hasn't changed.
                     if this.last_time_stamp == new_time_stamp {
                         return;
                     }
                     this.last_time_stamp = new_time_stamp;
-                    this.all_rows = new_rows;
-                    this.available_commands = Self::extract_commands(&this.all_rows);
-                    // Remove selected commands that no longer exist
-                    this.selected_commands.retain(|c| this.available_commands.contains(c));
-                    let filtered = this.filter_rows();
-                    this.row_count = filtered.len();
-                    table_state.update(cx, |state, _| {
-                        state
-                            .delegate_mut()
-                            .set_rows(filtered.iter().map(SlowLogRow::cells).collect());
-                    });
-                    cx.notify();
+                    this.replace_rows(new_rows, cx);
                 }
-            }
-        }));
+            }),
+        );
 
         Self {
             server_state,
@@ -622,7 +695,7 @@ impl ZedisSlowlogEditor {
             all_rows,
             available_commands,
             selected_commands: HashSet::new(),
-            min_duration_ms: 0,
+            min_amount: 0,
             duration_input_state,
             keyword: String::new(),
             keyword_state,
@@ -637,6 +710,11 @@ impl ZedisSlowlogEditor {
             _event_detail_task: None,
             _slowlog_reset_task: None,
             _latency_poll_task: None,
+            log_kind: CommandLogKind::Slow,
+            commandlog_entries: Vec::new(),
+            commandlog_loading: false,
+            _commandlog_task: None,
+            _commandlog_poll_task: None,
             window_filter: None,
             window_filter_label: None,
             _subscriptions: subscriptions,
@@ -719,11 +797,151 @@ impl ZedisSlowlogEditor {
     /// Single source of truth for "the inputs that drive the chip just
     /// changed".
     fn rebuild_rows_with_correlations(&mut self, cx: &mut gpui::Context<Self>) {
-        let new_rows = Self::build_all_rows(&self.server_state, &self.latency_events, cx);
-        self.all_rows = new_rows;
+        let new_rows = self.rows_from_current_log(cx);
+        self.replace_rows(new_rows, cx);
+    }
+
+    /// The rows of the log the panel shows: the slow log from the server
+    /// state (with the Latency correlation), or the fetched size log.
+    fn rows_from_current_log(&self, cx: &gpui::App) -> Vec<SlowLogRow> {
+        if self.log_kind.is_slow() {
+            Self::build_all_rows(
+                self.server_state.read(cx).slow_logs(),
+                self.log_kind,
+                &self.latency_events,
+            )
+        } else {
+            Self::build_all_rows(&self.commandlog_entries, self.log_kind, &[])
+        }
+    }
+
+    /// Swap in a fresh row set; the command list, the selection and the
+    /// filtered table follow.
+    fn replace_rows(&mut self, rows: Vec<SlowLogRow>, cx: &mut gpui::Context<Self>) {
+        self.all_rows = rows;
         self.available_commands = Self::extract_commands(&self.all_rows);
         self.selected_commands.retain(|c| self.available_commands.contains(c));
         self.apply_filters(cx);
+    }
+
+    /// Show another of COMMANDLOG's logs. The table is rebuilt for the
+    /// column title, the filters that meant something else (command set,
+    /// the "≥" threshold in the old unit) are cleared, and a size log
+    /// starts its fetch + 30s poll — or, back on the slow log, stops it.
+    fn set_log_kind(&mut self, kind: CommandLogKind, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.log_kind == kind {
+            return;
+        }
+        self.log_kind = kind;
+        self.selected_commands.clear();
+        self.min_amount = 0;
+        self.duration_input_state.update(cx, |state, cx| {
+            state.set_value(SharedString::default(), window, cx);
+        });
+        self.last_time_stamp = SharedString::default();
+        let editor_weak = cx.entity().downgrade();
+        self.table_state = cx.new(|cx| TableState::new(build_table(editor_weak, kind, window, cx), window, cx));
+        self.commandlog_entries.clear();
+        self._commandlog_task = None;
+        self._commandlog_poll_task = None;
+        let rows = self.rows_from_current_log(cx);
+        self.replace_rows(rows, cx);
+        if !kind.is_slow() {
+            self.fetch_commandlog(cx);
+            self.start_commandlog_polling(cx);
+        }
+        cx.notify();
+    }
+
+    /// `COMMANDLOG GET` for the shown size log. A reply for a log the user
+    /// has since switched away from is dropped.
+    fn fetch_commandlog(&mut self, cx: &mut gpui::Context<Self>) {
+        let kind = self.log_kind;
+        if kind.is_slow() {
+            return;
+        }
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id.is_empty() {
+            return;
+        }
+        let db = self.server_state.read(cx).db();
+        self.commandlog_loading = true;
+        cx.notify();
+        self._commandlog_task = Some(cx.spawn(async move |handle, cx| {
+            let result: Result<Vec<SlowLogEntry>, Error> = cx
+                .background_spawn(async move {
+                    let client = get_connection_manager().get_client(&server_id, db).await?;
+                    Ok(client.get_command_logs(kind).await?)
+                })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                this.commandlog_loading = false;
+                if this.log_kind != kind {
+                    return;
+                }
+                match result {
+                    Ok(entries) => {
+                        this.commandlog_entries = entries;
+                        let rows = this.rows_from_current_log(cx);
+                        this.replace_rows(rows, cx);
+                    }
+                    Err(e) => {
+                        // A NOPERM / unknown-command reply degrades the feature
+                        // matrix (and explains itself once); anything else is
+                        // a toast.
+                        let explained = this
+                            .server_state
+                            .update(cx, |state, cx| state.note_command_error(&e, cx));
+                        if !explained {
+                            this.server_state.update(cx, |state, cx| {
+                                state.emit_error_notification(e.to_string().into(), cx);
+                            });
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Re-fetch the shown size log every 30 seconds — the slow log rides
+    /// the heartbeat's 60s cycle; a size log has no such feed. The loop
+    /// ends itself once the panel is back on the slow log.
+    fn start_commandlog_polling(&mut self, cx: &mut gpui::Context<Self>) {
+        if self._commandlog_poll_task.is_some() {
+            return;
+        }
+        self._commandlog_poll_task = Some(cx.spawn(async move |handle, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(30)).await;
+                let still_active = handle
+                    .update(cx, |this, cx| {
+                        if this.log_kind.is_slow() {
+                            false
+                        } else {
+                            this.fetch_commandlog(cx);
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+                if !still_active {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// The empty state of the shown log: the slow log explains the periodic
+    /// refresh, a size log its thresholds — or "Loading…" while its first
+    /// fetch is out.
+    fn empty_message(&self, cx: &gpui::App) -> SharedString {
+        if self.log_kind.is_slow() {
+            i18n_slowlog_editor(cx, "no_slowlogs")
+        } else if self.commandlog_loading {
+            i18n_common(cx, "loading")
+        } else {
+            i18n_slowlog_editor(cx, "no_commandlogs")
+        }
     }
 
     /// Switch to the Latency tab and pin the named event as expanded so
@@ -1015,9 +1233,34 @@ impl ZedisSlowlogEditor {
         if server_id.is_empty() {
             return;
         }
-        let body = escalate_dangerous_body(cx, &server_id, i18n_slowlog_editor(cx, "reset_confirm_body"));
+        let kind = self.log_kind;
+        let (title, body) = if kind.is_slow() {
+            (
+                i18n_slowlog_editor(cx, "reset_confirm_title"),
+                i18n_slowlog_editor(cx, "reset_confirm_body"),
+            )
+        } else {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+            (
+                rust_i18n::t!(
+                    "slowlog_editor.commandlog_reset_confirm_title",
+                    kind = kind.wire(),
+                    locale = &locale
+                )
+                .to_string()
+                .into(),
+                rust_i18n::t!(
+                    "slowlog_editor.commandlog_reset_confirm_body",
+                    kind = kind.wire(),
+                    locale = &locale
+                )
+                .to_string()
+                .into(),
+            )
+        };
+        let body = escalate_dangerous_body(cx, &server_id, body);
         let editor = cx.entity().downgrade();
-        ZedisDialog::new_alert(i18n_slowlog_editor(cx, "reset_confirm_title"), body)
+        ZedisDialog::new_alert(title, body)
             .button_props(dialog_button_props(cx))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
@@ -1029,8 +1272,9 @@ impl ZedisSlowlogEditor {
             .open(window, cx);
     }
 
-    /// Run `SLOWLOG RESET` on every master, then clear the cached rows so
-    /// the table empties without waiting for the next heartbeat poll.
+    /// Run `SLOWLOG RESET` (or `COMMANDLOG RESET <type>` for a size log) on
+    /// every master, then clear the cached rows so the table empties
+    /// without waiting for the next poll.
     fn run_reset_slowlog(&mut self, cx: &mut gpui::Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
@@ -1038,19 +1282,39 @@ impl ZedisSlowlogEditor {
             return;
         }
         let server_state = self.server_state.clone();
+        let kind = self.log_kind;
         self._slowlog_reset_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
-                client.slowlog_reset().await
+                client.commandlog_reset(kind).await
             });
             let result = task.await;
-            let _ = handle.update(cx, |_this, cx| {
+            let _ = handle.update(cx, |this, cx| {
                 match result {
-                    Ok(()) => {
+                    Ok(()) if kind.is_slow() => {
                         let message = i18n_slowlog_editor(cx, "reset_done");
                         server_state.update(cx, |state, cx| {
                             state.clear_slow_logs(cx);
                             state.emit_success_notification(message, "SLOWLOG RESET".into(), cx);
+                        });
+                    }
+                    Ok(()) => {
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                        let message = rust_i18n::t!(
+                            "slowlog_editor.commandlog_reset_done",
+                            kind = kind.wire(),
+                            locale = &locale
+                        )
+                        .to_string();
+                        this.commandlog_entries.clear();
+                        let rows = this.rows_from_current_log(cx);
+                        this.replace_rows(rows, cx);
+                        server_state.update(cx, |state, cx| {
+                            state.emit_success_notification(
+                                message.into(),
+                                format!("COMMANDLOG RESET {}", kind.wire()).into(),
+                                cx,
+                            );
                         });
                     }
                     Err(e) => {
@@ -1064,19 +1328,19 @@ impl ZedisSlowlogEditor {
         }));
     }
 
-    /// Reads the current slow-log entries from the server state and converts them
-    /// into display rows, decorating each row with the closest Latency event in
-    /// `±CORRELATION_WINDOW_SECS` (if any) so the chip column has data to render.
+    /// Converts a log's entries into display rows, decorating each row with
+    /// the closest Latency event in `±CORRELATION_WINDOW_SECS` (if any) so
+    /// the chip column has data to render — the slow log's caller passes
+    /// the events, a size log's passes none.
     fn build_all_rows(
-        server_state: &Entity<ZedisServerState>,
+        entries: &[SlowLogEntry],
+        kind: CommandLogKind,
         latency_events: &[LatencyEvent],
-        cx: &gpui::App,
     ) -> Vec<SlowLogRow> {
-        let entries = server_state.read(cx).slow_logs();
         entries
             .iter()
             .map(|entry| {
-                let mut row = SlowLogRow::from_entry(entry);
+                let mut row = SlowLogRow::from_entry(entry, kind);
                 row.correlated_event = correlated_event_for_slowlog(row.raw_timestamp, latency_events);
                 row
             })
@@ -1107,7 +1371,7 @@ impl ZedisSlowlogEditor {
                 if !self.selected_commands.is_empty() && !self.selected_commands.contains(&row.command) {
                     return false;
                 }
-                if self.min_duration_ms > 0 && row.duration_ms < self.min_duration_ms {
+                if self.min_amount > 0 && row.amount < self.min_amount {
                     return false;
                 }
                 if let Some((lo, hi)) = self.window_filter
@@ -1158,15 +1422,16 @@ impl ZedisSlowlogEditor {
             .map(|r| {
                 vec![
                     r.timestamp.to_string(),
-                    r.duration_ms.to_string(),
+                    r.amount.to_string(),
                     r.command.to_string(),
                     r.args.to_string(),
                     r.client.to_string(),
                 ]
             })
             .collect();
-        let csv = build_csv(&["timestamp", "duration_ms", "command", "args", "client"], &data);
-        self.save_export(csv.into_bytes(), "slowlog.csv", true, cx);
+        let kind = self.log_kind;
+        let csv = build_csv(&["timestamp", amount_key(kind), "command", "args", "client"], &data);
+        self.save_export(csv.into_bytes(), &export_name(kind, "csv"), true, cx);
     }
 
     /// Export the currently-filtered slow-log rows to a pretty-printed
@@ -1176,12 +1441,13 @@ impl ZedisSlowlogEditor {
         if rows.is_empty() {
             return;
         }
+        let kind = self.log_kind;
         let values: Vec<serde_json::Value> = rows
             .iter()
             .map(|r| {
                 serde_json::json!({
                     "timestamp": r.timestamp.to_string(),
-                    "duration_ms": r.duration_ms,
+                    (amount_key(kind)): r.amount,
                     "command": r.command.to_string(),
                     "args": r.args.to_string(),
                     "client": r.client.to_string(),
@@ -1189,14 +1455,14 @@ impl ZedisSlowlogEditor {
             })
             .collect();
         let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
-        self.save_export(json.into_bytes(), "slowlog.json", false, cx);
+        self.save_export(json.into_bytes(), &export_name(kind, "json"), false, cx);
     }
 
     /// Shared save flow for the exports: prompt for a path, write the
     /// bytes off the UI thread, and notify on success/failure. `is_csv`
     /// only selects which notification strings to use. Mirrors the
     /// value-search CSV export.
-    fn save_export(&mut self, bytes: Vec<u8>, suggested: &'static str, is_csv: bool, cx: &mut gpui::Context<Self>) {
+    fn save_export(&mut self, bytes: Vec<u8>, suggested: &str, is_csv: bool, cx: &mut gpui::Context<Self>) {
         let server_state = self.server_state.clone();
         let (success_key, error_key) = if is_csv {
             ("csv_exported", "csv_export_failed")
@@ -1228,7 +1494,8 @@ impl gpui::Render for ZedisSlowlogEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let is_empty = self.row_count == 0;
         let total_count = self.all_rows.len();
-        let has_filter = !self.selected_commands.is_empty() || self.min_duration_ms > 0 || !self.keyword.is_empty();
+        let has_filter = !self.selected_commands.is_empty() || self.min_amount > 0 || !self.keyword.is_empty();
+        let empty_message = self.empty_message(cx);
 
         // Count label: show "filtered/total" when filters are active
         let count_label = if has_filter {
@@ -1339,8 +1606,7 @@ impl gpui::Render for ZedisSlowlogEditor {
                             .when(is_empty, |this| {
                                 this.child(
                                     div().size_full().flex().items_center().justify_center().child(
-                                        Label::new(i18n_slowlog_editor(cx, "no_slowlogs"))
-                                            .text_color(cx.theme().muted_foreground),
+                                        Label::new(empty_message.clone()).text_color(cx.theme().muted_foreground),
                                     ),
                                 )
                             })
@@ -1401,8 +1667,12 @@ impl ZedisSlowlogEditor {
             format!("{} ({selected_count})", i18n_slowlog_editor(cx, "command_filter")).into()
         };
 
+        let unit_label = if self.log_kind.is_slow() { "ms" } else { "KB" };
+        let log_kind_switch = self.render_log_kind_switch(cx);
+
         match self.current_tab {
             PerformanceTab::SlowLog => ZedisDivider::new()
+                .when_some(log_kind_switch, |this, switch| this.child(switch))
                 .child(
                     h_flex()
                         .gap_1()
@@ -1423,7 +1693,7 @@ impl ZedisSlowlogEditor {
                                 .text_sm(),
                         )
                         .child(Input::new(&self.duration_input_state).xsmall().w(px(60.)))
-                        .child(Label::new("ms").text_color(cx.theme().muted_foreground).text_sm()),
+                        .child(Label::new(unit_label).text_color(cx.theme().muted_foreground).text_sm()),
                 )
                 .when(!commands.is_empty(), |this| {
                     this.child(
@@ -1465,11 +1735,25 @@ impl ZedisSlowlogEditor {
                             }),
                     )
                 })
+                // A size log is the panel's own fetch (30s poll): let the
+                // user pull it now.
+                .when(!self.log_kind.is_slow(), |this| {
+                    this.child(
+                        Button::new("commandlog-refresh")
+                            .outline()
+                            .small()
+                            .icon(Icon::new(CustomIconName::RotateCw))
+                            .tooltip(i18n_slowlog_editor(cx, "commandlog_refresh_tooltip"))
+                            .loading(self.commandlog_loading)
+                            .on_click(cx.listener(|this, _, _w, cx| this.fetch_commandlog(cx))),
+                    )
+                })
                 .child(self.reset_slowlog_button(cx))
                 .into_any_element(),
             PerformanceTab::TopCommands => h_flex()
                 .gap_2()
                 .items_center()
+                .when_some(log_kind_switch, |this, switch| this.child(switch))
                 .child(self.reset_slowlog_button(cx))
                 .into_any_element(),
             PerformanceTab::Latency => h_flex()
@@ -1498,15 +1782,65 @@ impl ZedisSlowlogEditor {
 
     /// `SLOWLOG RESET` toolbar button — shared by the SlowLog and Top
     /// Commands tabs (the aggregation view is where "these are stale,
-    /// start a fresh window" usually gets decided).
+    /// start a fresh window" usually gets decided). On a size log it is
+    /// `COMMANDLOG RESET <type>`.
     fn reset_slowlog_button(&self, cx: &mut gpui::Context<Self>) -> Button {
+        let kind = self.log_kind;
+        let tooltip: SharedString = if kind.is_slow() {
+            i18n_slowlog_editor(cx, "slowlog_reset_tooltip")
+        } else {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+            rust_i18n::t!(
+                "slowlog_editor.commandlog_reset_tooltip",
+                kind = kind.wire(),
+                locale = &locale
+            )
+            .to_string()
+            .into()
+        };
         Button::new("slowlog-reset")
             .outline()
             .small()
             .icon(IconName::CircleX)
             .label(i18n_slowlog_editor(cx, "slowlog_reset"))
-            .tooltip(i18n_slowlog_editor(cx, "slowlog_reset_tooltip"))
+            .tooltip(tooltip)
             .on_click(cx.listener(|this, _, window, cx| this.confirm_reset_slowlog(window, cx)))
+    }
+
+    /// Which of COMMANDLOG's logs the SlowLog / Top Commands tabs show — a
+    /// segmented control, only on a server that has COMMANDLOG (Valkey
+    /// 8.1) and lets this user run it. Elsewhere the panel is the slow log
+    /// and says nothing about the others.
+    fn render_log_kind_switch(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
+        let available = {
+            let state = self.server_state.read(cx);
+            state.supports(floors::COMMANDLOG) && state.command_block(ServerCommand::CommandlogGet).is_none()
+        };
+        if !available {
+            return None;
+        }
+        let tooltip = i18n_slowlog_editor(cx, "log_kind_tooltip");
+        let mut group = h_flex().gap_1().items_center().mr_2();
+        for kind in CommandLogKind::ALL {
+            let label_key = match kind {
+                CommandLogKind::Slow => "log_kind_slow",
+                CommandLogKind::LargeRequest => "log_kind_large_request",
+                CommandLogKind::LargeReply => "log_kind_large_reply",
+            };
+            let mut button = Button::new(SharedString::from(format!("perf-log-kind-{}", kind.name())))
+                .xsmall()
+                .label(i18n_slowlog_editor(cx, label_key))
+                .tooltip(tooltip.clone());
+            button = if self.log_kind == kind {
+                button.primary()
+            } else {
+                button.outline()
+            };
+            group = group.child(button.on_click(cx.listener(move |this, _, window, cx| {
+                this.set_log_kind(kind, window, cx);
+            })));
+        }
+        Some(group.into_any_element())
     }
 
     /// The Top Commands tab body: slow-log entries grouped by command and
@@ -1515,9 +1849,10 @@ impl ZedisSlowlogEditor {
     /// this one answers "which command is *slow*".
     fn render_top_commands_body(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let kind = self.log_kind;
         let rows = aggregate_commands(&self.all_rows);
         if rows.is_empty() {
-            return centered_message(i18n_slowlog_editor(cx, "no_slowlogs"), muted).into_any_element();
+            return centered_message(self.empty_message(cx), muted).into_any_element();
         }
 
         let header = h_flex()
@@ -1575,7 +1910,14 @@ impl ZedisSlowlogEditor {
         let body_rows: Vec<gpui::AnyElement> = rows
             .iter()
             .map(|agg| {
-                let avg_us = agg.total_us / agg.count.max(1) as u64;
+                let avg = agg.total / agg.count.max(1) as u64;
+                // Severity is a latency notion; a byte count has none.
+                let max_label = Label::new(format_amount(kind, agg.max)).text_sm();
+                let max_label = if kind.is_slow() {
+                    max_label.text_color(severity_color((agg.max / 1000) as i64, cx))
+                } else {
+                    max_label
+                };
                 let command = agg.command.clone();
                 let id_hash = djb2_hash(command.as_ref());
                 h_flex()
@@ -1590,16 +1932,10 @@ impl ZedisSlowlogEditor {
                     .child(
                         div()
                             .w(px(110.0))
-                            .child(Label::new(format_us_as_ms(agg.total_us)).text_sm()),
+                            .child(Label::new(format_amount(kind, agg.total)).text_sm()),
                     )
-                    .child(div().w(px(110.0)).child(Label::new(format_us_as_ms(avg_us)).text_sm()))
-                    .child(
-                        div().w(px(110.0)).child(
-                            Label::new(format_us_as_ms(agg.max_us))
-                                .text_sm()
-                                .text_color(severity_color((agg.max_us / 1000) as i64, cx)),
-                        ),
-                    )
+                    .child(div().w(px(110.0)).child(Label::new(format_amount(kind, avg)).text_sm()))
+                    .child(div().w(px(110.0)).child(max_label))
                     .child(
                         // Share of total time: numeric label + a proportional
                         // bar so the dominant command is visible at a glance.
@@ -1996,9 +2332,9 @@ mod tests {
         SlowLogRow {
             timestamp: "2026-08-02 10:00:00".into(),
             raw_timestamp: 0,
-            duration: "--".into(),
-            duration_ms: duration_us / 1000,
-            duration_us,
+            amount_text: "--".into(),
+            amount: duration_us / 1000,
+            amount_fine: duration_us,
             command: command.to_string().into(),
             args: "".into(),
             client: "".into(),
@@ -2021,8 +2357,8 @@ mod tests {
         assert_eq!(aggs[1].command.as_ref(), "KEYS");
         assert_eq!(aggs[2].command.as_ref(), "GET");
         assert_eq!(aggs[2].count, 2);
-        assert_eq!(aggs[2].total_us, 6_000);
-        assert_eq!(aggs[2].max_us, 4_000);
+        assert_eq!(aggs[2].total, 6_000);
+        assert_eq!(aggs[2].max, 4_000);
         let share_sum: f64 = aggs.iter().map(|a| a.share_pct).sum();
         assert!((share_sum - 100.0).abs() < 1e-6);
     }
