@@ -157,6 +157,13 @@ pub enum ServerTask {
     /// hash slots from their current owner to a target master.
     ClusterReshard,
 
+    /// `REPLICAOF host port` / `REPLICAOF NO ONE` — the standalone
+    /// replication link, sent to the pooled client's node.
+    Replicaof,
+    /// `FAILOVER TO host port [FORCE] TIMEOUT ms` / `FAILOVER ABORT` — the
+    /// standalone primary switch, sent to the pooled client's node.
+    Failover,
+
     /// `SENTINEL FAILOVER master_name` — force a manual failover on
     /// the named master. Fanned out to all sentinel instances via
     /// the pooled client.
@@ -238,6 +245,8 @@ impl ServerTask {
             ServerTask::ClusterForget => "cluster_forget",
             ServerTask::ClusterReplicate => "cluster_replicate",
             ServerTask::ClusterReshard => "cluster_reshard",
+            ServerTask::Replicaof => "replicaof",
+            ServerTask::Failover => "failover",
             ServerTask::SentinelFailover => "sentinel_failover",
             ServerTask::SentinelReset => "sentinel_reset",
             ServerTask::SentinelRemove => "sentinel_remove",

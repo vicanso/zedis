@@ -638,10 +638,12 @@ pub fn clear_expired_clients() -> (usize, usize) {
 mod client;
 mod pool;
 mod pubsub_channels;
+mod replication;
 mod sharded_pubsub;
 mod slots;
 
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
+pub use replication::FAILOVER_TIMEOUT_MS;
 pub use sharded_pubsub::ShardedPubSub;
 pub use slots::plan_reshard_slots;
 #[allow(unused_imports)]

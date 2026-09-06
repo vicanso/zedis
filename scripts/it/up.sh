@@ -7,7 +7,10 @@
 #                                 ("mymaster") and 16383 / replica 16384 ("mymaster2")
 #   busy        127.0.0.1:16385   plain server the runaway-script test parks in BUSY (its own,
 #                                 so the other tests never see the BUSY replies)
-#                                 (`IT_PORT_BASE=26379` shifts these eight ports together)
+#   replication 127.0.0.1:16386   a primary with a replica on 16387, for the REPLICAOF / FAILOVER
+#                                 test (its own pair: that test promotes and fails over, which
+#                                 would upset the sentinel's)
+#                                 (`IT_PORT_BASE=26379` shifts these ten ports together)
 #   cluster     127.0.0.1:17000-17005   3 masters + 3 replicas (cluster bus on 27000-27005;
 #                                       `IT_CLUSTER_BASE=7100` moves the block when those are taken)
 #
@@ -30,7 +33,7 @@ IMAGE=${REDIS_IMAGE:-}
 STACK=${IT_STACK:-0}
 SERVER_BIN=${SERVER_BIN:-redis-server}
 CLI_BIN=${CLI_BIN:-redis-cli}
-SCENARIOS=${IT_SCENARIOS:-"standalone tls sentinel cluster busy"}
+SCENARIOS=${IT_SCENARIOS:-"standalone tls sentinel cluster busy replication"}
 if [ "$STACK" = "1" ]; then SCENARIOS="standalone"; fi
 
 # `IT_PORT_BASE` shifts the whole non-cluster block (defaults: 16379 /
@@ -44,6 +47,8 @@ PORT_REPLICA=$((PORT_BASE + 3))
 PORT_MASTER2=$((PORT_BASE + 4))
 PORT_REPLICA2=$((PORT_BASE + 5))
 PORT_BUSY=$((PORT_BASE + 6))
+PORT_REPL_PRIMARY=$((PORT_BASE + 7))
+PORT_REPL_REPLICA=$((PORT_BASE + 8))
 PORT_SENTINEL=$((PORT_BASE + 100))
 PORT_CLUSTER_BASE=${IT_CLUSTER_BASE:-17000}
 MASTER_NAME=mymaster
@@ -222,6 +227,19 @@ if has busy; then
   start busy --port "$PORT_BUSY" --save "" --appendonly no --dir "$FS"
   wait_pong busy -p "$PORT_BUSY"
   env_put ZEDIS_IT_BUSY "127.0.0.1:$PORT_BUSY"
+fi
+
+# ── replication ──────────────────────────────────────────────────────────
+if has replication; then
+  echo "replication :$PORT_REPL_PRIMARY (replica :$PORT_REPL_REPLICA)"
+  wait_port_free "$PORT_REPL_PRIMARY" "replication primary"
+  wait_port_free "$PORT_REPL_REPLICA" "replication replica"
+  start repl-primary --port "$PORT_REPL_PRIMARY" --save "" --appendonly no --dir "$FS"
+  start repl-replica --port "$PORT_REPL_REPLICA" --save "" --appendonly no --dir "$FS" --replicaof 127.0.0.1 "$PORT_REPL_PRIMARY"
+  wait_pong repl-primary -p "$PORT_REPL_PRIMARY"
+  wait_pong repl-replica -p "$PORT_REPL_REPLICA"
+  env_put ZEDIS_IT_REPL_PRIMARY "127.0.0.1:$PORT_REPL_PRIMARY"
+  env_put ZEDIS_IT_REPL_REPLICA "127.0.0.1:$PORT_REPL_REPLICA"
 fi
 
 # ── cluster ──────────────────────────────────────────────────────────────

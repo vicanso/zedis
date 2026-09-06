@@ -120,6 +120,8 @@ pub enum Capability {
     ClusterWrite,
     /// Sentinel failover / reset / remove.
     SentinelWrite,
+    /// `REPLICAOF` / `FAILOVER` on a standalone primary / replica pair.
+    ReplicationWrite,
     /// `BGSAVE` / `BGREWRITEAOF`.
     PersistenceWrite,
     /// `PUBLISH` a pub/sub message.
@@ -172,6 +174,7 @@ impl Capability {
         Capability::HotkeysControl,
         Capability::ClusterWrite,
         Capability::SentinelWrite,
+        Capability::ReplicationWrite,
         Capability::PersistenceWrite,
         Capability::PublishMessage,
         Capability::FunctionWrite,
@@ -204,6 +207,7 @@ impl Capability {
                 | Capability::HotkeysControl
                 | Capability::ClusterWrite
                 | Capability::SentinelWrite
+                | Capability::ReplicationWrite
                 | Capability::PersistenceWrite
                 | Capability::PublishMessage
                 | Capability::FunctionWrite
@@ -235,6 +239,7 @@ impl Capability {
             Capability::AclWrite => &[ServerCommand::AclSetUser],
             Capability::ConfigWrite => &[ServerCommand::ConfigSet],
             Capability::HotkeysControl => &[ServerCommand::HotkeysStart],
+            Capability::ReplicationWrite => &[ServerCommand::Replicaof],
             Capability::PersistenceWrite => &[ServerCommand::Bgsave],
             Capability::PublishMessage => &[ServerCommand::Publish],
             Capability::FunctionWrite => &[ServerCommand::FunctionLoad],
@@ -308,6 +313,7 @@ mod tests {
         (Capability::HotkeysControl, false),
         (Capability::ClusterWrite, false),
         (Capability::SentinelWrite, false),
+        (Capability::ReplicationWrite, false),
         (Capability::PersistenceWrite, false),
         (Capability::PublishMessage, false),
         (Capability::FunctionWrite, false),

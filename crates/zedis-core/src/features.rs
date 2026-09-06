@@ -67,6 +67,11 @@ pub enum ServerCommand {
     HotkeysStart,
     /// `HSETEX` — a hash field and its TTL in one write (Redis 8.0).
     HSetEx,
+    /// `REPLICAOF host port` / `REPLICAOF NO ONE` — the standalone
+    /// replication link (managed clouds reject it).
+    Replicaof,
+    /// `FAILOVER` — the coordinated standalone primary switch (Redis 6.2).
+    Failover,
 }
 
 impl ServerCommand {
@@ -105,6 +110,8 @@ impl ServerCommand {
         ServerCommand::HotkeysGet,
         ServerCommand::HotkeysStart,
         ServerCommand::HSetEx,
+        ServerCommand::Replicaof,
+        ServerCommand::Failover,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -137,6 +144,8 @@ impl ServerCommand {
             ServerCommand::FlushDb => "FLUSHDB",
             ServerCommand::HotkeysGet | ServerCommand::HotkeysStart => "HOTKEYS",
             ServerCommand::HSetEx => "HSETEX",
+            ServerCommand::Replicaof => "REPLICAOF",
+            ServerCommand::Failover => "FAILOVER",
         }
     }
 
@@ -194,6 +203,8 @@ impl ServerCommand {
                 | ServerCommand::FlushDb
                 | ServerCommand::HotkeysStart
                 | ServerCommand::HSetEx
+                | ServerCommand::Replicaof
+                | ServerCommand::Failover
         )
     }
 

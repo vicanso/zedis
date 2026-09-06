@@ -27,6 +27,9 @@ pub enum DangerKind {
     Shutdown,
     ScriptFlush,
     ClusterReset,
+    /// `REPLICAOF` / `SLAVEOF` / `FAILOVER`: `REPLICAOF host port` throws this
+    /// node's dataset away for a full sync, `FAILOVER` pauses writes.
+    Replication,
     /// `KEYS *` against a non-trivial pattern. Cheap to mistype, expensive to run.
     KeysGlob,
     /// Multi-key delete (`DEL k1 k2 ...`) above an arbitrary threshold.
@@ -50,6 +53,7 @@ impl DangerKind {
             DangerKind::Shutdown => "danger.shutdown",
             DangerKind::ScriptFlush => "danger.script_flush",
             DangerKind::ClusterReset => "danger.cluster_reset",
+            DangerKind::Replication => "danger.replication",
             DangerKind::KeysGlob => "danger.keys_glob",
             DangerKind::BatchDelete { .. } => "danger.batch_delete",
             DangerKind::GenericWrite => "danger.generic_write",
@@ -64,6 +68,7 @@ impl DangerKind {
                 | DangerKind::FlushDb
                 | DangerKind::Shutdown
                 | DangerKind::ClusterReset
+                | DangerKind::Replication
                 | DangerKind::Debug
                 | DangerKind::ScriptFlush
         )
@@ -116,6 +121,7 @@ pub fn classify_dangerous(cmd_name: &str, args: &[String]) -> Option<DangerKind>
         "FLUSHALL" => Some(DangerKind::FlushAll),
         "FLUSHDB" => Some(DangerKind::FlushDb),
         "SHUTDOWN" => Some(DangerKind::Shutdown),
+        "REPLICAOF" | "SLAVEOF" | "FAILOVER" => Some(DangerKind::Replication),
         "CONFIG" => match args.first().map(|s| s.to_ascii_uppercase()).as_deref() {
             Some("SET") => Some(DangerKind::ConfigSet),
             Some("RESETSTAT") => Some(DangerKind::ConfigResetStat),
@@ -291,6 +297,19 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn replication_commands_are_destructive() {
+        for (command, rest) in [
+            ("REPLICAOF", &["NO", "ONE"][..]),
+            ("slaveof", &["h", "1"]),
+            ("FAILOVER", &[]),
+        ] {
+            let kind = classify_dangerous(command, &args(rest));
+            assert_eq!(kind, Some(DangerKind::Replication), "{command}");
+            assert!(kind.is_some_and(|k| k.is_destructive()), "{command}");
+        }
     }
 
     #[test]

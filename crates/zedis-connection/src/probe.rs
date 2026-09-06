@@ -361,6 +361,8 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
         ServerCommand::FlushDb => &["FLUSHDB"],
         ServerCommand::HotkeysStart => &["HOTKEYS", "START", "METRICS", "1", "CPU"],
         ServerCommand::HSetEx => &["HSETEX", PROBE_KEY, "FIELDS", "1", "f", "v"],
+        ServerCommand::Replicaof => &["REPLICAOF", "NO", "ONE"],
+        ServerCommand::Failover => &["FAILOVER", "ABORT"],
         _ => &["PING"],
     }
 }

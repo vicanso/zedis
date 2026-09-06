@@ -105,9 +105,10 @@ pub use slot_stats::{SlotStatMetric, SlotStatRow};
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 
 pub use manager::{
-    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, HeatMetric, HeatProbe,
-    KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot, RedisClientDescription,
-    ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager, plan_reshard_slots,
+    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS, HeatMetric,
+    HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
+    RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager,
+    plan_reshard_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
@@ -118,6 +119,7 @@ pub use search::{
 // here so call sites keep using `crate::connection::Capability` unchanged.
 pub use zedis_core::capability::Capability;
 pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
+pub use zedis_core::replication::{ReplicationInfo, ReplicationReplica, ReplicationRole};
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
     if removed_count > 0 {

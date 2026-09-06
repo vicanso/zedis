@@ -51,6 +51,7 @@ pub mod json;
 pub mod key;
 pub mod list;
 pub mod persistence;
+pub mod replication;
 pub mod script_kill;
 pub mod sentinel;
 pub mod set;
@@ -1069,14 +1070,16 @@ impl ZedisServerState {
         self.supports(floors::EXPIRE_CONDITIONS)
     }
 
-    /// Whether the Topology panel is meaningful: true for multi-node
-    /// deployments (Cluster / Sentinel), false for Standalone where the panel
-    /// would only show placeholder text. Compares the `ServerType` Debug repr
-    /// surfaced on the description (the enum itself is crate-private to the
-    /// connection layer).
+    /// Whether the Topology panel has something to show: Cluster and
+    /// Sentinel get their node views, Standalone its primary / replica pair
+    /// (ADR 6) — only a server whose type is not known yet is left out.
+    /// Compares the `ServerType` Debug repr surfaced on the description (the
+    /// enum itself is crate-private to the connection layer).
     pub fn supports_topology(&self) -> bool {
-        let server_type = &self.nodes_description().server_type;
-        server_type.as_str() == "Cluster" || server_type.as_str() == "Sentinel"
+        matches!(
+            self.nodes_description().server_type.as_str(),
+            "Cluster" | "Sentinel" | "Standalone"
+        )
     }
 
     /// Get the currently selected server id

@@ -269,7 +269,7 @@ struct StatusBarServerState {
     /// commands are Redis 7+.
     supports_functions: bool,
     /// Mirrors `ZedisServerState::supports_topology()` — the Topology panel
-    /// only has content for Cluster / Sentinel, so it's hidden on Standalone.
+    /// is hidden only while the server type is still unknown.
     supports_topology: bool,
     /// True when `INFO` reports `role:slave` — the connection points at a
     /// replica, so writes will bounce with `-READONLY`. Drives the quiet
@@ -676,8 +676,8 @@ impl ZedisStatusBar {
     /// entries stay *visible but disabled* with a why-suffix (e.g.
     /// "module not loaded" / "requires Redis ≥ 7.0") so the feature is
     /// discoverable and the user knows what to enable. `supports_topology`
-    /// is the exception: a cluster topology isn't a feature you can turn
-    /// on, so that group is still hidden on Standalone.
+    /// is the exception: a topology isn't a feature you can turn on, so
+    /// that group is simply absent until the server type is known.
     fn render_tools_menu(this: PopupMenu, gates: &ToolsMenuGates, cx: &gpui::App) -> PopupMenu {
         let ToolsMenuGates {
             supports_search,
@@ -953,13 +953,12 @@ impl ZedisStatusBar {
             menu = menu.menu_with_icon_and_disabled(label, Icon::new(icon), Box::new(action), disabled);
         }
 
-        // ── Cluster ── (multi-node only; on Standalone the Topology panel is
-        // just a placeholder, so the whole group — separator and heading
-        // included — is hidden).
+        // ── Topology & Replication ── (absent only while the server type is
+        // unknown: the page adapts to Cluster / Sentinel / Standalone).
         if supports_topology {
-            menu = menu.separator().label(i18n_status_bar(cx, "group_cluster"));
-            // Topology adapts to Cluster / Sentinel. Re-uses `topology.title`
-            // as the label to avoid an extra 8-locale tooltip key.
+            menu = menu.separator().label(i18n_status_bar(cx, "group_topology"));
+            // Re-uses `topology.title` as the label to avoid an extra
+            // 8-locale tooltip key.
             menu = menu.menu_element_with_icon(
                 Icon::new(CustomIconName::Network),
                 Box::new(ServerToolsAction::Topology),

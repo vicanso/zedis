@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{get_connection_manager, get_server};
+use crate::connection::{ReplicationInfo, get_connection_manager, get_server};
 use crate::db::{insert_metrics_sample, list_metrics_samples, prune_metrics_history};
 use crate::helpers::{unix_ts, unix_ts_millis};
 use crate::states::{
@@ -302,6 +302,11 @@ pub struct RedisInfo {
     /// Per-master persistence rows. Empty on standalone (the top-level
     /// cards already cover the single node).
     pub persistence_nodes: Vec<PersistenceNodeSnapshot>,
+    /// The whole `INFO replication` section of the polled node — both
+    /// sides of a primary / replica link, for the Topology page's
+    /// standalone view. On a cluster / Sentinel entry the aggregate keeps
+    /// the first master's, which nothing reads.
+    pub replication: ReplicationInfo,
 }
 
 /// Aggregates metrics from multiple Redis Cluster nodes into a single global view.
@@ -437,7 +442,10 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
 }
 impl RedisInfo {
     pub fn parse(info_str: &str) -> Self {
-        let mut info = RedisInfo::default();
+        let mut info = RedisInfo {
+            replication: ReplicationInfo::parse(info_str),
+            ..Default::default()
+        };
         // `slave_n` lines and `master_repl_offset` may appear in either order
         // within `INFO replication`, so collect them first then compute byte
         // lag once both are known.
@@ -883,6 +891,7 @@ impl ZedisServerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection::ReplicationRole;
 
     #[test]
     fn parses_replicas_and_computes_lag_bytes() {
@@ -894,6 +903,10 @@ mod tests {
                    slave1:ip=10.0.0.5,port=6379,state=wait_bgsave,offset=600,lag=2\n";
         let info = RedisInfo::parse(raw);
         assert_eq!(info.replicas.len(), 2);
+        // The same section, kept whole for the Topology page.
+        assert_eq!(info.replication.role, ReplicationRole::Primary);
+        assert_eq!(info.replication.connected_replicas, 2);
+        assert_eq!(info.replication.replicas[1].lag_bytes, 400);
 
         let r0 = &info.replicas[0];
         assert_eq!(r0.addr.as_ref(), "10.0.0.4:6379");

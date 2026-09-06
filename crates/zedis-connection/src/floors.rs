@@ -96,6 +96,9 @@ pub const EXPIRE_CONDITIONS: Floor = Floor::since_fork("7.0.0");
 pub const EVAL_RO: Floor = Floor::since_fork("7.0.0");
 /// `CLIENT SETINFO LIB-NAME / LIB-VER` (Redis 7.2; every Valkey release).
 pub const CLIENT_SETINFO: Floor = Floor::since_fork("7.2.0");
+/// `FAILOVER [TO host port [FORCE]] [TIMEOUT ms] [ABORT]` — the coordinated
+/// standalone primary switch (Redis 6.2; every Valkey release).
+pub const FAILOVER: Floor = Floor::since_fork("6.2.0");
 /// `CLIENT PAUSE timeout WRITE|ALL` and `CLIENT UNPAUSE` (Redis 6.2).
 pub const CLIENT_PAUSE_WRITE: Floor = Floor::since_fork("6.2.0");
 /// `CLIENT KILL … USER name` (Redis 6.0, with ACL).
@@ -174,6 +177,13 @@ mod tests {
         assert!(CLIENT_KILL_MAXAGE.met_by(false, &v("7.4.0")));
         assert!(!CLIENT_KILL_MAXAGE.met_by(true, &v("7.2.9")));
         assert!(CLIENT_KILL_MAXAGE.met_by(true, &v("8.0.0")));
+    }
+
+    #[test]
+    fn failover_is_a_6_2_feature_every_valkey_has() {
+        assert!(!FAILOVER.met_by(false, &v("6.0.16")));
+        assert!(FAILOVER.met_by(false, &v("6.2.0")));
+        assert!(FAILOVER.met_by(true, &v("7.2.4")));
     }
 
     #[test]
