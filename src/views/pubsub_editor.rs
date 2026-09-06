@@ -16,26 +16,30 @@
 ///
 /// Provides a UI for subscribing to Redis channels via pattern-based subscriptions
 /// and publishing messages. Received messages are displayed in a scrollable table
-/// with timestamp, channel, and message columns.
+/// with timestamp, channel, and message columns, exportable as CSV / JSON. The
+/// Channels button opens the channel browser (`PUBSUB CHANNELS`), so a channel
+/// can be picked instead of typed.
 use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
 use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
 use crate::error::Error;
-use crate::helpers::{get_mono_font_family, now_datetime};
+use crate::helpers::{build_csv, get_mono_font_family, now_datetime};
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
-use crate::views::unavailable_chip;
+use crate::views::{ChannelPick, export_to_file, open_pubsub_channels_dialog, unavailable_chip};
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon,
+    ActiveTheme, Disableable, Icon, WindowExt,
     button::Button,
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    menu::{DropdownMenu, PopupMenuItem},
     table::{DataTable, TableState},
     v_flex,
 };
 use redis::aio::PubSub;
+use std::rc::Rc;
 use tracing::{error, info};
 use zedis_ui::{TextColumn, ZedisTextTable};
 
@@ -43,6 +47,10 @@ use zedis_ui::{TextColumn, ZedisTextTable};
 /// view's `MAX_RECORDS`) so subscribing to a hot channel can't grow
 /// memory without bound; matches the Keyspace-notifications history cap.
 const MAX_MESSAGES: usize = 1_000;
+
+/// The table's columns, in order — also the CSV header / JSON keys of an
+/// export.
+const COLUMN_KEYS: [&str; 3] = ["timestamp", "channel", "message"];
 
 /// A single message received from a Redis Pub/Sub channel.
 #[derive(Clone, Debug)]
@@ -360,6 +368,89 @@ impl ZedisPubsubEditor {
         cx.notify();
     }
 
+    /// Opens the channel browser; a picked channel replaces the running
+    /// subscription (the dialog closes first, so the editor's input is
+    /// what the user sees change).
+    fn open_channels_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = cx.entity().downgrade();
+        let on_pick: ChannelPick = Rc::new(move |channel, window, cx| {
+            window.close_dialog(cx);
+            if let Some(editor) = editor.upgrade() {
+                editor.update(cx, |this, cx| this.subscribe_to(channel, window, cx));
+            }
+        });
+        open_pubsub_channels_dialog(self.server_state.clone(), self.sharded, on_pick, window, cx);
+    }
+
+    /// Subscribes to exactly `channel`, dropping the current subscription
+    /// (the input is disabled while one runs, so this is the only way in).
+    fn subscribe_to(&mut self, channel: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.subscribe_task.take();
+        self.subscribing = false;
+        self.subscribe_error = None;
+        self.subscribe_input_state.update(cx, |state, cx| {
+            state.set_value(channel, window, cx);
+        });
+        self.handle_subscribe(window, cx);
+    }
+
+    fn handle_clear(&mut self, cx: &mut Context<Self>) {
+        self.table_state.update(cx, |state, _| state.delegate_mut().clear());
+        self.message_count = 0;
+        cx.notify();
+    }
+
+    /// Every retained message, newest first — what the table shows.
+    fn rows_snapshot(&self, cx: &Context<Self>) -> Vec<Vec<SharedString>> {
+        self.table_state.read(cx).delegate().all_rows()
+    }
+
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let rows = self.rows_snapshot(cx);
+        if rows.is_empty() {
+            return;
+        }
+        let data: Vec<Vec<String>> = rows
+            .iter()
+            .map(|cells| cells.iter().map(|c| c.to_string()).collect())
+            .collect();
+        let csv = build_csv(&COLUMN_KEYS, &data);
+        self.save_export(csv.into_bytes(), "pubsub.csv", true, cx);
+    }
+
+    fn export_json(&mut self, cx: &mut Context<Self>) {
+        let rows = self.rows_snapshot(cx);
+        if rows.is_empty() {
+            return;
+        }
+        let values: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|cells| {
+                let object: serde_json::Map<String, serde_json::Value> = COLUMN_KEYS
+                    .iter()
+                    .zip(cells)
+                    .map(|(key, cell)| (key.to_string(), serde_json::Value::String(cell.to_string())))
+                    .collect();
+                serde_json::Value::Object(object)
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
+        self.save_export(json.into_bytes(), "pubsub.json", false, cx);
+    }
+
+    /// Shared save flow for the exports — mirrors the Monitor panel.
+    fn save_export(&mut self, bytes: Vec<u8>, suggested: &'static str, is_csv: bool, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+        let (success_key, error_key) = if is_csv {
+            ("csv_exported", "csv_export_failed")
+        } else {
+            ("json_exported", "json_export_failed")
+        };
+        let success = i18n_common(cx, success_key);
+        let error = i18n_common(cx, error_key);
+        export_to_file(cx, server_state, bytes, suggested, success, error);
+    }
+
     /// Publishes a message to the specified channel via the server state.
     /// Does nothing if either the channel or message field is empty.
     fn handle_publish(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -380,12 +471,33 @@ impl ZedisPubsubEditor {
     }
 
     /// Renders the top toolbar: a channel pattern input, a Sharded toggle
-    /// (Redis 7+ only), and a subscribe/unsubscribe button.
+    /// (Redis 7+ only), the channel browser, a subscribe/unsubscribe
+    /// button, and — for the message list — Export and Clear.
     /// While an active subscription exists the input is disabled and the button switches
     /// to "unsubscribe".
     fn render_subscribe_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_subscriptions = self.subscribe_task.is_some();
+        let has_messages = self.message_count > 0;
         let supports_sharded = self.server_state.read(cx).supports_sharded_pubsub();
+        // PUBSUB CHANNELS missing / denied: name the reason where the
+        // button was, the way the publish bar does.
+        let channels_control = match self.server_state.read(cx).command_block(ServerCommand::PubsubChannels) {
+            Some(status) => unavailable_chip(cx, ServerCommand::PubsubChannels, status).into_any_element(),
+            None => Button::new("pubsub-channels-btn")
+                .outline()
+                .icon(Icon::new(CustomIconName::ListCheck))
+                .label(i18n_pubsub_editor(cx, "channels"))
+                .tooltip(i18n_pubsub_editor(cx, "channels_tooltip"))
+                .disabled(self.subscribing)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_channels_dialog(window, cx);
+                }))
+                .into_any_element(),
+        };
+        // The menu items call back into the editor directly rather than
+        // dispatching an action: focus may sit in the key tree, which the
+        // editor's element tree does not contain.
+        let exporter = cx.entity().downgrade();
         let subscribe_btn = if has_subscriptions {
             Button::new("pubsub-unsubscribe-btn")
                 .outline()
@@ -446,7 +558,44 @@ impl ZedisPubsubEditor {
                         })),
                 )
             })
+            .child(channels_control)
             .child(subscribe_btn)
+            .child(div().w(px(1.)).h_5().flex_shrink_0().bg(cx.theme().border))
+            .child(
+                Button::new("pubsub-export-btn")
+                    .outline()
+                    .icon(Icon::new(CustomIconName::Download))
+                    .label(i18n_common(cx, "export"))
+                    .disabled(!has_messages)
+                    .dropdown_menu(move |menu, _window, cx| {
+                        let csv = exporter.clone();
+                        let json = exporter.clone();
+                        menu.item(
+                            PopupMenuItem::new(i18n_common(cx, "export_csv")).on_click(move |_, _window, cx| {
+                                if let Some(editor) = csv.upgrade() {
+                                    editor.update(cx, |this, cx| this.export_csv(cx));
+                                }
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new(i18n_common(cx, "export_json")).on_click(move |_, _window, cx| {
+                                if let Some(editor) = json.upgrade() {
+                                    editor.update(cx, |this, cx| this.export_json(cx));
+                                }
+                            }),
+                        )
+                    }),
+            )
+            .child(
+                Button::new("pubsub-clear-btn")
+                    .outline()
+                    .icon(Icon::new(CustomIconName::Eraser))
+                    .label(i18n_pubsub_editor(cx, "clear"))
+                    .disabled(!has_messages)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.handle_clear(cx);
+                    })),
+            )
     }
 
     /// Renders the bottom toolbar: channel input, message input, and a publish button.

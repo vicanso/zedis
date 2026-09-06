@@ -30,13 +30,14 @@ use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
     CommandStatus, ConflictMode, ExpireCondition, FieldTtl, ImportFormat, KillFilter, KillOutcome, KillTarget,
-    PauseMode, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, RestoreStatus,
-    SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header,
-    dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_search, get_connection_manager, get_server,
-    get_servers, kill_filter_commands, kill_running, open_single_connection, parse_readable_entries, pause_args,
-    probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers,
-    sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set,
-    sniff_import_format, split_acl_rules, write_hash_field, write_readable_chunk,
+    PauseMode, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer,
+    RestoreStatus, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user,
+    acl_set_user, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_search,
+    get_connection_manager, get_server, get_servers, kill_filter_commands, kill_running, open_single_connection,
+    parse_readable_entries, pause_args, probe_server_features, read_readable_chunk, rename_hash_field,
+    restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters,
+    sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, write_hash_field,
+    write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -1258,6 +1259,97 @@ fn standalone_client_pause_and_filtered_kill() {
 }
 
 // ── tls ──────────────────────────────────────────────────────────────────
+
+/// The channel browser: a channel is listed with its subscriber count
+/// only while someone is subscribed to it, filtered by the glob, and the
+/// sharded pair (`SHARDCHANNELS` / `SHARDNUMSUB`) sees shard subscriptions
+/// — on every server that has sharded Pub/Sub at all.
+#[test]
+#[ignore]
+fn standalone_pubsub_channels_lists_the_subscribed_ones() {
+    smol::block_on(async {
+        let id = register(server("it-pubsub-channels", standalone())).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let channel = unique("pubsub");
+
+        let none = client
+            .pubsub_channels("zedis:it:pubsub:*", false)
+            .await
+            .expect("pubsub channels");
+        assert!(
+            !none.channels.iter().any(|c| c.name == channel),
+            "nobody is subscribed yet: {none:?}"
+        );
+
+        let mut subscriber = get_connection_manager()
+            .get_pubsub_connection(&id)
+            .await
+            .expect("pubsub connection");
+        subscriber.subscribe(&channel).await.expect("subscribe");
+        subscriber
+            .psubscribe("zedis:it:pubsub:pattern:*")
+            .await
+            .expect("psubscribe");
+
+        let listed = client
+            .pubsub_channels("zedis:it:pubsub:*", false)
+            .await
+            .expect("pubsub channels");
+        assert_eq!(listed.nodes, 1);
+        assert_eq!(
+            listed.channels.iter().find(|c| c.name == channel),
+            Some(&PubsubChannel {
+                name: channel.clone(),
+                subscribers: 1
+            }),
+            "the subscribed channel is listed once with one subscriber: {listed:?}"
+        );
+        assert!(
+            listed.pattern_subscriptions.expect("NUMPAT in classic mode") >= 1,
+            "the pattern subscription counts: {listed:?}"
+        );
+        let other = client
+            .pubsub_channels("zedis:it:elsewhere:*", false)
+            .await
+            .expect("pubsub channels");
+        assert!(other.channels.is_empty(), "the glob filters: {other:?}");
+
+        if supports(&id, floors::SHARDED_PUBSUB).await {
+            let shard_channel = unique("spubsub");
+            let mut shard_subscriber = get_connection_manager()
+                .get_sharded_pubsub(&id)
+                .await
+                .expect("sharded pubsub");
+            shard_subscriber
+                .ssubscribe(&[shard_channel.as_str()])
+                .await
+                .expect("ssubscribe");
+            let shards = client
+                .pubsub_channels("zedis:it:spubsub:*", true)
+                .await
+                .expect("shard channels");
+            assert_eq!(
+                shards.channels,
+                vec![PubsubChannel {
+                    name: shard_channel,
+                    subscribers: 1
+                }],
+                "the shard subscription is listed: {shards:?}"
+            );
+            assert!(shards.pattern_subscriptions.is_none(), "no NUMPAT in sharded mode");
+            let classic = client
+                .pubsub_channels("zedis:it:spubsub:*", false)
+                .await
+                .expect("pubsub channels");
+            assert!(
+                classic.channels.is_empty(),
+                "a shard channel is not a classic one: {classic:?}"
+            );
+            drop(shard_subscriber);
+        }
+        drop(subscriber);
+    });
+}
 
 #[test]
 #[ignore]

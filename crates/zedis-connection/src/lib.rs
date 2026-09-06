@@ -106,8 +106,8 @@ pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_cr
 
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandStat, ExpireCondition, HeatMetric, HeatProbe,
-    KeyMemoryUsage, MatchLocation, RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound,
-    get_connection_manager, plan_reshard_slots,
+    KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot, RedisClientDescription,
+    ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager, plan_reshard_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

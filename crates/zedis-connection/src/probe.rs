@@ -314,8 +314,9 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::ScriptExists => {
             c.arg("EXISTS").arg(PROBE_SHA);
         }
-        ServerCommand::PubsubNumpat => {
-            c.arg("NUMPAT");
+        // The channel browser's listing, filtered down to nothing.
+        ServerCommand::PubsubChannels => {
+            c.arg("CHANNELS").arg(PROBE_KEY);
         }
         ServerCommand::ClusterInfo => {
             c.arg("INFO");
