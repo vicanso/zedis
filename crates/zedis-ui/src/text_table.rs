@@ -114,8 +114,9 @@ pub struct CellAction {
     pub on_click: CellClick,
 }
 
-/// `(column index, the row's cells)` → an action for that cell, or none.
-pub type CellActionProvider = Rc<dyn Fn(usize, &[SharedString]) -> Option<CellAction>>;
+/// `(column index, the row's cells)` → the actions for that cell, in the
+/// order they are drawn before the copy button. Empty for a plain cell.
+pub type CellActionProvider = Rc<dyn Fn(usize, &[SharedString]) -> Vec<CellAction>>;
 
 /// How a text cell is drawn beyond its text.
 #[derive(Default)]
@@ -444,16 +445,19 @@ impl TableDelegate for ZedisTextTable {
             return element;
         }
         let column = &self.gpui_columns[col_ix];
-        let (value, action, style): (SharedString, Option<CellAction>, CellStyle) = match self.visible_row(row_ix) {
+        let (value, actions, style): (SharedString, Vec<CellAction>, CellStyle) = match self.visible_row(row_ix) {
             Some(row) => (
                 row.get(col_ix).cloned().unwrap_or_else(|| "--".into()),
-                self.cell_action.as_ref().and_then(|provider| provider(col_ix, row)),
+                self.cell_action
+                    .as_ref()
+                    .map(|provider| provider(col_ix, row))
+                    .unwrap_or_default(),
                 self.cell_style
                     .as_ref()
                     .map(|provider| provider(col_ix, row, cx))
                     .unwrap_or_default(),
             ),
-            None => ("--".into(), None, CellStyle::default()),
+            None => ("--".into(), Vec::new(), CellStyle::default()),
         };
         let group_name: SharedString = format!("text-td-{row_ix}-{col_ix}").into();
         let copied_message = self.copied_message.clone();
@@ -496,16 +500,14 @@ impl TableDelegate for ZedisTextTable {
                     .group_hover(group_name, |style| style.visible())
                     .flex_none()
                     .on_click(|_, _, cx: &mut App| cx.stop_propagation())
-                    .when_some(action, |this, action| {
+                    .children(actions.into_iter().enumerate().map(|(ix, action)| {
                         let on_click = action.on_click.clone();
-                        this.child(
-                            Button::new(("text-td-action", cell_id))
-                                .ghost()
-                                .icon(action.icon)
-                                .tooltip(action.tooltip.clone())
-                                .on_click(move |_, window, cx: &mut App| on_click(window, cx)),
-                        )
-                    })
+                        Button::new(("text-td-action", cell_id * 10 + ix))
+                            .ghost()
+                            .icon(action.icon)
+                            .tooltip(action.tooltip.clone())
+                            .on_click(move |_, window, cx: &mut App| on_click(window, cx))
+                    }))
                     .child(copy_button),
             )
             .into_any_element()

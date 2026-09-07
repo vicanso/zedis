@@ -160,6 +160,10 @@ pub struct KeyMemoryUsage {
     pub memory_usage: u64,
     // key type
     pub key_type: String,
+    /// `OBJECT ENCODING` — how the value is stored (`listpack`, `hashtable`,
+    /// `intset`, `embstr`, …). Empty when the caller did not ask for it or
+    /// the server refused the command.
+    pub encoding: String,
     // ttl in seconds
     pub ttl: i64,
     // heat metric (FREQ or IDLETIME or unknown)
@@ -650,6 +654,7 @@ mod sharded_pubsub;
 mod slots;
 
 pub use commandlog::CommandLogKind;
+pub(crate) use commandlog::MAX_COMMAND_LOG_ENTRIES;
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
 pub use replication::FAILOVER_TIMEOUT_MS;
 pub use sharded_pubsub::ShardedPubSub;

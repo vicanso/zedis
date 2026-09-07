@@ -29,6 +29,14 @@ use std::cmp::Reverse;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// How many entries one log is read with. `SLOWLOG GET` / `COMMANDLOG GET`
+/// default to **10**, far below the log's own capacity
+/// (`slowlog-max-len` / `commandlog-*-max-len`, 128 by default) — and the
+/// panel filters, ranks and exports these rows, so ten of them is not a
+/// view of the log. This reads the whole log on a default server and caps
+/// the reply on one configured to keep tens of thousands.
+pub(crate) const MAX_COMMAND_LOG_ENTRIES: i64 = 1_000;
+
 /// One of the three `COMMANDLOG` logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommandLogKind {
@@ -73,14 +81,20 @@ impl CommandLogKind {
 impl RedisClient {
     /// The entries of one log on every master, newest first. The slow log
     /// goes through `SLOWLOG GET` (every server); a size log through
-    /// `COMMANDLOG GET -1 <type>` — every entry, the log's own `max-len`
-    /// caps it.
+    /// `COMMANDLOG GET <type>`. Both read up to
+    /// [`MAX_COMMAND_LOG_ENTRIES`].
     pub async fn get_command_logs(&self, kind: CommandLogKind) -> Result<Vec<SlowLogEntry>> {
         if kind.is_slow() {
             return self.get_slow_logs().await;
         }
         let (_, per_node): (_, Vec<Vec<SlowLogEntry>>) = self
-            .query_async_masters(vec![cmd("COMMANDLOG").arg("GET").arg(-1).arg(kind.wire()).clone()])
+            .query_async_masters(vec![
+                cmd("COMMANDLOG")
+                    .arg("GET")
+                    .arg(MAX_COMMAND_LOG_ENTRIES)
+                    .arg(kind.wire())
+                    .clone(),
+            ])
             .await?;
         let mut logs: Vec<SlowLogEntry> = per_node.into_iter().flatten().collect();
         logs.sort_unstable_by_key(|entry| Reverse(entry.timestamp));

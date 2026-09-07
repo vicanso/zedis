@@ -32,7 +32,9 @@ use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_
 /// 1. Top 20 prefix groups by estimated memory (keys containing the separator)
 /// 2. Top 20 single keys by memory / freq / idletime (keys without the separator)
 use crate::views::{export_to_file, open_key_in_editor, search_keys_in_tree};
-use gpui::{ClipboardItem, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, rems};
+use gpui::{
+    ClipboardItem, Entity, Pixels, SharedString, Subscription, Task, Window, div, prelude::*, px, relative, rems,
+};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu;
@@ -115,6 +117,12 @@ fn table_height(row_count: usize) -> Pixels {
 /// A row in the prefix-group table.
 #[derive(Clone, Debug)]
 struct PrefixRow {
+    /// The prefix path without the wildcard ("user:session") — what a
+    /// drill-down takes as its new root.
+    path: SharedString,
+    /// Whether the map holds a level below this path, i.e. whether the row
+    /// can be drilled into.
+    has_children: bool,
     /// e.g. "user:*"
     prefix: SharedString,
     /// Estimated key count (sampled × 1/ratio)
@@ -312,6 +320,23 @@ pub struct ZedisMemoryAnalysis {
     /// Rows came from an offline RDB file: the tables' jump actions read
     /// this at click time and stay hidden, since there is no live key.
     offline: Rc<Cell<bool>>,
+    /// Every prefix path of the finished run, one entry per level — what
+    /// the drill-down re-slices. Empty while a run is in flight.
+    prefix_map: HashMap<String, PrefixStats>,
+    /// The path the prefix table is currently showing the children of;
+    /// empty is the top level.
+    prefix_root: SharedString,
+    /// Whether the prefix rows can be drilled into — read by the table's
+    /// action provider at click time, false until a run has finished and
+    /// left its map behind.
+    drillable: Rc<Cell<bool>>,
+    /// `(type, encoding)` shares of the sample, and the rows built from
+    /// them for the breakdown card.
+    type_map: HashMap<(String, String), TypeStats>,
+    type_rows: Vec<TypeShareRow>,
+    /// Breakdown card mode: one row per `(type, encoding)` pair instead of
+    /// one per type.
+    type_by_encoding: bool,
     status: AnalysisStatus,
     prefix_count: usize,
     single_count: usize,
@@ -393,9 +418,18 @@ impl ZedisMemoryAnalysis {
         let mut subscriptions = Vec::new();
 
         let offline = Rc::new(Cell::new(false));
+        let drillable = Rc::new(Cell::new(false));
+        let view = cx.entity().downgrade();
         let prefix_table = cx.new(|cx| {
             TableState::new(
-                prefix_table(server_state.clone(), offline.clone(), window, cx),
+                prefix_table(
+                    server_state.clone(),
+                    offline.clone(),
+                    drillable.clone(),
+                    view,
+                    window,
+                    cx,
+                ),
                 window,
                 cx,
             )
@@ -504,6 +538,12 @@ impl ZedisMemoryAnalysis {
             should_rebuild_sort_items: None,
             single_groups: SingleKeyTopGroups::new(TOP_N),
             prefix_rows: Vec::new(),
+            prefix_map: HashMap::new(),
+            prefix_root: SharedString::default(),
+            drillable,
+            type_map: HashMap::new(),
+            type_rows: Vec::new(),
+            type_by_encoding: false,
             single_rows: Vec::new(),
             offline,
             server_state,
@@ -646,6 +686,7 @@ impl ZedisMemoryAnalysis {
             &prefix_rows,
             &single_rows,
             &self.ttl_histogram,
+            &self.type_rows,
         );
 
         self.ai_status = AiStatus::Running;
@@ -698,10 +739,86 @@ impl ZedisMemoryAnalysis {
         self.recommendations.clear();
 
         self.offline.set(offline);
+        // A run in flight has no map to drill through yet.
+        self.drillable.set(false);
+        self.prefix_map.clear();
+        self.prefix_root = SharedString::default();
+        self.type_map.clear();
+        self.type_rows.clear();
         self.prefix_rows.clear();
         self.single_rows.clear();
         self.prefix_table.update(cx, |s, _| s.delegate_mut().clear());
         self.single_table.update(cx, |s, _| s.delegate_mut().clear());
+    }
+
+    /// What the displayed numbers must be scaled by: the run's sample ratio
+    /// online, 1.0 for an RDB file (every key in it was read).
+    fn row_ratio(&self) -> f32 {
+        if self.rdb_file.is_some() { 1.0 } else { self.ratio }
+    }
+
+    /// Show the children of `root` in the prefix table (empty = top level).
+    pub(super) fn set_prefix_root(&mut self, root: SharedString, cx: &mut gpui::Context<Self>) {
+        self.prefix_root = root;
+        let separator = self.server_state.read(cx).key_separator().to_string();
+        let rows = build_prefix_rows(&self.prefix_map, self.row_ratio(), &separator, &self.prefix_root);
+        self.prefix_count = rows.len();
+        self.prefix_table.update(cx, |state, _| {
+            state
+                .delegate_mut()
+                .set_rows(rows.iter().map(PrefixRow::cells).collect());
+        });
+        self.prefix_rows = rows;
+        cx.notify();
+    }
+
+    /// The breadcrumb's steps: every ancestor of the current root, each with
+    /// the path that returns to it. Empty at the top level.
+    pub(super) fn prefix_breadcrumb(&self, cx: &gpui::App) -> Vec<(SharedString, SharedString)> {
+        if self.prefix_root.is_empty() {
+            return Vec::new();
+        }
+        let separator = self.server_state.read(cx).key_separator().to_string();
+        if separator.is_empty() {
+            return vec![(self.prefix_root.clone(), self.prefix_root.clone())];
+        }
+        let mut steps = Vec::new();
+        let mut path = String::new();
+        for segment in self.prefix_root.split(separator.as_str()) {
+            if !path.is_empty() {
+                path.push_str(&separator);
+            }
+            path.push_str(segment);
+            steps.push((
+                SharedString::from(segment.to_string()),
+                SharedString::from(path.clone()),
+            ));
+        }
+        steps
+    }
+
+    /// Whether the sample carries encodings at all: a server whose probe
+    /// found `OBJECT ENCODING` missing or denied leaves every one empty, and
+    /// then there is no second cut to offer.
+    pub(super) fn has_encodings(&self) -> bool {
+        self.type_map.keys().any(|(_, encoding)| !encoding.is_empty())
+    }
+
+    /// Rebuild the breakdown rows — after a scan round, or when the card's
+    /// type / encoding toggle flips.
+    fn rebuild_type_rows(&mut self, cx: &gpui::App) {
+        let unknown = i18n_memory_analysis(cx, "types_unknown");
+        let by_encoding = self.type_by_encoding && self.has_encodings();
+        self.type_rows = build_type_rows(&self.type_map, self.row_ratio(), by_encoding, &unknown);
+    }
+
+    pub(super) fn set_type_by_encoding(&mut self, by_encoding: bool, cx: &mut gpui::Context<Self>) {
+        if self.type_by_encoding == by_encoding {
+            return;
+        }
+        self.type_by_encoding = by_encoding;
+        self.rebuild_type_rows(cx);
+        cx.notify();
     }
 
     /// The live sampler's hard dependencies (`SCAN` + `MEMORY USAGE`) — the
@@ -721,6 +838,9 @@ impl ZedisMemoryAnalysis {
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
+        // One extra O(1) command per sampled key, skipped entirely on a
+        // server the probe found unable to run it.
+        let with_encoding = server_state.features().is_usable(ServerCommand::ObjectEncoding);
         let prefix_table = self.prefix_table.clone();
         let single_table = self.single_table.clone();
         let key_separator = self.server_state.read(cx).key_separator().to_string();
@@ -785,7 +905,7 @@ impl ZedisMemoryAnalysis {
                         let start = Instant::now();
                         let client = get_connection_manager().get_client(&server_id, db).await?;
                         let (count, new_cursors, keys_memory_usage) = client
-                            .sample_scan_memory_usage(ratio, scan_count, cursors_clone, heat)
+                            .sample_scan_memory_usage(ratio, scan_count, cursors_clone, heat, with_encoding)
                             .await?;
                         let base_sleep = start.elapsed().mul_f64(redis_process_ratio);
                         let sleep_duration = base_sleep.clamp(min_sleep, max_sleep);
@@ -816,6 +936,7 @@ impl ZedisMemoryAnalysis {
                             memory_bytes: item.memory_usage,
                             ttl: item.ttl,
                             key_type: &item.key_type,
+                            encoding: &item.encoding,
                             heat: item.heat,
                         },
                         heat,
@@ -830,16 +951,21 @@ impl ZedisMemoryAnalysis {
                     99
                 };
                 let progress_text: SharedString = format!("{}%", pct).into();
-                let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator);
+                // A run always shows the top level: the drill-down needs the
+                // finished map, which only the final update hands over.
+                let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator, "");
                 let pc = prefix_rows.len();
                 let groups_snapshot = acc.single_groups.clone();
                 let ttl_snapshot = acc.ttl_histogram.clone();
+                let type_snapshot = acc.type_map.clone();
                 let _ = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.progress_value = pct;
                     this.prefix_count = pc;
                     this.single_groups = groups_snapshot;
                     this.ttl_histogram = ttl_snapshot;
+                    this.type_map = type_snapshot;
+                    this.rebuild_type_rows(cx);
                     let mode = this.sort_mode;
                     let single_rows = this.single_groups.rows_for(mode);
                     this.single_count = single_rows.len();
@@ -864,10 +990,12 @@ impl ZedisMemoryAnalysis {
             }
 
             // Final update
-            let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator);
+            let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator, "");
             let pc = prefix_rows.len();
             let final_groups = acc.single_groups;
             let final_histogram = acc.ttl_histogram;
+            let final_prefix_map = acc.prefix_map;
+            let final_type_map = acc.type_map;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(err) = scan_error {
                     // Surface the failure instead of a fake "100% / Finished".
@@ -896,6 +1024,11 @@ impl ZedisMemoryAnalysis {
                 this.prefix_count = pc;
                 this.single_groups = final_groups;
                 this.ttl_histogram = final_histogram;
+                this.prefix_map = final_prefix_map;
+                this.type_map = final_type_map;
+                this.rebuild_type_rows(cx);
+                // The map is on the view now, so rows can be drilled into.
+                this.drillable.set(true);
                 let mode = this.sort_mode;
                 let single_rows = this.single_groups.rows_for(mode);
                 this.single_count = single_rows.len();
@@ -1050,7 +1183,8 @@ impl ZedisMemoryAnalysis {
                             key: &entry.key,
                             memory_bytes: entry.serialized_bytes,
                             ttl,
-                            key_type: entry.key_type,
+                            key_type: entry.key_type.as_ref(),
+                            encoding: entry.encoding,
                             heat: HeatMetric::None,
                         },
                         HeatProbe::None,
@@ -1064,14 +1198,17 @@ impl ZedisMemoryAnalysis {
                     99
                 };
                 let progress_text: SharedString = format!("{}%", pct).into();
-                let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator);
+                let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator, "");
                 let pc = prefix_rows.len();
                 let groups_snapshot = acc.single_groups.clone();
                 let ttl_snapshot = acc.ttl_histogram.clone();
+                let type_snapshot = acc.type_map.clone();
                 let updated = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.progress_value = pct;
                     this.prefix_count = pc;
+                    this.type_map = type_snapshot;
+                    this.rebuild_type_rows(cx);
                     this.single_groups = groups_snapshot;
                     this.ttl_histogram = ttl_snapshot;
                     let mode = this.sort_mode;
@@ -1095,10 +1232,12 @@ impl ZedisMemoryAnalysis {
                 }
             }
 
-            let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator);
+            let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator, "");
             let pc = prefix_rows.len();
             let final_groups = acc.single_groups;
             let final_histogram = acc.ttl_histogram;
+            let final_prefix_map = acc.prefix_map;
+            let final_type_map = acc.type_map;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(err) = parse_error {
                     // Keep whatever parsed before the corruption point.
@@ -1116,6 +1255,10 @@ impl ZedisMemoryAnalysis {
                 this.prefix_count = pc;
                 this.single_groups = final_groups;
                 this.ttl_histogram = final_histogram;
+                this.prefix_map = final_prefix_map;
+                this.type_map = final_type_map;
+                this.rebuild_type_rows(cx);
+                this.drillable.set(true);
                 let mode = this.sort_mode;
                 let single_rows = this.single_groups.rows_for(mode);
                 this.single_count = single_rows.len();
@@ -1231,10 +1374,12 @@ impl ZedisMemoryAnalysis {
 #[cfg(test)]
 mod tests {
     use super::{
-        PrefixRow, RecoKind, RecoSeverity, SingleKeyRow, TtlHistogram, build_markdown_report, build_recommendations,
-        format_memory, format_thousands, md_cell,
+        AnalysisAccumulators, KeySample, PrefixRow, RecoKind, RecoSeverity, SingleKeyRow, TtlHistogram, TypeStats,
+        build_markdown_report, build_prefix_rows, build_recommendations, build_type_rows, format_memory,
+        format_thousands, md_cell,
     };
-    use crate::connection::HeatMetric;
+    use crate::connection::{HeatMetric, HeatProbe};
+    use std::collections::HashMap;
 
     const MIB: u64 = 1024 * 1024;
 
@@ -1253,6 +1398,8 @@ mod tests {
 
     fn prefix_row(prefix: &str, key_count: u64, memory_bytes: u64, types: &str) -> PrefixRow {
         PrefixRow {
+            path: prefix.to_string().into(),
+            has_children: false,
             prefix: prefix.to_string().into(),
             key_count,
             display_key_count: format_thousands(key_count).into(),
@@ -1266,6 +1413,113 @@ mod tests {
         }
     }
 
+    /// One key folded into the accumulators, all defaults but the shape
+    /// under test.
+    fn fold(acc: &mut AnalysisAccumulators, key: &str, bytes: u64) {
+        acc.add(
+            KeySample {
+                key,
+                memory_bytes: bytes,
+                ttl: -1,
+                key_type: "string",
+                encoding: "embstr",
+                heat: HeatMetric::None,
+            },
+            HeatProbe::None,
+            ":",
+        );
+    }
+
+    /// Every ancestor path is counted, so drilling into a prefix is a
+    /// filter over the same map — and it stops at `MAX_PREFIX_DEPTH`.
+    #[test]
+    fn prefixes_accumulate_at_every_level_and_slice_by_root() {
+        let mut acc = AnalysisAccumulators::new();
+        for (key, bytes) in [
+            ("user:session:eu:1", 100),
+            ("user:session:us:2", 200),
+            ("user:profile:3", 400),
+            ("cache:page:4", 800),
+            ("nosep", 1600),
+        ] {
+            fold(&mut acc, key, bytes);
+        }
+
+        let top = build_prefix_rows(&acc.prefix_map, 1.0, ":", "");
+        assert_eq!(
+            top.iter().map(|r| r.prefix.as_ref()).collect::<Vec<_>>(),
+            vec!["cache:*", "user:*"],
+            "ranked by memory, and a key without the separator joins no group"
+        );
+        let user = top.iter().find(|r| r.path == "user").expect("user row");
+        assert_eq!(user.memory_bytes, 700, "every key below the prefix counts once");
+        assert!(user.has_children);
+
+        let level2 = build_prefix_rows(&acc.prefix_map, 1.0, ":", "user");
+        assert_eq!(
+            level2.iter().map(|r| r.prefix.as_ref()).collect::<Vec<_>>(),
+            vec!["user:profile:*", "user:session:*"]
+        );
+
+        let level3 = build_prefix_rows(&acc.prefix_map, 1.0, ":", "user:session");
+        assert_eq!(
+            level3.iter().map(|r| r.prefix.as_ref()).collect::<Vec<_>>(),
+            vec!["user:session:us:*", "user:session:eu:*"]
+        );
+        assert!(
+            level3.iter().all(|r| !r.has_children),
+            "the third level is the last one kept, so nothing drills deeper"
+        );
+        assert!(!acc.prefix_map.contains_key("user:session:us:2"));
+    }
+
+    #[test]
+    fn type_rows_merge_encodings_and_rank_by_memory() {
+        let mut map: HashMap<(String, String), TypeStats> = HashMap::new();
+        map.insert(
+            ("hash".to_string(), "listpack".to_string()),
+            TypeStats {
+                key_count: 10,
+                memory_bytes: 100,
+            },
+        );
+        map.insert(
+            ("hash".to_string(), "hashtable".to_string()),
+            TypeStats {
+                key_count: 2,
+                memory_bytes: 900,
+            },
+        );
+        // A server that would not answer OBJECT ENCODING.
+        map.insert(
+            ("string".to_string(), String::new()),
+            TypeStats {
+                key_count: 5,
+                memory_bytes: 500,
+            },
+        );
+
+        let by_type = build_type_rows(&map, 1.0, false, "unknown");
+        assert_eq!(
+            by_type.iter().map(|r| r.label.as_ref()).collect::<Vec<_>>(),
+            vec!["hash", "string"]
+        );
+        assert_eq!(by_type[0].key_count, 12);
+        assert_eq!(by_type[0].memory_bytes, 1000);
+        assert!((by_type[0].share_pct - 1000.0 / 15.0).abs() < 0.1);
+
+        let by_encoding = build_type_rows(&map, 1.0, true, "unknown");
+        assert_eq!(
+            by_encoding.iter().map(|r| r.label.as_ref()).collect::<Vec<_>>(),
+            vec!["hash · hashtable", "string · unknown", "hash · listpack"]
+        );
+
+        // Sampling scales the figures back up to the whole keyspace.
+        let scaled = build_type_rows(&map, 0.5, false, "unknown");
+        assert_eq!(scaled[0].memory_bytes, 2000);
+        assert_eq!(scaled[0].key_count, 24);
+    }
+
     #[test]
     fn md_cell_escapes_pipes_and_newlines() {
         assert_eq!(md_cell("a|b\nc"), "a\\|b c");
@@ -1276,7 +1530,7 @@ mod tests {
         let mut ttl = TtlHistogram::default();
         ttl.add(-1);
         ttl.add(30);
-        let md = build_markdown_report(Some(1_234), "allkeys-lru", 1.0, &[], &[], &ttl);
+        let md = build_markdown_report(Some(1_234), "allkeys-lru", 1.0, &[], &[], &ttl, &[]);
         assert!(md.contains("# Redis Memory Analysis Report"));
         assert!(md.contains("Total keys (DBSIZE): 1,234"));
         assert!(md.contains("maxmemory-policy: `allkeys-lru`"));

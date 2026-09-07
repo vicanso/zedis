@@ -17,6 +17,21 @@
 
 use super::*;
 
+/// How many levels of prefix the map keeps. `user:session:eu:42`
+/// contributes `user`, `user:session` and `user:session:eu`; a fourth level
+/// is almost always the id itself, which costs one map entry per key and
+/// tells nobody anything.
+pub(super) const MAX_PREFIX_DEPTH: usize = 3;
+
+/// Cap on distinct prefix paths. A keyspace whose *first* segment is an id
+/// (`42:profile`) grows one entry per key, so the map needs a ceiling; past
+/// it new paths are dropped while the ones already tracked keep counting.
+pub(super) const MAX_PREFIX_PATHS: usize = 100_000;
+
+/// Distinct type names kept per prefix — the column shows them joined, and
+/// a real prefix holds one or two.
+const MAX_TYPES_PER_PREFIX: usize = 8;
+
 #[derive(Default)]
 pub(super) struct PrefixStats {
     pub(super) key_count: u64,
@@ -77,10 +92,15 @@ impl<T> TopN<T> {
 
 // ─── Row builders ────────────────────────────────────────────────────────────
 
+/// The rows one level below `root` — the top-level prefixes when it is
+/// empty, otherwise the children of that path. Every level lives flat in
+/// `prefix_map` keyed by its full path, so drilling in is a filter, not a
+/// re-scan.
 pub(super) fn build_prefix_rows(
     prefix_map: &HashMap<String, PrefixStats>,
     ratio: f32,
     key_separator: &str,
+    root: &str,
 ) -> Vec<PrefixRow> {
     let scale = if ratio > 0.0 { 1.0 / ratio } else { 1.0 };
 
@@ -88,8 +108,30 @@ pub(super) fn build_prefix_rows(
     let is_sampled = ratio > 0.0 && ratio < 1.0;
     let est_prefix = if is_sampled { "~" } else { "" };
 
+    if key_separator.is_empty() {
+        return Vec::new();
+    }
+    // Paths that have a level below them: those rows can be drilled into.
+    let parents: std::collections::HashSet<&str> = prefix_map
+        .keys()
+        .filter_map(|path| path.rfind(key_separator).map(|ix| &path[..ix]))
+        .collect();
+    // Empty for the top level, so `strip_prefix` selects every path there.
+    let child_of = if root.is_empty() {
+        String::new()
+    } else {
+        format!("{root}{key_separator}")
+    };
+
     let mut rows: Vec<PrefixRow> = prefix_map
         .iter()
+        .filter(|(path, _)| {
+            let Some(rest) = path.strip_prefix(child_of.as_str()) else {
+                return false;
+            };
+            // One level down, not two.
+            !rest.is_empty() && !rest.contains(key_separator)
+        })
         .map(|(prefix, stats)| {
             // Raw numeric values for internal logic and sorting
             let est_count = (stats.key_count as f32 * scale) as u64;
@@ -106,6 +148,8 @@ pub(super) fn build_prefix_rows(
             };
 
             PrefixRow {
+                path: prefix.clone().into(),
+                has_children: parents.contains(prefix.as_str()),
                 prefix: format!("{prefix}{key_separator}*").into(),
 
                 // Keep raw values for TableDelegate's perform_sort
@@ -175,14 +219,85 @@ pub(super) struct KeySample<'a> {
     /// Remaining TTL in seconds; `-1` = no expiry.
     pub(super) ttl: i64,
     pub(super) key_type: &'a str,
+    /// `OBJECT ENCODING` (live scan) or the RDB type byte's storage form.
+    /// Empty when the server would not say.
+    pub(super) encoding: &'a str,
     pub(super) heat: HeatMetric,
+}
+
+/// One `(type, encoding)` pair's share of the sample.
+#[derive(Default, Clone)]
+pub(super) struct TypeStats {
+    pub(super) key_count: u64,
+    pub(super) memory_bytes: u64,
+}
+
+/// A row of the type / encoding breakdown.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct TypeShareRow {
+    /// `hash`, or `hash · listpack` in encoding mode.
+    pub(super) label: SharedString,
+    pub(super) key_count: u64,
+    pub(super) memory_bytes: u64,
+    /// Share of the sample's total memory, 0–100.
+    pub(super) share_pct: f64,
+}
+
+/// Fold the `(type, encoding)` map into rows: one per type, or one per
+/// pair when `by_encoding`. Sorted by memory, scaled back up to the whole
+/// keyspace by the sample ratio, and capped like the other tables — the
+/// shares stay relative to the *whole* sample, so a truncated list adds up
+/// to less than 100% instead of lying.
+pub(super) fn build_type_rows(
+    type_map: &HashMap<(String, String), TypeStats>,
+    ratio: f32,
+    by_encoding: bool,
+    unknown_encoding: &str,
+) -> Vec<TypeShareRow> {
+    let scale = if ratio > 0.0 { 1.0 / ratio } else { 1.0 };
+    let mut merged: HashMap<String, TypeStats> = HashMap::new();
+    for ((key_type, encoding), stats) in type_map {
+        let label = if by_encoding {
+            let encoding = if encoding.is_empty() {
+                unknown_encoding
+            } else {
+                encoding
+            };
+            format!("{key_type} · {encoding}")
+        } else {
+            key_type.clone()
+        };
+        let entry = merged.entry(label).or_default();
+        entry.key_count += stats.key_count;
+        entry.memory_bytes += stats.memory_bytes;
+    }
+    let total: u64 = merged.values().map(|s| s.memory_bytes).sum();
+    let mut rows: Vec<TypeShareRow> = merged
+        .into_iter()
+        .map(|(label, stats)| TypeShareRow {
+            label: label.into(),
+            key_count: (stats.key_count as f32 * scale) as u64,
+            memory_bytes: (stats.memory_bytes as f32 * scale) as u64,
+            share_pct: if total == 0 {
+                0.0
+            } else {
+                stats.memory_bytes as f64 * 100.0 / total as f64
+            },
+        })
+        .collect();
+    rows.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.label.cmp(&b.label)));
+    rows.truncate(TOP_N);
+    rows
 }
 
 /// The accumulators every analysis source folds into — the online SCAN
 /// loop and the offline RDB parse share [`add`](Self::add) so the two
 /// pipelines can't drift apart.
 pub(super) struct AnalysisAccumulators {
+    /// Every prefix path, one entry per level (see [`MAX_PREFIX_DEPTH`]).
     pub(super) prefix_map: HashMap<String, PrefixStats>,
+    /// `(type, encoding)` → its share of the sample.
+    pub(super) type_map: HashMap<(String, String), TypeStats>,
     pub(super) single_groups: SingleKeyTopGroups,
     pub(super) ttl_histogram: TtlHistogram,
 }
@@ -191,6 +306,7 @@ impl AnalysisAccumulators {
     pub(super) fn new() -> Self {
         Self {
             prefix_map: HashMap::new(),
+            type_map: HashMap::new(),
             single_groups: SingleKeyTopGroups::new(TOP_N),
             ttl_histogram: TtlHistogram::default(),
         }
@@ -205,14 +321,39 @@ impl AnalysisAccumulators {
             memory_bytes: memory,
             ttl,
             key_type,
+            encoding,
             heat,
         } = sample;
 
         self.ttl_histogram.add(ttl);
 
-        if let Some(pos) = key.find(key_separator) {
-            let prefix = &key[..pos];
-            let stats = self.prefix_map.entry(prefix.to_string()).or_default();
+        let typed = !key_type.is_empty() && key_type != "none";
+        if typed {
+            let stats = self
+                .type_map
+                .entry((key_type.to_string(), encoding.to_string()))
+                .or_default();
+            stats.key_count += 1;
+            stats.memory_bytes += memory;
+        }
+
+        // Every ancestor path of the key, up to `MAX_PREFIX_DEPTH`: the
+        // levels the prefix table drills through.
+        let mut start = 0;
+        for _ in 0..MAX_PREFIX_DEPTH {
+            if key_separator.is_empty() {
+                break;
+            }
+            let Some(offset) = key[start..].find(key_separator) else {
+                break;
+            };
+            let end = start + offset;
+            start = end + key_separator.len();
+            let path = &key[..end];
+            if !self.prefix_map.contains_key(path) && self.prefix_map.len() >= MAX_PREFIX_PATHS {
+                break;
+            }
+            let stats = self.prefix_map.entry(path.to_string()).or_default();
             stats.key_count += 1;
             stats.memory_bytes += memory;
             if ttl > 0 {
@@ -221,7 +362,7 @@ impl AnalysisAccumulators {
             } else if ttl == -1 {
                 stats.perm_count += 1;
             }
-            if !key_type.is_empty() && key_type != "none" {
+            if typed && stats.types.len() < MAX_TYPES_PER_PREFIX {
                 stats.types.insert(key_type.to_string());
             }
         }

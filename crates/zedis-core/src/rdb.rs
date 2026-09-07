@@ -27,6 +27,7 @@
 //! is absent — but relative sizes are faithful, which is what big-key
 //! and prefix analysis need.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
@@ -93,6 +94,24 @@ const AR_TAG_INT: u64 = 1;
 const AR_TAG_FLOAT: u64 = 2;
 const AR_TAG_SMALLSTR: u64 = 3;
 
+/// The 64 characters a module type name is built from
+/// (`MODULE_TYPE_NAME_CHAR_SET` in redis `module.c`).
+const MODULE_NAME_CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// The 9-character type name packed into a module value's id — the string
+/// `TYPE` reports for such a key (`ReJSON-RL`, `TSDB-TYPE`, `MBbloom--`).
+/// The low 10 bits are the encoding version; the 54 above them are nine
+/// 6-bit indexes into [`MODULE_NAME_CHARSET`], most significant first.
+fn module_type_name(module_id: u64) -> String {
+    let mut name = [0u8; 9];
+    let mut id = module_id >> 10;
+    for slot in name.iter_mut().rev() {
+        *slot = MODULE_NAME_CHARSET[(id & 63) as usize];
+        id >>= 6;
+    }
+    String::from_utf8_lossy(&name).into_owned()
+}
+
 /// Module value opcodes (`RDB_MODULE_OPCODE_*`).
 const MODULE_OP_EOF: u64 = 0;
 const MODULE_OP_SINT: u64 = 1;
@@ -128,9 +147,15 @@ pub struct RdbEntry {
     /// Key name, lossily UTF-8 decoded (binary keys keep replacement chars,
     /// matching how the live key tree renders them).
     pub key: String,
-    /// Canonical Redis type name: `string` / `list` / `set` / `zset` /
-    /// `hash` / `stream` / `array` / `module`.
-    pub key_type: &'static str,
+    /// Type name as `TYPE` reports it: `string` / `list` / `set` / `zset` /
+    /// `hash` / `stream` / `array`, or a module's own 9-character type name
+    /// (`ReJSON-RL`, `TSDB-TYPE`, …) decoded from the value's module id, so
+    /// an offline dump names the same types a live scan does.
+    pub key_type: Cow<'static, str>,
+    /// Storage encoding as `OBJECT ENCODING` reports it (`listpack`,
+    /// `hashtable`, `intset`, `quicklist`, `embstr`, …), read from the
+    /// value's RDB type byte — no extra round-trip, unlike the live scan.
+    pub encoding: &'static str,
     /// Absolute expiry in unix milliseconds, `None` for persistent keys.
     pub expire_at_ms: Option<i64>,
     /// Bytes this entry occupies in the file (expiry opcode + type byte +
@@ -284,11 +309,12 @@ impl<R: Read> RdbParser<R> {
                 value_type => {
                     let start = entry_start.unwrap_or(opcode_offset);
                     let key = self.read_string()?;
-                    let key_type = self.skip_value(value_type)?;
+                    let (key_type, encoding) = self.skip_value(value_type)?;
                     return Ok(Some(RdbEntry {
                         db: self.current_db,
                         key: String::from_utf8_lossy(&key).into_owned(),
                         key_type,
+                        encoding,
                         expire_at_ms,
                         serialized_bytes: self.offset - start,
                     }));
@@ -420,6 +446,40 @@ impl<R: Read> RdbParser<R> {
         }
     }
 
+    /// Skips a string value and reports how Redis encodes it: `int` for the
+    /// three integer forms, then `embstr` up to
+    /// [`EMBSTR_LIMIT`](Self::EMBSTR_LIMIT) bytes and `raw` above it.
+    fn skip_string_value(&mut self) -> Result<&'static str> {
+        /// `OBJ_ENCODING_EMBSTR_SIZE_LIMIT` in redis `object.c`.
+        const EMBSTR_LIMIT: u64 = 44;
+        let by_length = |n: u64| if n <= EMBSTR_LIMIT { "embstr" } else { "raw" };
+        match self.read_length()? {
+            Length::Len(n) => {
+                self.skip(n)?;
+                Ok(by_length(n))
+            }
+            Length::Encoded(0) => {
+                self.skip(1)?;
+                Ok("int")
+            }
+            Length::Encoded(1) => {
+                self.skip(2)?;
+                Ok("int")
+            }
+            Length::Encoded(2) => {
+                self.skip(4)?;
+                Ok("int")
+            }
+            Length::Encoded(3) => {
+                let compressed = self.read_length_value()?;
+                let uncompressed = self.read_length_value()?;
+                self.skip(compressed)?;
+                Ok(by_length(uncompressed))
+            }
+            Length::Encoded(enc) => Err(self.err(format!("unknown string encoding {enc}"))),
+        }
+    }
+
     /// Skips over a string without materializing it (LZF stays compressed).
     fn skip_string(&mut self) -> Result<()> {
         match self.read_length()? {
@@ -446,20 +506,26 @@ impl<R: Read> RdbParser<R> {
         }
     }
 
-    /// Length-skips one value of the given type; returns the canonical
-    /// Redis type name.
-    fn skip_value(&mut self, value_type: u8) -> Result<&'static str> {
+    /// Length-skips one value of the given type; returns the type name
+    /// `TYPE` would report and the encoding `OBJECT ENCODING` would. The
+    /// encoding falls out of the RDB type byte — the file stores each value
+    /// in exactly the form the server holds it in.
+    fn skip_value(&mut self, value_type: u8) -> Result<(Cow<'static, str>, &'static str)> {
         match value_type {
             T_STRING => {
-                self.skip_string()?;
-                Ok("string")
+                let encoding = self.skip_string_value()?;
+                Ok(("string".into(), encoding))
             }
             T_LIST | T_SET => {
                 let n = self.read_length_value()?;
                 for _ in 0..n {
                     self.skip_string()?;
                 }
-                Ok(if value_type == T_LIST { "list" } else { "set" })
+                Ok(if value_type == T_LIST {
+                    ("list".into(), "linkedlist")
+                } else {
+                    ("set".into(), "hashtable")
+                })
             }
             T_ZSET => {
                 let n = self.read_length_value()?;
@@ -467,7 +533,7 @@ impl<R: Read> RdbParser<R> {
                     self.skip_string()?;
                     self.skip_double_string()?;
                 }
-                Ok("zset")
+                Ok(("zset".into(), "skiplist"))
             }
             T_ZSET_2 => {
                 let n = self.read_length_value()?;
@@ -475,7 +541,7 @@ impl<R: Read> RdbParser<R> {
                     self.skip_string()?;
                     self.skip(8)?;
                 }
-                Ok("zset")
+                Ok(("zset".into(), "skiplist"))
             }
             T_HASH => {
                 let n = self.read_length_value()?;
@@ -483,30 +549,46 @@ impl<R: Read> RdbParser<R> {
                     self.skip_string()?;
                     self.skip_string()?;
                 }
-                Ok("hash")
+                Ok(("hash".into(), "hashtable"))
             }
             // Single-blob compact encodings.
             T_HASH_ZIPMAP | T_HASH_ZIPLIST | T_HASH_LISTPACK | T_HASH_LISTPACK_EX_PRE_GA => {
                 self.skip_string()?;
-                Ok("hash")
+                let encoding = match value_type {
+                    T_HASH_ZIPMAP => "zipmap",
+                    T_HASH_ZIPLIST => "ziplist",
+                    T_HASH_LISTPACK_EX_PRE_GA => "listpackex",
+                    _ => "listpack",
+                };
+                Ok(("hash".into(), encoding))
             }
             T_LIST_ZIPLIST => {
                 self.skip_string()?;
-                Ok("list")
+                Ok(("list".into(), "ziplist"))
             }
             T_SET_INTSET | T_SET_LISTPACK => {
                 self.skip_string()?;
-                Ok("set")
+                let encoding = if value_type == T_SET_INTSET {
+                    "intset"
+                } else {
+                    "listpack"
+                };
+                Ok(("set".into(), encoding))
             }
             T_ZSET_ZIPLIST | T_ZSET_LISTPACK => {
                 self.skip_string()?;
-                Ok("zset")
+                let encoding = if value_type == T_ZSET_ZIPLIST {
+                    "ziplist"
+                } else {
+                    "listpack"
+                };
+                Ok(("zset".into(), encoding))
             }
             T_HASH_LISTPACK_EX => {
                 // minExpire (unix ms, 8 bytes LE) + listpack blob.
                 self.skip(8)?;
                 self.skip_string()?;
-                Ok("hash")
+                Ok(("hash".into(), "listpackex"))
             }
             T_HASH_METADATA => {
                 // minExpire + n × (ttl-delta, field, value).
@@ -517,7 +599,7 @@ impl<R: Read> RdbParser<R> {
                     self.skip_string()?;
                     self.skip_string()?;
                 }
-                Ok("hash")
+                Ok(("hash".into(), "hashtable"))
             }
             T_HASH_METADATA_PRE_GA => {
                 // n × (absolute ttl, field, value) — 7.4 RC layout.
@@ -527,14 +609,14 @@ impl<R: Read> RdbParser<R> {
                     self.skip_string()?;
                     self.skip_string()?;
                 }
-                Ok("hash")
+                Ok(("hash".into(), "hashtable"))
             }
             T_LIST_QUICKLIST => {
                 let n = self.read_length_value()?;
                 for _ in 0..n {
                     self.skip_string()?;
                 }
-                Ok("list")
+                Ok(("list".into(), "quicklist"))
             }
             T_LIST_QUICKLIST_2 => {
                 let n = self.read_length_value()?;
@@ -543,26 +625,26 @@ impl<R: Read> RdbParser<R> {
                     self.read_length_value()?;
                     self.skip_string()?;
                 }
-                Ok("list")
+                Ok(("list".into(), "quicklist"))
             }
             T_STREAM_LISTPACKS | T_STREAM_LISTPACKS_2 | T_STREAM_LISTPACKS_3 | T_STREAM_LISTPACKS_4
             | T_STREAM_LISTPACKS_5 => {
                 self.skip_stream(value_type)?;
-                Ok("stream")
+                Ok(("stream".into(), "stream"))
             }
             T_MODULE_2 => {
-                self.read_length_value()?; // module id
+                let module_id = self.read_length_value()?;
                 self.skip_module_opcodes()?;
-                Ok("module")
+                Ok((module_type_name(module_id).into(), "module"))
             }
             T_ARRAY => {
                 self.skip_array()?;
-                Ok("array")
+                Ok(("array".into(), "array"))
             }
             T_HASH_TMPL_LP_REF => {
                 // One listpack blob; its first entry is the template id.
                 self.skip_string()?;
-                Ok("hash")
+                Ok(("hash".into(), "listpack"))
             }
             T_HASH_TMPL_ARRAY_REF => {
                 let id = self.read_length_value()?;
@@ -572,19 +654,19 @@ impl<R: Read> RdbParser<R> {
                 for _ in 0..field_count {
                     self.skip_string()?;
                 }
-                Ok("hash")
+                Ok(("hash".into(), "array"))
             }
             T_HASH_TMPL_LP => {
                 self.skip_template_fields()?;
                 self.skip_string()?; // values listpack
-                Ok("hash")
+                Ok(("hash".into(), "listpack"))
             }
             T_HASH_TMPL_ARRAY => {
                 let field_count = self.skip_template_fields()?;
                 for _ in 0..field_count {
                     self.skip_string()?;
                 }
-                Ok("hash")
+                Ok(("hash".into(), "array"))
             }
             T_MODULE_PRE_GA => Err(self.err("pre-GA module value (Redis < 4.0 GA) is not supported")),
             other => Err(self.err(format!("unknown RDB value type {other}"))),
@@ -836,7 +918,7 @@ mod tests {
     }
 
     fn summary(entries: &[RdbEntry]) -> Vec<(&str, &str)> {
-        entries.iter().map(|e| (e.key.as_str(), e.key_type)).collect()
+        entries.iter().map(|e| (e.key.as_str(), e.key_type.as_ref())).collect()
     }
 
     #[test]
@@ -1062,7 +1144,7 @@ mod tests {
             .eof();
 
         let entries = parse_all(&data);
-        let summary: Vec<(&str, &str)> = entries.iter().map(|e| (e.key.as_str(), e.key_type)).collect();
+        let summary: Vec<(&str, &str)> = entries.iter().map(|e| (e.key.as_str(), e.key_type.as_ref())).collect();
         assert_eq!(
             summary,
             vec![("count", "string"), ("h", "hash"), ("z", "zset"), ("l", "list")]
@@ -1126,8 +1208,88 @@ mod tests {
             .eof();
 
         let entries = parse_all(&data);
-        let summary: Vec<(&str, &str)> = entries.iter().map(|e| (e.key.as_str(), e.key_type)).collect();
-        assert_eq!(summary, vec![("st", "stream"), ("m", "module")]);
+        let summary: Vec<(&str, &str)> = entries.iter().map(|e| (e.key.as_str(), e.key_type.as_ref())).collect();
+        assert_eq!(summary, vec![("st", "stream"), ("m", "AAAAAAAAA")]);
+    }
+
+    /// The 9 characters packed into a module id, the way redis writes them.
+    fn module_id(name: &str, encoding_version: u64) -> u64 {
+        let mut id = 0u64;
+        for byte in name.bytes() {
+            let index = MODULE_NAME_CHARSET
+                .iter()
+                .position(|c| *c == byte)
+                .expect("module names use the charset");
+            id = (id << 6) | index as u64;
+        }
+        (id << 10) | encoding_version
+    }
+
+    /// A module key names its module — `module` told the user nothing about
+    /// a dump full of RedisJSON documents.
+    #[test]
+    fn a_module_value_carries_its_module_type_name() {
+        for name in [
+            "ReJSON-RL",
+            "TSDB-TYPE",
+            "MBbloom--",
+            "MBbloomCF",
+            "CMSk-TYPE",
+            "TopK-TYPE",
+        ] {
+            assert_eq!(module_type_name(module_id(name, 3)), name);
+        }
+        let data = Fixture::new()
+            .op(T_MODULE_2)
+            .str(b"doc:1")
+            .byte(0x81)
+            .bytes(&module_id("ReJSON-RL", 3).to_be_bytes())
+            .byte(MODULE_OP_STRING as u8)
+            .str(b"payload")
+            .byte(MODULE_OP_EOF as u8)
+            .eof();
+        let entries = parse_all(&data);
+        assert_eq!(entries[0].key_type.as_ref(), "ReJSON-RL");
+        assert_eq!(entries[0].encoding, "module");
+    }
+
+    /// Every value also reports the encoding it is stored in — the RDB type
+    /// byte says it, so an offline dump needs no `OBJECT ENCODING`.
+    #[test]
+    fn values_report_the_encoding_they_are_stored_in() {
+        let data = Fixture::new()
+            .op(T_STRING)
+            .str(b"short")
+            .str(b"under 44 bytes")
+            .op(T_STRING)
+            .str(b"long")
+            .str(&[b'x'; 45])
+            .op(T_STRING)
+            .str(b"number")
+            .byte(0xC0) // 8-bit integer encoding
+            .byte(7)
+            .op(T_SET_INTSET)
+            .str(b"ints")
+            .str(b"intset-blob")
+            .op(T_HASH_LISTPACK)
+            .str(b"small-hash")
+            .str(b"listpack-blob")
+            .op(T_HASH)
+            .str(b"big-hash")
+            .byte(0) // zero fields
+            .eof();
+        let summary: Vec<(String, &str)> = parse_all(&data).iter().map(|e| (e.key.clone(), e.encoding)).collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("short".to_string(), "embstr"),
+                ("long".to_string(), "raw"),
+                ("number".to_string(), "int"),
+                ("ints".to_string(), "intset"),
+                ("small-hash".to_string(), "listpack"),
+                ("big-hash".to_string(), "hashtable"),
+            ]
+        );
     }
 
     #[test]

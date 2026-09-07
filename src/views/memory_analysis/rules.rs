@@ -54,6 +54,7 @@ pub(super) fn build_markdown_report(
     prefix_rows: &[PrefixRow],
     single_rows: &[SingleKeyRow],
     ttl: &TtlHistogram,
+    type_rows: &[TypeShareRow],
 ) -> String {
     let mut md = String::with_capacity(2048);
     md.push_str("# Redis Memory Analysis Report\n\n");
@@ -83,6 +84,21 @@ pub(super) fn build_markdown_report(
         ];
         for (label, count) in buckets {
             md.push_str(&format!("| {label} | {} | {} |\n", format_thousands(count), pct(count)));
+        }
+        md.push('\n');
+    }
+
+    if !type_rows.is_empty() {
+        md.push_str("## Memory by type and encoding (sampled keys)\n\n");
+        md.push_str("| Type / encoding | Keys | Est. memory | Share |\n| --- | ---: | ---: | ---: |\n");
+        for r in type_rows.iter().take(REPORT_ROW_LIMIT) {
+            md.push_str(&format!(
+                "| {} | {} | {} | {:.1}% |\n",
+                md_cell(&r.label),
+                format_thousands(r.key_count),
+                format_memory(r.memory_bytes),
+                r.share_pct,
+            ));
         }
         md.push('\n');
     }

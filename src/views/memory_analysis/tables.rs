@@ -17,6 +17,7 @@
 //! sortable columns order by and the CSV exports write out.
 
 use super::*;
+use gpui::WeakEntity;
 use std::cell::Cell;
 use std::rc::Rc;
 use zedis_ui::{CellAction, CellActionProvider, TextColumn, ZedisTextTable};
@@ -33,6 +34,10 @@ pub(super) const PREFIX_CELL_KEY_COUNT: usize = 6;
 pub(super) const PREFIX_CELL_MEMORY_BYTES: usize = 7;
 pub(super) const PREFIX_CELL_AVG_TTL_SECS: usize = 8;
 pub(super) const PREFIX_CELL_PERM_COUNT: usize = 9;
+/// The path behind the displayed `user:session:*`, and whether the map
+/// holds a level below it — what the drill-down action reads.
+pub(super) const PREFIX_CELL_PATH: usize = 10;
+pub(super) const PREFIX_CELL_HAS_CHILDREN: usize = 11;
 
 /// Payload cells of a single-key row, after its five columns.
 pub(super) const KEY_CELL_MEMORY_BYTES: usize = 5;
@@ -52,6 +57,12 @@ impl PrefixRow {
             self.memory_bytes.to_string().into(),
             self.avg_ttl_secs.to_string().into(),
             self.perm_count.to_string().into(),
+            self.path.clone(),
+            if self.has_children {
+                "1".into()
+            } else {
+                SharedString::default()
+            },
         ]
     }
 }
@@ -71,12 +82,16 @@ impl SingleKeyRow {
     }
 }
 
-/// The prefix-group table. The prefix cell jumps to the key tree filtered
-/// by that prefix — unless the rows came from an offline RDB file, which
-/// `offline` (shared with the view) says at click time.
+/// The prefix-group table. The prefix cell carries two hover actions:
+/// drill into the next prefix level (only once a finished run left its map
+/// on the view, which `drillable` says at click time), and jump to the key
+/// tree filtered by that prefix — the latter not for rows that came from an
+/// offline RDB file, which `offline` says the same way.
 pub(super) fn prefix_table(
     server_state: Entity<ZedisServerState>,
     offline: Rc<Cell<bool>>,
+    drillable: Rc<Cell<bool>>,
+    view: WeakEntity<ZedisMemoryAnalysis>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) -> ZedisTextTable {
@@ -101,18 +116,39 @@ pub(super) fn prefix_table(
         TextColumn::new(COL_PERM_COUNT, title(COL_PERM_COUNT), PERM_KEY_WIDTH).sort_by_cell(PREFIX_CELL_PERM_COUNT),
         TextColumn::new(COL_TYPES, title(COL_TYPES), TYPE_KEY_WIDTH).sortable(),
     ];
-    let tooltip = i18n_common(cx, "search_prefix_tooltip");
+    let search_tooltip = i18n_common(cx, "search_prefix_tooltip");
+    let drill_tooltip = i18n_memory_analysis(cx, "prefix_drill_tooltip");
     let jump: CellActionProvider = Rc::new(move |col_ix, cells| {
-        if col_ix != 0 || offline.get() {
-            return None;
+        let mut actions = Vec::new();
+        if col_ix != 0 {
+            return actions;
         }
-        let prefix = cells.first()?.clone();
-        let server_state = server_state.clone();
-        Some(CellAction {
-            icon: IconName::Search,
-            tooltip: tooltip.clone(),
-            on_click: Rc::new(move |_window, cx| search_keys_in_tree(&server_state, prefix.clone(), cx)),
-        })
+        if drillable.get()
+            && cells.get(PREFIX_CELL_HAS_CHILDREN).is_some_and(|c| c.as_ref() == "1")
+            && let Some(path) = cells.get(PREFIX_CELL_PATH).cloned()
+        {
+            let view = view.clone();
+            actions.push(CellAction {
+                icon: IconName::ChevronRight,
+                tooltip: drill_tooltip.clone(),
+                on_click: Rc::new(move |_window, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |this, cx| this.set_prefix_root(path.clone(), cx));
+                    }
+                }),
+            });
+        }
+        if !offline.get()
+            && let Some(prefix) = cells.first().cloned()
+        {
+            let server_state = server_state.clone();
+            actions.push(CellAction {
+                icon: IconName::Search,
+                tooltip: search_tooltip.clone(),
+                on_click: Rc::new(move |_window, cx| search_keys_in_tree(&server_state, prefix.clone(), cx)),
+            });
+        }
+        actions
     });
     ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
         .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
@@ -147,16 +183,19 @@ pub(super) fn single_key_table(
     ];
     let tooltip = i18n_common(cx, "open_key_tooltip");
     let jump: CellActionProvider = Rc::new(move |col_ix, cells| {
-        if col_ix != 0 || offline.get() {
-            return None;
-        }
-        let key = cells.first()?.clone();
-        let server_state = server_state.clone();
-        Some(CellAction {
-            icon: IconName::Search,
-            tooltip: tooltip.clone(),
-            on_click: Rc::new(move |_window, cx| open_key_in_editor(&server_state, key.clone(), cx)),
-        })
+        let action = || -> Option<CellAction> {
+            if col_ix != 0 || offline.get() {
+                return None;
+            }
+            let key = cells.first()?.clone();
+            let server_state = server_state.clone();
+            Some(CellAction {
+                icon: IconName::Search,
+                tooltip: tooltip.clone(),
+                on_click: Rc::new(move |_window, cx| open_key_in_editor(&server_state, key.clone(), cx)),
+            })
+        };
+        action().into_iter().collect()
     });
     ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
         .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))

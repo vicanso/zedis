@@ -737,6 +737,205 @@ impl ZedisMemoryAnalysis {
             .into_any_element()
     }
 
+    /// Where the prefix table currently is — `All keys › user › session`,
+    /// each step going back to that level. Hidden at the top level, where
+    /// there is nothing to go back to.
+    pub(super) fn render_prefix_breadcrumb(&self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
+        let steps = self.prefix_breadcrumb(cx);
+        if steps.is_empty() {
+            return None;
+        }
+        let muted = cx.theme().muted_foreground;
+        let last = steps.len() - 1;
+        let mut bar = h_flex().w_full().px_3().gap_1().items_center().flex_wrap().child(
+            Button::new("memory-prefix-root")
+                .ghost()
+                .xsmall()
+                .label(i18n_memory_analysis(cx, "prefix_root_all"))
+                .on_click(cx.listener(|this, _, _w, cx| this.set_prefix_root(SharedString::default(), cx))),
+        );
+        for (ix, (segment, path)) in steps.into_iter().enumerate() {
+            bar = bar.child(Label::new("›").text_xs().text_color(muted));
+            if ix == last {
+                // Where we are: a label, not a button back to here.
+                bar = bar.child(Label::new(segment).text_sm());
+            } else {
+                bar = bar.child(
+                    Button::new(SharedString::from(format!("memory-prefix-step-{ix}")))
+                        .ghost()
+                        .xsmall()
+                        .label(segment)
+                        .on_click(cx.listener(move |this, _, _w, cx| this.set_prefix_root(path.clone(), cx))),
+                );
+            }
+        }
+        Some(bar.into_any_element())
+    }
+
+    /// Where the sampled memory sits by value type, or by `(type, encoding)`
+    /// pair — the cut that says whether the compact encodings are still in
+    /// play. Both the live scan (`OBJECT ENCODING`) and an RDB file (the
+    /// value's type byte) feed it.
+    pub(super) fn render_type_breakdown_body(&self, cx: &mut gpui::Context<Self>) -> gpui::AnyElement {
+        // Theme colours out of the borrow first: the mode buttons below take
+        // `cx` mutably (see CLAUDE.md).
+        let (muted, bar_color, track_color, border, radius) = {
+            let theme = cx.theme();
+            (
+                theme.muted_foreground,
+                theme.chart_3,
+                theme.muted.opacity(0.4),
+                theme.border,
+                theme.radius_lg,
+            )
+        };
+        // Nothing to split by on a server that would not answer
+        // `OBJECT ENCODING`: the card stays a single list of types.
+        let has_encodings = self.has_encodings();
+        let by_encoding = self.type_by_encoding && has_encodings;
+
+        let mode_button =
+            |id: &'static str, key: &'static str, active: bool, wanted: bool, cx: &mut gpui::Context<Self>| {
+                Button::new(id)
+                    .xsmall()
+                    .when(active, |b| b.primary())
+                    .when(!active, |b| b.outline())
+                    .label(i18n_memory_analysis(cx, key))
+                    .on_click(cx.listener(move |this, _, _w, cx| this.set_type_by_encoding(wanted, cx)))
+            };
+        let toggle = has_encodings.then(|| {
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(mode_button(
+                    "memory-types-by-type",
+                    "types_by_type",
+                    !by_encoding,
+                    false,
+                    cx,
+                ))
+                .child(mode_button(
+                    "memory-types-by-encoding",
+                    "types_by_encoding",
+                    by_encoding,
+                    true,
+                    cx,
+                ))
+        });
+
+        let column = |width: f32| div().w(px(width)).flex_none();
+        let header = h_flex()
+            .px_3()
+            .py_1()
+            .gap_4()
+            .items_center()
+            .border_b_1()
+            .border_color(border)
+            .child(
+                column(240.).child(
+                    Label::new(i18n_memory_analysis(cx, "types_column"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                column(110.).child(
+                    Label::new(i18n_memory_analysis(cx, "key_count"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                column(110.).child(
+                    Label::new(i18n_memory_analysis(cx, "memory"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            )
+            .child(
+                div().flex_1().child(
+                    Label::new(i18n_memory_analysis(cx, "types_share"))
+                        .text_xs()
+                        .text_color(muted),
+                ),
+            );
+
+        let rows: Vec<gpui::AnyElement> =
+            self.type_rows
+                .iter()
+                .map(|row| {
+                    h_flex()
+                        .px_3()
+                        .py_1()
+                        .gap_4()
+                        .items_center()
+                        .child(column(240.).child(Label::new(row.label.clone()).text_sm().text_ellipsis()))
+                        .child(column(110.).child(Label::new(format_thousands(row.key_count)).text_sm()))
+                        .child(column(110.).child(Label::new(format_memory(row.memory_bytes)).text_sm()))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div().w(px(56.)).flex_none().child(
+                                        Label::new(format!("{:.1}%", row.share_pct)).text_xs().text_color(muted),
+                                    ),
+                                )
+                                .child(
+                                    div().flex_1().h(px(6.)).rounded_full().bg(track_color).child(
+                                        div()
+                                            .w(relative((row.share_pct / 100.0).clamp(0.0, 1.0) as f32))
+                                            .h_full()
+                                            .rounded_full()
+                                            .bg(bar_color),
+                                    ),
+                                ),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let types: std::collections::HashSet<&String> = self.type_map.keys().map(|(t, _)| t).collect();
+        let encodings: std::collections::HashSet<&String> = self.type_map.keys().map(|(_, e)| e).collect();
+        let summary: SharedString = rust_i18n::t!(
+            "memory_analysis.types_summary",
+            types = types.len(),
+            encodings = encodings.len(),
+            locale = locale
+        )
+        .to_string()
+        .into();
+
+        v_flex()
+            .w_full()
+            .flex_none()
+            .gap_2()
+            .child(
+                v_flex()
+                    .w_full()
+                    .flex_none()
+                    .border_1()
+                    .border_color(border)
+                    .rounded(radius)
+                    .p_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .mb_2()
+                            .child(div().font_semibold().child(i18n_memory_analysis(cx, "types_title")))
+                            .children(toggle),
+                    )
+                    .child(header)
+                    .child(v_flex().w_full().children(rows)),
+            )
+            .child(div().px_2().child(Label::new(summary).text_sm().text_color(muted)))
+            .into_any_element()
+    }
+
     pub(super) fn render_ttl_histogram_body(&self, cx: &mut gpui::Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -925,6 +1124,7 @@ impl gpui::Render for ZedisMemoryAnalysis {
         let has_single = self.single_count > 0;
         let has_data = has_prefix || has_single;
         let has_ttl_data = self.ttl_histogram.total() > 0;
+        let has_type_data = !self.type_rows.is_empty();
 
         // Lay the toolbar out as a single non-wrapping row inside a
         // horizontal scroll container. Modern IDEs (Zed included) keep dense
@@ -1075,6 +1275,13 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     body = body.child(self.render_keysizes_body(cx));
                 }
 
+                // Where the sampled memory sits by type / encoding — the
+                // broadest cut of the same scan, so it leads the sampled
+                // sections.
+                if has_type_data {
+                    body = body.child(self.render_type_breakdown_body(cx));
+                }
+
                 // Unified empty state: nothing sampled yet and not running.
                 if !has_data && !has_ttl_data && !is_running {
                     body = body.child(div().size_full().flex().items_center().justify_center().child(
@@ -1087,13 +1294,17 @@ impl gpui::Render for ZedisMemoryAnalysis {
                     body = body.child(self.render_ttl_histogram_body(cx));
                 }
 
-                // Prefix groups table
-                if has_prefix {
+                // Prefix groups table, under the breadcrumb naming the level
+                // it is showing.
+                if has_prefix || !self.prefix_root.is_empty() {
                     let table = DataTable::new(&self.prefix_table)
                         .stripe(true)
                         .bordered(true)
                         .scrollbar_visible(false, false);
 
+                    if let Some(breadcrumb) = self.render_prefix_breadcrumb(cx) {
+                        body = body.child(breadcrumb);
+                    }
                     body = body.child(self.render_table_section(
                         "prefix_table_title",
                         self.prefix_count,

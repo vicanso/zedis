@@ -126,16 +126,19 @@ impl ZedisPubsubChannelsDialog {
         let table = ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
             .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
             .cell_action(Rc::new(move |column, cells| {
-                if column != 0 {
-                    return None;
-                }
-                let channel = cells.first()?.clone();
-                let on_pick = on_pick.clone();
-                Some(CellAction {
-                    icon: IconName::Play,
-                    tooltip: subscribe_tooltip.clone(),
-                    on_click: Rc::new(move |window, cx| on_pick(channel.clone(), window, cx)),
-                })
+                let action = || -> Option<CellAction> {
+                    if column != 0 {
+                        return None;
+                    }
+                    let channel = cells.first()?.clone();
+                    let on_pick = on_pick.clone();
+                    Some(CellAction {
+                        icon: IconName::Play,
+                        tooltip: subscribe_tooltip.clone(),
+                        on_click: Rc::new(move |window, cx| on_pick(channel.clone(), window, cx)),
+                    })
+                };
+                action().into_iter().collect()
             }));
         let table_state = cx.new(|cx| TableState::new(table, window, cx));
 

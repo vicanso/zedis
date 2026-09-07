@@ -200,22 +200,25 @@ fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: 
     // are ambiguous, so only the first token is used).
     let open_key_tooltip = i18n_common(cx, "open_key_tooltip");
     let jump: CellActionProvider = Rc::new(move |col_ix, cells| {
-        if col_ix != ARGS_COLUMN {
-            return None;
-        }
-        let key: SharedString = cells
-            .get(ARGS_COLUMN)?
-            .split(' ')
-            .next()
-            .filter(|s| !s.is_empty())?
-            .to_string()
-            .into();
-        let server_state = server_state.clone();
-        Some(CellAction {
-            icon: IconName::Search,
-            tooltip: open_key_tooltip.clone(),
-            on_click: Rc::new(move |_window, cx| open_key_in_editor(&server_state, key.clone(), cx)),
-        })
+        let action = || -> Option<CellAction> {
+            if col_ix != ARGS_COLUMN {
+                return None;
+            }
+            let key: SharedString = cells
+                .get(ARGS_COLUMN)?
+                .split(' ')
+                .next()
+                .filter(|s| !s.is_empty())?
+                .to_string()
+                .into();
+            let server_state = server_state.clone();
+            Some(CellAction {
+                icon: IconName::Search,
+                tooltip: open_key_tooltip.clone(),
+                on_click: Rc::new(move |_window, cx| open_key_in_editor(&server_state, key.clone(), cx)),
+            })
+        };
+        action().into_iter().collect()
     });
 
     ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))

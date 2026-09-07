@@ -584,13 +584,16 @@ impl RedisClient {
         Ok(total_count * (avg_len + overhead))
     }
 
-    /// Returns the slow logs of the Redis server, optionally filtered by timestamp.
+    /// Returns the slow logs of the Redis server, newest first.
+    ///
+    /// The count is explicit: `SLOWLOG GET` on its own answers ten entries,
+    /// which is not the log (see [`MAX_COMMAND_LOG_ENTRIES`]).
     ///
     /// # Returns
     /// * `Vec<SlowLogEntry>` - A vector of slow log entries.
     pub async fn get_slow_logs(&self) -> Result<Vec<SlowLogEntry>> {
         let (_, logs_arr): (_, Vec<Vec<SlowLogEntry>>) = self
-            .query_async_masters(vec![cmd("SLOWLOG").arg("GET").clone()])
+            .query_async_masters(vec![cmd("SLOWLOG").arg("GET").arg(MAX_COMMAND_LOG_ENTRIES).clone()])
             .await?;
 
         let mut logs: Vec<SlowLogEntry> = logs_arr.into_iter().flatten().collect();
@@ -684,6 +687,11 @@ impl RedisClient {
     /// * `ratio` - The ratio of keys to sample.
     /// * `count` - The count of keys to sample.
     /// * `cursors` - The cursors to continue the scan from.
+    /// * `heat` - Which `OBJECT` probe the eviction policy makes meaningful.
+    /// * `with_encoding` - Add `OBJECT ENCODING` to each key's pipeline, what
+    ///   the memory analyzer's encoding breakdown reads. `false` when the
+    ///   probe found the command missing or denied, so a restricted server is
+    ///   not asked once per sampled key.
     /// # Returns
     /// * `(Vec<u64>, Vec<KeyMemoryUsage>)` - A tuple containing the new cursors and the key memory usage.
     pub async fn sample_scan_memory_usage(
@@ -692,6 +700,7 @@ impl RedisClient {
         count: u64,
         cursors: Option<Vec<u64>>,
         heat: HeatProbe,
+        with_encoding: bool,
     ) -> Result<(u64, Vec<u64>, Vec<KeyMemoryUsage>)> {
         let pattern = "*";
         let (cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, count, None).await?;
@@ -708,7 +717,11 @@ impl RedisClient {
         let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
         let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
         let heat_subcommand = heat.redis_subcommand();
-        let cmds_per_key: usize = if heat_subcommand.is_some() { 4 } else { 3 };
+        // TYPE, MEMORY USAGE, TTL, then the two optional probes in the order
+        // they are queued below.
+        let encoding_index = with_encoding.then_some(3);
+        let heat_index = heat_subcommand.map(|_| 3 + usize::from(with_encoding));
+        let cmds_per_key: usize = 3 + usize::from(with_encoding) + usize::from(heat_subcommand.is_some());
         for (index, keys) in keys_per_node.iter().enumerate() {
             if keys.is_empty() {
                 continue;
@@ -724,6 +737,10 @@ impl RedisClient {
                     .arg("5")
                     .cmd("TTL")
                     .arg(key.as_str());
+                if with_encoding {
+                    // O(1) — the object header already carries it.
+                    pipe.cmd("OBJECT").arg("ENCODING").arg(key.as_str());
+                }
                 if let Some(sub) = heat_subcommand {
                     // OBJECT FREQ / OBJECT IDLETIME — both O(1).
                     pipe.cmd("OBJECT").arg(sub).arg(key.as_str());
@@ -746,10 +763,14 @@ impl RedisClient {
                 }
                 let key = &keys[i];
 
-                let key_type = match &chunk[0] {
+                let as_text = |value: &Value| match value {
                     Value::SimpleString(s) => s.clone(),
                     Value::BulkString(d) => String::from_utf8_lossy(d).to_string(),
-                    _ => "unknown".to_string(),
+                    _ => String::new(),
+                };
+                let key_type = match &chunk[0] {
+                    Value::Nil | Value::Array(_) => "unknown".to_string(),
+                    other => as_text(other),
                 };
 
                 let memory: u64 = match &chunk[1] {
@@ -765,11 +786,19 @@ impl RedisClient {
                     continue;
                 }
 
+                // Same per-key tolerance as the heat probe below: a key
+                // that vanished between SCAN and the pipeline answers with
+                // an error, which reads back as an empty encoding.
+                let encoding = encoding_index
+                    .and_then(|ix| chunk.get(ix))
+                    .map(&as_text)
+                    .unwrap_or_default();
+
                 // OBJECT FREQ/IDLETIME may legitimately error per-key
                 // (key vanished between SCAN and pipeline execution, or
                 // policy mismatch on an older Redis). Treat any non-Int
                 // result as "unknown heat" rather than failing the batch.
-                let heat = match (heat, chunk.get(3)) {
+                let heat = match (heat, heat_index.and_then(|ix| chunk.get(ix))) {
                     (HeatProbe::Freq, Some(Value::Int(v))) => HeatMetric::Freq((*v).max(0) as u64),
                     (HeatProbe::IdleTime, Some(Value::Int(v))) => HeatMetric::IdleTime((*v).max(0) as u64),
                     _ => HeatMetric::None,
@@ -779,6 +808,7 @@ impl RedisClient {
                     key: key.clone(),
                     memory_usage: memory,
                     key_type,
+                    encoding,
                     ttl,
                     heat,
                 });
