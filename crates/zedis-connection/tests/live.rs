@@ -29,10 +29,11 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, ImportFormat,
-    KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus,
-    RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions, ServerCommand,
-    ServerFlavor, SlotStatMetric, acl_del_user, acl_get_user, acl_set_user, csv_header, dump_keys_chunk, entry_to_csv,
+    AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl,
+    ImportFormat, KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue,
+    ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions,
+    ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
+    acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, csv_header, dump_keys_chunk, entry_to_csv,
     entry_to_json, ft_explain, ft_search, get_connection_manager, get_server, get_servers, kill_filter_commands,
     kill_running, open_single_connection, parse_readable_entries, pause_args, probe_server_features,
     read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers, sentinel_ckquorum,
@@ -1975,6 +1976,101 @@ fn standalone_hotkeys_collects_a_report() {
 /// tokenized as one SETUSER argument, parsed back out of GETUSER, and
 /// re-emitted verbatim by `to_rules_text`, which must itself re-apply
 /// cleanly (the editor's save path).
+/// The rest of the ACL page: `ACL LOG` records what the server refused,
+/// `ACL DRYRUN` answers the same question before it happens, `ACL GENPASS`
+/// makes a password, and `ACL SAVE` is refused on a server without an
+/// `aclfile` — which is exactly why the page hides that button there.
+#[test]
+#[ignore]
+fn acl_log_dryrun_genpass_and_the_aclfile_gate() {
+    smol::block_on(async {
+        let admin_id = register(server("it-standalone", standalone())).await;
+        let mut admin = conn(&admin_id, 0).await;
+        if acl_whoami(&mut admin).await.expect("whoami").is_empty() {
+            eprintln!("skipped: server has no ACL (Redis < 6)");
+            return;
+        }
+
+        // A user who may connect and PING, and nothing else. `+select` by
+        // name: it only joined `@connection` in 7.0.
+        let suffix = unique("acllog").rsplit(':').take(3).collect::<Vec<_>>().join("_");
+        let username = format!("zedis_it_log_{suffix}");
+        acl_set_user(
+            &mut admin,
+            &username,
+            &split_acl_rules("on >pw ~* &* -@all +@connection +select"),
+        )
+        .await
+        .expect("setuser");
+
+        // Trip one denial on a connection of that user's own.
+        let mut user_server = server(&format!("it-acllog-{suffix}"), standalone());
+        user_server.username = Some(username.clone());
+        user_server.password = Some("pw".into());
+        let mut denied = open_single_connection(&user_server, 0, false)
+            .await
+            .expect("connect as the restricted user");
+        let refused: Result<String, _> = cmd("GET").arg("zedis:it:nope").query_async(&mut denied).await;
+        assert!(refused.is_err(), "the restricted user must not be able to GET");
+
+        let entries = acl_log(&mut admin, 128).await.expect("acl log");
+        let hit = entries
+            .iter()
+            .find(|entry| entry.username == username)
+            .unwrap_or_else(|| panic!("the denial was logged: {entries:?}"));
+        assert_eq!(hit.reason, "command");
+        assert_eq!(hit.object.to_ascii_lowercase(), "get");
+        assert!(hit.count >= 1);
+        assert!(!hit.client_info.is_empty(), "the entry names the connection: {hit:?}");
+
+        // `ACL DRYRUN` answers the same question without running anything.
+        if supports(&admin_id, floors::ACL_V2).await {
+            assert_eq!(
+                acl_dryrun(&mut admin, &username, &["ping".to_string()])
+                    .await
+                    .expect("dryrun ping"),
+                AclDryRun::Allowed
+            );
+            match acl_dryrun(&mut admin, &username, &["get".to_string(), "zedis:it:nope".to_string()])
+                .await
+                .expect("dryrun get")
+            {
+                AclDryRun::Denied(reason) => {
+                    assert!(reason.to_lowercase().contains("get"), "the reason names it: {reason}");
+                }
+                AclDryRun::Allowed => panic!("GET must be denied for {username}"),
+            }
+        } else {
+            eprintln!("skipped ACL DRYRUN: it is Redis 7.0+");
+        }
+
+        let password = acl_genpass(&mut admin, None).await.expect("genpass");
+        assert_eq!(password.len(), 64, "256 bits, hex encoded: {password}");
+        assert!(password.chars().all(|c| c.is_ascii_hexdigit()), "{password}");
+        assert_eq!(
+            acl_genpass(&mut admin, Some(64)).await.expect("genpass 64").len(),
+            16,
+            "the bit count decides the length"
+        );
+
+        // No aclfile here, so the page offers neither Save nor Load — and
+        // the command itself says why.
+        assert!(acl_file(&mut admin).await.expect("config get aclfile").is_none());
+        assert!(acl_save(&mut admin).await.is_err(), "ACL SAVE needs an aclfile");
+
+        acl_log_reset(&mut admin).await.expect("acl log reset");
+        assert!(
+            !acl_log(&mut admin, 128)
+                .await
+                .expect("acl log")
+                .iter()
+                .any(|entry| entry.username == username),
+            "RESET cleared the log"
+        );
+        acl_del_user(&mut admin, &username).await.expect("deluser");
+    });
+}
+
 #[test]
 #[ignore]
 fn standalone_acl_selectors_round_trip() {

@@ -202,6 +202,161 @@ pub async fn acl_del_user(conn: &mut RedisAsyncConn, username: &str) -> Result<(
     Ok(())
 }
 
+/// One `ACL LOG` entry: a command, key, channel or authentication the
+/// server refused. This is where a `NOPERM` an application hit shows up
+/// with the rule that produced it, which is the question an ACL editor
+/// cannot answer on its own.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AclLogEntry {
+    /// How often this same event repeated before the server reported it.
+    pub count: u64,
+    /// What was refused: `command`, `key`, `channel` or `auth`.
+    pub reason: String,
+    /// Where the call came from: `toplevel`, `multi` or `lua`.
+    pub context: String,
+    /// The command name, key pattern or channel that was refused.
+    pub object: String,
+    pub username: String,
+    /// Seconds since the event was last seen.
+    pub age_seconds: f64,
+    /// `CLIENT INFO` of the connection that tripped it.
+    pub client_info: String,
+    /// Redis 7.0+ fields; `0` on a server that predates them.
+    pub entry_id: u64,
+    /// Unix **milliseconds**, Redis 7.0+.
+    pub timestamp_created: i64,
+    pub timestamp_last_updated: i64,
+}
+
+/// The `count` newest entries of `ACL LOG`, newest first (the server's own
+/// order).
+pub async fn acl_log(conn: &mut RedisAsyncConn, count: u64) -> Result<Vec<AclLogEntry>> {
+    let value: Value = cmd("ACL").arg("LOG").arg(count).query_async(conn).await?;
+    let Value::Array(items) = value else {
+        return Ok(Vec::new());
+    };
+    // A malformed entry is skipped, never fatal: the log is diagnostic, and
+    // one unreadable row must not hide the rest.
+    Ok(items.iter().filter_map(parse_log_entry).collect())
+}
+
+/// `ACL LOG RESET` — drop every recorded event.
+pub async fn acl_log_reset(conn: &mut RedisAsyncConn) -> Result<()> {
+    let _: () = cmd("ACL").arg("LOG").arg("RESET").query_async(conn).await?;
+    Ok(())
+}
+
+/// `ACL SAVE` — write the running ACL to the server's `aclfile`. Errors
+/// when the server keeps its users in the config file instead, which
+/// [`acl_file`] tells the caller in advance.
+pub async fn acl_save(conn: &mut RedisAsyncConn) -> Result<()> {
+    let _: () = cmd("ACL").arg("SAVE").query_async(conn).await?;
+    Ok(())
+}
+
+/// `ACL LOAD` — replace the running ACL with the `aclfile`'s contents,
+/// discarding every runtime change.
+pub async fn acl_load(conn: &mut RedisAsyncConn) -> Result<()> {
+    let _: () = cmd("ACL").arg("LOAD").query_async(conn).await?;
+    Ok(())
+}
+
+/// `ACL GENPASS [bits]` — a password from the server's CSPRNG, hex encoded.
+pub async fn acl_genpass(conn: &mut RedisAsyncConn, bits: Option<u32>) -> Result<String> {
+    let mut c = cmd("ACL");
+    c.arg("GENPASS");
+    if let Some(bits) = bits {
+        c.arg(bits);
+    }
+    Ok(c.query_async(conn).await?)
+}
+
+/// The server's `aclfile`, or `None` when it keeps its users in the main
+/// config — which is what decides whether `ACL SAVE` / `LOAD` mean
+/// anything at all. A server that will not answer `CONFIG GET` is also
+/// `None`: better to hide the two buttons than to offer ones that error.
+pub async fn acl_file(conn: &mut RedisAsyncConn) -> Result<Option<String>> {
+    let res: redis::RedisResult<Vec<String>> = cmd("CONFIG").arg("GET").arg("aclfile").query_async(conn).await;
+    let Ok(pair) = res else {
+        return Ok(None);
+    };
+    Ok(pair.get(1).filter(|path| !path.is_empty()).cloned())
+}
+
+/// What `ACL DRYRUN` said about one user running one command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AclDryRun {
+    /// The user may run it.
+    Allowed,
+    /// The server's own explanation of what the user is missing.
+    Denied(String),
+}
+
+/// `ACL DRYRUN username command [arg …]` — would this user be allowed to
+/// run this, without running it. `args` is the command and its arguments,
+/// already split. Redis 7.0+ (see `floors::ACL_V2`).
+pub async fn acl_dryrun(conn: &mut RedisAsyncConn, username: &str, args: &[String]) -> Result<AclDryRun> {
+    if args.is_empty() {
+        return Err(Error::Invalid {
+            message: "ACL DRYRUN needs a command to test".to_string(),
+        });
+    }
+    let mut c = cmd("ACL");
+    c.arg("DRYRUN").arg(username);
+    for arg in args {
+        c.arg(arg.as_str());
+    }
+    let value: Value = c.query_async(conn).await?;
+    // `OK` means allowed; anything else is the server spelling out why not.
+    Ok(match &value {
+        Value::Okay => AclDryRun::Allowed,
+        _ => match parse_simple_string(&value) {
+            Some(text) if text == "OK" => AclDryRun::Allowed,
+            Some(text) => AclDryRun::Denied(text),
+            None => AclDryRun::Denied(String::new()),
+        },
+    })
+}
+
+/// One `ACL LOG` entry — the same flat-array-or-map shape as `GETUSER`,
+/// with fields that only exist from Redis 7.0 left at zero on older
+/// servers.
+fn parse_log_entry(value: &Value) -> Option<AclLogEntry> {
+    let mut entry = AclLogEntry::default();
+    for (key, val) in extract_pairs(value)? {
+        match key.as_str() {
+            "count" => entry.count = parse_u64(&val),
+            "reason" => entry.reason = parse_simple_string(&val).unwrap_or_default(),
+            "context" => entry.context = parse_simple_string(&val).unwrap_or_default(),
+            "object" => entry.object = parse_simple_string(&val).unwrap_or_default(),
+            "username" => entry.username = parse_simple_string(&val).unwrap_or_default(),
+            "age-seconds" => entry.age_seconds = parse_f64(&val),
+            "client-info" => entry.client_info = parse_simple_string(&val).unwrap_or_default(),
+            "entry-id" => entry.entry_id = parse_u64(&val),
+            "timestamp-created" => entry.timestamp_created = parse_u64(&val) as i64,
+            "timestamp-last-updated" => entry.timestamp_last_updated = parse_u64(&val) as i64,
+            _ => {}
+        }
+    }
+    Some(entry)
+}
+
+fn parse_u64(v: &Value) -> u64 {
+    match v {
+        Value::Int(n) => (*n).max(0) as u64,
+        _ => parse_simple_string(v).and_then(|s| s.parse().ok()).unwrap_or(0),
+    }
+}
+
+/// `age-seconds` comes as a bulk string with decimals ("12.345").
+fn parse_f64(v: &Value) -> f64 {
+    match v {
+        Value::Int(n) => *n as f64,
+        Value::Double(d) => *d,
+        _ => parse_simple_string(v).and_then(|s| s.parse().ok()).unwrap_or(0.0),
+    }
+}
+
 fn is_unsupported(err: &redis::RedisError) -> bool {
     let msg = err.to_string();
     msg.contains("unknown command") || msg.contains("ERR unknown") || msg.contains("not available")
@@ -350,7 +505,79 @@ fn parse_keys_or_channels(v: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redis::Value;
+
+    fn bulk(text: &str) -> Value {
+        Value::BulkString(text.as_bytes().to_vec())
+    }
+
+    /// A Redis 7 entry, in the flat array RESP2 delivers.
+    #[test]
+    fn a_log_entry_reads_every_field() {
+        let entry = Value::Array(vec![
+            bulk("count"),
+            Value::Int(3),
+            bulk("reason"),
+            bulk("command"),
+            bulk("context"),
+            bulk("toplevel"),
+            bulk("object"),
+            bulk("get"),
+            bulk("username"),
+            bulk("worker"),
+            bulk("age-seconds"),
+            bulk("12.345"),
+            bulk("client-info"),
+            bulk("id=7 addr=127.0.0.1:6379"),
+            bulk("entry-id"),
+            Value::Int(41),
+            bulk("timestamp-created"),
+            Value::Int(1_700_000_000_000),
+            bulk("timestamp-last-updated"),
+            Value::Int(1_700_000_001_000),
+        ]);
+        let parsed = parse_log_entry(&entry).expect("entry parses");
+        assert_eq!(
+            parsed,
+            AclLogEntry {
+                count: 3,
+                reason: "command".into(),
+                context: "toplevel".into(),
+                object: "get".into(),
+                username: "worker".into(),
+                age_seconds: 12.345,
+                client_info: "id=7 addr=127.0.0.1:6379".into(),
+                entry_id: 41,
+                timestamp_created: 1_700_000_000_000,
+                timestamp_last_updated: 1_700_000_001_000,
+            }
+        );
+    }
+
+    /// Redis 6 has no `entry-id` / `timestamp-*`: those stay zero instead of
+    /// failing the parse.
+    #[test]
+    fn a_redis_6_entry_parses_without_the_7_0_fields() {
+        let entry = Value::Array(vec![
+            bulk("count"),
+            Value::Int(1),
+            bulk("reason"),
+            bulk("auth"),
+            bulk("context"),
+            bulk("toplevel"),
+            bulk("object"),
+            bulk("AUTH"),
+            bulk("username"),
+            bulk("default"),
+            bulk("age-seconds"),
+            bulk("0.5"),
+            bulk("client-info"),
+            bulk("id=1"),
+        ]);
+        let parsed = parse_log_entry(&entry).expect("entry parses");
+        assert_eq!(parsed.reason, "auth");
+        assert_eq!(parsed.entry_id, 0);
+        assert_eq!(parsed.timestamp_created, 0);
+    }
 
     fn bs(s: &str) -> Value {
         Value::BulkString(s.as_bytes().to_vec())

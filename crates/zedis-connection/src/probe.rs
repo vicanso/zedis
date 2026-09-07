@@ -308,6 +308,10 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::AclList => {
             c.arg("LIST");
         }
+        // Zero entries — proves the subcommand, reads nothing.
+        ServerCommand::AclLog => {
+            c.arg("LOG").arg(0);
+        }
         ServerCommand::FunctionList => {
             c.arg("LIST").arg("LIBRARYNAME").arg(PROBE_KEY);
         }
