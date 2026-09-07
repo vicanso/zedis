@@ -35,6 +35,9 @@ pub(super) enum KeyTreeAction {
     RefreshFolder(SharedString),
     CollapseAllKeys,
     ToggleMultiSelectMode,
+    /// Drop the multi-selection without touching the mode — the ✕ on the
+    /// count chip in the key bar.
+    ClearSelection,
     ChangeChannelMode,
     AutoRefresh(u32),
     SelectFavoriteKey(SharedString),
@@ -168,6 +171,12 @@ impl Render for ZedisKeyTree {
                     }
                     this.server_state.update(cx, |state, cx| {
                         state.collapse_all_keys(cx);
+                    });
+                }
+                KeyTreeAction::ClearSelection => {
+                    this.key_tree_list_state.update(cx, |state, cx| {
+                        state.delegate_mut().clear_selection();
+                        cx.notify();
                     });
                 }
                 KeyTreeAction::ToggleMultiSelectMode => {
@@ -553,7 +562,7 @@ impl Render for ZedisKeyTree {
                     // else the selected key.
                     let multi = {
                         let delegate = this.key_tree_list_state.read(cx).delegate();
-                        delegate.enabled_multiple_selection && !delegate.selected_items.is_empty()
+                        !delegate.selected_items.is_empty()
                     };
                     if multi {
                         window.dispatch_action(Box::new(KeyTreeAction::DeleteMultipleKeys), cx);

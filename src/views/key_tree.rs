@@ -437,6 +437,7 @@ impl ZedisKeyTree {
             enabled_multiple_selection: false,
             selected_items: AHashSet::with_capacity(5),
             range_anchor: None,
+            range_base: AHashSet::new(),
             readonly,
             server_state: server_state.clone(),
         };
@@ -777,9 +778,7 @@ impl ZedisKeyTree {
                     cx.notify();
                 });
                 handle.update(cx, |this, cx| {
-                    let delegate = this.delegate_mut();
-                    delegate.selected_items.clear();
-                    delegate.range_anchor = None;
+                    this.delegate_mut().clear_selection();
                     this.delegate_mut().items = result;
                     this.delegate_mut().readonly = readonly;
                     cx.notify();

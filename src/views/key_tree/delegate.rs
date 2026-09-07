@@ -17,14 +17,52 @@
 
 use super::*;
 
+/// The keys between two rows, in visual order. Folders and the synthetic
+/// "Load more" row are skipped: a folder id is a prefix, and every batch op
+/// reads a selected id as a key name. The two ends may come in either
+/// order, and an out-of-range end is clamped.
+fn keys_between(items: &[KeyTreeItem], a: usize, b: usize) -> Vec<SharedString> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let last = items.len() - 1;
+    let (from, to) = if a <= b { (a, b) } else { (b, a) };
+    items[from.min(last)..=to.min(last)]
+        .iter()
+        .filter(|item| !item.is_folder && item.load_more_prefix.is_none())
+        .map(|item| item.id.clone())
+        .collect()
+}
+
+/// What a Shift-click selects: the picks that stood when the anchor was
+/// set, plus the keys spanned now. Built from the *base* rather than from
+/// the current selection, so clicking a nearer row shrinks the range
+/// instead of only ever growing it, while picks made before the anchor
+/// survive either way.
+fn range_selection(
+    base: &AHashSet<SharedString>,
+    items: &[KeyTreeItem],
+    anchor: usize,
+    row: usize,
+) -> AHashSet<SharedString> {
+    let mut selection = base.clone();
+    selection.extend(keys_between(items, anchor, row));
+    selection
+}
+
 pub(super) struct KeyTreeDelegate {
     pub(super) items: Vec<KeyTreeItem>,
     pub(super) enabled_multiple_selection: bool,
     pub(super) selected_items: AHashSet<SharedString>,
-    /// Row a plain multi-select click last landed on — the other end of a
-    /// Shift-click range. Reset whenever the selection is cleared, so a
-    /// range never spans two unrelated trees.
+    /// Row the last non-Shift selecting click landed on — one end of a
+    /// Shift range. Reset whenever the selection is cleared, so a range
+    /// never spans two unrelated trees.
     pub(super) range_anchor: Option<usize>,
+    /// The selection as it stood when that anchor was set. A Shift-click
+    /// rebuilds the selection as this **plus** the new range, so clicking
+    /// a nearer row shrinks the range instead of only ever growing it, and
+    /// picks made before the anchor survive either way.
+    pub(super) range_base: AHashSet<SharedString>,
     pub(super) readonly: bool,
     /// Read in `render_item` to highlight the row whose key is the editor's
     /// active key. Keyed off the persistent `ZedisServerState::key()` instead
@@ -34,12 +72,19 @@ pub(super) struct KeyTreeDelegate {
 }
 
 impl KeyTreeDelegate {
+    pub(super) fn clear_selection(&mut self) {
+        self.selected_items.clear();
+        self.range_base.clear();
+        self.range_anchor = None;
+    }
+
     pub(super) fn toggle_multiple_selection(&mut self, cx: &mut Context<ListState<Self>>) {
-        self.enabled_multiple_selection = !self.enabled_multiple_selection;
-        if self.enabled_multiple_selection {
-            self.selected_items.clear();
-            self.range_anchor = None;
-        }
+        // The entry reads as "multi-selecting", which a modifier click can
+        // start without the mode ever being on. So when either is true,
+        // clicking it means *stop*: drop the picks and leave the mode off.
+        let active = self.enabled_multiple_selection || !self.selected_items.is_empty();
+        self.enabled_multiple_selection = !active;
+        self.clear_selection();
         cx.notify();
     }
 }
@@ -210,7 +255,9 @@ impl ListDelegate for KeyTreeDelegate {
         } else {
             cx.theme().blue.alpha(0.1)
         };
-        let show_check_icon = self.enabled_multiple_selection && !is_folder;
+        // The check column appears in the mode, and also whenever a
+        // selection exists — modifier clicks can build one without it.
+        let show_check_icon = (self.enabled_multiple_selection || !self.selected_items.is_empty()) && !is_folder;
         let selected = if show_check_icon && let Some(item) = self.items.get(ix.row) {
             let id = &item.id;
             self.selected_items.contains(id)
@@ -650,45 +697,134 @@ impl ListDelegate for KeyTreeDelegate {
         )
     }
 
+    /// Selection is state, not a mode: Shift and the platform's secondary
+    /// modifier always work on it, because neither collides with a plain
+    /// click, whose job here is to *open* the key. The mode only decides
+    /// whether a plain click selects too — the touch-style path, kept for
+    /// picking many rows without holding a key down.
     fn set_selected_index(&mut self, ix: Option<IndexPath>, window: &mut Window, _cx: &mut Context<ListState<Self>>) {
-        if !self.enabled_multiple_selection {
-            return;
-        }
         let Some(ix) = ix else {
             return;
         };
-        if self.items.get(ix.row).is_none() {
+        let Some(item) = self.items.get(ix.row) else {
             return;
-        }
-        // Shift extends from the last plain click: add every key between the
-        // two rows. Folders and the synthetic "Load more" row are skipped —
-        // a folder id is a prefix, and every batch op reads a selected id as
-        // a key name.
-        if window.modifiers().shift
+        };
+        // Neither gesture means anything on a folder or a "Load more" row.
+        let selectable = !item.is_folder && item.load_more_prefix.is_none();
+        let modifiers = window.modifiers();
+
+        if modifiers.shift
             && let Some(anchor) = self.range_anchor
             && anchor < self.items.len()
         {
-            let (from, to) = if anchor <= ix.row {
-                (anchor, ix.row)
-            } else {
-                (ix.row, anchor)
-            };
-            let in_range: Vec<SharedString> = self.items[from..=to]
-                .iter()
-                .filter(|item| !item.is_folder && item.load_more_prefix.is_none())
-                .map(|item| item.id.clone())
-                .collect();
-            self.selected_items.extend(in_range);
+            // The base plus the new range, not the old selection plus it:
+            // that is what lets a nearer second click shrink the range.
+            self.selected_items = range_selection(&self.range_base, &self.items, anchor, ix.row);
             return;
         }
-        let Some(id) = self.items.get(ix.row).map(|item| item.id.clone()) else {
+        if !selectable {
             return;
-        };
+        }
+        // `secondary` is Cmd on macOS, Ctrl elsewhere.
+        if !modifiers.secondary() && !self.enabled_multiple_selection {
+            // A plain click in normal mode opens the key; the anchor still
+            // follows it, so a Shift-click right after works from where the
+            // user is looking.
+            self.range_anchor = Some(ix.row);
+            self.range_base = self.selected_items.clone();
+            return;
+        }
+        let id = item.id.clone();
         if self.selected_items.contains(&id) {
             self.selected_items.remove(&id);
         } else {
             self.selected_items.insert(id);
         }
         self.range_anchor = Some(ix.row);
+        self.range_base = self.selected_items.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(id: &str) -> KeyTreeItem {
+        KeyTreeItem {
+            id: id.into(),
+            label: id.into(),
+            ..Default::default()
+        }
+    }
+
+    fn folder(id: &str) -> KeyTreeItem {
+        KeyTreeItem {
+            id: id.into(),
+            label: id.into(),
+            is_folder: true,
+            ..Default::default()
+        }
+    }
+
+    fn load_more() -> KeyTreeItem {
+        KeyTreeItem {
+            id: "more".into(),
+            load_more_prefix: Some("user:".into()),
+            ..Default::default()
+        }
+    }
+
+    /// `user/ user:1 user:2 <more> order/ order:1` — the flattened shape a
+    /// range has to walk.
+    fn rows() -> Vec<KeyTreeItem> {
+        vec![
+            folder("user"),
+            leaf("user:1"),
+            leaf("user:2"),
+            load_more(),
+            folder("order"),
+            leaf("order:1"),
+        ]
+    }
+
+    #[test]
+    fn a_range_spans_folders_but_selects_only_keys() {
+        let items = rows();
+        // Every visible row from `user:1` to `order:1`, which crosses a
+        // folder header and the "Load more" row.
+        assert_eq!(
+            keys_between(&items, 1, 5),
+            vec![
+                SharedString::from("user:1"),
+                SharedString::from("user:2"),
+                SharedString::from("order:1")
+            ]
+        );
+        // Dragging upward is the same range.
+        assert_eq!(keys_between(&items, 5, 1), keys_between(&items, 1, 5));
+        // One row, and a stale index from a rebuilt tree.
+        assert_eq!(keys_between(&items, 2, 2), vec![SharedString::from("user:2")]);
+        assert_eq!(keys_between(&items, 99, 99), vec![SharedString::from("order:1")]);
+        assert!(keys_between(&[], 0, 3).is_empty());
+    }
+
+    #[test]
+    fn a_second_shift_click_can_shrink_the_range() {
+        let items = rows();
+        let mut base = AHashSet::new();
+        // A key picked before the anchor: it must survive both clicks.
+        base.insert(SharedString::from("kept"));
+
+        let wide = range_selection(&base, &items, 1, 5);
+        assert!(wide.contains(&SharedString::from("order:1")));
+        assert_eq!(wide.len(), 4, "kept + three keys: {wide:?}");
+
+        // Same anchor, a nearer row: the far key is gone, the earlier pick
+        // is not.
+        let narrow = range_selection(&base, &items, 1, 2);
+        assert!(!narrow.contains(&SharedString::from("order:1")));
+        assert!(narrow.contains(&SharedString::from("kept")));
+        assert!(narrow.contains(&SharedString::from("user:2")));
+        assert_eq!(narrow.len(), 3);
     }
 }

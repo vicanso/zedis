@@ -592,7 +592,14 @@ impl ZedisKeyTree {
             .prefix(query_mode_dropdown)
             .suffix(search_btn)
             .cleanable(true);
-        let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
+        // "Multi-selecting" is the mode *or* any selection a modifier click
+        // built without it — the menu entry has to say the same thing the
+        // tree is doing.
+        let (multi_select_mode, selected_count) = {
+            let delegate = self.key_tree_list_state.read(cx).delegate();
+            (delegate.enabled_multiple_selection, delegate.selected_items.len())
+        };
+        let enabled_multiple_selection = multi_select_mode || selected_count > 0;
         let refresh_interval_sec = self.state.refresh_interval_sec;
         let flat_view = self.state.flat_view;
         let regex_mode = self.state.regex_mode;
@@ -698,6 +705,23 @@ impl ZedisKeyTree {
             .w_full()
             .gap_x_2()
             .child(keyword_input)
+            // How many keys are picked, and the one click that drops them.
+            // Without it a selection built with Shift is invisible until a
+            // right-click, and there is nothing obvious to undo it with.
+            .when(selected_count > 0, |this| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                let label = t!("key_tree.selected_count", count = selected_count, locale = &locale).to_string();
+                this.child(
+                    Button::new("key-tree-clear-selection")
+                        .outline()
+                        .label(label)
+                        .icon(IconName::Close)
+                        .tooltip(i18n_key_tree(cx, "clear_selection"))
+                        .on_click(cx.listener(|_this, _, window, cx| {
+                            window.dispatch_action(Box::new(KeyTreeAction::ClearSelection), cx);
+                        })),
+                )
+            })
             .child({
                 let can_create = Capability::CreateKey.allowed(readonly);
                 Button::new("key-tree-add-btn")
