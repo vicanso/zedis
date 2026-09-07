@@ -88,6 +88,7 @@ pub enum CustomIconName {
     MemoryStick,
     AudioWaveform,
     Binary,
+    List,
     ListChecvronsDownUp,
     Lock,
     LockOpen,
@@ -112,6 +113,7 @@ pub enum CustomIconName {
     Languages,
     Command,
     Keyboard,
+    Regex,
     RefreshCw,
     Power,
 }
@@ -150,6 +152,7 @@ impl CustomIconName {
             CustomIconName::SwatchBook => "icons/swatch-book.svg",
             CustomIconName::Eraser => "icons/eraser.svg",
             CustomIconName::Save => "icons/save.svg",
+            CustomIconName::List => "icons/list.svg",
             CustomIconName::ListCheck => "icons/list-check.svg",
             CustomIconName::Square => "icons/square.svg",
             CustomIconName::SquareCheck => "icons/square-check.svg",
@@ -166,6 +169,7 @@ impl CustomIconName {
             CustomIconName::Languages => "icons/languages.svg",
             CustomIconName::Command => "icons/command.svg",
             CustomIconName::Keyboard => "icons/keyboard.svg",
+            CustomIconName::Regex => "icons/regex.svg",
             CustomIconName::RefreshCw => "icons/refresh-cw.svg",
             CustomIconName::Power => "icons/power.svg",
         }
@@ -176,5 +180,50 @@ impl CustomIconName {
 impl From<CustomIconName> for Icon {
     fn from(val: CustomIconName) -> Self {
         Icon::empty().path(val.path())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `.svg` under `assets/icons` is reachable through the embed
+    /// glob and is really an SVG. A file added with a name the `path()`
+    /// arm does not match renders as nothing at all, which is invisible
+    /// until someone opens that menu.
+    #[test]
+    fn every_bundled_icon_loads() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("assets/icons") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("svg") {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).expect("file name");
+            let asset = format!("icons/{name}");
+            let loaded = Assets
+                .load(&asset)
+                .unwrap_or_else(|e| panic!("{asset}: {e}"))
+                .unwrap_or_else(|| panic!("{asset} is not bundled"));
+            assert!(
+                String::from_utf8_lossy(&loaded).contains("<svg"),
+                "{asset} is not an SVG"
+            );
+            checked += 1;
+        }
+        assert!(checked > 40, "the icon set should not have shrunk: {checked}");
+    }
+
+    /// The two the key tree's flat-list and regex toggles ask for by name.
+    #[test]
+    fn the_key_tree_toggle_icons_are_registered() {
+        for icon in [CustomIconName::List, CustomIconName::Regex] {
+            let path = icon.path();
+            assert!(
+                Assets.load(path.as_ref()).expect("load").is_some(),
+                "the {path} icon is not bundled"
+            );
+        }
     }
 }

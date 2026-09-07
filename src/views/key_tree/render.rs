@@ -252,6 +252,7 @@ impl ZedisKeyTree {
     /// - Search input field with placeholder
     /// - Search button (with loading state during scan)
     /// - Clearable input (X button appears when text entered)
+    /// - Regex error line under the bar when the pattern will not compile
     pub(super) fn render_keyword_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state_clone = self.server_state.clone();
         let server_state = self.server_state.read(cx);
@@ -272,16 +273,23 @@ impl ZedisKeyTree {
         let module_types = self.server_state.read(cx).module_types_seen();
         let show_key_tree_ttl = self.server_state.read(cx).show_key_tree_ttl();
         let ttl_filter = self.state.selected_ttl_filter;
+        let sort = self.state.sort;
         // Always offer the tag filter next to Type/TTL (not buried in ⋯ and
         // not gated on whether any tag records exist — empty servers still
         // show "All keys").
         let tag_filter_active = self.state.selected_tag_filter;
 
-        // Select icon based on query mode
-        let icon = match query_mode {
-            QueryMode::All => Icon::new(IconName::Asterisk), // * for all keys
-            QueryMode::Prefix => Icon::new(CustomIconName::ChevronUp), // ~ for prefix
-            QueryMode::Exact => Icon::new(CustomIconName::Equal), // = for exact match
+        // Select icon based on query mode. In regex mode the mode no longer
+        // reaches the server — the scan runs unfiltered — so the box says
+        // "regex" instead of pretending to be one of the three.
+        let icon = if self.state.regex_mode {
+            Icon::new(CustomIconName::Regex)
+        } else {
+            match query_mode {
+                QueryMode::All => Icon::new(IconName::Asterisk), // * for all keys
+                QueryMode::Prefix => Icon::new(CustomIconName::ChevronUp), // ~ for prefix
+                QueryMode::Exact => Icon::new(CustomIconName::Equal), // = for exact match
+            }
         };
         let server_id_for_favorites: SharedString = server_id.clone().into();
         let query_mode_dropdown = DropdownButton::new("dropdown")
@@ -542,6 +550,30 @@ impl ZedisKeyTree {
                         },
                     )
                 })
+                // Sibling order. TTL orders read the same cache the TTL
+                // chips do, so they need it enabled too.
+                .submenu_with_icon(
+                    Some(Icon::new(CustomIconName::ListChecvronsDownUp)),
+                    i18n_key_tree(cx, "sort"),
+                    window,
+                    cx,
+                    move |submenu, _window, _cx| {
+                        let mut submenu = submenu;
+                        for option in KeySort::ALL {
+                            if !show_key_tree_ttl && matches!(option, KeySort::TtlAsc | KeySort::TtlDesc) {
+                                continue;
+                            }
+                            let id: SharedString = option.as_str().into();
+                            let label_key = option.i18n_key();
+                            submenu = submenu.menu_element_with_check(
+                                sort == option,
+                                Box::new(KeyTreeAction::SetSort(id)),
+                                move |_, cx| Label::new(i18n_key_tree(cx, label_key)),
+                            );
+                        }
+                        submenu
+                    },
+                )
             });
         let search_btn = Button::new("key-tree-search-btn")
             .ghost()
@@ -562,6 +594,8 @@ impl ZedisKeyTree {
             .cleanable(true);
         let enabled_multiple_selection = self.key_tree_list_state.read(cx).delegate().enabled_multiple_selection;
         let refresh_interval_sec = self.state.refresh_interval_sec;
+        let flat_view = self.state.flat_view;
+        let regex_mode = self.state.regex_mode;
 
         let more_dropdown = Button::new("key-tree-more-dropdown")
             .outline()
@@ -628,14 +662,38 @@ impl ZedisKeyTree {
                     Box::new(KeyTreeAction::ChangeChannelMode),
                     move |_, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
                 )
+                .separator()
+                // A check replaces the icon while the mode is on — the same
+                // shape the multi-select entry above uses, since the menu API
+                // carries an icon *or* a check, not both.
+                .menu_element_with_icon(
+                    if flat_view {
+                        Icon::new(IconName::Check)
+                    } else {
+                        Icon::new(CustomIconName::List)
+                    },
+                    Box::new(KeyTreeAction::ToggleFlatView),
+                    move |_, cx| Label::new(i18n_key_tree(cx, "flat_view")),
+                )
+                .menu_element_with_icon(
+                    if regex_mode {
+                        Icon::new(IconName::Check)
+                    } else {
+                        Icon::new(CustomIconName::Regex)
+                    },
+                    Box::new(KeyTreeAction::ToggleRegexMode),
+                    move |_, cx| Label::new(i18n_key_tree(cx, "regex_mode")),
+                )
             });
 
-        h_flex()
+        // A regex that will not compile is reported under the bar, not by
+        // emptying the tree: half a pattern is a normal state while typing.
+        let regex_error = self.state.regex_error.clone();
+        let danger = cx.theme().danger;
+        let bar = h_flex()
             .flex_shrink_0()
             .px_2()
             .h(EDITOR_KEY_BAR_HEIGHT)
-            .border_b_1()
-            .border_color(cx.theme().border)
             .items_center()
             .w_full()
             .gap_x_2()
@@ -659,6 +717,20 @@ impl ZedisKeyTree {
                         this.handle_add_key(window, cx);
                     }))
             })
-            .child(more_dropdown)
+            .child(more_dropdown);
+
+        v_flex()
+            .flex_shrink_0()
+            .w_full()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(bar)
+            .children(regex_error.map(|message| {
+                div()
+                    .w_full()
+                    .px_2()
+                    .pb_1()
+                    .child(Label::new(message).text_xs().text_color(danger).whitespace_normal())
+            }))
     }
 }

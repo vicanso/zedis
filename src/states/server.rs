@@ -198,6 +198,11 @@ pub struct ZedisServerState {
 
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
+    /// The key tree reads its keyword box as a regex. `SCAN` has no regex,
+    /// so this turns the server-side `MATCH` off and the tree filters what
+    /// comes back — a full walk of the keyspace, which is the price of a
+    /// regex and is why it is off by default.
+    regex_keyword: bool,
     /// Optional filter to show only keys of one native type (`SCAN ... TYPE`).
     type_filter: Option<KeyType>,
 
@@ -887,6 +892,13 @@ impl ZedisServerState {
     /// Set the query mode (All/Prefix/Exact)
     pub fn set_query_mode(&mut self, mode: QueryMode, _cx: &mut Context<Self>) {
         self.query_mode = mode;
+    }
+    /// Whether the keyword is a regex, which the scan cannot narrow by.
+    pub fn regex_keyword(&self) -> bool {
+        self.regex_keyword
+    }
+    pub fn set_regex_keyword(&mut self, on: bool, _cx: &mut Context<Self>) {
+        self.regex_keyword = on;
     }
     /// The active key-type filter, if any.
     pub fn type_filter(&self) -> Option<KeyType> {

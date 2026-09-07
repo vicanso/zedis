@@ -267,6 +267,13 @@ impl ZedisServerState {
         // keys are already loaded (the effective offset into the overall scan),
         // plus the match pattern when a keyword filter is active.
         let offset = self.keys.len();
+        // A regex keyword has no glob to send, so the scan runs unfiltered
+        // and the tree filters what comes back.
+        let keyword = if self.regex_keyword() {
+            SharedString::default()
+        } else {
+            keyword
+        };
         let scan_arg = if keyword.is_empty() {
             format!("count={key_scan_count} offset={offset}")
         } else {

@@ -21,6 +21,10 @@ pub(super) struct KeyTreeDelegate {
     pub(super) items: Vec<KeyTreeItem>,
     pub(super) enabled_multiple_selection: bool,
     pub(super) selected_items: AHashSet<SharedString>,
+    /// Row a plain multi-select click last landed on — the other end of a
+    /// Shift-click range. Reset whenever the selection is cleared, so a
+    /// range never spans two unrelated trees.
+    pub(super) range_anchor: Option<usize>,
     pub(super) readonly: bool,
     /// Read in `render_item` to highlight the row whose key is the editor's
     /// active key. Keyed off the persistent `ZedisServerState::key()` instead
@@ -34,6 +38,7 @@ impl KeyTreeDelegate {
         self.enabled_multiple_selection = !self.enabled_multiple_selection;
         if self.enabled_multiple_selection {
             self.selected_items.clear();
+            self.range_anchor = None;
         }
         cx.notify();
     }
@@ -645,17 +650,45 @@ impl ListDelegate for KeyTreeDelegate {
         )
     }
 
-    fn set_selected_index(&mut self, ix: Option<IndexPath>, _window: &mut Window, _cx: &mut Context<ListState<Self>>) {
-        if self.enabled_multiple_selection
-            && let Some(ix) = ix
-            && let Some(item) = self.items.get(ix.row)
-        {
-            let id = &item.id;
-            if self.selected_items.contains(id) {
-                self.selected_items.remove(id);
-            } else {
-                self.selected_items.insert(id.clone());
-            }
+    fn set_selected_index(&mut self, ix: Option<IndexPath>, window: &mut Window, _cx: &mut Context<ListState<Self>>) {
+        if !self.enabled_multiple_selection {
+            return;
         }
+        let Some(ix) = ix else {
+            return;
+        };
+        if self.items.get(ix.row).is_none() {
+            return;
+        }
+        // Shift extends from the last plain click: add every key between the
+        // two rows. Folders and the synthetic "Load more" row are skipped —
+        // a folder id is a prefix, and every batch op reads a selected id as
+        // a key name.
+        if window.modifiers().shift
+            && let Some(anchor) = self.range_anchor
+            && anchor < self.items.len()
+        {
+            let (from, to) = if anchor <= ix.row {
+                (anchor, ix.row)
+            } else {
+                (ix.row, anchor)
+            };
+            let in_range: Vec<SharedString> = self.items[from..=to]
+                .iter()
+                .filter(|item| !item.is_folder && item.load_more_prefix.is_none())
+                .map(|item| item.id.clone())
+                .collect();
+            self.selected_items.extend(in_range);
+            return;
+        }
+        let Some(id) = self.items.get(ix.row).map(|item| item.id.clone()) else {
+            return;
+        };
+        if self.selected_items.contains(&id) {
+            self.selected_items.remove(&id);
+        } else {
+            self.selected_items.insert(id);
+        }
+        self.range_anchor = Some(ix.row);
     }
 }

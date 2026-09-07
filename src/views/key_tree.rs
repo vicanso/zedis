@@ -55,6 +55,7 @@ use gpui_kit::component::{
     list::{List, ListDelegate, ListEvent, ListItem, ListState},
     menu::DropdownMenu,
 };
+use regex::Regex;
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,19 @@ struct KeyTreeState {
     /// Local TTL-range filter. [`TtlFilter::All`] means no TTL constraint.
     /// Combined with type + tag via AND on the already-loaded key set.
     selected_ttl_filter: TtlFilter,
+    /// Sibling order inside the tree.
+    sort: KeySort,
+    /// Flat mode: one row per key, no folders.
+    flat_view: bool,
+    /// Read the keyword box as a regex over the loaded keys instead of a
+    /// substring. Mirrored onto the server state, which then scans without
+    /// `MATCH` — `SCAN` has no regex, so the filtering has to be local and
+    /// the scan has to be unfiltered for it to have anything to filter.
+    regex_mode: bool,
+    /// Why the regex was ignored, when it would not compile. Shown under
+    /// the keyword bar; the tree keeps showing everything rather than
+    /// going blank on a half-typed pattern.
+    regex_error: Option<SharedString>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -422,6 +436,7 @@ impl ZedisKeyTree {
             items: Vec::new(),
             enabled_multiple_selection: false,
             selected_items: AHashSet::with_capacity(5),
+            range_anchor: None,
             readonly,
             server_state: server_state.clone(),
         };
@@ -653,7 +668,19 @@ impl ZedisKeyTree {
         let suppressed = self.state.suppressed_auto_expand.clone();
 
         let view_handle = cx.entity().downgrade();
-        let keyword = self.state.keyword.clone();
+        // A regex that will not compile filters nothing: a half-typed
+        // pattern must not blank the tree.
+        let (keyword, regex_error) = match (self.state.regex_mode, self.state.keyword.as_ref()) {
+            (_, "") => (KeywordMatch::All, None),
+            (true, pattern) => match Regex::new(pattern) {
+                Ok(regex) => (KeywordMatch::Regex(Box::new(regex)), None),
+                Err(e) => (KeywordMatch::All, Some(SharedString::from(e.to_string()))),
+            },
+            (false, _) => (KeywordMatch::Contains(self.state.keyword.clone()), None),
+        };
+        self.state.regex_error = regex_error;
+        let sort = self.state.sort;
+        let flat = self.state.flat_view;
 
         // Snapshot client-side annotations for this server up-front so
         // the background tree-build task doesn't have to re-enter the
@@ -701,6 +728,8 @@ impl ZedisKeyTree {
                     let mut items = new_key_tree_items(KeyTreeBuildInput {
                         keys: keys_input,
                         keyword,
+                        sort,
+                        flat,
                         expanded_items,
                         suppressed,
                         separator: &separator,
@@ -748,7 +777,9 @@ impl ZedisKeyTree {
                     cx.notify();
                 });
                 handle.update(cx, |this, cx| {
-                    this.delegate_mut().selected_items.clear();
+                    let delegate = this.delegate_mut();
+                    delegate.selected_items.clear();
+                    delegate.range_anchor = None;
                     this.delegate_mut().items = result;
                     this.delegate_mut().readonly = readonly;
                     cx.notify();

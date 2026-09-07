@@ -63,6 +63,13 @@ pub(super) enum KeyTreeAction {
     /// Local TTL-range filter (`TtlFilter::as_str` wire id). `"all"` /
     /// empty clears it. Applied only on the already-loaded TTL cache.
     SetTtlFilter(SharedString),
+    /// Sibling order (`KeySort::as_str` wire id).
+    SetSort(SharedString),
+    /// One row per key with its full name, instead of folders.
+    ToggleFlatView,
+    /// Read the keyword box as a regex over the loaded keys. Turning it on
+    /// drops the server-side `MATCH`, so the scan reloads unfiltered.
+    ToggleRegexMode,
     /// Multi-select: open the batch tag colour dialog for the current
     /// selection (tag only — notes on each key are preserved).
     BatchTagSelectedKeys,
@@ -244,6 +251,33 @@ impl Render for ZedisKeyTree {
                     if this.state.selected_ttl_filter != new_filter {
                         this.state.selected_ttl_filter = new_filter;
                         this.update_key_tree(true, cx);
+                    }
+                }
+                KeyTreeAction::SetSort(id) => {
+                    let new_sort = KeySort::from_name(id.as_ref());
+                    if this.state.sort != new_sort {
+                        this.state.sort = new_sort;
+                        this.update_key_tree(true, cx);
+                    }
+                }
+                KeyTreeAction::ToggleFlatView => {
+                    this.state.flat_view = !this.state.flat_view;
+                    this.update_key_tree(true, cx);
+                }
+                KeyTreeAction::ToggleRegexMode => {
+                    let on = !this.state.regex_mode;
+                    this.state.regex_mode = on;
+                    // The server side has to agree: with a regex there is no
+                    // glob to send, so the scan runs unfiltered and the whole
+                    // filtering happens on what came back.
+                    this.server_state
+                        .update(cx, |state, cx| state.set_regex_keyword(on, cx));
+                    if this.state.keyword.is_empty() {
+                        this.update_key_tree(true, cx);
+                    } else {
+                        // A different scan target: re-scan rather than
+                        // re-filter what the old pattern happened to load.
+                        this.handle_filter(true, cx);
                     }
                 }
                 KeyTreeAction::SelectFavoriteKey(key) => {

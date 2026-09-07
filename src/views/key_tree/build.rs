@@ -17,6 +17,7 @@
 //! is unit-tested at the bottom of the file.
 
 use super::*;
+use regex::Regex;
 
 /// When a tag-colour filter is active, derive the input key list
 /// **directly from local metadata** rather than from the SCAN snapshot.
@@ -427,12 +428,128 @@ pub(super) fn single_child_expanded_set(
     effective
 }
 
+/// How sibling rows are ordered. Folders always come before leaves; this
+/// decides the order inside each group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum KeySort {
+    #[default]
+    NameAsc,
+    NameDesc,
+    /// Soonest expiry first. Keys that never expire — and keys whose TTL
+    /// the tree has not loaded — sort last in **both** directions: "never"
+    /// is not a small number, and putting it at one end would bury the
+    /// keys the order is for.
+    TtlAsc,
+    TtlDesc,
+}
+
+impl KeySort {
+    pub(super) const ALL: [KeySort; 4] = [KeySort::NameAsc, KeySort::NameDesc, KeySort::TtlAsc, KeySort::TtlDesc];
+
+    /// Wire id carried by the action payload.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            KeySort::NameAsc => "name_asc",
+            KeySort::NameDesc => "name_desc",
+            KeySort::TtlAsc => "ttl_asc",
+            KeySort::TtlDesc => "ttl_desc",
+        }
+    }
+
+    pub(super) fn from_name(name: &str) -> Self {
+        KeySort::ALL
+            .into_iter()
+            .find(|sort| sort.as_str() == name)
+            .unwrap_or_default()
+    }
+
+    /// Key in the `key_tree` i18n section.
+    pub(super) fn i18n_key(self) -> &'static str {
+        match self {
+            KeySort::NameAsc => "sort_name_asc",
+            KeySort::NameDesc => "sort_name_desc",
+            KeySort::TtlAsc => "sort_ttl_asc",
+            KeySort::TtlDesc => "sort_ttl_desc",
+        }
+    }
+
+    /// Ordering for one pair of sibling rows, folders first.
+    fn compare(self, a: &KeyTreeItem, b: &KeyTreeItem) -> std::cmp::Ordering {
+        b.is_folder.cmp(&a.is_folder).then_with(|| match self {
+            KeySort::NameAsc => a.label.cmp(&b.label),
+            KeySort::NameDesc => b.label.cmp(&a.label),
+            KeySort::TtlAsc => {
+                let (group_a, ttl_a) = ttl_rank(a);
+                let (group_b, ttl_b) = ttl_rank(b);
+                group_a
+                    .cmp(&group_b)
+                    .then(ttl_a.cmp(&ttl_b))
+                    .then_with(|| a.label.cmp(&b.label))
+            }
+            KeySort::TtlDesc => {
+                let (group_a, ttl_a) = ttl_rank(a);
+                let (group_b, ttl_b) = ttl_rank(b);
+                group_a
+                    .cmp(&group_b)
+                    .then(ttl_b.cmp(&ttl_a))
+                    .then_with(|| a.label.cmp(&b.label))
+            }
+        })
+    }
+}
+
+/// `(group, ttl)` — group 0 is a key with a live expiry, group 1 everything
+/// else (no expiry, unknown, folders), so the second group always trails
+/// whichever direction the TTL sort runs in.
+fn ttl_rank(item: &KeyTreeItem) -> (u8, i64) {
+    match item.ttl_secs {
+        Some(ttl) if ttl >= 0 => (0, ttl),
+        _ => (1, 0),
+    }
+}
+
+/// How the keyword narrows the already-loaded keys during the build.
+pub(super) enum KeywordMatch {
+    /// Everything passes — no keyword, or a regex that would not compile.
+    All,
+    /// Substring, the same test the server-side `SCAN MATCH *kw*` makes.
+    Contains(SharedString),
+    /// A regex over the whole key name. Local only: `SCAN` has no regex, so
+    /// the scan that produced this list ran unfiltered.
+    Regex(Box<Regex>),
+}
+
+impl KeywordMatch {
+    fn matches(&self, key: &str) -> bool {
+        match self {
+            KeywordMatch::All => true,
+            KeywordMatch::Contains(keyword) => key.contains(keyword.as_str()),
+            KeywordMatch::Regex(regex) => regex.is_match(key),
+        }
+    }
+
+    /// The substring the folder passes use to keep a path visible. A regex
+    /// has no such prefix, so those passes fall back to "no keyword".
+    fn substring(&self) -> SharedString {
+        match self {
+            KeywordMatch::Contains(keyword) => keyword.clone(),
+            _ => SharedString::default(),
+        }
+    }
+}
+
 /// Inputs for [`new_key_tree_items`] — keeps the builder signature under
 /// clippy's argument limit without losing the per-concern docs.
 pub(super) struct KeyTreeBuildInput<'a> {
     /// **Must be sorted by key** (see [`new_key_tree_items`]'s contract).
     pub keys: Vec<(SharedString, KeyType)>,
-    pub keyword: SharedString,
+    pub keyword: KeywordMatch,
+    /// Order of sibling rows.
+    pub sort: KeySort,
+    /// Flat mode: one row per key, full name as the label, no folders. The
+    /// separator still groups nothing, so a deep namespace reads as a plain
+    /// list instead of a tree.
+    pub flat: bool,
     pub expanded_items: AHashSet<SharedString>,
     pub suppressed: AHashSet<SharedString>,
     pub separator: &'a str,
@@ -456,6 +573,8 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
     let KeyTreeBuildInput {
         keys,
         keyword,
+        sort,
+        flat,
         expanded_items,
         suppressed,
         separator,
@@ -467,6 +586,12 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
         keys.is_sorted_by(|(a, _), (b, _)| a <= b),
         "new_key_tree_items requires key-sorted input"
     );
+    if flat {
+        return flat_key_items(keys, &keyword, sort, key_ttls, metadata);
+    }
+    // The folder passes reason about a literal prefix; a regex has none, so
+    // they see "no keyword" and the per-key test below does the filtering.
+    let keyword_substring = keyword.substring();
     // Effective expansion = the user-expanded folders plus any single-child
     // folder chains hanging off them, so drilling into a deep single-child
     // namespace (`app:user` → `profile` → leaves) opens straight through in
@@ -475,7 +600,7 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
         &keys,
         &expanded_items,
         &suppressed,
-        &keyword,
+        &keyword_substring,
         separator,
         max_key_tree_depth,
     );
@@ -491,7 +616,7 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
     let mut promoted_leaves: Vec<(SharedString, KeyType, SharedString, usize)> = Vec::new();
 
     for (key, key_type) in keys {
-        if !keyword.is_empty() && !key.contains(keyword.as_str()) {
+        if !keyword.matches(key.as_ref()) {
             continue;
         }
         let ttl_for_leaf = key_ttls.get(&key).copied();
@@ -646,9 +771,14 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
 
     let mut result = Vec::with_capacity(children_map.values().map(|v| v.len()).sum());
 
-    fn build_sorted_list(parent_id: &str, map: &mut AHashMap<String, Vec<KeyTreeItem>>, result: &mut Vec<KeyTreeItem>) {
+    fn build_sorted_list(
+        parent_id: &str,
+        map: &mut AHashMap<String, Vec<KeyTreeItem>>,
+        result: &mut Vec<KeyTreeItem>,
+        sort: KeySort,
+    ) {
         if let Some(mut children) = map.remove(parent_id) {
-            children.sort_unstable_by(|a, b| b.is_folder.cmp(&a.is_folder).then_with(|| a.label.cmp(&b.label)));
+            children.sort_unstable_by(|a, b| sort.compare(a, b));
 
             // Zebra index restarts under each parent: among this parent's leaf
             // (non-folder) children, every second one (2nd, 4th, …) is striped.
@@ -663,14 +793,52 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
                 // needs to outlive the recursive call below.
                 let child_id = child.id.clone();
                 result.push(child);
-                build_sorted_list(child_id.as_ref(), map, result);
+                build_sorted_list(child_id.as_ref(), map, result, sort);
             }
         }
     }
 
-    build_sorted_list("", &mut children_map, &mut result);
+    build_sorted_list("", &mut children_map, &mut result, sort);
 
     result
+}
+
+/// Flat mode: every key is one depth-0 row labelled with its full name.
+/// None of the folder machinery runs, so the later folder passes
+/// (`fill_parent_indices`, tag aggregates, "Load more") find nothing to do.
+fn flat_key_items(
+    keys: Vec<(SharedString, KeyType)>,
+    keyword: &KeywordMatch,
+    sort: KeySort,
+    key_ttls: &AHashMap<SharedString, i64>,
+    metadata: &std::collections::HashMap<String, KeyMetadata>,
+) -> Vec<KeyTreeItem> {
+    let mut items: Vec<KeyTreeItem> = keys
+        .into_iter()
+        .filter(|(key, _)| keyword.matches(key.as_ref()))
+        .map(|(key, key_type)| {
+            let (tag, note) = match metadata.get(key.as_ref()) {
+                Some(meta) => (meta.tag, SharedString::from(meta.note.clone())),
+                None => (None, SharedString::default()),
+            };
+            KeyTreeItem {
+                id: key.clone(),
+                label: key.clone(),
+                key_type,
+                ttl_secs: key_ttls.get(&key).copied(),
+                tag,
+                note,
+                ..Default::default()
+            }
+        })
+        .collect();
+    items.sort_unstable_by(|a, b| sort.compare(a, b));
+    // Zebra stripes run down the whole list here — there is no parent to
+    // restart them under.
+    for (index, item) in items.iter_mut().enumerate() {
+        item.stripe = index % 2 == 1;
+    }
+    items
 }
 
 /// Appends a synthetic "Load more" row after the visible children of any
@@ -886,6 +1054,125 @@ mod split_key_segments_tests {
         assert_eq!(split_key_segments("a:b", ":", 0), vec!["a:b"]);
         // Multi-byte content must not panic or split mid-codepoint.
         assert_eq!(split_key_segments("用户:1:名字", ":", 5), vec!["用户", "1", "名字"]);
+    }
+}
+
+#[cfg(test)]
+mod sort_and_flat_tests {
+    use super::*;
+
+    fn leaf(label: &str, ttl: Option<i64>) -> KeyTreeItem {
+        KeyTreeItem {
+            id: label.into(),
+            label: label.into(),
+            ttl_secs: ttl,
+            ..Default::default()
+        }
+    }
+
+    fn ordered(sort: KeySort, mut items: Vec<KeyTreeItem>) -> Vec<String> {
+        items.sort_unstable_by(|a, b| sort.compare(a, b));
+        items.into_iter().map(|item| item.label.to_string()).collect()
+    }
+
+    #[test]
+    fn folders_lead_every_order() {
+        let folder = KeyTreeItem {
+            id: "zzz".into(),
+            label: "zzz".into(),
+            is_folder: true,
+            ..Default::default()
+        };
+        for sort in KeySort::ALL {
+            let order = ordered(sort, vec![leaf("aaa", Some(1)), folder.clone()]);
+            assert_eq!(order.first().map(String::as_str), Some("zzz"), "{sort:?}");
+        }
+    }
+
+    #[test]
+    fn ttl_orders_put_the_ones_that_never_expire_last_either_way() {
+        let items = || {
+            vec![
+                leaf("soon", Some(10)),
+                leaf("later", Some(1000)),
+                leaf("never", Some(-1)),
+                leaf("unknown", None),
+            ]
+        };
+        assert_eq!(
+            ordered(KeySort::TtlAsc, items()),
+            vec!["soon", "later", "never", "unknown"]
+        );
+        // Reversed among the keys that do expire; the other two still trail,
+        // in a stable order of their own.
+        assert_eq!(
+            ordered(KeySort::TtlDesc, items()),
+            vec!["later", "soon", "never", "unknown"]
+        );
+    }
+
+    #[test]
+    fn name_orders_are_plain_reverses() {
+        let items = || vec![leaf("b", None), leaf("a", None), leaf("c", None)];
+        assert_eq!(ordered(KeySort::NameAsc, items()), vec!["a", "b", "c"]);
+        assert_eq!(ordered(KeySort::NameDesc, items()), vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn sort_ids_round_trip_and_an_unknown_one_falls_back() {
+        for sort in KeySort::ALL {
+            assert_eq!(KeySort::from_name(sort.as_str()), sort);
+        }
+        assert_eq!(KeySort::from_name("nope"), KeySort::NameAsc);
+    }
+
+    #[test]
+    fn the_keyword_matcher_covers_substring_and_regex() {
+        assert!(KeywordMatch::All.matches("anything"));
+        assert!(KeywordMatch::All.substring().is_empty());
+
+        let contains = KeywordMatch::Contains("ser".into());
+        assert!(contains.matches("user:1"));
+        assert!(!contains.matches("order:1"));
+        assert_eq!(contains.substring().as_ref(), "ser");
+
+        let regex = KeywordMatch::Regex(Box::new(Regex::new(r"^user:\d+$").expect("regex")));
+        assert!(regex.matches("user:42"));
+        assert!(!regex.matches("user:abc"));
+        // A regex has no literal prefix for the folder passes to reason about.
+        assert!(regex.substring().is_empty());
+    }
+
+    #[test]
+    fn flat_mode_is_one_row_per_key_with_no_folders() {
+        let keys = vec![
+            ("user:1".into(), KeyType::String),
+            ("user:2".into(), KeyType::String),
+            ("order:9".into(), KeyType::Hash),
+        ];
+        let mut ttls: AHashMap<SharedString, i64> = AHashMap::new();
+        ttls.insert("user:2".into(), 5);
+        let metadata = std::collections::HashMap::new();
+        let items = flat_key_items(keys, &KeywordMatch::All, KeySort::NameAsc, &ttls, &metadata);
+        assert_eq!(
+            items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
+            vec!["order:9", "user:1", "user:2"],
+            "full key names, no folder rows"
+        );
+        assert!(items.iter().all(|i| !i.is_folder && i.depth == 0));
+        // Stripes run down the whole list, since there is no parent.
+        assert_eq!(
+            items.iter().map(|i| i.stripe).collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        // The TTL order reaches across what would have been folders.
+        let keys = vec![
+            ("user:1".into(), KeyType::String),
+            ("user:2".into(), KeyType::String),
+            ("order:9".into(), KeyType::Hash),
+        ];
+        let by_ttl = flat_key_items(keys, &KeywordMatch::All, KeySort::TtlAsc, &ttls, &metadata);
+        assert_eq!(by_ttl.first().map(|i| i.label.to_string()), Some("user:2".to_string()));
     }
 }
 
