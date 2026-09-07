@@ -34,10 +34,14 @@
 //!     become a replica. One-shot connection to that node.
 //!   * Reshard — for each slot: SETSLOT MIGRATING/IMPORTING on source
 //!     and target, MIGRATE keys, then SETSLOT NODE on every master.
+//!   * `SETSLOT … STABLE` — the repair for a reshard that was interrupted
+//!     and left a slot marked on both ends.
+//!   * `ADDSLOTS` — the repair for a cluster that lost slot coverage.
 
 use crate::connection::{
-    Capability, get_connection_manager, get_server, open_node_connection, open_node_connection_cached,
-    plan_reshard_slots,
+    AtomicSlotMigration, Capability, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
+    cluster_migrate_slots, get_connection_manager, get_server, group_slot_ranges, open_node_connection,
+    open_node_connection_cached, plan_cluster_rebalance as plan_rebalance_slots, plan_reshard_slots,
 };
 use crate::error::Error;
 use crate::states::{ServerTask, ZedisServerState, i18n_common};
@@ -226,6 +230,326 @@ impl ZedisServerState {
         );
     }
 
+    /// `CLUSTER SETSLOT <slot> STABLE` on both ends of a migration that
+    /// never finished — the state an interrupted reshard leaves behind
+    /// (`[slot->-target]` on the source, `[slot-<-source]` on the target).
+    /// Clearing the markers settles the slot with its current owner; the
+    /// keys that already moved stay moved, which the confirm dialog says.
+    ///
+    /// Both ends are addressed directly: `SETSLOT` is not gossiped. An
+    /// address the map could not pair is simply not sent to — the other
+    /// end still gets cleared, which is what a half-visible migration
+    /// needs.
+    pub fn cluster_stabilize_slot(&mut self, slot: u16, addrs: Vec<SharedString>, cx: &mut Context<Self>) {
+        if !self.can(Capability::ClusterWrite) {
+            self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
+            return;
+        }
+        let addrs: Vec<SharedString> = addrs.into_iter().filter(|addr| !addr.is_empty()).collect();
+        if addrs.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        self.spawn_with_arg(
+            ServerTask::ClusterStabilizeSlot,
+            slot.to_string(),
+            move || async move {
+                for addr in &addrs {
+                    let mut conn = open_node_connection(server_id.as_ref(), addr.as_ref()).await?;
+                    let _: String = cmd("CLUSTER")
+                        .arg("SETSLOT")
+                        .arg(slot)
+                        .arg("STABLE")
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| Error::Invalid {
+                            message: format!("SETSLOT {slot} STABLE on {addr}: {e}"),
+                        })?;
+                }
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification(
+                        format!("CLUSTER SETSLOT {slot} STABLE").into(),
+                        "SETSLOT".into(),
+                        cx,
+                    );
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// `CLUSTER ADDSLOTS` on `target_addr` — hand slots nobody owns to a
+    /// master. The command runs **on** the node that will own them and is
+    /// rejected for a slot that already has an owner, so callers pass only
+    /// the coverage gaps.
+    ///
+    /// Sent in chunks: `ADDSLOTS` takes one argument per slot (the range
+    /// form is Redis 7.0+), and a full-shard gap is over five thousand of
+    /// them.
+    pub fn cluster_add_slots(&mut self, target_addr: SharedString, slots: Vec<u16>, cx: &mut Context<Self>) {
+        if !self.can(Capability::ClusterWrite) {
+            self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
+            return;
+        }
+        if slots.is_empty() {
+            return;
+        }
+        /// Slots per `CLUSTER ADDSLOTS` call.
+        const CHUNK: usize = 1024;
+        let server_id = self.server_id.clone();
+        let count = slots.len();
+        let target_for_msg = target_addr.clone();
+        self.spawn_with_arg(
+            ServerTask::ClusterAddSlots,
+            target_addr.clone(),
+            move || async move {
+                let mut conn = open_node_connection(server_id.as_ref(), target_addr.as_ref()).await?;
+                for chunk in slots.chunks(CHUNK) {
+                    let mut c = cmd("CLUSTER");
+                    c.arg("ADDSLOTS");
+                    for slot in chunk {
+                        c.arg(*slot);
+                    }
+                    let _: String = c.query_async(&mut conn).await.map_err(|e| Error::Invalid {
+                        message: format!("CLUSTER ADDSLOTS on {target_addr}: {e}"),
+                    })?;
+                }
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification(
+                        format!("CLUSTER ADDSLOTS — {count} slots → {target_for_msg}").into(),
+                        "ADDSLOTS".into(),
+                        cx,
+                    );
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Valkey 9's atomic slot migration: one `CLUSTER MIGRATESLOTS` per
+    /// source node, each handing its own ranges to `target_id`. The
+    /// command returns as soon as the server accepted the job, so this
+    /// finishes immediately and the Reshard tab watches the result through
+    /// `CLUSTER GETSLOTMIGRATIONS` — unlike the legacy path, closing the
+    /// app no longer strands a slot half-migrated.
+    pub fn cluster_migrate_slots_atomic(
+        &mut self,
+        jobs: Vec<(SharedString, Vec<(u16, u16)>)>,
+        target_id: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can(Capability::ClusterWrite) {
+            self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
+            return;
+        }
+        let jobs: Vec<(SharedString, Vec<(u16, u16)>)> = jobs
+            .into_iter()
+            .filter(|(addr, ranges)| !addr.is_empty() && !ranges.is_empty())
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let slot_count: usize = jobs
+            .iter()
+            .flat_map(|(_, ranges)| ranges.iter())
+            .map(|(lo, hi)| usize::from(hi - lo) + 1)
+            .sum();
+        let target_for_msg = target_id.clone();
+        self.spawn_with_arg(
+            ServerTask::ClusterMigrateSlots,
+            target_id.clone(),
+            move || async move {
+                for (source_addr, ranges) in &jobs {
+                    let mut conn = open_node_connection(server_id.as_ref(), source_addr.as_ref()).await?;
+                    cluster_migrate_slots(&mut conn, ranges, target_id.as_ref())
+                        .await
+                        .map_err(|e| Error::Invalid {
+                            message: format!("CLUSTER MIGRATESLOTS on {source_addr}: {e}"),
+                        })?;
+                }
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification(
+                        format!("CLUSTER MIGRATESLOTS — {slot_count} slots → {target_for_msg}").into(),
+                        "MIGRATESLOTS".into(),
+                        cx,
+                    );
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// `CLUSTER CANCELSLOTMIGRATIONS` on each source node — only the node
+    /// that started a migration can abort it.
+    pub fn cluster_cancel_slot_migrations(&mut self, source_addrs: Vec<SharedString>, cx: &mut Context<Self>) {
+        if !self.can(Capability::ClusterWrite) {
+            self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
+            return;
+        }
+        let source_addrs: Vec<SharedString> = source_addrs.into_iter().filter(|a| !a.is_empty()).collect();
+        if source_addrs.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let count = source_addrs.len();
+        self.spawn(
+            ServerTask::ClusterCancelSlotMigrations,
+            move || async move {
+                for addr in &source_addrs {
+                    let mut conn = open_node_connection(server_id.as_ref(), addr.as_ref()).await?;
+                    cluster_cancel_slot_migrations(&mut conn)
+                        .await
+                        .map_err(|e| Error::Invalid {
+                            message: format!("CLUSTER CANCELSLOTMIGRATIONS on {addr}: {e}"),
+                        })?;
+                }
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification(
+                        format!("CLUSTER CANCELSLOTMIGRATIONS sent to {count} node(s)").into(),
+                        "CANCELSLOTMIGRATIONS".into(),
+                        cx,
+                    );
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Run a rebalance leg by leg. `atomic` picks the Valkey 9 path (the
+    /// servers own the move and the app can be closed) over the legacy
+    /// `SETSLOT` + `MIGRATE` loop.
+    pub fn cluster_rebalance(&mut self, legs: Vec<RebalanceLeg>, atomic: bool, cx: &mut Context<Self>) {
+        if !self.can(Capability::ClusterWrite) {
+            self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
+            return;
+        }
+        let legs: Vec<RebalanceLeg> = legs.into_iter().filter(|leg| !leg.slots.is_empty()).collect();
+        if legs.is_empty() {
+            return;
+        }
+        if self.manually_offline {
+            self.emit_warning_notification(i18n_common(cx, "reconnect_first"), cx);
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let total: u32 = legs.iter().map(|leg| leg.slots.len() as u32).sum();
+        let leg_count = legs.len();
+
+        // The legacy path reports per slot; the atomic one finishes as soon
+        // as the servers accepted the jobs, so it needs no bar.
+        let (progress_tx, progress_rx) = smol::channel::unbounded::<(u32, u32)>();
+        if !atomic {
+            self.set_reshard_progress(Some((0, total)), cx);
+            cx.spawn(async move |handle, cx| {
+                while let Ok(progress) = progress_rx.recv().await {
+                    let updated = handle.update(cx, |this: &mut Self, cx| {
+                        if this.reshard_progress.is_some() {
+                            this.set_reshard_progress(Some(progress), cx);
+                        }
+                    });
+                    if updated.is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+
+        self.spawn(
+            ServerTask::ClusterReshard,
+            move || async move {
+                let mut moved = 0u32;
+                let mut errors: Vec<String> = Vec::new();
+                for leg in &legs {
+                    if atomic {
+                        let mut conn = open_node_connection(server_id.as_ref(), &leg.source_addr).await?;
+                        let ranges = group_slot_ranges(&leg.slots);
+                        match cluster_migrate_slots(&mut conn, &ranges, &leg.target_id).await {
+                            Ok(()) => moved += leg.slots.len() as u32,
+                            Err(e) => errors.push(format!("{} → {}: {e}", leg.source_addr, leg.target_id)),
+                        }
+                        continue;
+                    }
+                    let source_by_slot: Vec<(u16, String, String)> = leg
+                        .slots
+                        .iter()
+                        .map(|slot| (*slot, leg.source_addr.clone(), leg.source_id.clone()))
+                        .collect();
+                    // Each leg counts from zero, so offset its ticks by
+                    // what earlier legs already moved.
+                    let (leg_tx, leg_rx) = smol::channel::unbounded::<(u32, u32)>();
+                    let outer = progress_tx.clone();
+                    let done_before = moved;
+                    smol::spawn(async move {
+                        while let Ok((processed, _)) = leg_rx.recv().await {
+                            if outer.send((done_before + processed, total)).await.is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                    let result = reshard_slots(
+                        server_id.as_ref(),
+                        &leg.target_addr,
+                        &leg.target_id,
+                        &leg.slots,
+                        &source_by_slot,
+                        leg_tx,
+                    )
+                    .await?;
+                    moved += result.moved;
+                    errors.extend(result.errors);
+                }
+                Ok(ClusterReshardResult { moved, total, errors })
+            },
+            move |this, result, cx| {
+                this.set_reshard_progress(None, cx);
+                if let Ok(outcome) = result {
+                    if outcome.errors.is_empty() {
+                        this.emit_success_notification(
+                            format!(
+                                "Rebalance: {}/{} slots over {leg_count} moves",
+                                outcome.moved, outcome.total
+                            )
+                            .into(),
+                            "REBALANCE".into(),
+                            cx,
+                        );
+                    } else {
+                        let detail = outcome.errors.join("; ");
+                        this.emit_warning_notification(
+                            format!(
+                                "Rebalance partial: {}/{} slots. Errors: {detail}",
+                                outcome.moved, outcome.total
+                            )
+                            .into(),
+                            cx,
+                        );
+                    }
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
+    }
+
     /// Move `slots` onto `target` (node_id + host:port). Source ownership
     /// is discovered per slot via `CLUSTER NODES` on the target connection
     /// when not supplied — callers that already planned a source should
@@ -330,6 +654,33 @@ impl ZedisServerState {
     }
 }
 
+/// `CLUSTER GETSLOTMIGRATIONS` on every master, tagged with the node it
+/// came from. Runs outside `ZedisServerState::spawn` so the Reshard tab can
+/// poll without competing with the server-task busy gate — the same shape
+/// as the load heatmap below.
+///
+/// A master that will not answer is skipped rather than failing the poll:
+/// the point is to show what *is* running, and one unreachable node must
+/// not blank the list.
+pub async fn fetch_slot_migrations(server_id: &str, masters: &[String]) -> Vec<(String, AtomicSlotMigration)> {
+    let tasks = masters.iter().map(|addr| async move {
+        let mut conn = open_node_connection_cached(server_id, addr).await.ok()?;
+        let migrations = cluster_get_slot_migrations(&mut conn).await.ok()?;
+        Some(
+            migrations
+                .into_iter()
+                .map(|migration| (addr.clone(), migration))
+                .collect::<Vec<_>>(),
+        )
+    });
+    futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect()
+}
+
 /// Fetch `INFO` memory/stats from each cluster master for the load heatmap.
 /// Runs outside `ZedisServerState::spawn` so the Topology view can poll
 /// without competing with the server-task busy gate.
@@ -381,6 +732,29 @@ pub struct ClusterMasterRanges {
     pub node_id: String,
     pub addr: String,
     pub ranges: Vec<(u16, u16)>,
+}
+
+/// One leg of a rebalance, resolved from node ids to the addresses the
+/// commands actually need.
+#[derive(Debug, Clone)]
+pub struct RebalanceLeg {
+    pub source_addr: String,
+    pub source_id: String,
+    pub target_addr: String,
+    pub target_id: String,
+    pub slots: Vec<u16>,
+}
+
+/// Even out the slots across the masters, one leg at a time.
+///
+/// The legs run sequentially on purpose. Atomically they are cheap — one
+/// `MIGRATESLOTS` per leg, and the servers do the rest — but on the legacy
+/// path each leg walks its slots key by key, and firing several at once
+/// would have every master both exporting and importing at the same time.
+pub fn plan_cluster_rebalance_moves(
+    masters: &[(String, Vec<(u16, u16)>)],
+) -> Result<Vec<zedis_connection::RebalanceMove>, String> {
+    plan_rebalance_slots(masters)
 }
 
 /// Build `(slot, source_addr, source_id)` rows from a slot map for the

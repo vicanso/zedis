@@ -651,6 +651,7 @@ mod pool;
 mod pubsub_channels;
 mod replication;
 mod sharded_pubsub;
+mod slot_migration;
 mod slots;
 
 pub use commandlog::CommandLogKind;
@@ -658,6 +659,12 @@ pub(crate) use commandlog::MAX_COMMAND_LOG_ENTRIES;
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
 pub use replication::FAILOVER_TIMEOUT_MS;
 pub use sharded_pubsub::ShardedPubSub;
-pub use slots::plan_reshard_slots;
+pub use slot_migration::{
+    AtomicSlotMigration, cluster_cancel_slot_migrations, cluster_get_slot_migrations, cluster_migrate_slots,
+};
 #[allow(unused_imports)]
 use slots::*;
+pub use slots::{
+    REBALANCE_THRESHOLD_PCT, RebalanceMove, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots,
+    slots_in_ranges, unassigned_slot_ranges,
+};

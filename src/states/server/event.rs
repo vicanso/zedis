@@ -156,6 +156,18 @@ pub enum ServerTask {
     /// `CLUSTER SETSLOT` + `MIGRATE` reshard batch — moves one or more
     /// hash slots from their current owner to a target master.
     ClusterReshard,
+    /// `CLUSTER SETSLOT <slot> STABLE` on both ends of an interrupted
+    /// migration — clears the MIGRATING / IMPORTING markers it left.
+    ClusterStabilizeSlot,
+    /// `CLUSTER ADDSLOTS` — give unowned slots back to a master, the
+    /// repair for a cluster that lost slot coverage.
+    ClusterAddSlots,
+    /// `CLUSTER MIGRATESLOTS` — hand whole slot ranges to another master
+    /// and let the server move them (Valkey 9 atomic slot migration).
+    ClusterMigrateSlots,
+    /// `CLUSTER CANCELSLOTMIGRATIONS` — abort the atomic migrations a
+    /// source node started.
+    ClusterCancelSlotMigrations,
 
     /// `REPLICAOF host port` / `REPLICAOF NO ONE` — the standalone
     /// replication link, sent to the pooled client's node.
@@ -245,6 +257,10 @@ impl ServerTask {
             ServerTask::ClusterForget => "cluster_forget",
             ServerTask::ClusterReplicate => "cluster_replicate",
             ServerTask::ClusterReshard => "cluster_reshard",
+            ServerTask::ClusterStabilizeSlot => "cluster_stabilize_slot",
+            ServerTask::ClusterAddSlots => "cluster_add_slots",
+            ServerTask::ClusterMigrateSlots => "cluster_migrate_slots",
+            ServerTask::ClusterCancelSlotMigrations => "cluster_cancel_slot_migrations",
             ServerTask::Replicaof => "replicaof",
             ServerTask::Failover => "failover",
             ServerTask::SentinelFailover => "sentinel_failover",

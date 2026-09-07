@@ -83,7 +83,8 @@ pub use server::ErrorMessage;
 pub use server::InfoSnapshot;
 pub use server::ZedisServerState;
 pub use server::cluster::{
-    ClusterMasterRanges, ClusterNodeLoad, fetch_cluster_node_loads, plan_cluster_reshard, source_owners_for_slots,
+    ClusterMasterRanges, ClusterNodeLoad, RebalanceLeg, fetch_cluster_node_loads, fetch_slot_migrations,
+    plan_cluster_rebalance_moves, plan_cluster_reshard, source_owners_for_slots,
 };
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;

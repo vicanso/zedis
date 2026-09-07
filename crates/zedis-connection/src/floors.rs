@@ -123,6 +123,11 @@ pub const CLIENT_KILL_LADDR: Floor = Floor::since_fork("6.2.0");
 pub const CLIENT_KILL_MAXAGE: Floor = Floor::both("7.4.0", "8.0.0");
 /// Hash field TTL — `HEXPIRE / HTTL / HPERSIST` (Redis 7.4; Valkey 9.0).
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
+/// Atomic slot migration — `CLUSTER MIGRATESLOTS` / `GETSLOTMIGRATIONS` /
+/// `CANCELSLOTMIGRATIONS`, whole slots moved server-side instead of the
+/// `SETSLOT` + `MIGRATE` loop (Valkey 9.0; Redis has no equivalent, and
+/// the legacy path still works on Valkey).
+pub const ATOMIC_SLOT_MIGRATION: Floor = Floor::valkey_only("9.0.0");
 /// `COMMANDLOG` — the slow log generalised into slow / large-request /
 /// large-reply logs (Valkey 8.1; Redis has no equivalent).
 pub const COMMANDLOG: Floor = Floor::valkey_only("8.1.0");
@@ -218,6 +223,9 @@ mod tests {
 
     #[test]
     fn valkey_only_features_never_clear_on_redis() {
+        assert!(ATOMIC_SLOT_MIGRATION.met_by(true, &v("9.0.0")));
+        assert!(!ATOMIC_SLOT_MIGRATION.met_by(true, &v("8.1.0")));
+        assert!(!ATOMIC_SLOT_MIGRATION.met_by(false, &v("99.0.0")));
         assert!(COMMANDLOG.met_by(true, &v("8.1.0")));
         assert!(!COMMANDLOG.met_by(true, &v("8.0.4")));
         assert!(!COMMANDLOG.met_by(false, &v("99.0.0")));

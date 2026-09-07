@@ -33,12 +33,13 @@ use zedis_connection::{
     ImportFormat, KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue,
     ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions,
     ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
-    acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, csv_header, dump_keys_chunk, entry_to_csv,
-    entry_to_json, ft_explain, ft_search, get_connection_manager, get_server, get_servers, kill_filter_commands,
-    kill_running, open_single_connection, parse_readable_entries, pause_args, probe_server_features,
-    read_readable_chunk, rename_hash_field, restore_keys_chunk, run_script, save_servers, sentinel_ckquorum,
-    sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format,
-    split_acl_rules, write_hash_field, write_readable_chunk,
+    acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, cluster_get_slot_migrations, cluster_migrate_slots,
+    csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_search, get_connection_manager,
+    get_server, get_servers, kill_filter_commands, kill_running, open_single_connection, parse_readable_entries,
+    pause_args, plan_cluster_rebalance, probe_server_features, read_readable_chunk, rename_hash_field,
+    restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters,
+    sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, unassigned_slot_ranges,
+    write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -82,6 +83,12 @@ fn isolate() {
 /// serialise the read-append-write (an async lock: it is held across the
 /// save's await).
 static REGISTER: smol::lock::Mutex<()> = smol::lock::Mutex::new(());
+
+/// Held by every test that changes cluster slot state. They share one
+/// cluster, and the states are mutually exclusive on the server: a node
+/// that is importing a slot atomically refuses `SETSLOT … IMPORTING`
+/// with "Slot import in progress".
+static CLUSTER_SLOTS: smol::lock::Mutex<()> = smol::lock::Mutex::new(());
 
 async fn register(server: RedisServer) -> String {
     isolate();
@@ -2420,6 +2427,309 @@ fn standalone_info_keysizes_buckets_types() {
 /// `CLUSTER SLOT-STATS` (8.2): per-master top lists merge, sort by the
 /// chosen metric and stay key-count-only while the extended metrics config
 /// is off (its default — it cannot be enabled at runtime).
+/// The two cluster repairs the Topology page offers. A healthy cluster
+/// has no coverage gap, and a reshard that was interrupted leaves a slot
+/// marked on both ends — which the slot map pairs and
+/// `CLUSTER SETSLOT … STABLE` settles.
+///
+/// The markers are cleared *before* the assertions run: a failing assert
+/// must not leave the shared cluster with a stuck migration.
+/// Valkey 9's atomic slot migration: `CLUSTER MIGRATESLOTS` hands a range
+/// to another master, `GETSLOTMIGRATIONS` reports it until a terminal
+/// state, and ownership has actually moved when it finishes. The slots are
+/// migrated back, so the cluster ends as it started.
+/// `redis-cli --cluster create` splits the slots evenly, so the rebalance
+/// planner must find nothing to do on a fresh cluster. Read-only: it takes
+/// no slot lock and mutates nothing.
+#[test]
+#[ignore]
+fn cluster_rebalance_plan_is_empty_on_a_fresh_cluster() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(server("it-cluster-rebalance", addr)).await;
+        let map = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("client")
+            .nodes_description()
+            .slot_map;
+        let masters: Vec<(String, Vec<(u16, u16)>)> = map
+            .masters
+            .iter()
+            .map(|master| {
+                let ranges = map
+                    .owners
+                    .iter()
+                    .filter(|range| range.node_id == master.node_id)
+                    .map(|range| (range.start, range.end))
+                    .collect();
+                (master.node_id.clone(), ranges)
+            })
+            .collect();
+        assert!(masters.len() >= 2, "the cluster has several masters: {masters:?}");
+        let plan = plan_cluster_rebalance(&masters).expect("plan");
+        assert!(
+            plan.is_empty(),
+            "an evenly created cluster needs no rebalance: {plan:?}"
+        );
+    });
+}
+
+#[test]
+#[ignore]
+fn cluster_migrates_slots_atomically_on_valkey_9() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(server("it-cluster-atomic", addr)).await;
+        let _slots = CLUSTER_SLOTS.lock().await;
+        if !supports(&id, floors::ATOMIC_SLOT_MIGRATION).await {
+            eprintln!("skipped: atomic slot migration is Valkey 9.0+");
+            return;
+        }
+        let node = |addr: &str| {
+            let (host, port) = addr.rsplit_once(':').expect("host:port");
+            server("it-cluster-node", (host.to_string(), port.parse().expect("port")))
+        };
+        /// Who owns `slot`, by node id, from a freshly read topology.
+        async fn owner_of(id: &str, slot: u16) -> String {
+            get_connection_manager()
+                .get_client_without_cache(id, 0)
+                .await
+                .expect("re-read the cluster")
+                .nodes_description()
+                .slot_map
+                .owners
+                .iter()
+                .find(|range| range.start <= slot && slot <= range.end)
+                .map(|range| range.node_id.clone())
+                .unwrap_or_default()
+        }
+        /// The names already on the node, so a job from an earlier run (or
+        /// an earlier half of this one) cannot satisfy the wait below.
+        async fn migration_names<C: redis::aio::ConnectionLike + Send>(conn: &mut C) -> HashSet<String> {
+            cluster_get_slot_migrations(conn)
+                .await
+                .expect("getslotmigrations")
+                .into_iter()
+                .map(|migration| migration.name)
+                .collect()
+        }
+
+        /// Poll until a migration this call started — a name not in `before`,
+        /// exporting to `target_id` — reaches a terminal state. An empty
+        /// reply means the server has not registered the job yet, which is
+        /// why "nothing is active" is not the condition.
+        async fn wait_for_export<C: redis::aio::ConnectionLike + Send>(
+            conn: &mut C,
+            before: &HashSet<String>,
+            target_id: &str,
+            what: &str,
+        ) -> zedis_connection::AtomicSlotMigration {
+            let mut last = Vec::new();
+            for _ in 0..160 {
+                last = cluster_get_slot_migrations(conn).await.expect("getslotmigrations");
+                if let Some(found) = last.iter().find(|migration| {
+                    migration.is_export()
+                        && migration.target_node == target_id
+                        && !before.contains(&migration.name)
+                        && !migration.is_active()
+                }) {
+                    return found.clone();
+                }
+                smol::Timer::after(std::time::Duration::from_millis(250)).await;
+            }
+            panic!("{what}: {last:?}");
+        }
+
+        let map = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("client")
+            .nodes_description()
+            .slot_map;
+        // The master holding the most slots gives two of them up, so the
+        // cluster keeps full coverage whatever happens.
+        let source = map
+            .masters
+            .iter()
+            .max_by_key(|master| master.slot_count)
+            .expect("a master")
+            .clone();
+        let target = map
+            .masters
+            .iter()
+            .find(|master| master.node_id != source.node_id)
+            .expect("a second master")
+            .clone();
+        let range = map
+            .owners
+            .iter()
+            .filter(|range| range.node_id == source.node_id)
+            .max_by_key(|range| range.end - range.start)
+            .expect("the source owns a range")
+            .clone();
+        assert!(
+            range.end - range.start >= 2,
+            "the range is big enough to lend two slots"
+        );
+        let moving = (range.end - 1, range.end);
+
+        let mut source_conn = open_single_connection(&node(&source.addr), 0, false)
+            .await
+            .expect("connect to the source");
+        let mut target_conn = open_single_connection(&node(&target.addr), 0, false)
+            .await
+            .expect("connect to the target");
+
+        let before = migration_names(&mut source_conn).await;
+        cluster_migrate_slots(&mut source_conn, &[moving], &target.node_id)
+            .await
+            .expect("migrateslots");
+        let job = wait_for_export(
+            &mut source_conn,
+            &before,
+            &target.node_id,
+            "the migration reached a terminal state",
+        )
+        .await;
+        assert_eq!(job.state, "success", "{job:?}");
+        assert_eq!(job.source_node, source.node_id);
+        assert!(!job.slot_ranges.is_empty());
+        assert_eq!(
+            owner_of(&id, moving.1).await,
+            target.node_id,
+            "ownership moved with the slots"
+        );
+
+        // Put them back so the cluster ends where it started.
+        let before = migration_names(&mut target_conn).await;
+        cluster_migrate_slots(&mut target_conn, &[moving], &source.node_id)
+            .await
+            .expect("migrateslots back");
+        let back = wait_for_export(
+            &mut target_conn,
+            &before,
+            &source.node_id,
+            "the migration back reached a terminal state",
+        )
+        .await;
+        assert_eq!(back.state, "success", "{back:?}");
+        assert_eq!(owner_of(&id, moving.1).await, source.node_id, "and back again");
+    });
+}
+
+#[test]
+#[ignore]
+fn cluster_slot_repairs_clear_a_stuck_migration() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(server("it-cluster-repair", addr)).await;
+        let _slots = CLUSTER_SLOTS.lock().await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let map = client.nodes_description().slot_map;
+        assert!(
+            unassigned_slot_ranges(&map.owners).is_empty(),
+            "a healthy cluster covers all 16384 slots: {:?}",
+            map.owners
+        );
+
+        // Two masters, and a slot the first owns that holds no keys — so
+        // nothing this test marks can redirect another test's traffic.
+        let mut owners = map.owners.clone();
+        owners.sort_by_key(|range| range.start);
+        let source = owners.first().expect("a master owns slots").clone();
+        let target = map
+            .masters
+            .iter()
+            .find(|master| master.node_id != source.node_id)
+            .expect("a second master")
+            .clone();
+        let node = |addr: &str| {
+            let (host, port) = addr.rsplit_once(':').expect("host:port");
+            server("it-cluster-node", (host.to_string(), port.parse().expect("port")))
+        };
+        let mut source_conn = open_single_connection(&node(&source.addr), 0, false)
+            .await
+            .expect("connect to the source master");
+        let mut target_conn = open_single_connection(&node(&target.addr), 0, false)
+            .await
+            .expect("connect to the target master");
+
+        let mut empty_slot = None;
+        for slot in source.start..=source.end.min(source.start.saturating_add(200)) {
+            let keys: u64 = cmd("CLUSTER")
+                .arg("COUNTKEYSINSLOT")
+                .arg(slot)
+                .query_async(&mut source_conn)
+                .await
+                .expect("countkeysinslot");
+            if keys == 0 {
+                empty_slot = Some(slot);
+                break;
+            }
+        }
+        let slot = empty_slot.expect("an empty slot in the first master's range");
+
+        // Exactly what an interrupted reshard leaves behind.
+        let setslot = |slot: u16, state: &'static str, peer: String| {
+            cmd("CLUSTER").arg("SETSLOT").arg(slot).arg(state).arg(peer).clone()
+        };
+        let _: String = setslot(slot, "IMPORTING", source.node_id.clone())
+            .query_async(&mut target_conn)
+            .await
+            .expect("setslot importing");
+        let _: String = setslot(slot, "MIGRATING", target.node_id.clone())
+            .query_async(&mut source_conn)
+            .await
+            .expect("setslot migrating");
+
+        // Re-read the topology (the map is built at connect, so not the
+        // cached client), then clear before asserting anything.
+        let stuck = get_connection_manager()
+            .get_client_without_cache(&id, 0)
+            .await
+            .expect("re-read the cluster")
+            .nodes_description()
+            .slot_map
+            .migrations
+            .clone();
+
+        for conn in [&mut source_conn, &mut target_conn] {
+            let _: String = cmd("CLUSTER")
+                .arg("SETSLOT")
+                .arg(slot)
+                .arg("STABLE")
+                .query_async(conn)
+                .await
+                .expect("setslot stable");
+        }
+        let settled = get_connection_manager()
+            .get_client_without_cache(&id, 0)
+            .await
+            .expect("re-read the cluster")
+            .nodes_description()
+            .slot_map
+            .migrations
+            .clone();
+
+        let entry = stuck
+            .iter()
+            .find(|entry| entry.slot == slot)
+            .unwrap_or_else(|| panic!("the half-done migration is paired: {stuck:?}"));
+        assert_eq!(entry.source_id, source.node_id);
+        assert_eq!(entry.target_id, target.node_id);
+        assert_eq!(
+            entry.source_addr, source.addr,
+            "both ends are addressable, which STABLE needs"
+        );
+        assert_eq!(entry.target_addr, target.addr);
+        assert!(
+            !settled.iter().any(|entry| entry.slot == slot),
+            "STABLE settled it: {settled:?}"
+        );
+    });
+}
+
 #[test]
 #[ignore]
 fn cluster_slot_stats_ranks_slots_by_key_count() {

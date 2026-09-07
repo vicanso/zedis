@@ -53,6 +53,13 @@ jobs:
             server_bin: valkey-server
             cli_bin: valkey-cli
             flavor: valkey
+          # Valkey 9 is where the Valkey-only paths live: COMMANDLOG's size
+          # logs (8.1) and atomic slot migration (9.0).
+          - name: valkey-9
+            image: valkey/valkey:9
+            server_bin: valkey-server
+            cli_bin: valkey-cli
+            flavor: valkey
           # Modules (ReJSON / RediSearch) — the stack image's own entrypoint,
           # standalone only.
           - name: redis-stack

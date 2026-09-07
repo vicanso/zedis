@@ -108,10 +108,12 @@ pub use slot_stats::{SlotStatMetric, SlotStatRow};
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 
 pub use manager::{
-    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS,
-    HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
-    RedisClientDescription, ShardedPubSub, SlowLogEntry, ValueMatch, ValueSearchRound, get_connection_manager,
-    plan_reshard_slots,
+    AccessMode, AtomicSlotMigration, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition,
+    FAILOVER_TIMEOUT_MS, HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel,
+    PubsubChannelsSnapshot, REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription, ShardedPubSub,
+    SlowLogEntry, ValueMatch, ValueSearchRound, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
+    cluster_migrate_slots, get_connection_manager, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots,
+    slots_in_ranges, unassigned_slot_ranges,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

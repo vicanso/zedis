@@ -149,6 +149,180 @@ pub(super) fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>
     Ok(nodes)
 }
 
+/// The hash slots no master owns, as inclusive ranges. A cluster with a
+/// gap here answers `cluster_state:fail` (unless `cluster-require-full-
+/// coverage no`) and refuses every key in it — the state `CLUSTER
+/// ADDSLOTS` repairs. Overlapping ranges are tolerated: a slot claimed
+/// twice is still covered.
+pub fn unassigned_slot_ranges(owners: &[ClusterSlotRange]) -> Vec<(u16, u16)> {
+    let mut owned: Vec<(u16, u16)> = owners.iter().map(|range| (range.start, range.end)).collect();
+    owned.sort_unstable();
+    let mut gaps: Vec<(u16, u16)> = Vec::new();
+    // A u32 cursor so the slot after 16383 has somewhere to land.
+    let mut cursor: u32 = 0;
+    for (start, end) in owned {
+        let (start, end) = (u32::from(start), u32::from(end));
+        if start > cursor {
+            gaps.push((cursor as u16, (start - 1) as u16));
+        }
+        cursor = cursor.max(end + 1);
+    }
+    if cursor < CLUSTER_HASH_SLOTS {
+        gaps.push((cursor as u16, (CLUSTER_HASH_SLOTS - 1) as u16));
+    }
+    gaps
+}
+
+/// One master's share of a rebalance: the slots it hands to another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebalanceMove {
+    pub source_id: String,
+    pub target_id: String,
+    /// Taken from the source's high end, so what it keeps stays contiguous.
+    pub slots: Vec<u16>,
+}
+
+/// How far off an even split a master may sit before a rebalance bothers
+/// moving anything, as a percentage of its ideal share. `redis-cli
+/// --cluster rebalance` uses the same 2% default, for the same reason: on
+/// a large cluster the remainder alone puts every master a slot or two off
+/// ideal, and chasing that would move data for nothing.
+pub const REBALANCE_THRESHOLD_PCT: f64 = 2.0;
+
+/// Plan an even redistribution of the assigned slots across `masters`.
+///
+/// Each master's ideal share is the assigned slots divided by the master
+/// count, remainder spread over the first few. A master above its ideal
+/// gives, one below takes, and the biggest giver is paired with the
+/// biggest taker until the deficits are covered — the shape
+/// `redis-cli --cluster rebalance` produces. Slots come off a giver's high
+/// end so what it keeps stays contiguous.
+///
+/// Returns an empty plan when every master is already within
+/// [`REBALANCE_THRESHOLD_PCT`] of its ideal, which is the "nothing to do"
+/// answer, not an error.
+pub fn plan_cluster_rebalance(masters: &[(String, Vec<(u16, u16)>)]) -> Result<Vec<RebalanceMove>, String> {
+    if masters.len() < 2 {
+        return Err("rebalancing needs at least two masters".into());
+    }
+    // Slot lists per master, ascending — the planner peels from the back.
+    let mut held: Vec<(String, Vec<u16>)> = masters
+        .iter()
+        .map(|(id, ranges)| {
+            let mut slots: Vec<u16> = ranges.iter().flat_map(|(lo, hi)| *lo..=*hi).collect();
+            slots.sort_unstable();
+            slots.dedup();
+            (id.clone(), slots)
+        })
+        .collect();
+    let assigned: usize = held.iter().map(|(_, slots)| slots.len()).sum();
+    if assigned == 0 {
+        return Err("no slots are assigned yet".into());
+    }
+
+    // Ideal share, remainder spread over the masters in list order so the
+    // totals add back up to `assigned`.
+    let base = assigned / held.len();
+    let remainder = assigned % held.len();
+    let ideal: Vec<usize> = (0..held.len())
+        .map(|index| base + usize::from(index < remainder))
+        .collect();
+
+    // Within the threshold everywhere means there is nothing worth moving.
+    let balanced = held.iter().zip(&ideal).all(|((_, slots), ideal)| {
+        let allowed = (*ideal as f64) * REBALANCE_THRESHOLD_PCT / 100.0;
+        (slots.len() as f64 - *ideal as f64).abs() <= allowed.max(1.0)
+    });
+    if balanced {
+        return Ok(Vec::new());
+    }
+
+    // Givers by surplus, takers by deficit, biggest first on both sides.
+    let mut givers: Vec<(usize, usize)> = Vec::new();
+    let mut takers: Vec<(usize, usize)> = Vec::new();
+    for (index, ((_, slots), ideal)) in held.iter().zip(&ideal).enumerate() {
+        match slots.len().cmp(ideal) {
+            std::cmp::Ordering::Greater => givers.push((index, slots.len() - ideal)),
+            std::cmp::Ordering::Less => takers.push((index, ideal - slots.len())),
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    givers.sort_by_key(|giver| std::cmp::Reverse(giver.1));
+    takers.sort_by_key(|taker| std::cmp::Reverse(taker.1));
+
+    let mut moves: Vec<RebalanceMove> = Vec::new();
+    let mut giver = 0;
+    let mut taker = 0;
+    while giver < givers.len() && taker < takers.len() {
+        let count = givers[giver].1.min(takers[taker].1);
+        if count == 0 {
+            if givers[giver].1 == 0 {
+                giver += 1;
+            } else {
+                taker += 1;
+            }
+            continue;
+        }
+        let source_index = givers[giver].0;
+        let target_index = takers[taker].0;
+        let mut slots = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Some(slot) = held[source_index].1.pop() else {
+                break;
+            };
+            slots.push(slot);
+        }
+        if slots.is_empty() {
+            giver += 1;
+            continue;
+        }
+        let moved = slots.len();
+        slots.sort_unstable();
+        moves.push(RebalanceMove {
+            source_id: held[source_index].0.clone(),
+            target_id: held[target_index].0.clone(),
+            slots,
+        });
+        givers[giver].1 -= moved;
+        takers[taker].1 -= moved;
+        if givers[giver].1 == 0 {
+            giver += 1;
+        }
+        if takers[taker].1 == 0 {
+            taker += 1;
+        }
+    }
+    Ok(moves)
+}
+
+/// Compress a slot list into inclusive ranges — what `CLUSTER
+/// MIGRATESLOTS` takes, and far fewer arguments than one per slot.
+pub fn group_slot_ranges(slots: &[u16]) -> Vec<(u16, u16)> {
+    let mut sorted: Vec<u16> = slots.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut ranges: Vec<(u16, u16)> = Vec::new();
+    for slot in sorted {
+        match ranges.last_mut() {
+            Some((_, end)) if *end + 1 == slot => *end = slot,
+            _ => ranges.push((slot, slot)),
+        }
+    }
+    ranges
+}
+
+/// Every slot inside `ranges`, in order — what `CLUSTER ADDSLOTS` takes
+/// (it has no range form before Redis 7.0, so the caller chunks these).
+pub fn slots_in_ranges(ranges: &[(u16, u16)]) -> Vec<u16> {
+    let mut slots = Vec::new();
+    for (start, end) in ranges {
+        for slot in *start..=*end {
+            slots.push(slot);
+        }
+    }
+    slots
+}
+
 /// Pick up to `count` slots to move toward `target_id`.
 ///
 /// When `source_id` is `Some`, take only from that master; otherwise
@@ -219,6 +393,98 @@ pub fn plan_reshard_slots(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn owner(start: u16, end: u16) -> ClusterSlotRange {
+        ClusterSlotRange {
+            start,
+            end,
+            node_id: "n".to_string(),
+            addr: "127.0.0.1:7000".to_string(),
+            color_index: 0,
+        }
+    }
+
+    fn master(id: &str, ranges: &[(u16, u16)]) -> (String, Vec<(u16, u16)>) {
+        (id.to_string(), ranges.to_vec())
+    }
+
+    #[test]
+    fn a_rebalance_moves_from_the_fullest_to_the_emptiest() {
+        // A fresh node with nothing: it should receive a third of 16384.
+        let plan = plan_cluster_rebalance(&[
+            master("a", &[(0, 8191)]),
+            master("b", &[(8192, 16383)]),
+            master("c", &[]),
+        ])
+        .expect("plan");
+        let onto_c: usize = plan.iter().filter(|m| m.target_id == "c").map(|m| m.slots.len()).sum();
+        assert_eq!(onto_c, 5461, "c reaches its ideal share");
+        assert!(plan.iter().all(|m| m.target_id == "c"), "only c is short: {plan:?}");
+        // Taken off the high end, so what a giver keeps stays contiguous.
+        let from_a = plan.iter().find(|m| m.source_id == "a").expect("a gives");
+        assert_eq!(*from_a.slots.last().expect("slots"), 8191);
+
+        // Every master keeps what the plan says it keeps.
+        let mut totals = std::collections::HashMap::new();
+        for (id, count) in [("a", 8192), ("b", 8192), ("c", 0)] {
+            totals.insert(id.to_string(), count as i64);
+        }
+        for m in &plan {
+            *totals.get_mut(&m.source_id).expect("source") -= m.slots.len() as i64;
+            *totals.get_mut(&m.target_id).expect("target") += m.slots.len() as i64;
+        }
+        assert_eq!(totals.values().sum::<i64>(), 16384);
+        assert!(
+            totals.values().all(|count| (*count - 5461).abs() <= 1),
+            "every master lands on its ideal share: {totals:?}"
+        );
+    }
+
+    #[test]
+    fn an_even_cluster_needs_no_rebalance() {
+        let even = plan_cluster_rebalance(&[
+            master("a", &[(0, 5460)]),
+            master("b", &[(5461, 10922)]),
+            master("c", &[(10923, 16383)]),
+        ])
+        .expect("plan");
+        assert!(even.is_empty(), "nothing worth moving: {even:?}");
+        // A single slot off ideal is inside the threshold too.
+        let nearly = plan_cluster_rebalance(&[
+            master("a", &[(0, 5461)]),
+            master("b", &[(5462, 10922)]),
+            master("c", &[(10923, 16383)]),
+        ])
+        .expect("plan");
+        assert!(nearly.is_empty(), "within the threshold: {nearly:?}");
+        // One master cannot be rebalanced against itself.
+        assert!(plan_cluster_rebalance(&[master("a", &[(0, 16383)])]).is_err());
+    }
+
+    #[test]
+    fn a_slot_list_compresses_into_the_ranges_migrateslots_takes() {
+        assert_eq!(group_slot_ranges(&[3, 1, 2, 7, 8, 20]), vec![(1, 3), (7, 8), (20, 20)]);
+        assert_eq!(group_slot_ranges(&[5, 5, 5]), vec![(5, 5)]);
+        assert!(group_slot_ranges(&[]).is_empty());
+        // The round trip the reshard path relies on.
+        let slots: Vec<u16> = (100..=180).chain(500..=500).collect();
+        assert_eq!(slots_in_ranges(&group_slot_ranges(&slots)), slots);
+    }
+
+    #[test]
+    fn coverage_gaps_are_the_slots_addslots_has_to_repair() {
+        // A cluster missing the slots one master used to own.
+        let gaps = unassigned_slot_ranges(&[owner(0, 5460), owner(10923, 16383)]);
+        assert_eq!(gaps, vec![(5461, 10922)]);
+        assert_eq!(slots_in_ranges(&gaps).len(), 5462);
+
+        // Full coverage, given out of order and overlapping.
+        assert!(unassigned_slot_ranges(&[owner(10923, 16383), owner(0, 10922), owner(5000, 6000)]).is_empty());
+        // Both ends open.
+        assert_eq!(unassigned_slot_ranges(&[owner(10, 20)]), vec![(0, 9), (21, 16383)]);
+        // Nothing assigned at all.
+        assert_eq!(unassigned_slot_ranges(&[]), vec![(0, 16383)]);
+    }
 
     #[test]
     fn parse_cluster_nodes_extracts_id_master_and_slots() {

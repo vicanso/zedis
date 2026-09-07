@@ -18,9 +18,14 @@
 //! Standalone) from `nodes_description().server_type` and renders
 //! per-mode content:
 //!   * Cluster: four tabs — **Nodes** (FAILOVER/MEET/FORGET/REPLICATE),
-//!     **Slots** (hash-slot map + in-flight migrations), **Load**
+//!     **Slots** (hash-slot map, in-flight migrations with a
+//!     `SETSLOT … STABLE` repair for one that never finished, and
+//!     `ADDSLOTS` for slots no master owns), **Load**
 //!     (per-master memory/OPS heatmap), **Reshard** (plan + execute
-//!     slot moves). Slot ownership comes from the heartbeat
+//!     slot moves, and a whole-cluster rebalance). Reshard takes the
+//!     Valkey 9 route when the server has it — `CLUSTER MIGRATESLOTS`
+//!     hands whole slots to the servers, which then own the job — and
+//!     the app's own `SETSLOT` + `MIGRATE` loop otherwise. Slot ownership comes from the heartbeat
 //!     `ClusterSlotMap`; load is polled separately.
 //!   * Sentinel: monitored-master list with per-master
 //!     `Force Failover` / `Reset` / `Remove` buttons; replica rows
@@ -39,15 +44,17 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{
-    CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, FAILOVER_TIMEOUT_MS, ReplicationRole, SentinelMaster,
-    ServerCommand, SlotStatMetric, SlotStatRow, floors, get_connection_manager, get_server,
+    AtomicSlotMigration, CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, FAILOVER_TIMEOUT_MS, RebalanceMove,
+    ReplicationRole, SentinelMaster, ServerCommand, SlotStatMetric, SlotStatRow, floors, get_connection_manager,
+    get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
 };
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{
-    ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, ReplicaInfo, ServerEvent, ZedisGlobalStore, ZedisServerState,
-    dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, i18n_common, i18n_hints, i18n_topology,
-    plan_cluster_reshard, source_owners_for_slots, update_app_state_and_save_quiet,
+    ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, RebalanceLeg, ReplicaInfo, ServerEvent, ZedisGlobalStore,
+    ZedisServerState, dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, fetch_slot_migrations,
+    i18n_common, i18n_hints, i18n_topology, plan_cluster_rebalance_moves, plan_cluster_reshard,
+    source_owners_for_slots, update_app_state_and_save_quiet,
 };
 use crate::views::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog, unavailable_chip};
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
@@ -167,6 +174,8 @@ pub struct ZedisTopology {
     replicate_master_input: Entity<InputState>,
     /// Standalone: the `REPLICAOF host port` target.
     replicaof_input: Entity<InputState>,
+    /// Cluster: which master the unowned slots are handed to.
+    addslots_target_input: Entity<InputState>,
     /// Inline validation for the Meet / Replicate / Replicate-from forms.
     form_error: Option<SharedString>,
     // Reshard wizard inputs.
@@ -177,6 +186,16 @@ pub struct ZedisTopology {
     plan_error: Option<SharedString>,
     /// True while a reshard batch is in flight (Execute confirmed → done/fail).
     reshard_running: bool,
+    /// Valkey 9 atomic migrations reported by every master, tagged with
+    /// the node they were read from. Polled only while the Reshard tab is
+    /// open on a server that has them.
+    slot_migrations: Vec<(String, AtomicSlotMigration)>,
+    slot_migrations_task: Option<Task<()>>,
+    /// The even-out plan, and whether it has been computed at all — an
+    /// empty plan after planning means "already balanced", which is a
+    /// different thing from "not planned yet".
+    rebalance_plan: Vec<RebalanceMove>,
+    rebalance_planned: bool,
     // Load heatmap.
     node_loads: Vec<ClusterNodeLoad>,
     load_error: Option<SharedString>,
@@ -210,6 +229,8 @@ impl ZedisTopology {
         let replicate_master_input = cx.new(|cx| InputState::new(window, cx).placeholder("master node_id"));
         let replicaof_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_topology(cx, "repl_make_replica_placeholder")));
+        let addslots_target_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_topology(cx, "slots_assign_placeholder")));
         let reshard_source_input = cx.new(|cx| InputState::new(window, cx).placeholder("source node_id (optional)"));
         let reshard_target_input = cx.new(|cx| InputState::new(window, cx).placeholder("target node_id"));
         let reshard_count_input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 100"));
@@ -241,6 +262,9 @@ impl ZedisTopology {
                 }
                 if this.mode == TopologyMode::Cluster {
                     this.ensure_load_poll(cx);
+                    // The version only lands with the first INFO, so a
+                    // Reshard tab opened before that starts polling here.
+                    this.ensure_slot_migration_poll(cx);
                 }
                 cx.notify();
             }
@@ -255,6 +279,7 @@ impl ZedisTopology {
             replicate_target_input,
             replicate_master_input,
             replicaof_input,
+            addslots_target_input,
             form_error: None,
             reshard_source_input,
             reshard_target_input,
@@ -262,6 +287,10 @@ impl ZedisTopology {
             planned_slots: Vec::new(),
             plan_error: None,
             reshard_running: false,
+            slot_migrations: Vec::new(),
+            slot_migrations_task: None,
+            rebalance_plan: Vec::new(),
+            rebalance_planned: false,
             node_loads: Vec::new(),
             load_error: None,
             load_metric: LoadMetric::Memory,
@@ -506,7 +535,73 @@ impl ZedisTopology {
         if tab == ClusterTab::Slots {
             self.ensure_slot_stats(cx);
         }
+        if tab == ClusterTab::Reshard {
+            self.ensure_slot_migration_poll(cx);
+        } else {
+            self.slot_migrations_task = None;
+        }
         cx.notify();
+    }
+
+    /// Whether this server moves slots atomically (Valkey 9) instead of
+    /// through the app's own `SETSLOT` + `MIGRATE` loop.
+    fn atomic_migration_supported(&self, cx: &Context<Self>) -> bool {
+        self.mode == TopologyMode::Cluster && self.server_state.read(cx).supports(floors::ATOMIC_SLOT_MIGRATION)
+    }
+
+    /// Poll `CLUSTER GETSLOTMIGRATIONS` while the Reshard tab is open on a
+    /// server that has it. Two seconds: the job list is what tells the user
+    /// a migration they just started is alive, and the reply is tiny.
+    fn ensure_slot_migration_poll(&mut self, cx: &mut Context<Self>) {
+        if self.cluster_tab != ClusterTab::Reshard
+            || self.slot_migrations_task.is_some()
+            || !self.atomic_migration_supported(cx)
+        {
+            return;
+        }
+        self.slot_migrations_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let target = this.update(cx, |this, cx| {
+                    let state = this.server_state.read(cx);
+                    let server_id = state.server_id().to_string();
+                    let addrs: Vec<String> = state
+                        .nodes_description()
+                        .slot_map
+                        .masters
+                        .iter()
+                        .map(|master| master.addr.to_string())
+                        .collect();
+                    (!server_id.is_empty() && !addrs.is_empty()).then_some((server_id, addrs))
+                });
+                match target {
+                    Ok(Some((server_id, addrs))) => {
+                        let migrations = fetch_slot_migrations(&server_id, &addrs).await;
+                        if this
+                            .update(cx, |this, cx| {
+                                this.slot_migrations = migrations;
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+            }
+        }));
+    }
+
+    /// The migrations still running, source side only — the same job shows
+    /// up as EXPORT on its source and IMPORT on its target, and listing
+    /// both would double every row.
+    fn active_migrations(&self) -> Vec<&(String, AtomicSlotMigration)> {
+        self.slot_migrations
+            .iter()
+            .filter(|(_, migration)| migration.is_export() && migration.is_active())
+            .collect()
     }
 
     fn render_cluster_tabs(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1025,6 +1120,7 @@ impl ZedisTopology {
             )
             .child(self.render_slot_bar(slot_map, cx))
             .child(self.render_slot_legend(slot_map, cx))
+            .children(self.render_unassigned_repair(slot_map, cx))
             .child(self.render_migrations_list(slot_map, cx))
             .child(self.render_slot_stats_section(slot_map, cx))
             .into_any_element()
@@ -1365,6 +1461,152 @@ impl ZedisTopology {
         h_flex().gap_2().flex_wrap().children(chips).into_any_element()
     }
 
+    /// The slots nobody owns, and the one command that fixes them. A
+    /// cluster with a gap answers `cluster_state:fail` and refuses every
+    /// key in it, so this is an error state, not a statistic — hence the
+    /// warning frame and its place right under the slot bar.
+    fn render_unassigned_repair(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let gaps = unassigned_slot_ranges(&slot_map.owners);
+        if gaps.is_empty() {
+            return None;
+        }
+        let theme = cx.theme();
+        let (warning, danger, radius) = (theme.warning, theme.danger, theme.radius);
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let count: u32 = gaps.iter().map(|(lo, hi)| u32::from(hi.saturating_sub(*lo)) + 1).sum();
+        // Enough ranges to recognise the shape of the hole, not all of them.
+        let shown: Vec<String> = gaps
+            .iter()
+            .take(6)
+            .map(|(lo, hi)| if lo == hi { lo.to_string() } else { format!("{lo}-{hi}") })
+            .collect();
+        let ranges = if gaps.len() > shown.len() {
+            format!("{}, …", shown.join(", "))
+        } else {
+            shown.join(", ")
+        };
+        let body: SharedString = rust_i18n::t!(
+            "topology.slots_unassigned_body",
+            count = count,
+            ranges = ranges,
+            locale = &locale
+        )
+        .to_string()
+        .into();
+
+        let mut block = v_flex()
+            .w_full()
+            .gap_2()
+            .p_3()
+            .rounded(radius)
+            .border_1()
+            .border_color(warning)
+            .bg(warning.opacity(0.1))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .child(Icon::new(IconName::TriangleAlert).text_color(warning))
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(
+                                Label::new(i18n_topology(cx, "slots_unassigned_title"))
+                                    .text_sm()
+                                    .text_color(warning),
+                            )
+                            .child(Label::new(body).text_xs().whitespace_normal()),
+                    ),
+            );
+        if self.can_cluster_write(cx) {
+            block = block.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Label::new(i18n_topology(cx, "slots_assign_label")).text_sm())
+                    .child(Input::new(&self.addslots_target_input).w(px(260.)))
+                    .child(
+                        Button::new("topo-addslots")
+                            .outline()
+                            .small()
+                            .label(i18n_topology(cx, "slots_assign_button"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let addr = this.addslots_target_input.read(cx).value().trim().to_string();
+                                if parse_host_port(&addr).is_none() {
+                                    this.form_error = Some(i18n_topology(cx, "slots_err_assign_target"));
+                                    cx.notify();
+                                    return;
+                                }
+                                this.form_error = None;
+                                this.open_addslots_dialog(addr.into(), window, cx);
+                            })),
+                    ),
+            );
+            if let Some(error) = self.form_error.clone() {
+                block = block.child(Label::new(error).text_xs().text_color(danger));
+            }
+        }
+        Some(block.into_any_element())
+    }
+
+    /// `SETSLOT … STABLE` behind the alert dialog: what it settles, and
+    /// what it cannot bring back.
+    fn open_stabilize_dialog(
+        &mut self,
+        slot: u16,
+        ends: Vec<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = i18n_topology(cx, "slots_stabilize_confirm_title");
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = rust_i18n::t!("topology.slots_stabilize_confirm_body", slot = slot, locale = &locale).to_string();
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+            .on_ok(move |_, window, cx| {
+                let ends = ends.clone();
+                server_state.update(cx, |state, cx| state.cluster_stabilize_slot(slot, ends, cx));
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `CLUSTER ADDSLOTS` behind the alert dialog. The slot list is taken
+    /// at confirm time, not at click time, so a heartbeat that repaired
+    /// the coverage in between cannot make this claim slots that now have
+    /// an owner.
+    fn open_addslots_dialog(&mut self, target_addr: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let slot_map = self.server_state.read(cx).nodes_description().slot_map.clone();
+        let slots = slots_in_ranges(&unassigned_slot_ranges(&slot_map.owners));
+        if slots.is_empty() {
+            return;
+        }
+        let title = i18n_topology(cx, "slots_assign_confirm_title");
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = rust_i18n::t!(
+            "topology.slots_assign_confirm_body",
+            count = slots.len(),
+            addr = target_addr.as_ref(),
+            locale = &locale
+        )
+        .to_string();
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+            .on_ok(move |_, window, cx| {
+                let target = target_addr.clone();
+                let slots = slots.clone();
+                server_state.update(cx, |state, cx| state.cluster_add_slots(target, slots, cx));
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
     fn render_migrations_list(&self, slot_map: &ClusterSlotMap, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
         let title = i18n_topology(cx, "slots_migrations");
@@ -1379,6 +1621,9 @@ impl ZedisTopology {
                 )
                 .into_any_element();
         }
+        let can_write = self.can_cluster_write(cx);
+        let stabilize_label = i18n_topology(cx, "slots_stabilize_button");
+        let stabilize_tooltip = i18n_topology(cx, "slots_stabilize_tooltip");
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         for m in &slot_map.migrations {
             let src = if m.source_addr.is_empty() {
@@ -1391,9 +1636,36 @@ impl ZedisTopology {
             } else {
                 m.target_addr.to_string()
             };
+            // Both ends, so `SETSLOT … STABLE` reaches whichever of them
+            // the map could pair.
+            let ends: Vec<SharedString> = [m.source_addr.clone(), m.target_addr.clone()]
+                .into_iter()
+                .filter(|addr| !addr.is_empty())
+                .map(SharedString::from)
+                .collect();
+            let slot = m.slot;
             rows.push(
-                Label::new(SharedString::from(format!("slot {} · {} → {}", m.slot, src, tgt)))
-                    .text_xs()
+                h_flex()
+                    .id(SharedString::from(format!("topo-migration-{slot}")))
+                    .items_center()
+                    .gap_2()
+                    .child(Label::new(SharedString::from(format!("slot {slot} · {src} → {tgt}"))).text_xs())
+                    .child(div().flex_1())
+                    // A migration that never finished sits here forever:
+                    // the cluster keeps serving the slot through ASK
+                    // redirects but never settles it.
+                    .when(can_write && !ends.is_empty(), |this| {
+                        this.child(
+                            Button::new(SharedString::from(format!("topo-stabilize-{slot}")))
+                                .ghost()
+                                .small()
+                                .label(stabilize_label.clone())
+                                .tooltip(stabilize_tooltip.clone())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_stabilize_dialog(slot, ends.clone(), window, cx);
+                                })),
+                        )
+                    })
                     .into_any_element(),
             );
         }
@@ -1724,10 +1996,20 @@ impl ZedisTopology {
             .gap_3()
             .child(Label::new(i18n_topology(cx, "reshard_title")).font_semibold())
             .child(
-                Label::new(i18n_topology(cx, "reshard_hint"))
-                    .text_xs()
-                    .text_color(muted),
+                Label::new(i18n_topology(
+                    cx,
+                    if self.atomic_migration_supported(cx) {
+                        "reshard_atomic_hint"
+                    } else {
+                        "reshard_hint"
+                    },
+                ))
+                .text_xs()
+                .text_color(muted)
+                .whitespace_normal(),
             )
+            .children(self.render_slot_migrations(cx))
+            .child(self.render_rebalance_section(cx))
             .child(
                 Label::new(i18n_topology(cx, "reshard_pick_masters"))
                     .text_xs()
@@ -1773,6 +2055,296 @@ impl ZedisTopology {
                     ),
             )
             .child(h_flex().gap_2().child(plan_btn).child(execute_btn).child(clear_src_btn))
+            .child(preview)
+            .into_any_element()
+    }
+
+    /// Atomic migrations the servers are running right now. Absent on a
+    /// cluster without them, and while none are in flight.
+    fn render_slot_migrations(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let active = self.active_migrations();
+        if active.is_empty() {
+            return None;
+        }
+        let theme = cx.theme();
+        let (muted, border, radius) = (theme.muted_foreground, theme.border, theme.radius);
+        let can_write = self.can_cluster_write(cx);
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        // `CANCELSLOTMIGRATIONS` aborts every job a node started, so the
+        // control is per source node, not per row.
+        let mut sources: Vec<SharedString> = active
+            .iter()
+            .map(|(addr, _)| SharedString::from(addr.clone()))
+            .collect();
+        sources.sort();
+        sources.dedup();
+
+        let rows: Vec<gpui::AnyElement> = active
+            .iter()
+            .map(|(addr, migration)| {
+                let mut line = format!(
+                    "{} · {} → {} · {}",
+                    migration.slot_ranges, addr, migration.target_node, migration.state
+                );
+                if migration.remaining_repl_size > 0 {
+                    line.push_str(&format!(
+                        " · {}",
+                        rust_i18n::t!(
+                            "topology.migrations_remaining",
+                            size = format_lag_bytes(migration.remaining_repl_size as i64),
+                            locale = &locale
+                        )
+                    ));
+                }
+                Label::new(SharedString::from(line)).text_xs().into_any_element()
+            })
+            .collect();
+
+        Some(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .p_3()
+                .rounded(radius)
+                .border_1()
+                .border_color(border)
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(Label::new(i18n_topology(cx, "migrations_title")).font_semibold())
+                        .child(
+                            Label::new(SharedString::from(active.len().to_string()))
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                        .child(div().flex_1())
+                        .when(can_write, |this| {
+                            this.child(
+                                Button::new("topo-cancel-migrations")
+                                    .outline()
+                                    .small()
+                                    .label(i18n_topology(cx, "migrations_cancel"))
+                                    .tooltip(i18n_topology(cx, "migrations_cancel_tooltip"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_cancel_migrations_dialog(sources.clone(), window, cx);
+                                    })),
+                            )
+                        }),
+                )
+                .children(rows)
+                .into_any_element(),
+        )
+    }
+
+    /// `CLUSTER CANCELSLOTMIGRATIONS` behind the alert dialog: it aborts
+    /// every job the named nodes started, not one row.
+    fn open_cancel_migrations_dialog(
+        &mut self,
+        sources: Vec<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = i18n_topology(cx, "migrations_cancel_confirm_title");
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = rust_i18n::t!(
+            "topology.migrations_cancel_confirm_body",
+            nodes = sources.len(),
+            locale = &locale
+        )
+        .to_string();
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+            .on_ok(move |_, window, cx| {
+                let sources = sources.clone();
+                server_state.update(cx, |state, cx| state.cluster_cancel_slot_migrations(sources, cx));
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Masters as `(node_id, ranges)` — what both planners take.
+    fn master_ranges(&self, cx: &Context<Self>) -> Vec<(String, Vec<(u16, u16)>)> {
+        let desc = self.server_state.read(cx).nodes_description();
+        let mut by_id: std::collections::HashMap<String, Vec<(u16, u16)>> = std::collections::HashMap::new();
+        // Every master, including one holding no slots — a node that just
+        // joined is exactly who a rebalance is for.
+        for master in &desc.slot_map.masters {
+            by_id.entry(master.node_id.to_string()).or_default();
+        }
+        for owner in &desc.slot_map.owners {
+            by_id
+                .entry(owner.node_id.to_string())
+                .or_default()
+                .push((owner.start, owner.end));
+        }
+        by_id.into_iter().collect()
+    }
+
+    fn run_rebalance_plan(&mut self, cx: &mut Context<Self>) {
+        self.rebalance_planned = true;
+        match plan_cluster_rebalance_moves(&self.master_ranges(cx)) {
+            Ok(moves) => {
+                self.rebalance_plan = moves;
+                self.plan_error = None;
+            }
+            Err(e) => {
+                self.rebalance_plan.clear();
+                self.plan_error = Some(SharedString::from(e));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Resolve the plan's node ids to addresses and run it.
+    fn open_rebalance_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rebalance_plan.is_empty() || self.reshard_running || !self.can_cluster_write(cx) {
+            return;
+        }
+        let desc = self.server_state.read(cx).nodes_description();
+        let addr_of = |node_id: &str| {
+            desc.slot_map
+                .masters
+                .iter()
+                .find(|master| master.node_id == node_id)
+                .map(|master| master.addr.to_string())
+        };
+        let mut legs: Vec<RebalanceLeg> = Vec::new();
+        for step in &self.rebalance_plan {
+            let (Some(source_addr), Some(target_addr)) = (addr_of(&step.source_id), addr_of(&step.target_id)) else {
+                self.plan_error = Some(i18n_topology(cx, "err_reshard_target_missing"));
+                cx.notify();
+                return;
+            };
+            legs.push(RebalanceLeg {
+                source_addr,
+                source_id: step.source_id.clone(),
+                target_addr,
+                target_id: step.target_id.clone(),
+                slots: step.slots.clone(),
+            });
+        }
+        let slots: usize = legs.iter().map(|leg| leg.slots.len()).sum();
+        let atomic = self.atomic_migration_supported(cx);
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = rust_i18n::t!(
+            "topology.rebalance_confirm_body",
+            moves = legs.len(),
+            slots = slots,
+            locale = &locale
+        )
+        .to_string();
+        let title = i18n_topology(cx, "rebalance_confirm_title");
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let entity = cx.entity().downgrade();
+        ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+            .on_ok(move |_, window, cx| {
+                let legs = legs.clone();
+                server_state.update(cx, |state, cx| state.cluster_rebalance(legs, atomic, cx));
+                if let Some(this) = entity.upgrade() {
+                    this.update(cx, |this, cx| {
+                        this.reshard_running = !atomic;
+                        this.rebalance_plan.clear();
+                        this.rebalance_planned = false;
+                        cx.notify();
+                    });
+                }
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Even out the slots across every master in one step — the planner
+    /// `redis-cli --cluster rebalance` implements, with the same 2%
+    /// threshold, executed over whichever migration path this server has.
+    fn render_rebalance_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let (muted, border, radius) = (theme.muted_foreground, theme.border, theme.radius);
+        let can_write = self.can_cluster_write(cx);
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let slots: usize = self.rebalance_plan.iter().map(|step| step.slots.len()).sum();
+
+        let preview: gpui::AnyElement = if !self.rebalance_planned {
+            Label::new(i18n_topology(cx, "rebalance_hint"))
+                .text_xs()
+                .text_color(muted)
+                .whitespace_normal()
+                .into_any_element()
+        } else if self.rebalance_plan.is_empty() {
+            Label::new(i18n_topology(cx, "rebalance_balanced"))
+                .text_xs()
+                .text_color(muted)
+                .into_any_element()
+        } else {
+            let rows: Vec<gpui::AnyElement> = self
+                .rebalance_plan
+                .iter()
+                .map(|step| {
+                    let line = rust_i18n::t!(
+                        "topology.rebalance_row",
+                        source = short_node_id(&step.source_id),
+                        target = short_node_id(&step.target_id),
+                        count = step.slots.len(),
+                        locale = &locale
+                    )
+                    .to_string();
+                    Label::new(SharedString::from(line))
+                        .text_xs()
+                        .font_family(get_mono_font_family())
+                        .into_any_element()
+                })
+                .collect();
+            let summary: SharedString = rust_i18n::t!(
+                "topology.rebalance_will_move",
+                moves = self.rebalance_plan.len(),
+                slots = slots,
+                locale = &locale
+            )
+            .to_string()
+            .into();
+            v_flex()
+                .gap_0p5()
+                .child(Label::new(summary).text_xs())
+                .children(rows)
+                .into_any_element()
+        };
+
+        v_flex()
+            .w_full()
+            .gap_2()
+            .p_3()
+            .rounded(radius)
+            .border_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(Label::new(i18n_topology(cx, "rebalance_title")).font_semibold())
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("topo-rebalance-plan")
+                            .outline()
+                            .small()
+                            .label(i18n_topology(cx, "rebalance_plan"))
+                            .disabled(!can_write || self.reshard_running)
+                            .on_click(cx.listener(|this, _, _window, cx| this.run_rebalance_plan(cx))),
+                    )
+                    .child(
+                        Button::new("topo-rebalance-exec")
+                            .danger()
+                            .small()
+                            .label(i18n_topology(cx, "rebalance_execute"))
+                            .disabled(!can_write || self.rebalance_plan.is_empty() || self.reshard_running)
+                            .on_click(cx.listener(|this, _, window, cx| this.open_rebalance_dialog(window, cx))),
+                    ),
+            )
             .child(preview)
             .into_any_element()
     }
@@ -1883,16 +2455,46 @@ impl ZedisTopology {
             }
         };
 
-        let title = i18n_topology(cx, "reshard_confirm_title");
+        // Valkey 9 hands the whole job to the source nodes; everything
+        // else walks the slots here. The wording differs because the
+        // promise does: an atomic migration survives closing the app.
+        let atomic = self.atomic_migration_supported(cx);
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let title = i18n_topology(
+            cx,
+            if atomic {
+                "reshard_atomic_confirm_title"
+            } else {
+                "reshard_confirm_title"
+            },
+        );
         let body = rust_i18n::t!(
-            "topology.reshard_confirm_body",
+            if atomic {
+                "topology.reshard_atomic_confirm_body"
+            } else {
+                "topology.reshard_confirm_body"
+            },
             count = self.planned_slots.len(),
             target_id = target_id.as_str(),
             target_addr = target_addr.as_str(),
             locale = locale
         )
         .to_string();
+        // One MIGRATESLOTS per source node, each carrying its own ranges.
+        let atomic_jobs: Vec<(SharedString, Vec<(u16, u16)>)> = if atomic {
+            let mut by_source: std::collections::HashMap<String, Vec<u16>> = std::collections::HashMap::new();
+            for (slot, source_addr, _) in &source_by_slot {
+                by_source.entry(source_addr.clone()).or_default().push(*slot);
+            }
+            let mut jobs: Vec<(SharedString, Vec<(u16, u16)>)> = by_source
+                .into_iter()
+                .map(|(addr, slots)| (SharedString::from(addr), group_slot_ranges(&slots)))
+                .collect();
+            jobs.sort_by(|a, b| a.0.cmp(&b.0));
+            jobs
+        } else {
+            Vec::new()
+        };
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
         let slots = self.planned_slots.clone();
@@ -1906,12 +2508,20 @@ impl ZedisTopology {
                 let source_by_slot = source_by_slot.clone();
                 let t_addr = target_addr_s.clone();
                 let t_id = target_id_s.clone();
+                let jobs = atomic_jobs.clone();
                 server_state.update(cx, |state, cx| {
-                    state.cluster_reshard(t_addr, t_id, slots, source_by_slot, cx);
+                    if atomic {
+                        state.cluster_migrate_slots_atomic(jobs, t_id, cx);
+                    } else {
+                        state.cluster_reshard(t_addr, t_id, slots, source_by_slot, cx);
+                    }
                 });
                 if let Some(this) = entity.upgrade() {
                     this.update(cx, |this, cx| {
-                        this.reshard_running = true;
+                        // The atomic path returns as soon as the servers
+                        // accepted the job — the progress bar belongs to the
+                        // loop this process drives, not to them.
+                        this.reshard_running = !atomic;
                         this.planned_slots.clear();
                         cx.notify();
                     });
@@ -2252,11 +2862,42 @@ impl ZedisTopology {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        // Forgetting a master that still owns slots orphans them: the
+        // cluster loses coverage and answers cluster_state:fail. Refuse
+        // and say what to do instead, rather than confirming a break.
+        let owned: u32 = self
+            .server_state
+            .read(cx)
+            .nodes_description()
+            .slot_map
+            .owners
+            .iter()
+            .filter(|range| range.node_id.as_str() == node_id.as_ref())
+            .map(|range| u32::from(range.end - range.start) + 1)
+            .sum();
+        if owned > 0 {
+            let body = rust_i18n::t!(
+                "topology.forget_owns_slots_body",
+                addr = addr_display.as_ref(),
+                count = owned,
+                locale = &locale
+            )
+            .to_string();
+            ZedisDialog::new_alert(i18n_topology(cx, "forget_owns_slots_title"), body)
+                .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+                .open(window, cx);
+            return;
+        }
+
         let title = i18n_topology(cx, "forget_confirm_title");
-        let body = format!(
-            "Drop node {addr_display} (id {node_id}) from the cluster view on all masters. \
-             Gossip may re-add it within 60s if any master misses the forget."
-        );
+        let body = rust_i18n::t!(
+            "topology.forget_confirm_body",
+            addr = addr_display.as_ref(),
+            node_id = node_id.as_ref(),
+            locale = &locale
+        )
+        .to_string();
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
         ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
