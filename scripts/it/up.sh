@@ -208,11 +208,28 @@ gen_tls_material() {
     # The client half: same CA, plus a PKCS#8 copy of the key encrypted with
     # a passphrase — the `client_key_passphrase` path, which a plaintext key
     # never exercises.
+    #
+    # `-extfile` is not decoration: `x509 -req` emits a **version 1**
+    # certificate when it adds no extensions (OpenSSL 3.0 — 3.6 happens to
+    # add SKID/AKID on its own and yield v3), and rustls refuses a v1 peer
+    # certificate outright with `UnsupportedCertVersion`. The server cert
+    # gets its v3 from `san.cnf`; give the client one of its own so both are
+    # v3 on every OpenSSL.
+    printf "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n" > client.cnf
     openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=zedis-it-client" 2>/dev/null
-    openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 2 2>/dev/null
+    openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 2 -extfile client.cnf 2>/dev/null
     openssl pkcs8 -topk8 -in client.key -out client.enc.key -passout "pass:$CLIENT_KEY_PASSPHRASE" 2>/dev/null
     chmod 644 server.key ca.key client.key client.enc.key
   )
+  # Catch a v1 certificate here rather than as a rustls error inside a test
+  # ten minutes later — this differs by OpenSSL version, so it has to be
+  # asserted on the host that generated them.
+  for cert in ca server client; do
+    if ! openssl x509 -in "$IT_DIR/tls/$cert.crt" -noout -text 2>/dev/null | grep -q "Version: 3"; then
+      echo "!! tls/$cert.crt is not X.509 v3 — rustls will refuse it (openssl $(openssl version))" >&2
+      exit 1
+    fi
+  done
   env_put ZEDIS_IT_TLS_CA "$IT_DIR/tls/ca.crt"
 }
 

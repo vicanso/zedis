@@ -91,6 +91,19 @@ jobs:
           CLI_BIN: ${{ matrix.cli_bin || 'redis-cli' }}
           IT_STACK: ${{ matrix.stack || '0' }}
         run: scripts/it/up.sh
+      # up.sh skips a scenario it cannot start (no sshd, an openssl whose
+      # certificates rustls refuses) and the tests skip with it — green, and
+      # the coverage quietly gone. Assert the two newest lanes really came
+      # up, everywhere but the stack image, which runs standalone only.
+      - name: assert the optional scenarios started
+        if: matrix.stack != '1'
+        run: |
+          for var in ZEDIS_IT_MTLS ZEDIS_IT_SSH; do
+            grep -q "^$var=" scripts/it/.env && continue
+            echo "::error::$var is missing — up.sh skipped that scenario, so its tests did not run"
+            tail -30 scripts/it/.run/sshd.log 2>/dev/null || true
+            exit 1
+          done
       - name: live tests
         env:
           ZEDIS_IT_FLAVOR: ${{ matrix.flavor || 'redis' }}
