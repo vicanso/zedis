@@ -19,11 +19,12 @@ use crate::connection::{
 };
 use crate::error::Error;
 use crate::helpers::{
-    EditorAction, card_background, decrypt_share, get_mono_font_family, is_share_token, resolve_path, resolve_tag_chip,
+    EditorAction, card_background, decrypt_share, format_duration_units, format_unix_secs, get_mono_font_family,
+    is_share_token, resolve_path, resolve_tag_chip, unix_ts,
 };
 use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
-    escalate_dangerous_body, i18n_common, i18n_servers, update_app_state_and_save,
+    escalate_dangerous_body, get_session_option, i18n_common, i18n_servers, update_app_state_and_save,
 };
 use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global, open_connection_diagnostics};
 use gpui::{
@@ -45,8 +46,11 @@ use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::mem::take;
 use std::rc::Rc;
+use std::time::Duration;
 use substring::Substring;
 use tracing::{info, warn};
 use zedis_ui::ZedisCard;
@@ -67,6 +71,94 @@ const UPDATED_AT_SUBSTRING_LENGTH: usize = 10; // Length of date string to displ
 enum ServersCardAction {
     Export(SharedString),
     Delete(SharedString),
+    /// Open the add dialog pre-filled from this server, with a fresh id —
+    /// the TLS material, SSH tunnel and credentials are the part worth
+    /// copying, and they are also the part nobody wants to retype.
+    Clone(SharedString),
+}
+
+/// Toolbar-level actions dispatched from the render root. Only the sort
+/// selector for now; the payload is a `ServerSort::as_str` wire id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
+enum ServersToolbarAction {
+    SetSort(SharedString),
+}
+
+/// Toolbar order for the cards inside each group. Groups themselves keep
+/// their own order; only the cards within one are re-arranged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ServerSort {
+    /// The hand-made order the ↑/↓ buttons produce. The default, because a
+    /// list someone arranged should not be re-sorted for them.
+    #[default]
+    Manual,
+    Name,
+    /// Most recently connected first; a server never connected sorts last.
+    LastUsed,
+}
+
+impl ServerSort {
+    const ALL: [ServerSort; 3] = [ServerSort::Manual, ServerSort::Name, ServerSort::LastUsed];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            ServerSort::Manual => "manual",
+            ServerSort::Name => "name",
+            ServerSort::LastUsed => "last_used",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        ServerSort::ALL
+            .into_iter()
+            .find(|sort| sort.as_str() == name)
+            .unwrap_or_default()
+    }
+
+    fn i18n_key(self) -> &'static str {
+        match self {
+            ServerSort::Manual => "sort_manual",
+            ServerSort::Name => "sort_name",
+            ServerSort::LastUsed => "sort_last_used",
+        }
+    }
+
+    /// Order one group's cards in place. `Manual` is a no-op: the list already
+    /// arrives in the canonical order the ↑/↓ buttons write. Both other orders
+    /// use a stable sort, so servers that tie (never connected, same name)
+    /// keep that manual order between themselves.
+    fn apply(self, servers: &mut [RedisServer], last_used: &HashMap<String, i64>) {
+        match self {
+            ServerSort::Manual => {}
+            ServerSort::Name => servers.sort_by_key(|server| server.name.to_lowercase()),
+            ServerSort::LastUsed => {
+                servers.sort_by_key(|server| Reverse(last_used.get(&server.id).copied().unwrap_or(0)))
+            }
+        }
+    }
+}
+
+/// When each server was last connected to, from the session store. Absent
+/// for one never opened on this machine.
+fn last_connected_map(servers: &[RedisServer]) -> HashMap<String, i64> {
+    servers
+        .iter()
+        .filter_map(|server| {
+            let at = get_session_option(&server.id).ok()?.last_connected_at?;
+            Some((server.id.clone(), at))
+        })
+        .collect()
+}
+
+/// "used 2h ago" for a connect stamp, or `None` when there is none.
+fn format_last_used(at: i64, locale: &str) -> String {
+    let ago = unix_ts().saturating_sub(at).max(0) as u64;
+    t!(
+        "servers.last_used_label",
+        ago = format_duration_units(Duration::from_secs(ago)),
+        locale = locale
+    )
+    .to_string()
 }
 
 /// Server management view component
@@ -1367,6 +1459,17 @@ impl Render for ZedisServers {
             }
         }
 
+        // Connect stamps feed both the card footer's "used …" line and the
+        // last-used order. `get_session_option` reads the in-memory session
+        // cache, so this is a map lookup per card, not a file read.
+        let last_used = last_connected_map(&all_servers);
+        // The toolbar order applies *inside* each group; the groups themselves
+        // keep the canonical order `get_servers()` returns.
+        let sort = ServerSort::from_name(&cx.global::<ZedisGlobalStore>().read(cx).server_sort());
+        for (_, group_servers) in groups.iter_mut() {
+            sort.apply(group_servers, &last_used);
+        }
+
         // Build one section per group: header + grid of cards. Each
         // card gets ↑/↓ reorder buttons gated by group-edge position.
         let mut sections: Vec<gpui::AnyElement> = Vec::new();
@@ -1419,6 +1522,10 @@ impl Render for ZedisServers {
                             .as_deref()
                             .map(|s| format_updated_relative(s, &locale))
                             .unwrap_or_default();
+                        // One relative-time slot, and "last connected" is the
+                        // more useful of the two — the edit stamp only shows
+                        // for a server never opened on this machine.
+                        let last_used_at = last_used.get(&server.id).copied();
                         let title = server.name.clone();
                         let tag_label = server.tag_label().unwrap_or_default().to_string();
                         let tag_chip = resolve_tag_chip(server.tag_color.as_deref(), dark);
@@ -1430,9 +1537,11 @@ impl Render for ZedisServers {
                         };
 
                         // Reorder ↑/↓ stay top-right, hover-only (design); skip
-                        // entirely when the group has a single member.
+                        // entirely when the group has a single member, or when a
+                        // toolbar order is active — the arrows move `sort_order`,
+                        // which the card positions no longer reflect.
                         let mut hover_actions: Vec<Button> = Vec::new();
-                        if !single_in_group {
+                        if !single_in_group && sort == ServerSort::Manual {
                             hover_actions.push(
                                 Button::new(("servers-card-action-up", index))
                                     .ghost()
@@ -1473,8 +1582,16 @@ impl Render for ZedisServers {
                         // footer slot.
                         let footer = {
                             let muted = cx.theme().muted_foreground;
-                            let tip = updated_label.clone();
-                            let has_time = !updated_at.is_empty();
+                            // Last connected wins the slot; the edit stamp is the
+                            // fallback for a server never opened here.
+                            let (relative, tip) = match last_used_at {
+                                Some(at) => (
+                                    SharedString::from(format_last_used(at, &locale)),
+                                    SharedString::from(format_unix_secs(at).unwrap_or_default()),
+                                ),
+                                None => (updated_relative.clone().into(), updated_label.clone().into()),
+                            };
+                            let has_time = last_used_at.is_some() || !updated_at.is_empty();
                             let edit_server = update_server.clone();
                             let more_id = more_server_id.clone();
                             h_flex()
@@ -1489,7 +1606,7 @@ impl Render for ZedisServers {
                                         .gap_1()
                                         .when(has_time, |this| {
                                             this.child(Icon::new(CustomIconName::Clock3).xsmall().text_color(muted))
-                                                .child(Label::new(updated_relative.clone()).text_xs().text_color(muted))
+                                                .child(Label::new(relative.clone()).text_xs().text_color(muted))
                                                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                                         }),
                                 )
@@ -1520,9 +1637,15 @@ impl Render for ZedisServers {
                                                 .dropdown_menu_with_anchor(
                                                     Anchor::TopRight,
                                                     move |menu, _window, _cx| {
+                                                        let clone_id = more_id.clone();
                                                         let exp_id = more_id.clone();
                                                         let del_id = more_id.clone();
                                                         menu.menu_element_with_icon(
+                                                            Icon::new(IconName::Copy),
+                                                            Box::new(ServersCardAction::Clone(clone_id)),
+                                                            |_, cx| Label::new(i18n_servers(cx, "clone_tooltip")),
+                                                        )
+                                                        .menu_element_with_icon(
                                                             Icon::new(IconName::ExternalLink),
                                                             Box::new(ServersCardAction::Export(exp_id)),
                                                             |_, cx| Label::new(i18n_servers(cx, "export_tooltip")),
@@ -1656,6 +1779,28 @@ impl Render for ZedisServers {
                     .h(px(32.))
                     .prefix(Icon::new(IconName::Search).text_color(muted_fg)),
             )
+            // Order selector — sorts the cards inside each group. Sits with the
+            // search box because both narrow/arrange the same list.
+            .child(
+                Button::new("servers-toolbar-sort")
+                    .outline()
+                    .icon(IconName::SortAscending)
+                    .tooltip(i18n_servers(cx, "sort_tooltip"))
+                    .label(i18n_servers(cx, sort.i18n_key()))
+                    .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _window, _cx| {
+                        let mut menu = menu;
+                        for option in ServerSort::ALL {
+                            let id: SharedString = option.as_str().into();
+                            let label_key = option.i18n_key();
+                            menu = menu.menu_element_with_check(
+                                sort == option,
+                                Box::new(ServersToolbarAction::SetSort(id)),
+                                move |_, cx| Label::new(i18n_servers(cx, label_key)),
+                            );
+                        }
+                        menu
+                    }),
+            )
             // Spacer pushes the action buttons to the right edge while the
             // search box keeps a fixed 200px width.
             .child(div().flex_1())
@@ -1713,6 +1858,16 @@ impl Render for ZedisServers {
                 }
                 _ => cx.propagate(),
             }))
+            // Toolbar order selector.
+            .on_action(cx.listener(|_this, e: &ServersToolbarAction, _window, cx| match e {
+                ServersToolbarAction::SetSort(id) => {
+                    let id = id.to_string();
+                    update_app_state_and_save(cx, "server_sort", move |state, _| {
+                        state.set_server_sort(&id);
+                    });
+                    cx.notify();
+                }
+            }))
             // Footer "⋯" dropdown actions are dispatched here.
             .on_action(cx.listener(|this, e: &ServersCardAction, window, cx| match e {
                 ServersCardAction::Export(id) => {
@@ -1724,6 +1879,26 @@ impl Render for ZedisServers {
                     }
                 }
                 ServersCardAction::Delete(id) => this.remove_server(window, cx, id.as_ref()),
+                ServersCardAction::Clone(id) => {
+                    if let Ok(servers) = get_servers()
+                        && let Some(server) = servers.iter().find(|s| s.id == id.as_ref())
+                    {
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                        // An empty id is what the dialog reads as "new", so
+                        // saving creates a second entry instead of editing
+                        // the one that was copied.
+                        let copy = RedisServer {
+                            id: String::new(),
+                            name: t!("servers.clone_name", name = server.name.as_str(), locale = &locale).to_string(),
+                            updated_at: None,
+                            // Placed at the end of its group, the way an import
+                            // is — the copy has no earned position.
+                            sort_order: None,
+                            ..server.clone()
+                        };
+                        this.add_or_update_server_dialog(&copy, window, cx);
+                    }
+                }
             }))
             .child(toolbar)
             .children(sections)
@@ -1749,5 +1924,59 @@ mod path_import_tests {
         // An existing non-.json file is NOT read — only .json paths are slurped.
         let non_json = "/etc/hosts";
         assert_eq!(resolve_import_input(non_json).expect("non-json"), non_json);
+    }
+}
+
+#[cfg(test)]
+mod server_sort_tests {
+    use super::{RedisServer, ServerSort};
+    use std::collections::HashMap;
+
+    fn servers(names: &[&str]) -> Vec<RedisServer> {
+        names
+            .iter()
+            .map(|name| RedisServer {
+                id: name.to_string(),
+                name: name.to_string(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn ids(servers: &[RedisServer]) -> Vec<&str> {
+        servers.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    #[test]
+    fn from_name_falls_back_to_manual() {
+        assert_eq!(ServerSort::from_name("name"), ServerSort::Name);
+        assert_eq!(ServerSort::from_name("last_used"), ServerSort::LastUsed);
+        // An unknown / stale wire id must not silently re-arrange the list.
+        assert_eq!(ServerSort::from_name("whatever"), ServerSort::Manual);
+        assert_eq!(ServerSort::from_name(""), ServerSort::Manual);
+    }
+
+    #[test]
+    fn manual_keeps_the_incoming_order() {
+        let mut list = servers(&["c", "a", "b"]);
+        ServerSort::Manual.apply(&mut list, &HashMap::new());
+        assert_eq!(ids(&list), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn name_order_ignores_case() {
+        let mut list = servers(&["beta", "Alpha", "gamma"]);
+        ServerSort::Name.apply(&mut list, &HashMap::new());
+        assert_eq!(ids(&list), vec!["Alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn last_used_puts_the_newest_first_and_never_connected_last() {
+        let mut list = servers(&["never", "old", "fresh", "also_never"]);
+        let last_used = HashMap::from([("old".to_string(), 100_i64), ("fresh".to_string(), 200)]);
+        ServerSort::LastUsed.apply(&mut list, &last_used);
+        // Connected ones by recency, then the never-connected pair in the
+        // manual order they arrived in (a stable sort over the same key).
+        assert_eq!(ids(&list), vec!["fresh", "old", "never", "also_never"]);
     }
 }

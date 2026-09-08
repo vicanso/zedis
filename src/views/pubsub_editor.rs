@@ -23,7 +23,7 @@ use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
 use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
 use crate::error::Error;
-use crate::helpers::{build_csv, get_mono_font_family, now_datetime};
+use crate::helpers::{build_csv, format_duration, get_mono_font_family, now_datetime, unix_ts};
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
 use crate::views::{ChannelPick, export_to_file, open_pubsub_channels_dialog, unavailable_chip};
 use gpui::{Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -40,6 +40,7 @@ use gpui_kit::component::{
 };
 use redis::aio::PubSub;
 use std::rc::Rc;
+use std::time::Duration;
 use tracing::{error, info};
 use zedis_ui::{TextColumn, ZedisTextTable};
 
@@ -155,6 +156,15 @@ pub struct ZedisPubsubEditor {
     /// Why the last subscribe failed, shown under the bar — a server that
     /// rejects SUBSCRIBE must not look like an idle, empty stream.
     subscribe_error: Option<SharedString>,
+    /// When the current subscription started, and when it last delivered
+    /// something (unix seconds). Together they answer the question a quiet
+    /// panel cannot: is this channel idle, or did the connection die? A
+    /// dropped subscription used to look exactly like an empty one.
+    subscribed_at: Option<i64>,
+    last_message_at: Option<i64>,
+    /// Repaints the status line while nothing arrives, so "last message 12m
+    /// ago" keeps counting instead of freezing at the last batch.
+    _tick_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -222,6 +232,9 @@ impl ZedisPubsubEditor {
             sharded: false,
             subscribe_task: None,
             subscribe_error: None,
+            subscribed_at: None,
+            last_message_at: None,
+            _tick_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -276,6 +289,9 @@ impl ZedisPubsubEditor {
                 Ok(sub) => {
                     let _ = entity.update(cx, |this, cx| {
                         this.subscribing = false;
+                        this.subscribed_at = Some(unix_ts());
+                        this.last_message_at = None;
+                        this.start_status_ticker(cx);
                         cx.notify();
                     });
 
@@ -330,6 +346,7 @@ impl ZedisPubsubEditor {
                                 delegate.total_len()
                             });
                             this.message_count = count;
+                            this.last_message_at = Some(unix_ts());
                             cx.notify();
                         });
                         // Entity was dropped – stop the loop.
@@ -365,7 +382,59 @@ impl ZedisPubsubEditor {
     fn handle_unsubscribe(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.subscribe_task.take();
         self.subscribing = false;
+        self.subscribed_at = None;
+        self.last_message_at = None;
+        self._tick_task = None;
         cx.notify();
+    }
+
+    /// Repaint every few seconds while subscribed. Without it the status
+    /// line only moves when a message arrives — which is precisely when it
+    /// does not need to move.
+    fn start_status_ticker(&mut self, cx: &mut Context<Self>) {
+        if self._tick_task.is_some() {
+            return;
+        }
+        self._tick_task = Some(cx.spawn(async move |handle, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                let alive = handle
+                    .update(cx, |this, cx| {
+                        if this.subscribed_at.is_none() {
+                            return false;
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// "Subscribed 5m · last message 12s ago", or "· no messages yet".
+    /// Absent when nothing is subscribed.
+    fn status_line(&self, cx: &gpui::App) -> Option<SharedString> {
+        let since = self.subscribed_at?;
+        let now = unix_ts();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let elapsed = |from: i64| format_duration(Duration::from_secs(now.saturating_sub(from).max(0) as u64));
+        let last = match self.last_message_at {
+            Some(at) => rust_i18n::t!("pubsub_editor.status_last_message", ago = elapsed(at), locale = &locale),
+            None => rust_i18n::t!("pubsub_editor.status_no_messages", locale = &locale),
+        };
+        Some(
+            rust_i18n::t!(
+                "pubsub_editor.status_subscribed",
+                elapsed = elapsed(since),
+                last = last,
+                locale = &locale
+            )
+            .to_string()
+            .into(),
+        )
     }
 
     /// Opens the channel browser; a picked channel replaces the running
@@ -647,6 +716,14 @@ impl Render for ZedisPubsubEditor {
                     )
                 },
             )
+            .when_some(self.status_line(cx), |this, status| {
+                this.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .child(Label::new(status).text_xs().text_color(cx.theme().muted_foreground)),
+                )
+            })
             .when_some(self.subscribe_error.clone(), |this, error| {
                 this.child(
                     div()

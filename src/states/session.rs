@@ -100,6 +100,10 @@ pub struct SessionOption {
     pub soft_wrap: Option<bool>,
     pub query_mode: Option<String>,
     pub refresh_interval_sec: Option<u32>,
+    /// Unix seconds of the last successful connect. A cache, not user data —
+    /// it lives here rather than in `redis-servers.toml` so exporting or
+    /// syncing a server list never carries one machine's usage with it.
+    pub last_connected_at: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]

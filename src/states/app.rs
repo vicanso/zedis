@@ -608,6 +608,10 @@ pub struct ZedisAppState {
     time_zone: Option<String>,
     /// Date + time layout id (`helpers::DATE_FORMATS`); unset = ISO-like.
     date_format: Option<String>,
+    /// How the server list orders cards inside each group. `None` keeps the
+    /// hand-made order the ↑/↓ buttons produce, which stays the default —
+    /// a list someone arranged themselves should not be re-sorted for them.
+    server_sort: Option<String>,
     /// Unix seconds of the last update check, used to throttle the startup
     /// check to one per [`UPDATE_CHECK_INTERVAL`].
     last_update_check: Option<i64>,
@@ -1256,6 +1260,13 @@ impl ZedisAppState {
     }
     pub fn set_date_format(&mut self, id: &str) {
         self.date_format = Some(id.to_string());
+    }
+    /// Server-list order id — see `ServerSort` in the servers view.
+    pub fn server_sort(&self) -> String {
+        self.server_sort.clone().unwrap_or_else(|| "manual".to_string())
+    }
+    pub fn set_server_sort(&mut self, id: &str) {
+        self.server_sort = Some(id.to_string());
     }
     /// Whether a startup update check is due: never run, or longer than
     /// [`UPDATE_CHECK_INTERVAL`] ago.

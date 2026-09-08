@@ -24,7 +24,9 @@
 //! also the unsubscribe path, mirroring the Monitor/Pub/Sub task pattern.
 
 use super::{ConnectionManager, NodeDiscovery, ServerType};
-use crate::async_connection::{resolve_connection_timeout, resolve_response_timeout};
+use crate::async_connection::{
+    keepalive_tcp_settings, resolve_connection_timeout, resolve_response_timeout, with_keepalive,
+};
 use crate::error::Error;
 use crate::ssh_cluster_connection::SshMultiplexedConnection;
 use crate::ssh_tunnel::open_single_ssh_tunnel_push_connection;
@@ -105,6 +107,7 @@ impl ConnectionManager {
                 let mut builder = ClusterClientBuilder::new(addrs)
                     .connection_timeout(resolve_connection_timeout(&first_node.server))
                     .response_timeout(resolve_response_timeout(&first_node.server))
+                    .tcp_settings(keepalive_tcp_settings())
                     .use_protocol(ProtocolVersion::RESP3)
                     .push_sender(move |info: PushInfo| tx.try_send(info));
                 if let Some(certificates) = first_node.server.tls_certificates()? {
@@ -130,7 +133,9 @@ impl ConnectionManager {
                 } else {
                     let info = config.get_connection_url().as_str().into_connection_info()?;
                     let redis_settings = info.redis_settings().clone().set_protocol(ProtocolVersion::RESP3);
-                    let info = info.set_redis_settings(redis_settings);
+                    // Sharded subscriptions read and never write, so they need
+                    // the same keepalive the classic ones do.
+                    let info = with_keepalive(info.set_redis_settings(redis_settings));
                     let client = if let Some(certificates) = config.tls_certificates()? {
                         Client::build_with_tls(info, certificates)?
                     } else {

@@ -16,6 +16,7 @@
 //! count) and the pooled `ConnectionManager`.
 
 use super::*;
+use crate::async_connection::open_single_client;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -418,12 +419,9 @@ impl ConnectionManager {
     }
     pub async fn get_pubsub_connection(&self, server_id: &str) -> Result<redis::aio::PubSub> {
         let config = get_server(server_id)?;
-        let url = config.get_connection_url();
-        let client = if let Some(certificates) = config.tls_certificates()? {
-            redis::Client::build_with_tls(url, certificates)
-        } else {
-            redis::Client::open(url)
-        }?;
+        // The shared builder, so a subscription gets the same TLS handling
+        // and the keepalive probes a read-only connection depends on.
+        let client = open_single_client(&config)?;
         let pubsub = client.get_async_pubsub().await?;
         Ok(pubsub)
     }

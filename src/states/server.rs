@@ -27,7 +27,7 @@ use crate::states::server::history::{ValueHistoryEntry, push_history};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
 use crate::states::{
     HINT_FIRST_CONNECT, QueryMode, ServerView, ZedisGlobalStore, command_unavailable_message, first_connect_hint,
-    get_session_option, i18n_common, i18n_status_bar, update_app_state_and_save_quiet,
+    get_session_option, i18n_common, i18n_status_bar, save_session_option, update_app_state_and_save_quiet,
 };
 use ahash::AHashMap;
 use ahash::AHashSet;
@@ -1319,6 +1319,14 @@ impl ZedisServerState {
                             this.nodes_description = Arc::new(nodes_description);
                             this.note_sentinel_master_choice(cx);
                             this.version = version.into();
+                            // Stamp the connection for the server list's
+                            // "last used" order. Once per successful connect,
+                            // and the write itself is a background task.
+                            let sid = this.server_id.to_string();
+                            if let Ok(mut option) = get_session_option(&sid) {
+                                option.last_connected_at = Some(unix_ts());
+                                save_session_option(&sid, option, cx);
+                            }
                             this.databases = databases;
                             this.access_mode = access_mode;
                             this.supports_rejson = supports_rejson;

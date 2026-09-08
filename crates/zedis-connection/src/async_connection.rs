@@ -19,10 +19,12 @@ use crate::error::{ConnectionErrorKind, Error};
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use redis::{
-    AsyncConnectionConfig, Client, Cmd, FromRedisValue, Pipeline, RedisFuture, Value,
+    AsyncConnectionConfig, Client, Cmd, ConnectionInfo, FromRedisValue, IntoConnectionInfo, Pipeline, RedisFuture,
+    Value,
     aio::{ConnectionLike, MultiplexedConnection},
     cluster_async::ClusterConnection,
     cmd,
+    io::tcp::{TcpSettings, socket2::TcpKeepalive},
 };
 use std::sync::{
     Arc,
@@ -32,6 +34,37 @@ use std::{sync::LazyLock, time::Duration};
 use tracing::{debug, error};
 use zedis_core::string::split_host_port;
 use zedis_core::ttl_cache::{TtlCache, now_secs};
+
+/// How long a connection may sit idle before the kernel probes the peer.
+///
+/// The pooled connections never get here — the heartbeat uses them every
+/// two seconds. The ones that need it are the dedicated connections a
+/// `MONITOR` or a subscription reads from and never writes to. When a
+/// middlebox silently drops the flow (corporate NAT, VPN) that read blocks
+/// forever: no FIN, so the stream never ends; no request, so the response
+/// timeout never applies; no writes, so no retransmit timeout either. The
+/// subscription simply goes quiet, and the panel reads as "no messages"
+/// rather than "disconnected" — the one failure a monitoring view must not
+/// have. Probes make the kernel notice, and the existing read loops exit on
+/// the error they then get.
+///
+/// A connection through an SSH tunnel is not a TCP socket this crate owns,
+/// so it keeps whatever the tunnel does.
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+
+/// TCP settings with the probes on — for a builder that has none yet.
+pub fn keepalive_tcp_settings() -> TcpSettings {
+    TcpSettings::default().set_keepalive(TcpKeepalive::new().with_time(TCP_KEEPALIVE_IDLE))
+}
+
+/// `info` with keepalive probes enabled, keeping every other TCP setting.
+pub fn with_keepalive(info: ConnectionInfo) -> ConnectionInfo {
+    let settings = info
+        .tcp_settings()
+        .clone()
+        .set_keepalive(TcpKeepalive::new().with_time(TCP_KEEPALIVE_IDLE));
+    info.set_tcp_settings(settings)
+}
 
 /// Name reported to Redis via `CLIENT SETNAME` — visible in `CLIENT LIST`,
 /// `CLIENT INFO` and the slow log, so operators can tell which Zedis version
@@ -335,12 +368,12 @@ pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
 ///
 /// A Redis client ready to establish connections
 pub fn open_single_client(config: &RedisServer) -> Result<Client> {
-    let url = config.get_connection_url();
+    let info = with_keepalive(config.get_connection_url().into_connection_info()?);
     // Build client with TLS if certificates are provided
     let client = if let Some(certificates) = config.tls_certificates()? {
-        Client::build_with_tls(url, certificates)?
+        Client::build_with_tls(info, certificates)?
     } else {
-        Client::open(url)?
+        Client::open(info)?
     };
     Ok(client)
 }
