@@ -2,7 +2,8 @@ name: "Integration"
 # Live tests for the connection layer against real servers
 # (crates/zedis-connection/tests/live.rs), one job per server flavour.
 # scripts/it/up.sh builds the same topology CI and a dev machine use:
-# standalone + TLS + sentinel + cluster from one image on the host network.
+# standalone + TLS + mTLS + sentinel + cluster from one image on the host
+# network, plus an unprivileged sshd on the runner for the tunnel tests.
 on:
   push:
     branches: ["main"]
@@ -76,6 +77,13 @@ jobs:
           key: integration
       - name: pull image
         run: docker pull ${{ matrix.image }}
+      # The tunnel tests need an sshd on the runner itself — the Redis image
+      # has none, and in docker mode the servers are on the host network, so
+      # a tunnel opened here reaches them anyway. up.sh skips the scenario
+      # (and the tests skip with it) when this is missing, which would lose
+      # the coverage silently; install it rather than find out that way.
+      - name: ensure sshd
+        run: command -v sshd >/dev/null || sudo apt-get install -y -qq openssh-server
       - name: start topology
         env:
           REDIS_IMAGE: ${{ matrix.image }}
@@ -94,6 +102,8 @@ jobs:
           for c in $(cat scripts/it/.run/containers 2>/dev/null); do
             echo "===== $c"; docker logs "$c" 2>&1 | tail -50
           done
+          # sshd is a host process, so it has no container log.
+          echo "===== sshd"; tail -50 scripts/it/.run/sshd.log 2>/dev/null || true
       - name: stop topology
         if: always()
         run: scripts/it/down.sh

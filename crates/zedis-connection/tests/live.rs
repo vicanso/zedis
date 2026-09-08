@@ -31,15 +31,16 @@ use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
     AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, HeatMetric,
     HeatProbe, ImportFormat, KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue,
-    ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions,
-    ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
-    acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, cluster_get_slot_migrations, cluster_migrate_slots,
-    csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_search, get_connection_manager,
-    get_server, get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
-    parse_readable_entries, pause_args, plan_cluster_rebalance, probe_server_features, read_readable_chunk,
-    rename_hash_field, restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig,
-    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules,
-    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
+    ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus,
+    SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_dryrun,
+    acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami,
+    cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
+    ft_explain, ft_search, get_connection_manager, get_server, get_server_heat_probe, get_servers,
+    kill_filter_commands, kill_running, open_single_connection, parse_readable_entries, pause_args,
+    plan_cluster_rebalance, probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk,
+    run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor,
+    sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, unassigned_slot_ranges, write_hash_field,
+    write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -108,6 +109,50 @@ fn server(id: &str, (host, port): (String, u16)) -> RedisServer {
         host,
         port,
         ..Default::default()
+    }
+}
+
+/// The password the harness put on the sentinel's data nodes and on every
+/// cluster node. Absent only when those scenarios were not started, in
+/// which case nothing that needs it runs either.
+fn data_password() -> Option<String> {
+    env::var("ZEDIS_IT_PASSWORD").ok().filter(|p| !p.is_empty())
+}
+
+/// An entry for a data node behind the harness's password: every cluster
+/// node (including on a MOVED redirect) and the masters and replicas the
+/// sentinel watches.
+fn protected_server(id: &str, addr: (String, u16)) -> RedisServer {
+    RedisServer {
+        password: data_password(),
+        ..server(id, addr)
+    }
+}
+
+/// A Sentinel entry: the data nodes' password *and* the sentinel's own,
+/// which the harness deliberately makes different. `password` reaches the
+/// master Sentinel points at, `sentinel_password` the sentinels themselves
+/// — the split `sentinel_login()` exists for.
+///
+/// `server_type` is left on auto, which is what the connection dialog
+/// produces by default, so discovery reaches the sentinel through
+/// `open_seed_endpoint`'s retry rather than its declared-Sentinel
+/// shortcut. `sentinel_declared_server` covers the other branch.
+fn sentinel_server(id: &str, addr: (String, u16)) -> RedisServer {
+    RedisServer {
+        password: data_password(),
+        sentinel_password: env::var("ZEDIS_IT_SENTINEL_PASSWORD").ok().filter(|p| !p.is_empty()),
+        ..server(id, addr)
+    }
+}
+
+/// The same entry with the type declared, which takes the sentinel's
+/// credentials straight to the seed instead of discovering them from a
+/// refused AUTH.
+fn sentinel_declared_server(id: &str, addr: (String, u16)) -> RedisServer {
+    RedisServer {
+        server_type: Some(SERVER_TYPE_SENTINEL),
+        ..sentinel_server(id, addr)
     }
 }
 
@@ -1736,6 +1781,181 @@ fn tls_connects_with_the_root_cert_and_in_insecure_mode() {
     });
 }
 
+/// Mutual TLS: the server verifies the client too (`tls-auth-clients yes`).
+///
+/// Three things the plain-TLS test cannot reach — the `client_cert` /
+/// `client_key` pair actually being presented, a PKCS#8-encrypted key being
+/// decrypted with `client_key_passphrase`, and a certificate-less client
+/// being *refused* rather than quietly connecting. The last one is what
+/// makes the first two mean anything.
+#[test]
+#[ignore]
+fn mtls_requires_the_client_certificate() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_MTLS");
+        let ca = env::var("ZEDIS_IT_TLS_CA").expect("ZEDIS_IT_TLS_CA");
+        let cert = env::var("ZEDIS_IT_TLS_CLIENT_CERT").expect("ZEDIS_IT_TLS_CLIENT_CERT");
+        let key = env::var("ZEDIS_IT_TLS_CLIENT_KEY").expect("ZEDIS_IT_TLS_CLIENT_KEY");
+        let encrypted_key = env::var("ZEDIS_IT_TLS_CLIENT_KEY_ENC").expect("ZEDIS_IT_TLS_CLIENT_KEY_ENC");
+        let passphrase = env::var("ZEDIS_IT_TLS_CLIENT_KEY_PASSPHRASE").expect("ZEDIS_IT_TLS_CLIENT_KEY_PASSPHRASE");
+
+        // Paths, not pasted PEM: `tls_material` takes either, and the file
+        // form is the one the connection dialog writes.
+        let mut client = server("it-mtls", addr.clone());
+        client.tls = Some(true);
+        client.root_cert = Some(ca.clone());
+        client.client_cert = Some(cert.clone());
+        client.client_key = Some(key);
+        let id = register(client).await;
+        get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("mtls client")
+            .ping()
+            .await
+            .expect("ping over mtls");
+
+        // The same certificate with its key encrypted: only the passphrase
+        // path can open it.
+        let mut encrypted = server("it-mtls-encrypted-key", addr.clone());
+        encrypted.tls = Some(true);
+        encrypted.root_cert = Some(ca.clone());
+        encrypted.client_cert = Some(cert);
+        encrypted.client_key = Some(encrypted_key.clone());
+        encrypted.client_key_passphrase = Some(passphrase);
+        let id = register(encrypted).await;
+        get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("mtls client (encrypted key)")
+            .ping()
+            .await
+            .expect("ping over mtls with an encrypted key");
+
+        // …and without it the key is unreadable, so the connection never
+        // even gets to the handshake.
+        let mut no_passphrase = server("it-mtls-no-passphrase", addr.clone());
+        no_passphrase.tls = Some(true);
+        no_passphrase.root_cert = Some(ca.clone());
+        no_passphrase.client_key = Some(encrypted_key);
+        let id = register(no_passphrase).await;
+        assert!(get_connection_manager().get_client(&id, 0).await.is_err());
+
+        // Trusting the server is not enough when the server also wants to
+        // trust you.
+        let mut anonymous = server("it-mtls-anonymous", addr);
+        anonymous.tls = Some(true);
+        anonymous.root_cert = Some(ca);
+        let id = register(anonymous).await;
+        let refused = match get_connection_manager().get_client(&id, 0).await {
+            Err(e) => Err(e),
+            // Some TLS stacks only surface the peer's alert on first use,
+            // so a handshake that "succeeded" still has to fail here.
+            Ok(client) => client.ping().await,
+        };
+        assert!(refused.is_err(), "a client without a certificate was accepted");
+    });
+}
+
+/// The SSH tunnel, against a real sshd: an encrypted key that needs its
+/// passphrase, a plain key, and a login that must be refused.
+///
+/// **The order inside this test matters.** SSH sessions are cached globally
+/// by `user@addr` ([`SshTarget::cache_id`]), so the second entry with the
+/// same user and host reuses the first one's session instead of
+/// authenticating again. The cases that have to *authenticate* therefore run
+/// before any session exists, and the one negative case that must not be
+/// answered from the cache uses a different user.
+#[test]
+#[ignore]
+fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
+    smol::block_on(async {
+        let (ssh_host, ssh_port) = skip_unless!("ZEDIS_IT_SSH");
+        let user = env::var("ZEDIS_IT_SSH_USER").expect("ZEDIS_IT_SSH_USER");
+        let key = env::var("ZEDIS_IT_SSH_KEY").expect("ZEDIS_IT_SSH_KEY");
+        let encrypted_key = env::var("ZEDIS_IT_SSH_KEY_ENC").expect("ZEDIS_IT_SSH_KEY_ENC");
+        let passphrase = env::var("ZEDIS_IT_SSH_KEY_PASSPHRASE").expect("ZEDIS_IT_SSH_KEY_PASSPHRASE");
+        let ssh_addr = format!("{ssh_host}:{ssh_port}");
+
+        let tunnelled = |id: &str| {
+            let mut s = server(id, standalone());
+            s.ssh_tunnel = Some(true);
+            s.ssh_addr = Some(ssh_addr.clone());
+            s.ssh_username = Some(user.clone());
+            s
+        };
+
+        // 1. An encrypted key with no passphrase cannot be read at all —
+        //    and this runs first, so no cached session can mask it.
+        let mut no_passphrase = tunnelled("it-ssh-no-passphrase");
+        no_passphrase.ssh_key = Some(encrypted_key.clone());
+        let id = register(no_passphrase).await;
+        assert!(
+            get_connection_manager().get_client(&id, 0).await.is_err(),
+            "an encrypted key was accepted without its passphrase"
+        );
+
+        // 2. The same key with the passphrase: a real authentication, since
+        //    nothing has succeeded yet.
+        let mut encrypted = tunnelled("it-ssh-encrypted-key");
+        encrypted.ssh_key = Some(encrypted_key);
+        encrypted.ssh_key_passphrase = Some(passphrase);
+        let id = register(encrypted).await;
+        get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("tunnelled client (encrypted key)")
+            .ping()
+            .await
+            .expect("ping through the tunnel");
+
+        // 3. A plain key, and a round trip that proves the forwarded stream
+        //    really reaches the standalone server: the value is written
+        //    through the tunnel and read back on a direct connection.
+        let mut plain = tunnelled("it-ssh");
+        plain.ssh_key = Some(key);
+        let id = register(plain).await;
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("tunnelled client");
+        assert_eq!(client.nodes_description().server_type, "Standalone");
+        let name = unique("ssh");
+        let mut tunnel_conn = conn(&id, 0).await;
+        cmd("SET")
+            .arg(&name)
+            .arg("through-the-tunnel")
+            .exec_async(&mut tunnel_conn)
+            .await
+            .expect("set through the tunnel");
+
+        let direct = register(server("it-ssh-direct", standalone())).await;
+        let mut direct_conn = conn(&direct, 0).await;
+        let value: String = cmd("GET")
+            .arg(&name)
+            .query_async(&mut direct_conn)
+            .await
+            .expect("get directly");
+        assert_eq!(value, "through-the-tunnel", "the tunnel reached the real server");
+        cmd("DEL")
+            .arg(&name)
+            .exec_async(&mut direct_conn)
+            .await
+            .expect("cleanup");
+
+        // 4. A login the sshd cannot grant. Its own `user@addr`, so the
+        //    successful session above is not reused for it.
+        let mut refused = tunnelled("it-ssh-wrong-user");
+        refused.ssh_username = Some("zedis-it-no-such-user".to_string());
+        refused.ssh_key = Some(env::var("ZEDIS_IT_SSH_KEY").expect("ZEDIS_IT_SSH_KEY"));
+        let id = register(refused).await;
+        assert!(
+            get_connection_manager().get_client(&id, 0).await.is_err(),
+            "an unknown ssh user was let in"
+        );
+    });
+}
+
 // ── sentinel ─────────────────────────────────────────────────────────────
 
 /// `SENTINEL GET-MASTER-ADDR-BY-NAME` straight from the sentinel.
@@ -1755,7 +1975,11 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_SENTINEL");
         let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
-        let mut sentinel = open_single_connection(&server("it-sentinel-raw", addr.clone()), 0, false)
+        // A direct dial of the sentinel: `sentinel_login()` swaps in the
+        // credentials the sentinel itself wants, which are not the data
+        // nodes'.
+        let raw = sentinel_server("it-sentinel-raw", addr.clone()).sentinel_login();
+        let mut sentinel = open_single_connection(&raw, 0, false)
             .await
             .expect("sentinel connection");
         let before = sentinel_master_port(&mut sentinel, &master_name).await;
@@ -1763,7 +1987,7 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
         // Seeds are walked in order: a dead first address must not stop
         // discovery — the real sentinel is the second entry.
         let (sentinel_host, sentinel_port) = addr.clone();
-        let mut s = server(
+        let mut s = sentinel_server(
             "it-sentinel",
             (format!("127.0.0.1:1, {sentinel_host}:{sentinel_port}"), sentinel_port),
         );
@@ -1827,7 +2051,8 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
         // (replica-read-only is the default, so writes bounce from then on).
         // Sentinel kills the demoted node's clients as part of the
         // reconfiguration, so poll on a fresh connection each time.
-        let demoted_server = server("it-demoted", ("127.0.0.1".into(), before));
+        // A data node, so the data password — not the sentinel's.
+        let demoted_server = protected_server("it-demoted", ("127.0.0.1".into(), before));
         let mut is_replica = false;
         for _ in 0..60 {
             if let Ok(mut demoted) = open_single_connection(&demoted_server, 0, false).await
@@ -1882,7 +2107,7 @@ fn sentinel_admin_commands_reach_the_sentinels() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_SENTINEL");
         let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
-        let mut s = server("it-sentinel-admin", addr);
+        let mut s = sentinel_server("it-sentinel-admin", addr);
         s.master_name = Some(master_name.clone());
         let id = register(s).await;
         let server = get_server(&id).expect("saved entry");
@@ -1951,6 +2176,68 @@ fn sentinel_admin_commands_reach_the_sentinels() {
 /// An entry that names no master on a sentinel with several connects to
 /// the first by name and carries the whole list for the Topology switcher;
 /// naming one the sentinel does not monitor fails and says what it does.
+/// The sentinel's own credentials, which the harness deliberately makes
+/// different from the data nodes'. Three shapes, all of them real:
+///
+/// * type declared as Sentinel → `open_seed_endpoint` takes
+///   `sentinel_login()` straight to the seed;
+/// * type on auto (what the connection dialog writes by default) → the
+///   data password is refused by the sentinel and the retry finds the
+///   sentinel's;
+/// * no sentinel credentials at all → nothing to retry with, and the
+///   failure has to arrive as an auth error rather than a hang or a
+///   "seed unreachable".
+#[test]
+#[ignore]
+fn sentinel_uses_its_own_credentials_for_the_sentinels() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_SENTINEL");
+        let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
+        let Some(sentinel_password) = env::var("ZEDIS_IT_SENTINEL_PASSWORD").ok().filter(|p| !p.is_empty()) else {
+            eprintln!("skipped: ZEDIS_IT_SENTINEL_PASSWORD not set");
+            return;
+        };
+        assert_ne!(
+            Some(&sentinel_password),
+            data_password().as_ref(),
+            "the harness must give the sentinel a different password, or this proves nothing"
+        );
+
+        for mut entry in [
+            sentinel_declared_server("it-sentinel-auth-declared", addr.clone()),
+            sentinel_server("it-sentinel-auth-auto", addr.clone()),
+        ] {
+            entry.master_name = Some(master_name.clone());
+            assert!(entry.has_sentinel_credentials());
+            let id = register(entry).await;
+            get_connection_manager().remove_client(&id, 0);
+            let client = get_connection_manager()
+                .get_client(&id, 0)
+                .await
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(client.nodes_description().server_type, "Sentinel");
+            // The data password is the one that has to reach the master.
+            client.ping().await.unwrap_or_else(|e| panic!("{id} ping: {e}"));
+        }
+
+        // Only the data credentials: the sentinel refuses them, and the
+        // legacy "retry without a password" fallback cannot help against a
+        // sentinel that wants one.
+        let mut blind = server("it-sentinel-auth-missing", addr);
+        blind.master_name = Some(master_name);
+        blind.password = data_password();
+        assert!(!blind.has_sentinel_credentials());
+        let id = register(blind).await;
+        get_connection_manager().remove_client(&id, 0);
+        let err = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .err()
+            .expect("a sentinel password is required here");
+        assert_eq!(err.connection_kind(), ConnectionErrorKind::Auth, "{err}");
+    });
+}
+
 #[test]
 #[ignore]
 fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
@@ -1961,7 +2248,7 @@ fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
             eprintln!("skipped: ZEDIS_IT_MASTER_NAME2 not set");
             return;
         };
-        let id = register(server("it-sentinel-unnamed", addr.clone())).await;
+        let id = register(sentinel_server("it-sentinel-unnamed", addr.clone())).await;
         get_connection_manager().remove_client(&id, 0);
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         let desc = client.nodes_description();
@@ -1981,7 +2268,7 @@ fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
         assert_eq!(client.master_servers().len(), 1, "connected to one master");
         assert_eq!(desc.topology[0].master.master_name, expected[0], "the first by name");
 
-        let mut s = server("it-sentinel-unknown", addr);
+        let mut s = sentinel_server("it-sentinel-unknown", addr);
         s.master_name = Some("no-such-master".into());
         let id = register(s).await;
         get_connection_manager().remove_client(&id, 0);
@@ -2001,7 +2288,7 @@ fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
 fn cluster_discovers_nodes_and_scans_every_master() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
-        let id = register(server("it-cluster", addr)).await;
+        let id = register(protected_server("it-cluster", addr)).await;
         let client = get_connection_manager()
             .get_client(&id, 0)
             .await
@@ -2318,7 +2605,7 @@ fn standalone_batch_ttl_conditions_report_skipped_keys() {
 fn cluster_batch_ttl_conditions_keep_key_order() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
-        let id = register(server("it-ttl-cond-cluster", addr)).await;
+        let id = register(protected_server("it-ttl-cond-cluster", addr)).await;
         check_batch_ttl_conditions(&id).await;
     });
 }
@@ -2586,7 +2873,7 @@ fn standalone_info_keysizes_buckets_types() {
 fn cluster_rebalance_plan_is_empty_on_a_fresh_cluster() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
-        let id = register(server("it-cluster-rebalance", addr)).await;
+        let id = register(protected_server("it-cluster-rebalance", addr)).await;
         let map = get_connection_manager()
             .get_client(&id, 0)
             .await
@@ -2620,7 +2907,7 @@ fn cluster_rebalance_plan_is_empty_on_a_fresh_cluster() {
 fn cluster_migrates_slots_atomically_on_valkey_9() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
-        let id = register(server("it-cluster-atomic", addr)).await;
+        let id = register(protected_server("it-cluster-atomic", addr)).await;
         let _slots = CLUSTER_SLOTS.lock().await;
         if !supports(&id, floors::ATOMIC_SLOT_MIGRATION).await {
             eprintln!("skipped: atomic slot migration is Valkey 9.0+");
@@ -2628,7 +2915,7 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
         }
         let node = |addr: &str| {
             let (host, port) = addr.rsplit_once(':').expect("host:port");
-            server("it-cluster-node", (host.to_string(), port.parse().expect("port")))
+            protected_server("it-cluster-node", (host.to_string(), port.parse().expect("port")))
         };
         /// Who owns `slot`, by node id, from a freshly read topology.
         async fn owner_of(id: &str, slot: u16) -> String {
@@ -2763,7 +3050,7 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
 fn cluster_slot_repairs_clear_a_stuck_migration() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
-        let id = register(server("it-cluster-repair", addr)).await;
+        let id = register(protected_server("it-cluster-repair", addr)).await;
         let _slots = CLUSTER_SLOTS.lock().await;
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         let map = client.nodes_description().slot_map;
@@ -2786,7 +3073,7 @@ fn cluster_slot_repairs_clear_a_stuck_migration() {
             .clone();
         let node = |addr: &str| {
             let (host, port) = addr.rsplit_once(':').expect("host:port");
-            server("it-cluster-node", (host.to_string(), port.parse().expect("port")))
+            protected_server("it-cluster-node", (host.to_string(), port.parse().expect("port")))
         };
         let mut source_conn = open_single_connection(&node(&source.addr), 0, false)
             .await
@@ -2875,7 +3162,7 @@ fn cluster_slot_repairs_clear_a_stuck_migration() {
 fn cluster_slot_stats_ranks_slots_by_key_count() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
-        let id = register(server("it-slot-stats", addr)).await;
+        let id = register(protected_server("it-slot-stats", addr)).await;
         if !supports(&id, floors::CLUSTER_SLOT_STATS).await {
             eprintln!("skipped: cluster predates SLOT-STATS (Redis 8.2 / Valkey 8.0)");
             return;
