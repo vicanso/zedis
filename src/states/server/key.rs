@@ -26,7 +26,7 @@ use super::{
     },
     zset::first_load_zset_value,
 };
-use crate::connection::{ExpireCondition, ServerCommand, floors, get_server_features};
+use crate::connection::{ExpireCondition, ServerCommand, floors, get_server_features, get_server_heat_probe};
 use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
     insert_trash_entry, purge_trash, recent_keys_scope,
@@ -39,6 +39,7 @@ use crate::{
 };
 use ahash::AHashSet;
 use bytes::Bytes;
+use futures::future::join;
 use futures::stream::{self, StreamExt};
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
@@ -702,6 +703,12 @@ impl ZedisServerState {
         let current_key = key.clone();
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
         let bypass_size_gate = self.size_gate_bypassed.as_ref() == Some(&key);
+        // Header decorations, both resolved from what the connect-time probe
+        // already learned: whether `OBJECT ENCODING` answers here at all, and
+        // which of FREQ / IDLETIME this server's eviction policy makes
+        // meaningful. A server that has neither simply gets no chip.
+        let with_encoding = self.features.is_usable(ServerCommand::ObjectEncoding);
+        let heat_probe = get_server_heat_probe(&server_id);
 
         self.spawn(
             task,
@@ -806,9 +813,19 @@ impl ZedisServerState {
                         message: format!("unsupported key type: {}", key_type.as_str()),
                     }),
                 }?;
-                if let Ok(memory_usage) = client.memory_usage(key.as_str(), key_type.as_str()).await {
+                // Size and the OBJECT header decorations are both O(1) tail
+                // calls on the same multiplexed connection, so they go out
+                // together — the chip costs no round trip of its own.
+                let (memory_usage, (encoding, heat)) = join(
+                    client.memory_usage(key.as_str(), key_type.as_str()),
+                    client.object_meta(key.as_str(), with_encoding, heat_probe),
+                )
+                .await;
+                if let Ok(memory_usage) = memory_usage {
                     redis_value.size = memory_usage;
                 }
+                redis_value.encoding = encoding.into();
+                redis_value.heat = heat;
                 redis_value.expire_at = expire_at;
                 Ok(redis_value)
             },
@@ -1273,6 +1290,46 @@ impl ZedisServerState {
                     .query_async(&mut conn)
                     .await?;
                 Ok(ttl)
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    if result.is_err() {
+                        value.expire_at = original_ttl;
+                    }
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Sets an absolute expiry (`EXPIREAT`) instead of a countdown. The UI
+    /// offers both because they answer different questions — "keep this for
+    /// an hour" and "drop this at midnight" — and the second one cannot be
+    /// expressed as a duration without the user doing the arithmetic that
+    /// the clock drift then invalidates.
+    ///
+    /// A past instant is refused by the caller, not here: `EXPIREAT` would
+    /// happily delete the key, which is a destructive act that belongs to
+    /// the delete button, not to a typo in a date field.
+    pub fn update_key_expire_at(&mut self, key: SharedString, at: i64, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
+        let original_ttl = value.expire_at;
+        value.expire_at = Some(at);
+        cx.notify();
+        self.spawn_with_arg(
+            ServerTask::UpdateKeyTtl,
+            key.clone(),
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let _: () = cmd("EXPIREAT").arg(key.as_str()).arg(at).query_async(&mut conn).await?;
+                Ok(at)
             },
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {

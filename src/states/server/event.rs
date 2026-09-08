@@ -367,7 +367,9 @@ impl ZedisServerState {
         let cap = match event {
             EditorAction::Create => Capability::CreateKey,
             EditorAction::Save => Capability::SaveValue,
-            EditorAction::UpdateTtl => Capability::SetTtl,
+            EditorAction::UpdateTtl | EditorAction::EditTtlDuration | EditorAction::EditTtlAbsolute => {
+                Capability::SetTtl
+            }
             EditorAction::ImportValue => Capability::ImportValue,
             EditorAction::Delete => Capability::DeleteKey,
             EditorAction::Rename => Capability::RenameKey,

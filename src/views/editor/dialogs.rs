@@ -169,6 +169,50 @@ impl ZedisEditor {
             .open(window, cx);
     }
 
+    /// Open the absolute-expiry picker (`EXPIREAT`). The dialog composes a
+    /// calendar date and a typed time into one instant and previews it; the
+    /// OK path re-checks that instant rather than trusting the preview,
+    /// because a dialog left open across midnight would otherwise submit a
+    /// deadline that has since passed — and a past `EXPIREAT` deletes the key.
+    pub(super) fn open_expire_at_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let Some(key) = state.key() else {
+            return;
+        };
+        let current = state.value().and_then(|value| value.expire_at).filter(|at| *at > 0);
+        let view = cx.new(|cx| ZedisExpireAtDialog::new(current, window, cx));
+        let view_child = view.clone();
+        let view_ok = view.clone();
+        let editor = cx.entity().downgrade();
+        ZedisDialog::new(i18n_expire_at(cx, "title"))
+            .w(px(420.))
+            .ok_text(i18n_expire_at(cx, "apply"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_expire_at(cx, "apply"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || view_child.clone())
+            .on_ok(move |_, _window, cx| {
+                let Some(at) = view_ok.read(cx).expire_at(cx).filter(|at| *at > unix_ts()) else {
+                    // The preview already says why; keep the dialog open
+                    // rather than closing on a value that cannot be sent.
+                    return false;
+                };
+                if let Some(editor) = editor.upgrade() {
+                    let key = key.clone();
+                    editor.update(cx, move |this, cx| {
+                        this.server_state.update(cx, move |state, cx| {
+                            state.update_key_expire_at(key, at, cx);
+                        });
+                    });
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
     /// Open the cross-server diff picker (the copy dialog reused as a pure
     /// server / db picker). On OK, diff this server's value of the key against
     /// the same key on the chosen server.

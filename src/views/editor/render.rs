@@ -765,6 +765,12 @@ impl Render for ZedisEditor {
                 EditorAction::DiffWithServer => {
                     this.open_diff_with_server_dialog(window, cx);
                 }
+                EditorAction::EditTtlDuration => {
+                    this.enter_ttl_edit_mode(window, cx);
+                }
+                EditorAction::EditTtlAbsolute => {
+                    this.open_expire_at_dialog(window, cx);
+                }
                 _ => {
                     cx.propagate();
                 }

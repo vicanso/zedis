@@ -818,6 +818,52 @@ impl RedisClient {
         Ok((total_count as u64, cursors, keys_memory_usage))
     }
 
+    /// `OBJECT ENCODING` plus the one heat metric this server's eviction
+    /// policy makes meaningful, for a single key — what the key editor's
+    /// header chip shows.
+    ///
+    /// Best effort in both directions, because this only decorates a value
+    /// that already loaded: a server without `OBJECT` (a proxy, a managed
+    /// cloud, a `NOPERM` user) and a key that expired between the load and
+    /// this call both answer "nothing to show" instead of failing. Both
+    /// subcommands are O(1) — the object header already carries them.
+    pub async fn object_meta(&self, key: &str, with_encoding: bool, heat: HeatProbe) -> (String, HeatMetric) {
+        let heat_subcommand = heat.redis_subcommand();
+        if !with_encoding && heat_subcommand.is_none() {
+            return (String::new(), HeatMetric::None);
+        }
+        let mut pipe = redis::pipe();
+        if with_encoding {
+            pipe.cmd("OBJECT").arg("ENCODING").arg(key);
+        }
+        if let Some(sub) = heat_subcommand {
+            pipe.cmd("OBJECT").arg(sub).arg(key);
+        }
+        let mut conn = self.connection.clone();
+        // `Vec<Value>` keeps a per-command failure as `Value::ServerError`
+        // rather than failing the batch, which is exactly the tolerance a
+        // vanished key needs.
+        let Ok(values): redis::RedisResult<Vec<Value>> = pipe.query_async(&mut conn).await else {
+            return (String::new(), HeatMetric::None);
+        };
+        let mut values = values.into_iter();
+        let encoding = if with_encoding {
+            match values.next() {
+                Some(Value::SimpleString(s)) => s,
+                Some(Value::BulkString(d)) => String::from_utf8_lossy(&d).to_string(),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        let heat = match (heat, values.next()) {
+            (HeatProbe::Freq, Some(Value::Int(v))) => HeatMetric::Freq(v.max(0) as u64),
+            (HeatProbe::IdleTime, Some(Value::Int(v))) => HeatMetric::IdleTime(v.max(0) as u64),
+            _ => HeatMetric::None,
+        };
+        (encoding, heat)
+    }
+
     /// Returns the active `maxmemory-policy` setting, or an empty string if
     /// the command fails (NOPERM, restricted environment). The caller should
     /// treat empty as "unknown" and skip heat probing.

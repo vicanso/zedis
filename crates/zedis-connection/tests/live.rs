@@ -29,17 +29,17 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl,
-    ImportFormat, KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue,
+    AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, HeatMetric,
+    HeatProbe, ImportFormat, KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue,
     ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SearchOptions,
     ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
     acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, cluster_get_slot_migrations, cluster_migrate_slots,
     csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_search, get_connection_manager,
-    get_server, get_servers, kill_filter_commands, kill_running, open_single_connection, parse_readable_entries,
-    pause_args, plan_cluster_rebalance, probe_server_features, read_readable_chunk, rename_hash_field,
-    restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters,
-    sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, unassigned_slot_ranges,
-    write_hash_field, write_readable_chunk,
+    get_server, get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
+    parse_readable_entries, pause_args, plan_cluster_rebalance, probe_server_features, read_readable_chunk,
+    rename_hash_field, restore_keys_chunk, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig,
+    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules,
+    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -795,6 +795,111 @@ fn standalone_feature_probe_matches_the_server() {
         } else {
             assert!(matches!(features.flavor, ServerFlavor::Redis | ServerFlavor::Valkey));
         }
+    });
+}
+
+/// The key editor's header chip: `OBJECT ENCODING` plus whichever of FREQ /
+/// IDLETIME the server's `maxmemory-policy` makes answerable. The two heat
+/// subcommands are mutually exclusive — asking for the wrong one is a
+/// guaranteed error — so the probe has to pick, and this test pins both the
+/// picking and the tolerance the chip depends on.
+#[test]
+#[ignore]
+fn standalone_object_meta_reports_encoding_and_the_policy_s_heat() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let features = probe_server_features(&id, 0).await.expect("probe");
+        assert_eq!(features.status(ServerCommand::ObjectEncoding), CommandStatus::Available);
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let mut c = conn(&id, 0).await;
+
+        // A short string is `embstr`; a small hash is a listpack (`ziplist`
+        // on the oldest servers in the matrix) — the exact word is the
+        // server's business, so assert the shape, not a spelling.
+        let key = unique("object-meta");
+        let _: () = cmd("SET").arg(&key).arg("v").query_async(&mut c).await.expect("set");
+        let heat = get_server_heat_probe(&id);
+        let (encoding, metric) = client.object_meta(&key, true, heat).await;
+        assert_eq!(encoding, "embstr", "string encoding");
+
+        // Whether FREQ or IDLETIME comes back is the policy's decision, and
+        // the one the probe made must be the one that answers.
+        let policy = client.maxmemory_policy().await.expect("policy");
+        match HeatProbe::from_policy(&policy) {
+            HeatProbe::Freq => {
+                assert!(matches!(metric, HeatMetric::Freq(_)), "{policy} → {metric:?}");
+                assert_eq!(heat, HeatProbe::Freq);
+            }
+            HeatProbe::IdleTime => {
+                assert!(matches!(metric, HeatMetric::IdleTime(_)), "{policy} → {metric:?}");
+                assert_eq!(heat, HeatProbe::IdleTime);
+            }
+            // Only when CONFIG GET is denied, which it is not here.
+            HeatProbe::None => panic!("standalone reported no maxmemory-policy"),
+        }
+
+        let hash = unique("object-meta-hash");
+        let _: () = cmd("HSET")
+            .arg(&hash)
+            .arg("f")
+            .arg("v")
+            .query_async(&mut c)
+            .await
+            .expect("hset");
+        let (hash_encoding, _) = client.object_meta(&hash, true, heat).await;
+        assert!(
+            hash_encoding == "listpack" || hash_encoding == "ziplist",
+            "small hash encoding: {hash_encoding}"
+        );
+
+        // The tolerance the chip is built on: a key that is gone, and a
+        // caller that asked for nothing, both answer "nothing to show"
+        // rather than failing the value load they decorate.
+        let (missing, missing_heat) = client.object_meta(&unique("object-meta-absent"), true, heat).await;
+        assert_eq!(missing, "");
+        assert_eq!(missing_heat, HeatMetric::None);
+        let (none, none_heat) = client.object_meta(&key, false, HeatProbe::None).await;
+        assert_eq!(none, "");
+        assert_eq!(none_heat, HeatMetric::None);
+
+        let _: () = cmd("DEL")
+            .arg(&key)
+            .arg(&hash)
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// `EXPIREAT` is the key editor's other TTL mode: the absolute instant the
+/// duration field cannot express without arithmetic that goes stale while
+/// it is typed. The UI refuses a past instant (that is the delete button's
+/// job), so what has to hold here is only that a future one lands as a
+/// readable countdown.
+#[test]
+#[ignore]
+fn standalone_expireat_sets_an_absolute_deadline() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let key = unique("expireat");
+        let _: () = cmd("SET").arg(&key).arg("v").query_async(&mut c).await.expect("set");
+
+        let now: i64 = cmd("TIME").query_async::<(i64, i64)>(&mut c).await.expect("time").0;
+        let at = now + 3600;
+        let applied: i64 = cmd("EXPIREAT")
+            .arg(&key)
+            .arg(at)
+            .query_async(&mut c)
+            .await
+            .expect("expireat");
+        assert_eq!(applied, 1);
+        let ttl: i64 = cmd("TTL").arg(&key).query_async(&mut c).await.expect("ttl");
+        // The server rounds; anything inside the hour proves the deadline
+        // was taken as an instant and not as a duration.
+        assert!((3500..=3600).contains(&ttl), "ttl after EXPIREAT: {ttl}");
+
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
     });
 }
 

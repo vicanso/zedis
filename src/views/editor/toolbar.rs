@@ -33,6 +33,15 @@ impl ZedisEditor {
         let mut bitmap_candidate = false;
         let mut bitmap_view = false;
         let mut has_bytes_value = false;
+        // `OBJECT ENCODING` and the server's heat metric, both absent on a
+        // server that has no usable `OBJECT` (a proxy, a managed cloud, a
+        // NOPERM user) — the chip then simply doesn't render.
+        let mut encoding: Option<SharedString> = None;
+        let mut heat: HeatMetric = HeatMetric::None;
+        // The absolute instant this key expires, for the TTL tooltip. A
+        // remaining duration answers "how long"; only this answers "when",
+        // which is the question an on-call actually has.
+        let mut expires_at: Option<SharedString> = None;
 
         let mut key_type = KeyType::Unknown;
         // Extract value information if available
@@ -53,6 +62,14 @@ impl ZedisEditor {
             } else {
                 "--".into()
             };
+
+            encoding = value.encoding();
+            heat = value.heat();
+            expires_at = value
+                .expire_at
+                .filter(|at| *at > 0)
+                .and_then(format_unix_secs)
+                .map(SharedString::from);
 
             size = format_size(value.size(), DECIMAL).into();
             // The Bitmap toggle only makes sense for genuinely opaque binary —
@@ -100,6 +117,68 @@ impl ZedisEditor {
             )
             .into_any_element()
         });
+
+        // Storage encoding + heat, rendered next to the size as one muted
+        // mono chip. Each half explains itself on hover, and each appears
+        // only if this server answered the command behind it — so a proxy
+        // that hides `OBJECT` degrades to exactly the bar we had before.
+        let object_el = {
+            let muted = cx.theme().muted_foreground;
+            let mono = get_mono_font_family();
+            let heat_part = match heat {
+                HeatMetric::None => None,
+                HeatMetric::Freq(count) => Some((
+                    format!("{} {}", i18n_editor(cx, "object_freq_label"), count),
+                    i18n_editor(cx, "object_freq_tooltip"),
+                )),
+                HeatMetric::IdleTime(secs) => Some((
+                    format!(
+                        "{} {}",
+                        i18n_editor(cx, "object_idle_label"),
+                        format_duration_units(Duration::from_secs(secs))
+                    ),
+                    i18n_editor(cx, "object_idle_tooltip"),
+                )),
+            };
+            let mut parts: Vec<gpui::AnyElement> = Vec::new();
+            if let Some(encoding) = encoding {
+                let tip = i18n_editor(cx, "object_encoding_tooltip");
+                parts.push(
+                    div()
+                        .id("zedis-editor-encoding")
+                        .flex_none()
+                        .child(
+                            Label::new(encoding)
+                                .text_xs()
+                                .font_family(mono.clone())
+                                .text_color(muted),
+                        )
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        .into_any_element(),
+                );
+            }
+            if let Some((label, tip)) = heat_part {
+                if !parts.is_empty() {
+                    parts.push(Label::new("·").text_xs().text_color(muted).into_any_element());
+                }
+                parts.push(
+                    div()
+                        .id("zedis-editor-heat")
+                        .flex_none()
+                        .child(Label::new(label).text_xs().font_family(mono).text_color(muted))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        .into_any_element(),
+                );
+            }
+            (!parts.is_empty()).then(|| {
+                h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .children(parts)
+                    .into_any_element()
+            })
+        };
 
         // Add save button for string editor if value is modified
         if let Some(bytes_editor) = &self.bytes_editor {
@@ -149,7 +228,7 @@ impl ZedisEditor {
                     .into_any_element()
             } else {
                 // Show TTL button that switches to edit mode on click
-                let ttl_tooltip: SharedString = if self.readonly {
+                let action = if self.readonly {
                     i18n_common(cx, "disable_in_readonly")
                 } else {
                     format!(
@@ -159,7 +238,14 @@ impl ZedisEditor {
                     )
                     .into()
                 };
-                Button::new("zedis-editor-ttl-btn")
+                // The button face is a remaining duration ("6.9d"); the exact
+                // expiry instant goes here, in the configured zone and layout,
+                // so nobody has to do that arithmetic by hand.
+                let ttl_tooltip: SharedString = match &expires_at {
+                    Some(at) => format!("{} {at} · {action}", i18n_editor(cx, "expires_at_label")).into(),
+                    None => action,
+                };
+                let button = Button::new("zedis-editor-ttl-btn")
                     .outline()
                     .font_family(get_mono_font_family())
                     .disabled(self.readonly || should_show_loading)
@@ -168,8 +254,29 @@ impl ZedisEditor {
                     .icon(CustomIconName::Clock3)
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.enter_ttl_edit_mode(window, cx);
-                    }))
-                    .into_any_element()
+                    }));
+                if self.readonly {
+                    // Nothing to choose between when neither command can run.
+                    button.into_any_element()
+                } else {
+                    // Click keeps doing the common thing (a countdown); the
+                    // caret is where "expire at this instant" lives.
+                    DropdownButton::new("zedis-editor-ttl")
+                        .button(button)
+                        .dropdown_menu(move |menu, _, _cx| {
+                            menu.menu_element_with_icon(
+                                CustomIconName::Clock3,
+                                Box::new(EditorAction::EditTtlDuration),
+                                move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_duration")),
+                            )
+                            .menu_element_with_icon(
+                                IconName::Calendar,
+                                Box::new(EditorAction::EditTtlAbsolute),
+                                move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_absolute")),
+                            )
+                        })
+                        .into_any_element()
+                }
             };
             btns.push(ttl_btn);
         }
@@ -473,6 +580,7 @@ impl ZedisEditor {
                     .tooltip(move |window, cx| Tooltip::new(key.clone()).build(window, cx)),
             )
             .children(size_el)
+            .children(object_el)
             .children(btns)
     }
 }

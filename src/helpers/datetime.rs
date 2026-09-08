@@ -22,7 +22,7 @@
 //! pure helpers with no `App` in reach. File-name stamps and diagnostics
 //! deliberately stay on their own fixed formats.
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::sync::RwLock;
 
 /// Which zone timestamps are rendered in.
@@ -194,6 +194,42 @@ pub fn format_unix_millis_with(ms: i64, pattern: &str) -> Option<String> {
     DateTime::from_timestamp_millis(ms).map(|dt| render(&dt, configured_time_zone(), pattern))
 }
 
+/// Split a unix instant into the calendar date and wall-clock time the
+/// configured zone shows it at — what a date picker and a time field have
+/// to be filled with so they agree with every timestamp elsewhere.
+pub fn unix_secs_to_parts(ts: i64) -> Option<(NaiveDate, NaiveTime)> {
+    let dt = DateTime::from_timestamp(ts, 0)?;
+    let naive = match current().0 {
+        TimeZonePref::Local => dt.with_timezone(&Local).naive_local(),
+        TimeZonePref::Utc => dt.naive_utc(),
+    };
+    Some((naive.date(), naive.time()))
+}
+
+/// A picked date + typed time back to a unix instant, read in the
+/// configured zone — the inverse of [`unix_secs_to_parts`].
+///
+/// A local time that a DST jump makes ambiguous resolves to the earlier of
+/// the two readings rather than failing; the alternative is refusing an
+/// hour of the year.
+pub fn unix_secs_from_parts(date: NaiveDate, time: NaiveTime) -> Option<i64> {
+    let naive = date.and_time(time);
+    match current().0 {
+        TimeZonePref::Local => Local.from_local_datetime(&naive).earliest().map(|dt| dt.timestamp()),
+        TimeZonePref::Utc => Some(naive.and_utc().timestamp()),
+    }
+}
+
+/// A typed time of day: `HH:MM` or `HH:MM:SS`, 24-hour. Deliberately not
+/// forgiving about 12-hour input — "7:30" with no meridiem would be a
+/// twelve-hour guess on a field that sets when a key dies.
+pub fn parse_clock_input(input: &str) -> Option<NaiveTime> {
+    let input = input.trim();
+    NaiveTime::parse_from_str(input, "%H:%M:%S")
+        .or_else(|_| NaiveTime::parse_from_str(input, "%H:%M"))
+        .ok()
+}
+
 /// Time of day (`HH:MM:SS`, optionally with milliseconds) in the
 /// configured zone, for the live panels' clock columns.
 pub fn format_clock<Tz: TimeZone>(dt: &DateTime<Tz>, millis: bool) -> String {
@@ -249,6 +285,70 @@ mod tests {
         set_datetime_prefs(TimeZonePref::Utc, "no-such-layout");
         assert_eq!(format_unix_secs(0).as_deref(), Some("1970-01-01 00:00:00"));
         set_datetime_prefs(TimeZonePref::Local, DEFAULT_DATE_FORMAT);
+    }
+
+    #[test]
+    fn every_layout_round_trips_through_the_date_and_time_parts() {
+        let _guard = lock();
+        // 2026-03-04T15:06:07Z — a whole second, so no precision is lost.
+        let ts = 1_772_636_767;
+        for zone in TimeZonePref::ALL {
+            for format in DATE_FORMATS {
+                set_datetime_prefs(zone, format.id);
+                let (date, time) = unix_secs_to_parts(ts).expect("in range");
+                assert_eq!(
+                    unix_secs_from_parts(date, time),
+                    Some(ts),
+                    "{} / {} did not round-trip ({date} {time})",
+                    zone.name(),
+                    format.id
+                );
+                // The parts must also agree with what the rest of the app
+                // renders for the same instant, or the picker would show a
+                // different clock from every other timestamp on screen.
+                assert_eq!(
+                    format_unix_millis_with(ts * 1000, "%Y-%m-%d %H:%M:%S").as_deref(),
+                    Some(date.and_time(time).format("%Y-%m-%d %H:%M:%S").to_string().as_str()),
+                    "{} / {} clock mismatch",
+                    zone.name(),
+                    format.id
+                );
+            }
+        }
+        set_datetime_prefs(TimeZonePref::Local, DEFAULT_DATE_FORMAT);
+    }
+
+    #[test]
+    fn parts_are_read_in_the_configured_zone() {
+        let _guard = lock();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 4).expect("valid date");
+        let time = NaiveTime::from_hms_opt(15, 6, 7).expect("valid time");
+        set_datetime_prefs(TimeZonePref::Utc, DEFAULT_DATE_FORMAT);
+        assert_eq!(unix_secs_from_parts(date, time), Some(1_772_636_767));
+        assert_eq!(unix_secs_to_parts(1_772_636_767), Some((date, time)));
+        // The same wall clock is a different instant in a zone that is not
+        // UTC, which is the whole reason this goes through the preference.
+        set_datetime_prefs(TimeZonePref::Local, DEFAULT_DATE_FORMAT);
+        let local = unix_secs_from_parts(date, time).expect("resolvable");
+        let offset = Local
+            .from_local_datetime(&date.and_time(time))
+            .earliest()
+            .expect("resolvable")
+            .offset()
+            .local_minus_utc() as i64;
+        assert_eq!(local, 1_772_636_767 - offset);
+    }
+
+    #[test]
+    fn clock_input_takes_hh_mm_and_hh_mm_ss_only() {
+        assert_eq!(parse_clock_input("14:30"), NaiveTime::from_hms_opt(14, 30, 0));
+        assert_eq!(parse_clock_input("  14:30:05 "), NaiveTime::from_hms_opt(14, 30, 5));
+        assert_eq!(parse_clock_input("00:00"), NaiveTime::from_hms_opt(0, 0, 0));
+        // No meridiem guessing, no bare hours, no nonsense.
+        assert_eq!(parse_clock_input("2:30 PM"), None);
+        assert_eq!(parse_clock_input("14"), None);
+        assert_eq!(parse_clock_input("25:00"), None);
+        assert_eq!(parse_clock_input(""), None);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
-use crate::connection::{floors, get_connection_manager};
+use crate::connection::{HeatMetric, floors, get_connection_manager};
 use bytes::Bytes;
 use chrono::Local;
 use gpui::{Hsla, SharedString, prelude::*};
@@ -800,6 +800,14 @@ pub struct RedisValue {
     pub(crate) data: Option<RedisValueData>,
     pub(crate) expire_at: Option<i64>,
     pub(crate) size: u64,
+    /// `OBJECT ENCODING` — how the server actually stores this value
+    /// (`listpack`, `hashtable`, `intset`, `embstr`, …). Empty when the
+    /// server has no usable `OBJECT`, which is the normal state on a proxy
+    /// or a restricted managed cloud; the header chip is then absent.
+    pub(crate) encoding: SharedString,
+    /// LFU access counter or LRU idle seconds — whichever this server's
+    /// `maxmemory-policy` makes meaningful. The two are mutually exclusive.
+    pub(crate) heat: HeatMetric,
 }
 
 impl RedisValue {
@@ -848,6 +856,16 @@ impl RedisValue {
     /// Returns the size of the value in bytes
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    /// `OBJECT ENCODING`, or `None` when this server would not answer it.
+    pub fn encoding(&self) -> Option<SharedString> {
+        (!self.encoding.is_empty()).then(|| self.encoding.clone())
+    }
+
+    /// The server's heat metric for this key (`None` when unavailable).
+    pub fn heat(&self) -> HeatMetric {
+        self.heat
     }
 
     /// Returns the time-to-live duration for this key

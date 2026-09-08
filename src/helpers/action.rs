@@ -177,6 +177,11 @@ pub enum EditorAction {
     CopyTo,
     /// Open the cross-server "diff with…" dialog for the selected key.
     DiffWithServer,
+    /// Open the TTL editor expecting a duration (`EXPIRE`) — what the TTL
+    /// button itself does, listed so the dropdown can name both modes.
+    EditTtlDuration,
+    /// Open the TTL editor expecting an absolute instant (`EXPIREAT`).
+    EditTtlAbsolute,
 }
 
 /// Actions scoped to the side-by-side value diff view.

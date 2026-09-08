@@ -15,23 +15,25 @@
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
+    connection::HeatMetric,
     connection::{ConflictMode, RestoreStatus, copy_key, get_connection_manager, get_server, get_servers},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{
-        EditorAction, MultiSearchAction, card_background, format_duration, get_mono_font_family, humanize_keystroke,
-        unix_ts, validate_ttl,
+        EditorAction, MultiSearchAction, card_background, format_duration, format_duration_units, format_unix_secs,
+        get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl,
     },
     states::{
         DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
-        dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_geo_map,
-        i18n_shortcuts,
+        dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_expire_at,
+        i18n_geo_map, i18n_shortcuts,
     },
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
-        ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor, ZedisPubsubEditor,
-        ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
-        ZedisZsetEditor, bitmap_eligible, export_to_file, looks_like_bitmap, looks_like_hll, zset_looks_geo,
+        ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
+        ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
+        ZedisVectorSetEditor, ZedisZsetEditor, bitmap_eligible, export_to_file, looks_like_bitmap, looks_like_hll,
+        zset_looks_geo,
     },
 };
 use bytes::Bytes;
@@ -658,6 +660,10 @@ impl ZedisEditor {
             }
         });
     }
+    /// Open the inline TTL editor, which always reads a countdown
+    /// (`EXPIRE`). An absolute deadline goes through
+    /// [`Self::open_expire_at_dialog`] instead — a date and a time do not
+    /// fit in a key-bar field, and a calendar beats typing a timestamp.
     fn enter_ttl_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let Some(value) = server_state.value() else {
@@ -668,6 +674,7 @@ impl ZedisEditor {
             return;
         }
         let ttl: SharedString = value.ttl().unwrap_or_default().to_string().into();
+        let placeholder = i18n_editor(cx, "ttl_duration_placeholder");
         self.ttl_edit_mode = true;
         self.ttl_input_state.update(cx, move |state, cx| {
             // Clear value if permanent, otherwise use current TTL
@@ -676,6 +683,7 @@ impl ZedisEditor {
             } else {
                 ttl.clone()
             };
+            state.set_placeholder(placeholder, window, cx);
             state.set_value(value, window, cx);
             state.focus(window, cx);
         });

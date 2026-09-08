@@ -29,6 +29,7 @@
 use crate::async_connection::open_single_connection;
 use crate::config::get_server;
 use crate::error::Error;
+use crate::manager::HeatProbe;
 use futures::future::join_all;
 use redis::{Cmd, RedisError, Value, aio::MultiplexedConnection, cmd};
 use std::collections::HashMap;
@@ -48,6 +49,23 @@ const PROBE_SHA: &str = "0000000000000000000000000000000000000000";
 /// which the UI treats as everything-available.
 static FEATURES: LazyLock<Mutex<HashMap<String, Arc<ServerFeatures>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Which `OBJECT` heat subcommand this server can answer, decided once from
+/// its `maxmemory-policy` — the two are mutually exclusive, so asking for
+/// the wrong one is a guaranteed error. Cached next to the command matrix
+/// because it has the same lifetime: read at connect, dropped on re-probe.
+static HEAT_PROBES: LazyLock<Mutex<HashMap<String, HeatProbe>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The heat metric `server_id` can answer, or `None` when it was never
+/// probed or the policy could not be read.
+pub fn get_server_heat_probe(server_id: &str) -> HeatProbe {
+    HEAT_PROBES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(server_id)
+        .copied()
+        .unwrap_or_default()
+}
+
 /// The cached matrix for `server_id`, or the optimistic default.
 pub fn get_server_features(server_id: &str) -> Arc<ServerFeatures> {
     FEATURES
@@ -62,6 +80,7 @@ pub fn get_server_features(server_id: &str) -> Arc<ServerFeatures> {
 /// server's credentials change or the user asks for a re-probe.
 pub fn invalidate_server_features(server_id: &str) {
     FEATURES.lock().unwrap_or_else(|e| e.into_inner()).remove(server_id);
+    HEAT_PROBES.lock().unwrap_or_else(|e| e.into_inner()).remove(server_id);
 }
 
 fn store(server_id: &str, features: ServerFeatures) -> Arc<ServerFeatures> {
@@ -101,11 +120,23 @@ pub fn note_server_command_error(
 pub async fn probe_server_features(server_id: &str, db: usize) -> Result<Arc<ServerFeatures>> {
     let server = get_server(server_id)?;
     let conn = open_single_connection(&server, db, false).await?;
-    let features = run_probe(conn, || {
+    let features = run_probe(conn.clone(), || {
         let server = server.clone();
         async move { open_single_connection(&server, db, false).await }
     })
     .await;
+    // Which of OBJECT FREQ / IDLETIME is meaningful here — one more read-only
+    // command on the probe's own connection, so the key editor never has to
+    // ask. A server that refuses CONFIG GET simply has no heat metric.
+    let heat = if features.is_usable(ServerCommand::ConfigGet) {
+        HeatProbe::from_policy(&read_maxmemory_policy(conn).await)
+    } else {
+        HeatProbe::None
+    };
+    HEAT_PROBES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(server_id.to_string(), heat);
     let unusable = features.unusable();
     info!(
         server_id,
@@ -114,6 +145,20 @@ pub async fn probe_server_features(server_id: &str, db: usize) -> Result<Arc<Ser
         "server feature probe finished"
     );
     Ok(store(server_id, features))
+}
+
+/// `CONFIG GET maxmemory-policy`, or an empty string when the server will
+/// not answer — `HeatProbe::from_policy` reads that as "no heat metric".
+async fn read_maxmemory_policy(mut conn: MultiplexedConnection) -> String {
+    let reply: std::result::Result<HashMap<String, String>, RedisError> = cmd("CONFIG")
+        .arg("GET")
+        .arg("maxmemory-policy")
+        .query_async(&mut conn)
+        .await;
+    reply
+        .ok()
+        .and_then(|map| map.get("maxmemory-policy").cloned())
+        .unwrap_or_default()
 }
 
 /// The probe proper, parameterised over a connection factory so the proxy

@@ -31,6 +31,7 @@ pub use i18n::i18n_config_editor;
 pub use i18n::i18n_copy;
 pub use i18n::i18n_crash;
 pub use i18n::i18n_editor;
+pub use i18n::i18n_expire_at;
 pub use i18n::i18n_features;
 pub use i18n::i18n_functions;
 pub use i18n::i18n_geo_map;
