@@ -114,15 +114,18 @@ start_local() { # <name> <command…>
   echo $! > "$IT_DIR/$name.pid"
   echo $! >> "$IT_DIR/pids"
 }
-# Whether the server started under <name> is still running.
+# Whether the server started under <name> is still running. Keyed on how it
+# was started, not on the mode: `start_local` writes a pid file even in
+# docker mode, and asking docker about a host process answers "not running"
+# for something that is perfectly alive.
 alive() { # <name>
-  if [ -n "$IMAGE" ]; then
-    [ "$(docker inspect -f '{{.State.Running}}' "zedis-it-$1" 2>/dev/null)" = "true" ]
-  else
+  if [ -f "$IT_DIR/$1.pid" ]; then
     local pid
     pid=$(cat "$IT_DIR/$1.pid" 2>/dev/null || true)
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    return
   fi
+  [ -n "$IMAGE" ] && [ "$(docker inspect -f '{{.State.Running}}' "zedis-it-$1" 2>/dev/null)" = "true" ]
 }
 cli() {
   if [ -n "$IMAGE" ]; then
@@ -131,12 +134,13 @@ cli() {
     "$CLI_BIN" "$@"
   fi
 }
-# Prints the server's own log (local file or `docker logs`) on a failure.
+# Prints the server's own log on a failure. Same rule as `alive`: a host
+# process has a log file, whatever mode the rest of the topology runs in.
 show_log() { # <name>
   local name=$1
   echo "---- $name log ----" >&2
-  if [ -n "$IMAGE" ]; then docker logs "zedis-it-$name" 2>&1 | tail -20 >&2 || true
-  else tail -20 "$IT_DIR/$name.log" >&2 2>/dev/null || true; fi
+  if [ -f "$IT_DIR/$name.log" ]; then tail -20 "$IT_DIR/$name.log" >&2 2>/dev/null || true
+  elif [ -n "$IMAGE" ]; then docker logs "zedis-it-$name" 2>&1 | tail -20 >&2 || true; fi
 }
 wait_pong() { # <name> <cli args…>   (name = the log to show on failure)
   local name=$1; shift
