@@ -44,6 +44,9 @@ pub enum ServerCommand {
     Unlink,
     ConfigGet,
     ConfigSet,
+    /// `CONFIG REWRITE` — persist the running configuration into the file
+    /// the server was started with. Managed clouds deny it.
+    ConfigRewrite,
     SlowlogGet,
     LatencyLatest,
     ClientList,
@@ -93,6 +96,7 @@ impl ServerCommand {
         ServerCommand::Unlink,
         ServerCommand::ConfigGet,
         ServerCommand::ConfigSet,
+        ServerCommand::ConfigRewrite,
         ServerCommand::SlowlogGet,
         ServerCommand::LatencyLatest,
         ServerCommand::ClientList,
@@ -133,7 +137,7 @@ impl ServerCommand {
             ServerCommand::Restore => "RESTORE",
             ServerCommand::Migrate => "MIGRATE",
             ServerCommand::Unlink => "UNLINK",
-            ServerCommand::ConfigGet | ServerCommand::ConfigSet => "CONFIG",
+            ServerCommand::ConfigGet | ServerCommand::ConfigSet | ServerCommand::ConfigRewrite => "CONFIG",
             ServerCommand::SlowlogGet => "SLOWLOG",
             ServerCommand::LatencyLatest => "LATENCY",
             ServerCommand::ClientList | ServerCommand::ClientKill => "CLIENT",
@@ -164,6 +168,7 @@ impl ServerCommand {
             ServerCommand::ObjectEncoding => Some("ENCODING"),
             ServerCommand::ConfigGet => Some("GET"),
             ServerCommand::ConfigSet => Some("SET"),
+            ServerCommand::ConfigRewrite => Some("REWRITE"),
             ServerCommand::SlowlogGet => Some("GET"),
             ServerCommand::LatencyLatest => Some("LATEST"),
             ServerCommand::ClientList => Some("LIST"),
@@ -202,6 +207,7 @@ impl ServerCommand {
                 | ServerCommand::Migrate
                 | ServerCommand::Unlink
                 | ServerCommand::ConfigSet
+                | ServerCommand::ConfigRewrite
                 | ServerCommand::ClientKill
                 | ServerCommand::AclSetUser
                 | ServerCommand::FunctionLoad
@@ -489,9 +495,18 @@ mod tests {
         );
         assert_eq!(
             ServerCommand::matching("CONFIG", None),
-            vec![ServerCommand::ConfigGet, ServerCommand::ConfigSet]
+            vec![
+                ServerCommand::ConfigGet,
+                ServerCommand::ConfigSet,
+                ServerCommand::ConfigRewrite
+            ]
         );
-        assert!(ServerCommand::matching("config", Some("rewrite")).is_empty());
+        assert_eq!(
+            ServerCommand::matching("config", Some("rewrite")),
+            vec![ServerCommand::ConfigRewrite]
+        );
+        // A subcommand the probe does not track narrows to nothing.
+        assert!(ServerCommand::matching("config", Some("resetstat")).is_empty());
         assert_eq!(ServerCommand::matching("scan", Some("x")), vec![]);
         assert_eq!(ServerCommand::matching("scan", None), vec![ServerCommand::Scan]);
     }
@@ -536,10 +551,14 @@ mod tests {
             commands_in_reply("User u has no permissions to run the 'config|set' command"),
             vec![ServerCommand::ConfigSet]
         );
-        // Redis 6 names only the container: both subcommands are affected.
+        // Redis 6 names only the container: every subcommand is affected.
         assert_eq!(
             commands_in_reply("this user has no permissions to run the 'config' command or its subcommand"),
-            vec![ServerCommand::ConfigGet, ServerCommand::ConfigSet]
+            vec![
+                ServerCommand::ConfigGet,
+                ServerCommand::ConfigSet,
+                ServerCommand::ConfigRewrite
+            ]
         );
         assert_eq!(
             commands_in_reply("unknown command 'scan', with args beginning with: '0' "),

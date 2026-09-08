@@ -16,12 +16,12 @@ use crate::views::config_doc::ConfigDocMap;
 use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
-    connection::{Capability, DangerKind, floors, get_connection_manager, get_server, get_servers},
+    connection::{Capability, DangerKind, ServerCommand, floors, get_connection_manager, get_server, get_servers},
     error::Error,
     helpers::{ConfigEditAction, card_background, get_mono_font_family, humanize_keystroke},
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
-        i18n_common, i18n_config_editor,
+        escalate_dangerous_body, i18n_common, i18n_config_editor,
     },
     views::{ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
 };
@@ -38,6 +38,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use redis::cmd;
+use rust_i18n::t;
 use std::collections::{BTreeSet, HashMap};
 use tracing::error;
 use zedis_ui::{ZedisDialog, ZedisSelect, ZedisSelectEvent, help_popover};
@@ -305,6 +306,13 @@ pub struct ZedisConfigEditor {
     /// Set when the `CONFIG GET *` load fails, so the body shows the error
     /// instead of a misleading empty "no data" panel.
     error: Option<SharedString>,
+    /// `config_file` from `INFO server`, read alongside the config load.
+    /// Empty when the server was started without one, and then `CONFIG
+    /// REWRITE` can only fail — every edit here is runtime-only, which the
+    /// header says instead of offering a button that errors. On a cluster
+    /// this is the polled node's path; it answers "are config files in use
+    /// here", which is what the affordance turns on.
+    config_file: SharedString,
     pending_notification: Option<Notification>,
     /// Active cross-server config comparison (`None` = normal editor view).
     diff: Option<ConfigDiff>,
@@ -361,6 +369,7 @@ impl ZedisConfigEditor {
             loading: false,
             comparing: false,
             error: None,
+            config_file: SharedString::default(),
             pending_notification: None,
             diff: None,
             config_docs: load_config_docs(config_docs_zh),
@@ -402,14 +411,27 @@ impl ZedisConfigEditor {
                 let mut configs: Vec<(SharedString, SharedString)> =
                     map.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
                 configs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                Ok(configs)
+                // Whether the edits below can be made to survive a restart.
+                let info: String = cmd("INFO")
+                    .arg("server")
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or_default();
+                let config_file = info
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("config_file:"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                Ok((configs, config_file))
             });
-            let result: Result<Vec<(SharedString, SharedString)>> = task.await;
+            let result: Result<(Vec<(SharedString, SharedString)>, String)> = task.await;
             let _ = handle.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(configs) => {
+                    Ok((configs, config_file)) => {
                         this.configs = configs;
+                        this.config_file = config_file.into();
                         this.error = None;
                     }
                     Err(e) => {
@@ -421,6 +443,77 @@ impl ZedisConfigEditor {
             });
         })
         .detach();
+    }
+
+    /// `CONFIG REWRITE` on every master — it is not gossiped, and on a
+    /// cluster each node keeps its own file.
+    fn rewrite_config(&mut self, cx: &mut Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::ConfigWrite) {
+            return;
+        }
+        let server_state = self.server_state.read(cx);
+        let server_id = server_state.server_id().to_string();
+        let db = server_state.db();
+        if server_id.is_empty() {
+            return;
+        }
+        cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let (_, _replies): (_, Vec<String>) = client
+                    .query_async_masters(vec![cmd("CONFIG").arg("REWRITE").clone()])
+                    .await?;
+                Ok(())
+            });
+            let result: Result<()> = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.pending_notification = Some(Notification::success(i18n_config_editor(cx, "rewrite_done")));
+                    }
+                    Err(e) => {
+                        let explained = this
+                            .server_state
+                            .update(cx, |state, cx| state.note_command_error(&e, cx));
+                        if !explained {
+                            let msg: SharedString =
+                                format!("{}: {}", i18n_config_editor(cx, "rewrite_failed"), e).into();
+                            this.pending_notification = Some(Notification::error(msg));
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The confirm for `CONFIG REWRITE`: it rewrites a file on the server,
+    /// and with the *whole* running configuration, not only what was
+    /// changed here.
+    fn open_rewrite_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let body = t!(
+            "config_editor.rewrite_confirm_body",
+            path = self.config_file.as_ref(),
+            locale = &locale
+        )
+        .to_string();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let entity = cx.entity().downgrade();
+        ZedisDialog::new_alert(
+            i18n_config_editor(cx, "rewrite_confirm_title"),
+            escalate_dangerous_body(cx, &server_id, body),
+        )
+        .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+        .on_ok(move |_, window, cx| {
+            if let Some(this) = entity.upgrade() {
+                this.update(cx, |this, cx| this.rewrite_config(cx));
+            }
+            window.close_dialog(cx);
+            true
+        })
+        .open(window, cx);
     }
 
     fn save_config(&mut self, key: SharedString, value: SharedString, cx: &mut Context<Self>) {
@@ -1048,7 +1141,44 @@ impl Render for ZedisConfigEditor {
                         self.server_state.read(cx).blocked_by(Capability::ConfigWrite),
                         |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
                     )
+                    // Whether an edit here survives a restart. A server with
+                    // no config file can only be told at runtime, and saying
+                    // so beats a button that is guaranteed to error.
+                    .when(self.config_file.is_empty() && !self.loading, |this| {
+                        this.child(
+                            Label::new(i18n_config_editor(cx, "runtime_only_hint"))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                    })
                     .child(div().flex_1())
+                    .when(
+                        !self.config_file.is_empty()
+                            && self.server_state.read(cx).can(Capability::ConfigWrite)
+                            && self
+                                .server_state
+                                .read(cx)
+                                .command_block(ServerCommand::ConfigRewrite)
+                                .is_none(),
+                        |this| {
+                            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                            let tooltip = t!(
+                                "config_editor.rewrite_tooltip",
+                                path = self.config_file.as_ref(),
+                                locale = &locale
+                            )
+                            .to_string();
+                            this.child(
+                                Button::new("config-rewrite")
+                                    .small()
+                                    .outline()
+                                    .icon(Icon::new(CustomIconName::Save))
+                                    .label(i18n_config_editor(cx, "rewrite"))
+                                    .tooltip(tooltip)
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_rewrite_dialog(window, cx))),
+                            )
+                        },
+                    )
                     .child(
                         Button::new("config-reload")
                             .small()

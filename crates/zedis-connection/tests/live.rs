@@ -798,6 +798,41 @@ fn standalone_feature_probe_matches_the_server() {
     });
 }
 
+/// `CONFIG SET` only changes the running configuration; `CONFIG REWRITE`
+/// is what makes it survive a restart, and it needs the server to have been
+/// started with a config file. The harness starts this one from command-line
+/// arguments alone, which is exactly the case the config editor has to
+/// detect — it reads `config_file` from `INFO server` and, when empty, says
+/// the edits are runtime-only instead of offering a button that can only
+/// fail.
+#[test]
+#[ignore]
+fn standalone_without_a_config_file_cannot_rewrite_it() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let info: String = cmd("INFO")
+            .arg("server")
+            .query_async(&mut c)
+            .await
+            .expect("info server");
+        let config_file = info
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("config_file:"))
+            .expect("INFO server reports config_file")
+            .trim();
+        assert!(
+            config_file.is_empty(),
+            "the harness starts this server without a config file: {config_file}"
+        );
+        let rewritten: Result<String, _> = cmd("CONFIG").arg("REWRITE").query_async(&mut c).await;
+        assert!(
+            rewritten.is_err(),
+            "CONFIG REWRITE needs a config file — that is why the button is hidden"
+        );
+    });
+}
+
 #[test]
 #[ignore]
 fn standalone_acl_users_are_classified() {

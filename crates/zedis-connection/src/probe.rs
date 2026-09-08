@@ -358,6 +358,7 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
         ServerCommand::Migrate => &["MIGRATE", "127.0.0.1", "0", PROBE_KEY, "0", "1"],
         ServerCommand::Unlink => &["UNLINK", PROBE_KEY],
         ServerCommand::ConfigSet => &["CONFIG", "SET", "maxmemory", "0"],
+        ServerCommand::ConfigRewrite => &["CONFIG", "REWRITE"],
         ServerCommand::ClientKill => &["CLIENT", "KILL", "ID", "0"],
         ServerCommand::AclSetUser => &["ACL", "SETUSER", PROBE_KEY],
         ServerCommand::FunctionLoad => &["FUNCTION", "LOAD", "x"],
