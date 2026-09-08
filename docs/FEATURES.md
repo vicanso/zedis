@@ -58,7 +58,7 @@ Every decoder is also its own detector: a decode has to read the whole value and
 ### Collection Editors
 **Hash, List, Set and Sorted Set open as paginated, editable tables — never one blocking `HGETALL`.**
 
-Every collection is walked incrementally (`HSCAN` / `SSCAN` / `ZSCAN`, `LRANGE` windows) with infinite scroll and a loaded/total counter, so a hash with a million fields opens as fast as one with ten. A keyword filter narrows the table — server-side through the scan's `MATCH` for hash / set / sorted set, client-side over the loaded window for lists. Rows edit inline in a resizable side panel — add, update, delete — with per-field **Hash TTL** columns where the server supports them and an `RPUSH` / `LPUSH` choice for lists. **Bulk add** takes pasted TSV/CSV (one row per line), and the visible table exports to CSV/JSON.
+Every collection is walked incrementally (`HSCAN` / `SSCAN` / `ZSCAN`, `LRANGE` windows) with infinite scroll and a loaded/total counter, so a hash with a million fields opens as fast as one with ten. A keyword filter narrows the table — server-side through the scan's `MATCH` for hash / set / sorted set, client-side over the loaded window for lists. Rows edit inline in a resizable side panel — add, update, delete — with per-field **Hash TTL** columns where the server supports them and an `RPUSH` / `LPUSH` choice for lists. Sorted sets walk by score (`ZRANGE` / `ZREVRANGE`) with a toolbar toggle for ascending vs descending. **Bulk add** takes pasted TSV/CSV (one row per line), and the visible table exports to CSV/JSON.
 
 ### Specialized Type Viewers
 **Opaque values open in purpose-built, interactive viewers.**
@@ -131,7 +131,7 @@ The structured panels cover the common fields; this page covers the long tail �
 ### CONFIG Editor
 **A typed `CONFIG GET/SET` editor with inline parameter docs.**
 
-Runtime parameters render with type-aware editors instead of raw strings, grouped by concern (memory & eviction, RDB, AOF, defrag, replication, cluster, network, security, TLS, latency, logging, data-type limits, scripting). The common parameters carry inline help lifted from the official `redis.conf` — what a knob does, right where you change it — in English and Chinese, with English as the fallback for the other UI languages. Writes go through `CONFIG SET` behind the PROD-escalated confirm dialog.
+Runtime parameters render with type-aware editors instead of raw strings, grouped by concern (memory & eviction, RDB, AOF, defrag, replication, cluster, network, security, TLS, latency, logging, data-type limits, scripting). The common parameters carry inline help lifted from the official `redis.conf` — what a knob does, right where you change it — in English and Chinese, with English as the fallback for the other UI languages. The `maxmemory-policy` picker includes Redis 8.6's `allkeys-lrm` / `volatile-lrm` (least-recently-modified) when the server supports them. Writes go through `CONFIG SET` behind the PROD-escalated confirm dialog.
 
 ---
 

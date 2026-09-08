@@ -54,7 +54,7 @@ Until DNS propagates, the site still works at `https://vicanso.github.io/zedis/`
 
 Language preference is stored in `localStorage` key `zedis-lang` (`en` \| `zh`) when the user clicks the language switcher.
 
-When bumping a release, update the **vX.Y.Z** strings in both `index.html` and `zh/index.html` (nav pill, download CTAs, JSON-LD `softwareVersion`, footer).
+When bumping a release, `scripts/bump-version.sh` (`make version-{patch,minor,major}`) rewrites the **vX.Y.Z** strings in both `index.html` and `zh/index.html` (nav pill, download CTAs, JSON-LD `softwareVersion`, footer) and, on a minor/major bump, the supported-line table in `SECURITY.md`. Do not edit those version pins by hand unless the script skipped a file.
 
 ## Hero video
 

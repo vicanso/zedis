@@ -40,4 +40,23 @@ CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
 
 cargo update --workspace --offline --quiet
 
+# Landing pages pin the version in several places (nav pill, CTAs, JSON-LD,
+# footer). docs/README.md lists this as a release step; do it here so a
+# bump cannot leave zedis.net on the previous tag.
+for f in docs/index.html docs/zh/index.html; do
+  CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
+    's/\Q$ENV{CURRENT}\E/$ENV{NEXT}/g' "$f"
+  grep -q "$NEXT" "$f" || { echo "failed to bump $f" >&2; exit 1; }
+done
+
+# SECURITY.md tracks the latest *line* (0.8.x), not the patch. Refresh it
+# when the minor/major moves so "supported versions" cannot lag a release.
+OLD_LINE="${CURRENT%.*}"
+NEW_LINE="${NEXT%.*}"
+if [ "$OLD_LINE" != "$NEW_LINE" ]; then
+  OLD_LINE="$OLD_LINE" NEW_LINE="$NEW_LINE" perl -pi -e \
+    's/\Q$ENV{OLD_LINE}\E/$ENV{NEW_LINE}/g' SECURITY.md
+  grep -q "$NEW_LINE.x" SECURITY.md || { echo "failed to bump SECURITY.md" >&2; exit 1; }
+fi
+
 echo "version: $CURRENT -> $NEXT"
