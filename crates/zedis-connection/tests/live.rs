@@ -22,25 +22,26 @@
 //!
 //! CI runs the full matrix in `.github/workflows/integration.yml`.
 
-use redis::cmd;
-use std::collections::HashSet;
+use redis::{FromRedisValue, cmd};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, FromEnd,
-    HeatMetric, HeatProbe, ImportFormat, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
+    AclDryRun, BitOpKind, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl,
+    FromEnd, HeatMetric, HeatProbe, ImportFormat, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
     PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo,
     ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
-    acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user,
-    acl_whoami, cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk, entry_to_csv,
-    entry_to_json, ft_explain, ft_search, get_connection_manager, get_server, get_server_heat_probe, get_servers,
-    kill_filter_commands, kill_running, open_single_connection, parse_readable_entries, pause_args,
-    plan_cluster_rebalance, probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field,
-    restore_keys_chunk, run_key_op, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig,
-    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules,
-    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
+    TsAlter, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
+    acl_set_user, acl_whoami, bit_op, cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk,
+    entry_to_csv, entry_to_json, ft_explain, ft_search, geo_add, geo_dist, get_connection_manager, get_server,
+    get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
+    parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance, probe_server_features, read_readable_chunk,
+    remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op, run_script, save_servers,
+    sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set,
+    sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, unassigned_slot_ranges,
+    write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -841,6 +842,387 @@ fn standalone_feature_probe_matches_the_server() {
             assert!(matches!(features.flavor, ServerFlavor::Redis | ServerFlavor::Valkey));
         }
     });
+}
+
+/// The writes the Geo / HLL / Bitmap viewers gained. All core Redis, so
+/// every lane runs them.
+///
+/// `GEOADD` is the point: a geo key is a sorted set whose score is a
+/// geohash, so this is the only way to put a member in one — `ZADD` with a
+/// hand-written score lands somewhere nobody meant. `BYBOX` is asserted
+/// against `BYRADIUS` on the same data, since a box that behaved like a
+/// circle would look right in every screenshot.
+#[test]
+#[ignore]
+fn standalone_geo_hll_and_bitmap_writes() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+
+        // Three points along a line of latitude, ~110 km apart in longitude.
+        let geo = unique("geo-write");
+        for (lon, member) in [(0.0_f64, "origin"), (1.0, "east"), (2.0, "far-east")] {
+            let added = geo_add(&mut c, &geo, lon, 0.0, member).await.expect("geoadd");
+            assert_eq!(added, 1, "{member} is new");
+        }
+        // Re-adding a member moves it rather than counting as new.
+        assert_eq!(geo_add(&mut c, &geo, 0.0, 0.0, "origin").await.expect("re-add"), 0);
+
+        let metres = geo_dist(&mut c, &geo, "origin", "east")
+            .await
+            .expect("geodist")
+            .expect("both members exist");
+        assert!(
+            (100_000.0..130_000.0).contains(&metres),
+            "a degree of longitude at the equator: {metres} m"
+        );
+        // A member that is not there is absent, not an error.
+        assert_eq!(
+            geo_dist(&mut c, &geo, "origin", "nowhere").await.expect("geodist"),
+            None
+        );
+
+        // A 150 km radius reaches the first neighbour but not the second.
+        let by_radius: Vec<String> = cmd("GEOSEARCH")
+            .arg(&geo)
+            .arg("FROMLONLAT")
+            .arg(0.0)
+            .arg(0.0)
+            .arg("BYRADIUS")
+            .arg(150)
+            .arg("km")
+            .arg("ASC")
+            .query_async(&mut c)
+            .await
+            .expect("byradius");
+        assert_eq!(by_radius, vec!["origin", "east"]);
+
+        // A box 500 km wide but only 10 km tall covers all three, which a
+        // circle of either extent would not — the two really are different.
+        let by_box: Vec<String> = cmd("GEOSEARCH")
+            .arg(&geo)
+            .arg("FROMLONLAT")
+            .arg(0.0)
+            .arg(0.0)
+            .arg("BYBOX")
+            .arg(500)
+            .arg(10)
+            .arg("km")
+            .arg("ASC")
+            .query_async(&mut c)
+            .await
+            .expect("bybox");
+        assert_eq!(by_box, vec!["origin", "east", "far-east"]);
+
+        // PFMERGE keeps what the destination already had and adds the rest.
+        let hll_a = unique("hll-a");
+        let hll_b = unique("hll-b");
+        let _: () = cmd("PFADD")
+            .arg(&hll_a)
+            .arg(&["x", "y"])
+            .query_async(&mut c)
+            .await
+            .expect("pfadd a");
+        let _: () = cmd("PFADD")
+            .arg(&hll_b)
+            .arg(&["y", "z"])
+            .query_async(&mut c)
+            .await
+            .expect("pfadd b");
+        pf_merge(&mut c, &hll_a, std::slice::from_ref(&hll_b))
+            .await
+            .expect("pfmerge");
+        let count: u64 = cmd("PFCOUNT").arg(&hll_a).query_async(&mut c).await.expect("pfcount");
+        assert_eq!(count, 3, "x, y and z — the destination was folded in, not replaced");
+        // Nothing to merge is a no-op, not an error.
+        pf_merge(&mut c, &hll_a, &[]).await.expect("empty merge");
+
+        // BITOP over two known byte patterns.
+        let bits_a = unique("bits-a");
+        let bits_b = unique("bits-b");
+        let dest = unique("bits-dest");
+        let _: () = cmd("SET")
+            .arg(&bits_a)
+            .arg("\x0f")
+            .query_async(&mut c)
+            .await
+            .expect("set a");
+        let _: () = cmd("SET")
+            .arg(&bits_b)
+            .arg("\x33")
+            .query_async(&mut c)
+            .await
+            .expect("set b");
+        let len = bit_op(&mut c, BitOpKind::And, &dest, &[bits_a.clone(), bits_b.clone()])
+            .await
+            .expect("bitop and");
+        assert_eq!(len, 1, "one byte in, one byte out");
+        let anded: Vec<u8> = cmd("GET").arg(&dest).query_async(&mut c).await.expect("get dest");
+        assert_eq!(anded, vec![0x0f & 0x33]);
+
+        // NOT takes exactly one source, and the wrapper refuses more before
+        // the server has to.
+        assert!(
+            bit_op(&mut c, BitOpKind::Not, &dest, &[bits_a.clone(), bits_b.clone()])
+                .await
+                .is_err()
+        );
+        bit_op(&mut c, BitOpKind::Not, &dest, std::slice::from_ref(&bits_a))
+            .await
+            .expect("bitop not");
+        let negated: Vec<u8> = cmd("GET").arg(&dest).query_async(&mut c).await.expect("get dest");
+        assert_eq!(negated, vec![!0x0f_u8]);
+
+        let _: () = cmd("DEL")
+            .arg(&[&geo, &hll_a, &hll_b, &bits_a, &bits_b, &dest])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// The TimeSeries writes the chart panel gained. RedisTimeSeries only, so
+/// this runs on the stack lane and skips loudly everywhere else.
+#[test]
+#[ignore]
+fn stack_timeseries_write_operations() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let key = unique("ts-write");
+        let compacted = unique("ts-write-1m");
+
+        let _: () = cmd("TS.CREATE")
+            .arg(&key)
+            .arg("RETENTION")
+            .arg(0)
+            .arg("LABELS")
+            .arg("env")
+            .arg("test")
+            .query_async(&mut c)
+            .await
+            .expect("ts.create");
+
+        // A sample at an explicit timestamp, and one at "now".
+        assert_eq!(ts_add(&mut c, &key, Some(1000), 1.5).await.expect("ts.add"), 1000);
+        let now_ts = ts_add(&mut c, &key, None, 2.5).await.expect("ts.add now");
+        assert!(now_ts > 1000, "wall clock follows the backfilled sample: {now_ts}");
+
+        // TS.ALTER touches only what it is given: retention alone leaves the
+        // labels, which is the distinction `Option` carries in `TsAlter`.
+        ts_alter(
+            &mut c,
+            &key,
+            &TsAlter {
+                retention_ms: Some(86_400_000),
+                labels: None,
+            },
+        )
+        .await
+        .expect("ts.alter retention");
+        let info = ts_info_map(&mut c, &key).await;
+        let retention = info
+            .get("retentionTime")
+            .cloned()
+            .and_then(|v| i64::from_redis_value(v).ok());
+        assert_eq!(retention, Some(86_400_000));
+        let labels = info.get("labels").cloned().expect("TS.INFO reports labels");
+        assert!(
+            matches!(&labels, redis::Value::Array(items) if !items.is_empty()),
+            "labels survived a retention-only alter: {labels:?}"
+        );
+
+        // An empty label list clears them — the reason "leave alone" and
+        // "clear" are different states rather than an empty vector.
+        ts_alter(
+            &mut c,
+            &key,
+            &TsAlter {
+                retention_ms: None,
+                labels: Some(Vec::new()),
+            },
+        )
+        .await
+        .expect("ts.alter clear labels");
+
+        // A compaction rule, and the destination filling from it.
+        let _: () = cmd("TS.CREATE")
+            .arg(&compacted)
+            .query_async(&mut c)
+            .await
+            .expect("ts.create dst");
+        ts_create_rule(&mut c, &key, &compacted, "avg", 60_000)
+            .await
+            .expect("ts.createrule");
+        let info = ts_info_map(&mut c, &key).await;
+        let rules = info.get("rules").cloned().expect("TS.INFO reports rules");
+        assert!(
+            matches!(&rules, redis::Value::Array(items) if items.len() == 1),
+            "one rule, the one the panel lists: {rules:?}"
+        );
+        ts_delete_rule(&mut c, &key, &compacted).await.expect("ts.deleterule");
+
+        let _: () = cmd("DEL")
+            .arg(&[&key, &compacted])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// `TS.INFO` flattened to name → value, for the assertions above.
+///
+/// Values stay `redis::Value` so each assertion converts the way it means
+/// to — a Debug rendering would make the test depend on how redis-rs
+/// happens to print an integer.
+async fn ts_info_map(c: &mut RedisAsyncConn, key: &str) -> HashMap<String, redis::Value> {
+    let raw: Vec<redis::Value> = cmd("TS.INFO").arg(key).query_async(c).await.expect("ts.info");
+    raw.chunks(2)
+        .filter_map(|pair| {
+            let name = String::from_redis_value(pair.first()?.clone()).ok()?;
+            Some((name, pair.get(1)?.clone()))
+        })
+        .collect()
+}
+
+/// The two stream operations the editor gained: removing a consumer, and
+/// moving the stream's own last-generated id.
+///
+/// `XGROUP DELCONSUMER` answers with the pending entries that went with the
+/// consumer — the number the dialog shows before the click. `XSETID` is the
+/// stream's id, not a group's: `last-generated-id` stays put when the newest
+/// entry is deleted, which is exactly why the two are separate fields and
+/// why lowering it lets `XADD` mint an id that already existed.
+#[test]
+#[ignore]
+fn standalone_stream_consumer_and_id_administration() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let key = unique("stream-admin");
+        let group = "g1";
+
+        let mut ids = Vec::new();
+        for n in 0..3 {
+            let entry: String = cmd("XADD")
+                .arg(&key)
+                .arg("*")
+                .arg("n")
+                .arg(n)
+                .query_async(&mut c)
+                .await
+                .expect("xadd");
+            ids.push(entry);
+        }
+        let _: () = cmd("XGROUP")
+            .arg("CREATE")
+            .arg(&key)
+            .arg(group)
+            .arg("0")
+            .query_async(&mut c)
+            .await
+            .expect("xgroup create");
+        // Read without acknowledging, so the consumer owns pending entries.
+        let _: redis::Value = cmd("XREADGROUP")
+            .arg("GROUP")
+            .arg(group)
+            .arg("worker")
+            .arg("COUNT")
+            .arg(2)
+            .arg("STREAMS")
+            .arg(&key)
+            .arg(">")
+            .query_async(&mut c)
+            .await
+            .expect("xreadgroup");
+
+        let pending: u64 = cmd("XGROUP")
+            .arg("DELCONSUMER")
+            .arg(&key)
+            .arg(group)
+            .arg("worker")
+            .query_async(&mut c)
+            .await
+            .expect("delconsumer");
+        assert_eq!(pending, 2, "the pending entries that went with the consumer");
+        // Deleting a consumer that is not there is not an error, just zero.
+        let pending: u64 = cmd("XGROUP")
+            .arg("DELCONSUMER")
+            .arg(&key)
+            .arg(group)
+            .arg("nobody")
+            .query_async(&mut c)
+            .await
+            .expect("delconsumer on an unknown name");
+        assert_eq!(pending, 0);
+
+        // `last-generated-id` outlives the entry that produced it.
+        let last = ids.last().expect("three entries").clone();
+        let _: u64 = cmd("XDEL")
+            .arg(&key)
+            .arg(&last)
+            .query_async(&mut c)
+            .await
+            .expect("xdel");
+        let generated = stream_info_field(&mut c, &key, "last-generated-id").await;
+        assert_eq!(generated, last, "deleting the newest entry does not rewind the id");
+
+        // The floor nobody expects: XSETID refuses anything below
+        // `max-deleted-entry-id`, which the XDEL above just set. Without
+        // this assertion the dialog would promise a rewind it cannot always
+        // deliver — the hint text says so because of this.
+        let refused: redis::RedisResult<()> = cmd("XSETID").arg(&key).arg("5-5").query_async(&mut c).await;
+        let error = refused.expect_err("below max-deleted-entry-id");
+        assert!(
+            error.to_string().contains("smaller than"),
+            "unexpected refusal: {error}"
+        );
+
+        // Above that floor it moves, and the next XADD carries on from there.
+        let raised = format!("{}-9", generated.split('-').next().unwrap_or("1"));
+        let _: () = cmd("XSETID")
+            .arg(&key)
+            .arg(&raised)
+            .query_async(&mut c)
+            .await
+            .expect("xsetid above the floor");
+        assert_eq!(stream_info_field(&mut c, &key, "last-generated-id").await, raised);
+        let next: String = cmd("XADD")
+            .arg(&key)
+            .arg("*")
+            .arg("n")
+            .arg(9)
+            .query_async(&mut c)
+            .await
+            .expect("xadd after xsetid");
+        assert!(next > raised, "the next id follows the one just set: {next}");
+
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+    });
+}
+
+/// One `XINFO STREAM` field, by name.
+async fn stream_info_field(c: &mut RedisAsyncConn, key: &str, field: &str) -> String {
+    let raw: Vec<redis::Value> = cmd("XINFO")
+        .arg("STREAM")
+        .arg(key)
+        .query_async(c)
+        .await
+        .expect("xinfo stream");
+    let mut pairs = raw.chunks(2);
+    pairs
+        .find(|pair| {
+            pair.first()
+                .map(|name| String::from_redis_value(name.clone()).unwrap_or_default() == field)
+                .unwrap_or(false)
+        })
+        .and_then(|pair| pair.get(1))
+        .map(|value| String::from_redis_value(value.clone()).unwrap_or_default())
+        .unwrap_or_default()
 }
 
 /// The sorted set's score window, and the direction trap in it.

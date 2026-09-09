@@ -811,6 +811,132 @@ impl ZedisStreamEditor {
             .open(window, cx);
     }
 
+    /// XGROUP DELCONSUMER: pick one of the group's consumers.
+    ///
+    /// A picker rather than a name field, unlike its create counterpart:
+    /// deleting the wrong consumer silently discards its pending entries,
+    /// and a typo would have to be *right* to be safe. Each choice carries
+    /// its pending count, so the cost is on screen at the moment of the
+    /// decision rather than in the toast afterwards.
+    fn delete_consumer_dialog(
+        &mut self,
+        group: SharedString,
+        consumers: Vec<(SharedString, u64)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if consumers.is_empty() {
+            return;
+        }
+        let picked: Entity<Option<SharedString>> = cx.new(|_| None);
+        let body_picked = picked.clone();
+        let body_consumers = consumers.clone();
+        let hint = i18n_stream_editor(cx, "delete_consumer_hint");
+        let server_state = self.server_state.clone();
+        let submit_picked = picked.clone();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "delete_consumer_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                let selected = body_picked.clone();
+                let mut row = h_flex().gap_2().flex_wrap();
+                for (name, pending) in &body_consumers {
+                    let name = name.clone();
+                    let choose = name.clone();
+                    let target = selected.clone();
+                    row = row.child(
+                        Button::new(SharedString::from(format!("stream-del-consumer-{name}")))
+                            .small()
+                            .label(format!("{name} ({pending})"))
+                            .on_click(move |_, _window, cx: &mut App| {
+                                target.update(cx, |state, cx| {
+                                    *state = Some(choose.clone());
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                gpui_kit::component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(row)
+                    .child(Label::new(hint.clone()).text_xs())
+                    .into_any_element()
+            })
+            .on_ok(move |_, _window, cx| {
+                let Some(consumer) = submit_picked.read(cx).clone() else {
+                    return false;
+                };
+                let group = group.clone();
+                server_state.update(cx, |state, cx| {
+                    state.delete_stream_consumer(group, consumer, cx);
+                });
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// XSETID: the stream's own last-generated id.
+    ///
+    /// Two steps on purpose. The form takes the id; the confirmation then
+    /// says what lowering it means — `XADD` can mint ids that already
+    /// existed, and consumer groups keep positions that no longer line up.
+    fn set_stream_id_dialog(&mut self, current_last_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let id_state = cx.new(|cx| InputState::new(window, cx).default_value(current_last_id.to_string()));
+        let hint = i18n_stream_editor(cx, "setid_stream_hint");
+        let body_id = id_state.clone();
+        let submit_id = id_state.clone();
+        let server_state = self.server_state.clone();
+        let server_id = self.server_state.read(cx).server_id().to_string();
+
+        ZedisDialog::new(i18n_stream_editor(cx, "setid_stream_title"))
+            .w(px(480.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                gpui_kit::component::v_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(Input::new(&body_id))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, window, cx| {
+                let id = submit_id.read(cx).value().trim().to_string();
+                if id.is_empty() {
+                    return false;
+                }
+                let server_state = server_state.clone();
+                let message = i18n_stream_editor(cx, "setid_stream_prompt").to_string();
+                ZedisDialog::new_alert(
+                    i18n_stream_editor(cx, "setid_stream_title"),
+                    escalate_dangerous_body(cx, &server_id, message),
+                )
+                .button_props(dialog_button_props(cx))
+                .on_ok(move |_, window, cx| {
+                    server_state.update(cx, |state, cx| {
+                        state.set_stream_id(id.clone().into(), cx);
+                    });
+                    window.close_dialog(cx);
+                    true
+                })
+                .open(window, cx);
+                true
+            })
+            .open(window, cx);
+    }
+
     /// XGROUP DESTROY confirmation. Destructive — drops the group and
     /// its entire PEL, so it routes through the standard alert dialog.
     fn confirm_destroy_group(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
@@ -1058,6 +1184,18 @@ impl ZedisStreamEditor {
         // ── Stream summary card ───────────────────────────────────────────────
         let length = stream_value.as_ref().map_or(0, |sv| sv.size);
         let summary = info.summary.clone();
+        // What XSETID actually changes. Falls back to the last entry's id
+        // on a server whose XINFO does not report it.
+        let last_generated_id: SharedString = summary
+            .as_ref()
+            .map(|s| {
+                if s.last_generated_id.is_empty() {
+                    s.last_entry_id.clone()
+                } else {
+                    s.last_generated_id.clone()
+                }
+            })
+            .unwrap_or_default();
 
         let summary_card = v_flex()
             .w_full()
@@ -1169,6 +1307,16 @@ impl ZedisStreamEditor {
                     h_flex()
                         .gap_2()
                         .child(
+                            Button::new("stream-setid-stream")
+                                .small()
+                                .icon(IconName::Asterisk)
+                                .label(i18n_stream_editor(cx, "setid_stream"))
+                                .tooltip(i18n_stream_editor(cx, "setid_stream_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set_stream_id_dialog(last_generated_id.clone(), window, cx);
+                                })),
+                        )
+                        .child(
                             Button::new("stream-trim")
                                 .small()
                                 .icon(Icon::new(CustomIconName::ListX))
@@ -1196,6 +1344,9 @@ impl ZedisStreamEditor {
             let autoclaim_group = g.name.clone();
             let destroy_group = g.name.clone();
             let create_consumer_group = g.name.clone();
+            let delete_consumer_group = g.name.clone();
+            let group_consumers: Vec<(SharedString, u64)> =
+                g.consumers.iter().map(|c| (c.name.clone(), c.pending as u64)).collect();
             result = result.child(
                 h_flex()
                     .w_full()
@@ -1220,6 +1371,22 @@ impl ZedisStreamEditor {
                                 .tooltip(i18n_stream_editor(cx, "create_consumer_tooltip"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.create_consumer_dialog(create_consumer_group.clone(), window, cx);
+                                })),
+                        )
+                    })
+                    // Only where there is a consumer to remove; an empty
+                    // group has nothing for the picker to offer.
+                    .when(!g.consumers.is_empty(), |this| {
+                        let group = delete_consumer_group.clone();
+                        let consumers = group_consumers.clone();
+                        this.child(
+                            Button::new(("stream-delete-consumer", idx))
+                                .small()
+                                .ghost()
+                                .icon(Icon::new(CustomIconName::UserRoundPlus))
+                                .tooltip(i18n_stream_editor(cx, "delete_consumer_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.delete_consumer_dialog(group.clone(), consumers.clone(), window, cx);
                                 })),
                         )
                     })

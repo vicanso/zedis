@@ -80,6 +80,24 @@ pub enum ServerCommand {
     /// `COMMANDLOG GET` — Valkey 8.1's slow / large-request / large-reply
     /// logs (Redis has no such command).
     CommandlogGet,
+    /// `TS.ALTER` — retention / labels of an existing time series.
+    /// Module commands are probed like every other: a server without
+    /// RedisTimeSeries simply answers "unknown command" and the write
+    /// affordances disappear.
+    TsAlter,
+    /// `TS.ADD` — append (or backfill) one sample.
+    TsAdd,
+    /// `TS.CREATERULE` — a compaction rule into a destination series.
+    TsCreateRule,
+    /// `GEOADD` — the only way to put a point into a geo key; the sorted-set
+    /// editor cannot, because nobody computes a geohash score by hand.
+    GeoAdd,
+    /// `GEODIST` — distance between two members.
+    GeoDist,
+    /// `PFMERGE` — fold several HyperLogLogs into one.
+    PfMerge,
+    /// `BITOP` — AND / OR / XOR / NOT across bitmaps into a destination.
+    BitOp,
 }
 
 impl ServerCommand {
@@ -123,6 +141,13 @@ impl ServerCommand {
         ServerCommand::Replicaof,
         ServerCommand::Failover,
         ServerCommand::CommandlogGet,
+        ServerCommand::TsAlter,
+        ServerCommand::TsAdd,
+        ServerCommand::TsCreateRule,
+        ServerCommand::GeoAdd,
+        ServerCommand::GeoDist,
+        ServerCommand::PfMerge,
+        ServerCommand::BitOp,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -158,6 +183,13 @@ impl ServerCommand {
             ServerCommand::Replicaof => "REPLICAOF",
             ServerCommand::Failover => "FAILOVER",
             ServerCommand::CommandlogGet => "COMMANDLOG",
+            ServerCommand::TsAlter => "TS.ALTER",
+            ServerCommand::TsAdd => "TS.ADD",
+            ServerCommand::TsCreateRule => "TS.CREATERULE",
+            ServerCommand::GeoAdd => "GEOADD",
+            ServerCommand::GeoDist => "GEODIST",
+            ServerCommand::PfMerge => "PFMERGE",
+            ServerCommand::BitOp => "BITOP",
         }
     }
 
@@ -221,6 +253,12 @@ impl ServerCommand {
                 | ServerCommand::HSetEx
                 | ServerCommand::Replicaof
                 | ServerCommand::Failover
+                | ServerCommand::TsAlter
+                | ServerCommand::TsAdd
+                | ServerCommand::TsCreateRule
+                | ServerCommand::GeoAdd
+                | ServerCommand::PfMerge
+                | ServerCommand::BitOp
         )
     }
 

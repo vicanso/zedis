@@ -409,6 +409,11 @@ pub struct StreamSummary {
     pub first_entry_id: SharedString,
     /// ID of the last (newest) entry in the stream.
     pub last_entry_id: SharedString,
+    /// `last-generated-id` — the highest id the stream has ever minted,
+    /// which stays put when the newest entry is deleted. This, not
+    /// `last_entry_id`, is what `XADD` compares against and what `XSETID`
+    /// changes, so the two are kept apart.
+    pub last_generated_id: SharedString,
     /// Number of internal radix-tree keys (structural).
     pub radix_tree_keys: usize,
     /// Number of radix-tree nodes — proxy for memory footprint.

@@ -52,6 +52,12 @@ pub enum ServerTask {
     /// selected key
     RunKeyOperation,
 
+    /// Delete a stream consumer (XGROUP DELCONSUMER)
+    DeleteStreamConsumer,
+
+    /// Set a stream's last-generated id (XSETID)
+    SetStreamId,
+
     /// Delete multiple keys from Redis
     DeleteKeys,
 
@@ -219,6 +225,8 @@ impl ServerTask {
             ServerTask::DeleteKey => "delete_key",
             ServerTask::ReloadValue => "reload_value",
             ServerTask::RunKeyOperation => "run_key_operation",
+            ServerTask::DeleteStreamConsumer => "delete_stream_consumer",
+            ServerTask::SetStreamId => "set_stream_id",
             ServerTask::DeleteKeys => "delete_keys",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",

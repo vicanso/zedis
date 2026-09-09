@@ -29,22 +29,23 @@
 
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::get_connection_manager,
+    connection::{Capability, get_connection_manager, pf_merge},
     error::Error,
-    states::{ZedisServerState, i18n_hll},
+    states::{ZedisServerState, dialog_button_props, i18n_common, i18n_hll},
 };
 use gpui::{Context, Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, StyledExt,
-    button::Button,
+    button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
     v_flex,
 };
 use humansize::{DECIMAL, format_size};
 use redis::cmd;
 use tracing::info;
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -192,6 +193,82 @@ impl ZedisHllEditor {
     }
 }
 
+impl ZedisHllEditor {
+    /// `PFMERGE`: other HyperLogLog keys, one per line.
+    ///
+    /// Redis counts the destination among the sources, so this folds them
+    /// into what this key already holds rather than replacing it — the
+    /// opposite reading is natural enough that the hint says which it is.
+    fn merge_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sources_state = cx.new(|cx| TextareaState::new(window, cx).rows(4));
+        let label = i18n_hll(cx, "merge_sources");
+        let hint = i18n_hll(cx, "merge_hint");
+        let body = sources_state.clone();
+        let submit = sources_state;
+        let editor = cx.entity().downgrade();
+
+        ZedisDialog::new(i18n_hll(cx, "merge"))
+            .w(px(440.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Label::new(label.clone()).text_xs())
+                    .child(Textarea::new(&body))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let sources: Vec<String> = submit
+                    .read(cx)
+                    .value()
+                    .lines()
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                if sources.is_empty() {
+                    return false;
+                }
+                if let Some(editor) = editor.upgrade() {
+                    editor.update(cx, |this, inner| this.run_merge(sources, inner));
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `PFMERGE`, then reload so the cardinality reflects it.
+    fn run_merge(&mut self, sources: Vec<String>, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        let key = self.key.to_string();
+        self.add_task = Some(cx.spawn(async move |this, cx| {
+            let result = async {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                pf_merge(&mut conn, &key, &sources).await
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.add_error = None;
+                    this.load(cx);
+                }
+                Err(e) => {
+                    this.add_error = Some(SharedString::from(e.to_string()));
+                    cx.notify();
+                }
+            });
+        }));
+    }
+}
+
 impl Render for ZedisHllEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
@@ -247,7 +324,16 @@ impl Render for ZedisHllEditor {
                         Button::new("hll-pfadd")
                             .label(i18n_hll(cx, "add"))
                             .on_click(cx.listener(|this, _, _window, cx| this.run_add(cx))),
-                    ),
+                    )
+                    .when(self.server_state.read(cx).can(Capability::HllMerge), |this| {
+                        this.child(
+                            Button::new("hll-pfmerge")
+                                .ghost()
+                                .label(i18n_hll(cx, "merge"))
+                                .tooltip(i18n_hll(cx, "merge_tooltip"))
+                                .on_click(cx.listener(|this, _, window, cx| this.merge_dialog(window, cx))),
+                        )
+                    }),
             )
             .when_some(self.add_error.clone(), |this, err| {
                 this.child(Label::new(err).text_xs().text_color(danger))

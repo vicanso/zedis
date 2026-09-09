@@ -107,6 +107,18 @@ pub enum Capability {
     CopyKeyToServer,
     /// Mutate a container field (hash / list / set / zset / stream / bitmap bit).
     MutateContainer,
+    /// Write to a time series: append a sample, change retention / labels,
+    /// add or drop a compaction rule (`TS.ADD` / `TS.ALTER` /
+    /// `TS.CREATERULE`). Its own capability rather than `MutateContainer`
+    /// because the commands come from a module that may not be loaded.
+    TimeSeriesWrite,
+    /// Add a point to a geo key (`GEOADD`) — the sorted-set editor cannot,
+    /// since a geohash score is not something anyone types.
+    GeoWrite,
+    /// Fold other HyperLogLogs into this one (`PFMERGE`).
+    HllMerge,
+    /// Combine bitmaps into a destination (`BITOP`).
+    BitmapCombine,
     /// `CLIENT KILL`.
     KillClient,
     /// ACL create / edit / delete users.
@@ -168,6 +180,10 @@ impl Capability {
         Capability::RenameKey,
         Capability::CopyKeyToServer,
         Capability::MutateContainer,
+        Capability::TimeSeriesWrite,
+        Capability::GeoWrite,
+        Capability::HllMerge,
+        Capability::BitmapCombine,
         Capability::KillClient,
         Capability::AclWrite,
         Capability::ConfigWrite,
@@ -201,6 +217,10 @@ impl Capability {
                 | Capability::RenameKey
                 | Capability::CopyKeyToServer
                 | Capability::MutateContainer
+                | Capability::TimeSeriesWrite
+                | Capability::GeoWrite
+                | Capability::HllMerge
+                | Capability::BitmapCombine
                 | Capability::KillClient
                 | Capability::AclWrite
                 | Capability::ConfigWrite
@@ -244,6 +264,13 @@ impl Capability {
             Capability::PublishMessage => &[ServerCommand::Publish],
             Capability::FunctionWrite => &[ServerCommand::FunctionLoad],
             Capability::EvalScript => &[ServerCommand::Eval],
+            // The module writes. `TS.ADD` alone stands for the series
+            // editor: a server that has it has the module, and TS.ALTER /
+            // TS.CREATERULE are probed separately for their own buttons.
+            Capability::TimeSeriesWrite => &[ServerCommand::TsAdd],
+            Capability::GeoWrite => &[ServerCommand::GeoAdd],
+            Capability::HllMerge => &[ServerCommand::PfMerge],
+            Capability::BitmapCombine => &[ServerCommand::BitOp],
             _ => &[],
         }
     }
@@ -307,6 +334,10 @@ mod tests {
         (Capability::RenameKey, false),
         (Capability::CopyKeyToServer, false),
         (Capability::MutateContainer, false),
+        (Capability::TimeSeriesWrite, false),
+        (Capability::GeoWrite, false),
+        (Capability::HllMerge, false),
+        (Capability::BitmapCombine, false),
         (Capability::KillClient, false),
         (Capability::AclWrite, false),
         (Capability::ConfigWrite, false),

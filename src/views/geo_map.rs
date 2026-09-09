@@ -27,11 +27,12 @@
 //! and a side list that cross-highlights with the canvas. Invalid /
 //! non-geo members are listed separately. Capped at [`GEO_CAP`] points.
 
+use crate::assets::CustomIconName;
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::get_connection_manager,
+    connection::{Capability, ServerCommand, geo_add, geo_dist, get_connection_manager},
     error::Error,
-    states::{ZedisServerState, i18n_geo_map},
+    states::{ZedisServerState, dialog_button_props, i18n_common, i18n_geo_map},
 };
 use gpui::{
     BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -51,6 +52,7 @@ use redis::{Value, cmd};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -93,13 +95,35 @@ struct GeoData {
     degenerate: bool,
 }
 
-/// An active radius search (`GEOSEARCH FROMLONLAT … BYRADIUS`). Members
-/// in `matches` are highlighted; the rest are dimmed.
+/// What a `GEOSEARCH` covers. Redis offers both and they answer different
+/// questions — "within 5 km of here" versus "inside this tile" — so the map
+/// offers both rather than approximating one with the other.
+#[derive(Clone, Copy, PartialEq)]
+enum GeoShape {
+    /// Metres from the centre (`BYRADIUS`).
+    Radius(f64),
+    /// Full width and height in metres (`BYBOX`).
+    Box { width_m: f64, height_m: f64 },
+}
+
+impl GeoShape {
+    /// Half-extents in metres, east–west and north–south. A circle is the
+    /// degenerate case where both are the radius.
+    fn half_extents_m(self) -> (f64, f64) {
+        match self {
+            GeoShape::Radius(r) => (r, r),
+            GeoShape::Box { width_m, height_m } => (width_m / 2.0, height_m / 2.0),
+        }
+    }
+}
+
+/// An active search (`GEOSEARCH FROMLONLAT … BYRADIUS` / `… BYBOX`).
+/// Members in `matches` are highlighted; the rest are dimmed.
 #[derive(Clone)]
 struct GeoSearch {
     lon: f64,
     lat: f64,
-    radius_m: f64,
+    shape: GeoShape,
     matches: Rc<HashSet<SharedString>>,
 }
 
@@ -111,9 +135,15 @@ pub enum GeoMapEvent {
 pub struct ZedisGeoMap {
     server_state: Entity<ZedisServerState>,
     key: SharedString,
-    /// Radius-search center/radius inputs.
+    /// Search centre, and the first extent — a radius, or the box width.
     lon_input: Entity<InputState>,
     lat_input: Entity<InputState>,
+    /// Box height; only read (and only shown) in box mode.
+    height_input: Entity<InputState>,
+    /// `BYBOX` rather than `BYRADIUS`.
+    box_search: bool,
+    /// Last `GEODIST` answer, shown next to the search result.
+    distance: Option<SharedString>,
     radius_input: Entity<InputState>,
     /// Active `GEOSEARCH` result, if any.
     search: Option<GeoSearch>,
@@ -157,6 +187,7 @@ impl ZedisGeoMap {
         let lon_input = make_input("lon", window, cx);
         let lat_input = make_input("lat", window, cx);
         let radius_input = make_input("km", window, cx);
+        let height_input = make_input("km", window, cx);
 
         let mut subscriptions = Vec::new();
         // Enter in any field runs the radius search.
@@ -173,6 +204,9 @@ impl ZedisGeoMap {
             key,
             lon_input,
             lat_input,
+            height_input,
+            box_search: false,
+            distance: None,
             radius_input,
             search: None,
             search_error: None,
@@ -235,13 +269,32 @@ impl ZedisGeoMap {
     fn run_search(&mut self, cx: &mut Context<Self>) {
         let lon = self.lon_input.read(cx).value().trim().parse::<f64>();
         let lat = self.lat_input.read(cx).value().trim().parse::<f64>();
-        let radius_km = self.radius_input.read(cx).value().trim().parse::<f64>();
-        let (Ok(lon), Ok(lat), Ok(radius_km)) = (lon, lat, radius_km) else {
+        let width_km = self.radius_input.read(cx).value().trim().parse::<f64>();
+        let (Ok(lon), Ok(lat), Ok(width_km)) = (lon, lat, width_km) else {
             self.search_error = Some(i18n_geo_map(cx, "search_invalid"));
             cx.notify();
             return;
         };
-        if radius_km <= 0.0 {
+        // In box mode the second field is the height; blank means "square",
+        // which is the shape people draw when they think in tiles.
+        let height_km = if self.box_search {
+            let raw = self.height_input.read(cx).value().trim().to_string();
+            if raw.is_empty() {
+                width_km
+            } else {
+                match raw.parse::<f64>() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.search_error = Some(i18n_geo_map(cx, "search_invalid"));
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        } else {
+            width_km
+        };
+        if width_km <= 0.0 || height_km <= 0.0 {
             self.search_error = Some(i18n_geo_map(cx, "search_invalid"));
             cx.notify();
             return;
@@ -251,17 +304,24 @@ impl ZedisGeoMap {
         let server_id = state.server_id().to_string();
         let db = state.db();
         let key = self.key.to_string();
-        let radius_m = radius_km * 1000.0;
+        let shape = if self.box_search {
+            GeoShape::Box {
+                width_m: width_km * 1000.0,
+                height_m: height_km * 1000.0,
+            }
+        } else {
+            GeoShape::Radius(width_km * 1000.0)
+        };
         cx.notify();
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result = geosearch(server_id, db, key, lon, lat, radius_km).await;
+            let result = geosearch(server_id, db, key, lon, lat, shape).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(members) => {
                         this.search = Some(GeoSearch {
                             lon,
                             lat,
-                            radius_m,
+                            shape,
                             matches: Rc::new(members.into_iter().map(SharedString::from).collect()),
                         });
                         this.search_error = None;
@@ -444,16 +504,26 @@ impl ZedisGeoMap {
                     let cwy = lat_to_world(s.lat);
                     let (csx, csy) = project(cwx, cwy, data.bbox, vw, vh, zoom, offset);
                     let lat_rad = s.lat.to_radians();
-                    let dlon = s.radius_m / (111_320.0 * lat_rad.cos().abs().max(1e-6));
+                    let (half_x_m, half_y_m) = s.shape.half_extents_m();
+                    let dlon = half_x_m / (111_320.0 * lat_rad.cos().abs().max(1e-6));
+                    let dlat = half_y_m / 110_540.0;
                     let (esx, _) = project(lon_to_world(s.lon + dlon), cwy, data.bbox, vw, vh, zoom, offset);
-                    let rad = (esx - csx).abs();
-                    if rad > 0.5 {
+                    let (_, north_sy) = project(cwx, lat_to_world(s.lat + dlat), data.bbox, vw, vh, zoom, offset);
+                    let rx = (esx - csx).abs();
+                    let ry = (north_sy - csy).abs();
+                    // A circle is a fully-rounded quad; a box is the same
+                    // quad with square corners and its own two extents.
+                    let corner = match s.shape {
+                        GeoShape::Radius(_) => rx.min(ry),
+                        GeoShape::Box { .. } => 0.0,
+                    };
+                    if rx > 0.5 && ry > 0.5 {
                         window.paint_quad(quad(
                             bounds(
-                                point(origin.x + px(csx - rad), origin.y + px(csy - rad)),
-                                size(px(rad * 2.0), px(rad * 2.0)),
+                                point(origin.x + px(csx - rx), origin.y + px(csy - ry)),
+                                size(px(rx * 2.0), px(ry * 2.0)),
                             ),
-                            px(rad),
+                            px(corner),
                             Hsla { a: 0.08, ..node_hi },
                             px(1.5),
                             node_hi,
@@ -719,9 +789,167 @@ impl ZedisGeoMap {
         )
     }
 
+    /// `GEOADD`: longitude, latitude, member name.
+    ///
+    /// Longitude first, which is the opposite of how coordinates are
+    /// usually spoken — both fields are labelled for that reason, and the
+    /// dialog is the only way to put a point in a geo key at all: the
+    /// sorted-set editor would need a geohash score nobody computes by hand.
+    fn add_point_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let lon_state = cx.new(|cx| InputState::new(window, cx).placeholder("0.0"));
+        let lat_state = cx.new(|cx| InputState::new(window, cx).placeholder("0.0"));
+        let member_state = cx.new(|cx| InputState::new(window, cx));
+        let lon_label = i18n_geo_map(cx, "add_lon");
+        let lat_label = i18n_geo_map(cx, "add_lat");
+        let member_label = i18n_geo_map(cx, "add_member");
+        let hint = i18n_geo_map(cx, "add_hint");
+        let body = (lon_state.clone(), lat_state.clone(), member_state.clone());
+        let submit = (lon_state, lat_state, member_state);
+        let map = cx.entity().downgrade();
+
+        ZedisDialog::new(i18n_geo_map(cx, "add_title"))
+            .w(px(420.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Label::new(lon_label.clone()).text_xs())
+                    .child(Input::new(&body.0).small().h(px(32.)))
+                    .child(Label::new(lat_label.clone()).text_xs())
+                    .child(Input::new(&body.1).small().h(px(32.)))
+                    .child(Label::new(member_label.clone()).text_xs())
+                    .child(Input::new(&body.2).small().h(px(32.)))
+                    .child(Label::new(hint.clone()).text_xs())
+            })
+            .on_ok(move |_, _window, cx| {
+                let member = submit.2.read(cx).value().trim().to_string();
+                let (Ok(lon), Ok(lat)) = (
+                    submit.0.read(cx).value().trim().parse::<f64>(),
+                    submit.1.read(cx).value().trim().parse::<f64>(),
+                ) else {
+                    return false;
+                };
+                // The ranges Redis itself enforces; catching them here means
+                // an error about the form rather than about the command.
+                if member.is_empty() || !(-180.0..=180.0).contains(&lon) || !(-85.05112878..=85.05112878).contains(&lat)
+                {
+                    return false;
+                }
+                if let Some(map) = map.upgrade() {
+                    map.update(cx, |this, inner| this.run_geo_add(lon, lat, member, inner));
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `GEOADD`, then a reload so the new point is on the map.
+    fn run_geo_add(&mut self, lon: f64, lat: f64, member: String, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        let key = self.key.to_string();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let result = async {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                geo_add(&mut conn, &key, lon, lat, &member).await
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(_) => {
+                    this.search_error = None;
+                    this.load(cx);
+                }
+                Err(e) => {
+                    this.search_error = Some(SharedString::from(e.to_string()));
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// `GEODIST`: two member names → metres, reported in the search bar.
+    fn distance_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let from_state = cx.new(|cx| InputState::new(window, cx));
+        let to_state = cx.new(|cx| InputState::new(window, cx));
+        let from_label = i18n_geo_map(cx, "dist_from");
+        let to_label = i18n_geo_map(cx, "dist_to");
+        let body = (from_state.clone(), to_state.clone());
+        let submit = (from_state, to_state);
+        let map = cx.entity().downgrade();
+
+        ZedisDialog::new(i18n_geo_map(cx, "dist_title"))
+            .w(px(420.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || {
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Label::new(from_label.clone()).text_xs())
+                    .child(Input::new(&body.0).small().h(px(32.)))
+                    .child(Label::new(to_label.clone()).text_xs())
+                    .child(Input::new(&body.1).small().h(px(32.)))
+            })
+            .on_ok(move |_, _window, cx| {
+                let from = submit.0.read(cx).value().trim().to_string();
+                let to = submit.1.read(cx).value().trim().to_string();
+                if from.is_empty() || to.is_empty() {
+                    return false;
+                }
+                if let Some(map) = map.upgrade() {
+                    map.update(cx, |this, inner| this.run_geo_dist(from, to, inner));
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `GEODIST`, with the answer (or "one of them is not in the key")
+    /// landing in the same slot the search reports through.
+    fn run_geo_dist(&mut self, from: String, to: String, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        let key = self.key.to_string();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let result = async {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                geo_dist(&mut conn, &key, &from, &to).await
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                this.distance = match &result {
+                    Ok(Some(metres)) => Some(SharedString::from(format!("{from} ↔ {to}: {:.1} m", metres))),
+                    Ok(None) => Some(i18n_geo_map(cx, "dist_missing")),
+                    Err(_) => None,
+                };
+                if let Err(e) = result {
+                    this.search_error = Some(SharedString::from(e.to_string()));
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     /// Radius-search bar: center lon/lat + radius (km) → `GEOSEARCH`.
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let state = self.server_state.read(cx);
+        let can_write = state.can(Capability::GeoWrite);
+        let can_measure = state.features().is_usable(ServerCommand::GeoDist);
         let mut bar = h_flex()
             .w_full()
             .gap_2()
@@ -729,13 +957,56 @@ impl ZedisGeoMap {
             .child(Input::new(&self.lon_input).small().w(px(90.)))
             .child(Input::new(&self.lat_input).small().w(px(90.)))
             .child(Input::new(&self.radius_input).small().w(px(80.)))
+            // Height only exists in box mode; in radius mode a second
+            // extent would be a field with nothing to mean.
+            .when(self.box_search, |this| {
+                this.child(Input::new(&self.height_input).small().w(px(80.)))
+            })
+            .child(
+                Button::new("geo-shape-toggle")
+                    .small()
+                    .ghost()
+                    .label(if self.box_search {
+                        i18n_geo_map(cx, "shape_box")
+                    } else {
+                        i18n_geo_map(cx, "shape_radius")
+                    })
+                    .tooltip(i18n_geo_map(cx, "shape_tooltip"))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.box_search = !this.box_search;
+                        // The old result described a different shape, so it
+                        // stops being shown rather than sitting under a
+                        // toggle that no longer matches it.
+                        this.clear_search(cx);
+                    })),
+            )
             .child(
                 Button::new("geo-radius-search")
                     .small()
                     .primary()
                     .label(i18n_geo_map(cx, "search"))
                     .on_click(cx.listener(|this, _, _window, cx| this.run_search(cx))),
-            );
+            )
+            .when(can_write, |this| {
+                this.child(
+                    Button::new("geo-add")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Plus)
+                        .tooltip(i18n_geo_map(cx, "add_title"))
+                        .on_click(cx.listener(|this, _, window, cx| this.add_point_dialog(window, cx))),
+                )
+            })
+            .when(can_measure, |this| {
+                this.child(
+                    Button::new("geo-dist")
+                        .small()
+                        .ghost()
+                        .icon(CustomIconName::Equal)
+                        .tooltip(i18n_geo_map(cx, "dist_title"))
+                        .on_click(cx.listener(|this, _, window, cx| this.distance_dialog(window, cx))),
+                )
+            });
         if self.search.is_some() {
             bar = bar.child(
                 Button::new("geo-radius-clear")
@@ -753,6 +1024,9 @@ impl ZedisGeoMap {
                     .text_xs()
                     .text_color(muted),
             );
+        }
+        if let Some(distance) = self.distance.clone() {
+            bar = bar.child(Label::new(distance).text_xs().text_color(muted));
         }
         bar
     }
@@ -1214,17 +1488,25 @@ async fn geosearch(
     key: String,
     lon: f64,
     lat: f64,
-    radius_km: f64,
+    shape: GeoShape,
 ) -> Result<Vec<String>> {
     let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    let members: Vec<String> = cmd("GEOSEARCH")
-        .arg(&key)
-        .arg("FROMLONLAT")
-        .arg(lon)
-        .arg(lat)
-        .arg("BYRADIUS")
-        .arg(radius_km)
-        .arg("km")
+    let mut command = cmd("GEOSEARCH");
+    command.arg(&key).arg("FROMLONLAT").arg(lon).arg(lat);
+    match shape {
+        GeoShape::Radius(radius_m) => {
+            command.arg("BYRADIUS").arg(radius_m / 1000.0).arg("km");
+        }
+        // Width then height, both in the same unit as the radius form.
+        GeoShape::Box { width_m, height_m } => {
+            command
+                .arg("BYBOX")
+                .arg(width_m / 1000.0)
+                .arg(height_m / 1000.0)
+                .arg("km");
+        }
+    }
+    let members: Vec<String> = command
         .arg("ASC")
         .arg("COUNT")
         .arg(GEO_CAP as i64)

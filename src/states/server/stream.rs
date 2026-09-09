@@ -128,6 +128,10 @@ async fn load_stream_info_data(conn: &mut RedisAsyncConn, key: &str) -> Result<S
             groups_count: map_get_usize(&map, "groups"),
             first_entry_id: map.get("first-entry").map(|v| extract_entry_id(v)).unwrap_or_default(),
             last_entry_id: map.get("last-entry").map(|v| extract_entry_id(v)).unwrap_or_default(),
+            last_generated_id: map
+                .get("last-generated-id")
+                .map(|v| redis_to_string(v))
+                .unwrap_or_default(),
             radix_tree_keys: map_get_usize(&map, "radix-tree-keys"),
             radix_tree_nodes: map_get_usize(&map, "radix-tree-nodes"),
             idmp,
@@ -906,6 +910,61 @@ impl ZedisServerState {
                 if !created {
                     this.emit_warning_notification(i18n_stream_editor(cx, "consumer_exists"), cx);
                 }
+                this.fetch_stream_info(cx);
+            },
+        );
+    }
+
+    /// XGROUP DELCONSUMER key group consumer — the counterpart to
+    /// CREATECONSUMER above.
+    ///
+    /// The reply is how many *pending* entries went with the consumer, and
+    /// that is the number worth reporting: those messages were delivered,
+    /// never acknowledged, and are now unreachable through this group. The
+    /// UI shows the count before the click too, so the decision is made with
+    /// it rather than told about it afterwards.
+    pub fn delete_stream_consumer(&mut self, group: SharedString, consumer: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::DeleteStreamConsumer,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let pending: i64 = cmd("XGROUP")
+                    .arg("DELCONSUMER")
+                    .arg(&key)
+                    .arg(group.as_str())
+                    .arg(consumer.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(pending.max(0) as usize)
+            },
+            |this, pending, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                let message = t!("stream_editor.consumer_deleted", count = pending, locale = locale);
+                this.emit_info_notification(message.to_string().into(), cx);
+                this.fetch_stream_info(cx);
+            },
+        );
+    }
+
+    /// XSETID key id — the *stream's* last-generated id, not a group's
+    /// position (that is `XGROUP SETID`, above).
+    ///
+    /// Lowering it lets `XADD` mint ids that already existed, which is why
+    /// this is a recovery tool and not an everyday one: the UI puts it
+    /// behind a confirmation that says so. `ENTRIESADDED` /
+    /// `MAXDELETEDID` are deliberately not exposed — they are replication
+    /// bookkeeping, and getting them wrong is worse than leaving them.
+    pub fn set_stream_id(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.exec_stream_op(
+            ServerTask::SetStreamId,
+            cx,
+            |_| {},
+            move |key, mut conn| async move {
+                let _: () = cmd("XSETID").arg(&key).arg(id.as_str()).query_async(&mut conn).await?;
+                Ok(())
+            },
+            |this, _, cx| {
                 this.fetch_stream_info(cx);
             },
         );

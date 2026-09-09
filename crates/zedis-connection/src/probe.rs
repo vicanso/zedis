@@ -332,6 +332,11 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::ObjectEncoding => {
             c.arg("ENCODING").arg(PROBE_KEY);
         }
+        // Read-only, and a key that cannot exist answers nil rather than
+        // touching anything.
+        ServerCommand::GeoDist => {
+            c.arg(PROBE_KEY).arg("a").arg("b");
+        }
         ServerCommand::Dump => {
             c.arg(PROBE_KEY);
         }
@@ -417,6 +422,16 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
         ServerCommand::HSetEx => &["HSETEX", PROBE_KEY, "FIELDS", "1", "f", "v"],
         ServerCommand::Replicaof => &["REPLICAOF", "NO", "ONE"],
         ServerCommand::Failover => &["FAILOVER", "ABORT"],
+        // Module writes. `ACL DRYRUN` answers for a command the server
+        // knows and "unknown command" for one it does not, which is exactly
+        // the two-way answer a module probe needs — no brand detection, no
+        // version guess.
+        ServerCommand::TsAlter => &["TS.ALTER", PROBE_KEY],
+        ServerCommand::TsAdd => &["TS.ADD", PROBE_KEY, "*", "0"],
+        ServerCommand::TsCreateRule => &["TS.CREATERULE", PROBE_KEY, PROBE_KEY, "AGGREGATION", "avg", "60000"],
+        ServerCommand::GeoAdd => &["GEOADD", PROBE_KEY, "0", "0", "m"],
+        ServerCommand::PfMerge => &["PFMERGE", PROBE_KEY, PROBE_KEY],
+        ServerCommand::BitOp => &["BITOP", "OR", PROBE_KEY, PROBE_KEY],
         _ => &["PING"],
     }
 }

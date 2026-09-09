@@ -29,9 +29,9 @@
 
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::get_connection_manager,
+    connection::{BitOpKind, Capability, bit_op, get_connection_manager},
     error::Error,
-    states::{ZedisServerState, i18n_bitmap},
+    states::{ZedisServerState, dialog_button_props, i18n_bitmap, i18n_common},
 };
 use gpui::{
     BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
@@ -42,7 +42,7 @@ use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
     v_flex,
 };
@@ -50,6 +50,7 @@ use redis::cmd;
 use std::cell::Cell;
 use std::rc::Rc;
 use tracing::info;
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -505,6 +506,67 @@ impl ZedisBitmapEditor {
     }
 }
 
+impl ZedisBitmapEditor {
+    /// `BITOP`: operation, source keys, destination.
+    ///
+    /// The destination defaults to this key — "combine these into what I am
+    /// looking at" — but stays editable, because AND / OR / XOR into a fresh
+    /// key is just as common and there is no reason to make that a second
+    /// trip through the terminal. `NOT` takes exactly one source, which the
+    /// form checks rather than letting the server say so.
+    fn bitop_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.new(|cx| BitOpForm::new(self.key.to_string(), window, cx));
+        let body = view.clone();
+        let submit = view;
+        let editor = cx.entity().downgrade();
+
+        ZedisDialog::new(i18n_bitmap(cx, "bitop"))
+            .w(px(440.))
+            .ok_text(i18n_common(cx, "confirm"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .button_props(
+                dialog_button_props(cx)
+                    .ok_text(i18n_common(cx, "confirm"))
+                    .cancel_text(i18n_common(cx, "cancel")),
+            )
+            .child(move || body.clone())
+            .on_ok(move |_, _window, cx| {
+                let Some((op, destination, sources)) = submit.read(cx).request(cx) else {
+                    return false;
+                };
+                if let Some(editor) = editor.upgrade() {
+                    editor.update(cx, |this, inner| this.run_bitop(op, destination, sources, inner));
+                }
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// `BITOP`, then reload — the destination may be this very key.
+    fn run_bitop(&mut self, op: BitOpKind, destination: String, sources: Vec<String>, cx: &mut Context<Self>) {
+        let state = self.server_state.read(cx);
+        let server_id = state.server_id().to_string();
+        let db = state.db();
+        self.load_task = Some(cx.spawn(async move |this, cx| {
+            let result = async {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                bit_op(&mut conn, op, &destination, &sources).await
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(_) => {
+                    this.error = None;
+                    this.load(cx);
+                }
+                Err(e) => {
+                    this.error = Some(SharedString::from(e.to_string()));
+                    cx.notify();
+                }
+            });
+        }));
+    }
+}
+
 impl Render for ZedisBitmapEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
@@ -521,7 +583,17 @@ impl Render for ZedisBitmapEditor {
                     .icon(IconName::Menu)
                     .tooltip(i18n_bitmap(cx, "raw"))
                     .on_click(cx.listener(|_this, _, _window, cx| cx.emit(BitmapEvent::ExitToRaw))),
-            );
+            )
+            .when(self.server_state.read(cx).can(Capability::BitmapCombine), |this| {
+                this.child(
+                    Button::new("bitmap-bitop")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Plus)
+                        .tooltip(i18n_bitmap(cx, "bitop_tooltip"))
+                        .on_click(cx.listener(|this, _, window, cx| this.bitop_dialog(window, cx))),
+                )
+            });
         if let Some(data) = self.data.as_ref() {
             header = header
                 .child(self.stat(i18n_bitmap(cx, "bits"), data.total_bits.to_string(), muted))
@@ -653,6 +725,78 @@ async fn bitfield(server_id: String, db: usize, key: String, args: Vec<String>) 
         command.arg(arg);
     }
     Ok(command.query_async(&mut conn).await?)
+}
+
+/// Body of the `BITOP` dialog.
+///
+/// A view entity rather than inline elements, and not by preference: the
+/// form holds an `Input` *and* a `flex_wrap` row of operation buttons, which
+/// is the combination that corrupts inputs when the body is a closure the
+/// dialog re-invokes each frame (see the GPUI notes in CLAUDE.md).
+struct BitOpForm {
+    op: BitOpKind,
+    sources: Entity<TextareaState>,
+    destination: Entity<InputState>,
+}
+
+impl BitOpForm {
+    fn new(destination: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self {
+            op: BitOpKind::Or,
+            sources: cx.new(|cx| TextareaState::new(window, cx).rows(4)),
+            destination: cx.new(|cx| InputState::new(window, cx).default_value(destination)),
+        }
+    }
+
+    /// The command the form describes, or `None` when it does not describe
+    /// one — no sources, no destination, or several sources under `NOT`.
+    fn request(&self, cx: &gpui::App) -> Option<(BitOpKind, String, Vec<String>)> {
+        let destination = self.destination.read(cx).value().trim().to_string();
+        let sources: Vec<String> = self
+            .sources
+            .read(cx)
+            .value()
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        if destination.is_empty() || sources.is_empty() || (self.op.single_source() && sources.len() != 1) {
+            return None;
+        }
+        Some((self.op, destination, sources))
+    }
+}
+
+impl Render for BitOpForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.op;
+        let mut ops = h_flex().gap_2().flex_wrap();
+        for op in BitOpKind::ALL {
+            let button = Button::new(SharedString::from(format!("bitop-{}", op.word())))
+                .small()
+                .label(op.word());
+            let button = if op == selected {
+                button.primary()
+            } else {
+                button.outline()
+            };
+            ops = ops.child(button.on_click(cx.listener(move |this, _, _window, cx| {
+                this.op = op;
+                cx.notify();
+            })));
+        }
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(ops)
+            .child(Label::new(i18n_bitmap(cx, "bitop_sources")).text_xs())
+            .child(Textarea::new(&self.sources))
+            .child(Label::new(i18n_bitmap(cx, "bitop_destination")).text_xs())
+            // Inputs paint `size_full` and their state carries `flex_1`;
+            // pin the height so they don't inflate here.
+            .child(Input::new(&self.destination).small().h(px(32.)))
+            .child(Label::new(i18n_bitmap(cx, "bitop_hint")).text_xs())
+    }
 }
 
 #[cfg(test)]
