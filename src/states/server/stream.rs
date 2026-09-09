@@ -29,7 +29,7 @@ use gpui::{SharedString, prelude::*};
 use redis::aio::MultiplexedConnection;
 use redis::cmd;
 use rust_i18n::t;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -654,6 +654,40 @@ impl ZedisServerState {
                 if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let stream = Arc::make_mut(stream_data);
                     stream.size -= 1;
+                }
+                cx.emit(ServerEvent::ValueUpdated);
+            },
+        );
+    }
+
+    /// Removes several entries in one `XDEL` — the table's multi-select
+    /// delete. The server reports how many it actually removed, which is
+    /// what the size is adjusted by: an id already trimmed away by MAXLEN
+    /// between the load and the click must not shrink the count twice.
+    pub fn remove_stream_values(&mut self, entry_ids: Vec<SharedString>, cx: &mut Context<Self>) {
+        if entry_ids.is_empty() {
+            return;
+        }
+        let gone: HashSet<SharedString> = entry_ids.iter().cloned().collect();
+        self.exec_stream_op(
+            ServerTask::RemoveStreamEntry,
+            cx,
+            move |stream| {
+                stream.values.retain(|(id, _)| !gone.contains(id));
+            },
+            move |key, mut conn| async move {
+                let mut command = cmd("XDEL");
+                command.arg(&key);
+                for id in &entry_ids {
+                    command.arg(id.as_str());
+                }
+                let removed: u64 = command.query_async(&mut conn).await?;
+                Ok(removed)
+            },
+            |this, removed, cx| {
+                if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
+                    let stream = Arc::make_mut(stream_data);
+                    stream.size = stream.size.saturating_sub(removed as usize);
                 }
                 cx.emit(ServerEvent::ValueUpdated);
             },

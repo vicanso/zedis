@@ -12,21 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{KvTableColumn, KvTableColumnType};
+use super::{KvTableColumn, KvTableColumnType, select_offset};
 use crate::helpers::get_mono_font_family;
 use crate::states::{KeyType, RedisValue, ZedisServerState, i18n_common};
 use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     label::Label,
     notification::Notification,
     table::{Column, ColumnSort, TableDelegate, TableState},
 };
-use std::{cell::Cell, rc::Rc, sync::Arc};
-
-pub const INDEX_COLUMN_NAME: &str = "#";
+use std::{cell::Cell, collections::HashSet, rc::Rc, sync::Arc};
 
 /// Trait defining the data fetching and manipulation interface for Key-Value data.
 /// Implementers allow the `ZedisKvDelegate` to display and edit various Redis data types (Hash, Set, List, ZSet).
@@ -73,6 +72,19 @@ pub trait ZedisKvFetcher: 'static {
     /// Removes an item at the specified index.
     fn remove(&self, index: usize, _cx: &mut App);
 
+    /// Whether this type can delete a whole selection in one command
+    /// (`HDEL` / `SREM` / `ZREM` / `XDEL`, or the List's marker pipeline).
+    /// The table only offers its checkbox column when this is true, so a
+    /// type that has no batch form simply keeps the one-row-at-a-time
+    /// affordance instead of pretending.
+    fn supports_batch_remove(&self) -> bool {
+        false
+    }
+
+    /// Removes every row in `rows` (indices into the *visible* rows) in one
+    /// operation. Only called when [`Self::supports_batch_remove`] is true.
+    fn remove_many(&self, _rows: &[usize], _cx: &mut App) {}
+
     /// Whether form fields are required when adding/editing.
     fn fields_required(&self) -> bool {
         true
@@ -85,6 +97,16 @@ pub trait ZedisKvFetcher: 'static {
 
     /// Whether the edit form should support dynamic add-fields.
     fn support_add_fields(&self) -> bool {
+        false
+    }
+
+    /// Whether [`Self::filter`] can only look at what is already loaded.
+    ///
+    /// True for List and Stream, and not by choice: Redis has no `LSCAN`,
+    /// so those types are read by range and there is nothing server-side to
+    /// match against. The table says so next to the box rather than letting
+    /// the result look like a whole-key search.
+    fn filters_client_side(&self) -> bool {
         false
     }
 
@@ -145,6 +167,14 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     fetcher: Arc<T>,
     /// Column definitions for the UI component.
     columns: Vec<Column>,
+    /// Rows ticked in the multi-select column, as indices into the visible
+    /// rows.
+    ///
+    /// Indices, not values, because that is what every fetcher's `remove`
+    /// already speaks — and why the table clears this set after any change
+    /// that can renumber rows (a delete, a filter, a new key). `load_more`
+    /// only appends, so a selection survives paging.
+    selected_rows: HashSet<usize>,
 }
 
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
@@ -156,8 +186,10 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     /// * `window` - GPUI window context
     /// * `cx` - GPUI application context
     pub fn new(columns: Vec<KvTableColumn>, fetcher: Arc<T>, _window: &mut Window, _cx: &mut App) -> Self {
-        // Convert KvTableColumns to UI Columns and initialize input states
-        let primary_ix = fetcher.primary_index();
+        // Convert KvTableColumns to UI Columns and initialize input states.
+        // `primary_index` is in fetcher space, so shift it past the
+        // multi-select column when there is one — see `fetcher_col`.
+        let primary_ix = fetcher.primary_index() + select_offset(&columns);
         let support_reverse = fetcher.support_reverse();
         let is_reverse = fetcher.current_reverse();
         let ui_columns = columns
@@ -193,7 +225,23 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
             columns: ui_columns,
             fetcher,
             processing: Rc::new(Cell::new(false)),
+            selected_rows: HashSet::new(),
         }
+    }
+
+    /// The ticked rows, ascending — the order `remove_many` is handed them.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self.selected_rows.iter().copied().collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected_rows.len()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected_rows.clear();
     }
 
     /// Returns a cloned Arc reference to the current fetcher.
@@ -208,9 +256,27 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         self.processing = Rc::new(Cell::new(false));
     }
 
+    /// Index of the multi-select column, when the table has one.
+    fn select_column(&self) -> Option<usize> {
+        self.table_columns
+            .iter()
+            .position(|column| column.column_type == KvTableColumnType::Select)
+    }
+
+    /// Delegate column index → the index a fetcher speaks.
+    ///
+    /// Fetchers address their columns with the Index column prepended and
+    /// nothing else — `col_ix == 2` is the second value, `TTL_COL_IX` is 3.
+    /// The multi-select column is inserted *before* that, so it is subtracted
+    /// back out here rather than teaching five fetchers about a column that
+    /// carries none of their data.
+    fn fetcher_col(&self, col_ix: usize) -> usize {
+        col_ix.saturating_sub(select_offset(&self.table_columns))
+    }
+
     /// Replaces the column definitions (e.g., when Stream fields change).
     pub fn set_columns(&mut self, columns: Vec<KvTableColumn>) {
-        let primary_ix = self.fetcher.primary_index();
+        let primary_ix = self.fetcher.primary_index() + select_offset(&columns);
         let support_reverse = self.fetcher.support_reverse();
         let is_reverse = self.fetcher.current_reverse();
         let ui_columns = columns
@@ -266,6 +332,30 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
 
+        // The multi-select header is a "tick every loaded row" box. It shows
+        // as checked only when everything loaded is ticked, so paging in more
+        // rows visibly un-checks it rather than silently claiming a selection
+        // that no longer covers the table.
+        if self.select_column() == Some(col_ix) {
+            let rows = self.fetcher.rows_count();
+            let all = rows > 0 && self.selected_rows.len() >= rows;
+            return h_flex()
+                .size_full()
+                .justify_center()
+                .items_center()
+                .child(Checkbox::new("kv-select-all").checked(all).on_click(cx.listener(
+                    move |table, checked: &bool, _window, cx| {
+                        let delegate = table.delegate_mut();
+                        delegate.selected_rows.clear();
+                        if *checked {
+                            delegate.selected_rows.extend(0..rows);
+                        }
+                        cx.notify();
+                    },
+                )))
+                .into_any_element();
+        }
+
         // h_flex (items_center) matches render_td below, so the header text
         // is vertically centered like the cells; flex_1 keeps the label
         // full-width so per-column text_align (e.g. the right-aligned index
@@ -284,6 +374,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                     .font_weight(FontWeight::BOLD)
                     .flex_1(),
             )
+            .into_any_element()
     }
 
     /// Handles sort toggling for the primary column (e.g., Stream Entry ID).
@@ -295,7 +386,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        if col_ix == self.fetcher.primary_index() && self.fetcher.support_reverse() {
+        if self.fetcher_col(col_ix) == self.fetcher.primary_index() && self.fetcher.support_reverse() {
             let reverse = matches!(sort, ColumnSort::Descending | ColumnSort::Default);
             self.fetcher.toggle_reverse(reverse, cx);
         }
@@ -318,18 +409,44 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .when_some(column.paddings, |this, paddings| this.paddings(paddings));
 
         // Handle special column types
-        if self
-            .table_columns
-            .get(col_ix)
-            .map(|item| item.column_type == KvTableColumnType::Index)
-            .unwrap_or_default()
-        {
+        let column_type = self.table_columns.get(col_ix).map(|item| item.column_type);
+        if column_type == Some(KvTableColumnType::Select) {
+            let checked = self.selected_rows.contains(&row_ix);
+            return base
+                .justify_center()
+                .items_center()
+                // The row underneath opens the entry panel; a tick is not
+                // that, so the click stops here. `id` is what makes the div
+                // stateful enough to carry the handler.
+                .id(("kv-select-cell", row_ix))
+                .on_click(|_, _, cx: &mut App| cx.stop_propagation())
+                .child(
+                    Checkbox::new(("kv-select", row_ix))
+                        .checked(checked)
+                        .on_click(cx.listener(move |table, checked: &bool, _window, cx| {
+                            let delegate = table.delegate_mut();
+                            if *checked {
+                                delegate.selected_rows.insert(row_ix);
+                            } else {
+                                delegate.selected_rows.remove(&row_ix);
+                            }
+                            cx.notify();
+                        })),
+                )
+                .into_any_element();
+        }
+        if column_type == Some(KvTableColumnType::Index) {
             // Index column: Display row number (1-based)
-            return base.child(Label::new((row_ix + 1).to_string()).text_align(column.align).w_full());
+            return base
+                .child(Label::new((row_ix + 1).to_string()).text_align(column.align).w_full())
+                .into_any_element();
         }
 
         // Default: Render value as label with copy button on hover
-        let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
+        let value = self
+            .fetcher
+            .get(row_ix, self.fetcher_col(col_ix))
+            .unwrap_or_else(|| "--".into());
         let group_name: SharedString = format!("td-{}-{}", row_ix, col_ix).into();
         let copied_message = i18n_common(cx, "copied_to_clipboard");
         base.group(group_name.clone())
@@ -358,6 +475,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                             }),
                     ),
             )
+            .into_any_element()
     }
     /// Returns whether all data has been loaded (end of file).
     fn has_more(&self, _: &App) -> bool {

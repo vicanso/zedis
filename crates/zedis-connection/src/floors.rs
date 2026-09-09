@@ -106,6 +106,14 @@ pub const SHARDED_PUBSUB: Floor = Floor::since_fork("7.0.0");
 pub const EXPIRE_CONDITIONS: Floor = Floor::since_fork("7.0.0");
 /// `EVAL_RO` / `EVALSHA_RO` — read-only script execution (Redis 7.0).
 pub const EVAL_RO: Floor = Floor::since_fork("7.0.0");
+
+/// `GETEX` — read a value and change its expiry in one command. Redis 6.2;
+/// Valkey forked from 7.2, so every Valkey has it.
+pub const GETEX: Floor = Floor::since_fork("6.2.0");
+
+/// The `count` argument of `LPOP` / `RPOP`. Redis 6.2 — the commands
+/// themselves are ancient, so only popping *several* is gated.
+pub const POP_COUNT: Floor = Floor::since_fork("6.2.0");
 /// `CLIENT SETINFO LIB-NAME / LIB-VER` (Redis 7.2; every Valkey release).
 pub const CLIENT_SETINFO: Floor = Floor::since_fork("7.2.0");
 /// `FAILOVER [TO host port [FORCE]] [TIMEOUT ms] [ABORT]` — the coordinated

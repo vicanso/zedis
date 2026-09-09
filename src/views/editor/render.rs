@@ -730,6 +730,12 @@ impl Render for ZedisEditor {
             // definite parent height to shrink against. Without this the diff
             // panes grow to their content height and never show a scrollbar.
             .child(div().flex_1().min_h_0().child(self.render_editor(window, cx)))
+            .on_action(cx.listener(move |this, event: &KeyOpAction, window, cx| {
+                let Some(key) = this.server_state.read(cx).key() else {
+                    return;
+                };
+                open_key_op_dialog(this.server_state.clone(), key, *event, window, cx);
+            }))
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {
                     this.save(window, cx);

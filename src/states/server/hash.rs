@@ -35,7 +35,7 @@ use crate::{
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -420,6 +420,37 @@ impl ZedisServerState {
                     .arg(remove_field.as_str())
                     .query_async(&mut conn)
                     .await?;
+                Ok(count)
+            },
+            |_, _, cx| {
+                cx.emit(ServerEvent::ValueUpdated);
+            },
+        );
+    }
+
+    /// Removes several fields in one `HDEL` — the table's multi-select
+    /// delete. One round trip and one optimistic update rather than N of
+    /// each.
+    pub fn remove_hash_values(&mut self, remove_fields: Vec<SharedString>, cx: &mut Context<Self>) {
+        if remove_fields.is_empty() {
+            return;
+        }
+        let gone: HashSet<SharedString> = remove_fields.iter().cloned().collect();
+        self.exec_hash_op(
+            ServerTask::RemoveHashField,
+            cx,
+            move |hash| {
+                let before = hash.values.len();
+                hash.values.retain(|(field, _)| !gone.contains(field));
+                hash.size = hash.size.saturating_sub(before - hash.values.len());
+            },
+            move |key, mut conn| async move {
+                let mut command = cmd("HDEL");
+                command.arg(&key);
+                for field in &remove_fields {
+                    command.arg(field.as_str());
+                }
+                let count: usize = command.query_async(&mut conn).await?;
                 Ok(count)
             },
             |_, _, cx| {

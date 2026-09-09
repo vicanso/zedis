@@ -39,6 +39,7 @@ pub use i18n::i18n_hash_editor;
 pub use i18n::i18n_hints;
 pub use i18n::i18n_hll;
 pub use i18n::i18n_hotkeys;
+pub use i18n::i18n_key_ops;
 pub use i18n::i18n_key_tag;
 pub use i18n::i18n_key_tree;
 pub use i18n::i18n_keyspace_notifications;

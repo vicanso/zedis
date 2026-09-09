@@ -280,6 +280,15 @@ pub struct RedisZsetValue {
     pub values: Vec<(SharedString, f64)>,
     pub done: bool,
     pub sort_order: SortOrder,
+    /// Active score window as `ZRANGEBYSCORE` spells it (`-inf`, `(5`, …).
+    ///
+    /// The one query a sorted set is actually *for*: members are ordered by
+    /// score, so "everything between 100 and 200" is a range read, while the
+    /// keyword filter can only match member names. The two are mutually
+    /// exclusive — setting either clears the other — because they page
+    /// through different commands and mixing them would need a client-side
+    /// intersection over data neither one fully loaded.
+    pub score_range: Option<(SharedString, SharedString)>,
 }
 
 /// Redis Hash value structure with pagination support

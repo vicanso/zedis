@@ -17,7 +17,7 @@ use super::{
     value::{RedisListValue, RedisValue, RedisValueStatus},
 };
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager},
+    connection::{RedisAsyncConn, get_connection_manager, remove_list_indexes},
     error::Error,
     states::ServerEvent,
 };
@@ -175,6 +175,37 @@ impl ZedisServerState {
             |_list| { /* Optional: Re-fetch or re-insert if critical */ },
         );
     }
+    /// Removes several positions in one round trip — the table's
+    /// multi-select delete. The renumbering that makes repeated index
+    /// deletion wrong is handled by [`remove_list_indexes`].
+    pub fn remove_list_values(&mut self, indexes: Vec<usize>, cx: &mut Context<Self>) {
+        if indexes.is_empty() {
+            return;
+        }
+        let optimistic = indexes.clone();
+        self.exec_list_op(
+            ServerTask::RemoveListValue,
+            cx,
+            move |list| {
+                // Descending, so each removal leaves the lower indexes valid.
+                let mut sorted = optimistic;
+                sorted.sort_unstable_by(|a, b| b.cmp(a));
+                sorted.dedup();
+                for index in sorted {
+                    if index < list.values.len() {
+                        list.values.remove(index);
+                        list.size = list.size.saturating_sub(1);
+                    }
+                }
+            },
+            move |key, mut conn| async move {
+                remove_list_indexes(&mut conn, &key, &indexes).await?;
+                Ok(())
+            },
+            |_list| {},
+        );
+    }
+
     /// Pushes a new value to the list (LPUSH or RPUSH).
     pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
         let is_lpush = mode == "1";

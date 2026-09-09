@@ -23,6 +23,7 @@ use crate::{
 };
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -374,6 +375,38 @@ impl ZedisServerState {
                     .arg(remove_value.as_str())
                     .query_async(&mut conn)
                     .await?;
+                Ok(count)
+            },
+            |_, _, cx| {
+                cx.emit(ServerEvent::ValueUpdated);
+            },
+        );
+    }
+
+    /// Removes several members in one `SREM` — the table's multi-select
+    /// delete. One round trip and one optimistic update rather than N of
+    /// each, which is the whole point: clearing fifty members used to be
+    /// fifty confirmations and fifty commands.
+    pub fn remove_set_values(&mut self, remove_values: Vec<SharedString>, cx: &mut Context<Self>) {
+        if remove_values.is_empty() {
+            return;
+        }
+        let gone: HashSet<SharedString> = remove_values.iter().cloned().collect();
+        self.exec_set_op(
+            ServerTask::RemoveSetValue,
+            cx,
+            move |set| {
+                let before = set.values.len();
+                set.values.retain(|v| !gone.contains(v));
+                set.size = set.size.saturating_sub(before - set.values.len());
+            },
+            move |key, mut conn| async move {
+                let mut command = cmd("SREM");
+                command.arg(&key);
+                for value in &remove_values {
+                    command.arg(value.as_str());
+                }
+                let count: usize = command.query_async(&mut conn).await?;
                 Ok(count)
             },
             |_, _, cx| {

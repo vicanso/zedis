@@ -211,6 +211,28 @@ impl ZedisKvFetcher for ZedisStreamValues {
     ///
     /// When a filter is active, maps the visible index to the real index
     /// in the underlying stream before performing the deletion (XDEL command).
+    fn filters_client_side(&self) -> bool {
+        true
+    }
+
+    fn supports_batch_remove(&self) -> bool {
+        true
+    }
+
+    fn remove_many(&self, rows: &[usize], cx: &mut App) {
+        let Some(stream) = self.value.stream_value() else {
+            return;
+        };
+        let ids: Vec<SharedString> = rows
+            .iter()
+            .map(|row| *self.visible_entry_indexes.get(*row).unwrap_or(row))
+            .filter_map(|real| stream.get_entry_id(real))
+            .collect();
+        self.server_state.update(cx, |this, cx| {
+            this.remove_stream_values(ids, cx);
+        });
+    }
+
     fn remove(&self, index: usize, cx: &mut App) {
         let Some(stream) = self.value.stream_value() else {
             return;

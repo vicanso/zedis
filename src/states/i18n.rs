@@ -171,6 +171,10 @@ pub fn i18n_expire_at<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("expire_at.{key}"), locale = locale).into()
 }
+pub fn i18n_key_ops<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("key_ops.{key}"), locale = locale).into()
+}
 pub fn i18n_server_load<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("server_load.{key}"), locale = locale).into()

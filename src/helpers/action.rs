@@ -184,6 +184,38 @@ pub enum EditorAction {
     EditTtlAbsolute,
 }
 
+/// The type-native key operations the editors offer beyond add / edit /
+/// delete. Each opens the shared form in `views::key_op_dialog`, which
+/// knows the fields each one needs; the dialog builds the
+/// `connection::KeyOp` and the server state runs it.
+///
+/// Dispatched by `ZedisKvTable` for the collection types and by the editor
+/// key bar for String, because those are the two places whose menu already
+/// knows which key is selected.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum KeyOpAction {
+    /// `LTRIM` — keep a window, drop the rest.
+    ListTrim,
+    /// `LPOP` — take from the head.
+    ListPopHead,
+    /// `RPOP` — take from the tail.
+    ListPopTail,
+    /// `ZINCRBY` — move one member's score.
+    ZsetIncrBy,
+    /// `ZPOPMIN` — take the lowest scores.
+    ZsetPopMin,
+    /// `ZPOPMAX` — take the highest scores.
+    ZsetPopMax,
+    /// `HINCRBY` — move one field's counter.
+    HashIncrBy,
+    /// `INCRBY` / `INCRBYFLOAT` — move a string counter.
+    StringIncrBy,
+    /// `APPEND` — add to the end of a string.
+    StringAppend,
+    /// `GETEX` — change the expiry while reading the value.
+    StringGetEx,
+}
+
 /// Actions scoped to the side-by-side value diff view.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum ValueDiffAction {

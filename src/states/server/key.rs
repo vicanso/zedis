@@ -26,7 +26,9 @@ use super::{
     },
     zset::first_load_zset_value,
 };
-use crate::connection::{ExpireCondition, ServerCommand, floors, get_server_features, get_server_heat_probe};
+use crate::connection::{
+    ExpireCondition, KeyOp, KeyOpOutcome, ServerCommand, floors, get_server_features, get_server_heat_probe, run_key_op,
+};
 use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
     insert_trash_entry, purge_trash, recent_keys_scope,
@@ -881,6 +883,58 @@ impl ZedisServerState {
                 };
                 cx.emit(ServerEvent::ValueLoaded);
                 cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Runs one type-native operation against the selected key, then
+    /// reloads the value.
+    ///
+    /// A full reload rather than an optimistic edit: `LTRIM` and the pops
+    /// change an unbounded number of elements, and a half-applied local
+    /// guess is worse than the round trip. The outcome becomes one toast —
+    /// the new counter, or what was taken out — because these are the
+    /// operations whose *result* is the point.
+    pub fn run_key_operation(&mut self, key: SharedString, op: KeyOp, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_arg = key.clone();
+        self.spawn_with_arg(
+            ServerTask::RunKeyOperation,
+            key.clone(),
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                Ok(run_key_op(&mut conn, key_arg.as_str(), op).await?)
+            },
+            move |this, result, cx| {
+                let Ok(outcome) = result else {
+                    // The error already surfaced through `spawn_with_arg`.
+                    return;
+                };
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                let message: SharedString = match outcome {
+                    KeyOpOutcome::Number(value) => t!("key_ops.result_number", value = value, locale = locale)
+                        .to_string()
+                        .into(),
+                    KeyOpOutcome::Removed(items) if items.is_empty() => {
+                        t!("key_ops.result_nothing", locale = locale).to_string().into()
+                    }
+                    KeyOpOutcome::Removed(items) => t!(
+                        "key_ops.result_removed",
+                        count = items.len(),
+                        items = items.join(", "),
+                        locale = locale
+                    )
+                    .to_string()
+                    .into(),
+                    KeyOpOutcome::Count(count) => t!("key_ops.result_count", count = count, locale = locale)
+                        .to_string()
+                        .into(),
+                    KeyOpOutcome::Done => t!("key_ops.result_done", locale = locale).to_string().into(),
+                };
+                this.emit_info_notification(message, cx);
+                this.reload_value(key.clone(), cx);
             },
             cx,
         );

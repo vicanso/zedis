@@ -48,6 +48,10 @@ pub enum ServerTask {
     /// Reload value data for a selected key
     ReloadValue,
 
+    /// One type-native operation (LTRIM / ZINCRBY / INCRBY / …) on the
+    /// selected key
+    RunKeyOperation,
+
     /// Delete multiple keys from Redis
     DeleteKeys,
 
@@ -214,6 +218,7 @@ impl ServerTask {
             ServerTask::Selectkey => "select_key",
             ServerTask::DeleteKey => "delete_key",
             ServerTask::ReloadValue => "reload_value",
+            ServerTask::RunKeyOperation => "run_key_operation",
             ServerTask::DeleteKeys => "delete_keys",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",

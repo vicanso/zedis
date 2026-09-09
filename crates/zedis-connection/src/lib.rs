@@ -38,7 +38,9 @@ mod functions;
 mod hash_fields;
 mod hotkeys;
 mod import_clients;
+mod key_ops;
 mod latency;
+mod list_ops;
 mod lua_script;
 mod manager;
 mod master_key;
@@ -84,9 +86,11 @@ pub use functions::{
 };
 pub use hash_fields::{FieldTtl, rename_hash_field, write_hash_field};
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
+pub use key_ops::{FromEnd, KeyOp, KeyOpOutcome, run_key_op};
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
+pub use list_ops::remove_list_indexes;
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
 pub use probe::{

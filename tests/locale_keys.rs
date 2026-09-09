@@ -26,7 +26,8 @@
 //!   (`t!("section.key")`), quoted as its last segment (the
 //!   `i18n_<section>(cx, "key")` helpers), or composed from a quoted
 //!   base plus a known dynamic suffix (`{base}_title` / `{base}_body`
-//!   in the danger confirm dialog, `{base}_desc` in the settings page).
+//!   in the danger confirm dialog, `{base}_desc` in the settings page,
+//!   `{base}_hint` / `{base}_confirm` in the key-operation dialog).
 //!   The match is deliberately loose — a key is only flagged when
 //!   nothing in the source could possibly produce it.
 
@@ -35,9 +36,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Suffixes the app appends to a quoted base key at runtime
-/// (`views/danger_confirm.rs`, `views/setting_editor.rs`). A new
-/// composed-key family belongs here, with its call site named.
-const DYNAMIC_SUFFIXES: &[&str] = &["_title", "_body", "_desc"];
+/// (`views/danger_confirm.rs`, `views/setting_editor.rs`,
+/// `views/key_op_dialog.rs`). A new composed-key family belongs here,
+/// with its call site named.
+const DYNAMIC_SUFFIXES: &[&str] = &["_title", "_body", "_desc", "_hint", "_confirm"];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

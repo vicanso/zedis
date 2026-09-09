@@ -129,6 +129,32 @@ impl ZedisKvFetcher for ZedisListValues {
     ///
     /// When a filter is active, maps the visible index to the real index
     /// in the underlying list before performing the deletion (LREM command).
+    fn filters_client_side(&self) -> bool {
+        true
+    }
+
+    fn supports_batch_remove(&self) -> bool {
+        true
+    }
+
+    fn remove_many(&self, rows: &[usize], cx: &mut App) {
+        // Visible rows map back to real positions when a filter is active;
+        // the state layer stamps them all with one marker, so the shifting
+        // that makes repeated index deletion wrong never happens.
+        let indexes: Vec<usize> = rows
+            .iter()
+            .map(|row| {
+                self.visible_item_indexes
+                    .as_ref()
+                    .and_then(|indexes| indexes.get(*row).copied())
+                    .unwrap_or(*row)
+            })
+            .collect();
+        self.server_state.update(cx, |state, cx| {
+            state.remove_list_values(indexes, cx);
+        });
+    }
+
     fn remove(&self, index: usize, cx: &mut App) {
         // Map visible index to real index when filtering is active
         let real_index = self

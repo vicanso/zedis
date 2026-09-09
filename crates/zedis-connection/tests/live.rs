@@ -29,18 +29,18 @@ use std::sync::Once;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, HeatMetric,
-    HeatProbe, ImportFormat, KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue,
-    ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus,
-    SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric, acl_del_user, acl_dryrun,
-    acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami,
-    cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json,
-    ft_explain, ft_search, get_connection_manager, get_server, get_server_heat_probe, get_servers,
+    AclDryRun, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, FromEnd,
+    HeatMetric, HeatProbe, ImportFormat, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
+    PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo,
+    ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
+    acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user,
+    acl_whoami, cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk, entry_to_csv,
+    entry_to_json, ft_explain, ft_search, get_connection_manager, get_server, get_server_heat_probe, get_servers,
     kill_filter_commands, kill_running, open_single_connection, parse_readable_entries, pause_args,
-    plan_cluster_rebalance, probe_server_features, read_readable_chunk, rename_hash_field, restore_keys_chunk,
-    run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor,
-    sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, unassigned_slot_ranges, write_hash_field,
-    write_readable_chunk,
+    plan_cluster_rebalance, probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field,
+    restore_keys_chunk, run_key_op, run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig,
+    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules,
+    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -840,6 +840,432 @@ fn standalone_feature_probe_matches_the_server() {
         } else {
             assert!(matches!(features.flavor, ServerFlavor::Redis | ServerFlavor::Valkey));
         }
+    });
+}
+
+/// The sorted set's score window, and the direction trap in it.
+///
+/// `ZREVRANGEBYSCORE` takes **max first**; passing the bounds in the
+/// ascending order silently returns nothing rather than erroring, so the
+/// descending half is what this test is really for. `ZCOUNT` supplies the
+/// total the footer pages against, and the exclusive `(` form is the other
+/// half of the syntax the filter accepts.
+#[test]
+#[ignore]
+fn standalone_score_window_reads_both_directions() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let key = unique("score-window");
+        for (member, score) in [("a", 1), ("b", 5), ("c", 10), ("d", 15), ("e", 20)] {
+            let _: () = cmd("ZADD")
+                .arg(&key)
+                .arg(score)
+                .arg(member)
+                .query_async(&mut c)
+                .await
+                .expect("zadd");
+        }
+
+        let count: u64 = cmd("ZCOUNT")
+            .arg(&key)
+            .arg(5)
+            .arg(15)
+            .query_async(&mut c)
+            .await
+            .expect("zcount");
+        assert_eq!(count, 3, "the window's total, which the footer counts against");
+
+        let ascending: Vec<String> = cmd("ZRANGEBYSCORE")
+            .arg(&key)
+            .arg(5)
+            .arg(15)
+            .query_async(&mut c)
+            .await
+            .expect("zrangebyscore");
+        assert_eq!(ascending, vec!["b", "c", "d"]);
+
+        // Max first. The same call with the arguments the ascending form
+        // takes would answer with an empty list, not an error.
+        let descending: Vec<String> = cmd("ZREVRANGEBYSCORE")
+            .arg(&key)
+            .arg(15)
+            .arg(5)
+            .query_async(&mut c)
+            .await
+            .expect("zrevrangebyscore");
+        assert_eq!(descending, vec!["d", "c", "b"]);
+        let reversed_bounds: Vec<String> = cmd("ZREVRANGEBYSCORE")
+            .arg(&key)
+            .arg(5)
+            .arg(15)
+            .query_async(&mut c)
+            .await
+            .expect("zrevrangebyscore with the bounds swapped");
+        assert!(
+            reversed_bounds.is_empty(),
+            "swapping the bounds fails silently — hence the assertion above"
+        );
+
+        // `(` excludes the endpoint, and LIMIT is how the window pages.
+        let exclusive: Vec<String> = cmd("ZRANGEBYSCORE")
+            .arg(&key)
+            .arg("(5")
+            .arg("+inf")
+            .query_async(&mut c)
+            .await
+            .expect("exclusive lower bound");
+        assert_eq!(exclusive, vec!["c", "d", "e"]);
+        let page: Vec<String> = cmd("ZRANGEBYSCORE")
+            .arg(&key)
+            .arg("-inf")
+            .arg("+inf")
+            .arg("LIMIT")
+            .arg(2)
+            .arg(2)
+            .query_async(&mut c)
+            .await
+            .expect("limit page");
+        assert_eq!(page, vec!["c", "d"]);
+
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+    });
+}
+
+/// The type-native operations the editors offer beyond add / edit / delete.
+///
+/// Each one is a command the terminal could run; what is asserted here is
+/// that `run_key_op` builds the right one and reports back what the panel
+/// shows — including the two shapes that are easy to get subtly wrong: an
+/// integer counter that must stay an integer, and a `ZPOPMIN` reply that
+/// interleaves members with scores.
+#[test]
+#[ignore]
+fn standalone_key_ops_run_and_report_their_result() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+
+        // LTRIM answers with the length that is left.
+        let list = unique("op-list");
+        let _: () = cmd("RPUSH")
+            .arg(&list)
+            .arg(&["a", "b", "c", "d", "e"])
+            .query_async(&mut c)
+            .await
+            .expect("rpush");
+        let outcome = run_key_op(&mut c, &list, KeyOp::ListTrim { start: 1, stop: 3 })
+            .await
+            .expect("ltrim");
+        assert_eq!(outcome, KeyOpOutcome::Count(3));
+        let rest: Vec<String> = cmd("LRANGE")
+            .arg(&list)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("lrange");
+        assert_eq!(rest, vec!["b", "c", "d"]);
+
+        // One pop uses the countless form every supported server has.
+        let outcome = run_key_op(
+            &mut c,
+            &list,
+            KeyOp::ListPop {
+                end: FromEnd::Head,
+                count: 1,
+            },
+        )
+        .await
+        .expect("lpop");
+        assert_eq!(outcome, KeyOpOutcome::Removed(vec!["b".to_string()]));
+        // Several needs the 6.2 count argument.
+        if supports(&id, floors::POP_COUNT).await {
+            let outcome = run_key_op(
+                &mut c,
+                &list,
+                KeyOp::ListPop {
+                    end: FromEnd::Tail,
+                    count: 2,
+                },
+            )
+            .await
+            .expect("rpop count");
+            assert_eq!(outcome, KeyOpOutcome::Removed(vec!["d".to_string(), "c".to_string()]));
+        } else {
+            eprintln!("skipped the multi-pop half: the server predates 6.2");
+        }
+        // Popping an empty list is not an error, just nothing.
+        let outcome = run_key_op(
+            &mut c,
+            &unique("op-list-absent"),
+            KeyOp::ListPop {
+                end: FromEnd::Head,
+                count: 1,
+            },
+        )
+        .await
+        .expect("lpop on a missing key");
+        assert_eq!(outcome, KeyOpOutcome::Removed(vec![]));
+
+        // ZINCRBY reports the new score, without a trailing `.0`.
+        let zset = unique("op-zset");
+        let _: () = cmd("ZADD")
+            .arg(&zset)
+            .arg(1)
+            .arg("m1")
+            .arg(2)
+            .arg("m2")
+            .query_async(&mut c)
+            .await
+            .expect("zadd");
+        let outcome = run_key_op(
+            &mut c,
+            &zset,
+            KeyOp::ZsetIncrBy {
+                member: "m1".to_string(),
+                delta: 4.0,
+            },
+        )
+        .await
+        .expect("zincrby");
+        assert_eq!(outcome, KeyOpOutcome::Number("5".to_string()));
+
+        // ZPOPMIN answers member, score, member, score — only the members
+        // are named back.
+        let outcome = run_key_op(
+            &mut c,
+            &zset,
+            KeyOp::ZsetPop {
+                end: FromEnd::Head,
+                count: 2,
+            },
+        )
+        .await
+        .expect("zpopmin");
+        assert_eq!(
+            outcome,
+            KeyOpOutcome::Removed(vec!["m2".to_string(), "m1".to_string()]),
+            "lowest score first"
+        );
+
+        // HINCRBY on a field that does not exist yet starts from zero.
+        let hash = unique("op-hash");
+        let outcome = run_key_op(
+            &mut c,
+            &hash,
+            KeyOp::HashIncrBy {
+                field: "hits".to_string(),
+                delta: 3,
+            },
+        )
+        .await
+        .expect("hincrby");
+        assert_eq!(outcome, KeyOpOutcome::Number("3".to_string()));
+
+        // A whole delta must keep the value an integer, so the *next*
+        // integer increment still works — INCRBYFLOAT would not.
+        let counter = unique("op-counter");
+        let _: () = cmd("SET").arg(&counter).arg(5).query_async(&mut c).await.expect("set");
+        let outcome = run_key_op(&mut c, &counter, KeyOp::StringIncrBy { delta: 2.0 })
+            .await
+            .expect("incrby");
+        assert_eq!(outcome, KeyOpOutcome::Number("7".to_string()));
+        let outcome = run_key_op(&mut c, &counter, KeyOp::StringIncrBy { delta: 1.0 })
+            .await
+            .expect("a second integer increment");
+        assert_eq!(outcome, KeyOpOutcome::Number("8".to_string()));
+        // A fractional delta switches command and the value stops being an int.
+        let outcome = run_key_op(&mut c, &counter, KeyOp::StringIncrBy { delta: 0.5 })
+            .await
+            .expect("incrbyfloat");
+        assert_eq!(outcome, KeyOpOutcome::Number("8.5".to_string()));
+
+        // APPEND answers with the new length.
+        let text = unique("op-text");
+        let _: () = cmd("SET").arg(&text).arg("ab").query_async(&mut c).await.expect("set");
+        let outcome = run_key_op(
+            &mut c,
+            &text,
+            KeyOp::StringAppend {
+                text: "cde".to_string(),
+            },
+        )
+        .await
+        .expect("append");
+        assert_eq!(outcome, KeyOpOutcome::Count(5));
+
+        // GETEX sets and clears the expiry without touching the value.
+        if supports(&id, floors::GETEX).await {
+            run_key_op(&mut c, &text, KeyOp::StringGetEx { ttl: Some(120) })
+                .await
+                .expect("getex ex");
+            let ttl: i64 = cmd("TTL").arg(&text).query_async(&mut c).await.expect("ttl");
+            assert!((100..=120).contains(&ttl), "ttl after GETEX EX: {ttl}");
+            run_key_op(&mut c, &text, KeyOp::StringGetEx { ttl: None })
+                .await
+                .expect("getex persist");
+            let ttl: i64 = cmd("TTL").arg(&text).query_async(&mut c).await.expect("ttl");
+            assert_eq!(ttl, -1, "PERSIST clears the expiry");
+            let value: String = cmd("GET").arg(&text).query_async(&mut c).await.expect("get");
+            assert_eq!(value, "abcde", "GETEX leaves the value alone");
+        } else {
+            eprintln!("skipped the GETEX half: the server predates 6.2");
+        }
+
+        let _: () = cmd("DEL")
+            .arg(&[&list, &zset, &hash, &counter, &text])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// Multi-select delete, per collection type.
+///
+/// Four of the five are a plain variadic command; the List is not, because
+/// Redis cannot delete by position at all. `remove_list_indexes` stamps every
+/// selected position with one marker inside a MULTI and removes the marker
+/// once — the assertion that matters is that the *survivors* are the ones the
+/// caller did not pick, which a naive "delete index 1, then index 3" would
+/// get wrong the moment the first removal renumbers the rest.
+#[test]
+#[ignore]
+fn standalone_batch_delete_removes_exactly_the_selected_entries() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+
+        // List: delete positions 1, 3 and 4 of six. Every index is taken from
+        // the same snapshot, which is what the marker makes safe.
+        let list = unique("batch-list");
+        let _: () = cmd("RPUSH")
+            .arg(&list)
+            .arg(&["a", "b", "c", "d", "e", "f"])
+            .query_async(&mut c)
+            .await
+            .expect("rpush");
+        let removed = remove_list_indexes(&mut c, &list, &[1, 3, 4])
+            .await
+            .expect("batch list");
+        assert_eq!(removed, 3);
+        let rest: Vec<String> = cmd("LRANGE")
+            .arg(&list)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("lrange");
+        assert_eq!(rest, vec!["a", "c", "f"], "only the unselected positions survive");
+
+        // A repeated index must not remove a second element, and an empty
+        // selection must not touch the list.
+        let removed = remove_list_indexes(&mut c, &list, &[0, 0])
+            .await
+            .expect("duplicate index");
+        assert_eq!(removed, 1);
+        assert_eq!(remove_list_indexes(&mut c, &list, &[]).await.expect("empty"), 0);
+        let rest: Vec<String> = cmd("LRANGE")
+            .arg(&list)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("lrange");
+        assert_eq!(rest, vec!["c", "f"]);
+
+        // Hash / Set / ZSet / Stream: the variadic forms the batch delete
+        // sends, asserted together so a server that lost one is caught here.
+        let hash = unique("batch-hash");
+        let _: () = cmd("HSET")
+            .arg(&hash)
+            .arg(&["f1", "v1", "f2", "v2", "f3", "v3"])
+            .query_async(&mut c)
+            .await
+            .expect("hset");
+        let gone: u64 = cmd("HDEL")
+            .arg(&hash)
+            .arg(&["f1", "f3"])
+            .query_async(&mut c)
+            .await
+            .expect("hdel");
+        assert_eq!(gone, 2);
+        let fields: Vec<String> = cmd("HKEYS").arg(&hash).query_async(&mut c).await.expect("hkeys");
+        assert_eq!(fields, vec!["f2"]);
+
+        let set = unique("batch-set");
+        let _: () = cmd("SADD")
+            .arg(&set)
+            .arg(&["m1", "m2", "m3"])
+            .query_async(&mut c)
+            .await
+            .expect("sadd");
+        let gone: u64 = cmd("SREM")
+            .arg(&set)
+            .arg(&["m1", "m2"])
+            .query_async(&mut c)
+            .await
+            .expect("srem");
+        assert_eq!(gone, 2);
+        let card: u64 = cmd("SCARD").arg(&set).query_async(&mut c).await.expect("scard");
+        assert_eq!(card, 1);
+
+        let zset = unique("batch-zset");
+        let _: () = cmd("ZADD")
+            .arg(&zset)
+            .arg(1)
+            .arg("z1")
+            .arg(2)
+            .arg("z2")
+            .arg(3)
+            .arg("z3")
+            .query_async(&mut c)
+            .await
+            .expect("zadd");
+        let gone: u64 = cmd("ZREM")
+            .arg(&zset)
+            .arg(&["z1", "z3"])
+            .query_async(&mut c)
+            .await
+            .expect("zrem");
+        assert_eq!(gone, 2);
+        let members: Vec<String> = cmd("ZRANGE")
+            .arg(&zset)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("zrange");
+        assert_eq!(members, vec!["z2"]);
+
+        let stream = unique("batch-stream");
+        let mut ids = Vec::new();
+        for n in 0..3 {
+            let entry: String = cmd("XADD")
+                .arg(&stream)
+                .arg("*")
+                .arg("n")
+                .arg(n)
+                .query_async(&mut c)
+                .await
+                .expect("xadd");
+            ids.push(entry);
+        }
+        let gone: u64 = cmd("XDEL")
+            .arg(&stream)
+            .arg(&[ids[0].as_str(), ids[2].as_str()])
+            .query_async(&mut c)
+            .await
+            .expect("xdel");
+        assert_eq!(gone, 2);
+        let len: u64 = cmd("XLEN").arg(&stream).query_async(&mut c).await.expect("xlen");
+        assert_eq!(len, 1);
+
+        let _: () = cmd("DEL")
+            .arg(&[&list, &hash, &set, &zset, &stream])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
     });
 }
 

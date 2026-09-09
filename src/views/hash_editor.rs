@@ -128,6 +128,23 @@ impl ZedisKvFetcher for ZedisHashValues {
     /// Removes a field-value pair from the HASH at the given index.
     ///
     /// Executes Redis HDEL command to delete the field.
+    fn supports_batch_remove(&self) -> bool {
+        true
+    }
+
+    fn remove_many(&self, rows: &[usize], cx: &mut App) {
+        let Some(hash) = self.value.hash_value() else {
+            return;
+        };
+        let fields: Vec<SharedString> = rows
+            .iter()
+            .filter_map(|row| hash.values.get(*row).map(|(field, _)| field.clone()))
+            .collect();
+        self.server_state.update(cx, |this, cx| {
+            this.remove_hash_values(fields, cx);
+        });
+    }
+
     fn remove(&self, index: usize, cx: &mut App) {
         // Get the HASH field at the specified index
         let Some(hash) = self.value.hash_value() else {

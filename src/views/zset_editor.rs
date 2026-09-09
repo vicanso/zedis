@@ -105,6 +105,23 @@ impl ZedisKvFetcher for ZedisZsetValues {
     /// Removes a member from the ZSET at the given index.
     ///
     /// Executes Redis ZREM command to delete the member.
+    fn supports_batch_remove(&self) -> bool {
+        true
+    }
+
+    fn remove_many(&self, rows: &[usize], cx: &mut App) {
+        let Some(zset) = self.value.zset_value() else {
+            return;
+        };
+        let members: Vec<SharedString> = rows
+            .iter()
+            .filter_map(|row| zset.values.get(*row).map(|(member, _)| member.clone()))
+            .collect();
+        self.server_state.update(cx, |this, cx| {
+            this.remove_zset_values(members, cx);
+        });
+    }
+
     fn remove(&self, index: usize, cx: &mut App) {
         // Get the ZSET member at the specified index
         let Some(zset) = self.value.zset_value() else {

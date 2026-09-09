@@ -17,16 +17,19 @@ use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT, WORKSPACE_TAB_B
 use crate::helpers::get_mono_font_family;
 use crate::{
     assets::CustomIconName,
-    components::{INDEX_COLUMN_NAME, KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvDelegate, ZedisKvFetcher},
-    helpers::{EditorAction, build_csv, humanize_keystroke},
-    states::{
-        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_kv_table,
-        i18n_list_editor, update_app_state_and_save_quiet_debounced,
+    components::{
+        KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvDelegate, ZedisKvFetcher, with_leading_columns,
     },
-    views::export_to_file,
+    helpers::{EditorAction, KeyOpAction, build_csv, humanize_keystroke},
+    states::{
+        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_key_ops,
+        i18n_kv_table, i18n_list_editor, i18n_zset_editor, update_app_state_and_save_quiet_debounced,
+    },
+    views::{export_to_file, key_op_title_key, open_key_op_dialog, open_score_filter_dialog},
 };
-use gpui::{App, Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
+use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::TITLE_BAR_HEIGHT;
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
@@ -179,21 +182,16 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// 2. Adds an action column at the end (100px, center-aligned)
     /// 3. Calculates remaining space for columns without fixed widths
     /// 4. Distributes remaining width evenly among flexible columns
-    fn new_columns(mut columns: Vec<KvTableColumn>, window: &Window, cx: &mut Context<Self>) -> Vec<KvTableColumn> {
+    fn new_columns(
+        columns: Vec<KvTableColumn>,
+        selectable: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<KvTableColumn> {
         // Calculate available width (window - sidebar - key tree - padding)
         let window_width = window.viewport_size().width;
 
-        // Insert index column at the beginning
-        columns.insert(
-            0,
-            KvTableColumn {
-                column_type: KvTableColumnType::Index,
-                name: INDEX_COLUMN_NAME.to_string().into(),
-                width: Some(80.),
-                align: Some(TextAlign::Right),
-                ..Default::default()
-            },
-        );
+        let mut columns = with_leading_columns(columns, selectable);
 
         // Calculate remaining width and count columns without fixed width
         let content_width = cx
@@ -292,8 +290,16 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         }
                     }
 
+                    // A selection is a set of row *indices*, so anything that
+                    // can renumber rows invalidates it. Paging only appends,
+                    // which is why it is the one event that keeps it.
+                    let renumbered = !matches!(event, ServerEvent::ValuePaginationFinished);
                     this.table_state.update(cx, |state, _| {
-                        state.delegate_mut().set_fetcher(fetcher);
+                        let delegate = state.delegate_mut();
+                        delegate.set_fetcher(fetcher);
+                        if renumbered {
+                            delegate.clear_selection();
+                        }
                     });
                 }
                 // Read-only was toggled from the status bar — recompute the
@@ -315,6 +321,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 ServerEvent::KeySelected(_) => {
                     this.edit_row = None;
                     this.key_changed = Some(true);
+                    this.table_state
+                        .update(cx, |state, _| state.delegate_mut().clear_selection());
                 }
                 _ => {}
             }
@@ -344,8 +352,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let done = fetcher.is_done();
         let items_count = fetcher.rows_count();
         let total_count = fetcher.count();
+        let selectable = fetcher.supports_batch_remove() && mode.contains(KvTableMode::REMOVE);
         let delegate = ZedisKvDelegate::new(
-            Self::new_columns(columns.clone(), window, cx),
+            Self::new_columns(columns.clone(), selectable, window, cx),
             fetcher.clone(),
             window,
             cx,
@@ -497,6 +506,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
     fn is_adding_row(&self) -> bool {
         self.edit_row == Some(usize::MAX)
+    }
+
+    /// Whether the multi-select column belongs in this table: the type must
+    /// have a batch delete, and the connection must allow deleting at all.
+    fn selectable(&self) -> bool {
+        self.fetcher.supports_batch_remove() && self.mode.contains(KvTableMode::REMOVE)
     }
 
     fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
@@ -655,8 +670,78 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let keyword = self.keyword_state.read(cx).value();
         self.loading = true;
         self.table_state.update(cx, |state, cx| {
+            // A different keyword means different rows behind the same
+            // indices, so the ticks cannot carry over.
+            state.delegate_mut().clear_selection();
             state.delegate().fetcher().filter(keyword, cx);
         });
+    }
+
+    /// The type-native operations this key type offers, or an empty list
+    /// when it has none. Gated on the same capability as any other write.
+    fn key_ops(&self) -> &'static [KeyOpAction] {
+        if !Capability::MutateContainer.allowed(self.readonly) {
+            return &[];
+        }
+        match self.fetcher.key_type() {
+            KeyType::List => &[
+                KeyOpAction::ListTrim,
+                KeyOpAction::ListPopHead,
+                KeyOpAction::ListPopTail,
+            ],
+            KeyType::Zset => &[
+                KeyOpAction::ZsetIncrBy,
+                KeyOpAction::ZsetPopMin,
+                KeyOpAction::ZsetPopMax,
+            ],
+            KeyType::Hash => &[KeyOpAction::HashIncrBy],
+            _ => &[],
+        }
+    }
+
+    /// Open the shared form for `action`, then run the operation it builds.
+    ///
+    /// A destructive one gets a second dialog rather than a checkbox in the
+    /// first: `LTRIM` and the pops throw data away, and the form that
+    /// collects the numbers is the wrong place to also be the warning.
+    fn open_key_op_dialog(&mut self, action: KeyOpAction, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.server_state.read(cx).key() else {
+            return;
+        };
+        open_key_op_dialog(self.server_state.clone(), key, action, window, cx);
+    }
+
+    /// Delete every ticked row in one command, behind one confirmation.
+    ///
+    /// The count is what the dialog names — listing fifty members would not
+    /// help anyone decide, and the ticks are still on screen behind it.
+    fn handle_remove_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.mode.contains(KvTableMode::REMOVE) {
+            return;
+        }
+        let rows = self.table_state.read(cx).delegate().selected_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let fetcher = self.fetcher.clone();
+        let entity = cx.entity().clone();
+        let table_state = self.table_state.clone();
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message = t!("common.remove_selected_prompt", count = rows.len(), locale = locale);
+        let title = i18n_common(cx, "remove_title");
+
+        ZedisDialog::new_alert(title, message.to_string())
+            .button_props(dialog_button_props(cx))
+            .on_ok(move |_, window, cx| {
+                fetcher.remove_many(&rows, cx);
+                table_state.update(cx, |state, _| state.delegate_mut().clear_selection());
+                entity.update(cx, |this, _cx| {
+                    this.edit_row = None;
+                });
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
     }
 
     fn handle_remove_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -898,7 +983,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
 
         // Rebuild delegate columns when they changed (e.g., Stream with new fields)
         if std::mem::take(&mut self.columns_dirty) {
-            let new_delegate_columns = Self::new_columns(self.columns.clone(), window, cx);
+            let new_delegate_columns = Self::new_columns(self.columns.clone(), self.selectable(), window, cx);
             // Rebuild value_states for the new columns
             self.value_states = self
                 .columns
@@ -921,6 +1006,9 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         }
 
         // Determine if operations are allowed based on mode
+        let selected_count = self.table_state.read(cx).delegate().selected_count();
+        let key_ops = self.key_ops();
+        let score_range = self.server_state.read(cx).zset_score_range();
         let can_add = self.mode.contains(KvTableMode::ADD);
         let can_filter = self.mode.contains(KvTableMode::FILTER);
 
@@ -1006,6 +1094,22 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                         .cleanable(true),
                                 )
                             })
+                            // List and Stream have no server-side scan, so
+                            // their filter only sees the loaded rows. Say so
+                            // next to the box: a result that looks like a
+                            // whole-key search but is not would be worse than
+                            // no filter at all.
+                            .when(can_filter && self.fetcher.filters_client_side(), |this| {
+                                this.child(
+                                    Label::new(t!(
+                                        "kv_table.filter_loaded_only",
+                                        count = self.items_count,
+                                        locale = cx.global::<ZedisGlobalStore>().read(cx).locale()
+                                    ))
+                                    .text_xs()
+                                    .text_color(text_color),
+                                )
+                            })
                             .when_some(self.action_button_factory.as_ref(), |this, factory| {
                                 this.children(factory(window, cx))
                             })
@@ -1025,6 +1129,105 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                     )
                                 },
                             )
+                            // A sorted set's own query: members are ordered
+                            // by score, so a score window is what the type is
+                            // for — the keyword box can only match names.
+                            .when(can_filter && self.fetcher.key_type() == KeyType::Zset, |this| {
+                                let active = score_range.is_some();
+                                this.child(
+                                    Button::new("kv-table-score-filter")
+                                        .ghost()
+                                        .when(active, |button| button.primary())
+                                        .icon(CustomIconName::Equal)
+                                        .tooltip(i18n_zset_editor(cx, "score_filter"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            open_score_filter_dialog(this.server_state.clone(), window, cx);
+                                        })),
+                                )
+                            })
+                            .when_some(score_range.clone(), |this, (min, max)| {
+                                this.child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(
+                                            Label::new(format!("{min} … {max}"))
+                                                .text_xs()
+                                                .font_family(get_mono_font_family())
+                                                .text_color(text_color),
+                                        )
+                                        .child(
+                                            Button::new("kv-table-score-filter-clear")
+                                                .ghost()
+                                                .icon(CustomIconName::X)
+                                                .tooltip(i18n_zset_editor(cx, "score_filter_clear"))
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.server_state
+                                                        .update(cx, |state, cx| state.clear_zset_score_filter(cx));
+                                                })),
+                                        ),
+                                )
+                            })
+                            // Type-native operations (LTRIM / ZINCRBY / …)
+                            // behind one menu, so the footer keeps its shape
+                            // whether a type has three of them or none.
+                            .when(!key_ops.is_empty(), |this| {
+                                this.child(
+                                    Button::new("kv-table-key-ops")
+                                        .ghost()
+                                        .icon(CustomIconName::Zap)
+                                        .tooltip(i18n_key_ops(cx, "menu_tooltip"))
+                                        .dropdown_menu(move |menu, _window, _cx| {
+                                            let mut menu = menu;
+                                            for action in key_ops {
+                                                let label_key = key_op_title_key(*action);
+                                                menu = menu.menu_element(Box::new(*action), move |_, cx| {
+                                                    Label::new(i18n_key_ops(cx, label_key))
+                                                });
+                                            }
+                                            menu
+                                        }),
+                                )
+                            })
+                            // The selection chip only exists while something
+                            // is ticked, so the toolbar keeps its usual shape
+                            // until there is a batch to act on.
+                            .when(selected_count > 0, |this| {
+                                this.child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(
+                                            Label::new(t!(
+                                                "kv_table.selected_count",
+                                                count = selected_count,
+                                                locale = cx.global::<ZedisGlobalStore>().read(cx).locale()
+                                            ))
+                                            .text_xs()
+                                            .text_color(text_color),
+                                        )
+                                        .child(
+                                            Button::new("kv-table-remove-selected")
+                                                .danger()
+                                                .icon(CustomIconName::FileXCorner)
+                                                .tooltip(i18n_kv_table(cx, "remove_selected_tooltip"))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.handle_remove_selected(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("kv-table-clear-selection")
+                                                .ghost()
+                                                .icon(CustomIconName::X)
+                                                .tooltip(i18n_kv_table(cx, "clear_selection_tooltip"))
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.table_state
+                                                        .update(cx, |state, _| state.delegate_mut().clear_selection());
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                            })
                             .flex_1(),
                     )
                     // Right side: Status icon and count
@@ -1085,6 +1288,9 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             .h_full()
             .w_full()
             .child(body)
+            .on_action(cx.listener(move |this, event: &KeyOpAction, window, cx| {
+                this.open_key_op_dialog(*event, window, cx);
+            }))
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {
                 EditorAction::Save => {
                     let Some(values) = this

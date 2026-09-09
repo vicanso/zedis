@@ -38,13 +38,17 @@ bitflags::bitflags! {
 }
 
 /// Defines the type of table column for different purposes.
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 pub enum KvTableColumnType {
     /// Standard value column displaying data
     #[default]
     Value,
     /// Row index/number column
     Index,
+    /// Multi-select checkbox column. Only present when the data type can
+    /// delete a whole selection in one command — see
+    /// `ZedisKvFetcher::supports_batch_remove`.
+    Select,
 }
 
 /// Configuration for a table column including name, width, and alignment.
@@ -101,5 +105,113 @@ impl KvTableColumn {
     pub fn optional(mut self) -> Self {
         self.optional = true;
         self
+    }
+}
+
+/// Row number column header.
+pub const INDEX_COLUMN_HEADER: &str = "#";
+/// Header of the multi-select column. Blank on purpose — the header cell
+/// renders a "select every loaded row" checkbox, and a caption next to it
+/// would only compete with it inside a 44px column.
+pub const SELECT_COLUMN_HEADER: &str = "";
+
+/// The columns the table delegate sees: the caller's value columns with the
+/// row number in front, and the multi-select box in front of *that*.
+///
+/// The order is a contract, not a preference. Fetchers address their own
+/// columns as if only the index column existed (`col_ix == 2` is the second
+/// value, hash's TTL is 3), so every column added ahead of it has to be
+/// subtracted back out before a fetcher is asked anything — see
+/// `ZedisKvDelegate::fetcher_col`. Checkboxes go outside the row number so
+/// the number stays where the eye already looks for it.
+pub fn with_leading_columns(mut columns: Vec<KvTableColumn>, selectable: bool) -> Vec<KvTableColumn> {
+    columns.insert(
+        0,
+        KvTableColumn {
+            column_type: KvTableColumnType::Index,
+            name: INDEX_COLUMN_HEADER.to_string().into(),
+            width: Some(80.),
+            align: Some(TextAlign::Right),
+            ..Default::default()
+        },
+    );
+    if selectable {
+        columns.insert(
+            0,
+            KvTableColumn {
+                column_type: KvTableColumnType::Select,
+                name: SELECT_COLUMN_HEADER.to_string().into(),
+                width: Some(44.),
+                align: Some(TextAlign::Center),
+                ..Default::default()
+            },
+        );
+    }
+    columns
+}
+
+/// How many columns the multi-select box adds in front of the ones a fetcher
+/// knows about: 1 when the table has one, 0 otherwise.
+pub fn select_offset(columns: &[KvTableColumn]) -> usize {
+    usize::from(
+        columns
+            .iter()
+            .any(|column| column.column_type == KvTableColumnType::Select),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KvTableColumn, KvTableColumnType, select_offset, with_leading_columns};
+
+    fn value_columns() -> Vec<KvTableColumn> {
+        vec![KvTableColumn::new("Field", None), KvTableColumn::new("Value", None)]
+    }
+
+    #[test]
+    fn without_selection_the_index_column_leads() {
+        let columns = with_leading_columns(value_columns(), false);
+        let types: Vec<KvTableColumnType> = columns.iter().map(|c| c.column_type).collect();
+        assert_eq!(
+            types,
+            vec![
+                KvTableColumnType::Index,
+                KvTableColumnType::Value,
+                KvTableColumnType::Value
+            ]
+        );
+        assert_eq!(select_offset(&columns), 0);
+    }
+
+    #[test]
+    fn the_checkbox_sits_outside_the_row_number() {
+        let columns = with_leading_columns(value_columns(), true);
+        let types: Vec<KvTableColumnType> = columns.iter().map(|c| c.column_type).collect();
+        assert_eq!(
+            types,
+            vec![
+                KvTableColumnType::Select,
+                KvTableColumnType::Index,
+                KvTableColumnType::Value,
+                KvTableColumnType::Value
+            ]
+        );
+        assert_eq!(select_offset(&columns), 1);
+    }
+
+    /// The contract fetchers rely on: subtracting `select_offset` from a
+    /// delegate index yields the index they were written against, which is
+    /// the layout with the row number and nothing else in front.
+    #[test]
+    fn subtracting_the_offset_restores_the_fetchers_own_numbering() {
+        let plain = with_leading_columns(value_columns(), false);
+        let selectable = with_leading_columns(value_columns(), true);
+        for value_ix in 0..2 {
+            let in_plain = 1 + value_ix;
+            let in_selectable = 2 + value_ix;
+            assert_eq!(plain[in_plain].column_type, KvTableColumnType::Value);
+            assert_eq!(selectable[in_selectable].column_type, KvTableColumnType::Value);
+            assert_eq!(in_selectable - select_offset(&selectable), in_plain);
+        }
     }
 }
