@@ -337,6 +337,12 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::GeoDist => {
             c.arg(PROBE_KEY).arg("a").arg("b");
         }
+        // A filter no series can carry: the answer is an empty array on a
+        // server that has the module, and "unknown command" on one that
+        // does not — which is the whole question.
+        ServerCommand::TsMRange => {
+            c.arg("-").arg("+").arg("FILTER").arg(format!("{PROBE_KEY}=1"));
+        }
         ServerCommand::Dump => {
             c.arg(PROBE_KEY);
         }

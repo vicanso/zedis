@@ -33,15 +33,15 @@ use zedis_connection::{
     FromEnd, HeatMetric, HeatProbe, ImportFormat, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
     PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo,
     ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
-    TsAlter, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
+    TsAlter, TsMRange, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
     acl_set_user, acl_whoami, bit_op, cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk,
     entry_to_csv, entry_to_json, ft_explain, ft_search, geo_add, geo_dist, get_connection_manager, get_server,
     get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
     parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance, probe_server_features, read_readable_chunk,
     remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op, run_script, save_servers,
     sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set,
-    sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, unassigned_slot_ranges,
-    write_hash_field, write_readable_chunk,
+    sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
+    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
 };
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -1068,6 +1068,112 @@ fn stack_timeseries_write_operations() {
 
         let _: () = cmd("DEL")
             .arg(&[&key, &compacted])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// `TS.MRANGE` behind the multi-series explorer.
+///
+/// Two things are asserted that a single-series read cannot show: label
+/// matchers select across keys, and `AGGREGATION` puts every matched series
+/// on the *same* bucket boundaries — which is the only reason overlaying
+/// their lines on one axis is honest.
+#[test]
+#[ignore]
+fn stack_timeseries_mrange_selects_by_label_and_aligns_buckets() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let tag = unique("mrange");
+        let a = format!("{tag}:a");
+        let b = format!("{tag}:b");
+        let other = format!("{tag}:other");
+
+        for (key, host) in [(&a, "a"), (&b, "b")] {
+            let _: () = cmd("TS.CREATE")
+                .arg(key)
+                .arg("LABELS")
+                .arg("suite")
+                .arg(&tag)
+                .arg("host")
+                .arg(host)
+                .query_async(&mut c)
+                .await
+                .expect("ts.create");
+        }
+        // A third series that the filter must *not* pick up.
+        let _: () = cmd("TS.CREATE")
+            .arg(&other)
+            .arg("LABELS")
+            .arg("suite")
+            .arg("someone-else")
+            .query_async(&mut c)
+            .await
+            .expect("ts.create other");
+
+        // Samples at different offsets inside the same 60s bucket, so
+        // aggregation is what makes the two series line up.
+        for (key, base) in [(&a, 1_000_000_000_000_i64), (&b, 1_000_000_000_000)] {
+            for (offset, value) in [(0_i64, 1.0_f64), (10_000, 2.0), (61_000, 3.0)] {
+                let _: () = cmd("TS.ADD")
+                    .arg(key)
+                    .arg(base + offset + if key == &b { 5_000 } else { 0 })
+                    .arg(value)
+                    .query_async(&mut c)
+                    .await
+                    .expect("ts.add");
+            }
+        }
+
+        // A filter that only excludes is refused before it is sent.
+        let refused = ts_mrange(
+            &mut c,
+            &TsMRange {
+                filters: vec!["host!=a".to_string()],
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(refused.is_err(), "a query with no positive matcher must not be sent");
+
+        let query = TsMRange {
+            from_ms: Some(0),
+            to_ms: Some(2_000_000_000_000),
+            filters: vec![format!("suite={tag}")],
+            aggregation: Some(("avg".to_string(), 60_000)),
+            count: Some(100),
+        };
+        let mut series = ts_mrange(&mut c, &query).await.expect("ts.mrange");
+        series.sort_by(|x, y| x.key.cmp(&y.key));
+        assert_eq!(
+            series.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(),
+            vec![a.as_str(), b.as_str()],
+            "the label picked exactly the two, not the third"
+        );
+        assert!(
+            series.iter().all(|s| s.labels.iter().any(|(k, _)| k == "host")),
+            "WITHLABELS carried the labels the table shows"
+        );
+
+        // Aggregated buckets are identical across series — the property the
+        // shared x-axis depends on.
+        let a_stamps: Vec<i64> = series[0].samples.iter().map(|(ts, _)| *ts).collect();
+        let b_stamps: Vec<i64> = series[1].samples.iter().map(|(ts, _)| *ts).collect();
+        assert_eq!(a_stamps, b_stamps, "aggregation aligned the buckets");
+        assert!(
+            a_stamps.iter().all(|ts| ts % 60_000 == 0),
+            "buckets snap to the duration"
+        );
+        assert_eq!(a_stamps.len(), 2, "two 60s buckets over the samples written");
+
+        let _: () = cmd("DEL")
+            .arg(&[&a, &b, &other])
             .query_async(&mut c)
             .await
             .expect("cleanup");

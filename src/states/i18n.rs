@@ -325,6 +325,7 @@ pub fn server_view_title(cx: &App, view: ServerView) -> SharedString {
         ServerView::Topology => i18n_topology(cx, "title"),
         ServerView::ServerLoad => i18n_server_load(cx, "title"),
         ServerView::Hotkeys => i18n_hotkeys(cx, "title"),
+        ServerView::TimeSeriesExplorer => i18n_timeseries(cx, "explorer_title"),
         ServerView::ValueSearch => i18n_value_search(cx, "title"),
         ServerView::ServerInfo => i18n_server_info(cx, "title"),
     }

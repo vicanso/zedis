@@ -21,8 +21,8 @@ use crate::{
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
-        i18n_hotkeys, i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_topology,
-        i18n_trash, i18n_value_search, save_session_option,
+        i18n_hotkeys, i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar,
+        i18n_timeseries, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
     },
 };
 use gpui::{
@@ -726,6 +726,11 @@ impl ZedisStatusBar {
         // HOTKEYS tracking — Redis 8.6; the probe's verdict on HOTKEYS GET
         // disables it (with the command as the why-suffix) everywhere else.
         let (hotkeys_label, hotkeys_off) = gated(i18n_hotkeys(cx, "title"), ServerView::Hotkeys, None);
+        let (ts_explorer_label, ts_explorer_off) = gated(
+            i18n_timeseries(cx, "explorer_title"),
+            ServerView::TimeSeriesExplorer,
+            None,
+        );
         // Keyspace Notifications relies on `notify-keyspace-events`
         // (since 2.8); an empty config surfaces a one-click Enable banner
         // inside the panel. Its hard dependency is SUBSCRIBE.
@@ -774,6 +779,14 @@ impl ZedisStatusBar {
                 Icon::new(CustomIconName::AudioWaveform),
                 Box::new(ServerToolsAction::KeyspaceNotifications),
                 keyspace_off,
+            )
+            // Multi-series TimeSeries explorer — greyed out (with the
+            // reason) wherever RedisTimeSeries is not loaded.
+            .menu_with_icon_and_disabled(
+                ts_explorer_label,
+                Icon::new(CustomIconName::Activity),
+                Box::new(ServerToolsAction::TimeSeriesExplorer),
+                ts_explorer_off,
             )
             // Pub/Sub (channel mode in the editor suite) — mirrored here so
             // the connection-level messaging tool is findable next to its

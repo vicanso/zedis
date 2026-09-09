@@ -98,6 +98,9 @@ pub enum ServerCommand {
     PfMerge,
     /// `BITOP` — AND / OR / XOR / NOT across bitmaps into a destination.
     BitOp,
+    /// `TS.MRANGE` — read many series at once by label. Read-only, and the
+    /// hard dependency of the multi-series panel.
+    TsMRange,
 }
 
 impl ServerCommand {
@@ -148,6 +151,7 @@ impl ServerCommand {
         ServerCommand::GeoDist,
         ServerCommand::PfMerge,
         ServerCommand::BitOp,
+        ServerCommand::TsMRange,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -190,6 +194,7 @@ impl ServerCommand {
             ServerCommand::GeoDist => "GEODIST",
             ServerCommand::PfMerge => "PFMERGE",
             ServerCommand::BitOp => "BITOP",
+            ServerCommand::TsMRange => "TS.MRANGE",
         }
     }
 

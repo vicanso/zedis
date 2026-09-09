@@ -1249,6 +1249,7 @@ impl Render for Zedis {
                     ServerToolsAction::Topology => ServerView::Topology,
                     ServerToolsAction::ServerLoad => ServerView::ServerLoad,
                     ServerToolsAction::Hotkeys => ServerView::Hotkeys,
+                    ServerToolsAction::TimeSeriesExplorer => ServerView::TimeSeriesExplorer,
                     ServerToolsAction::ValueSearch => ServerView::ValueSearch,
                     ServerToolsAction::ServerInfo => ServerView::ServerInfo,
                     // FLUSHDB / FLUSHALL: a confirm dialog over whatever view

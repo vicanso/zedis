@@ -71,6 +71,7 @@ mod status_bar;
 mod stream_editor;
 mod terminal;
 mod timeseries_editor;
+mod timeseries_explorer;
 mod title_bar;
 mod topology;
 mod trash_dialog;
@@ -115,6 +116,7 @@ pub use lua_script_library::ZedisLuaScriptLibrary;
 pub use memory_analysis::ZedisMemoryAnalysis;
 pub use score_filter_dialog::open_score_filter_dialog;
 pub use sentinel_dialogs::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
+pub use timeseries_explorer::ZedisTimeSeriesExplorer;
 // Chart helpers re-exported so other diagnostic panels (e.g.
 // memory_analysis) can reuse the metrics view's canvas primitives
 // without each one re-implementing axis / tick rendering.

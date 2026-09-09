@@ -86,6 +86,11 @@ pub enum ServerView {
     /// Raw `INFO everything` browser — every field, filterable, for the
     /// long tail the structured panels don't surface.
     ServerInfo,
+    /// `TS.MRANGE` explorer — many time series at once, selected by label
+    /// rather than by key. The single-key chart answers "what did this do";
+    /// this answers "what did all of these do", which is the question a
+    /// label-organised series set exists for.
+    TimeSeriesExplorer,
 }
 
 impl Route {
@@ -152,6 +157,7 @@ impl ServerView {
             ServerView::Hotkeys => "hotkeys",
             ServerView::ValueSearch => "valuesearch",
             ServerView::ServerInfo => "serverinfo",
+            ServerView::TimeSeriesExplorer => "timeseriesexplorer",
         }
     }
     /// The probed commands this panel cannot function without — when one is
@@ -174,6 +180,7 @@ impl ServerView {
             ServerView::Functions => &[ServerCommand::FunctionList],
             ServerView::KeyspaceNotifications => &[ServerCommand::Subscribe],
             ServerView::ValueSearch => &[ServerCommand::Scan],
+            ServerView::TimeSeriesExplorer => &[ServerCommand::TsMRange],
             ServerView::Editor
             | ServerView::MemoryAnalysis
             | ServerView::Search
@@ -203,6 +210,7 @@ impl ServerView {
             "hotkeys" => ServerView::Hotkeys,
             "valuesearch" => ServerView::ValueSearch,
             "serverinfo" => ServerView::ServerInfo,
+            "timeseriesexplorer" => ServerView::TimeSeriesExplorer,
             _ => return None,
         })
     }
@@ -288,6 +296,7 @@ pub enum ServerToolsAction {
     Hotkeys,
     ValueSearch,
     ServerInfo,
+    TimeSeriesExplorer,
     /// Opens the local recycle-bin dialog (soft-deleted keys) instead of a
     /// sub-route — handled specially in `main.rs`.
     Trash,

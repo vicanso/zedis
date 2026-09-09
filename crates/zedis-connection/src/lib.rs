@@ -94,8 +94,8 @@ pub use latency::{
 pub use list_ops::remove_list_indexes;
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
 pub use module_ops::{
-    BitOpKind, TS_AGGREGATORS, TsAlter, bit_op, geo_add, geo_dist, pf_merge, ts_add, ts_alter, ts_create_rule,
-    ts_delete_rule,
+    BitOpKind, TS_AGGREGATORS, TsAlter, TsMRange, TsSeries, bit_op, geo_add, geo_dist, has_positive_matcher, pf_merge,
+    ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
 };
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
 pub use probe::{

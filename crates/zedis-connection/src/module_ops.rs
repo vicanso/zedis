@@ -23,7 +23,7 @@
 
 use crate::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use redis::cmd;
+use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -118,6 +118,141 @@ pub async fn ts_delete_rule(conn: &mut RedisAsyncConn, source: &str, destination
 pub const TS_AGGREGATORS: &[&str] = &[
     "avg", "sum", "min", "max", "range", "count", "first", "last", "std.p", "std.s", "var.p", "var.s", "twa",
 ];
+
+/// One series returned by `TS.MRANGE`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TsSeries {
+    pub key: String,
+    /// Labels, when the query asked for them (`WITHLABELS`).
+    pub labels: Vec<(String, String)>,
+    /// `(timestamp_ms, value)`, oldest first.
+    pub samples: Vec<(i64, f64)>,
+}
+
+/// A multi-series query.
+///
+/// `filters` are RedisTimeSeries label matchers (`env=prod`, `host!=a`,
+/// `region=(eu,us)`) and at least one of them must be a positive `k=v` —
+/// the server rejects a query that only excludes, because it would have to
+/// scan every series to answer. The panel says so rather than passing the
+/// refusal through.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TsMRange {
+    /// Milliseconds; `None` for the open end (`-` / `+`).
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+    pub filters: Vec<String>,
+    /// `(aggregator, bucket_ms)` — downsampling, which is what makes a
+    /// multi-series chart readable at all beyond a few thousand points.
+    pub aggregation: Option<(String, i64)>,
+    /// Samples per series. RedisTimeSeries has no default cap, and a panel
+    /// that asks for a year of raw samples across fifty series is a hang.
+    pub count: Option<u64>,
+}
+
+/// Whether `filters` contains at least one positive `k=v` matcher, which is
+/// what RedisTimeSeries requires. Pure so the dialog can check as you type.
+pub fn has_positive_matcher(filters: &[String]) -> bool {
+    filters.iter().any(|f| {
+        let Some((name, value)) = f.split_once('=') else {
+            return false;
+        };
+        // `k!=v` splits at the same `=`, leaving a name ending in `!`.
+        !name.ends_with('!') && !name.trim().is_empty() && !value.trim().is_empty()
+    })
+}
+
+/// `TS.MRANGE from to [AGGREGATION agg bucket] [COUNT n] WITHLABELS FILTER …`
+pub async fn ts_mrange(conn: &mut RedisAsyncConn, query: &TsMRange) -> Result<Vec<TsSeries>> {
+    if !has_positive_matcher(&query.filters) {
+        return Err(Error::Invalid {
+            message: "at least one label filter must be a positive match (label=value)".to_string(),
+        });
+    }
+    let mut command = cmd("TS.MRANGE");
+    match query.from_ms {
+        Some(from) => command.arg(from),
+        None => command.arg("-"),
+    };
+    match query.to_ms {
+        Some(to) => command.arg(to),
+        None => command.arg("+"),
+    };
+    if let Some(count) = query.count {
+        command.arg("COUNT").arg(count);
+    }
+    if let Some((aggregator, bucket_ms)) = &query.aggregation {
+        command.arg("AGGREGATION").arg(aggregator).arg(*bucket_ms);
+    }
+    command.arg("WITHLABELS").arg("FILTER");
+    for filter in &query.filters {
+        command.arg(filter.as_str());
+    }
+    let raw: Value = command.query_async(conn).await?;
+    Ok(parse_mrange(&raw))
+}
+
+/// `[[key, [[label, value] …], [[ts, value] …]] …]`.
+///
+/// Anything that does not have that shape is skipped rather than defaulted:
+/// a series drawn at the wrong key or a sample at timestamp 0 would be worse
+/// than one missing from the chart.
+fn parse_mrange(value: &Value) -> Vec<TsSeries> {
+    let Value::Array(entries) = value else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let Value::Array(fields) = entry else {
+                return None;
+            };
+            let key = value_text(fields.first()?)?;
+            let labels = match fields.get(1) {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|item| {
+                        let Value::Array(pair) = item else {
+                            return None;
+                        };
+                        Some((value_text(pair.first()?)?, value_text(pair.get(1)?)?))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let samples = match fields.get(2) {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|item| {
+                        let Value::Array(pair) = item else {
+                            return None;
+                        };
+                        let ts = match pair.first()? {
+                            Value::Int(ts) => *ts,
+                            other => value_text(other)?.parse().ok()?,
+                        };
+                        // Values come back as bulk strings even though they
+                        // are doubles, which is why this is not `as_f64`.
+                        let sample = value_text(pair.get(1)?)?.parse().ok()?;
+                        Some((ts, sample))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            Some(TsSeries { key, labels, samples })
+        })
+        .collect()
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+        Value::SimpleString(text) => Some(text.clone()),
+        Value::Int(number) => Some(number.to_string()),
+        Value::Double(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
 
 // ── Geo ──────────────────────────────────────────────────────────────────
 
@@ -216,7 +351,8 @@ pub async fn bit_op(conn: &mut RedisAsyncConn, op: BitOpKind, destination: &str,
 
 #[cfg(test)]
 mod tests {
-    use super::{BitOpKind, TsAlter};
+    use super::{BitOpKind, TsAlter, TsSeries, has_positive_matcher, parse_mrange};
+    use redis::Value;
 
     #[test]
     fn an_alter_with_nothing_set_sends_nothing() {
@@ -246,5 +382,70 @@ mod tests {
             assert!(!op.single_source(), "{}", op.word());
         }
         assert_eq!(BitOpKind::Xor.word(), "XOR");
+    }
+
+    #[test]
+    fn a_query_that_only_excludes_is_refused_before_it_is_sent() {
+        assert!(has_positive_matcher(&["env=prod".to_string()]));
+        assert!(has_positive_matcher(&[
+            "host!=a".to_string(),
+            "region=(eu,us)".to_string()
+        ]));
+        // Only negatives, only an empty value, or no matcher at all: the
+        // server would refuse each of these.
+        assert!(!has_positive_matcher(&["host!=a".to_string()]));
+        assert!(!has_positive_matcher(&["env=".to_string()]));
+        assert!(!has_positive_matcher(&["env".to_string()]));
+        assert!(!has_positive_matcher(&[]));
+    }
+
+    fn bulk(text: &str) -> Value {
+        Value::BulkString(text.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn mrange_parses_key_labels_and_samples() {
+        let reply = Value::Array(vec![Value::Array(vec![
+            bulk("cpu:1"),
+            Value::Array(vec![Value::Array(vec![bulk("host"), bulk("a")])]),
+            Value::Array(vec![
+                Value::Array(vec![Value::Int(1000), bulk("1.5")]),
+                Value::Array(vec![Value::Int(2000), bulk("2")]),
+            ]),
+        ])]);
+        assert_eq!(
+            parse_mrange(&reply),
+            vec![TsSeries {
+                key: "cpu:1".to_string(),
+                labels: vec![("host".to_string(), "a".to_string())],
+                samples: vec![(1000, 1.5), (2000, 2.0)],
+            }]
+        );
+    }
+
+    #[test]
+    fn malformed_entries_are_skipped_rather_than_defaulted() {
+        let reply = Value::Array(vec![
+            // No key at all.
+            Value::Array(vec![]),
+            // A sample whose value is not a number, next to a good one.
+            Value::Array(vec![
+                bulk("cpu:2"),
+                Value::Nil,
+                Value::Array(vec![
+                    Value::Array(vec![Value::Int(1), bulk("oops")]),
+                    Value::Array(vec![Value::Int(2), bulk("3.5")]),
+                ]),
+            ]),
+        ]);
+        let series = parse_mrange(&reply);
+        assert_eq!(series.len(), 1, "the keyless entry is dropped");
+        assert_eq!(series[0].key, "cpu:2");
+        assert!(series[0].labels.is_empty(), "a nil label block is no labels");
+        assert_eq!(
+            series[0].samples,
+            vec![(2, 3.5)],
+            "the unparsable sample is skipped, not zeroed"
+        );
     }
 }

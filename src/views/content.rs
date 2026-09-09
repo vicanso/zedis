@@ -22,8 +22,8 @@ use crate::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisHotkeys,
         ZedisKeyTree, ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics,
         ZedisMonitor, ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerInfo,
-        ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTopology,
-        ZedisUnsupportedPanel, ZedisValueSearch,
+        ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTimeSeriesExplorer,
+        ZedisTopology, ZedisUnsupportedPanel, ZedisValueSearch,
     },
 };
 use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
@@ -467,6 +467,7 @@ impl ZedisContent {
             ServerView::Topology => cx.new(|cx| ZedisTopology::new(state, window, cx)).into(),
             ServerView::ServerLoad => cx.new(|cx| ZedisServerLoad::new(state, window, cx)).into(),
             ServerView::Hotkeys => cx.new(|cx| ZedisHotkeys::new(state, window, cx)).into(),
+            ServerView::TimeSeriesExplorer => cx.new(|cx| ZedisTimeSeriesExplorer::new(state, window, cx)).into(),
             ServerView::ValueSearch => cx.new(|cx| ZedisValueSearch::new(state, window, cx)).into(),
             ServerView::ServerInfo => cx.new(|cx| ZedisServerInfo::new(state, window, cx)).into(),
         };
