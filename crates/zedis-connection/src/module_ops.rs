@@ -272,14 +272,19 @@ pub async fn geo_add(conn: &mut RedisAsyncConn, key: &str, lon: f64, lat: f64, m
         .await?)
 }
 
-/// `GEODIST key member1 member2 M` — metres, or `None` when either member is
+/// `GEODIST key member1 member2 m` — metres, or `None` when either member is
 /// absent.
+///
+/// The unit is **lowercase on purpose**: Redis 6.2 compares it
+/// case-sensitively and answers "unsupported unit provided. please use m,
+/// km, ft, mi" for `M`, while later versions accept either. Lowercase works
+/// everywhere, so don't "tidy" it to match the other argument keywords.
 pub async fn geo_dist(conn: &mut RedisAsyncConn, key: &str, from: &str, to: &str) -> Result<Option<f64>> {
     let raw: Option<String> = cmd("GEODIST")
         .arg(key)
         .arg(from)
         .arg(to)
-        .arg("M")
+        .arg("m")
         .query_async(conn)
         .await?;
     Ok(raw.and_then(|value| value.parse().ok()))
